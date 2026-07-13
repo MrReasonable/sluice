@@ -42,7 +42,11 @@ def test_title_on_neither_list_is_not_rejected_on_shape(titles):
 
 
 def test_geography_reject(titles):
-    assert classify(L(titles, location="Bangalore, India"), _cfg(titles))[0] == "reject"
+    # Rejecting on geography requires a CONFIGURED geography; the shipped default
+    # abstains (see test_unconfigured_geography_gate_abstains).
+    cfg = _cfg(titles)
+    cfg.target_locations = ["remote"]
+    assert classify(L(titles, location="Bangalore, India"), cfg)[0] == "reject"
 
 
 def test_contract_day_rate_floor(titles):
@@ -93,3 +97,21 @@ def test_accept_list_still_protects_a_substring_reject_pattern(titles):
     cfg = _cfg(titles)
     cfg.reject_titles = [accept[0].split()[-1]]   # a bare word inside the accepted phrase
     assert classify(L(titles, role=accept[0].title()), cfg)[0] == "keep"
+
+
+def test_unconfigured_geography_gate_abstains(titles):
+    # The empty list must mean "no opinion", not "match nothing". Guarding this is
+    # the difference between passing every lead through and rejecting every lead
+    # that names a location.
+    cfg = _cfg(titles)
+    cfg.target_locations = []
+    for loc in ("London", "Berlin", "Remote", "Anywhere at all", ""):
+        lead = L(titles, location=loc)
+        assert classify(lead, cfg)[0] == "keep", f"unconfigured gate rejected {loc!r}"
+
+
+def test_configured_geography_gate_still_filters(titles):
+    cfg = _cfg(titles)
+    cfg.target_locations = ["london"]
+    assert classify(L(titles, location="London"), cfg)[0] == "keep"
+    assert classify(L(titles, location="Berlin"), cfg)[0] == "reject"

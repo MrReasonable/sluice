@@ -22,11 +22,12 @@ def test_cv_defaults_carry_no_pii():
 
 
 def test_triage_defaults_carry_no_pii():
-    # TriageConfig ships with generic geo/company defaults: no owner-specific
-    # reject list and no personal location preferences baked into source.
+    # TriageConfig ships with NO geo or company preference. target_locations was
+    # once ["remote"], which is not neutral: classify rejects anything that does not
+    # match it, so a fresh install silently binned every job with a location on it.
     t = TriageConfig()
     assert t.reject_companies == []
-    assert t.target_locations == ["remote"]
+    assert t.target_locations == []
     assert t.reject_locations == []
 
 

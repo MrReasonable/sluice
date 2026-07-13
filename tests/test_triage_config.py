@@ -33,3 +33,14 @@ def test_yaml_supplies_the_titles(tmp_path, titles):
     assert cfg.contract_floor_gbp_day == 550
     assert cfg.accept_titles == [accept[0]]
     assert cfg.reject_titles == [reject[0]]
+
+
+def test_shipped_defaults_do_not_filter_on_geography(monkeypatch):
+    # Regression: target_locations used to default to ["remote"], and classify
+    # rejects anything not matching it -- so a fresh install silently binned every
+    # job with a location on it. A shipped default must never filter a stranger's
+    # job hunt. Empty means the gate abstains, NOT "match nothing".
+    monkeypatch.delenv("SLUICE_CONFIG", raising=False)
+    cfg = load_triage_config(None)
+    assert cfg.target_locations == []
+    assert cfg.reject_locations == []
