@@ -1,0 +1,181 @@
+{
+  "result": [
+    {
+      "title": "Senior Engineer - Material",
+      "company": "Acme",
+      "location": "Abu Dhabi , Al Ain - United Arab Emirates (UAE)",
+      "link": "https://example.com/jobs/1",
+      "salary": ""
+    },
+    {
+      "title": "Senior Engineer - Ind. Traffic Safety",
+      "company": "Globex",
+      "location": "Abu Dhabi - United Arab Emirates (UAE)",
+      "link": "https://example.com/jobs/2",
+      "salary": ""
+    },
+    {
+      "title": "Steel Fabrication Engineer",
+      "company": "Vertex",
+      "location": "Sharjah - United Arab Emirates (UAE)",
+      "link": "https://example.com/jobs/3",
+      "salary": ""
+    },
+    {
+      "title": "Data Platform & Management Manager",
+      "company": "Umbrella",
+      "location": "Jeddah - Saudi Arabia",
+      "link": "https://example.com/jobs/4",
+      "salary": ""
+    },
+    {
+      "title": "Business Process Consultant - Catering manager",
+      "company": "Acme",
+      "location": "Abu Dhabi , Al Ain - United Arab Emirates (UAE)",
+      "link": "https://example.com/jobs/5",
+      "salary": ""
+    },
+    {
+      "title": "Site Technical Manager",
+      "company": "Hooli",
+      "location": "Dubai - United Arab Emirates (UAE)",
+      "link": "https://example.com/jobs/6",
+      "salary": ""
+    },
+    {
+      "title": "Project Manager / Project Coordinator – Civil Engineer",
+      "company": "Stark",
+      "location": "Dubai - United Arab Emirates (UAE)",
+      "link": "https://example.com/jobs/7",
+      "salary": ""
+    },
+    {
+      "title": "BankerConfidential Company",
+      "company": "",
+      "location": "Abu Dhabi - United Arab Emirates (UAE)",
+      "link": "https://example.com/jobs/8",
+      "salary": ""
+    },
+    {
+      "title": "BankerPied Piper",
+      "company": "",
+      "location": "Saudi Arabia - Saudi Arabia",
+      "link": "https://example.com/jobs/9",
+      "salary": ""
+    },
+    {
+      "title": "Banker",
+      "company": "Wayne",
+      "location": "Saudi Arabia - Saudi Arabia",
+      "link": "https://example.com/jobs/10",
+      "salary": ""
+    },
+    {
+      "title": "Cluster BankerMassive Dynamic",
+      "company": "",
+      "location": "Dubai - United Arab Emirates",
+      "link": "https://example.com/jobs/11",
+      "salary": ""
+    },
+    {
+      "title": "BankerMassive Dynamic",
+      "company": "",
+      "location": "Saudi Arabia - Saudi Arabia",
+      "link": "https://example.com/jobs/12",
+      "salary": ""
+    },
+    {
+      "title": "Banker - OffshoreGringotts Arabia Limited Co",
+      "company": "",
+      "location": "Abu Dhabi - United Arab Emirates",
+      "link": "https://example.com/jobs/13",
+      "salary": ""
+    },
+    {
+      "title": "Power Supply Project Banker (PrEM)",
+      "company": "Wonka",
+      "location": "Riyadh - Saudi Arabia",
+      "link": "https://example.com/jobs/14",
+      "salary": ""
+    },
+    {
+      "title": "BankerClient of Oscorp HR Consultancy",
+      "company": "",
+      "location": "Dubai - United Arab Emirates",
+      "link": "https://example.com/jobs/15",
+      "salary": ""
+    },
+    {
+      "title": "Banker",
+      "company": "Cyberdyne",
+      "location": "Doha - Qatar",
+      "link": "https://example.com/jobs/16",
+      "salary": ""
+    },
+    {
+      "title": "BankerClient of Aperture Limited",
+      "company": "",
+      "location": "Bahrain - Bahrain",
+      "link": "https://example.com/jobs/17",
+      "salary": ""
+    },
+    {
+      "title": "ETIC, AI Engineer - ManagerVandelay",
+      "company": "",
+      "location": "Cairo - Egypt",
+      "link": "https://example.com/jobs/18",
+      "salary": ""
+    },
+    {
+      "title": "Rail Systems Banker (High Speed Rail)Praxis Corporation",
+      "company": "",
+      "location": "Abu Dhabi - United Arab Emirates",
+      "link": "https://example.com/jobs/19",
+      "salary": ""
+    },
+    {
+      "title": "Banker Civil & BuildingsNakatomi Group",
+      "company": "",
+      "location": "Riyadh - Saudi Arabia",
+      "link": "https://example.com/jobs/20",
+      "salary": ""
+    },
+    {
+      "title": "BankerZenith",
+      "company": "",
+      "location": "United Arab Emirates - United Arab Emirates",
+      "link": "https://example.com/jobs/21",
+      "salary": ""
+    },
+    {
+      "title": "BankerContoso AI",
+      "company": "",
+      "location": "United Arab Emirates - United Arab Emirates",
+      "link": "https://example.com/jobs/22",
+      "salary": ""
+    },
+    {
+      "title": "BankerContoso AI",
+      "company": "",
+      "location": "Riyadh - Saudi Arabia",
+      "link": "https://example.com/jobs/23",
+      "salary": ""
+    },
+    {
+      "title": "PMC Banker - SiteZenith",
+      "company": "",
+      "location": "Abu Dhabi - United Arab Emirates",
+      "link": "https://example.com/jobs/24",
+      "salary": ""
+    },
+    {
+      "title": "Banker II - Financial ServicesFabrikam",
+      "company": "",
+      "location": "Cairo - Egypt",
+      "link": "https://example.com/jobs/25",
+      "salary": ""
+    }
+  ],
+  "landed": "https://example.com/search",
+  "requested": "https://example.com/search"
+}

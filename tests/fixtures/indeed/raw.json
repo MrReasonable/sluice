@@ -1,0 +1,132 @@
+{
+  "result": [
+    {
+      "title": "Engineering Contract Manager",
+      "company": "Acme UKLondon",
+      "location": "London",
+      "link": "https://example.com/jobs/1",
+      "salary": "£60,000 - £70,000 a year"
+    },
+    {
+      "title": "Engineering Contract Manager",
+      "company": "Acme UKLondon",
+      "location": "London",
+      "link": "https://example.com/jobs/1",
+      "salary": "£60,000 - £70,000 a year"
+    },
+    {
+      "title": "Technical Product Owner / Technical Make – Agentic AI (Lead I - Software Engineering)",
+      "company": "GlobexHybrid work in London",
+      "location": "Hybrid work in London",
+      "link": "https://example.com/jobs/2",
+      "salary": ""
+    },
+    {
+      "title": "Technical Product Owner / Technical Make – Agentic AI (Lead I - Software Engineering)",
+      "company": "GlobexHybrid work in London",
+      "location": "Hybrid work in London",
+      "link": "https://example.com/jobs/2",
+      "salary": ""
+    },
+    {
+      "title": "Technical Product Owner / Technical Make – Agentic AI (Lead I - Software Engineering)",
+      "company": "GlobexHybrid work in London",
+      "location": "Hybrid work in London",
+      "link": "https://example.com/jobs/3",
+      "salary": ""
+    },
+    {
+      "title": "Technical Product Owner / Technical Make – Agentic AI (Lead I - Software Engineering)",
+      "company": "GlobexHybrid work in London",
+      "location": "Hybrid work in London",
+      "link": "https://example.com/jobs/3",
+      "salary": ""
+    },
+    {
+      "title": "Interface Regulatory Support Engineer",
+      "company": "VertexLondon",
+      "location": "London",
+      "link": "https://example.com/jobs/4",
+      "salary": ""
+    },
+    {
+      "title": "Interface Regulatory Support Engineer",
+      "company": "VertexLondon",
+      "location": "London",
+      "link": "https://example.com/jobs/4",
+      "salary": ""
+    },
+    {
+      "title": "Foundations Design Engineer",
+      "company": "Umbrella EdgeLondon EC4Y",
+      "location": "London EC4Y",
+      "link": "https://example.com/jobs/5",
+      "salary": ""
+    },
+    {
+      "title": "Foundations Design Engineer",
+      "company": "Umbrella EdgeLondon EC4Y",
+      "location": "London EC4Y",
+      "link": "https://example.com/jobs/5",
+      "salary": ""
+    },
+    {
+      "title": "Water Design Manager",
+      "company": "Hooli WestHybrid work in London",
+      "location": "Hybrid work in London",
+      "link": "https://example.com/jobs/6",
+      "salary": "£68 an hour"
+    },
+    {
+      "title": "Water Design Manager",
+      "company": "Hooli WestHybrid work in London",
+      "location": "Hybrid work in London",
+      "link": "https://example.com/jobs/6",
+      "salary": "£68 an hour"
+    },
+    {
+      "title": "Project Engineer",
+      "company": "Hooli WestLondon",
+      "location": "London",
+      "link": "https://example.com/jobs/7",
+      "salary": "£475 a day"
+    },
+    {
+      "title": "Project Engineer",
+      "company": "Hooli WestLondon",
+      "location": "London",
+      "link": "https://example.com/jobs/7",
+      "salary": "£475 a day"
+    },
+    {
+      "title": "ONSS Substation Electrical Engineer",
+      "company": "Umbrella EdgeLondon EC4Y",
+      "location": "London EC4Y",
+      "link": "https://example.com/jobs/8",
+      "salary": ""
+    },
+    {
+      "title": "ONSS Substation Electrical Engineer",
+      "company": "Umbrella EdgeLondon EC4Y",
+      "location": "London EC4Y",
+      "link": "https://example.com/jobs/8",
+      "salary": ""
+    },
+    {
+      "title": "Banker (Front-end)",
+      "company": "StarkHybrid work in London",
+      "location": "Hybrid work in London",
+      "link": "https://example.com/jobs/9",
+      "salary": ""
+    },
+    {
+      "title": "Banker (Front-end)",
+      "company": "StarkHybrid work in London",
+      "location": "Hybrid work in London",
+      "link": "https://example.com/jobs/9",
+      "salary": ""
+    }
+  ],
+  "landed": "https://example.com/search",
+  "requested": "https://example.com/search"
+}

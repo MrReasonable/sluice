@@ -1,0 +1,111 @@
+{
+  "result": [
+    {
+      "title": "Acme Appraisals",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/1",
+      "salary": ""
+    },
+    {
+      "title": "Banker",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/2",
+      "salary": ""
+    },
+    {
+      "title": "Globex Logic",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/3",
+      "salary": ""
+    },
+    {
+      "title": "Lead Data Engineer",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/4",
+      "salary": ""
+    },
+    {
+      "title": "Vertex Voice",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/5",
+      "salary": ""
+    },
+    {
+      "title": "Sales Operations Manager - Korea",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/6",
+      "salary": ""
+    },
+    {
+      "title": "Umbrella Astra",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/7",
+      "salary": ""
+    },
+    {
+      "title": "Technical Account Manager",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/8",
+      "salary": ""
+    },
+    {
+      "title": "Hooli Interactive Software",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/9",
+      "salary": ""
+    },
+    {
+      "title": "Stark Permit",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/10",
+      "salary": ""
+    },
+    {
+      "title": "Product Operations Manager",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/11",
+      "salary": ""
+    },
+    {
+      "title": "Make (Senior / Lead / Staff)",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/12",
+      "salary": ""
+    },
+    {
+      "title": "Wayne Finance",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/13",
+      "salary": ""
+    },
+    {
+      "title": "Wonka Rewards",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/14",
+      "salary": ""
+    },
+    {
+      "title": "Senior Make - Platform",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/15",
+      "salary": ""
+    }
+  ],
+  "landed": "https://example.com/search",
+  "requested": "https://example.com/search"
+}

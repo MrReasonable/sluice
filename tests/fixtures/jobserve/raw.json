@@ -1,0 +1,13 @@
+{
+  "result": [
+    {
+      "title": "Banker",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/1",
+      "salary": ""
+    }
+  ],
+  "landed": "https://example.com/search",
+  "requested": "https://example.com/search"
+}

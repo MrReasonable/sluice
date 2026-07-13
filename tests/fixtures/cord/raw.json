@@ -1,0 +1,90 @@
+{
+  "result": [
+    {
+      "title": "staff software engineer",
+      "company": "Acme",
+      "location": "",
+      "link": "https://example.com/jobs/1",
+      "salary": ""
+    },
+    {
+      "title": "full stack engineer",
+      "company": "Globex",
+      "location": "",
+      "link": "https://example.com/jobs/2",
+      "salary": ""
+    },
+    {
+      "title": "senior machine learning engineer",
+      "company": "Vertex",
+      "location": "",
+      "link": "https://example.com/jobs/3",
+      "salary": ""
+    },
+    {
+      "title": "senior software engineer (aws typescript)",
+      "company": "Globex",
+      "location": "",
+      "link": "https://example.com/jobs/4",
+      "salary": ""
+    },
+    {
+      "title": "product engineer",
+      "company": "Umbrella",
+      "location": "",
+      "link": "https://example.com/jobs/5",
+      "salary": ""
+    },
+    {
+      "title": "sap hcm successfactors consultant",
+      "company": "Hooli",
+      "location": "",
+      "link": "https://example.com/jobs/6",
+      "salary": ""
+    },
+    {
+      "title": "staff software engineer (health and safety adviser)   engine by starling",
+      "company": "Stark",
+      "location": "",
+      "link": "https://example.com/jobs/7",
+      "salary": ""
+    },
+    {
+      "title": "senior java developer",
+      "company": "Wayne",
+      "location": "",
+      "link": "https://example.com/jobs/8",
+      "salary": ""
+    },
+    {
+      "title": "ai and data engineer",
+      "company": "Wonka",
+      "location": "",
+      "link": "https://example.com/jobs/9",
+      "salary": ""
+    },
+    {
+      "title": "senior make",
+      "company": "Wonka",
+      "location": "",
+      "link": "https://example.com/jobs/10",
+      "salary": ""
+    },
+    {
+      "title": "senior mlops engineer",
+      "company": "Cyberdyne",
+      "location": "",
+      "link": "https://example.com/jobs/11",
+      "salary": ""
+    },
+    {
+      "title": "senior software engineer (ruby on rails)",
+      "company": "Soylent",
+      "location": "",
+      "link": "https://example.com/jobs/12",
+      "salary": ""
+    }
+  ],
+  "landed": "https://example.com/search",
+  "requested": "https://example.com/search"
+}

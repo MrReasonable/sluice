@@ -1,0 +1,257 @@
+# tests/test_cv_engine.py
+from sluice.cv.engine import run_one, run_batch
+from sluice.core.backends import BackendError, FallbackBackend, OpenAiCompatibleBackend
+
+class Note:
+    def __init__(self, fm, path="Job Applications/Job Leads/Acme - Analyst.md"):
+        self.fm = fm; self.path = path
+
+class FakeVault:
+    def __init__(self, entries, notes=None):
+        self._entries = entries; self._notes = notes or []; self.written = {}
+    def read_experience_entries(self, verified_only=True): return self._entries
+    def read_baseline(self, rel="My CV/Jane Roe CV.md"): return "BASELINE"
+    def read_leads(self, statuses=None): return self._notes
+    def set_tailored_cv(self, path, value): self.written[path] = value
+
+class FakeCache:
+    def get_or_build(self, fm): return {"jd": {"markdown": "we value delivery"}}
+
+class FakeBackend:
+    def __init__(self, cv_out, audit_out="supported\tx\tSF1"):
+        self.cv_out = cv_out; self.audit_out = audit_out
+        self.last_backend = "primary"; self.calls = 0
+    def complete(self, prompt):
+        self.calls += 1
+        # first call = compose, later audit; return CV then audit
+        return self.cv_out if "SOURCE BUNDLE" in prompt and "auditing" not in prompt else self.audit_out
+
+ENTRIES = [{"title": "Grew team", "company": "Solarflux", "best_for": "delivery",
+            "category": "people", "metrics": "3 8", "body": "Grew 3 to 8."}]
+
+def _cfg():
+    from sluice.cv.config import CvConfig
+    c = CvConfig(); c.output_dir = "/tmp/cvout"; c.served_dir = "/tmp/cvserved"
+    # prefix_map now defaults to {}; CLEAN_CV's citations are hardcoded to [SF1],
+    # so the single ENTRIES company must still code to "SF1" (2-letter fallback
+    # coding of "Solarflux" alone would yield "SO1").
+    c.prefix_map = {"Solarflux": "SF"}
+    return c
+
+CLEAN_CV = "\n".join([
+    "JANE ROE", "", "WORK EXPERIENCE", "",
+    "Novacraft", "12/2025–present | LONDON | Founder", "- Shipped [SF1]", "",
+    "Solarflux", "01/2025–04/2026 | LONDON | EM", "- Grew team from 3 to 8 [SF1]", "",
+    "Driftwave", "11/2022–04/2024 | LONDON | Lead", "- Coached [SF1]", "",
+    "Coalridge Media", "09/2020–10/2022 | LONDON | Lead", "- CI [SF1]", "",
+    "Roxwell Fashion", "04/2017–12/2019 | LONDON | EM", "- Led [SF1]", "",
+    "Trueverse", "05/2015–03/2017 | LONDON | CTO", "- Uptime [SF1]", "",
+    "Early career (various)", "08/2001–03/2015 | UK", "- Various [SF1]", "",
+    "CERTIFICATES", "- CSM", "EDUCATION", "- Uni",
+])
+
+def test_application_owned_lead_is_refused():
+    v = FakeVault(ENTRIES)
+    r = run_one(Note({"status": "applied", "company": "Acme"}), v, _cfg(),
+                FakeBackend("x"), FakeCache())
+    assert r.status == "skipped-selection"
+    assert v.written == {}
+
+def test_gate_failure_skips_and_never_renders():
+    # compose returns an uncited CV -> validate fails both attempts -> skip
+    bad = CLEAN_CV.replace("- Grew team from 3 to 8 [SF1]", "- Grew team from 3 to 8")
+    v = FakeVault(ENTRIES)
+    r = run_one(Note({"status": "shortlist", "company": "Solarflux", "role": "Analyst"}),
+                v, _cfg(), FakeBackend(bad), FakeCache())
+    assert r.status == "skipped-gate"
+    assert any("UNCITED" in x for x in r.violations)
+    assert v.written == {}   # nothing recorded, nothing rendered
+
+def test_dry_run_reports_but_writes_nothing():
+    v = FakeVault(ENTRIES)
+    r = run_one(Note({"status": "shortlist", "company": "Solarflux", "role": "Analyst"}),
+                v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(), dry_run=True)
+    assert r.status == "dry-run"
+    assert v.written == {}
+
+def test_batch_skips_leads_that_already_have_a_cv():
+    notes = [Note({"status": "shortlist", "company": "A", "role": "Analyst", "tailored_cv": "x.pdf"})]
+    v = FakeVault(ENTRIES, notes=notes)
+    results = run_batch(v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(), dry_run=True)
+    assert results[0].status == "skipped-has-cv"
+
+def test_non_shortlist_lead_is_refused():
+    v = FakeVault(ENTRIES)
+    r = run_one(Note({"status": "new", "company": "Acme"}), v, _cfg(),
+                FakeBackend("x"), FakeCache())
+    assert r.status == "skipped-selection"
+    assert v.written == {}
+
+def test_drifted_work_header_fails_closed():
+    # Proves the fail-open hole is closed: validate()'s per-bullet citation checks
+    # only run inside the section keyed on the exact "WORK EXPERIENCE" header, so a
+    # fully-cited CV whose header drifted would sail through plain validate() with
+    # zero violations (see engine.py's STRUCTURAL guard). The engine must catch this
+    # itself and HARD-fail the gate rather than rendering an unchecked draft.
+    drifted = CLEAN_CV.replace("WORK EXPERIENCE", "PROFESSIONAL EXPERIENCE")
+    v = FakeVault(ENTRIES)
+    r = run_one(Note({"status": "shortlist", "company": "Solarflux", "role": "Analyst"}),
+                v, _cfg(), FakeBackend(drifted), FakeCache())
+    assert r.status == "skipped-gate"
+    assert any("STRUCTURAL" in x for x in r.violations)
+    assert v.written == {}
+
+def test_happy_path_renders_and_records(monkeypatch):
+    import sluice.cv.render as _render_mod
+    monkeypatch.setattr(_render_mod, "render",
+                        lambda *a, **k: "/tmp/x/Jane Roe CV.pdf")
+    monkeypatch.setattr(_render_mod, "serve",
+                        lambda *a, **k: "Jane_Roe_CV_deadbeef.pdf")
+    v = FakeVault(ENTRIES)
+    note = Note({"status": "shortlist", "company": "Solarflux", "role": "Analyst"})
+    r = run_one(note, v, _cfg(), FakeBackend(CLEAN_CV), FakeCache())
+    assert r.status == "rendered"
+    assert r.served == "Jane_Roe_CV_deadbeef.pdf"
+    assert "Jane_Roe_CV_deadbeef.pdf" in v.written[note.path]
+
+def test_no_serve_renders_but_does_not_mark_lead(monkeypatch):
+    # --no-serve is emulated via cvcfg.served_dir = "": the engine's serve() call
+    # is short-circuited entirely (see the `if cvcfg.served_dir else None` guard
+    # in run_one), so only render() needs monkeypatching here. Proves the fixed
+    # bug -- writing the literal string "None (...)" into tailored_cv, which is
+    # truthy and so would permanently dedup-skip the lead in run_batch even
+    # though no CV was ever published -- cannot recur: a render that is never
+    # served must leave the vault untouched.
+    import sluice.cv.render as _render_mod
+    monkeypatch.setattr(_render_mod, "render",
+                        lambda *a, **k: "/tmp/x/Jane Roe CV.pdf")
+    cfg = _cfg()
+    cfg.served_dir = ""  # emulates --no-serve
+    v = FakeVault(ENTRIES)
+    r = run_one(Note({"status": "shortlist", "company": "Solarflux", "role": "Analyst"}),
+                v, cfg, FakeBackend(CLEAN_CV), FakeCache())
+    assert r.status == "rendered"
+    assert r.served is None
+    assert v.written == {}   # no tailored_cv marker when nothing was published
+
+def test_slop_only_failure_fails_gate_and_feeds_retry():
+    # A CV that is correctly cited (validate() passes clean) but whose first WORK
+    # bullet contains an em dash -- a slop HARD error. Proves (a) a slop-only
+    # failure still fails the gate, and (b) the SLOP message reaches the retry
+    # prompt via prior_violations.
+    slop_cv = CLEAN_CV.replace("- Shipped [SF1]", "- Shipped, launched \u2014 and iterated [SF1]")
+
+    class RecordingBackend:
+        def __init__(self, cv):
+            self.cv = cv; self.last_backend = "primary"; self.prompts = []
+        def complete(self, prompt):
+            self.prompts.append(prompt)
+            # compose prompts contain "SOURCE BUNDLE" and not "auditing"; audit
+            # prompts contain both, so this mirrors FakeBackend's routing.
+            return self.cv if "SOURCE BUNDLE" in prompt and "auditing" not in prompt else "supported\tx\tSF1"
+
+    be = RecordingBackend(slop_cv)
+    v = FakeVault(ENTRIES)
+    r = run_one(Note({"status": "shortlist", "company": "Solarflux", "role": "Analyst"}),
+                v, _cfg(), be, FakeCache())
+    assert r.status == "skipped-gate"
+    assert r.slop                      # slop error surfaced
+    assert v.written == {}             # nothing rendered/recorded
+    # the SECOND compose prompt must carry the slop feedback
+    compose_prompts = [p for p in be.prompts if "SOURCE BUNDLE" in p and "auditing" not in p]
+    assert len(compose_prompts) == 2
+    assert "SLOP" in compose_prompts[1]
+
+def test_retry_happens_exactly_once():
+    # A persistently gate-failing CV must be composed exactly twice: the initial
+    # attempt plus the single retry, then skip -- never a third attempt.
+    bad = CLEAN_CV.replace("- Grew team from 3 to 8 [SF1]", "- Grew team from 3 to 8")
+    v = FakeVault(ENTRIES)
+    backend = FakeBackend(bad)
+    r = run_one(Note({"status": "shortlist", "company": "Solarflux", "role": "Analyst"}),
+                v, _cfg(), backend, FakeCache())
+    assert r.status == "skipped-gate"
+    assert backend.calls == 2   # audit is never reached on skipped-gate, so this
+                                # counts compose calls exactly
+
+def test_advisory_audit_failure_does_not_block_render(monkeypatch):
+    # The audit is explicitly advisory ("NEVER blocks", audit.py). A backend error
+    # or timeout during the audit call must not prevent a CV that already passed
+    # the HARD citation gate from rendering -- it must be swallowed and logged.
+    import sluice.cv.render as _render_mod
+    monkeypatch.setattr(_render_mod, "render",
+                        lambda *a, **k: "/tmp/x/Jane Roe CV.pdf")
+    monkeypatch.setattr(_render_mod, "serve",
+                        lambda *a, **k: "Jane_Roe_CV_deadbeef.pdf")
+
+    class AuditRaisingBackend:
+        def __init__(self, cv):
+            self.cv = cv; self.last_backend = "primary"
+        def complete(self, prompt):
+            # compose call succeeds with a clean, fully-cited CV; the audit call
+            # (same routing rule as FakeBackend: contains "SOURCE BUNDLE" AND
+            # "auditing") raises, simulating a backend timeout/error.
+            if "SOURCE BUNDLE" in prompt and "auditing" not in prompt:
+                return self.cv
+            raise RuntimeError("backend timeout during advisory audit")
+
+    v = FakeVault(ENTRIES)
+    r = run_one(Note({"status": "shortlist", "company": "Solarflux", "role": "Analyst"}),
+                v, _cfg(), AuditRaisingBackend(CLEAN_CV), FakeCache())
+    assert r.status == "rendered"
+    assert r.audit_flags == []
+
+def test_batch_survives_a_single_lead_exception(monkeypatch):
+    # The triage engine records per-lead failures and continues; the CV engine
+    # must do the same. One lead's render failure (e.g. WeasyPrint blowing up)
+    # must not abort the rest of the --all-shortlist batch.
+    import sluice.cv.render as _render_mod
+
+    def flaky_render(cv_text, out_dir, **kwargs):
+        if "acme" in out_dir:
+            raise RuntimeError("weasyprint boom")
+        return "/tmp/x/Jane Roe CV.pdf"
+
+    monkeypatch.setattr(_render_mod, "render", flaky_render)
+    monkeypatch.setattr(_render_mod, "serve",
+                        lambda *a, **k: "Jane_Roe_CV_deadbeef.pdf")
+
+    notes = [
+        Note({"status": "shortlist", "company": "Acme", "role": "Analyst"},
+             path="Job Applications/Job Leads/Acme - Analyst.md"),
+        Note({"status": "shortlist", "company": "Zenith", "role": "Analyst"},
+             path="Job Applications/Job Leads/Zenith - Analyst.md"),
+    ]
+    v = FakeVault(ENTRIES, notes=notes)
+    results = run_batch(v, _cfg(), FakeBackend(CLEAN_CV), FakeCache())
+    assert len(results) == 2   # the batch did not abort after the first failure
+    assert results[0].status == "error"
+    assert results[1].status == "rendered"
+    assert notes[0].path not in v.written   # the errored lead is never marked tailored
+    assert notes[1].path in v.written       # the surviving lead still gets recorded
+
+def test_batch_records_error_when_fallback_response_is_truncated():
+    # A truncated fallback response (finish_reason==length) is a hard error, not
+    # a silent partial (see OpenAiCompatibleBackend.complete). Drive this through
+    # a real FallbackBackend + OpenAiCompatibleBackend -- primary down, fallback
+    # truncated -- and prove the batch surfaces "error", never a rendered CV
+    # built from the partial content.
+    class FailingPrimary:
+        last_backend = None
+        def complete(self, prompt):
+            raise BackendError("claude-max invocation failed: ssh down")
+
+    def truncated_http(url, data, headers, timeout):
+        return ('{"choices":[{"message":{"content":"JANE ROE\\n\\nWORK EXP"},'
+                '"finish_reason":"length"}]}')
+
+    fallback = OpenAiCompatibleBackend("m", base_url="http://x", api_key="k",
+                                       http=truncated_http)
+    backend = FallbackBackend(FailingPrimary(), fallback)
+
+    notes = [Note({"status": "shortlist", "company": "Acme", "role": "Analyst"})]
+    v = FakeVault(ENTRIES, notes=notes)
+    results = run_batch(v, _cfg(), backend, FakeCache())
+    assert len(results) == 1
+    assert results[0].status == "error"
+    assert v.written == {}   # never marked tailored off a truncated partial

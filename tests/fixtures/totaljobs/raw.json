@@ -1,0 +1,146 @@
+{
+  "result": [
+    {
+      "title": "Related Jobs",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/1",
+      "salary": ""
+    },
+    {
+      "title": "Retail merchandiser",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/1",
+      "salary": ""
+    },
+    {
+      "title": "Retail merchandiser",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/2",
+      "salary": ""
+    },
+    {
+      "title": "Banker",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/3",
+      "salary": ""
+    },
+    {
+      "title": "Explore jobs that match your experience and skills",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/4",
+      "salary": ""
+    },
+    {
+      "title": "Forward Deployed Engineering- Build Manager",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/4",
+      "salary": ""
+    },
+    {
+      "title": "Immigration officer (AI)",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/5",
+      "salary": ""
+    },
+    {
+      "title": "Immigration officer",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/6",
+      "salary": ""
+    },
+    {
+      "title": "Lead Banker",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/7",
+      "salary": ""
+    },
+    {
+      "title": "Banker - Hardware & Electronics",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/8",
+      "salary": ""
+    },
+    {
+      "title": "Senior Manufacturing Engineer",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/9",
+      "salary": ""
+    },
+    {
+      "title": "Mechanical Banker",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/10",
+      "salary": ""
+    },
+    {
+      "title": "Make, Dialogue",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/11",
+      "salary": ""
+    },
+    {
+      "title": "Banker",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/12",
+      "salary": ""
+    },
+    {
+      "title": "Banker",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/13",
+      "salary": ""
+    },
+    {
+      "title": "Lead Make",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/14",
+      "salary": ""
+    },
+    {
+      "title": "Immigration officer",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/15",
+      "salary": ""
+    },
+    {
+      "title": "Banker (AI Enablement)",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/16",
+      "salary": ""
+    },
+    {
+      "title": "Product Application Engineer, Data Centers",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/17",
+      "salary": ""
+    },
+    {
+      "title": "Banker",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/18",
+      "salary": ""
+    }
+  ],
+  "landed": "https://example.com/search",
+  "requested": "https://example.com/search"
+}
