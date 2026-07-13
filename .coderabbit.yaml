@@ -1,0 +1,47 @@
+# yaml-language-server: $schema=https://storage.googleapis.com/coderabbit_public_assets/schema.v2.json
+# CodeRabbit configuration for sluice. Reviews run on pull requests.
+language: en-GB
+tone_instructions: >-
+  Be direct and concise. Skip praise and filler. No emojis or em-dashes.
+  Focus on correctness, security, and whether new code stays config-driven
+  with no hardcoded personal data, paths, or credentials.
+
+reviews:
+  profile: chill
+  # Approve once comments are resolved and pre-merge checks pass; request changes
+  # (blocking) while any actionable comment is open, instead of comment-only.
+  request_changes_workflow: true
+  high_level_summary: true
+  review_status: true
+  collapse_walkthrough: true
+  sequence_diagrams: false
+  poem: false
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+  path_instructions:
+    - path: sluice/**
+      instructions: >-
+        This is a config-driven pipeline meant to be reusable by anyone. Flag
+        any hardcoded personal data, employer names, absolute file paths,
+        hostnames, or credentials that belong in config or environment
+        variables. Core modules must stay Python standard-library only. Writes
+        to the vault or lead status must never clobber a field a human or
+        another agent has already set (never-clobber / never-regress).
+    - path: tests/**
+      instructions: >-
+        Tests use synthetic fixtures only. Flag any real personal data, real
+        company names, or real URLs. Every test must assert on behaviour, not
+        merely run without error.
+  tools:
+    gitleaks:
+      enabled: true
+    ruff:
+      enabled: true
+    markdownlint:
+      enabled: true
+
+chat:
+  auto_reply: true
