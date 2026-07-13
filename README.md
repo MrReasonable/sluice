@@ -12,10 +12,16 @@ a single YAML file overrides them, and secrets come from the environment.
 Sluice expresses no opinion about which jobs are good. That is deliberate, and it is
 enforced rather than promised:
 
-- `accept_titles` / `reject_titles` and the coarse ingest gate (`relevance_keep` /
-  `relevance_drop`) all default to **empty**. An unconfigured gate abstains and passes
-  every lead through, rather than silently filtering your job hunt against a stranger's
-  taste. Pay floors default to `0` (off).
+- `accept_titles` / `reject_titles`, `target_locations` / `reject_locations`,
+  `reject_companies`, and the coarse ingest gate (`relevance_keep` / `relevance_drop`)
+  all default to **empty**. An unconfigured gate **abstains** and passes every lead
+  through, rather than silently filtering your job hunt against a stranger's taste.
+  Pay floors default to `0` (off).
+
+  Note that empty means *abstain*, not *match nothing*: an empty `target_locations`
+  keeps every lead, it does not reject every lead that names a location. That
+  distinction is enforced by a test, because getting it backwards would bin someone's
+  entire job hunt in silence.
 - The judge's criteria - who you are, what you want, what you refuse - are read at
   runtime from an Obsidian note (`Job Applications/Judging Profile.md`), never from this
   repository. The fallback compiled into the code states only that nothing is configured

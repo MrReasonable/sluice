@@ -17,10 +17,10 @@ except ImportError:  # pragma: no cover
 # which reads the criteria from your vault Judging Profile.
 _ACCEPT: list = []
 _REJECT: list = []
-# Geo/company preferences are entirely personal, so the code ships with
-# neutral, generic defaults; supply your own via the `triage:` block of
-# sluice.yaml (see sluice.yaml.example).
-_TARGET_LOC = ["remote"]
+# Geography and company preferences are personal too, so they ship empty as well.
+# Empty target_locations means the location gate ABSTAINS (see classify): a fresh
+# install must never silently reject every job that is not remote.
+_TARGET_LOC: list = []
 _REJECT_LOC: list = []
 _REJECT_CO: list = []
 

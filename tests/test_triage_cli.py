@@ -29,7 +29,14 @@ def test_triage_run_dispatches(tmp_path, monkeypatch):
           ['company: "Beta"', 'role: "International aid/development worker"', 'location: "London"',
            'salary: ""', 'role_type: "permanent"', 'url: "u"', "status: new",
            "score: 0", 'relevance_notes: ""'])
-    # --no-llm avoids any backend call; Director is a deterministic reject
+    # A deterministic reject now requires CONFIGURED criteria: the shipped defaults
+    # express no opinion, so nothing is rejected out of the box. (This test used to
+    # pass only because target_locations defaulted to ["remote"] and silently binned
+    # the London lead -- exactly the hidden preference that default was hiding.)
+    cfgfile = tmp_path / "sluice.yaml"
+    cfgfile.write_text('triage:\n  reject_titles: ["aid/development worker"]\n')
+    monkeypatch.setenv("SLUICE_CONFIG", str(cfgfile))
+    # --no-llm avoids any backend call
     rc = main(["triage", "run", "--status", "new", "--no-llm"])
     assert rc == 0
     from sluice.core.vault import Vault

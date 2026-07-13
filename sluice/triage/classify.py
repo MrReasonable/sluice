@@ -40,7 +40,11 @@ def classify(lead: dict, cfg) -> tuple[str, str]:
     if any(b in location for b in cfg.reject_locations):
         return "reject", "Location outside target geography"
 
-    if location and not any(t in location for t in cfg.target_locations):
+    # Guarded on target_locations being set. Without the guard an empty list makes
+    # `not any(...)` true for every located lead, so an unconfigured install would
+    # reject EVERY job that names a location -- the opposite of abstaining.
+    if cfg.target_locations and location and not any(
+            t in location for t in cfg.target_locations):
         return "reject", "Location outside target geography"
 
     # Pay floors.
