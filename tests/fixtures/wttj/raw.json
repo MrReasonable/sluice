@@ -1,0 +1,86 @@
+{
+  "jobs": [
+    {
+      "title": "Banker, Acme",
+      "company": "Acme",
+      "location": "",
+      "salary": "Salary not provided",
+      "link": "https://example.com/jobs/1",
+      "caught": false
+    },
+    {
+      "title": "Banker, Globex",
+      "company": "Globex",
+      "location": "",
+      "salary": "Salary not provided",
+      "link": "https://example.com/jobs/2",
+      "caught": false
+    },
+    {
+      "title": "Banker Lead, Vertex",
+      "company": "Vertex",
+      "location": "",
+      "salary": "Salary not provided",
+      "link": "https://example.com/jobs/3",
+      "caught": false
+    },
+    {
+      "title": "Education administrator, Umbrella",
+      "company": "Umbrella",
+      "location": "",
+      "salary": "Salary not provided",
+      "link": "https://example.com/jobs/4",
+      "caught": false
+    },
+    {
+      "title": "Banker, Hooli",
+      "company": "Hooli",
+      "location": "",
+      "salary": "Salary not provided",
+      "link": "https://example.com/jobs/5",
+      "caught": false
+    },
+    {
+      "title": "Senior Engineering Lead, Stark",
+      "company": "Stark",
+      "location": "",
+      "salary": "Salary not provided",
+      "link": "https://example.com/jobs/6",
+      "caught": false
+    },
+    {
+      "title": "Staff Product Engineer, Wayne",
+      "company": "Wayne",
+      "location": "",
+      "salary": "£135-170k",
+      "link": "https://example.com/jobs/7",
+      "caught": false
+    },
+    {
+      "title": "Banker, Wonka",
+      "company": "Wonka",
+      "location": "",
+      "salary": "Salary not provided",
+      "link": "https://example.com/jobs/8",
+      "caught": false
+    },
+    {
+      "title": "Immigration officer, Cyberdyne",
+      "company": "Cyberdyne",
+      "location": "",
+      "salary": "Salary not provided",
+      "link": "https://example.com/jobs/9",
+      "caught": false
+    },
+    {
+      "title": "Education administrator, Soylent",
+      "company": "Soylent",
+      "location": "",
+      "salary": "£110-137k",
+      "link": "https://example.com/jobs/10",
+      "caught": false
+    }
+  ],
+  "landed": "https://example.com/search",
+  "requested": "https://example.com/search"
+}

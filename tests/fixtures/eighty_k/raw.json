@@ -1,0 +1,146 @@
+{
+  "result": [
+    {
+      "title": "Security Engineer, Corporate IT",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/1",
+      "salary": ""
+    },
+    {
+      "title": "Senior Standards and Governance Manager Acme Labs London, UK ▪ Washington, DC",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/2",
+      "salary": ""
+    },
+    {
+      "title": "Talent Scout  Globex AI San Francisco Bay Area",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/3",
+      "salary": ""
+    },
+    {
+      "title": "Catering manager, AI Verification Vertex Singapore ▪ London, UK",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/4",
+      "salary": ""
+    },
+    {
+      "title": "Senior Data Scientist, AI Safety Umbrella National Laboratory Richland, WA ▪ Seattle metro area",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/5",
+      "salary": ""
+    },
+    {
+      "title": "Senior Cloud Infrastructure Engineer",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/6",
+      "salary": ""
+    },
+    {
+      "title": "Intern, Quality Engineering Hooli Fund Kigali, Rwanda ▪ Nairobi, Kenya",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/7",
+      "salary": ""
+    },
+    {
+      "title": "Senior Software Security Engineer Stark Labs San Francisco Bay Area ▪ New York, NY ▪ Seattle metro area",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/8",
+      "salary": ""
+    },
+    {
+      "title": "Contract Software Engineer Wayne Systems Remote, Global",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/9",
+      "salary": ""
+    },
+    {
+      "title": "Research Engineer Wonka Research Remote, Singapore",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/10",
+      "salary": ""
+    },
+    {
+      "title": "Senior Engineering Lead, Chemical and Biological",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/11",
+      "salary": ""
+    },
+    {
+      "title": "Senior Security Engineer",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/12",
+      "salary": ""
+    },
+    {
+      "title": "Director, Evaluations Cyberdyne Labs Montreal, Canada",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/13",
+      "salary": ""
+    },
+    {
+      "title": "Machine Learning Manager Cyberdyne Labs Montreal, Canada",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/14",
+      "salary": ""
+    },
+    {
+      "title": "Compute Administrator  Soylent Research San Francisco Bay Area",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/15",
+      "salary": ""
+    },
+    {
+      "title": "Systems Software Engineer, Security, First Party Hardware",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/16",
+      "salary": ""
+    },
+    {
+      "title": "Member of Technical Staff, Synthetic Data",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/17",
+      "salary": ""
+    },
+    {
+      "title": "Staff Software Engineer, Security Engineering, AI Compute",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/18",
+      "salary": ""
+    },
+    {
+      "title": "Security Engineer Pied Piper Tel Aviv, Israel",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/19",
+      "salary": ""
+    },
+    {
+      "title": "Founding Engineer Massive Dynamic Remote, Global",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/20",
+      "salary": ""
+    }
+  ],
+  "landed": "https://example.com/search",
+  "requested": "https://example.com/search"
+}

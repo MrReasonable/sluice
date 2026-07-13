@@ -1,0 +1,43 @@
+[project]
+name = "sluice"
+version = "0.1.0"
+description = "Sluice: an engineered, config-driven job-hunting pipeline (ingest, triage, CV tailoring, apply, track)."
+requires-python = ">=3.12"
+dependencies = ["pyyaml"]
+
+[project.scripts]
+sluice = "sluice.cli:main"
+
+[project.optional-dependencies]
+render = ["weasyprint"]
+google = ["google-api-python-client", "google-auth"]
+# The suite generates its own synthetic job titles rather than hardcoding anyone's
+# real role preferences, so faker is a test dependency (see tests/conftest.py).
+test = ["pytest", "faker"]
+
+[project.urls]
+Homepage = "https://github.com/MrReasonable/sluice"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["sluice*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]   # ruff's default set, made explicit
+
+[tool.ruff.lint.per-file-ignores]
+# Test doubles use compact one-liners, grouped imports, short loop names, and inline
+# lambdas by design; F (unused import/var) is NOT relaxed here, so real cruft is still
+# caught. E731 (lambda-assignment) is included so a lambda double in the tests does not
+# keep ruff red.
+"tests/*" = ["E701", "E702", "E741", "E401", "E731"]

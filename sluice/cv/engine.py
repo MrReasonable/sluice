@@ -1,0 +1,131 @@
+# sluice/cv/engine.py
+"""CV tailoring orchestrator: select -> bundle -> compose -> gate -> render -> serve
+-> record -> notify. Composition is a bounded backend call over the closed verified
+bundle; a HARD-gate failure triggers exactly one retry with the violations fed back,
+then the lead is skipped (never rendered ungated). dry_run computes and reports but
+writes nothing."""
+import re
+from dataclasses import dataclass, field
+from datetime import date
+
+from sluice.core import status as _status
+from sluice.core.log import get_logger
+from sluice.cv import bundle as _bundle
+from sluice.cv import compose as _compose
+from sluice.cv.audit import run_audit
+from sluice.cv.slop import check_text as _slop
+from sluice.cv.validate import validate as _validate
+
+_log = get_logger("cv.engine")
+
+
+@dataclass
+class CvResult:
+    """status is one of: rendered, skipped-gate, skipped-selection, skipped-has-cv,
+    dry-run, error (a single lead's exception caught by run_batch -- see run_batch --
+    so one bad lead never aborts the rest of the batch)."""
+    lead: str
+    status: str
+    violations: list = field(default_factory=list)
+    slop: list = field(default_factory=list)
+    audit_flags: list = field(default_factory=list)
+    served: str | None = None
+    backend: str | None = None
+
+
+def _slug(company: str, role: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", f"{company}-{role}".lower()).strip("-")[:80] or "lead"
+
+
+def _jd_keywords(role: str, jd: str) -> list:
+    return sorted({w for w in re.findall(r"[a-z]{4,}", f"{role} {jd or ''}".lower())})
+
+
+def run_one(note, vault, cvcfg, backend, dossier_cache, *, dry_run=False) -> CvResult:
+    fm = note.fm
+    # Process ONLY shortlist leads. This enforces the shortlist-only constraint and
+    # inherently never touches (never clobbers) application-owned leads.
+    if _status.normalize(fm.get("status", "")) != "shortlist":
+        return CvResult(note.path, "skipped-selection")
+
+    company, role = fm.get("company", ""), fm.get("role", "")
+    jd = ""
+    try:
+        d = dossier_cache.get_or_build(fm)
+        jd = (d.get("jd") or {}).get("markdown", "")
+    except Exception as e:
+        _log.warning("dossier for %s failed: %s", note.path, e)
+
+    entries = vault.read_experience_entries(verified_only=True)
+    baseline = vault.read_baseline(cvcfg.baseline_rel)
+    b = _bundle.build_bundle(entries, baseline, cvcfg.negatives,
+                             _jd_keywords(role, jd), cvcfg.prefix_map)
+    bundle_text = _bundle.render_bundle(b)
+
+    gate_msgs, cv_text, violations, slop_err = None, "", [], []
+    for _ in range(2):
+        cv_text = _compose.compose(backend, bundle_text, jd, company, role,
+                                   name=cvcfg.name, contact=cvcfg.contact,
+                                   employers=cvcfg.employers, prior_violations=gate_msgs)
+        violations = _validate(cv_text, bundle_text, employers=cvcfg.employers,
+                               fabrication_decoys=cvcfg.fabrication_decoys)
+        # Fail-closed: validate()'s per-bullet citation checks only run inside the
+        # section keyed on a case-insensitive "WORK EXPERIENCE" header (validate()
+        # upper-cases before comparing). If the composer drifted the header entirely
+        # (e.g. "PROFESSIONAL EXPERIENCE"), those checks silently do not run and
+        # validate() returns []. Mirror validate()'s exact condition here so this guard
+        # fires in exactly the cases validate() silently skips -- no more, no fewer.
+        if not any(line.strip().upper() == "WORK EXPERIENCE" for line in cv_text.splitlines()):
+            violations = ["STRUCTURAL: composed CV lacks the exact 'WORK EXPERIENCE' "
+                          "header, so the citation gate did not run"] + violations
+        slop_err, _warns = _slop(cv_text)
+        gate_msgs = violations + [f"SLOP {lbl}: {snip}" for _ln, lbl, snip in slop_err]
+        if not gate_msgs:
+            break
+
+    backend_used = getattr(backend, "last_backend", None)
+    if gate_msgs:
+        return CvResult(note.path, "skipped-gate", violations=violations,
+                        slop=[s[2] for s in slop_err], backend=backend_used)
+
+    # The audit is advisory only (see audit.py: "NEVER blocks"). A backend error or
+    # timeout here must not prevent a CV that already passed the HARD gate from
+    # rendering -- swallow and log, never propagate.
+    try:
+        _report, audit_flags = run_audit(backend, cv_text, bundle_text)
+    except Exception as e:
+        _log.warning("advisory audit failed for %s: %s", note.path, e)
+        audit_flags = []
+    if dry_run:
+        return CvResult(note.path, "dry-run", audit_flags=audit_flags, backend=backend_used)
+
+    from sluice.cv import render as _render
+    out_dir = f"{cvcfg.output_dir}/{_slug(company, role)}"
+    pdf = _render.render(cv_text, out_dir, render_script=cvcfg.render_script,
+                         python_bin=cvcfg.render_python, home=cvcfg.render_home,
+                         neutral_name=cvcfg.neutral_filename)
+    served = (_render.serve(pdf, cvcfg.served_dir, served_prefix=cvcfg.served_prefix)
+              if cvcfg.served_dir else None)
+    if served:
+        vault.set_tailored_cv(note.path, f"{served} ({date.today().isoformat()})")
+    return CvResult(note.path, "rendered", audit_flags=audit_flags,
+                    served=served, backend=backend_used)
+
+
+def run_batch(vault, cvcfg, backend, dossier_cache, *, limit=None, dry_run=False) -> list:
+    notes = [n for n in vault.read_leads({"shortlist"})]
+    results = []
+    for note in notes:
+        if note.fm.get("tailored_cv"):
+            results.append(CvResult(note.path, "skipped-has-cv"))
+            continue
+        # A single lead's exception (e.g. a WeasyPrint render failure) must not abort
+        # the rest of the batch -- mirrors the triage engine's per-lead resilience.
+        try:
+            results.append(run_one(note, vault, cvcfg, backend, dossier_cache, dry_run=dry_run))
+        except Exception as e:
+            _log.warning("cv run failed for %s: %s", note.path, e)
+            results.append(CvResult(note.path, "error"))
+        if limit and sum(1 for r in results if r.status in ("rendered", "dry-run")) >= limit:
+            break
+    return results

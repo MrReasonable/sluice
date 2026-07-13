@@ -1,0 +1,181 @@
+{
+  "result": [
+    {
+      "title": "Related Jobs",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/1",
+      "salary": ""
+    },
+    {
+      "title": "Banker",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/1",
+      "salary": ""
+    },
+    {
+      "title": "Immigration officer",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/2",
+      "salary": ""
+    },
+    {
+      "title": "Immigration officer (AI)",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/3",
+      "salary": ""
+    },
+    {
+      "title": "Retail merchandiser",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/4",
+      "salary": ""
+    },
+    {
+      "title": "Retail merchandiser",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/5",
+      "salary": ""
+    },
+    {
+      "title": "Banker",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/6",
+      "salary": ""
+    },
+    {
+      "title": "Banker",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/7",
+      "salary": ""
+    },
+    {
+      "title": "Banker - Cards",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/8",
+      "salary": ""
+    },
+    {
+      "title": "Banker (Growth)",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/9",
+      "salary": ""
+    },
+    {
+      "title": "Engineering & Hygiene Manager",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/10",
+      "salary": ""
+    },
+    {
+      "title": "Quality Assurance Manager",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/11",
+      "salary": ""
+    },
+    {
+      "title": "Banker (Data Engineering)",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/12",
+      "salary": ""
+    },
+    {
+      "title": "C# Retail merchandiser",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/13",
+      "salary": ""
+    },
+    {
+      "title": "Manager, Sales Engineering",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/14",
+      "salary": ""
+    },
+    {
+      "title": "GIS Engineer",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/15",
+      "salary": ""
+    },
+    {
+      "title": "Education administrator - SAP Platform and Transformation",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/16",
+      "salary": ""
+    },
+    {
+      "title": "Lead Systems Engineer",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/17",
+      "salary": ""
+    },
+    {
+      "title": "Principal / Lead Systems Engineer",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/18",
+      "salary": ""
+    },
+    {
+      "title": "VP of Engineering",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/19",
+      "salary": ""
+    },
+    {
+      "title": "AI Make – Remote/Hybrid",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/20",
+      "salary": ""
+    },
+    {
+      "title": "Staff Software Engineer, Voices",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/21",
+      "salary": ""
+    },
+    {
+      "title": "Solution Architect / Systems Architect / Principal Engineer",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/22",
+      "salary": ""
+    },
+    {
+      "title": "Asset Engineer Renewals and Enhancements",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/23",
+      "salary": ""
+    },
+    {
+      "title": "Interface Engineer",
+      "company": "",
+      "location": "",
+      "link": "https://example.com/jobs/24",
+      "salary": ""
+    }
+  ],
+  "landed": "https://example.com/search",
+  "requested": "https://example.com/search"
+}

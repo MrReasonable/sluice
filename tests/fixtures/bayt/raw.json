@@ -1,0 +1,146 @@
+{
+  "result": [
+    {
+      "title": "Banker – Business Platforms (Fintech)",
+      "company": "Acme",
+      "location": "Dubai",
+      "link": "https://example.com/jobs/1",
+      "salary": ""
+    },
+    {
+      "title": "Senior Full Stack Engineer",
+      "company": "Globex",
+      "location": "USA",
+      "link": "https://example.com/jobs/2",
+      "salary": ""
+    },
+    {
+      "title": "Java Developer",
+      "company": "Globex",
+      "location": "USA",
+      "link": "https://example.com/jobs/3",
+      "salary": ""
+    },
+    {
+      "title": "Strategic Project Lead",
+      "company": "Globex",
+      "location": "USA",
+      "link": "https://example.com/jobs/4",
+      "salary": ""
+    },
+    {
+      "title": "Java Developer",
+      "company": "Globex",
+      "location": "USA",
+      "link": "https://example.com/jobs/5",
+      "salary": ""
+    },
+    {
+      "title": "Backend Developer",
+      "company": "Vertex",
+      "location": "Abu Dhabi",
+      "link": "https://example.com/jobs/6",
+      "salary": ""
+    },
+    {
+      "title": "Catering manager",
+      "company": "Umbrella",
+      "location": "Beirut",
+      "link": "https://example.com/jobs/7",
+      "salary": ""
+    },
+    {
+      "title": "Computer Vision & Backend Engineer",
+      "company": "Hooli",
+      "location": "Dammam",
+      "link": "https://example.com/jobs/8",
+      "salary": ""
+    },
+    {
+      "title": "Full Stack Developer -Technical Analyst",
+      "company": "Stark",
+      "location": "Abu Dhabi",
+      "link": "https://example.com/jobs/9",
+      "salary": ""
+    },
+    {
+      "title": "Sr. Backend Developer",
+      "company": "Wayne",
+      "location": "Doha",
+      "link": "https://example.com/jobs/10",
+      "salary": ""
+    },
+    {
+      "title": "Backend Developer (.NET) in Abu Dhabi",
+      "company": "Wonka",
+      "location": "Abu Dhabi",
+      "link": "https://example.com/jobs/11",
+      "salary": ""
+    },
+    {
+      "title": "Backend Engineer",
+      "company": "Cyberdyne",
+      "location": "Ukraine",
+      "link": "https://example.com/jobs/12",
+      "salary": ""
+    },
+    {
+      "title": "Backend Engineer - Python",
+      "company": "Soylent",
+      "location": "Abu Dhabi",
+      "link": "https://example.com/jobs/13",
+      "salary": ""
+    },
+    {
+      "title": "Full Stack Developer (AI-Native)",
+      "company": "Pied Piper",
+      "location": "Dubai",
+      "link": "https://example.com/jobs/14",
+      "salary": ""
+    },
+    {
+      "title": "Java Developer in Saudi Arabia",
+      "company": "Wonka",
+      "location": "Riyadh",
+      "link": "https://example.com/jobs/15",
+      "salary": ""
+    },
+    {
+      "title": "project manager",
+      "company": "Massive Dynamic",
+      "location": "Abu Dhabi",
+      "link": "https://example.com/jobs/16",
+      "salary": ""
+    },
+    {
+      "title": "Software Development Manager, Fixed Asset Automation (FAA)",
+      "company": "Gringotts",
+      "location": "India",
+      "link": "https://example.com/jobs/17",
+      "salary": ""
+    },
+    {
+      "title": "Senior Director of Software Engineering - Data Governance, Program Management, AWS",
+      "company": "Oscorp",
+      "location": "India",
+      "link": "https://example.com/jobs/18",
+      "salary": ""
+    },
+    {
+      "title": "Software Development Manager, Seller Fees Tech",
+      "company": "Aperture",
+      "location": "Bengaluru",
+      "link": "https://example.com/jobs/19",
+      "salary": ""
+    },
+    {
+      "title": "Software Development Manager (SDM), Concessions Tech",
+      "company": "Gringotts",
+      "location": "India",
+      "link": "https://example.com/jobs/20",
+      "salary": ""
+    }
+  ],
+  "landed": "https://example.com/search",
+  "requested": "https://example.com/search"
+}

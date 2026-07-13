@@ -1,0 +1,73 @@
+# sluice configuration example. Copy to sluice.local.yaml (git-ignored) and point
+# SLUICE_CONFIG at it. Every key is optional; unset keys fall back to code
+# defaults. Secrets (API keys, private hostnames) come from the environment or a
+# git-ignored local overlay, never this file.
+
+# Ingestion (sub-app #1): per-source enable/disable + tuning, target locations,
+# and per-source search overrides. Each source ships with ONE neutral example
+# search; set `searches` to run your own. Entries are [label, url, {params}?] -
+# the optional params tag the resulting leads (e.g. {job_type: perm}). This is
+# where your personal search list lives, so keep this file out of any public repo.
+locations: [Remote]
+
+# Coarse ingest title filter, applied before dedup and long before any LLM call.
+# Personal, so empty by default (an unconfigured gate passes everything through).
+# Configure it to make ingest cheap. Placeholders below are generated nonsense.
+relevance_keep: ['horticultural consultant']   # keep only titles containing one of these
+relevance_drop: ['sport and exercise psychologist']   # ...then drop any containing one of these
+# sources:
+#   workinstartups: { enabled: false }
+#   linkedin:
+#     searches:
+#       - ["Example role, city", "https://www.linkedin.com/jobs/search/?keywords=software%20developer&location=London", {job_type: perm}]
+#       - ["Example role, remote", "https://www.linkedin.com/jobs/search/?keywords=software%20developer&location=Remote", {job_type: perm}]
+#   reed:
+#     searches:
+#       - ["Example contract role", "https://www.reed.co.uk/jobs/contract-software-developer-jobs-in-london?sortby=datecreated"]
+
+# Triage (sub-app #2): role/geo/pay rules + judge routing. Lists shown here
+# override the code defaults wholesale when set.
+triage:
+  batch_size: 5
+  ttl_days: 7
+  contract_floor_gbp_day: 450     # illustrative; set your own (0 = no floor)
+  perm_floor_gbp: 90000          # illustrative; set your own (0 = no floor)
+  primary_backend: claude-max
+  fallback_backend: deepseek
+  # Model ids are BARE, not provider/model: the value is sent verbatim as the API's
+  # `model` field (the provider is already chosen by the *_backend keys above), so
+  # an "anthropic/" or "deepseek/" prefix here would 400.
+  claude_max_model: claude-sonnet-4-5    # the primary_backend's model
+  cheap_model: deepseek-v4-flash         # the fallback_backend's model
+                                         # (deepseek-chat is retired 2026-07-24)
+  # Which roles you want, and which disqualify a role, is PERSONAL. Nothing ships in
+  # code: declare yours here. The values below are randomly generated placeholders,
+  # deliberately nonsense, so nobody inherits somebody else's taste. Leave both empty
+  # and the title gate abstains: every lead reaches the LLM judge.
+  accept_titles: ['horticultural consultant', 'geoscientist']   # <- replace with the roles YOU want
+  reject_titles: ['sport and exercise psychologist', 'broadcast engineer']   # <- replace with your disqualifiers
+  route_borderline: false
+  # reject_companies: [example-co]
+  # claude_max_host: <your-claude-host>    # empty runs claude_max_path locally
+  # claude_max_path: claude
+
+# CV tailoring (sub-app #3): entirely personal, so every field below is empty
+# or a neutral placeholder by default.
+# cv:
+#   name: Your Name
+#   contact: |
+#     Phone number: +1 555 0100
+#     Email address: you@example.com
+#     Web: https://www.linkedin.com/in/you/
+#   employers: [Employer A, Employer B]   # empty skips the per-employer gate
+#   fabrication_decoys: [Some Other Company]
+#   served_prefix: CV
+#   compose_host: <your-claude-host>       # empty runs compose_claude_path locally
+#   compose_claude_path: claude
+
+# Apply (sub-app #4): stage the rendered CV + a prep packet for a shortlisted
+# lead. served_prefix must stay in sync with cv.served_prefix above (both
+# default to "CV"); only one adapter selector value works for each of
+# backend/store/renderer/fetch today, see docs/ARCHITECTURE.md.
+# apply:
+#   served_prefix: CV  # must match cv.served_prefix

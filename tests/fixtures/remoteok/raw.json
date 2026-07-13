@@ -1,0 +1,181 @@
+{
+  "result": [
+    {
+      "title": "CRO specialist",
+      "company": "Acme",
+      "location": "Remote",
+      "link": "https://example.com/jobs/1",
+      "salary": ""
+    },
+    {
+      "title": "Junior Crypto Trader",
+      "company": "Globex",
+      "location": "Remote",
+      "link": "https://example.com/jobs/2",
+      "salary": ""
+    },
+    {
+      "title": "Senior Software Engineer",
+      "company": "Vertex",
+      "location": "Remote",
+      "link": "https://example.com/jobs/3",
+      "salary": ""
+    },
+    {
+      "title": "Replacement for Joe test",
+      "company": "Umbrella",
+      "location": "Remote",
+      "link": "https://example.com/jobs/4",
+      "salary": ""
+    },
+    {
+      "title": "Paid Media Specialist Meta & Google Ads",
+      "company": "Hooli",
+      "location": "Remote",
+      "link": "https://example.com/jobs/5",
+      "salary": ""
+    },
+    {
+      "title": "Custodian",
+      "company": "Stark",
+      "location": "Remote",
+      "link": "https://example.com/jobs/6",
+      "salary": ""
+    },
+    {
+      "title": "Lifeguard",
+      "company": "Wayne",
+      "location": "Remote",
+      "link": "https://example.com/jobs/7",
+      "salary": ""
+    },
+    {
+      "title": "Dutch Speaking Customer Service Agent For Imperial Work from Home Greece",
+      "company": "Wonka",
+      "location": "Remote",
+      "link": "https://example.com/jobs/8",
+      "salary": ""
+    },
+    {
+      "title": "Testing Testing Test",
+      "company": "Cyberdyne",
+      "location": "Remote",
+      "link": "https://example.com/jobs/9",
+      "salary": ""
+    },
+    {
+      "title": "Operations Supervisor Healthcare South Georgia",
+      "company": "Soylent",
+      "location": "Remote",
+      "link": "https://example.com/jobs/10",
+      "salary": ""
+    },
+    {
+      "title": "Construction Inspector",
+      "company": "Pied Piper",
+      "location": "Remote",
+      "link": "https://example.com/jobs/11",
+      "salary": ""
+    },
+    {
+      "title": "Operator Red days",
+      "company": "Massive Dynamic",
+      "location": "Remote",
+      "link": "https://example.com/jobs/12",
+      "salary": ""
+    },
+    {
+      "title": "Proposal Manager",
+      "company": "Gringotts",
+      "location": "Remote",
+      "link": "https://example.com/jobs/13",
+      "salary": ""
+    },
+    {
+      "title": "SCL Agent",
+      "company": "Oscorp",
+      "location": "Remote",
+      "link": "https://example.com/jobs/14",
+      "salary": ""
+    },
+    {
+      "title": "Land/geomatics surveyor",
+      "company": "Aperture",
+      "location": "Remote",
+      "link": "https://example.com/jobs/15",
+      "salary": ""
+    },
+    {
+      "title": "Expression of Interest Transition of Candidate",
+      "company": "Duff",
+      "location": "Remote",
+      "link": "https://example.com/jobs/16",
+      "salary": ""
+    },
+    {
+      "title": "Wireless Systems Technical Support Engineer",
+      "company": "Vandelay",
+      "location": "Remote",
+      "link": "https://example.com/jobs/17",
+      "salary": ""
+    },
+    {
+      "title": "Entry Level Administrative Assistant",
+      "company": "Praxis",
+      "location": "Remote",
+      "link": "https://example.com/jobs/18",
+      "salary": ""
+    },
+    {
+      "title": "Virtual Executive Assistant",
+      "company": "Praxis",
+      "location": "Remote",
+      "link": "https://example.com/jobs/19",
+      "salary": ""
+    },
+    {
+      "title": "File Clerk",
+      "company": "Praxis",
+      "location": "Remote",
+      "link": "https://example.com/jobs/20",
+      "salary": ""
+    },
+    {
+      "title": "Expression of Interest",
+      "company": "Nakatomi",
+      "location": "Remote",
+      "link": "https://example.com/jobs/21",
+      "salary": ""
+    },
+    {
+      "title": "Head of Hiring and Training South FL",
+      "company": "Sirius Cybernetics",
+      "location": "Remote",
+      "link": "https://example.com/jobs/22",
+      "salary": ""
+    },
+    {
+      "title": "Human Resources Generalist Manager",
+      "company": "Weyland-Yutani",
+      "location": "Remote",
+      "link": "https://example.com/jobs/23",
+      "salary": ""
+    },
+    {
+      "title": "Content Creator",
+      "company": "Tyrell",
+      "location": "Remote",
+      "link": "https://example.com/jobs/24",
+      "salary": ""
+    },
+    {
+      "title": "Business Analyst",
+      "company": "Buy n Large",
+      "location": "Remote",
+      "link": "https://example.com/jobs/25",
+      "salary": ""
+    }
+  ],
+  "landed": "https://example.com/search",
+  "requested": "https://example.com/search"
+}

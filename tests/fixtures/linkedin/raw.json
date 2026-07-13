@@ -1,0 +1,55 @@
+{
+  "result": [
+    {
+      "title": "Technical Architect (SharePoint)",
+      "company": "Acme",
+      "location": "London, England, United Kingdom (Hybrid)",
+      "link": "https://example.com/jobs/1",
+      "salary": ""
+    },
+    {
+      "title": "Freelance Project Manager | Digital & Print Campaigns",
+      "company": "Globex",
+      "location": "London Area, United Kingdom (Hybrid)",
+      "link": "https://example.com/jobs/2",
+      "salary": ""
+    },
+    {
+      "title": "Project Manager",
+      "company": "Vertex",
+      "location": "London, England, United Kingdom (Remote)",
+      "link": "https://example.com/jobs/3",
+      "salary": ""
+    },
+    {
+      "title": "Banker, Payments",
+      "company": "Umbrella",
+      "location": "London, England, United Kingdom (Hybrid)",
+      "link": "https://example.com/jobs/4",
+      "salary": ""
+    },
+    {
+      "title": "HVAC Technical Supervisor",
+      "company": "Hooli",
+      "location": "London, England, United Kingdom (Remote)",
+      "link": "https://example.com/jobs/5",
+      "salary": ""
+    },
+    {
+      "title": "Lead Pre-Construction Project Manager",
+      "company": "Stark",
+      "location": "United Kingdom (Remote)",
+      "link": "https://example.com/jobs/6",
+      "salary": ""
+    },
+    {
+      "title": "Platform Operations Manager",
+      "company": "Wayne",
+      "location": "London Area, United Kingdom (Hybrid)",
+      "link": "https://example.com/jobs/7",
+      "salary": ""
+    }
+  ],
+  "landed": "https://example.com/search",
+  "requested": "https://example.com/search"
+}

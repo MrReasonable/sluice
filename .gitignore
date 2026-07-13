@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+*.egg-info/
+
+# Local config overlays hold secrets and personal data. Never commit these.
+# (sluice.yaml.example is the tracked template; a real sluice.yaml / *.local.yaml
+# holds your personal searches, contact details, and hosts.)
+*.local.yaml
+sluice.local.yaml
+/sluice.yaml
+*.token
+google_token*.json
+.env
+.env.*
+
+# Runtime artifacts (CV render/serve/apply outputs, dossiers, dedup db,
+# health/disabled tracking files)
+cv-out/
+cv-output/
+cv-served/
+cv-home/
+dossiers/
+*.pdf
+*_health.json
+*_disabled.json
+*.db

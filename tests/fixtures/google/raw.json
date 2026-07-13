@@ -1,0 +1,41 @@
+{
+  "result": [
+    {
+      "title": "Choose what you’re giving feedback on",
+      "company": "",
+      "location": "",
+      "snippet": "",
+      "link": ""
+    },
+    {
+      "title": "Choose what you’re giving feedback on",
+      "company": "",
+      "location": "",
+      "snippet": "",
+      "link": ""
+    },
+    {
+      "title": "Customised date range",
+      "company": "",
+      "location": "",
+      "snippet": "",
+      "link": ""
+    },
+    {
+      "title": "Customised date range",
+      "company": "",
+      "location": "",
+      "snippet": "",
+      "link": ""
+    },
+    {
+      "title": "London",
+      "company": "",
+      "location": "London ∙ Choose area",
+      "snippet": "",
+      "link": ""
+    }
+  ],
+  "landed": "https://example.com/search?q=engineering+manager+jobs",
+  "requested": "https://example.com/search?q=engineering+manager+jobs"
+}
