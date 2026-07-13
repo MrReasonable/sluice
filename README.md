@@ -7,6 +7,27 @@ preps and records applications, and reconciles the funnel from email and
 calendar signals. Every stage is config-first: sane defaults ship in code,
 a single YAML file overrides them, and secrets come from the environment.
 
+## Ships no preferences
+
+Sluice expresses no opinion about which jobs are good. That is deliberate, and it is
+enforced rather than promised:
+
+- `accept_titles` / `reject_titles` and the coarse ingest gate (`relevance_keep` /
+  `relevance_drop`) all default to **empty**. An unconfigured gate abstains and passes
+  every lead through, rather than silently filtering your job hunt against a stranger's
+  taste. Pay floors default to `0` (off).
+- The judge's criteria - who you are, what you want, what you refuse - are read at
+  runtime from an Obsidian note (`Job Applications/Judging Profile.md`), never from this
+  repository. The fallback compiled into the code states only that nothing is configured
+  and declines to invent an opinion.
+- The test suite generates its own synthetic job titles (seeded `faker`, see
+  `tests/conftest.py`), so no real person's preferences are encoded in the fixtures or the
+  assertions. `test_shipped_prompt_expresses_no_role_or_culture_preference` fails the
+  build if a role or culture preference is ever baked back into the shipped prompt.
+
+If you are contributing: your job search belongs in your config and your vault. It must
+not land in this repo.
+
 ## Pipeline
 
 ```
