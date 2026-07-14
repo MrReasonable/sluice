@@ -4,9 +4,10 @@ from sluice.track.config import TrackConfig
 from sluice.track import classify as C
 
 
-def _lead(company, role, status="applied", path=None):
+def _lead(company, role, status="applied", slug=None):
+    slug = slug or f"{company} - {role}"
     return SimpleNamespace(fm={"company": company, "role": role}, status=status,
-                           path=path or f"/v/Job Leads/{company} - {role}.md")
+                           ref=f"/v/Job Leads/{slug}.md", slug=slug)
 
 
 class FakeBackend:

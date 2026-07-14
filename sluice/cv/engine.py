@@ -41,12 +41,12 @@ def _jd_keywords(role: str, jd: str) -> list:
     return sorted({w for w in re.findall(r"[a-z]{4,}", f"{role} {jd or ''}".lower())})
 
 
-def run_one(note, vault, cvcfg, backend, dossier_cache, *, dry_run=False) -> CvResult:
+def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=False) -> CvResult:
     fm = note.fm
     # Process ONLY shortlist leads. This enforces the shortlist-only constraint and
     # inherently never touches (never clobbers) application-owned leads.
     if _status.normalize(fm.get("status", "")) != "shortlist":
-        return CvResult(note.path, "skipped-selection")
+        return CvResult(note.ref, "skipped-selection")
 
     company, role = fm.get("company", ""), fm.get("role", "")
     jd = ""
@@ -54,10 +54,10 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, dry_run=False) -> CvR
         d = dossier_cache.get_or_build(fm)
         jd = (d.get("jd") or {}).get("markdown", "")
     except Exception as e:
-        _log.warning("dossier for %s failed: %s", note.path, e)
+        _log.warning("dossier for %s failed: %s", note.ref, e)
 
     entries = vault.read_experience_entries(verified_only=True)
-    baseline = vault.read_baseline(cvcfg.baseline_rel)
+    baseline = vault.read_baseline()
     b = _bundle.build_bundle(entries, baseline, cvcfg.negatives,
                              _jd_keywords(role, jd), cvcfg.prefix_map)
     bundle_text = _bundle.render_bundle(b)
@@ -85,7 +85,7 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, dry_run=False) -> CvR
 
     backend_used = getattr(backend, "last_backend", None)
     if gate_msgs:
-        return CvResult(note.path, "skipped-gate", violations=violations,
+        return CvResult(note.ref, "skipped-gate", violations=violations,
                         slop=[s[2] for s in slop_err], backend=backend_used)
 
     # The audit is advisory only (see audit.py: "NEVER blocks"). A backend error or
@@ -94,38 +94,41 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, dry_run=False) -> CvR
     try:
         _report, audit_flags = run_audit(backend, cv_text, bundle_text)
     except Exception as e:
-        _log.warning("advisory audit failed for %s: %s", note.path, e)
+        _log.warning("advisory audit failed for %s: %s", note.ref, e)
         audit_flags = []
     if dry_run:
-        return CvResult(note.path, "dry-run", audit_flags=audit_flags, backend=backend_used)
+        return CvResult(note.ref, "dry-run", audit_flags=audit_flags, backend=backend_used)
 
     from sluice.cv import render as _render
     out_dir = f"{cvcfg.output_dir}/{_slug(company, role)}"
-    pdf = _render.render(cv_text, out_dir, render_script=cvcfg.render_script,
-                         python_bin=cvcfg.render_python, home=cvcfg.render_home,
-                         neutral_name=cvcfg.neutral_filename)
+    # The renderer is INJECTED, never built here. An engine that constructs its own
+    # adapter breaks both the seam and the offline tests. It is reached only past the
+    # HARD gate above: a renderer never validates, and is never handed a CV with
+    # outstanding violations.
+    pdf = renderer.render(cv_text, out_dir, neutral_name=cvcfg.neutral_filename)
     served = (_render.serve(pdf, cvcfg.served_dir, served_prefix=cvcfg.served_prefix)
               if cvcfg.served_dir else None)
     if served:
-        vault.set_tailored_cv(note.path, f"{served} ({date.today().isoformat()})")
-    return CvResult(note.path, "rendered", audit_flags=audit_flags,
+        vault.set_tailored_cv(note.ref, f"{served} ({date.today().isoformat()})")
+    return CvResult(note.ref, "rendered", audit_flags=audit_flags,
                     served=served, backend=backend_used)
 
 
-def run_batch(vault, cvcfg, backend, dossier_cache, *, limit=None, dry_run=False) -> list:
+def run_batch(vault, cvcfg, backend, dossier_cache, *, renderer, limit=None, dry_run=False) -> list:
     notes = [n for n in vault.read_leads({"shortlist"})]
     results = []
     for note in notes:
         if note.fm.get("tailored_cv"):
-            results.append(CvResult(note.path, "skipped-has-cv"))
+            results.append(CvResult(note.ref, "skipped-has-cv"))
             continue
         # A single lead's exception (e.g. a WeasyPrint render failure) must not abort
         # the rest of the batch -- mirrors the triage engine's per-lead resilience.
         try:
-            results.append(run_one(note, vault, cvcfg, backend, dossier_cache, dry_run=dry_run))
+            results.append(run_one(note, vault, cvcfg, backend, dossier_cache,
+                                   renderer=renderer, dry_run=dry_run))
         except Exception as e:
-            _log.warning("cv run failed for %s: %s", note.path, e)
-            results.append(CvResult(note.path, "error"))
+            _log.warning("cv run failed for %s: %s", note.ref, e)
+            results.append(CvResult(note.ref, "error"))
         if limit and sum(1 for r in results if r.status in ("rendered", "dry-run")) >= limit:
             break
     return results

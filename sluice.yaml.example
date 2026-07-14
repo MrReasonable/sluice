@@ -8,10 +8,20 @@
 # search; set `searches` to run your own. Entries are [label, url, {params}?] -
 # the optional params tag the resulting leads (e.g. {job_type: perm}). This is
 # where your personal search list lives, so keep this file out of any public repo.
-# Geography is personal, so nothing ships in code, and nothing ships here either: this
-# file is COPIED, so an active `locations: [Remote]` would hand every copier the very
-# preference the code default just stopped expressing. Unset = no geographic preference.
-# locations: [Remote]   # <- uncomment and set YOUR OWN
+# Geography is personal, so nothing ships in code: an unset `locations` expresses no
+# preference. The value below is an illustrative placeholder, not a default.
+locations: [Remote]   # illustrative; set your own (unset = no geographic preference)
+
+# ── adapter seams ────────────────────────────────────────────────────────────
+# Which implementation fills each seam. Selection is by NAME; an unknown name raises at
+# construction and lists the valid ones rather than falling through to a default.
+# (`sluice/stores/`, `sluice/fetchers/`, `sluice/renderers/` -- a new plugin registers
+# itself there and becomes selectable here, with no change to core.)
+store: vault        # the lead/experience store
+fetcher: camofox    # the browser the ingest sources drive
+# Where the STORE keeps your baseline CV, relative to the store root. Lives here rather
+# than under `cv:` because only the store can honour it.
+baseline_rel: My CV/CV.md
 
 # Coarse ingest title filter, applied before dedup and long before any LLM call.
 # Personal, so empty by default (an unconfigured gate passes everything through).
@@ -57,6 +67,15 @@ triage:
 # CV tailoring (sub-app #3): entirely personal, so every field below is empty
 # or a neutral placeholder by default.
 # cv:
+#   # Which renderer fills the seam.
+#   #   script     - shells out to the external WeasyPrint script at render_script.
+#   #                This is the default, and the SHIPPED render_script path
+#   #                (./scripts/cv_render_v2.py) does not exist in the repo: supply your
+#   #                own script, or switch to weasyprint below. Either way it now fails
+#   #                at construction with that message, not after the CV is composed.
+#   #   weasyprint - bundled, in-process, no external file. pip install 'sluice[render]'.
+#   renderer: script
+#   render_script: ./scripts/cv_render_v2.py
 #   name: Your Name
 #   contact: |
 #     Phone number: +1 555 0100

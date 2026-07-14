@@ -19,7 +19,6 @@ def test_cv_defaults_carry_no_pii():
     assert c.negatives == []
     assert c.prefix_map == {}
     assert c.neutral_filename == "CV.pdf"
-    assert c.baseline_rel == "My CV/CV.md"
 
 
 def test_triage_defaults_carry_no_pii():
@@ -49,6 +48,16 @@ def test_ingest_defaults_carry_no_preference(monkeypatch):
     assert c.locations == []
     assert c.relevance_keep == []
     assert c.relevance_drop == []
+    # baseline_rel moved here from CvConfig (only the store can honour it, and
+    # Sluice.store() only ever sees the root Config). The assertion had to move WITH it:
+    # the refactor deleted it from the CvConfig test and nothing replaced it, so a
+    # regression to an absolute personal path would have shipped green. Caught by review.
+    assert c.baseline_rel == "My CV/CV.md"
+    assert not c.baseline_rel.startswith("/"), \
+        "baseline_rel must be RELATIVE to the store: an absolute path is someone's machine"
+    # The adapter selectors name shipped implementations, never a person's setup.
+    assert c.store == "vault"
+    assert c.fetcher == "camofox"
 
     # ...and the same must hold through the real loader with no config file, which is
     # what a fresh install actually gets. Both env overrides are cleared: without this

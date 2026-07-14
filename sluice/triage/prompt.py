@@ -133,6 +133,20 @@ def load_criteria(vault_dir: str | None) -> str:
     return body or _DEFAULT_CRITERIA
 
 
+def build_system_prompt_from(criteria: str) -> str:
+    """Compose the judge system prompt around criteria the STORE supplied.
+
+    This is the form the engine uses. It takes text, not a directory, because reaching
+    through the store to a filesystem path (`build_system_prompt(vault.dir)`) is what put
+    a store-implementation detail on the judge's critical path -- a store without a `.dir`
+    would have AttributeError'd there. An empty/missing criteria file falls back to the
+    shipped default, which states only that nothing is configured and declines to invent
+    an opinion.
+    """
+    body = _strip_frontmatter(criteria or "").strip() or _DEFAULT_CRITERIA
+    return f"{_SCAFFOLD_INTRO}\n\n{body}\n\n{_SCAFFOLD_TAIL}"
+
+
 def build_system_prompt(vault_dir: str | None = None) -> str:
     """Compose the full judge system prompt: stable scaffold wrapped around the
     candidate's (vault-sourced) criteria."""

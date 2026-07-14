@@ -15,7 +15,7 @@ from sluice.triage.apply import apply_classification, apply_verdict
 from sluice.triage.audit import render_rejected_note
 from sluice.triage.classify import classify
 from sluice.triage.judge import judge
-from sluice.triage.prompt import build_system_prompt
+from sluice.triage.prompt import build_system_prompt_from
 
 _log = get_logger("triage.engine")
 
@@ -58,7 +58,7 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
         key = "skipped" if outcome == "skipped" else (
             "dismiss" if decision == "reject" else "needs_review")
         report.counts[key] = report.counts.get(key, 0) + 1
-        _audit({"ts": today, "slug": note.fm.get("url", note.path),
+        _audit({"ts": today, "slug": note.slug,
                 "company": note.fm.get("company", ""), "role": note.fm.get("role", ""),
                 "url": note.fm.get("url", ""), "stage": "classify",
                 "decision": decision, "reason": reason, "score": 0})
@@ -71,14 +71,14 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
             try:
                 d = dossier_cache.get_or_build(note.fm)
             except Exception as e:
-                report.failures.append(f"dossier {note.path}: {e}")
+                report.failures.append(f"dossier {note.ref}: {e}")
                 continue
             dossiers.append(d)
             note_by_id[d["lead_id"]] = note
         # Compose the judge prompt from the candidate's vault-sourced criteria
         # (their editable source of truth), falling back to the baked-in default
         # if it is missing.
-        system_prompt = build_system_prompt(vault.dir)
+        system_prompt = build_system_prompt_from(vault.read_criteria())
         verdicts = judge(dossiers, backend, batch_size=cfg.batch_size,
                          system_prompt=system_prompt)
         report.judged = len(verdicts)

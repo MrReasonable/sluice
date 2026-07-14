@@ -39,7 +39,7 @@ def test_eligibility_reasons():
         ("Skipped.md", 'company: "C"\nrole: "Analyst"\nstatus: shortlist\nurl: "https://x/y"\ntailored_cv: "SKIPPED - too senior"'),
         ("Missing.md", 'company: "D"\nrole: "Analyst"\nstatus: shortlist\nurl: "https://x/y"\ntailored_cv: CV_facef00d.pdf (2026-07-09)'),
     ])
-    by = {p.path.split("/")[-1]: select.eligibility(p, cfg) for p in v.read_leads({"shortlist"})}
+    by = {p.slug + ".md": select.eligibility(p, cfg) for p in v.read_leads({"shortlist"})}
     assert by["NoUrl.md"] == (False, "no_url")
     assert by["Legacy.md"] == (False, "no_artifact")
     assert by["Skipped.md"] == (False, "no_artifact")

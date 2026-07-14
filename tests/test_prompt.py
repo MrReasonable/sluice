@@ -59,3 +59,33 @@ def test_vault_criteria_overrides_default(tmp_path):
 def test_empty_vault_file_falls_back(tmp_path):
     _write_criteria(str(tmp_path), "---\nonly: frontmatter\n---\n   \n")
     assert load_criteria(str(tmp_path)) == load_criteria(None)
+
+
+# ── build_system_prompt_from: the form the ENGINE actually calls ──────────────
+# triage/engine.py now calls build_system_prompt_from(store.read_criteria()) rather than
+# build_system_prompt(vault.dir) -- reaching through the store to a filesystem path is what
+# put a store-implementation detail on the judge's critical path. Every existing test in
+# this file exercises the OLD form, so the live path had zero coverage.
+
+def test_build_system_prompt_from_uses_the_supplied_criteria():
+    from sluice.triage.prompt import build_system_prompt_from
+    out = build_system_prompt_from("I want roles doing X. I refuse roles doing Y.")
+    assert "I refuse roles doing Y" in out
+
+
+def test_build_system_prompt_from_abstains_when_criteria_are_absent():
+    """Empty criteria must fall back to the shipped default, which states only that
+    nothing is configured and declines to invent an opinion. A store that returns "" must
+    not produce a prompt with an EMPTY criteria block: the judge would then score every
+    lead against nothing."""
+    from sluice.triage.prompt import _DEFAULT_CRITERIA, build_system_prompt_from
+    for empty in ("", "   ", None):
+        out = build_system_prompt_from(empty)
+        assert _DEFAULT_CRITERIA in out, "empty criteria must fall back to the neutral default"
+
+
+def test_build_system_prompt_from_strips_frontmatter():
+    from sluice.triage.prompt import build_system_prompt_from
+    out = build_system_prompt_from("---\ntitle: Judging Profile\n---\nI want roles doing X.")
+    assert "I want roles doing X" in out
+    assert "title: Judging Profile" not in out

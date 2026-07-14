@@ -4,18 +4,30 @@ from sluice.core.backends import BackendError, FallbackBackend, OpenAiCompatible
 
 class Note:
     def __init__(self, fm, path="Job Applications/Job Leads/Acme - Analyst.md"):
-        self.fm = fm; self.path = path
+        # A store hands back an opaque `ref` and the slug it issued; it never hands
+        # back a path for the caller to parse.
+        self.fm = fm; self.ref = path; self.slug = path.split("/")[-1][:-3]
 
 class FakeVault:
     def __init__(self, entries, notes=None):
         self._entries = entries; self._notes = notes or []; self.written = {}
     def read_experience_entries(self, verified_only=True): return self._entries
-    def read_baseline(self, rel="My CV/Jane Roe CV.md"): return "BASELINE"
+    # Signature must track protocols.Store EXACTLY. This fake carrying the old
+    # read_baseline(rel=...) is what let a real TypeError ship green.
+    def read_baseline(self): return "BASELINE"
     def read_leads(self, statuses=None): return self._notes
-    def set_tailored_cv(self, path, value): self.written[path] = value
+    def set_tailored_cv(self, ref, value): self.written[ref] = value
 
 class FakeCache:
     def get_or_build(self, fm): return {"jd": {"markdown": "we value delivery"}}
+
+class FakeRenderer:
+    """The Renderer seam, injected. Records what it was asked to render so a test can
+    assert a CV was NEVER rendered -- which is the fabrication gate's whole point."""
+    def __init__(self): self.rendered = []
+    def render(self, cv_text, out_dir, *, neutral_name="CV.pdf"):
+        self.rendered.append(cv_text)
+        return f"/tmp/x/{neutral_name}"
 
 class FakeBackend:
     def __init__(self, cv_out, audit_out="supported\tx\tSF1"):
@@ -53,37 +65,47 @@ CLEAN_CV = "\n".join([
 def test_application_owned_lead_is_refused():
     v = FakeVault(ENTRIES)
     r = run_one(Note({"status": "applied", "company": "Acme"}), v, _cfg(),
-                FakeBackend("x"), FakeCache())
+                FakeBackend("x"), FakeCache(), renderer=FakeRenderer())
     assert r.status == "skipped-selection"
     assert v.written == {}
 
 def test_gate_failure_skips_and_never_renders():
+    # `rend` is BOUND so the assertion below can look at it. Every gate test used to pass
+    # renderer=FakeRenderer() inline and throw the reference away, which made the
+    # "never rendered" claim in the test name unassertable -- an unconditional
+    # renderer.render() before the gate check passed the entire suite.
     # compose returns an uncited CV -> validate fails both attempts -> skip
     bad = CLEAN_CV.replace("- Grew team from 3 to 8 [SF1]", "- Grew team from 3 to 8")
     v = FakeVault(ENTRIES)
+    rend = FakeRenderer()
     r = run_one(Note({"status": "shortlist", "company": "Solarflux", "role": "Analyst"}),
-                v, _cfg(), FakeBackend(bad), FakeCache())
+                v, _cfg(), FakeBackend(bad), FakeCache(), renderer=rend)
     assert r.status == "skipped-gate"
     assert any("UNCITED" in x for x in r.violations)
-    assert v.written == {}   # nothing recorded, nothing rendered
+    assert v.written == {}   # nothing recorded
+    # THE assertion. `v.written == {}` says nothing about rendering: the gate path returns
+    # before set_tailored_cv either way. Only this proves no PDF with an invented metric
+    # was written to the output dir under the neutral filename -- the exact file a user
+    # picks up and attaches to an application.
+    assert rend.rendered == [], "a CV was RENDERED despite an open fabrication gate"
 
 def test_dry_run_reports_but_writes_nothing():
     v = FakeVault(ENTRIES)
     r = run_one(Note({"status": "shortlist", "company": "Solarflux", "role": "Analyst"}),
-                v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(), dry_run=True)
+                v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(), renderer=FakeRenderer(), dry_run=True)
     assert r.status == "dry-run"
     assert v.written == {}
 
 def test_batch_skips_leads_that_already_have_a_cv():
     notes = [Note({"status": "shortlist", "company": "A", "role": "Analyst", "tailored_cv": "x.pdf"})]
     v = FakeVault(ENTRIES, notes=notes)
-    results = run_batch(v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(), dry_run=True)
+    results = run_batch(v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(), renderer=FakeRenderer(), dry_run=True)
     assert results[0].status == "skipped-has-cv"
 
 def test_non_shortlist_lead_is_refused():
     v = FakeVault(ENTRIES)
     r = run_one(Note({"status": "new", "company": "Acme"}), v, _cfg(),
-                FakeBackend("x"), FakeCache())
+                FakeBackend("x"), FakeCache(), renderer=FakeRenderer())
     assert r.status == "skipped-selection"
     assert v.written == {}
 
@@ -95,11 +117,13 @@ def test_drifted_work_header_fails_closed():
     # itself and HARD-fail the gate rather than rendering an unchecked draft.
     drifted = CLEAN_CV.replace("WORK EXPERIENCE", "PROFESSIONAL EXPERIENCE")
     v = FakeVault(ENTRIES)
+    rend = FakeRenderer()
     r = run_one(Note({"status": "shortlist", "company": "Solarflux", "role": "Analyst"}),
-                v, _cfg(), FakeBackend(drifted), FakeCache())
+                v, _cfg(), FakeBackend(drifted), FakeCache(), renderer=rend)
     assert r.status == "skipped-gate"
     assert any("STRUCTURAL" in x for x in r.violations)
     assert v.written == {}
+    assert rend.rendered == [], "a CV was RENDERED despite an open fabrication gate"
 
 def test_happy_path_renders_and_records(monkeypatch):
     import sluice.cv.render as _render_mod
@@ -109,10 +133,10 @@ def test_happy_path_renders_and_records(monkeypatch):
                         lambda *a, **k: "Jane_Roe_CV_deadbeef.pdf")
     v = FakeVault(ENTRIES)
     note = Note({"status": "shortlist", "company": "Solarflux", "role": "Analyst"})
-    r = run_one(note, v, _cfg(), FakeBackend(CLEAN_CV), FakeCache())
+    r = run_one(note, v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(), renderer=FakeRenderer())
     assert r.status == "rendered"
     assert r.served == "Jane_Roe_CV_deadbeef.pdf"
-    assert "Jane_Roe_CV_deadbeef.pdf" in v.written[note.path]
+    assert "Jane_Roe_CV_deadbeef.pdf" in v.written[note.ref]
 
 def test_no_serve_renders_but_does_not_mark_lead(monkeypatch):
     # --no-serve is emulated via cvcfg.served_dir = "": the engine's serve() call
@@ -129,7 +153,7 @@ def test_no_serve_renders_but_does_not_mark_lead(monkeypatch):
     cfg.served_dir = ""  # emulates --no-serve
     v = FakeVault(ENTRIES)
     r = run_one(Note({"status": "shortlist", "company": "Solarflux", "role": "Analyst"}),
-                v, cfg, FakeBackend(CLEAN_CV), FakeCache())
+                v, cfg, FakeBackend(CLEAN_CV), FakeCache(), renderer=FakeRenderer())
     assert r.status == "rendered"
     assert r.served is None
     assert v.written == {}   # no tailored_cv marker when nothing was published
@@ -152,8 +176,9 @@ def test_slop_only_failure_fails_gate_and_feeds_retry():
 
     be = RecordingBackend(slop_cv)
     v = FakeVault(ENTRIES)
+    rend = FakeRenderer()
     r = run_one(Note({"status": "shortlist", "company": "Solarflux", "role": "Analyst"}),
-                v, _cfg(), be, FakeCache())
+                v, _cfg(), be, FakeCache(), renderer=rend)
     assert r.status == "skipped-gate"
     assert r.slop                      # slop error surfaced
     assert v.written == {}             # nothing rendered/recorded
@@ -161,6 +186,7 @@ def test_slop_only_failure_fails_gate_and_feeds_retry():
     compose_prompts = [p for p in be.prompts if "SOURCE BUNDLE" in p and "auditing" not in p]
     assert len(compose_prompts) == 2
     assert "SLOP" in compose_prompts[1]
+    assert rend.rendered == [], "a CV was RENDERED despite an open fabrication gate"
 
 def test_retry_happens_exactly_once():
     # A persistently gate-failing CV must be composed exactly twice: the initial
@@ -169,7 +195,7 @@ def test_retry_happens_exactly_once():
     v = FakeVault(ENTRIES)
     backend = FakeBackend(bad)
     r = run_one(Note({"status": "shortlist", "company": "Solarflux", "role": "Analyst"}),
-                v, _cfg(), backend, FakeCache())
+                v, _cfg(), backend, FakeCache(), renderer=FakeRenderer())
     assert r.status == "skipped-gate"
     assert backend.calls == 2   # audit is never reached on skipped-gate, so this
                                 # counts compose calls exactly
@@ -197,7 +223,7 @@ def test_advisory_audit_failure_does_not_block_render(monkeypatch):
 
     v = FakeVault(ENTRIES)
     r = run_one(Note({"status": "shortlist", "company": "Solarflux", "role": "Analyst"}),
-                v, _cfg(), AuditRaisingBackend(CLEAN_CV), FakeCache())
+                v, _cfg(), AuditRaisingBackend(CLEAN_CV), FakeCache(), renderer=FakeRenderer())
     assert r.status == "rendered"
     assert r.audit_flags == []
 
@@ -205,14 +231,18 @@ def test_batch_survives_a_single_lead_exception(monkeypatch):
     # The triage engine records per-lead failures and continues; the CV engine
     # must do the same. One lead's render failure (e.g. WeasyPrint blowing up)
     # must not abort the rest of the --all-shortlist batch.
+    #
+    # The failure is injected through the RENDERER SEAM rather than by monkeypatching
+    # sluice.cv.render: the engine no longer reaches into that module, so a monkeypatch
+    # there would be inert and this test would pass for the wrong reason.
     import sluice.cv.render as _render_mod
 
-    def flaky_render(cv_text, out_dir, **kwargs):
-        if "acme" in out_dir:
-            raise RuntimeError("weasyprint boom")
-        return "/tmp/x/Jane Roe CV.pdf"
+    class FlakyRenderer:
+        def render(self, cv_text, out_dir, *, neutral_name="CV.pdf"):
+            if "acme" in out_dir:
+                raise RuntimeError("weasyprint boom")
+            return f"/tmp/x/{neutral_name}"
 
-    monkeypatch.setattr(_render_mod, "render", flaky_render)
     monkeypatch.setattr(_render_mod, "serve",
                         lambda *a, **k: "Jane_Roe_CV_deadbeef.pdf")
 
@@ -223,12 +253,12 @@ def test_batch_survives_a_single_lead_exception(monkeypatch):
              path="Job Applications/Job Leads/Zenith - Analyst.md"),
     ]
     v = FakeVault(ENTRIES, notes=notes)
-    results = run_batch(v, _cfg(), FakeBackend(CLEAN_CV), FakeCache())
+    results = run_batch(v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(), renderer=FlakyRenderer())
     assert len(results) == 2   # the batch did not abort after the first failure
     assert results[0].status == "error"
     assert results[1].status == "rendered"
-    assert notes[0].path not in v.written   # the errored lead is never marked tailored
-    assert notes[1].path in v.written       # the surviving lead still gets recorded
+    assert notes[0].ref not in v.written   # the errored lead is never marked tailored
+    assert notes[1].ref in v.written       # the surviving lead still gets recorded
 
 def test_batch_records_error_when_fallback_response_is_truncated():
     # A truncated fallback response (finish_reason==length) is a hard error, not
@@ -251,7 +281,30 @@ def test_batch_records_error_when_fallback_response_is_truncated():
 
     notes = [Note({"status": "shortlist", "company": "Acme", "role": "Analyst"})]
     v = FakeVault(ENTRIES, notes=notes)
-    results = run_batch(v, _cfg(), backend, FakeCache())
+    results = run_batch(v, _cfg(), backend, FakeCache(), renderer=FakeRenderer())
     assert len(results) == 1
     assert results[0].status == "error"
     assert v.written == {}   # never marked tailored off a truncated partial
+
+
+def test_the_fake_vault_conforms_to_the_real_store_signature():
+    """The join between "conformance tests real stores" and "engine tests use a fake" was
+    MANUAL, and that is exactly how a total breakage of `cv run` shipped green: the fake's
+    read_baseline still took the `rel` argument the real Vault had dropped, so the engine's
+    stale call site was invisible.
+
+    Any method this fake implements must match the real Vault's signature. It need not
+    implement all of them -- it is a fake for the CV path -- but where it does, it may not
+    drift.
+    """
+    import inspect
+    from sluice.core.vault import Vault
+
+    fake = FakeVault([])
+    for name in ("read_experience_entries", "read_baseline", "read_leads", "set_tailored_cv"):
+        real_sig = inspect.signature(getattr(Vault, name))
+        fake_sig = inspect.signature(getattr(FakeVault, name))
+        assert list(fake_sig.parameters) == list(real_sig.parameters), (
+            f"FakeVault.{name}{fake_sig} has drifted from Vault.{name}{real_sig}. "
+            f"A fake that outlives the contract it fakes hides real breakage.")
+    assert fake is not None

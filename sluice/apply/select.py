@@ -30,7 +30,9 @@ def resolve(vault, slug):
 
 
 def _label(note):
-    return os.path.basename(note.path)[:-3] if note.path.endswith(".md") else note.path
+    # The store issues the slug; deriving it from a filename here is what pinned the
+    # store to a filesystem.
+    return note.slug
 
 
 def select_one(vault, slug, cfg):
