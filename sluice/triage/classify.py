@@ -7,10 +7,69 @@ unconfigured gate abstains rather than applying somebody else's idea of a good r
 """
 import re
 
+# Boards advertise pay in wildly inconsistent shapes: "£60k", "£30,000-£40,000",
+# "up to £75k", "£500/day", "£50,000 + 10% bonus". The old parser stripped every
+# non-digit and concatenated whatever was left, which broke the floors in BOTH
+# directions:
+#   "£30,000-£40,000"  -> 3000040000, sailing over any floor (the gate silently did
+#                         nothing, so a configured floor still showed you £30k jobs)
+#   "£1.5k/day"        -> 15, binned by any floor (the gate silently rejected a lead
+#                         the user wanted -- the failure that actually costs)
+# Parse the money tokens properly instead, and abstain when nothing credible parses.
+_PERCENT_RE = re.compile(r"\d+(?:\.\d+)?\s*%")
 
-def _num(s: str) -> int | None:
-    digits = re.sub(r"[^0-9]", "", s or "")
-    return int(digits) if digits else None
+# A bare digit run is NOT money. A salary field reading "Ref 50000" or "postcode 1234"
+# would otherwise parse as an advertised salary and be REJECTED by a floor -- binning a
+# lead whose pay was never stated at all. That is the fails-closed direction, i.e. exactly
+# the bug class this module exists to remove, coming back in through the parser.
+#
+# So a number only counts as money when it carries MONEY CONTEXT: a currency symbol, or a
+# k suffix (which is itself unambiguous). Anything else is ignored, and a string with no
+# money in it yields no opinion -- and no opinion never rejects.
+_MONEY_RE = re.compile(
+    r"[£$€]\s*(\d[\d,]*(?:\.\d+)?)\s*([kK])?\b"   # £60k, £30,000, $120,000
+    r"|(\d[\d,]*(?:\.\d+)?)\s*([kK])\b"           # 60k -- the suffix IS the context
+)
+
+# Below these, a parse is not a real offer -- it is a mis-parse. Abstain rather than
+# reject: a wrong reject bins a lead the user never sees, the expensive direction.
+_MIN_CREDIBLE_DAY_RATE = 50
+_MIN_CREDIBLE_SALARY = 1000
+
+
+def _salary_amounts(s: str) -> list[int]:
+    """Every money amount in `s`, with k-notation expanded ("60k" -> 60000).
+
+    Percentages are stripped first, so "£50,000 + 10% bonus" does not contribute a
+    spurious 10.
+    """
+    if not s:
+        return []
+    out: list[int] = []
+    for cur_raw, cur_k, k_raw, k_suffix in _MONEY_RE.findall(_PERCENT_RE.sub(" ", s)):
+        raw = cur_raw or k_raw
+        k_suffix = cur_k or k_suffix
+        try:
+            value = float(raw.replace(",", ""))
+        except ValueError:  # pragma: no cover - regex only yields parseable numbers
+            continue
+        # round(), not int(): int() truncates a float product toward zero, and 1.15 is
+        # not exactly representable, so int(1.15 * 1000) is 1149. A rate sitting on a
+        # floor would flip keep->reject on representation error, not on the pay.
+        out.append(round(value * 1000) if k_suffix else int(value))
+    return out
+
+
+def _salary_ceiling(s: str) -> int | None:
+    """The TOP of the advertised pay, or None when nothing parses.
+
+    The top, not the bottom, because a floor check must fail OPEN. Rejecting an
+    "£80,000-£120,000" lead against a £90k floor on the strength of its lower bound
+    would bin a job the user wants; only when even the best case is under the floor is
+    the reject safe. `None` means "no opinion" and never rejects.
+    """
+    amounts = _salary_amounts(s)
+    return max(amounts) if amounts else None
 
 
 def classify(lead: dict, cfg) -> tuple[str, str]:
@@ -47,14 +106,19 @@ def classify(lead: dict, cfg) -> tuple[str, str]:
             t in location for t in cfg.target_locations):
         return "reject", "Location outside target geography"
 
-    # Pay floors.
+    # Pay floors. Both branches abstain on an implausible parse rather than trusting
+    # it. The perm branch always had its credibility guard; the contract branch did
+    # not, which is why a "£1.5k/day" lead was silently rejected while the identical
+    # mistake on the perm side was harmless.
     if "contract" in role_type or "/day" in salary.lower() or "per day" in salary.lower():
-        rate = _num(salary)
-        if rate is not None and rate < cfg.contract_floor_gbp_day:
+        rate = _salary_ceiling(salary)
+        if (rate is not None and rate >= _MIN_CREDIBLE_DAY_RATE
+                and rate < cfg.contract_floor_gbp_day):
             return "reject", f"Day rate below floor: {rate} < {cfg.contract_floor_gbp_day}"
     else:
-        amount = _num(salary)
-        if amount is not None and amount >= 1000 and amount < cfg.perm_floor_gbp:
+        amount = _salary_ceiling(salary)
+        if (amount is not None and amount >= _MIN_CREDIBLE_SALARY
+                and amount < cfg.perm_floor_gbp):
             return "reject", f"Salary below floor: {amount} < {cfg.perm_floor_gbp}"
 
     if not company or company.lower() == "unknown":

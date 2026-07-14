@@ -115,3 +115,102 @@ def test_configured_geography_gate_still_filters(titles):
     cfg.target_locations = ["london"]
     assert classify(L(titles, location="London"), cfg)[0] == "keep"
     assert classify(L(titles, location="Berlin"), cfg)[0] == "reject"
+
+
+# ── salary parsing ────────────────────────────────────────────────────────────
+# The floors used to run on a parser that stripped every non-digit and concatenated
+# the rest, which broke them in both directions. These pin both directions, because
+# only one of them is expensive: a floor that fails OPEN just shows you jobs you did
+# not want, while a floor that fails CLOSED silently bins a job you did.
+
+def test_salary_range_is_read_at_its_ceiling_not_its_concatenation(titles):
+    # "£30,000-£40,000" once parsed as 3000040000 and sailed over every floor, so a
+    # configured floor silently did nothing. It must be read as its top (40,000).
+    assert classify(L(titles, salary="£30,000-£40,000"), _cfg(titles))[0] == "reject"
+    # ...and a range whose ceiling clears the floor is kept, even though its FLOOR
+    # does not. Rejecting on the lower bound would bin a job the user wants.
+    assert classify(L(titles, salary="£80,000-£120,000"), _cfg(titles))[0] == "keep"
+
+
+def test_k_notation_is_expanded(titles):
+    # "£60k" parsed as 60, which the perm branch's credibility guard turned into a
+    # (lucky) abstain -- so the floor silently ignored every k-formatted salary.
+    assert classify(L(titles, salary="£60k"), _cfg(titles))[0] == "reject"
+    assert classify(L(titles, salary="up to £75k"), _cfg(titles))[0] == "reject"
+    assert classify(L(titles, salary="£120k"), _cfg(titles))[0] == "keep"
+
+
+def test_k_notation_day_rate_is_not_binned(titles):
+    # The contract branch had NO credibility guard, so "£1.5k/day" parsed as 15 and
+    # was REJECTED against a 480/day floor. This is the destructive direction: a
+    # well-paid contract silently binned. 1.5k/day is 1500, comfortably over.
+    assert classify(L(titles, role_type="contract", salary="£1.5k/day"), _cfg(titles))[0] == "keep"
+
+
+def test_percentages_do_not_contribute_a_salary(titles):
+    # "10%" must not parse as a money amount; the salary here is 50,000, under floor.
+    assert classify(L(titles, salary="£50,000 + 10% bonus"), _cfg(titles))[0] == "reject"
+    assert classify(L(titles, salary="£120,000 + 10% bonus"), _cfg(titles))[0] == "keep"
+
+
+def test_unparseable_salary_abstains(titles):
+    # No credible number means no opinion. Never a reject.
+    for salary in ("", "Competitive", "DOE", "Negotiable"):
+        assert classify(L(titles, salary=salary), _cfg(titles))[0] == "keep"
+
+
+def test_stray_numbers_do_not_become_the_day_rate(titles):
+    # "6 month contract" must not make this a £6/day lead and bin it.
+    assert classify(
+        L(titles, role_type="contract", salary="6 month contract, £500/day"),
+        _cfg(titles))[0] == "keep"
+
+
+def test_unconfigured_floors_never_reject(titles):
+    # The shipped floors are 0. An unconfigured gate abstains: no salary string,
+    # however mangled, may produce a reject.
+    neutral = TriageConfig()
+    neutral.accept_titles, neutral.reject_titles = [], []
+    for salary in ("£1", "£60k", "£30,000-£40,000", "junk", ""):
+        for role_type in ("permanent", "contract"):
+            assert classify(
+                L(titles, salary=salary, role_type=role_type), neutral)[0] != "reject"
+
+
+def test_k_notation_does_not_lose_a_pound_to_float_truncation(titles):
+    # int() truncates a float product toward zero, and most decimal fractions are not
+    # exactly representable: int(2.01 * 1000) is 2009, not 2010. A day rate sitting exactly
+    # on a configured floor would then flip keep->reject on binary representation error
+    # rather than on the advertised pay. (CodeRabbit flagged this; its example, 1.15, does
+    # NOT truncate on CPython -- 2.01 does. 18 such cases exist between £0.01k and £20k.)
+    from sluice.triage.classify import _salary_ceiling
+    assert _salary_ceiling("£2.01k") == 2010
+    assert _salary_ceiling("£4.02k") == 4020
+    assert _salary_ceiling("£1.5k/day") == 1500
+
+    # ...and the boundary behaviour that motivates it: a 2010/day contract must not be
+    # rejected by a 2010 floor. (_cfg already fixes the floors, so set it directly.)
+    cfg = _cfg(titles)
+    cfg.contract_floor_gbp_day = 2010
+    assert classify(L(titles, role_type="contract", salary="£2.01k/day"), cfg)[0] == "keep"
+
+
+def test_a_bare_number_is_not_a_salary(titles):
+    # A salary field carrying a stray identifier -- "Ref 50000", a postcode -- must not be
+    # read as advertised pay. It would be REJECTED by a floor, binning a lead whose pay was
+    # never stated at all: the fails-closed direction, which is the bug class this whole
+    # module exists to remove, arriving through the parser. Money needs money CONTEXT: a
+    # currency symbol, or a k suffix.
+    from sluice.triage.classify import _salary_ceiling
+    for junk in ("postcode 1234", "Ref 50000", "Job ID 60000", "12 month contract"):
+        assert _salary_ceiling(junk) is None, f"{junk!r} parsed as money"
+        # ...and therefore never rejects, even under a floor that the stray number is below.
+        assert classify(L(titles, salary=junk), _cfg(titles))[0] != "reject"
+
+
+def test_money_context_is_a_symbol_or_a_k_suffix(titles):
+    from sluice.triage.classify import _salary_ceiling
+    assert _salary_ceiling("£60,000") == 60000
+    assert _salary_ceiling("$120,000") == 120000
+    assert _salary_ceiling("60k") == 60000          # the suffix IS the context
+    assert _salary_ceiling("60000") is None         # bare digits are not money

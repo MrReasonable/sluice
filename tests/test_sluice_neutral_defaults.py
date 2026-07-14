@@ -1,3 +1,4 @@
+from sluice.core.config import Config, load_config
 from sluice.cv.config import CvConfig, load_cv_config
 from sluice.triage.config import TriageConfig, load_triage_config
 
@@ -29,6 +30,36 @@ def test_triage_defaults_carry_no_pii():
     assert t.reject_companies == []
     assert t.target_locations == []
     assert t.reject_locations == []
+    # Title and pay preferences are equally personal. These were guarded only in
+    # test_triage_config.py, so this file -- the one the docs and the review agents
+    # point at as THE neutrality guard -- did not actually cover them.
+    assert t.accept_titles == []
+    assert t.reject_titles == []
+    assert t.contract_floor_gbp_day == 0
+    assert t.perm_floor_gbp == 0
+
+
+def test_ingest_defaults_carry_no_preference(monkeypatch):
+    # The root Config gates ingest, and its defaults were NOT guarded here at all:
+    # `locations` shipped as ["Remote"] (the same geo-preference-in-source shape as
+    # the 672ad2a bug), and relevance_keep/relevance_drop had no assertion anywhere
+    # in the suite -- a regression to relevance_keep = ["engineer"] would have shipped
+    # green. An unset gate must express no opinion.
+    c = Config()
+    assert c.locations == []
+    assert c.relevance_keep == []
+    assert c.relevance_drop == []
+
+    # ...and the same must hold through the real loader with no config file, which is
+    # what a fresh install actually gets. Both env overrides are cleared: without this
+    # the assertion would silently read the developer's own SLUICE_CONFIG and pass for
+    # the wrong reason.
+    monkeypatch.delenv("SLUICE_CONFIG", raising=False)
+    monkeypatch.delenv("SLUICE_LOCATIONS", raising=False)
+    loaded = load_config(None)
+    assert loaded.locations == []
+    assert loaded.relevance_keep == []
+    assert loaded.relevance_drop == []
 
 
 def test_config_overlay_restores_neutralized_defaults(tmp_path, monkeypatch):
