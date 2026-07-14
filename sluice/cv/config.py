@@ -38,9 +38,12 @@ class CvConfig:
     served_prefix: str = "CV"
     prefix_map: dict = field(default_factory=lambda: dict(_PREFIX_MAP))
     negatives: list = field(default_factory=lambda: list(_NEGATIVES))
-    baseline_rel: str = "My CV/CV.md"
     ttl_days: int = 7
     dossier_dir: str = "./dossiers"
+    # Which renderer fills the seam. "script" is today's external WeasyPrint shell-out
+    # and stays the default so an operator with a working script is unaffected;
+    # "weasyprint" is the bundled in-process renderer (pip install 'sluice[render]').
+    renderer: str = "script"
     render_script: str = "./scripts/cv_render_v2.py"
     render_python: str = "/usr/bin/python3"
     render_home: str = "./cv-home"
@@ -67,6 +70,22 @@ def load_cv_config(path: str | None = None) -> CvConfig:
         return cfg
     with open(path, encoding="utf-8") as f:
         data = (yaml.safe_load(f) or {}).get("cv") or {}
+
+    # baseline_rel MOVED to the root config (only the store can honour it). This loader
+    # filters unknown keys with `hasattr`, so an existing `cv.baseline_rel` would be
+    # dropped in silence -- and it was LIVE before this move, so a user with a curated
+    # baseline would quietly get a CV composed from a stale `My CV/CV.md` instead, with
+    # the fabrication gate green (the gate checks bullets against cited entries; it does
+    # not check the baseline's dates and employers). Fail loudly at construction, which is
+    # this codebase's rule precisely because a quiet wrong default is the bug class it
+    # most consistently engineers out.
+    if "baseline_rel" in data:
+        raise ValueError(
+            "cv.baseline_rel has moved to the top level of sluice.yaml (it is a STORE "
+            "location, and only the store can honour it). Move it out of the `cv:` block:\n"
+            "    baseline_rel: " + str(data["baseline_rel"])
+        )
+
     for k, v in data.items():
         if hasattr(cfg, k) and v is not None:
             setattr(cfg, k, v)

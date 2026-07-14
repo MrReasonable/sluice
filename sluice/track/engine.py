@@ -1,7 +1,6 @@
 """Orchestration: run (fetch -> classify -> reconcile, per-message resilient) and
 confirm (apply an approved proposal). The Gmail query is scoped by time window; the
 `seen` set (a message-id store) provides dedup, never read-state (F8/F10)."""
-import os
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
@@ -46,7 +45,7 @@ def run(vault, cfg, client, backend, *, seen, now_iso, since_iso=None, dry_run=F
     rep = RunReport()
     leads = [n for n in vault.read_leads(set(_status.APPLICATION_OWNED))
              if n.status in _INFLIGHT]
-    note_by_slug = {os.path.basename(n.path)[:-3]: n for n in leads}
+    note_by_slug = {n.slug: n for n in leads}
     try:
         ids = client.search_messages(_gmail_query(cfg, now_iso, since_iso))
     except GoogleAuthError:
@@ -112,5 +111,5 @@ def confirm(vault, cfg, slug, to, when=None, dry_run=False) -> dict:
         fields = {"status": _status.normalize(to), "last_signal": date.today().isoformat()}
         if when:
             fields["interview_date"] = f'"{when}"'
-        vault.update_fields(note.path, fields)
+        vault.update_fields(note.ref, fields)
     return {"ok": True, "from": note.status, "to": _status.normalize(to)}

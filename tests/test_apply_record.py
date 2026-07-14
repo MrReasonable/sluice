@@ -20,7 +20,7 @@ def test_record_flips_shortlist_to_applied_and_stamps():
     note = v.read_leads({"shortlist"})[0]
     out = rec.record(v, note, ApplyConfig(), ats="greenhouse", url="https://x/apply")
     assert out["ok"] is True
-    text = pathlib.Path(note.path).read_text()
+    text = pathlib.Path(note.ref).read_text()
     assert "status: applied" in text
     assert re.search(r"applied_date: \d{4}-\d\d-\d\d", text)
     assert "ats: greenhouse" in text
@@ -35,7 +35,7 @@ def test_record_refuses_application_owned():
     note = [n for n in v.read_leads() if n.fm["company"] == "Northwind"][0]
     out = rec.record(v, note, ApplyConfig())
     assert out["ok"] is False
-    assert "status: applied" not in pathlib.Path(note.path).read_text()
+    assert "status: applied" not in pathlib.Path(note.ref).read_text()
 
 
 def test_record_dry_run_writes_nothing():
@@ -43,4 +43,4 @@ def test_record_dry_run_writes_nothing():
     note = v.read_leads({"shortlist"})[0]
     out = rec.record(v, note, ApplyConfig(), dry_run=True)
     assert out["ok"] is True and out["fields"]["status"] == "applied"
-    assert "status: shortlist" in pathlib.Path(note.path).read_text()  # untouched
+    assert "status: shortlist" in pathlib.Path(note.ref).read_text()  # untouched

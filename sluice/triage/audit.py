@@ -63,8 +63,6 @@ def render_rejected_note(vault, entries: list, out_relpath: str) -> str:
             )
         lines.append("")
 
-    path = os.path.join(vault.dir, out_relpath)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
-    return path
+    # Was os.path.join(vault.dir, ...): a filesystem join THROUGH the store. `.dir` is
+    # not on the Store contract, so this is now a store write.
+    return vault.write_document(out_relpath, "\n".join(lines))

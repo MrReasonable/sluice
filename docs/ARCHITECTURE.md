@@ -54,21 +54,66 @@ Shared by every sub-app:
    guess on ambiguity), and reconcile it against lead status
    (never-regress: a status can only move forward).
 
+## The plugin core
+
+Two modules and a composition root make the seams real:
+
+- `core/plugins.py`: the adapter registry. `register(seam, name, factory)` /
+  `get(seam, name)`, keyed by the name in config. An unknown name raises and
+  lists the valid ones; it never falls through to a default. For the store seam
+  that matters most, because a quiet wrong default means writing the user's
+  leads somewhere they did not ask for.
+- `core/protocols.py`: `Store`, `Fetcher`, `Renderer`. Interface only. `LeadNote`
+  carries an opaque `ref` (a path for the vault, a row id for some other store)
+  and a `slug` the store issues -- identity used to be re-derived from the
+  markdown filename in four separate modules, and that is what pinned the store
+  to a filesystem.
+- `core/app.py`: `Sluice(config)`, the composition root. Resolves the adapters
+  config names and exposes the pipeline operations. Adapters are built lazily on
+  first use, so an offline command still never constructs a browser, a store or a
+  backend.
+
+Implementations live in `sluice/stores/`, `sluice/fetchers/` and
+`sluice/renderers/`, each self-registering on import exactly as
+`ingest/sources/` already did.
+
+There are two kinds of plugin, and only one of them is fully served today. An
+**adapter** plugin is something core calls (a store, a renderer, a fetcher); a
+**surface** plugin is something that calls core (a web UI, a TUI, a daemon). The
+registry serves adapters. Surfaces need a programmatic API to drive, and `Sluice`
+is only the first half of one: it resolves the adapters, so a surface no longer
+constructs a `Vault()` itself, but the backend construction, the dossier fetcher
+and the operations are still driven from `cli.py`. A web UI written today would
+still have to duplicate that wiring.
+
+Moving it into `Sluice` -- and adding `.triage()`, `.compose_cv()`, `.prep()`,
+`.record()`, `.track()` as value-returning methods -- is the follow-up that makes
+"a surface is a plugin" true. It touches every command and is deliberately a
+separate change.
+
+`tests/conformance/test_store_contract.py` is parameterised over every registered
+store and asserts never-clobber, never-regress, and slug/ref identity. Those
+guarantees used to live inside `core/vault.py`; a second store would have shipped
+without them. They are now properties of the contract, and a store passes that
+suite or it does not ship.
+
 ## Adapter-selector seams
 
-Four points in the config are the intended seams for pluggable adapters.
-Today each one has exactly one implementation; there is no runtime selector
-because there is nothing yet to select between.
+Four points in the config are the seams for pluggable adapters.
 
-- **backend**: `core/backends.py`, `cv.config.primary_backend` /
-  `fallback_backend`, `track.config.claude_max_*`. Today: a Claude CLI
-  shell-out (local or SSH) primary, a per-token HTTP backend as fallback.
-  SP2 adds a direct LLM API backend.
-- **store**: `core/vault.py`. Today: an Obsidian-style markdown vault on
-  disk. SP4 adds a pluggable store interface.
-- **renderer**: `cv/config.render_script`, `cv/render.py`. Today: shells
-  out to an external WeasyPrint script the operator supplies. SP3 bundles
-  a renderer so this is no longer an external dependency.
-- **fetch**: `core/camofox.py`, `ingest/base.py` (`Source.fetch`). Today:
-  a Camofox headless-browser HTTP server. SP5 adds a pluggable
-  fetch/browser adapter.
+- **backend**: `core/backends.py`; selected by ROLE (`primary` / `fallback`)
+  rather than by provider, via `make_backend(name, ...)`. Keeps its own
+  registry, which already worked.
+- **store**: `sluice/stores/`, selected by `store:` (default `vault`).
+  Implementations: `vault` (the Obsidian-style markdown vault in
+  `core/vault.py`). A SQLite store is the obvious next one, and the
+  conformance suite is what it must pass.
+- **renderer**: `sluice/renderers/`, selected by `cv.renderer:` (default
+  `script`). Implementations: `script` (shells out to the external WeasyPrint
+  script at `cv.render_script`) and `weasyprint` (bundled, in-process, needs
+  `pip install 'sluice[render]'`). Note the shipped `render_script` default
+  points at a file that does not exist in the repo; `script` now says so at
+  construction rather than dying after a CV has been composed and gated.
+- **fetch**: `sluice/fetchers/`, selected by `fetcher:` (default `camofox`).
+  Implementations: `camofox` (the headless-browser HTTP server).
+- **sources**: `ingest/sources/`, the registry all of the above are modelled on.

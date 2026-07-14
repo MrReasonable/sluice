@@ -31,7 +31,7 @@ def _stamp_materials(vault, note, ev, dry_run=False):
     tag = f"track-materials-{note.status}-{ev.message_id or ev.type}"
     lines = [f"- {m}" for m in ev.materials] + [f"- {u}" for u in ev.links]
     section = f"## Interview materials <!--{tag}-->\n" + "\n".join(lines)
-    return vault.append_body_section(note.path, tag, section)
+    return vault.append_body_section(note.ref, tag, section)
 
 
 def _advance(vault, note, target, ev, dry_run=False):
@@ -43,7 +43,7 @@ def _advance(vault, note, target, ev, dry_run=False):
     if ev.links:
         fields["interview_link"] = f'"{ev.links[0]}"'
     if not dry_run:
-        vault.update_fields(note.path, fields)
+        vault.update_fields(note.ref, fields)
 
 
 def reconcile(event, note_by_slug, vault, cfg, client, dry_run=False) -> ReconcileResult:

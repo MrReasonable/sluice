@@ -31,7 +31,7 @@ def test_update_fields_sets_values_preserves_body_and_is_idempotent(tmp_path):
                 ['company: "Acme"', "status: new", "score: 0",
                  'relevance_notes: ""'],
                 body="# Acme\n\nDetailed body text.\n")
-    path = v.read_leads()[0].path
+    path = v.read_leads()[0].ref
 
     v.update_fields(path, {"status": "dismiss", "score": "20"},
                     append_note="[triage] IC role.", note_tag="[triage]")
@@ -67,7 +67,7 @@ def test_normalize_all_statuses(tmp_path):
     statuses = sorted(n.status for n in v.read_leads())
     assert statuses == ["dismiss", "new", "new", "research"]
     # canonical form is unquoted, for both value-drift and quoting-drift notes
-    dismiss_raw = open(v.read_leads({"dismiss"})[0].path).read()
+    dismiss_raw = open(v.read_leads({"dismiss"})[0].ref).read()
     assert "status: dismiss" in dismiss_raw and 'status: "dismiss"' not in dismiss_raw
     d_raw = open(os.path.join(v.leads_dir, "D.md")).read()
     assert "status: new" in d_raw and 'status: "new"' not in d_raw

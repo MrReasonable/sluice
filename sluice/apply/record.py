@@ -24,5 +24,5 @@ def record(vault, note, cfg, *, ats=None, url=None, dry_run=False):
         literals = dict(fields)
         if url:
             literals["applied_url"] = f'"{url}"'   # URLs need quoting
-        vault.update_fields(note.path, literals)
+        vault.update_fields(note.ref, literals)
     return {"ok": True, "fields": fields}

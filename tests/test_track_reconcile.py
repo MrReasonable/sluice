@@ -13,7 +13,7 @@ def _vault_with(slug, status):
     leads = pathlib.Path(root, "Job Applications", "Job Leads"); leads.mkdir(parents=True)
     (leads / f"{slug}.md").write_text(f'---\ncompany: "X"\nrole: "Analyst"\nstatus: {status}\n---\n\nBODY\n')
     v = Vault(root)
-    note = [n for n in v.read_leads() if n.path.endswith(f"{slug}.md")][0]
+    note = [n for n in v.read_leads() if n.slug == slug][0]
     return v, {slug: note}, str(leads / f"{slug}.md")
 
 

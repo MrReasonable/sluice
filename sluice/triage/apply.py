@@ -13,7 +13,7 @@ _DECISION_STATUS = {"reject": "dismiss", "needs_review": "needs_review", "keep":
 
 def _guarded(note) -> bool:
     if _status.is_application_owned(note.status):
-        _log.info("skip %s: application-owned status %s", note.path, note.status)
+        _log.info("skip %s: application-owned status %s", note.ref, note.status)
         return True
     return False
 
@@ -24,7 +24,7 @@ def apply_classification(vault, note, decision, reason) -> str:
     new_status = _DECISION_STATUS.get(decision, "needs_review")
     tag = f"[triage {date.today().isoformat()}]"
     vault.update_fields(
-        note.path, {"status": new_status},
+        note.ref, {"status": new_status},
         append_note=f"{tag} {decision}: {reason}".strip(), note_tag=tag,
     )
     return "applied"
@@ -50,5 +50,5 @@ def apply_verdict(vault, note, verdict, dossier) -> str:
     if verdict.get("recommended_next_action"):
         parts.append("Next: " + verdict["recommended_next_action"])
     note_text = f"{tag} " + " ".join(p for p in parts if p)
-    vault.update_fields(note.path, fields, append_note=note_text.strip(), note_tag=tag)
+    vault.update_fields(note.ref, fields, append_note=note_text.strip(), note_tag=tag)
     return "applied"

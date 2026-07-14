@@ -3,7 +3,6 @@ decides type/confidence/lead-name; deterministic code resolves the lead name to 
 actual in-flight lead (refuse-on-ambiguity -> propose) and never lets the model
 invent a match."""
 import json
-import os
 import re
 from dataclasses import dataclass, field
 
@@ -28,7 +27,7 @@ class Event:
 
 
 def _lead_key(note):
-    return os.path.basename(note.path)[:-3] if note.path.endswith(".md") else note.path
+    return note.slug
 
 
 def build_prompt(msg, leads, cfg):
