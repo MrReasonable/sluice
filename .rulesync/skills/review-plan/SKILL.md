@@ -114,7 +114,9 @@ and human-gated; `CLAUDE.md`, `AGENTS.md` and `.claude/` are generated from it a
 
 ```bash
 plan_slug=$(basename "$plan_path" .md)
-findings_dir="${RUNNER_TEMP:-$HOME/.cache/sluice}/review-plan/$plan_slug"
+# Per-RUN, not per-plan: a re-run would otherwise aggregate the previous run's findings.
+run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+findings_dir="${RUNNER_TEMP:-$HOME/.cache/sluice}/review-plan/$plan_slug/$run_id"
 mkdir -p "$findings_dir/findings" "$findings_dir/evidence"
 ```
 
