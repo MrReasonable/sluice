@@ -19,6 +19,12 @@ reviews:
   auto_review:
     enabled: true
     drafts: false
+    # Re-running the review on EVERY push is what burns the plan's review quota: a
+    # 49-file refactor pushed six times is six full reviews of the same PR, and it is
+    # also exactly what usage-based billing charges per file for. Review on open and
+    # on demand (`@coderabbitai review`) instead -- which is what you actually want:
+    # reviewed when the PR is ready, not while it is still being iterated on.
+    auto_incremental_review: false
     base_branches:
       - main
   path_instructions:
