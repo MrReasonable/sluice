@@ -21,10 +21,20 @@ from sluice.renderers import register
 
 # Deliberately plain. The CV's content is gated; its typography is not the gate's problem,
 # and a heavyweight default stylesheet here would silently change every operator's layout.
+# The CV text is wrapped in <pre>, and WeasyPrint's user-agent stylesheet declares
+# `pre { white-space: pre; font-family: monospace }` DIRECTLY on the element -- a direct UA
+# declaration beats a value inherited from `body`, so wrapping and the intended font have to
+# be set on `pre` itself, not on `body`. Without `white-space: pre-wrap` a bullet longer
+# than the text column overflows the page box and is silently clipped in the PDF an employer
+# sees (print media has no scrollbar); `overflow-wrap: anywhere` breaks a single over-long
+# token such as a URL. `font-*: inherit` pulls the body font back onto the <pre> so the
+# DejaVu Sans declaration actually reaches the text instead of being dead.
 _CSS = """
 @page { size: A4; margin: 18mm 16mm; }
 body { font-family: "DejaVu Sans", "Helvetica", sans-serif; font-size: 10.5pt;
-       line-height: 1.35; white-space: pre-wrap; }
+       line-height: 1.35; }
+pre { font-family: inherit; font-size: inherit; line-height: inherit;
+      white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
 """
 
 
