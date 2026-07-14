@@ -8,9 +8,10 @@
 # search; set `searches` to run your own. Entries are [label, url, {params}?] -
 # the optional params tag the resulting leads (e.g. {job_type: perm}). This is
 # where your personal search list lives, so keep this file out of any public repo.
-# Geography is personal, so nothing ships in code: an unset `locations` expresses no
-# preference. The value below is an illustrative placeholder, not a default.
-locations: [Remote]   # illustrative; set your own (unset = no geographic preference)
+# Geography is personal, so nothing ships in code, and nothing ships here either: this
+# file is COPIED, so an active `locations: [Remote]` would hand every copier the very
+# preference the code default just stopped expressing. Unset = no geographic preference.
+# locations: [Remote]   # <- uncomment and set YOUR OWN
 
 # ── adapter seams ────────────────────────────────────────────────────────────
 # Which implementation fills each seam. Selection is by NAME; an unknown name raises at

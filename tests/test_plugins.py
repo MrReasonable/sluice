@@ -36,6 +36,23 @@ def test_store_is_resolved_from_config_by_name(tmp_path, monkeypatch):
     assert store.read_leads() == []          # a real, working vault store
 
 
+def test_store_factory_honours_a_non_default_baseline_rel(tmp_path, monkeypatch):
+    """`baseline_rel` moved to the root Config specifically so the STORE can honour it; the
+    factory wires it through with `Vault(baseline_rel=config.baseline_rel)`. Nothing else
+    covers that wiring -- the conformance suite writes and reads the DEFAULT `My CV/CV.md`,
+    so a factory that hardcoded the default and ignored `config.baseline_rel` passes every
+    conformance test. The consequence of that regression is the exact bug the move exists to
+    prevent: a user who points at a curated baseline silently gets a CV composed from the
+    stale default, with the fabrication gate green. Assert the configured path wins.
+    """
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    store = Sluice(Config(baseline_rel="My CV/Curated.md")).store()
+    store.write_document("My CV/Curated.md", "CURATED")
+    store.write_document("My CV/CV.md", "STALE DEFAULT")
+    assert store.read_baseline() == "CURATED", \
+        "the store read the default baseline, not the configured one: stale-CV, gate green"
+
+
 def test_adapters_are_resolved_lazily(monkeypatch):
     """Constructing Sluice must not construct a browser, a store or a backend.
 
