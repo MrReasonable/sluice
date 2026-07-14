@@ -34,6 +34,20 @@ class SourceConfig:
 @dataclass
 class Config:
     sources: dict = field(default_factory=dict)  # id -> SourceConfig
+    # Which implementation fills each adapter seam. Selection is by NAME, and an unknown
+    # name raises at construction listing the valid ones -- it never falls through to a
+    # default. For the store seam especially, a quiet wrong default means writing the
+    # user's leads somewhere they did not ask for.
+    store: str = "vault"
+    fetcher: str = "camofox"
+    # Where the store keeps the baseline CV. A STORE location, so it lives here: once the
+    # store is resolved from the root Config, a `cv.baseline_rel` could not reach the store
+    # that has to honour it. It used to work only because cv/engine.py passed it down by
+    # hand (`vault.read_baseline(cvcfg.baseline_rel)`), which is the coupling this seam
+    # exists to remove. Moving it silently would have been the worse bug -- a user pointing
+    # at a curated baseline would get a stale one, with the fabrication gate still green --
+    # so load_cv_config RAISES on the old key rather than dropping it.
+    baseline_rel: str = "My CV/CV.md"
     locations: list = field(default_factory=lambda: list(_DEFAULT_LOCATIONS))
     notify: dict = field(default_factory=dict)
     # Coarse ingest title filter. Personal, so empty by default: an unconfigured
@@ -79,5 +93,8 @@ def load_config(path: str | None = None) -> Config:
         notify["telegram"] = tele
 
     return Config(sources=sources, locations=locations, notify=notify,
+                  store=str(data.get("store") or "vault"),
+                  baseline_rel=str(data.get("baseline_rel") or "My CV/CV.md"),
+                  fetcher=str(data.get("fetcher") or "camofox"),
                   relevance_keep=list(data.get("relevance_keep") or []),
                   relevance_drop=list(data.get("relevance_drop") or []))

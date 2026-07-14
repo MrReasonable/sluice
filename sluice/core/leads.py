@@ -50,4 +50,4 @@ def slug_matches(note, wanted: str) -> bool:
     import re
     hay = re.sub(r"[^a-z0-9]+", "-",
                  f"{note.fm.get('company','')}-{note.fm.get('role','')}".lower()).strip("-")
-    return wanted.lower() in hay or wanted.lower() in note.path.lower()
+    return wanted.lower() in hay or wanted.lower() in note.slug.lower()

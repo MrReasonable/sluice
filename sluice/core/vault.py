@@ -15,15 +15,16 @@ The engine's Lead model is source-agnostic (title, job_type); the vault schema's
 """
 import os
 import re
-from dataclasses import dataclass
 from datetime import date
 
 from sluice.core import status as _status
 from sluice.core.leads import Lead, _norm_url
+from sluice.core.protocols import LeadNote
 
 _LEADS_SUBDIR = os.path.join("Job Applications", "Job Leads")
 _EXP_SUBDIR = os.path.join("Job Applications", "Experience Library")
 _MYCV_BASELINE = os.path.join("My CV", "CV.md")
+_CRITERIA_RELPATH = os.path.join("Job Applications", "Judging Profile.md")
 _DEFAULT_VAULT = "./vault"
 
 # Frontmatter is the `---`-fenced block at the very top of a note. Capture its
@@ -58,20 +59,25 @@ def _parse_fm_spaced(inner: str | None) -> dict:
     return out
 
 
-@dataclass
-class VaultNote:
-    """One lead note read back from the vault: its path, parsed frontmatter, body,
-    and normalized status. Triage consumes these; the sink still deals in Leads."""
-    path: str
-    fm: dict
-    body: str
-    status: str
+# The store contract's note type. `VaultNote` survives as an alias because this module
+# is the vault's own, but the type the SEAM speaks is LeadNote: `ref` is an opaque
+# handle (a path here, a row id in another store) and `slug` is issued by the store
+# rather than re-derived from a filename by four separate callers.
+VaultNote = LeadNote
 
 
 class Vault:
-    def __init__(self, dir: str | None = None):
+    def __init__(self, dir: str | None = None, *, baseline_rel: str = _MYCV_BASELINE):
         self.dir = dir or os.environ.get("VAULT_DIR", _DEFAULT_VAULT)
         self.leads_dir = os.path.join(self.dir, _LEADS_SUBDIR)
+        self.baseline_rel = baseline_rel
+
+    def _slug_for(self, path: str) -> str:
+        """The lead's stable identity. For a markdown vault that is the filename without
+        its extension -- exactly what apply/select.py, apply/engine.py, track/classify.py
+        and track/engine.py each used to recompute for themselves."""
+        name = os.path.basename(path)
+        return name[:-3] if name.endswith(".md") else name
 
     # ── paths ────────────────────────────────────────────────────────────────
     def _path_for(self, lead: Lead) -> str:
@@ -125,19 +131,20 @@ class Vault:
             st = _status.normalize(fm.get("status", ""))
             if want is not None and st not in want:
                 continue
-            out.append(VaultNote(path=path, fm=fm, body=body, status=st))
+            out.append(LeadNote(ref=path, slug=self._slug_for(path),
+                                fm=fm, body=body, status=st))
         return out
 
-    def update_fields(self, path: str, fields: dict, *,
+    def update_fields(self, ref, fields: dict, *,
                       append_note: str | None = None,
                       note_tag: str | None = None) -> None:
         """Surgically set frontmatter keys (values are literal YAML scalars) and
         leave the body byte-for-byte intact. Optionally append a guarded note to
         relevance_notes: skipped if note_tag is already present, so re-runs are
         idempotent. Callers control quoting (matching _render_new's literal lines)."""
-        inner, body = _split_frontmatter(_read(path))
+        inner, body = _split_frontmatter(_read(ref))
         if inner is None:
-            inner, body = "", _read(path)
+            inner, body = "", _read(ref)
         for key, literal in fields.items():
             inner = _set_fm(inner, key, literal)
         if append_note and note_tag:
@@ -145,18 +152,18 @@ class Vault:
             if note_tag not in current:
                 merged = (current + " " + append_note).strip()
                 inner = _set_fm(inner, "relevance_notes", f'"{merged}"')
-        _write(path, f"---\n{inner}\n---\n{body}")
+        _write(ref, f"---\n{inner}\n---\n{body}")
 
-    def append_body_section(self, path: str, tag: str, section_md: str) -> bool:
+    def append_body_section(self, ref, tag: str, section_md: str) -> bool:
         """Append a markdown section to the note body, idempotently: if `tag` is
         already anywhere in the file, do nothing and return False. Body/frontmatter
         otherwise untouched. Callers embed `tag` in `section_md` (e.g. an HTML
         comment) so re-runs are detected."""
-        text = _read(path)
+        text = _read(ref)
         if tag in text:
             return False
         sep = "" if text.endswith("\n") else "\n"
-        _write(path, f"{text}{sep}\n{section_md}\n")
+        _write(ref, f"{text}{sep}\n{section_md}\n")
         return True
 
     # ── cv sub-app reads/writes ──────────────────────────────────────────────
@@ -184,12 +191,48 @@ class Vault:
             out.append(entry)
         return out
 
-    def read_baseline(self, rel: str = _MYCV_BASELINE) -> str:
-        return _read(os.path.join(self.dir, rel))
+    def read_criteria(self) -> str:
+        """The user's judging criteria, from their editable source of truth. Returns ""
+        when unset; the caller falls back to the shipped (opinion-free) default.
 
-    def set_tailored_cv(self, path: str, value: str) -> None:
+        This was `build_system_prompt(vault.dir)`: triage reached THROUGH the store to a
+        filesystem path. `.dir` is not on the Store contract and a SQLite store has none,
+        so a second store would have AttributeError'd on the judge's critical path.
+        """
+        try:
+            return _read(os.path.join(self.dir, _CRITERIA_RELPATH))
+        except OSError:
+            return ""
+
+    def write_document(self, rel: str, text: str) -> str:
+        """Write a store-managed document (the rejected-leads digest). Returns an opaque
+        handle. Also formerly an os.path.join onto `vault.dir`.
+
+        `rel` must stay INSIDE the store. An absolute path makes os.path.join discard
+        self.dir entirely, and "../" walks out -- either would let the one wholesale-write
+        primitive on a never-clobber contract scribble anywhere on the disk, including over
+        `My CV/CV.md`, which is the fabrication gate's ground truth. Not currently
+        reachable (the only caller passes a config constant), which is exactly when to
+        close it.
+        """
+        # realpath, not abspath: a symlink INSIDE the store (link -> /etc) would otherwise
+        # satisfy commonpath and escape anyway.
+        root = os.path.realpath(self.dir)
+        path = os.path.realpath(os.path.join(root, rel))
+        if os.path.isabs(rel) or os.path.commonpath([root, path]) != root:
+            raise ValueError(f"write_document: '{rel}' escapes the store root")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        _write(path, text)
+        return path
+
+    def read_baseline(self) -> str:
+        """Where the baseline CV lives is the store's business (configured on the
+        store), not a path a caller passes in."""
+        return _read(os.path.join(self.dir, self.baseline_rel))
+
+    def set_tailored_cv(self, ref, value: str) -> None:
         """Additive: set the tailored_cv frontmatter field, body byte-for-byte intact."""
-        self.update_fields(path, {"tailored_cv": value})
+        self.update_fields(ref, {"tailored_cv": value})
 
     def normalize_all_statuses(self, dry_run: bool = False) -> dict:
         """Canonicalize every lead note's status: fix value drift (dismissed ->
@@ -200,7 +243,7 @@ class Vault:
         never auto-guessed. Body untouched; unknown values reported."""
         summary = {"changed": 0, "unchanged": 0, "unknown": [], "conflicts": []}
         for note in self.read_leads():
-            inner, body = _split_frontmatter(_read(note.path))
+            inner, body = _split_frontmatter(_read(note.ref))
             if inner is None:
                 summary["unchanged"] += 1
                 continue
@@ -208,7 +251,7 @@ class Vault:
             norms = [_status.normalize(r.strip()) for r in raws]
             if len(set(norms)) > 1:  # conflicting duplicate statuses -> hands off
                 summary["conflicts"].append(
-                    (os.path.basename(note.path), sorted(set(norms))))
+                    (os.path.basename(note.ref), sorted(set(norms))))
                 continue
             canonical = norms[0] if norms else ""
             if not _status.is_canonical(canonical):
@@ -221,7 +264,7 @@ class Vault:
             else:
                 summary["changed"] += 1
                 if not dry_run:
-                    _write(note.path,
+                    _write(note.ref,
                            f"---\n{_collapse_status_lines(inner, canonical)}\n---\n{body}")
         return summary
 
@@ -230,6 +273,11 @@ class Vault:
         """Create a new note or bump last_seen on an existing one. Returns
         "created" | "updated"."""
         os.makedirs(self.leads_dir, exist_ok=True)
+        # The vault ensures its own Syncthing marker, on the WRITE path. This used to be
+        # a Store method cli.py called by hand, which leaked a Syncthing/Obsidian concept
+        # into a contract every other store would have had to pretend to implement. It
+        # belongs here and not in __init__: constructing a store must not touch the disk.
+        self.ensure_stfolder()
         path = self._path_for(lead)
         if os.path.exists(path):
             self._bump_last_seen(path, lead.last_seen or _today())

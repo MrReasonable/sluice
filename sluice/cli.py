@@ -118,9 +118,8 @@ def cmd_health(args, config) -> int:
 
 def cmd_run(args, config) -> int:
     # Imported here so offline commands (and their tests) never touch Camofox.
-    from sluice.core.camofox import Camofox
+    from sluice.core.app import Sluice
     from sluice.core.seendb import SeenDb
-    from sluice.core.vault import Vault
     from sluice.ingest.base import Ctx
     from sluice.ingest.sink import JsonSink, VaultSink
 
@@ -129,15 +128,16 @@ def cmd_run(args, config) -> int:
     if not srcs:
         _log.warning("no enabled sources selected")
         return 1
-    ctx = Ctx(camofox=Camofox(), config=config)
+    app = Sluice(config)
+    ctx = Ctx(camofox=app.fetcher(), config=config)
     seen = SeenDb()
     health = HealthStore(_health_path())
     if args.dry_run or args.sink == "json":
         sink = JsonSink(sys.stdout)  # dry-run never writes the vault or seen.db
     else:
-        vault = Vault()
-        vault.ensure_stfolder()
-        sink = VaultSink(vault, seen)
+        # The store ensures its own Syncthing marker on the write path now, so cli.py
+        # no longer reaches into a vault-specific method no other store could implement.
+        sink = VaultSink(app.store(), seen)
     report = engine_run(srcs, ctx, sink, seen, health)
     _print_report(report)
     if report.degraded:
@@ -146,11 +146,11 @@ def cmd_run(args, config) -> int:
 
 
 def cmd_test_source(args, config) -> int:
-    from sluice.core.camofox import Camofox
+    from sluice.core.app import Sluice
     from sluice.ingest.base import Ctx, searches_for
 
     src = registry.get(args.id)
-    ctx = Ctx(camofox=Camofox(), config=config)
+    ctx = Ctx(camofox=Sluice(config).fetcher(), config=config)
     search = searches_for(src, config)[0]  # honour a configured override, else built-in
     raw = src.fetch(ctx, search)
     if args.raw:  # print ONLY the raw payload, for redirecting into a golden fixture
@@ -185,8 +185,8 @@ def _format_degraded(report) -> str:
 
 # ── triage ───────────────────────────────────────────────────────────────────
 def cmd_triage_normalize(args, config) -> int:
-    from sluice.core.vault import Vault
-    summary = Vault().normalize_all_statuses(dry_run=args.dry_run)
+    from sluice.core.app import Sluice
+    summary = Sluice(config).store().normalize_all_statuses(dry_run=args.dry_run)
     print(f"status normalize: changed={summary['changed']} "
           f"unchanged={summary['unchanged']} "
           f"conflicts={summary.get('conflicts', [])} "
@@ -196,19 +196,20 @@ def cmd_triage_normalize(args, config) -> int:
 
 
 def cmd_triage_run(args, config) -> int:
-    from sluice.core.vault import Vault
+    from sluice.core.app import Sluice
     from sluice.triage.audit import AuditLog
     from sluice.triage.config import load_triage_config
     from sluice.core.dossier import DossierCache
     from sluice.triage.engine import run as triage_run
 
     tcfg = load_triage_config()
-    vault = Vault()
+    app = Sluice(config)
+    vault = app.store()
     audit = AuditLog(_audit_path())
     # args.backend was parsed but never forwarded before, so triage's --backend was
     # a dead flag: every run silently got "auto" regardless of what was asked for.
     backend = None if args.no_llm else _build_backend(tcfg, args.backend)
-    cache = DossierCache(_dossier_dir(), tcfg.ttl_days, fetcher=_dossier_fetcher())
+    cache = DossierCache(_dossier_dir(), tcfg.ttl_days, fetcher=_dossier_fetcher(app))
     statuses = tuple(s.strip() for s in (args.status or "new,research").split(",") if s.strip())
     report = triage_run(vault, tcfg, backend, cache, audit,
                         statuses=statuses, limit=args.limit,
@@ -324,11 +325,11 @@ def _build_backend(tcfg, backend_choice="auto"):
         fallback_name=tcfg.fallback_backend, fallback_model=tcfg.cheap_model)
 
 
-def _dossier_fetcher():
-    """Camofox-backed JD enrichment. Camofox is constructed lazily on the first
-    cache miss, so a --no-llm run or a fully-cached run never touches it. Text is
-    read via evaluate(document.body.innerText) - the same {"result": ...} shape the
-    ingest sources use - rather than guessing the snapshot payload key."""
+def _dossier_fetcher(app):
+    """Fetcher-backed JD enrichment. The fetcher is resolved lazily on the first cache
+    miss, so a --no-llm run or a fully-cached run never opens a browser. Text is read via
+    evaluate(document.body.innerText) - the same {"result": ...} shape the ingest sources
+    use - rather than guessing the snapshot payload key."""
     cam = {}
 
     def fetch(lead: dict) -> dict:
@@ -336,8 +337,7 @@ def _dossier_fetcher():
         url = lead.get("url")
         if url:
             if "client" not in cam:
-                from sluice.core.camofox import Camofox
-                cam["client"] = Camofox()
+                cam["client"] = app.fetcher()
             c = cam["client"]
             tid = c.create_tab(url)
             if tid:
@@ -359,20 +359,26 @@ def _build_compose_backend(cvcfg, backend_choice="auto"):
 
 
 def cmd_cv_run(args, config) -> int:
+    from sluice.core.app import Sluice
     from sluice.core.dossier import DossierCache
-    from sluice.core.vault import Vault
     from sluice.cv.config import load_cv_config
     from sluice.cv.engine import run_batch, run_one
 
     cvcfg = load_cv_config()
     if args.no_serve:
         cvcfg.served_dir = ""  # engine still renders; serve is skipped when dir is empty
-    vault = Vault()
+    app = Sluice(config)
+    vault = app.store()
+    # Resolved BEFORE any LLM spend: a missing render script is a config error and must
+    # surface at construction, not after a CV has been composed and gated. But a dry run
+    # never renders, so it must not require a renderer at all -- resolving eagerly there
+    # broke the one path whose whole point is to cost nothing and change nothing.
+    renderer = None if args.dry_run else app.renderer(cvcfg)
     backend = _build_compose_backend(cvcfg, args.backend)
-    cache = DossierCache(cvcfg.dossier_dir, cvcfg.ttl_days, fetcher=_dossier_fetcher())
+    cache = DossierCache(cvcfg.dossier_dir, cvcfg.ttl_days, fetcher=_dossier_fetcher(app))
 
     if args.all_shortlist:
-        results = run_batch(vault, cvcfg, backend, cache,
+        results = run_batch(vault, cvcfg, backend, cache, renderer=renderer,
                             limit=args.limit, dry_run=args.dry_run)
     else:
         notes = [n for n in vault.read_leads({"shortlist"})
@@ -380,7 +386,8 @@ def cmd_cv_run(args, config) -> int:
         if not notes:
             print(f"cv: no shortlist lead matching '{args.lead}'", file=sys.stderr)
             return 1
-        results = [run_one(notes[0], vault, cvcfg, backend, cache, dry_run=args.dry_run)]
+        results = [run_one(notes[0], vault, cvcfg, backend, cache,
+                           renderer=renderer, dry_run=args.dry_run)]
 
     for r in results:
         print(f"cv: {r.status} {r.lead} served={r.served} "
@@ -396,12 +403,12 @@ def cmd_cv_run(args, config) -> int:
 
 # ── apply ────────────────────────────────────────────────────────────────────
 def cmd_apply_prep(args, config) -> int:
-    from sluice.core.vault import Vault
+    from sluice.core.app import Sluice
     from sluice.apply.config import load_apply_config
     from sluice.apply import engine, packet
 
     cfg = load_apply_config()
-    vault = Vault()
+    vault = Sluice(config).store()
     if args.all_shortlist:
         results = engine.preview_all(vault, cfg, limit=args.limit)
         for r in results:
@@ -432,12 +439,12 @@ def cmd_apply_prep(args, config) -> int:
 
 
 def cmd_apply_record(args, config) -> int:
-    from sluice.core.vault import Vault
+    from sluice.core.app import Sluice
     from sluice.apply.config import load_apply_config
     from sluice.apply import engine
 
     cfg = load_apply_config()
-    out = engine.record_one(Vault(), cfg, args.lead,
+    out = engine.record_one(Sluice(config).store(), cfg, args.lead,
                             ats=args.ats, url=args.url, dry_run=args.dry_run)
     if out["ok"]:
         f = out["fields"]
@@ -491,7 +498,7 @@ def _save_lastrun(path, iso):
 
 def cmd_track_run(args, config) -> int:
     from datetime import datetime, timezone
-    from sluice.core.vault import Vault
+    from sluice.core.app import Sluice
     from sluice.track.config import load_track_config
     from sluice.track.engine import run
     from sluice.track.google_client import RealGoogleClient
@@ -503,7 +510,7 @@ def cmd_track_run(args, config) -> int:
     client = RealGoogleClient(tcfg.token_path)
     backend = _track_backend(tcfg, args.backend)
     now_iso = datetime.now(timezone.utc).isoformat()
-    rep = run(Vault(), tcfg, client, backend, seen=seen, now_iso=now_iso,
+    rep = run(Sluice(config).store(), tcfg, client, backend, seen=seen, now_iso=now_iso,
               since_iso=since_iso, dry_run=args.dry_run)
     if not args.dry_run:
         _save_seen(tcfg.seen_db, seen)
@@ -521,11 +528,12 @@ def cmd_track_run(args, config) -> int:
 
 
 def cmd_track_confirm(args, config) -> int:
-    from sluice.core.vault import Vault
+    from sluice.core.app import Sluice
     from sluice.track.config import load_track_config
     from sluice.track.engine import confirm
 
-    out = confirm(Vault(), load_track_config(), args.lead, args.to, when=args.when, dry_run=args.dry_run)
+    out = confirm(Sluice(config).store(), load_track_config(), args.lead, args.to,
+                  when=args.when, dry_run=args.dry_run)
     if out["ok"]:
         print(f"track-confirm: {args.lead} {out['from']} -> {out['to']}", file=sys.stderr)
         return 0

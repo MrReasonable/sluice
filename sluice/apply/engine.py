@@ -19,8 +19,7 @@ class PrepResult:
 
 
 def _label(note):
-    import os
-    return os.path.basename(note.path)[:-3] if note.path.endswith(".md") else note.path
+    return note.slug
 
 
 def prep_one(vault, cfg, slug):
