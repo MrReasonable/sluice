@@ -12,7 +12,13 @@ try:
 except ImportError:  # pragma: no cover - yaml is a declared dependency
     yaml = None
 
-_DEFAULT_LOCATIONS = ["Remote"]
+# Geography is a personal preference, so the code ships with none. This was
+# ["Remote"], which is the same shape as the bug 672ad2a fixed in triage: a geo
+# preference baked into shipped source. It survived here because nothing reads
+# `Config.locations` yet -- which made it a loaded gun rather than a live bug, since
+# the first consumer to wire it into a search or a gate would have inherited a
+# stranger's "remote only" and silently binned every located job.
+_DEFAULT_LOCATIONS: list = []
 
 
 @dataclass
