@@ -7,7 +7,10 @@ def test_defaults_when_no_file(monkeypatch):
     monkeypatch.delenv("SLUICE_LOCATIONS", raising=False)
     monkeypatch.delenv("SLUICE_CONFIG", raising=False)
     cfg = load_config(None)
-    assert cfg.locations == ["Remote"]
+    # Empty, not ["Remote"]: geography is a personal preference and none ships in
+    # code. This assertion used to PIN the non-neutral default, so the next person to
+    # neutralise it would have seen a red test and reverted the fix.
+    assert cfg.locations == []
     assert cfg.source("anything").enabled is True
     assert cfg.source("anything").tuning == {}
 

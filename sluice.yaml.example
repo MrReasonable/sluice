@@ -8,7 +8,10 @@
 # search; set `searches` to run your own. Entries are [label, url, {params}?] -
 # the optional params tag the resulting leads (e.g. {job_type: perm}). This is
 # where your personal search list lives, so keep this file out of any public repo.
-locations: [Remote]
+# Geography is personal, so nothing ships in code, and nothing ships here either: this
+# file is COPIED, so an active `locations: [Remote]` would hand every copier the very
+# preference the code default just stopped expressing. Unset = no geographic preference.
+# locations: [Remote]   # <- uncomment and set YOUR OWN
 
 # Coarse ingest title filter, applied before dedup and long before any LLM call.
 # Personal, so empty by default (an unconfigured gate passes everything through).

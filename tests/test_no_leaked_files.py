@@ -47,14 +47,20 @@ def test_no_generated_or_personal_artefact_is_tracked():
     )
 
 
-@pytest.mark.parametrize("marker", ["/Users/", "/home/"])
+@pytest.mark.parametrize("marker", [r"/Users/[a-z]", r"/home/[a-z]"])
 def test_no_absolute_home_path_is_tracked_in_source_or_config(marker):
-    """An absolute home path names a person and their machine. This repo promises neither."""
+    """An absolute home path names a person and their machine. This repo promises neither.
+
+    The pattern requires a NAME after the slash, not a bare "/Users/". That distinction is
+    load-bearing: the neutrality-reviewer agent definition legitimately lists `/Users/` and
+    `/home/` among the patterns it hunts for, and a detector must be allowed to name what it
+    detects. `/Users/` is a pattern; `/Users/someone` is a leak.
+    """
     out = subprocess.run(
-        ["git", "grep", "-l", "-I", "--fixed-strings", marker, "--",
+        ["git", "grep", "-l", "-I", "-E", marker, "--",
          "sluice", "tests", "*.md", "*.yaml", "*.yml", "*.toml", ".gitignore"],
         cwd=REPO, capture_output=True, text=True, timeout=30)
     hits = [f for f in out.stdout.splitlines()
             # this file necessarily contains the strings it is searching for
             if not f.endswith("test_no_leaked_files.py")]
-    assert not hits, f"absolute home path {marker!r} found in tracked files: {hits}"
+    assert not hits, f"absolute home path matching {marker!r} in tracked files: {hits}"
