@@ -187,8 +187,11 @@ echo "Unresolved inline threads: $total_unresolved"
 These are comments CodeRabbit cannot post inline because the code is outside the PR diff. They appear **only in the review body**, not as threads.
 
 ```bash
-LATEST_CR_REVIEW_ID=$(gh api --paginate "repos/$repo_full/pulls/$PR/reviews" \
-  --jq '[.[] | select(.user.login | test("coderabbit"; "i"))] | last | .id')
+# --paginate runs the --jq filter ONCE PER PAGE, so `| last` is last-of-page, not last-of-all:
+# with >1 page this returned several ids and the follow-up fetch could pull the WRONG review.
+# --slurp merges the pages into one array first, then pick the newest once.
+LATEST_CR_REVIEW_ID=$(gh api --paginate --slurp "repos/$repo_full/pulls/$PR/reviews" \
+  --jq 'add | map(select(.user.login | test("coderabbit"; "i"))) | sort_by(.submitted_at) | last | .id')
 
 if [ -n "$LATEST_CR_REVIEW_ID" ] && [ "$LATEST_CR_REVIEW_ID" != "null" ]; then
   gh api "repos/$repo_full/pulls/$PR/reviews/$LATEST_CR_REVIEW_ID" --jq .body \
@@ -305,7 +308,22 @@ If a comment genuinely requires a NEW commit rather than a fixup (rare: it's new
 MrReasonable <4990954+MrReasonable@users.noreply.github.com>
 ```
 
-## Step 6: Reply to skipped / rejected items: ONE reply per issue
+## Step 6: Reply to EVERY handled item: ONE reply per issue
+
+**Applied fixes get a reply too, before Step 9 resolves them.** The previous version replied only
+to `rejected` / `deferred` items, so a valid finding could be silently resolved with no reply and
+no link to the fixup that fixed it -- the reviewer (and the next human to read the thread) has no
+evidence the fix exists. Resolving without replying is how a review thread becomes a lie.
+
+For an `applied` / `addressed` item, reply with the fixup SHA:
+
+```bash
+gh api graphql -f query='mutation($t:ID!,$b:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$t,body:$b}){clientMutationId}}' \
+  -f t="$thread_id" -f b="Fixed in \`$(git rev-parse --short HEAD)\`. <one line on what changed and why>"
+```
+
+Only then may Step 9 resolve it.
+
 
 **Every declined or rejected actionable comment MUST get its own individual reply.** Do NOT batch multiple rejections into a single comment. CodeRabbit processes replies per-thread, and a bulk comment teaches it nothing. (Praise, walkthrough summaries, and non-actionable items don't require a reply.)
 

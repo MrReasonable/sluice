@@ -332,36 +332,44 @@ If `gh run watch` exits non-zero, the new run failed, so go back to Step 3 with 
 When all 4 merge-gate conditions hold:
 
 ```bash
-# Sanity-check: the branch should rebase cleanly onto main,
-# i.e. nothing landed in main since we last rebased.
-git fetch origin main
-if ! git rebase origin/main; then
-  # Rebase failed (conflict, broken history, and so on). Don't proceed.
+# The branch must rebase cleanly onto the PR's OWN base -- not a hard-coded `main`. This
+# skill runs on arbitrary PRs, and $base was already captured in Step 1.
+git fetch origin "$base"
+if ! git rebase "origin/$base"; then
   git rebase --abort
-  echo "rebase onto origin/main failed, escalating to user" >&2
+  echo "rebase onto origin/$base failed, escalating to user" >&2
   echo "  conflicting files (pre-abort):"
   git diff --name-only --diff-filter=U 2>/dev/null || true
   exit 2
 fi
 
-# Re-run the local bar after the rebase. It costs ~2 seconds, and it catches
-# the case where main moved under you and your branch is now semantically
-# stale even though it merged textually.
+# Re-run the local bar after the rebase. ~2 seconds, and it catches the case where the base
+# moved under you and the branch is now semantically stale though it merged textually.
 ruff check sluice tests && python -m pytest || {
-  echo "local gates fail after rebase onto origin/main, escalating" >&2
+  echo "local gates fail after rebase onto origin/$base, escalating" >&2
   exit 2
 }
 
-# Force-push the rebased branch first. GitHub requires the merge ref
-# to match what is about to be merged.
 if ! git push --force-with-lease; then
-  echo "force-push-with-lease failed, likely someone pushed since our last fetch; escalating" >&2
+  echo "force-push-with-lease failed; someone pushed since our last fetch. Escalating" >&2
   exit 2
 fi
+```
 
-# Linear-history merge. GUARDED: GitHub rejects this if the approval gate (Case A
-# condition 5) is not satisfied on the current SHA, and an unguarded call would fall
-# through to the cleanup block below and force-delete the branch of an UNMERGED PR.
+**STOP. Do not merge here.** The rebase and force-push above CHANGED THE PR's SHA, and the
+`qa-gates` ruleset sets `dismiss_stale_reviews_on_push: true`. So that push just:
+
+- **dismissed the approving review** the loop had earned, and
+- **started fresh CI runs** on a SHA nothing has yet checked.
+
+Merging now attempts to merge a SHA with no approval and no completed CI. **Return to Step 3**
+and wait for all merge-gate conditions again on the NEW head SHA -- including a fresh
+approving review. Only when they hold on THAT SHA may you run:
+
+```bash
+# Linear-history merge. GUARDED: GitHub rejects this if the approval gate is not satisfied on
+# the current SHA, and an unguarded call would fall through to the cleanup block and
+# force-delete the branch of an UNMERGED PR.
 if ! gh pr merge "$PR" --rebase --delete-branch; then
   echo "merge rejected by GitHub (most likely: no approving review on the current SHA)" >&2
   echo "the PR is left intact and ready to merge; escalating" >&2
@@ -385,10 +393,17 @@ After merge:
 # server-side deleted by --delete-branch. Set PATH_TO_GREEN_KEEP_WORKTREE=1
 # in the env to preserve them (rare; useful only when you want to keep the
 # venv around for the next branch off the same feature area).
+# Determine whether this is the MAIN worktree BEFORE leaving it. Running
+# `git rev-parse --show-toplevel` after `cd ..` asks a different directory (or none), so the
+# comparison silently fell through to `git worktree remove` on the main worktree, which
+# refuses -- and the local branch could then never be deleted.
+is_main_worktree=0
+[ "$(git -C "$worktree_path" rev-parse --show-toplevel)" = "$(git -C "$worktree_path" rev-parse --git-common-dir | xargs dirname)" ] && is_main_worktree=1
+
 cd ..
 if [ "${PATH_TO_GREEN_KEEP_WORKTREE:-0}" = "1" ]; then
   echo "PATH_TO_GREEN_KEEP_WORKTREE=1 set, preserving $worktree_path and local branch $head_branch"
-elif [ "$worktree_path" = "$(git rev-parse --show-toplevel)" ]; then
+elif [ "$is_main_worktree" = "1" ]; then
   # sluice is normally worked in its MAIN worktree, not a linked one. `git worktree
   # remove` refuses the main worktree and `git branch -D` refuses a checked-out branch,
   # so both calls would fail noisily for no reason. Just step back to main.
