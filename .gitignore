@@ -27,3 +27,34 @@ dossiers/
 *_health.json
 *_disabled.json
 *.db
+
+# AI-tool configs are GENERATED from .rulesync/ via `rulesync generate`. The source of
+# truth is .rulesync/ and it IS tracked; everything below is a build artifact. Run
+#   npx rulesync@9.6.3 generate -t '*' -f '*'
+# after cloning to populate them locally.
+#
+# Every pattern is ROOT-ANCHORED, and the leading slash is load-bearing: a bare
+# `CLAUDE.md` matches at ANY depth and silently swallows the canonical source at
+# .rulesync/rules/CLAUDE.md, leaving git with no rules file to clone.
+/CLAUDE.md
+/AGENTS.md
+/GEMINI.md
+/.claude/
+/.mcp.json
+/.cursor/
+/.cursorrules
+/.github/copilot-instructions.md
+
+# Belt and braces: re-include the canonical source unconditionally. The `/**` is required --
+# a bare `!/.rulesync/` re-includes only the DIRECTORY and cannot rescue a file inside it.
+!/.rulesync/**
+
+# MemSearch runtime artefacts: session transcripts carrying absolute home paths, session
+# UUIDs and PIDs. Never in a public repo.
+#
+# Deliberately NOT root-anchored, unlike everything above. The anchoring above exists to
+# stop a bare `CLAUDE.md` swallowing the canonical source at .rulesync/rules/CLAUDE.md --
+# a collision that cannot happen here, since nothing legitimate is named .memsearch/. For
+# a directory that has already leaked personal data into this repo twice, catching it at
+# ANY depth is the safer default, and there is nothing for it to shadow.
+.memsearch/
