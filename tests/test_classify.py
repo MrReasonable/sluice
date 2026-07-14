@@ -214,3 +214,21 @@ def test_money_context_is_a_symbol_or_a_k_suffix(titles):
     assert _salary_ceiling("$120,000") == 120000
     assert _salary_ceiling("60k") == 60000          # the suffix IS the context
     assert _salary_ceiling("60000") is None         # bare digits are not money
+
+
+def test_a_single_symbol_range_reads_its_upper_bound(titles):
+    # Boards routinely write "£30,000-40,000" with ONE symbol. The upper bound then carries no
+    # money context of its own, so the ceiling read as 30,000 and a £35k floor REJECTED a role
+    # paying up to £40k -- fails-closed, the expensive direction. A bare number IS money when it
+    # is the tail of a range whose head was money.
+    from sluice.triage.classify import _salary_ceiling
+    assert _salary_ceiling("£30,000-40,000") == 40000
+    assert _salary_ceiling("£60k-80k") == 80000
+    assert _salary_ceiling("£60k to £80k") == 80000
+
+    # ...but a stray number that is NOT a range tail is still not money.
+    assert _salary_ceiling("£500/day, ref 60000") == 500
+
+    cfg = _cfg(titles)
+    cfg.perm_floor_gbp = 35_000
+    assert classify(L(titles, salary="£30,000-40,000"), cfg)[0] == "keep"

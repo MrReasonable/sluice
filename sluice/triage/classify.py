@@ -31,6 +31,13 @@ _MONEY_RE = re.compile(
     r"|(\d[\d,]*(?:\.\d+)?)\s*([kK])\b"           # 60k -- the suffix IS the context
 )
 
+# Boards routinely write a range with ONE symbol: "£30,000-40,000". The upper bound then
+# carries no money context of its own, so _MONEY_RE alone reads the ceiling as 30,000 and a
+# £35k floor REJECTS a role paying up to £40k -- fails-closed, the expensive direction. A
+# bare number is money when it is the tail of a range whose head was money.
+_RANGE_TAIL_RE = re.compile(
+    r"\s*(?:-|\u2013|\u2014|to)\s*(\d[\d,]*(?:\.\d+)?)\s*([kK])?\b", re.I)
+
 # Below these, a parse is not a real offer -- it is a mis-parse. Abstain rather than
 # reject: a wrong reject bins a lead the user never sees, the expensive direction.
 _MIN_CREDIBLE_DAY_RATE = 50
@@ -45,18 +52,29 @@ def _salary_amounts(s: str) -> list[int]:
     """
     if not s:
         return []
-    out: list[int] = []
-    for cur_raw, cur_k, k_raw, k_suffix in _MONEY_RE.findall(_PERCENT_RE.sub(" ", s)):
-        raw = cur_raw or k_raw
-        k_suffix = cur_k or k_suffix
+    def _to_int(raw: str, k: str) -> int | None:
         try:
             value = float(raw.replace(",", ""))
         except ValueError:  # pragma: no cover - regex only yields parseable numbers
-            continue
-        # round(), not int(): int() truncates a float product toward zero, and 1.15 is
-        # not exactly representable, so int(1.15 * 1000) is 1149. A rate sitting on a
-        # floor would flip keep->reject on representation error, not on the pay.
-        out.append(round(value * 1000) if k_suffix else int(value))
+            return None
+        # round(), not int(): int() truncates a float product toward zero, and 2.01 is not
+        # exactly representable, so int(2.01 * 1000) is 2009. A rate sitting on a floor
+        # would flip keep->reject on representation error, not on the pay.
+        return round(value * 1000) if k else int(value)
+
+    out: list[int] = []
+    text = _PERCENT_RE.sub(" ", s)
+    for m in _MONEY_RE.finditer(text):
+        cur_raw, cur_k, k_raw, k_suffix = m.groups()
+        v = _to_int(cur_raw or k_raw, cur_k or k_suffix)
+        if v is not None:
+            out.append(v)
+        # ...and the tail of a single-symbol range ("£30,000-40,000") is money too.
+        tail = _RANGE_TAIL_RE.match(text, m.end())
+        if tail:
+            tv = _to_int(tail.group(1), tail.group(2))
+            if tv is not None:
+                out.append(tv)
     return out
 
 
