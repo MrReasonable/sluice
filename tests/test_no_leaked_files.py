@@ -2,15 +2,23 @@
 
 This is a CI gate, not a rule, because the rule already existed and did not work.
 
-.memsearch/ has been committed to this public repository THREE times. Each time the
-.gitignore rule was present and correct. The rule was irrelevant: `.gitignore` only applies
-to files git is not ALREADY TRACKING. The file became tracked via a `git stash -u` taken on
-a branch whose .gitignore predated the rule; popping that stash restored it *already
-staged*, and from then on every `git add -A` carried it forward invisibly.
+`.memsearch/` (absolute home paths, session UUIDs) reached this public repository THREE
+times. The `.gitignore` rule was present and correct every time, and irrelevant every time:
+**gitignore only applies to files git is not ALREADY TRACKING.** The file became tracked via
+a `git stash -u` taken on a branch whose .gitignore predated the rule; popping that stash
+restored it *already staged*, and every `git add -A` then carried it past a rule that could
+no longer see it.
 
-So the defence cannot be a pattern in a file. It has to be an assertion that fails the
-build, on every PR, whatever route the file took into the index.
+So the defence is an assertion that fails the build, on every PR, whatever route a file took
+into the index.
+
+And it FAILS CLOSED. A guard that silently passes when its own subprocess errors is worse
+than no guard, because it manufactures confidence. CodeRabbit caught precisely that in the
+first version of this file: a `git ls-files` failure produced empty output, the comprehension
+found nothing, and CI went green having checked nothing at all -- the same fails-open class
+this repo spends its life engineering out, reproduced inside the test written to prevent it.
 """
+import re
 import subprocess
 from pathlib import Path
 
@@ -18,49 +26,99 @@ import pytest
 
 REPO = Path(__file__).parent.parent
 
-# Generated from .rulesync/ (rulesync generate), or runtime artefacts of local tooling.
-# None of them belong in git; some of them carry absolute home paths and session ids.
-FORBIDDEN_PREFIXES = (
-    ".memsearch/",   # MemSearch session transcripts: absolute home paths, session UUIDs
-    ".claude/",      # generated from .rulesync/
-    "CLAUDE.md",     # generated from .rulesync/rules/CLAUDE.md
+# Generated from .rulesync/ by `rulesync generate`, or runtime artefacts of local tooling.
+# Kept in step with .gitignore: a gate that guards fewer paths than the ignore file has a hole.
+FORBIDDEN_EXACT = (
+    "CLAUDE.md",
     "AGENTS.md",
     "GEMINI.md",
     ".mcp.json",
-    ".cursor/",
+    ".cursorrules",
+    ".github/copilot-instructions.md",
 )
+FORBIDDEN_PREFIXES = (".claude/", ".cursor/")
+# .memsearch may appear at ANY depth. Its .gitignore rule is deliberately unanchored -- for a
+# directory that has already leaked personal data three times, catching it anywhere is the
+# safer default, and nothing legitimate in this repo is named .memsearch.
+FORBIDDEN_COMPONENTS = (".memsearch",)
+
+# The first path component after the home prefix, whatever it is called. The first version of
+# this gate used `/Users/[a-z]`, which missed /Users/Alice and /home/2runner -- a personal path
+# walking straight through.
+_NAME = r"[^/\s'\"`,)\]]+"
+_HOME_PATH_RE = re.compile(r"/(?:Users|home)/" + _NAME)
 
 
-def _tracked_files() -> list[str]:
-    out = subprocess.run(["git", "ls-files"], cwd=REPO, capture_output=True, text=True,
-                         timeout=30)
-    return out.stdout.splitlines()
+def _git(*args: str, allow: tuple = (0,)) -> str:
+    """Run git and FAIL CLOSED. An unexpected exit code raises, rather than yielding the empty
+    output that would let this gate pass without having checked anything."""
+    proc = subprocess.run(["git", *args], cwd=REPO, capture_output=True, text=True, timeout=30)
+    if proc.returncode not in allow:
+        raise AssertionError(
+            f"git {' '.join(args)} failed ({proc.returncode}); the leak gate could not run and "
+            f"must NOT pass silently: {proc.stderr.strip()[:200]}"
+        )
+    return proc.stdout
+
+
+def _is_forbidden(path: str) -> bool:
+    if path in FORBIDDEN_EXACT:
+        return True
+    if any(path.startswith(p) for p in FORBIDDEN_PREFIXES):
+        return True
+    return any(part in FORBIDDEN_COMPONENTS for part in path.split("/"))
 
 
 def test_no_generated_or_personal_artefact_is_tracked():
-    tracked = _tracked_files()
-    leaked = [f for f in tracked if any(f.startswith(p) for p in FORBIDDEN_PREFIXES)]
+    tracked = _git("ls-files").splitlines()
+    assert tracked, "git ls-files returned nothing: the gate would be passing without checking"
+
+    leaked = sorted(f for f in tracked if _is_forbidden(f))
     assert not leaked, (
         f"{len(leaked)} generated/personal file(s) are TRACKED in a public repo: {leaked}\n"
-        f"gitignore does not help once a file is tracked. Remove it from the index:\n"
+        f"gitignore does not help once a file is tracked. Remove them from the index:\n"
         f"    git rm -r --cached {' '.join(leaked)}"
     )
 
 
-@pytest.mark.parametrize("marker", [r"/Users/[a-z]", r"/home/[a-z]"])
-def test_no_absolute_home_path_is_tracked_in_source_or_config(marker):
+@pytest.mark.parametrize("prefix", ["/Users/", "/home/"])
+def test_no_absolute_home_path_is_tracked_in_source_or_config(prefix):
     """An absolute home path names a person and their machine. This repo promises neither.
 
-    The pattern requires a NAME after the slash, not a bare "/Users/". That distinction is
-    load-bearing: the neutrality-reviewer agent definition legitimately lists `/Users/` and
-    `/home/` among the patterns it hunts for, and a detector must be allowed to name what it
-    detects. `/Users/` is a pattern; `/Users/someone` is a leak.
+    A NAME is required after the prefix, not a bare "/Users/": the neutrality-reviewer agent
+    definition legitimately lists `/Users/` and `/home/` among the patterns it hunts for, and a
+    detector must be allowed to name what it detects. `/Users/` is a pattern; `/Users/someone`
+    is a leak.
     """
-    out = subprocess.run(
-        ["git", "grep", "-l", "-I", "-E", marker, "--",
-         "sluice", "tests", "*.md", "*.yaml", "*.yml", "*.toml", ".gitignore"],
-        cwd=REPO, capture_output=True, text=True, timeout=30)
-    hits = [f for f in out.stdout.splitlines()
+    # git grep exits 1 for "no matches" -- the SUCCESS case here. Any other code means it failed
+    # to run, and must not be read as "clean".
+    out = _git("grep", "-l", "-I", "-E", re.escape(prefix) + _NAME, "--",
+               "sluice", "tests", "docs", "*.md", "*.yaml", "*.yml", "*.toml", ".gitignore",
+               allow=(0, 1))
+    hits = [f for f in out.splitlines()
             # this file necessarily contains the strings it is searching for
             if not f.endswith("test_no_leaked_files.py")]
-    assert not hits, f"absolute home path matching {marker!r} in tracked files: {hits}"
+    assert not hits, f"absolute home path under {prefix!r} in tracked files: {hits}"
+
+
+def test_the_gate_catches_real_shapes_and_spares_bare_prefixes():
+    """The gate's own regression test. It has already been wrong once: lowercase-ASCII only."""
+    for leak in ("/Users/iandominey/.claude/x.jsonl", "/Users/Alice/dev", "/home/2runner/work"):
+        assert _HOME_PATH_RE.search(leak), f"gate would MISS a real leak: {leak}"
+    for detector in ("`/Users/`", "`/home/`, `.local`, `ssh`"):
+        assert not _HOME_PATH_RE.search(detector), f"gate false-positives on a detector: {detector}"
+
+
+def test_the_gate_covers_every_path_gitignore_covers():
+    """A gate guarding fewer paths than .gitignore is a gate with a hole in it."""
+    ignored = (REPO / ".gitignore").read_text()
+    for path in FORBIDDEN_EXACT + FORBIDDEN_PREFIXES:
+        assert path.strip("/") in ignored, f"{path} is gated but NOT gitignored -- they must agree"
+    assert ".memsearch" in ignored
+
+
+def test_the_gate_fails_closed_when_git_fails():
+    """The bug CodeRabbit found in v1: a failing subprocess produced empty output, so the gate
+    passed having checked nothing."""
+    with pytest.raises(AssertionError, match="must NOT pass silently"):
+        _git("this-is-not-a-git-command")
