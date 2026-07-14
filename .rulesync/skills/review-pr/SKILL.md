@@ -43,12 +43,35 @@ applies them.
 ### Step 1: Determine scope
 
 ```bash
-gh pr view "$ARGUMENTS" --json number,headRefName,baseRefName,title
-git diff "origin/${base}...HEAD" --name-only > /tmp/sluice-changed-files.txt
+set -euo pipefail
+
+# `gh pr view ""` is NOT the same as `gh pr view` -- an empty argument is a lookup for a PR
+# named "", not a fall-back to the current branch. Build the argv conditionally.
+if [ -n "${ARGUMENTS:-}" ]; then
+  pr_json=$(gh pr view "$ARGUMENTS" --json number,url,headRefName,baseRefName,title)
+else
+  pr_json=$(gh pr view --json number,url,headRefName,baseRefName,title)
+fi
+
+# ...and ASSIGN what you just fetched. The previous version printed this JSON and then
+# referenced ${base} and ${pr_number}, which were never set: `origin/...HEAD` expanded to
+# `origin/...HEAD`, so the diff was silently wrong for every PR not based on the default.
+pr_number=$(jq -r .number <<<"$pr_json")
+pr_url=$(jq -r .url <<<"$pr_json")
+head=$(jq -r .headRefName <<<"$pr_json")
+base=$(jq -r .baseRefName <<<"$pr_json")
+title=$(jq -r .title <<<"$pr_json")
+[ -n "$base" ] && [ "$base" != "null" ] || { echo "could not resolve the PR base" >&2; exit 1; }
+
+git fetch -q origin "$base"
+# Per-run file: a shared /tmp path is clobbered by a concurrent /review-pr, which would hand
+# one PR's reviewers another PR's changed-file list.
+changed_files=$(mktemp -t sluice-changed-files.XXXXXX)
+git diff "origin/${base}...HEAD" --name-only > "$changed_files"
 ```
 
-If `$ARGUMENTS` is empty, use the current branch. Capture the PR number and URL, head and base
-branch, and the exact list of changed files.
+Every later step uses `$base`, `$pr_number`, `$changed_files` -- never a hard-coded `main` and
+never a fixed `/tmp` path.
 
 ### Step 2: Select reviewers
 
@@ -79,7 +102,10 @@ and a reviewer with nothing to say produces noise that buries the reviewers who 
 
 ```bash
 pr_number="${pr_number:-branch-$(git rev-parse --abbrev-ref HEAD)}"
-findings_dir="${RUNNER_TEMP:-$HOME/.cache/sluice}/review-pr/$pr_number"
+# Per-RUN, not per-PR. Keyed only by $pr_number, a re-run loads every JSON left behind by the
+# previous run and reports its findings as current -- so a fixed issue reappears forever.
+run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+findings_dir="${RUNNER_TEMP:-$HOME/.cache/sluice}/review-pr/$pr_number/$run_id"
 mkdir -p "$findings_dir/findings" "$findings_dir/evidence"
 ```
 

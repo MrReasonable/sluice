@@ -22,9 +22,11 @@ doing too much.
    than defaulting silently.
 3. **Scope discipline.** Does the diff do one thing? Unrelated refactoring, drive-by renames, and
    opportunistic reformatting bury the actual change and make the PR unreviewable. Say so.
-4. **Lazy imports in `cli.py`.** Heavy modules (Camofox, the vault, backends) are imported *inside*
-   command functions so offline commands and their tests never touch them. A new module-scope
-   import in `cli.py` is a finding.
+4. **Lazy imports in `cli.py`.** Three module families — **Camofox, the vault/store, and the
+   backends** — are imported *inside* command functions, so offline commands and their tests never
+   touch a browser, a vault or an LLM. Pulling any of those three to module scope is a finding.
+   This is NOT a blanket ban on module-scope imports: `cli.py` already imports the config, the
+   logger, the health store and the source registry at module scope, and that is correct.
 5. **Comments.** Sluice's comments explain *why* — the invariant upheld, the bug prevented, the
    trade-off taken. Several encode real incidents. A diff that strips them, or that adds comments
    restating what the next line does, is a finding in either direction.
