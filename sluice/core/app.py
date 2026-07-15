@@ -174,6 +174,26 @@ class Sluice:
         fallback = _make_fallback(fallback_name, fallback_model)
         return FallbackBackend(primary, fallback) if fallback else primary
 
+    def dossier_cache(self, dossier_dir, ttl_days):
+        """A DossierCache whose fetcher is resolved lazily on the first cache miss, so a
+        --no-llm or fully-cached run never opens a browser. JD text read via
+        evaluate(document.body.innerText) -- the same {"result": ...} shape ingest uses."""
+        from sluice.core.dossier import DossierCache
+        cam = {}
+        def fetch(lead: dict) -> dict:
+            md, url = "", lead.get("url")
+            if url:
+                if "client" not in cam:
+                    cam["client"] = self.fetcher()
+                c = cam["client"]
+                tid = c.create_tab(url)
+                if tid:
+                    res = c.evaluate(tid, "document.body.innerText")
+                    md = res.get("result") if isinstance(res, dict) else ""
+                    c.close_tab(tid)
+            return {"jd": {"markdown": md or ""}, "glassdoor": {}}
+        return DossierCache(dossier_dir, ttl_days, fetcher=fetch)
+
     # ── introspection ────────────────────────────────────────────────────────
     @staticmethod
     def available(seam: str) -> list:
