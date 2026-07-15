@@ -59,6 +59,15 @@ def test_primary_role_ignores_the_fallback(no_key):
     assert _b("primary").__class__.__name__ == "ClaudeMaxBackend"
 
 
+def test_primary_model_reaches_the_claude_max_backend():
+    # The deleted test_track_backend_wiring was the only test proving that
+    # primary_model lands on the constructed backend's .model attribute, not merely
+    # that it's passed as a kwarg to make_backend. Without this, _make_primary could
+    # silently drop or hardcode the model and nothing would fail.
+    be = _b("primary", primary_name="claude-max", primary_model="claude-sonnet-4-5")
+    assert be.model == "claude-sonnet-4-5"
+
+
 # ── fallback: strict, missing key is fatal ───────────────────────────────────
 
 def test_fallback_role_selects_the_configured_fallback(key):
