@@ -230,6 +230,42 @@ class Sluice:
             return {"jd": {"markdown": md or ""}, "glassdoor": {}}
         return DossierCache(dossier_dir, ttl_days, fetcher=fetch)
 
+    def ingest(self, sources, *, dry_run=False, json_sink=False, out=None):
+        """Run the ingest sub-app: fetch each given source, dedup/relevance-gate
+        through `ingest.engine.run`, and write survivors to a sink. Which sources
+        to run (the enabled/disabled overlay, `--source`/`--all`) stays in
+        cli.py's `_selected` -- this method just executes the list it is handed.
+
+        `dry_run` OR `json_sink` both route to `JsonSink`, never `VaultSink`: a
+        dry run's whole point is to change nothing on disk, and `--sink json` is
+        an explicit request to skip the vault -- so both must skip the store and
+        seen.db entirely rather than constructing them and then merely not
+        calling write(). `out` lets a caller (a future surface, or a test) capture
+        the JSON lines somewhere other than stdout; it defaults to stdout because
+        that is what `sluice ingest run --dry-run`/`--sink json` has always done."""
+        import sys
+        from sluice.core.health import HealthStore
+        from sluice.core.seendb import SeenDb
+        from sluice.ingest.base import Ctx
+        from sluice.ingest.engine import run as _ingest_run
+        from sluice.ingest.sink import JsonSink, VaultSink
+
+        ctx = Ctx(camofox=self.fetcher(), config=self.config)
+        seen = SeenDb()
+        health = HealthStore(os.environ.get("SLUICE_HEALTH", "./sluice_health.json"))
+        if dry_run or json_sink:
+            sink = JsonSink(out or sys.stdout)
+        else:
+            sink = VaultSink(self.store(), seen)
+        return _ingest_run(sources, ctx, sink, seen, health)
+
+    def normalize_statuses(self, *, dry_run=False) -> dict:
+        """Canonicalize every lead note's status field -- fix value drift and
+        quoting, collapse duplicate status lines -- via the store. Thin
+        passthrough to `Store.normalize_all_statuses`; the CLI just formats the
+        returned summary dict for `sluice triage normalize-status`."""
+        return self.store().normalize_all_statuses(dry_run=dry_run)
+
     def triage(self, *, statuses=("new", "research"), limit=None, dry_run=False,
                no_llm=False, backend_role="auto"):
         """Run the triage sub-app end to end: classify, dossier-enrich the kept leads,
