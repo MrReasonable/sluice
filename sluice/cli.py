@@ -5,6 +5,7 @@
   sluice ingest test-source ID [--raw]      run ONE source live (fixture capture)
   sluice ingest enable|disable ID           persist an operator on/off override
   sluice health                             per-source baseline + retire state
+  sluice doctor [--offline] [--strict]      preflight configured backends (live round-trip)
 
 `run` and `test-source` drive the live Camofox session; the rest are offline.
 enable/disable persist to a small JSON overlay (SLUICE_DISABLED) so an operator
@@ -300,6 +301,33 @@ def cmd_track_confirm(args, config) -> int:
     return 1
 
 
+# ── doctor ────────────────────────────────────────────────────────────────────
+def cmd_doctor(args, config) -> int:
+    from sluice.core.app import Sluice
+
+    report = Sluice(config).doctor(offline=args.offline)
+    _print_doctor(report, offline=args.offline)
+    return report.exit_code(strict=args.strict)
+
+
+def _print_doctor(report, *, offline) -> None:
+    """One line per distinct backend, annotated with the sub-app roles it serves.
+    Written to stdout, like `health`/`list-sources` -- doctor's output IS the
+    answer the operator asked for, not a run side-report."""
+    from sluice.core.doctor import DEAD, DEGRADED, OK, format_roles
+
+    print(f"sluice doctor  ({'offline' if offline else 'live round-trip'})\n")
+    for c in report.checks:
+        t = c.target
+        elapsed = f"  ({c.elapsed:.1f}s)" if c.elapsed is not None else ""
+        print(f"{t.provider:11} {t.model:20} {c.state:9} "
+              f"{format_roles(t.uses)}  {c.detail}{elapsed}")
+    n_ok = sum(1 for c in report.checks if c.state == OK)
+    n_deg = sum(1 for c in report.checks if c.state == DEGRADED)
+    n_dead = sum(1 for c in report.checks if c.state == DEAD)
+    print(f"\n{n_ok} ok, {n_deg} degraded, {n_dead} dead")
+
+
 # ── argument parsing ─────────────────────────────────────────────────────────
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="sluice")
@@ -397,6 +425,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     health = top.add_parser("health")
     health.set_defaults(func=cmd_health)
+
+    doctor = top.add_parser("doctor", help="preflight the configured backends")
+    doctor.add_argument("--offline", action="store_true",
+                        help="config-only checks; no round-trip")
+    doctor.add_argument("--strict", action="store_true",
+                        help="exit non-zero on degraded (e.g. a keyless fallback) too")
+    doctor.set_defaults(func=cmd_doctor)
     return p
 
 

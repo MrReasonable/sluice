@@ -392,3 +392,29 @@ def test_enumerate_matches_operation_backend_wiring(monkeypatch, tmp_path):
         # enumerate carries the fallback's host/path as the _make_fallback
         # defaults, since Sluice.backend does not forward them for the fallback.
         assert (f.host, f.claude_path) == ("", "claude"), subapp
+
+
+# ── cmd_doctor / argparse (offline; live exit codes are covered via Sluice) ───
+from sluice.cli import main                    # noqa: E402
+
+
+def test_cli_doctor_offline_degraded_fallback_exits_zero(monkeypatch, capsys):
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    rc = main(["doctor", "--offline"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "claude-max" in out and "deepseek" in out
+    assert "degraded" in out
+
+
+def test_cli_doctor_strict_fails_on_degraded(monkeypatch):
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    assert main(["doctor", "--offline", "--strict"]) == 1
+
+
+def test_cli_doctor_offline_dead_when_claude_missing_exits_nonzero(monkeypatch):
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    assert main(["doctor", "--offline"]) == 1
