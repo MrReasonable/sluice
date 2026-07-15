@@ -56,7 +56,7 @@ Copied verbatim from the spec and `CLAUDE.md`. Every task implicitly includes th
   - `BackendTarget(provider: str, model: str, host: str, claude_path: str, uses: list[RoleUse])` with a property `is_primary: bool` (any use is a primary).
   - `BackendCheck(target: BackendTarget, state: str, detail: str, elapsed: float | None = None)`.
   - `DoctorReport(checks: list[BackendCheck])` with `exit_code(*, strict: bool = False) -> int`.
-  - `enumerate_targets(triage_cfg, cv_cfg, track_cfg) -> list[BackendTarget]` — sub-app×role, deduped by `(provider, model, host)`, preserving first-seen order.
+  - `enumerate_targets(triage_cfg, cv_cfg, track_cfg) -> list[BackendTarget]` — sub-app×role, deduped by `(provider, model, host, claude_path)`, preserving first-seen order.
   - `classify(target, *, known, needs_key, key_present, key_var, cli_present, offline, probe_error) -> BackendCheck`.
   - `format_roles(uses: list[RoleUse]) -> str` — e.g. `"primary · triage, cv, track"`.
 
@@ -231,6 +231,42 @@ def test_format_roles_groups_by_role_in_order():
     uses = [RoleUse("triage", "primary"), RoleUse("cv", "primary"),
             RoleUse("track", "primary")]
     assert format_roles(uses) == "primary · triage, cv, track"
+
+
+def test_enumerate_includes_claude_path_in_dedup_key():
+    # rev-001: same provider/model/host, DIFFERENT claude binaries must NOT
+    # collapse -- else only the first path is ever checked.
+    triage = _Triage(claude_max_path="/opt/a/claude")
+    track = _Track(claude_max_path="/opt/b/claude")
+    targets = enumerate_targets(triage, _Cv(), track)
+    claude = [t for t in targets if t.provider == "claude-max"]
+    assert {t.claude_path for t in claude} == {"/opt/a/claude", "/opt/b/claude", "claude"}
+
+
+def test_enumerate_merges_and_flags_mixed_primary_fallback_role():
+    # tst-003: a backend used as BOTH primary and fallback (same key) dedupes to
+    # one target that is_primary -- so the strict primary rule applies to it.
+    cfg = _Triage(primary_backend="claude-max", claude_max_model="m",
+                  claude_max_host="", claude_max_path="claude",
+                  fallback_backend="claude-max", cheap_model="m")
+    targets = enumerate_targets(cfg, _Cv(), _Track())
+    merged = [t for t in targets
+              if t.provider == "claude-max" and t.model == "m" and t.host == ""]
+    assert len(merged) == 1
+    assert {u.role for u in merged[0].uses} == {"primary", "fallback"}
+    assert merged[0].is_primary is True
+    assert format_roles(merged[0].uses) == "primary · triage; fallback · triage"
+
+
+def test_classify_keyless_mixed_role_is_dead():
+    # tst-003: is_primary wins -- a keyless per-token backend used as BOTH roles
+    # is dead (a run using it as primary cannot happen), not merely degraded.
+    t = _target(provider="deepseek",
+                roles=(("triage", "primary"), ("cv", "fallback")))
+    c = classify(t, known=True, needs_key=True, key_present=False,
+                 key_var="DEEPSEEK_API_KEY", cli_present=None, offline=False,
+                 probe_error=None)
+    assert c.state == DEAD
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -336,7 +372,8 @@ def enumerate_targets(triage_cfg, cv_cfg, track_cfg) -> list:
     Effort is deliberately NOT part of the dedup key: it changes cost/quality,
     not whether the backend works, so triage(medium)+cv(max) fold into one
     claude-max probe. A per-sub-app MODEL override does split, preserving the
-    per-sub-app "is this a live model id" check.
+    per-sub-app "is this a live model id" check. `claude_path` IS in the key so
+    two claude-max backends pointing at different binaries never collapse.
     """
     specs = [
         # (subapp, role, provider, model, host, claude_path)
@@ -350,9 +387,14 @@ def enumerate_targets(triage_cfg, cv_cfg, track_cfg) -> list:
          track_cfg.claude_max_host, track_cfg.claude_max_path),
         ("track", "fallback", track_cfg.fallback_backend, track_cfg.cheap_model, "", "claude"),
     ]
-    by_key: dict = {}  # (provider, model, host) -> BackendTarget, insertion-ordered
+    by_key: dict = {}  # (provider, model, host, claude_path) -> BackendTarget, insertion-ordered
     for subapp, role, provider, model, host, claude_path in specs:
-        key = (provider, model, host)
+        # claude_path is IN the key (rev-001): two claude-max backends that share
+        # provider/model/host but shell different `claude` binaries are genuinely
+        # different checks -- collapsing them would probe only the first path and
+        # report a false `ok` for the second. For a per-token backend claude_path
+        # is the harmless "claude" default and does not over-split.
+        key = (provider, model, host, claude_path)
         target = by_key.get(key)
         if target is None:
             target = BackendTarget(provider=provider, model=model, host=host,
@@ -522,6 +564,106 @@ def test_doctor_never_builds_a_store_or_browser(monkeypatch):
     monkeypatch.setattr(Sluice, "fetcher",
                         lambda self: pytest.fail("doctor resolved a fetcher"))
     Sluice().doctor(probe=_ok_probe)            # must not fail
+
+
+# tst-002: the elapsed field is printed, so pin when it is set vs None.
+def test_doctor_records_elapsed_on_live_probe_only(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    rep = Sluice().doctor(probe=_ok_probe)
+    by = {c.target.provider: c for c in rep.checks}
+    assert isinstance(by["claude-max"].elapsed, float)
+    assert isinstance(by["deepseek"].elapsed, float)
+
+
+def test_doctor_offline_leaves_elapsed_none(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    rep = Sluice().doctor(offline=True, probe=_ok_probe)
+    assert all(c.elapsed is None for c in rep.checks)
+
+
+def test_doctor_keyless_fallback_has_no_elapsed(monkeypatch):
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    rep = Sluice().doctor(probe=_ok_probe)
+    deepseek = next(c for c in rep.checks if c.target.provider == "deepseek")
+    assert deepseek.elapsed is None             # degraded, never probed
+
+
+# tst-001: exercise unknown-provider and keyless-primary through the FULL
+# Sluice.doctor wiring (not just pure classify) by injecting a sub-app config via
+# the from-imported loader. Sluice.doctor does `from sluice.triage.config import
+# load_triage_config` at call time, so patching the module attribute takes effect.
+def test_doctor_unknown_provider_in_config_is_dead(monkeypatch):
+    monkeypatch.setattr("sluice.triage.config.load_triage_config",
+                        lambda: _Triage(fallback_backend="gpt5"))
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    rep = Sluice().doctor(probe=_ok_probe)      # must not crash on the typo
+    gpt5 = next(c for c in rep.checks if c.target.provider == "gpt5")
+    assert gpt5.state == DEAD
+    assert rep.exit_code() == 1
+
+
+def test_doctor_keyless_primary_is_dead_through_wiring(monkeypatch):
+    monkeypatch.setattr("sluice.triage.config.load_triage_config",
+                        lambda: _Triage(primary_backend="deepseek"))
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    rep = Sluice().doctor(probe=_ok_probe)
+    assert any(c.state == DEAD and c.target.provider == "deepseek"
+               and c.target.is_primary for c in rep.checks)
+    assert rep.exit_code() == 1
+
+
+# arc-001: doctor must probe the SAME backend a real run builds. Spy on
+# Sluice.backend to capture what each operation feeds it, and assert
+# enumerate_targets derives the identical primary/fallback per sub-app. This is
+# the drift guard for the config->backend field mapping that both this method and
+# the operation methods encode.
+def test_enumerate_matches_operation_backend_wiring(monkeypatch, tmp_path):
+    from sluice.cv.config import load_cv_config
+    from sluice.track.config import load_track_config
+    from sluice.triage.config import load_triage_config
+
+    class _Stop(Exception):
+        pass
+
+    def _capture(run):
+        rec = {}
+
+        def spy(self, role, *, primary_name, primary_model, effort, host,
+                claude_path, fallback_name, fallback_model):
+            rec["primary"] = (primary_name, primary_model, host, claude_path)
+            rec["fallback"] = (fallback_name, fallback_model)
+            raise _Stop()
+
+        monkeypatch.setattr(Sluice, "backend", spy)
+        try:
+            run()
+        except _Stop:
+            pass
+        return rec
+
+    monkeypatch.setenv("TRIAGE_AUDIT", str(tmp_path / "audit.jsonl"))
+    wired = {
+        "triage": _capture(lambda: Sluice().triage()),
+        "cv": _capture(lambda: Sluice().compose_cv(all_shortlist=True, dry_run=True)),
+        "track": _capture(lambda: Sluice().track(client=object())),
+    }
+
+    targets = enumerate_targets(load_triage_config(), load_cv_config(),
+                                load_track_config())
+    derived = {}
+    for t in targets:
+        for u in t.uses:
+            derived[(u.subapp, u.role)] = t
+
+    for subapp, w in wired.items():
+        p = derived[(subapp, "primary")]
+        assert (p.provider, p.model, p.host, p.claude_path) == w["primary"], subapp
+        f = derived[(subapp, "fallback")]
+        assert (f.provider, f.model) == w["fallback"], subapp
+        # enumerate carries the fallback's host/path as the _make_fallback
+        # defaults, since Sluice.backend does not forward them for the fallback.
+        assert (f.host, f.claude_path) == ("", "claude"), subapp
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -797,6 +939,17 @@ EOF
 ```
 
 ---
+
+## Review-plan findings folded in (2026-07-16, 5 specialists)
+
+Invariant + neutrality: **clean, no findings**. The rest are folded into the tasks above:
+
+- **arc-001 (Medium, config-drift):** `enumerate_targets` re-derives the config→backend field mapping the operation methods also encode → a drifted doctor would silently probe the wrong backend. Fixed by a **guard test** (`test_enumerate_matches_operation_backend_wiring`, Task 2) that spies on `Sluice.backend` across the real `triage/compose_cv/track` and pins `enumerate_targets`' derived per-sub-app targets to what each operation feeds. Additive — the operation methods are not touched.
+- **tst-001 (Medium, missing-tests):** unknown-provider and keyless-primary now exercised through the full `Sluice.doctor` wiring (`test_doctor_unknown_provider_in_config_is_dead`, `test_doctor_keyless_primary_is_dead_through_wiring`, Task 2) by injecting a sub-app config via the from-imported loader.
+- **tst-002 (Medium, missing-tests):** `BackendCheck.elapsed` now asserted (float on a live probe, `None` offline / not-probed — Task 2).
+- **tst-003 (Medium, missing-tests):** mixed-role dedup (`is_primary` wins), the two-role `format_roles` string, and keyless-mixed-role → `dead` now covered (Task 1).
+- **rev-001 (Low, correctness):** `claude_path` added to the dedup key so two claude-max backends with different binaries no longer collapse to one probe (Task 1 code + `test_enumerate_includes_claude_path_in_dedup_key`).
+- **rev-002 (Low, docs-drift):** the spec's example summary line reconciled with `_print_doctor`'s flat `N ok, N degraded, N dead` form (spec edited alongside this plan).
 
 ## Self-Review
 
