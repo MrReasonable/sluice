@@ -1,10 +1,9 @@
 import tempfile, pathlib
 from types import SimpleNamespace
-from sluice.cli import _build_parser, cmd_track_confirm, _track_backend
+from sluice.cli import _build_parser, cmd_track_confirm
 # _load_lastrun/_save_lastrun moved from cli.py to core/app.py in Task 6 (they are
 # Sluice.track()'s file-backed state now, not cli.py wiring).
 from sluice.core.app import _load_lastrun, _save_lastrun
-from sluice.core.backends import DEFAULT_BASE_URLS
 
 
 def test_track_run_parses_flags():
@@ -28,27 +27,12 @@ def test_cmd_track_confirm_advances(monkeypatch):
     assert "status: offer" in (leads / "Tidemark - Analyst.md").read_text()
 
 
-def test_track_backend_wiring(monkeypatch):
-    # Mirrors test_backend_fallback_targets_deepseek_direct in test_triage_cli.py.
-    # _track_backend has its own zero coverage: mutating tcfg.cheap_model ->
-    # tcfg.claude_max_model when building the OpenAiCompatibleBackend fallback
-    # passes the whole suite otherwise. Pin every field the wiring is
-    # responsible for so that swap fails here.
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
-    monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)  # exercise the default
-    from sluice.core.backends import ClaudeMaxBackend, OpenAiCompatibleBackend
-    from sluice.track.config import TrackConfig
-
-    tcfg = TrackConfig()
-    be = _track_backend(tcfg)
-    assert isinstance(be.primary, ClaudeMaxBackend)
-    assert be.primary.model == tcfg.claude_max_model == "claude-sonnet-4-5"
-    assert isinstance(be.fallback, OpenAiCompatibleBackend)
-    assert be.fallback.model == tcfg.cheap_model == "deepseek-v4-flash"
-    # Assert the default endpoint via the constant, not a live URL literal:
-    # pins that the provider default is applied and the path appended.
-    assert be.fallback.url == DEFAULT_BASE_URLS["deepseek"] + "/chat/completions"
-    assert be.fallback.api_key == "sk-test"
+# The former _track_backend field-routing test (primary/fallback model, fallback
+# url/key) moved to tests/test_backend_selection.py (generic role/provider
+# construction) and
+# tests/test_app_operations.py::test_track_threads_the_track_config_into_the_backend
+# (track's specific config-field mapping into Sluice.backend's kwargs), now that
+# track's backend construction is Sluice.backend() rather than a cli.py wrapper.
 
 
 def test_lastrun_roundtrip(tmp_path):
