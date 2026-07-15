@@ -1,6 +1,5 @@
 import os
-from sluice.cli import main, _build_backend
-from sluice.core.backends import DEFAULT_BASE_URLS
+from sluice.cli import main
 
 
 def _note(vault_dir, name, fm_lines):
@@ -43,23 +42,9 @@ def test_triage_run_dispatches(tmp_path, monkeypatch):
     assert Vault(str(tmp_path)).read_leads()[0].status == "dismiss"
 
 
-def test_backend_fallback_targets_deepseek_direct(monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
-    monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)  # exercise the default
-    from sluice.triage.config import TriageConfig
-    be = _build_backend(TriageConfig())
-    assert be.fallback.model == "deepseek-v4-flash"
-    # Assert the default endpoint via the constant, not a live URL literal:
-    # pins that the provider default is applied and the path appended.
-    assert be.fallback.url == DEFAULT_BASE_URLS["deepseek"] + "/chat/completions"
-    assert be.fallback.api_key == "sk-test"
-
-
-def test_triage_backend_primary_uses_medium_effort(monkeypatch):
-    # Triage judges a large backlog; medium keeps a full run from taking hours.
-    # This would fail if _build_backend silently kept the "max" default.
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")  # a configured fallback exists
-    from sluice.triage.config import TriageConfig
-    be = _build_backend(TriageConfig())
-    ct = be.primary.cmd_template
-    assert ct[ct.index("--effort") + 1] == "medium"
+# The former _build_backend field-routing tests (fallback provider/model/url/key,
+# and the medium-effort pin) moved to tests/test_backend_selection.py (generic
+# role/provider construction + the new end-to-end effort tests) and
+# tests/test_app_operations.py::test_triage_threads_the_triage_config_into_the_backend
+# (triage's specific config-field mapping into Sluice.backend's kwargs), now that
+# triage's backend construction is Sluice.backend() rather than a cli.py wrapper.

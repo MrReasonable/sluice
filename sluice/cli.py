@@ -33,14 +33,6 @@ def _disabled_path() -> str:
     return os.environ.get("SLUICE_DISABLED", "./sluice_disabled.json")
 
 
-def _dossier_dir() -> str:
-    return os.environ.get("DOSSIER_DIR", "./dossiers")
-
-
-def _audit_path() -> str:
-    return os.environ.get("TRIAGE_AUDIT", "./triage-audit.jsonl")
-
-
 # ── operator on/off overlay ──────────────────────────────────────────────────
 def _load_disabled() -> set:
     try:
@@ -196,59 +188,17 @@ def cmd_triage_run(args, config) -> int:
 # ── backend construction ─────────────────────────────────────────────────────
 # `--backend` names a ROLE (auto/primary/fallback), not a provider; the config
 # decides which provider fills each role. Role resolution -- and the provider-
-# construction helpers behind it -- now live in Sluice.backend(), which the three
-# per-command wrappers below delegate to. This literal is KEPT here so argparse
-# still has its `choices` without importing the moved role/alias tables.
+# construction that used to live here as per-command wrappers -- now lives
+# entirely in Sluice.backend(), which every cmd_* below calls via Sluice(config).
+# This literal is KEPT here so argparse still has its `choices` without importing
+# the moved role/alias tables.
 _BACKEND_CHOICES = ["auto", "primary", "fallback", "claude-max", "deepseek"]
 _BACKEND_HELP = (
     "which configured backend to use: auto (primary, falling back), primary, or "
     "fallback. claude-max/deepseek are deprecated aliases for primary/fallback.")
 
 
-def _build_backend(tcfg, backend_choice="auto"):
-    from sluice.core.app import Sluice
-    return Sluice().backend(
-        backend_choice,
-        primary_name=tcfg.primary_backend, primary_model=tcfg.claude_max_model,
-        effort=tcfg.claude_max_effort, host=tcfg.claude_max_host,
-        claude_path=tcfg.claude_max_path,
-        fallback_name=tcfg.fallback_backend, fallback_model=tcfg.cheap_model)
-
-
-def _dossier_fetcher(app):
-    """Fetcher-backed JD enrichment. The fetcher is resolved lazily on the first cache
-    miss, so a --no-llm run or a fully-cached run never opens a browser. Text is read via
-    evaluate(document.body.innerText) - the same {"result": ...} shape the ingest sources
-    use - rather than guessing the snapshot payload key."""
-    cam = {}
-
-    def fetch(lead: dict) -> dict:
-        md = ""
-        url = lead.get("url")
-        if url:
-            if "client" not in cam:
-                cam["client"] = app.fetcher()
-            c = cam["client"]
-            tid = c.create_tab(url)
-            if tid:
-                res = c.evaluate(tid, "document.body.innerText")
-                md = res.get("result") if isinstance(res, dict) else ""
-                c.close_tab(tid)
-        return {"jd": {"markdown": md or ""}, "glassdoor": {}}
-    return fetch
-
-
 # ── cv ────────────────────────────────────────────────────────────────────
-def _build_compose_backend(cvcfg, backend_choice="auto"):
-    from sluice.core.app import Sluice
-    return Sluice().backend(
-        backend_choice,
-        primary_name=cvcfg.primary_backend, primary_model=cvcfg.compose_model,
-        effort=cvcfg.compose_effort, host=cvcfg.compose_host,
-        claude_path=cvcfg.compose_claude_path,
-        fallback_name=cvcfg.fallback_backend, fallback_model=cvcfg.cheap_model)
-
-
 def cmd_cv_run(args, config) -> int:
     from sluice.core.app import Sluice
 
@@ -323,16 +273,6 @@ def cmd_apply_record(args, config) -> int:
 
 
 # ── track ────────────────────────────────────────────────────────────────────
-def _track_backend(tcfg, backend_choice="auto"):
-    from sluice.core.app import Sluice
-    return Sluice().backend(
-        backend_choice,
-        primary_name=tcfg.primary_backend, primary_model=tcfg.claude_max_model,
-        effort=tcfg.claude_max_effort, host=tcfg.claude_max_host,
-        claude_path=tcfg.claude_max_path,
-        fallback_name=tcfg.fallback_backend, fallback_model=tcfg.cheap_model)
-
-
 def cmd_track_run(args, config) -> int:
     from sluice.core.app import Sluice
 

@@ -1,5 +1,4 @@
 from sluice.cli import _build_parser
-from sluice.core.backends import DEFAULT_BASE_URLS
 
 
 def test_cv_run_parses_lead_and_flags():
@@ -14,55 +13,10 @@ def test_cv_run_parses_all_shortlist():
     assert args.all_shortlist and args.limit == 3
 
 
-def test_compose_fallback_targets_deepseek_direct(monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
-    monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)  # exercise the default
-    from sluice.cli import _build_compose_backend
-    from sluice.cv.config import CvConfig
-    be = _build_compose_backend(CvConfig())
-    assert be.fallback.model == "deepseek-v4-flash"
-    # Assert the default endpoint via the constant, not a live URL literal:
-    # pins that the provider default is applied and the path appended.
-    assert be.fallback.url == DEFAULT_BASE_URLS["deepseek"] + "/chat/completions"
-    assert be.fallback.api_key == "sk-test"
-
-
-def test_build_compose_backend_auto_returns_fallback_backend(monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")  # a configured fallback exists
-    from sluice.cli import _build_compose_backend
-    from sluice.cv.config import CvConfig
-    be = _build_compose_backend(CvConfig(), "auto")
-    assert type(be).__name__ == "FallbackBackend"
-
-
-def test_build_compose_backend_claude_max_returns_claude_max_only():
-    from sluice.cli import _build_compose_backend
-    from sluice.cv.config import CvConfig
-    be = _build_compose_backend(CvConfig(), "claude-max")
-    assert type(be).__name__ == "ClaudeMaxBackend"
-
-
-def test_build_compose_backend_deepseek_returns_deepseek_only(monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
-    from sluice.cli import _build_compose_backend
-    from sluice.cv.config import CvConfig
-    be = _build_compose_backend(CvConfig(), "deepseek")
-    assert type(be).__name__ == "OpenAiCompatibleBackend"
-
-
-def test_compose_backend_auto_primary_uses_max_effort(monkeypatch):
-    # cv compose still needs max reasoning; only triage should drop to medium.
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
-    from sluice.cli import _build_compose_backend
-    from sluice.cv.config import CvConfig
-    be = _build_compose_backend(CvConfig(), "auto")
-    ct = be.primary.cmd_template
-    assert ct[ct.index("--effort") + 1] == "max"
-
-
-def test_compose_backend_claude_max_uses_max_effort():
-    from sluice.cli import _build_compose_backend
-    from sluice.cv.config import CvConfig
-    be = _build_compose_backend(CvConfig(), "claude-max")
-    ct = be.cmd_template
-    assert ct[ct.index("--effort") + 1] == "max"
+# The former _build_compose_backend tests (fallback provider/model/url/key, role
+# behaviour for auto/claude-max/deepseek, and the max-effort pins) moved to
+# tests/test_backend_selection.py (generic role/provider construction + the new
+# end-to-end effort tests) and
+# tests/test_app_operations.py::test_compose_cv_threads_the_cv_config_into_the_backend
+# (cv's specific config-field mapping into Sluice.backend's kwargs), now that cv's
+# backend construction is Sluice.backend() rather than a cli.py wrapper.
