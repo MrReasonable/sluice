@@ -37,9 +37,8 @@ Copied verbatim from the spec and `CLAUDE.md`. Every task implicitly includes th
 - `sluice/core/app.py` — add the `Sluice.doctor(*, offline=False, probe=None) -> DoctorReport` method. Nothing else changes; `_PROVIDER_ENV`/`_provider_creds` are reused as-is.
 - `sluice/cli.py` — add `cmd_doctor`, the `_print_doctor` formatter, and the `doctor` subparser; add `sluice doctor` to the module docstring's command list.
 - `docs/ARCHITECTURE.md` — document the `doctor` command / the backend-preflight (a reader over the backend seam).
-- `.rulesync/rules/CLAUDE.md` — add `sluice doctor` to the "Running the pipeline" command examples (canonical source; the generated `CLAUDE.md` is gitignored).
 
-**Untouched (do not edit):** `core/backends.py` (incl. `make_backend`), `Sluice.backend` and the role/alias tables, all five `*/engine.py`, `core/vault.py`, `core/status.py`, `cv/validate.py`, every `*Config` default.
+**Untouched (do not edit):** `core/backends.py` (incl. `make_backend`), `Sluice.backend` and the role/alias tables, all five `*/engine.py`, `core/vault.py`, `core/status.py`, `cv/validate.py`, every `*Config` default, **and `.rulesync/` (the canonical human-gated tree — the new command is self-documenting via `--help`, the `cli.py` docstring, and `docs/ARCHITECTURE.md`, so no rulesync edit is needed for this PR)**.
 
 ---
 
@@ -759,47 +758,38 @@ EOF
 ### Task 4: docs + final verification
 
 **Files:**
-- Modify: `docs/ARCHITECTURE.md`, `.rulesync/rules/CLAUDE.md`
+- Modify: `docs/ARCHITECTURE.md`
 
 **Interfaces:** none (documentation + a manual smoke check).
 
-- [ ] **Step 1: Confirm the canonical doc source and tracking**
+**Note:** `.rulesync/` is deliberately NOT touched (see File structure). The new command is
+self-documenting via `--help`, the `cli.py` module docstring (Task 3), and `docs/ARCHITECTURE.md`
+below. Keeping this PR out of the canonical human-gated tree is intentional.
 
-Run: `git check-ignore CLAUDE.md; echo "---"; grep -n "sluice health\|Running the pipeline" .rulesync/rules/CLAUDE.md`
-Expected: `CLAUDE.md` is printed (it is gitignored — a generated output), so edit only `.rulesync/rules/CLAUDE.md`. The grep locates the pipeline command block to extend.
+- [ ] **Step 1: Document the command in `docs/ARCHITECTURE.md`**
 
-- [ ] **Step 2: Add `sluice doctor` to the rulesync command examples**
+Locate the backend section (`grep -n -i "backend" docs/ARCHITECTURE.md`) and add a short paragraph noting that `sluice doctor` is a read-only preflight over the backend seam: it enumerates every configured backend (primary + fallback, per sub-app), reports `ok`/`degraded`/`dead`, and exits non-zero when a run-blocking backend is dead — a keyless fallback degrades (sanctioned primary-only), a keyed-but-broken one is dead. Live round-trip by default; `--offline` for config-only; `--strict` to fail on degraded. Match the file's existing prose density and heading style.
 
-In `.rulesync/rules/CLAUDE.md`, in the "Running the pipeline" fenced block, add a line near the other read-only commands (e.g. after the `triage run --no-llm` line):
-
-```bash
-sluice doctor --offline                    # preflight backends, no round-trip (live by default)
-```
-
-- [ ] **Step 3: Document the command in `docs/ARCHITECTURE.md`**
-
-Locate the backend section (`grep -n "backend" docs/ARCHITECTURE.md`) and add a short paragraph noting that `sluice doctor` is a read-only preflight over the backend seam: it enumerates every configured backend (primary + fallback, per sub-app), reports `ok`/`degraded`/`dead`, and exits non-zero when a run-blocking backend is dead — a keyless fallback degrades (sanctioned primary-only), a keyed-but-broken one is dead. Match the file's existing prose density and heading style.
-
-- [ ] **Step 4: Manual smoke check (proves the wired command runs offline)**
+- [ ] **Step 2: Manual smoke check (proves the wired command runs offline)**
 
 Run: `.venv/bin/python -m sluice.cli doctor --offline; echo "exit=$?"`
 Expected: the grouped report prints; exit is `0` if `claude` is on this machine's PATH, else `1` (claude-max primary dead — a correct verdict). Also run `.venv/bin/python -m sluice.cli doctor --help` and confirm `--offline`/`--strict` appear.
 
-- [ ] **Step 5: Full verification bar**
+- [ ] **Step 3: Full verification bar**
 
 Run: `.venv/bin/ruff check sluice tests && .venv/bin/python -m pytest -q`
 Expected: ruff clean, all tests green.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add docs/ARCHITECTURE.md .rulesync/rules/CLAUDE.md
+git add docs/ARCHITECTURE.md
 git commit -m "$(cat <<'EOF'
 docs: document sluice doctor (backend preflight) (#4)
 
-ARCHITECTURE.md backend section + the rulesync command examples. The generated
-CLAUDE.md/AGENTS.md/.claude outputs are gitignored; only the .rulesync source
-is edited.
+Add the doctor command to the ARCHITECTURE.md backend section. .rulesync/ is
+left untouched (canonical/human-gated); the command is self-documenting via
+--help and the cli.py docstring.
 
 MrReasonable <4990954+MrReasonable@users.noreply.github.com>
 EOF
