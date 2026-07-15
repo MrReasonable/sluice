@@ -138,23 +138,26 @@ def test_happy_path_renders_and_records(monkeypatch):
     assert r.served == "Jane_Roe_CV_deadbeef.pdf"
     assert "Jane_Roe_CV_deadbeef.pdf" in v.written[note.ref]
 
-def test_no_serve_renders_but_does_not_mark_lead(monkeypatch):
-    # --no-serve is emulated via cvcfg.served_dir = "": the engine's serve() call
-    # is short-circuited entirely (see the `if cvcfg.served_dir else None` guard
-    # in run_one), so only render() needs monkeypatching here. Proves the fixed
-    # bug -- writing the literal string "None (...)" into tailored_cv, which is
-    # truthy and so would permanently dedup-skip the lead in run_batch even
-    # though no CV was ever published -- cannot recur: a render that is never
+def test_no_serve_renders_but_does_not_mark_lead():
+    # --no-serve is emulated via cvcfg.served_dir = "": the engine's serve() call is
+    # short-circuited entirely (the `if cvcfg.served_dir else None` guard in run_one), so
+    # nothing is published. Proves the fixed bug -- writing the literal string "None (...)"
+    # into tailored_cv, which is truthy and so would permanently dedup-skip the lead in
+    # run_batch even though no CV was ever published -- cannot recur: a render that is never
     # served must leave the vault untouched.
-    import sluice.cv.render as _render_mod
-    monkeypatch.setattr(_render_mod, "render",
-                        lambda *a, **k: "/tmp/x/Jane Roe CV.pdf")
+    #
+    # Rendering itself must STILL happen on this path, so assert on the INJECTED renderer
+    # (the active seam). The old monkeypatch of sluice.cv.render.render was inert here --
+    # run_one renders through the injected renderer, not that module function -- so removing
+    # the render call would have left this test green while publishing nothing.
     cfg = _cfg()
     cfg.served_dir = ""  # emulates --no-serve
     v = FakeVault(ENTRIES)
+    rend = FakeRenderer()
     r = run_one(Note({"status": "shortlist", "company": "Solarflux", "role": "Analyst"}),
-                v, cfg, FakeBackend(CLEAN_CV), FakeCache(), renderer=FakeRenderer())
+                v, cfg, FakeBackend(CLEAN_CV), FakeCache(), renderer=rend)
     assert r.status == "rendered"
+    assert rend.rendered == [CLEAN_CV]   # the render still happened; only serving was skipped
     assert r.served is None
     assert v.written == {}   # no tailored_cv marker when nothing was published
 

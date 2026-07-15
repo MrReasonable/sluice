@@ -86,9 +86,11 @@ def test_a_broken_plugin_is_skipped_but_never_silently_substituted(tmp_path, cap
     rule the source registry already follows. But its NAME must then be absent, and asking
     for it must RAISE rather than quietly resolving to a different implementation.
 
-    The previous version of this test broke no plugin at all: it just asserted `get` raised
-    on a name nobody had registered, duplicating the test above and leaving autoload's
-    except-branch with zero coverage.
+    The broken plugin REGISTERS an adapter and only then raises, so this also pins
+    autoload's rollback: a name half-registered by a module that never finished importing
+    must not survive. An earlier version broke no plugin at all -- it asserted `get` raised
+    on a name nobody had registered, which duplicated the test above and left autoload's
+    except-branch (and its rollback) with zero coverage.
     """
     import sys, types
     pkg = types.ModuleType("_probe_pkg")
@@ -97,7 +99,12 @@ def test_a_broken_plugin_is_skipped_but_never_silently_substituted(tmp_path, cap
     (tmp_path / "healthy.py").write_text(
         "from sluice.core import plugins\n"
         "plugins.register('probe', 'healthy', lambda cfg: 'ok')\n")
-    (tmp_path / "broken.py").write_text("raise RuntimeError('this plugin is broken')\n")
+    # Registers, THEN dies. Without autoload's snapshot/rollback, 'broken' would remain
+    # selectable from a module whose import failed.
+    (tmp_path / "broken.py").write_text(
+        "from sluice.core import plugins\n"
+        "plugins.register('probe', 'broken', lambda cfg: 'zombie: import never finished')\n"
+        "raise RuntimeError('this plugin is broken')\n")
     try:
         with caplog.at_level("WARNING"):
             plugins.autoload(pkg)

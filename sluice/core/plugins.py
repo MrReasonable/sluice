@@ -79,7 +79,17 @@ def autoload(package) -> None:
     for mod in pkgutil.iter_modules(package.__path__):
         if mod.name.startswith("_"):
             continue
+        # Snapshot the registry so the skip is TRANSACTIONAL. A plugin that calls
+        # register() and THEN raises later in its import would otherwise leave its name
+        # half-registered -- selectable by `get` even though the module never finished
+        # importing and was logged as skipped. That is precisely the quiet-wrong-default
+        # (a store resolving to a half-built implementation) this module exists to prevent,
+        # so roll the registration back on failure. Copy the inner dicts, not just the
+        # top level: register() mutates them in place.
+        snapshot = {seam: dict(impls) for seam, impls in _REGISTRY.items()}
         try:
             importlib.import_module(f"{package.__name__}.{mod.name}")
         except Exception as e:  # a broken plugin must not sink the rest
             _log.warning("plugin module %s failed to import: %s", mod.name, e)
+            _REGISTRY.clear()
+            _REGISTRY.update(snapshot)
