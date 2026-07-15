@@ -79,8 +79,9 @@ Three new modules in `core/`, none large:
   fetcher, the seen/lastrun files), and exposes operations as **value-returning** methods.
 
 Implementations live in per-seam packages that self-register on import, mirroring `ingest/sources/`:
-`sluice/stores/`, `sluice/fetchers/`, `sluice/renderers/`. `core/vault.py` **stays where it is** —
-`stores/vault.py` registers it. This is registration, not relocation.
+`sluice/stores/`, `sluice/fetchers/`, `sluice/renderers/` (and `sluice/backends/`, added in Stage 2 —
+see the superseded non-goal below). `core/vault.py` **stays where it is** — `stores/vault.py` registers
+it. This is registration, not relocation.
 
 **The engines do not change.** That is what makes this affordable.
 
@@ -224,6 +225,9 @@ originally made is true rather than aspirational.
 - No entry-point discovery / third-party plugins. Internal seams, in-tree implementations. Promoting
   to entry-point discovery later is additive (`importlib.metadata` is stdlib, ~5 lines).
 - Sources and backends keep their existing registries. They work; churning them buys nothing.
+  _(Superseded for backends by Stage 2, 2026-07-15: the backend provider registry was unified
+  into `core/plugins.py` via `sluice/backends/`; `make_backend` became a shim over it. Sources
+  keep their own registry.)_
 
 ## Testing and migration
 
