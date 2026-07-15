@@ -25,3 +25,12 @@ def test_load_overlays_track_block(monkeypatch, tmp_path):
 def test_load_defaults_when_no_config(monkeypatch):
     monkeypatch.delenv("SLUICE_CONFIG", raising=False)
     assert load_track_config().token_path == "./google_token.json"
+
+
+def test_config_exposes_backend_selectors():
+    # track had no selectors while its backend was hardcoded; config-driven
+    # construction needs them, and they must match the other two sub-apps
+    # (triage, cv). Carried over from the retired test_cli_backend_selection.py.
+    c = TrackConfig()
+    assert c.primary_backend == "claude-max"
+    assert c.fallback_backend == "deepseek"
