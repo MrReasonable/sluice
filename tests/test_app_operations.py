@@ -46,3 +46,20 @@ def test_triage_threads_the_triage_config_into_the_backend(tmp_path, monkeypatch
     assert seen["role"] == "primary"
     assert seen["primary_model"] == "claude-sonnet-4-5"   # triage uses claude_max_model
     assert seen["fallback_model"] == "deepseek-v4-flash"  # ...and cheap_model for fallback
+
+
+def test_compose_cv_unknown_lead_returns_empty(tmp_path, monkeypatch):
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    app = Sluice(Config())
+    monkeypatch.setattr(app, "backend", lambda *a, **k: object())  # avoid real creds
+    assert app.compose_cv(lead="no-such-lead", dry_run=True) == []
+
+
+def test_compose_cv_threads_the_cv_config_into_the_backend(tmp_path, monkeypatch):
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    app = Sluice(Config())
+    seen = {}
+    monkeypatch.setattr(app, "backend", lambda role, **kw: seen.update(**kw) or object())
+    app.compose_cv(lead="x", dry_run=True)
+    assert seen["primary_model"] == "claude-sonnet-4-5"   # cv uses compose_model
+    assert seen["effort"] == "max"                        # ...and compose_effort
