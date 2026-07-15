@@ -222,6 +222,45 @@ class Sluice:
                            statuses=tuple(statuses), limit=limit,
                            dry_run=dry_run, no_llm=no_llm)
 
+    def compose_cv(self, *, lead=None, all_shortlist=False, limit=None, dry_run=False,
+                    no_serve=False, backend_role="auto"):
+        """Run the cv sub-app: compose (and, unless dry_run, render) a CV for one
+        shortlisted lead or for every shortlisted lead. Returns the list of CvResult.
+
+        The renderer is resolved ONLY when not dry_run: a missing render script is a
+        config error that must surface at construction, before any LLM spend -- but a
+        dry run's whole point is to cost nothing and change nothing, so it must not
+        require a renderer to exist at all. This is the fabrication-gate-safe behaviour
+        `cli.py`'s old cmd_cv_run preserved; moving it here must not lose it.
+
+        cv's config maps to Sluice.backend's fields via compose_model/compose_effort/
+        compose_host/compose_claude_path -- NOT triage's claude_max_* fields. That
+        mapping belongs here, not in Sluice.backend, same reasoning as `triage()`."""
+        from sluice.cv.config import load_cv_config
+        from sluice.cv.engine import run_batch, run_one
+        from sluice.core.leads import slug_matches
+
+        cvcfg = load_cv_config()
+        if no_serve:
+            cvcfg.served_dir = ""  # engine still renders; serve is skipped when dir is empty
+        renderer = None if dry_run else self.renderer(cvcfg)
+        backend = self.backend(
+            backend_role, primary_name=cvcfg.primary_backend,
+            primary_model=cvcfg.compose_model, effort=cvcfg.compose_effort,
+            host=cvcfg.compose_host, claude_path=cvcfg.compose_claude_path,
+            fallback_name=cvcfg.fallback_backend, fallback_model=cvcfg.cheap_model)
+        cache = self.dossier_cache(cvcfg.dossier_dir, cvcfg.ttl_days)
+        store = self.store()
+
+        if all_shortlist:
+            return run_batch(store, cvcfg, backend, cache, renderer=renderer,
+                             limit=limit, dry_run=dry_run)
+        notes = [n for n in store.read_leads({"shortlist"}) if slug_matches(n, lead)]
+        if not notes:
+            return []
+        return [run_one(notes[0], store, cvcfg, backend, cache, renderer=renderer,
+                        dry_run=dry_run)]
+
     # ── introspection ────────────────────────────────────────────────────────
     @staticmethod
     def available(seam: str) -> list:
