@@ -422,6 +422,78 @@ class Sluice:
         return track_engine.confirm(self.store(), load_track_config(), lead, to,
                                     when=when, dry_run=dry_run)
 
+    def doctor(self, *, offline=False, probe=None):
+        """Preflight every configured backend (primary + fallback, per sub-app):
+        is the provider known, is a model resolved, are the credentials present
+        in THIS process, and -- unless `offline` -- does a one-token round-trip
+        succeed? Returns a DoctorReport whose `exit_code` is non-zero when a
+        run-blocking backend is dead.
+
+        Backends only: this method touches neither `self.store()` nor
+        `self.fetcher()`, so `sluice doctor` never constructs a browser or a
+        store. `probe` is the test seam -- a `callable(backend) -> None` that
+        raises `BackendError` on failure; it defaults to the real round-trip.
+        The provider is built DIRECTLY via `make_backend` (not the role
+        composite), so there is no `FallbackBackend` to disentangle, and it is
+        built ONLY when there is something testable -- a known provider whose
+        credentials are satisfied -- so a keyless per-token backend is
+        classified from config alone, never by catching a construction error."""
+        import shutil
+        import time
+
+        from sluice.core import doctor as _doctor
+        from sluice.core.backends import DEFAULT_MODELS, BackendError, make_backend
+        from sluice.cv.config import load_cv_config
+        from sluice.track.config import load_track_config
+        from sluice.triage.config import load_triage_config
+
+        targets = _doctor.enumerate_targets(
+            load_triage_config(), load_cv_config(), load_track_config())
+        if probe is None:
+            probe = lambda b: b.complete(_doctor.PROBE_PROMPT)  # noqa: E731
+
+        # A provider is usable only if make_backend could actually build it, which
+        # takes BOTH guards: the name in DEFAULT_MODELS (its default-model + the
+        # unknown-name check) AND a factory registered in the backend seam. Checking
+        # the registry is an import + dict lookup, not a round-trip, so --offline can
+        # do it too -- and must, or a provider whose plugin is in DEFAULT_MODELS but
+        # failed to import would be reported `ok` offline instead of `dead` (live
+        # mode catches it via make_backend, but offline skips that). Resolved once.
+        registered = set(Sluice.available("backend"))
+        checks = []
+        for t in targets:
+            known = t.provider in DEFAULT_MODELS and t.provider in registered
+            needs_key = t.provider in _PROVIDER_ENV
+            key_var = _PROVIDER_ENV.get(t.provider, ("", ""))[0]
+            api_key, base_url = _provider_creds(t.provider)
+            key_present = bool(api_key)
+            # A local (no-host) backend that needs no key IS the claude-max CLI;
+            # for the offline mode we can only check the binary exists on PATH.
+            cli_present = None
+            if known and not needs_key and not t.host:
+                cli_present = shutil.which(t.claude_path) is not None
+            # Round-trip ONLY when live AND buildable+testable: known provider,
+            # creds satisfied. Everything else is classified from config alone.
+            probe_error = None
+            elapsed = None
+            if not offline and known and (not needs_key or key_present):
+                try:
+                    backend = make_backend(
+                        t.provider, t.model, api_key=api_key, base_url=base_url,
+                        claude_host=t.host, claude_path=t.claude_path)
+                    start = time.monotonic()
+                    probe(backend)
+                    elapsed = time.monotonic() - start
+                except BackendError as e:
+                    probe_error = str(e)
+            check = _doctor.classify(
+                t, known=known, needs_key=needs_key, key_present=key_present,
+                key_var=key_var, cli_present=cli_present, offline=offline,
+                probe_error=probe_error)
+            check.elapsed = elapsed
+            checks.append(check)
+        return _doctor.DoctorReport(checks=checks)
+
     # ── introspection ────────────────────────────────────────────────────────
     @staticmethod
     def available(seam: str) -> list:
