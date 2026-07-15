@@ -1,5 +1,10 @@
 # Backend Provider Seam Implementation Plan (Stage 2)
 
+> **Status: IMPLEMENTED — landed in PR #19 (2026-07-15).** This document is retained as a historical
+> record of the plan as it was executed; it is **not** outstanding work. The unchecked `- [ ]` boxes
+> below are the original step list, and the "Execution handoff" section describes how the plan *was*
+> run (subagent-driven), not a pending action.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Register `backend` as the 4th self-registering provider seam (`sluice/backends/`, mirroring `stores`/`fetchers`/`renderers`), so provider construction is a name-keyed registry lookup like every other adapter — with `make_backend` kept as a thin compatibility shim that delegates to the registry, and every existing test green.
@@ -32,7 +37,7 @@ These are the choices this plan makes over the "Deferred to Stage 2" seed; they 
 
 2. **Credential resolution stays in `core/app.py` — the "creds helper before `autoload()`" hazard is designed out, not mitigated.** The seed anticipated moving `_provider_creds`/`_PROVIDER_ENV` into the package (hence the ordering warning). This plan does **not** move them, because the degrade-vs-strict decision (`_make_fallback` warns-and-returns-None on a missing key; `_make_fallback_strict` raises) is a **role** concern that must stay in `Sluice.backend()`, and splitting "resolve the key" from "decide what a missing key means" across two modules is worse, not better. Provider factories receive an already-resolved `api_key`/`base_url` (exactly as `make_backend` forwards them today). The only ordering constraint in the new package is the established idiom — define `register` **before** `autoload()` — identical to `stores/__init__.py`.
 
-3. **No `BackendSpec` value object.** The four factories share one explicit keyword signature (the union of construction params `make_backend` forwards). A dataclass would bundle the same fields for no Stage-2 gain. YAGNI.
+3. **No `BackendSpec` value object — yet.** The four factories share one explicit 10-parameter keyword signature (the union of construction params `make_backend` forwards), restated in the package docstring, all four factories, and `make_backend`'s call — six times. The honest tradeoff: a params object (a frozen dataclass or a `TypedDict`) *would* remove exactly that repetition and give the factory contract one authored home. It is declined for Stage 2 because (a) the signature is stable and small, (b) introducing the type is churn orthogonal to the seam this stage delivers, and (c) each factory still reads only its own subset, so the duplication is mechanical, not semantic. **Revisit trigger:** if a 5th/6th provider lands, or a construction param is added/removed (forcing an edit across all six sites at once), promote the signature to a `BackendSpec` in the same change. Until then, YAGNI.
 
 4. **`DEFAULT_MODELS`/`DEFAULT_BASE_URLS` stay central; provider metadata is not fully distributed.** Distributing the default-model map into per-provider modules would break `test_default_models_cover_every_selector` (a load-bearing assertion about the four defaults) and churn `test_backend_selection.py`. Accepted, stated limit: adding a 5th provider is *mostly* a plugin — a new module in `sluice/backends/` — but still requires one line in `DEFAULT_MODELS` (and `DEFAULT_BASE_URLS`/`_PROVIDER_ENV` if it is per-token and needs a key). A new test pins `set(available("backend")) == set(DEFAULT_MODELS)` so the registry and the default-model map cannot drift apart. Full metadata distribution is a possible later stage, not this one.
 
@@ -366,7 +371,9 @@ MrReasonable <4990954+MrReasonable@users.noreply.github.com>"
 - Consumes: the `"backend"` seam registry from Task 1; `plugins.get`/`UnknownAdapter`; `DEFAULT_MODELS` (unchanged).
 - Produces: `make_backend(name, model="", *, http=_urlopen, runner=subprocess.run, timeout=300, api_key="", base_url="", max_tokens=None, claude_host="", claude_path="claude", effort="max") -> backend` — **identical public signature and observable behaviour to today**, now delegating provider construction to `plugins.get("backend", name)`.
 
-- [ ] **Step 1: Write the failing dispatch test**
+- [ ] **Step 1: Write the failing tests — dispatch, and the exception-translation path**
+
+The second test pins a branch that is otherwise unreachable in normal operation (the four providers are always registered — Task 1 pins that), and so has no other test. `plugins.UnknownAdapter` is a `KeyError` subclass; the shim must surface it as `BackendError` (the fail-at-construction contract every caller — `Sluice._make_*`, the role tests — relies on), never leak the raw `KeyError`. A later "simplification" collapsing the `try/except` would leak `UnknownAdapter` with nothing red unless this test exists. `pytest.raises(BackendError)` does **not** catch a leaked `UnknownAdapter`, which is exactly what gives this test teeth.
 
 ```python
 # add to tests/test_backend_registry.py
@@ -386,12 +393,30 @@ def test_make_backend_routes_provider_construction_through_the_registry(monkeypa
     be = backends.make_backend("claude-max", "m")
     assert ("backend", "claude-max") in calls
     assert type(be).__name__ == "ClaudeMaxBackend"
+
+
+def test_make_backend_translates_a_missing_plugin_to_backenderror(monkeypatch):
+    # A provider name that is valid (in DEFAULT_MODELS) but whose plugin module failed to
+    # import leaves the registry without a factory: plugins.get raises UnknownAdapter (a
+    # KeyError). The shim must surface BackendError -- the fail-at-construction contract
+    # every caller relies on -- not leak the KeyError. Unreachable for the four registered
+    # providers, so this dedicated test is the only thing pinning the translation branch.
+    from sluice.core import backends, plugins
+
+    def raise_unknown(seam, name):
+        raise plugins.UnknownAdapter(seam, name, [])
+
+    monkeypatch.setattr(plugins, "get", raise_unknown)
+    with pytest.raises(backends.BackendError):
+        backends.make_backend("claude-max", "m")
 ```
+
+(`tests/test_backend_registry.py` already imports `pytest` from Task 1.)
 
 - [ ] **Step 2: Run to verify red**
 
-Run: `.venv/bin/python -m pytest tests/test_backend_registry.py -k routes -v`
-Expected: FAIL — `assert ("backend", "claude-max") in calls` fails; `calls == []` because today's `make_backend` builds the class inline without touching `plugins.get`.
+Run: `.venv/bin/python -m pytest tests/test_backend_registry.py -k "routes or translates" -v`
+Expected: BOTH FAIL. `routes`: `assert ("backend", "claude-max") in calls` fails; `calls == []` because today's `make_backend` builds the class inline without touching `plugins.get`. `translates`: today's `make_backend` never calls `plugins.get`, so the monkeypatch is inert and `make_backend("claude-max", "m")` succeeds — `pytest.raises(BackendError)` fails because nothing was raised.
 
 - [ ] **Step 3: Rewrite `make_backend` as the shim**
 
@@ -485,6 +510,8 @@ MrReasonable <4990954+MrReasonable@users.noreply.github.com>"
 
 No code changes and no new behaviour, so no new test — the deliverable is that the four documents no longer contradict the shipped seam. Verify with a full suite + ruff run so the doc-only commit is still gated.
 
+> **USER-GATED (Steps 3 + 5).** Steps 3 and 5 edit `.rulesync/rules/CLAUDE.md` — the canonical, human-governed rules source the review agents read as ground truth — and regenerate its outputs. Per hard rule 15, an executing subagent must NOT self-apply these; they require explicit user sign-off (obtained before execution begins). Steps 1, 2, and 4 (the `docs/`, `plugins.py`, and spec edits) are not gated.
+
 - [ ] **Step 1: Update `sluice/core/plugins.py`'s docstring**
 
 The opening lines (1–9) say three seams had no registry. All four now do. Change:
@@ -521,7 +548,13 @@ to:
   the config picks which provider fills each role, the role picks which backend runs.
 ```
 
-Then update the plugin-core prose (line 81–83) so the package list includes backends:
+Then update the plugin-core prose (lines 81–83) so the package list includes backends. Change:
+```
+Implementations live in `sluice/stores/`, `sluice/fetchers/` and
+`sluice/renderers/`, each self-registering on import exactly as
+`ingest/sources/` already did.
+```
+to:
 ```
 Implementations live in `sluice/stores/`, `sluice/fetchers/`, `sluice/renderers/`
 and `sluice/backends/`, each self-registering on import exactly as
@@ -536,12 +569,15 @@ Update the seams convention (lines 127–129). Change:
   and no runtime selector, because there is nothing yet to select between. Route new implementations
   through those seams rather than around them.
 ```
-to:
+to (the wording must NOT claim all four resolve identically — the backend seam is name-keyed like the others but differs in shape, per Design decision 5; overstating uniformity here plants exactly the mental model DD5 dismantles):
 ```
-- The four adapter seams (backend, store, renderer, fetch) are each a name-keyed registry. The backend
-  seam has four provider implementations (claude-max/anthropic/deepseek/openai) selected by name; store,
-  renderer, and fetch have one each today and no runtime selection is exercised yet, but all four resolve
-  the same way. Route new implementations through those seams (a self-registering module) rather than
+- The four adapter seams (backend, store, renderer, fetch) are each a name-keyed registry resolved via
+  `plugins.get`. The backend seam has four provider implementations (claude-max/anthropic/deepseek/openai)
+  selected by name; store, renderer, and fetch have one each today and no runtime selection is exercised
+  yet. The backend seam differs in shape, though: a role layer (auto/primary/fallback, in
+  `Sluice.backend()`) sits above the provider lookup, and its factory takes resolved construction params
+  (model/key/base_url), not the config object -- so it does not go through `Sluice._resolve` the way the
+  other three do. Route new implementations through those seams (a self-registering module) rather than
   around them.
 ```
 
@@ -595,7 +631,9 @@ MrReasonable <4990954+MrReasonable@users.noreply.github.com>"
 
 **Type/name consistency:** the backend factory contract signature `(model, *, api_key, base_url, http, runner, timeout, max_tokens, claude_host, claude_path, effort)` is identical in the package docstring (Task 1 Step 4), all four factories (Task 1 Step 5), and `make_backend`'s delegation call (Task 2 Step 3). `_BACKEND_SEAM = "backend"` matches `SEAM = "backend"` and the `plugins.get("backend", …)` / `Sluice.available("backend")` string. The guard reuses `BackendError`, `DEFAULT_MODELS`, `DEFAULT_BASE_URLS`, `UnknownAdapter` exactly as they exist in `core/backends.py` / `core/plugins.py`.
 
-**Behavioural-safety check:** `make_backend`'s existing tests (`tests/test_backends.py`, 33 refs) and `tests/test_backend_selection.py` are asserted green *with no edits* at Task 2 Step 5 — the definition of "observable behaviour unchanged". The one new exception path (`UnknownAdapter` → `BackendError`) is unreachable for the four registered providers (pinned equal to `DEFAULT_MODELS` by Task 1) and only fires on a broken install, where surfacing `BackendError` is strictly better than a raw `KeyError`.
+**Behavioural-safety check:** `make_backend`'s existing tests (`tests/test_backends.py`, 33 refs) and `tests/test_backend_selection.py` are asserted green *with no edits* at Task 2 Step 5 — the definition of "observable behaviour unchanged". The one new exception path (`UnknownAdapter` → `BackendError`) is unreachable for the four registered providers (pinned equal to `DEFAULT_MODELS` by Task 1) and only fires on a broken install, where surfacing `BackendError` is strictly better than a raw `KeyError` — and it is pinned by its own dedicated test (`test_make_backend_translates_a_missing_plugin_to_backenderror`, Task 2 Step 1), because a branch nothing else reaches is a branch a later refactor can silently break.
+
+**Review-plan findings folded in (2026-07-15):** TE-01 (Medium, missing-tests) → the translation test above. arch-01 (Medium, docs-drift) → the `.rulesync` wording in Task 3 Step 3 no longer claims "all four resolve the same way". GEN-1 (Low) → the second `ARCHITECTURE.md` edit now quotes its before-text. arch-03 (Low) → DD3 now names the duplication tradeoff and a revisit trigger. NEUT-1 / arch-02 (Low, corroborated ×3) → the `.rulesync` steps are marked USER-GATED. The plan was otherwise clean: no Critical, no High; invariant, neutrality, and generalist reviewers passed it, and the architect endorsed the seam boundary, the dependency direction, the shim-not-retire call, and the no-BackendSpec call.
 
 ---
 
