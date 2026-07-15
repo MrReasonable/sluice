@@ -288,13 +288,11 @@ def cmd_cv_run(args, config) -> int:
 # ── apply ────────────────────────────────────────────────────────────────────
 def cmd_apply_prep(args, config) -> int:
     from sluice.core.app import Sluice
-    from sluice.apply.config import load_apply_config
-    from sluice.apply import engine, packet
+    from sluice.apply import packet
 
-    cfg = load_apply_config()
-    vault = Sluice(config).store()
+    app = Sluice(config)
     if args.all_shortlist:
-        results = engine.preview_all(vault, cfg, limit=args.limit)
+        results = app.prep(all_shortlist=True, limit=args.limit)
         for r in results:
             if r.status == "previewed":
                 print(packet.render_json(r.packet) if args.json else packet.render_text(r.packet))
@@ -303,17 +301,19 @@ def cmd_apply_prep(args, config) -> int:
         print(f"apply-preview: eligible={eligible} skipped={skipped}", file=sys.stderr)
         return 0
     if args.dry_run:
-        # select + packet, never touch the filesystem
-        from sluice.apply import select
-        note, reason = select.select_one(vault, args.lead, cfg)
-        if note is None:
-            print(f"apply-prep: {args.lead} skipped ({reason})", file=sys.stderr)
+        # Sluice.prep(dry_run=True) wraps select+packet as one PrepResult with
+        # status "previewed"/"skipped" -- the engine's real vocabulary -- but the
+        # CLI's dry-run wording predates that method and stays "dry-run", not
+        # "previewed dry-run", so it is reproduced literally here rather than
+        # printed from r.status.
+        r = app.prep(lead=args.lead, dry_run=True)[0]
+        if r.status == "skipped":
+            print(f"apply-prep: {args.lead} skipped ({r.reason})", file=sys.stderr)
             return 1
-        pkt = packet.build_packet(note, cfg, cv_staged=False)
-        print(packet.render_json(pkt) if args.json else packet.render_text(pkt))
+        print(packet.render_json(r.packet) if args.json else packet.render_text(r.packet))
         print(f"apply-prep: {args.lead} dry-run", file=sys.stderr)
         return 0
-    r = engine.prep_one(vault, cfg, args.lead)
+    r = app.prep(lead=args.lead)[0]
     if r.status == "staged":
         print(packet.render_json(r.packet) if args.json else packet.render_text(r.packet))
         print(f"apply-prep: {r.lead} staged", file=sys.stderr)
@@ -324,12 +324,9 @@ def cmd_apply_prep(args, config) -> int:
 
 def cmd_apply_record(args, config) -> int:
     from sluice.core.app import Sluice
-    from sluice.apply.config import load_apply_config
-    from sluice.apply import engine
 
-    cfg = load_apply_config()
-    out = engine.record_one(Sluice(config).store(), cfg, args.lead,
-                            ats=args.ats, url=args.url, dry_run=args.dry_run)
+    out = Sluice(config).record(lead=args.lead, ats=args.ats, url=args.url,
+                                dry_run=args.dry_run)
     if out["ok"]:
         f = out["fields"]
         print(f"apply-record: {args.lead} -> applied "
