@@ -78,7 +78,13 @@ def test_cmd_apply_prep_dry_run_touches_no_filesystem(monkeypatch, capsys):
     args = SimpleNamespace(lead="northwind", all_shortlist=False, limit=None, json=False, dry_run=True)
     assert cmd_apply_prep(args, None) == 0
     assert not pathlib.Path(upload, "CV.pdf").exists()   # dry-run stages no CV
-    assert "APPLICATION PACKET" in capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert "APPLICATION PACKET" in captured.out
+    # Pin the exact stderr wording: "apply-prep: {lead} dry-run", NOT "previewed dry-run"
+    # (Sluice.prep(dry_run=True) returns status="previewed", but the CLI's dry-run
+    # wording predates that API and must stay literal "dry-run" to match operator docs).
+    assert "apply-prep: northwind dry-run" in captured.err
+    assert "previewed" not in captured.err
 
 
 def test_cmd_apply_prep_lead_no_match_returns_1(monkeypatch, capsys):
