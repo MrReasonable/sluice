@@ -77,6 +77,7 @@ def test_triage_threads_the_triage_config_into_the_backend(tmp_path, monkeypatch
     app.triage(backend_role="primary")
     assert seen["role"] == "primary"
     assert seen["primary_model"] == "claude-sonnet-4-5"   # triage uses claude_max_model
+    assert seen["effort"] == "medium"                     # ...and claude_max_effort
     assert seen["fallback_model"] == "deepseek-v4-flash"  # ...and cheap_model for fallback
 
 
@@ -95,6 +96,7 @@ def test_compose_cv_threads_the_cv_config_into_the_backend(tmp_path, monkeypatch
     app.compose_cv(lead="x", dry_run=True)
     assert seen["primary_model"] == "claude-sonnet-4-5"   # cv uses compose_model
     assert seen["effort"] == "max"                        # ...and compose_effort
+    assert seen["fallback_model"] == "deepseek-v4-flash"  # ...and cheap_model for fallback
 
 
 def test_prep_all_shortlist_on_empty_vault_returns_a_prep_result_list(tmp_path, monkeypatch):
@@ -138,6 +140,7 @@ def test_track_threads_the_track_config_into_the_backend(tmp_path, monkeypatch):
     app.track(dry_run=True, client=_FakeGoogle(), now_iso="2026-07-15T00:00:00+00:00")
     assert seen["primary_model"] == "claude-sonnet-4-5"   # track uses claude_max_model
     assert seen["effort"] == "medium"                     # ...and claude_max_effort
+    assert seen["fallback_model"] == "deepseek-v4-flash"  # ...and cheap_model for fallback
 
 
 def test_normalize_statuses_dry_run_on_empty_vault(tmp_path, monkeypatch):
