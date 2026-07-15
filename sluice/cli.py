@@ -18,7 +18,6 @@ from dataclasses import asdict
 
 from sluice.core.config import load_config
 from sluice.core.health import HealthStore
-from sluice.core.leads import slug_matches as _slug_matches
 from sluice.core.log import get_logger, notify
 from sluice.ingest import sources as registry
 from sluice.ingest.engine import run as engine_run
@@ -266,34 +265,13 @@ def _build_compose_backend(cvcfg, backend_choice="auto"):
 
 def cmd_cv_run(args, config) -> int:
     from sluice.core.app import Sluice
-    from sluice.core.dossier import DossierCache
-    from sluice.cv.config import load_cv_config
-    from sluice.cv.engine import run_batch, run_one
 
-    cvcfg = load_cv_config()
-    if args.no_serve:
-        cvcfg.served_dir = ""  # engine still renders; serve is skipped when dir is empty
-    app = Sluice(config)
-    vault = app.store()
-    # Resolved BEFORE any LLM spend: a missing render script is a config error and must
-    # surface at construction, not after a CV has been composed and gated. But a dry run
-    # never renders, so it must not require a renderer at all -- resolving eagerly there
-    # broke the one path whose whole point is to cost nothing and change nothing.
-    renderer = None if args.dry_run else app.renderer(cvcfg)
-    backend = _build_compose_backend(cvcfg, args.backend)
-    cache = DossierCache(cvcfg.dossier_dir, cvcfg.ttl_days, fetcher=_dossier_fetcher(app))
-
-    if args.all_shortlist:
-        results = run_batch(vault, cvcfg, backend, cache, renderer=renderer,
-                            limit=args.limit, dry_run=args.dry_run)
-    else:
-        notes = [n for n in vault.read_leads({"shortlist"})
-                 if _slug_matches(n, args.lead)]
-        if not notes:
-            print(f"cv: no shortlist lead matching '{args.lead}'", file=sys.stderr)
-            return 1
-        results = [run_one(notes[0], vault, cvcfg, backend, cache,
-                           renderer=renderer, dry_run=args.dry_run)]
+    results = Sluice(config).compose_cv(
+        lead=args.lead, all_shortlist=args.all_shortlist, limit=args.limit,
+        dry_run=args.dry_run, no_serve=args.no_serve, backend_role=args.backend)
+    if not results and not args.all_shortlist:
+        print(f"cv: no shortlist lead matching '{args.lead}'", file=sys.stderr)
+        return 1
 
     for r in results:
         print(f"cv: {r.status} {r.lead} served={r.served} "
