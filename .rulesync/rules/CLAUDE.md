@@ -124,8 +124,13 @@ consistently engineers out; see `_select_backend`'s guard in `cli.py`.
   than stripping it.
 - Conventional commits (`fix(triage): ...`, `ci: ...`, `docs: ...`).
 - Tests assert on behaviour, not merely that code runs. Fixtures stay synthetic.
-- The four adapter seams (backend, store, renderer, fetch) each have exactly one implementation today
-  and no runtime selector, because there is nothing yet to select between. Route new implementations
-  through those seams rather than around them.
+- The four adapter seams (backend, store, renderer, fetch) are each a name-keyed registry resolved via
+  `plugins.get`. The backend seam has four provider implementations (claude-max/anthropic/deepseek/openai)
+  selected by name; store, renderer, and fetch have one each today and no runtime selection is exercised
+  yet. The backend seam differs in shape, though: a role layer (auto/primary/fallback, in
+  `Sluice.backend()`) sits above the provider lookup, and its factory takes resolved construction params
+  (model/key/base_url), not the config object -- so it does not go through `Sluice._resolve` the way the
+  other three do. Route new implementations through those seams (a self-registering module) rather than
+  around them.
 - `.rulesync/` is canonical. `CLAUDE.md`, `AGENTS.md`, `.claude/` and the other AI-tool outputs are
   generated and gitignored; edit the source, then regenerate.
