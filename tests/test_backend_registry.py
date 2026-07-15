@@ -69,3 +69,37 @@ def test_per_token_factory_missing_key_is_fatal_at_construction():
     for name in ("anthropic", "deepseek", "openai"):
         with pytest.raises(BackendError, match="requires an api_key"):
             _factory(name)("m", api_key="")
+
+
+def test_make_backend_routes_provider_construction_through_the_registry(monkeypatch):
+    # The shim's whole point: make_backend no longer branches on name itself, it asks the
+    # registry. Spy on plugins.get and prove make_backend consults it. Before the rewrite
+    # make_backend never calls plugins.get, so `calls` stays empty and this fails (red).
+    from sluice.core import backends, plugins
+    calls = []
+    real_get = plugins.get
+
+    def spy(seam, name):
+        calls.append((seam, name))
+        return real_get(seam, name)
+
+    monkeypatch.setattr(plugins, "get", spy)
+    be = backends.make_backend("claude-max", "m")
+    assert ("backend", "claude-max") in calls
+    assert type(be).__name__ == "ClaudeMaxBackend"
+
+
+def test_make_backend_translates_a_missing_plugin_to_backenderror(monkeypatch):
+    # A provider name that is valid (in DEFAULT_MODELS) but whose plugin module failed to
+    # import leaves the registry without a factory: plugins.get raises UnknownAdapter (a
+    # KeyError). The shim must surface BackendError -- the fail-at-construction contract
+    # every caller relies on -- not leak the KeyError. Unreachable for the four registered
+    # providers, so this dedicated test is the only thing pinning the translation branch.
+    from sluice.core import backends, plugins
+
+    def raise_unknown(seam, name):
+        raise plugins.UnknownAdapter(seam, name, [])
+
+    monkeypatch.setattr(plugins, "get", raise_unknown)
+    with pytest.raises(backends.BackendError):
+        backends.make_backend("claude-max", "m")
