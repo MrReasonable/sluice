@@ -5,6 +5,10 @@ __pycache__/
 .venv/
 *.egg-info/
 
+# Subagent-driven-development scratch (ledger, task briefs/reports, review packages).
+# Local-only working state; may contain absolute paths, so never track it.
+.superpowers/
+
 # Local config overlays hold secrets and personal data. Never commit these.
 # (sluice.yaml.example is the tracked template; a real sluice.yaml / *.local.yaml
 # holds your personal searches, contact details, and hosts.)
