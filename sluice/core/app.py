@@ -261,6 +261,49 @@ class Sluice:
         return [run_one(notes[0], store, cvcfg, backend, cache, renderer=renderer,
                         dry_run=dry_run)]
 
+    def prep(self, *, lead=None, all_shortlist=False, limit=None, dry_run=False):
+        """Run the apply sub-app's prep step: stage the tailored CV and build an
+        application packet for one shortlisted lead, or preview the whole ready
+        queue. Always returns a list of `apply.engine.PrepResult` so a single lead
+        and an all_shortlist batch share one return shape for the caller.
+
+        Apply is OFFLINE by contract -- no backend, no dossier, just the store --
+        so unlike `triage`/`compose_cv` this method never touches `Sluice.backend`
+        or `Sluice.dossier_cache`.
+
+        `dry_run` (single lead only; `preview_all` already has its own no-write
+        preview mode for all_shortlist) mirrors `engine.prep_one`'s select-then-
+        build-packet shape but skips `cvfile.stage` entirely, so a dry run changes
+        nothing on disk. The result is wrapped as a single-element list with
+        status "previewed" (an eligible lead whose packet was built) or "skipped"
+        (select_one found no eligible match) -- the same vocabulary
+        `PrepResult.status` uses everywhere else, even though `prep_one`'s
+        non-dry-run success status is "staged". The CLI is what re-labels the
+        dry-run "previewed" case back to today's "dry-run" wording; see
+        cmd_apply_prep."""
+        from sluice.apply import engine, packet, select
+        from sluice.apply.config import load_apply_config
+
+        cfg = load_apply_config()
+        store = self.store()
+        if all_shortlist:
+            return engine.preview_all(store, cfg, limit=limit)
+        if dry_run:
+            note, reason = select.select_one(store, lead, cfg)
+            if note is None:
+                return [engine.PrepResult(lead=lead, status="skipped", reason=reason)]
+            pkt = packet.build_packet(note, cfg, cv_staged=False)
+            return [engine.PrepResult(lead=lead, status="previewed", packet=pkt)]
+        return [engine.prep_one(store, cfg, lead)]
+
+    def record(self, *, lead, ats=None, url=None, dry_run=False):
+        """Run the apply sub-app's record step: the never-clobber shortlist ->
+        applied transition. Offline, same as `prep` -- just the store."""
+        from sluice.apply import engine
+        from sluice.apply.config import load_apply_config
+        return engine.record_one(self.store(), load_apply_config(), lead,
+                                 ats=ats, url=url, dry_run=dry_run)
+
     # ── introspection ────────────────────────────────────────────────────────
     @staticmethod
     def available(seam: str) -> list:
