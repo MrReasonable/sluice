@@ -41,6 +41,42 @@ _STORE_SEAM = "store"
 _FETCHER_SEAM = "fetcher"
 _RENDERER_SEAM = "renderer"
 
+
+# ── track seen/lastrun persistence ───────────────────────────────────────────
+# Moved verbatim from cli.py (Task 6): the message-id dedup set and the
+# previous-successful-run timestamp are file-backed state Sluice.track() owns,
+# not adapters a registry resolves -- there is exactly one implementation and
+# no reason for a surface to swap it out.
+def _load_seen(path):
+    try:
+        with open(path) as f:
+            return set(line.strip() for line in f if line.strip())
+    except OSError:
+        return set()
+
+
+def _save_seen(path, seen):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write("\n".join(sorted(seen)))
+
+
+def _load_lastrun(path):
+    """Read the ISO timestamp of the previous successful (non-dry-run) track run,
+    so the next run's Gmail query can be scoped since then (F10) instead of the
+    fixed lookback window. Missing/unreadable file just means "no prior run"."""
+    try:
+        with open(path) as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
+def _save_lastrun(path, iso):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w") as f:
+        f.write(iso)
+
 # ── backend construction ─────────────────────────────────────────────────────
 # Per-token providers authenticate with an API key and take an optional base_url
 # override, both from the environment. claude-max is deliberately absent: it
@@ -303,6 +339,54 @@ class Sluice:
         from sluice.apply.config import load_apply_config
         return engine.record_one(self.store(), load_apply_config(), lead,
                                  ats=ats, url=url, dry_run=dry_run)
+
+    def track(self, *, dry_run=False, backend_role="auto", client=None, now_iso=None):
+        """Run the track sub-app: fetch Gmail/Calendar since the last run, classify
+        and reconcile each message against the vault's in-flight leads. Returns the
+        engine's RunReport.
+
+        `client` is a plain constructor argument, not a registered adapter seam:
+        unlike store/fetcher/renderer/backend there is exactly one Google client
+        shape to resolve against (no config knob selects among providers), so this
+        is the test seam rather than a `plugins.get` lookup.
+
+        Save-on-success mirrors cli.py's old cmd_track_run exactly: `_save_seen`
+        runs on every non-dry-run call (the seen set is safe to persist even after
+        an auth error -- it only ever grew by ids actually processed before the
+        break), but `_save_lastrun` is additionally gated on `not rep.auth_error`,
+        because advancing the lastrun watermark past a run that never got to
+        classify anything would silently skip messages next time."""
+        from datetime import datetime, timezone
+        from sluice.track import engine as track_engine
+        from sluice.track.config import load_track_config
+        from sluice.track.google_client import RealGoogleClient
+
+        tcfg = load_track_config()
+        lastrun_path = tcfg.seen_db + ".lastrun"
+        seen = _load_seen(tcfg.seen_db)
+        since_iso = _load_lastrun(lastrun_path)
+        client = client if client is not None else RealGoogleClient(tcfg.token_path)
+        backend = self.backend(
+            backend_role, primary_name=tcfg.primary_backend,
+            primary_model=tcfg.claude_max_model, effort=tcfg.claude_max_effort,
+            host=tcfg.claude_max_host, claude_path=tcfg.claude_max_path,
+            fallback_name=tcfg.fallback_backend, fallback_model=tcfg.cheap_model)
+        now_iso = now_iso or datetime.now(timezone.utc).isoformat()
+        rep = track_engine.run(self.store(), tcfg, client, backend, seen=seen,
+                               now_iso=now_iso, since_iso=since_iso, dry_run=dry_run)
+        if not dry_run:
+            _save_seen(tcfg.seen_db, seen)
+            if not rep.auth_error:
+                _save_lastrun(lastrun_path, now_iso)
+        return rep
+
+    def track_confirm(self, *, lead, to, when=None, dry_run=False):
+        """Run the track sub-app's confirm step: apply an operator-approved
+        proposal (a status advance the engine flagged rather than auto-applied)."""
+        from sluice.track import engine as track_engine
+        from sluice.track.config import load_track_config
+        return track_engine.confirm(self.store(), load_track_config(), lead, to,
+                                    when=when, dry_run=dry_run)
 
     # ── introspection ────────────────────────────────────────────────────────
     @staticmethod

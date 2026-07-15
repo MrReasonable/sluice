@@ -1,6 +1,9 @@
 import tempfile, pathlib
 from types import SimpleNamespace
-from sluice.cli import _build_parser, cmd_track_confirm, _load_lastrun, _save_lastrun, _track_backend
+from sluice.cli import _build_parser, cmd_track_confirm, _track_backend
+# _load_lastrun/_save_lastrun moved from cli.py to core/app.py in Task 6 (they are
+# Sluice.track()'s file-backed state now, not cli.py wiring).
+from sluice.core.app import _load_lastrun, _save_lastrun
 from sluice.core.backends import DEFAULT_BASE_URLS
 
 
