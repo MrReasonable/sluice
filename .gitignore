@@ -49,6 +49,48 @@ dossiers/
 /.cursorrules
 /.github/copilot-instructions.md
 
+# The list above covers the AI tools this repo hand-maintains. But the documented regenerate
+# command uses `-t '*'` (ALL targets), so `rulesync generate` also emits an output for every
+# other tool rulesync 9.6.3 knows about. Those are build artifacts too -- ignore them so the
+# documented command leaves a clean tree instead of 32 untracked entries. Root-anchored for the
+# same reason as the block above. Re-audit this list on a rulesync version bump (the target set
+# is what changes).
+#
+# NOTE: `.github/` is TRACKED (workflows/, and the copilot handling above), so only rulesync's
+# generated SUBdirs under it are ignored here -- never a bare `.github/`.
+/.agents/
+/.aiassistant/
+/.augment/
+/.cline/
+/.codex/
+/.deepagents/
+/.devin/
+/.factory/
+/.github/agents/
+/.github/skills/
+/.goose/
+/.goosehints
+/.grok/
+/.hermes/
+/.hermes.md
+/.junie/
+/.kilo/
+/.kiro/
+/.opencode/
+/.pi/
+/.qwen/
+/.reasonix/
+/.roo/
+/.roomodes
+/.rovodev/
+/.rules
+/.takt/
+/.vibe/
+/.warp/
+/QWEN.md
+/REASONIX.md
+/replit.md
+
 # Belt and braces: re-include the canonical source unconditionally. The `/**` is required --
 # a bare `!/.rulesync/` re-includes only the DIRECTORY and cannot rescue a file inside it.
 !/.rulesync/**
