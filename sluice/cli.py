@@ -339,7 +339,6 @@ def _build_parser() -> argparse.ArgumentParser:
     tr = triage.add_parser("run")
     tr.add_argument("--status", default="new,research")
     tr.add_argument("--limit", type=int)
-    tr.add_argument("--sink", choices=["vault", "json"], default="vault")
     tr.add_argument("--dry-run", action="store_true")
     tr.add_argument("--backend", choices=_BACKEND_CHOICES, default="auto",
                     help=_BACKEND_HELP)
@@ -386,8 +385,6 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="cmd", required=True)
     trun = track.add_parser("run")
     trun.add_argument("--dry-run", action="store_true")
-    trun.add_argument("--limit", type=int, default=None)
-    trun.add_argument("--json", action="store_true")
     trun.add_argument("--backend", choices=_BACKEND_CHOICES, default="auto",
                       help=_BACKEND_HELP)
     trun.set_defaults(func=cmd_track_run)
