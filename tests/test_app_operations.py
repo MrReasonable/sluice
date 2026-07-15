@@ -152,18 +152,48 @@ def test_normalize_statuses_dry_run_on_empty_vault(tmp_path, monkeypatch):
 
 
 def test_ingest_dry_run_writes_nothing(tmp_path, monkeypatch):
-    # dry_run must route to JsonSink, never VaultSink -- so an empty source list
-    # touches neither the vault nor seen.db, mirroring the offline guarantee
-    # `sluice ingest run --dry-run` has always given. fetcher=object() proves the
-    # override seam is used rather than a real Camofox (Ctx always resolves
-    # self.fetcher(), even for zero sources -- see Sluice.ingest's docstring).
+    # dry_run must route to JsonSink, never VaultSink -- so it must NOT construct
+    # VaultSink or call self.store(). This test monkeypatches store() to raise if
+    # called, then runs ingest with a source that yields a lead (so sink.write runs).
+    # If store() were called, the AssertionError would fire, proving the bug.
+    # fetcher=object() proves the override seam is used rather than a real Camofox.
+    from sluice.core.leads import Lead
+    from sluice.ingest.base import Search
+
     monkeypatch.setenv("VAULT_DIR", str(tmp_path))
     monkeypatch.setenv("SEEN_DB", str(tmp_path / "seen.db"))
     monkeypatch.setenv("SLUICE_HEALTH", str(tmp_path / "health.json"))
+
+    class _TestSource:
+        id = "test"
+        enabled = True
+        kind = "browser"
+
+        def searches(self):
+            return [Search("test search", "http://example.invalid")]
+
+        def fetch(self, ctx, search):
+            return {"result": [{"title": "Engineer", "link": "http://x/1"}],
+                    "landed": "http://x", "requested": "http://x"}
+
+        def parse(self, raw, search):
+            return [Lead(source=self.id, search=search.label, title="Engineer",
+                        company="TestCorp", url="http://x/1")]
+
+        def health_hint(self, raw):
+            return {"count": 1, "landed_host": "x", "requested_host": "x", "markers": {}}
+
     app = Sluice(Config(), fetcher=object())
+    # Monkeypatch store to raise if called -- discriminates that JsonSink is used
+    def raising_store():
+        raise AssertionError("dry_run must not construct VaultSink / call store()")
+    monkeypatch.setattr(app, "store", raising_store)
+
     out = io.StringIO()
-    report = app.ingest([], dry_run=True, out=out)
-    assert report.sources == []
-    assert report.written == {"created": 0, "updated": 0, "skipped": 0}
-    assert out.getvalue() == ""
+    report = app.ingest([_TestSource()], dry_run=True, out=out)
+
+    # Assertions: dry_run completed without calling store(), wrote 1 lead to JsonSink
+    assert report.sources[0].status == "ok"
+    assert report.written == {"created": 1, "updated": 0, "skipped": 0}
+    assert out.getvalue() != ""  # JSON lines were written to out
     assert not os.path.exists(os.path.join(str(tmp_path), "Job Applications", "Job Leads"))
