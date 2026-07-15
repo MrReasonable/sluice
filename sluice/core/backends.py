@@ -6,9 +6,10 @@ locally. AnthropicBackend calls the Anthropic Messages API directly, and
 OpenAiCompatibleBackend calls an OpenAI-compatible chat/completions endpoint
 (per-token, the fallback). FallbackBackend tries the primary and, if it errors
 (primary host down, timeout, nonzero exit), falls back automatically so a run
-is never blocked. `make_backend` builds any backend by name so selection can
-be config-driven. The subprocess runner and HTTP poster are injected, so
-everything is tested offline.
+is never blocked. `make_backend` builds any backend by name -- delegating the
+per-provider construction to the `backend` seam registry (`sluice/backends/`) so
+selection is config-driven and a new provider is a drop-in module. The subprocess
+runner and HTTP poster are injected, so everything is tested offline.
 """
 import json
 import subprocess
@@ -210,48 +211,40 @@ class FallbackBackend:
 def make_backend(name, model="", *, http=_urlopen, runner=subprocess.run, timeout=300,
                  api_key="", base_url="", max_tokens=None,
                  claude_host="", claude_path="claude", effort="max"):
-    """Build one backend by name so selection can be config-driven. The caller
-    (which knows `name`) resolves and passes the right api_key/base_url; each
-    branch reads only what it needs.
+    """Build one backend by name, delegating provider construction to the `backend`
+    seam registry (`sluice/backends/`).
 
-    `model` may be omitted, in which case it defaults to DEFAULT_MODELS[name] --
-    so a config that names a backend but no model is still buildable, and the
-    map is the single place a provider's default model lives.
+    A thin compatibility shim, deliberately: this is the tested, config-driven by-name
+    factory every caller (and `Sluice.backend`'s role helpers) already uses. It keeps
+    two responsibilities here, above the registry, so behaviour is unchanged:
 
-    `api_key` is *required* for the per-token backends and validated here, at
-    construction. Deferring it to call time turns a plain misconfiguration into
-    an opaque 401 halfway through a run -- and for the fallback specifically,
-    that surfaces only when the primary is already down. claude-max needs no key
-    (it shells the flat-rate CLI).
+    - the unknown-name guard raises `BackendError` listing the valid names (never a
+      silent default, and never the bare `UnknownAdapter`/`KeyError` the registry would
+      raise -- callers assert `BackendError`), and
+    - `model` defaults to `DEFAULT_MODELS[name]` when omitted, so the default-model map
+      stays the single place a provider's default model lives.
 
-    `max_tokens` defaults to None so OpenAI-compatible backends (deepseek/openai)
-    stay uncapped, matching direct construction -- config-driven selection must
-    not silently cap a fallback. The Anthropic API requires max_tokens, so the
-    anthropic branch falls through to AnthropicBackend's own default when unset."""
+    Everything provider-specific -- which class, which default endpoint, whether a key is
+    required -- now lives in the provider's module under `sluice/backends/`, reached via
+    `plugins.get("backend", name)`. The caller (which knows `name`) still resolves and
+    passes the right api_key/base_url; each factory reads only what it needs.
+    """
+    from sluice.core import plugins
+    import sluice.backends  # noqa: F401  -- import triggers factory self-registration
+
     if name not in DEFAULT_MODELS:
         raise BackendError(
             f"unknown backend '{name}' (expected {', '.join(DEFAULT_MODELS)})")
     model = model or DEFAULT_MODELS[name]
-
-    if name == "claude-max":
-        return ClaudeMaxBackend(model, host=claude_host, claude_path=claude_path,
-                                effort=effort, runner=runner, timeout=timeout)
-
-    # Every remaining backend is per-token and authenticates with a key.
-    if not api_key:
-        raise BackendError(
-            f"backend '{name}' requires an api_key (set the provider's API key env var)")
-
-    if name == "anthropic":
-        extra = {} if max_tokens is None else {"max_tokens": max_tokens}
-        return AnthropicBackend(model, api_key=api_key,
-                                base_url=base_url or DEFAULT_BASE_URLS["anthropic"],
-                                http=http, timeout=timeout, **extra)
-    if name == "deepseek":
-        return OpenAiCompatibleBackend(model, api_key=api_key,
-                                       base_url=base_url or DEFAULT_BASE_URLS["deepseek"],
-                                       http=http, timeout=timeout, max_tokens=max_tokens)
-    # openai -- the only name left, guaranteed by the DEFAULT_MODELS check above.
-    return OpenAiCompatibleBackend(model, api_key=api_key,
-                                   base_url=base_url or DEFAULT_BASE_URLS["openai"],
-                                   http=http, timeout=timeout, max_tokens=max_tokens)
+    try:
+        factory = plugins.get("backend", name)
+    except plugins.UnknownAdapter as e:
+        # name is in DEFAULT_MODELS but its plugin module failed to import (autoload
+        # swallows a broken plugin's ImportError, leaving the name unregistered). Surface
+        # loudly as BackendError -- the fail-at-construction contract callers rely on --
+        # rather than the KeyError-flavoured UnknownAdapter. The registry-completeness
+        # test is what stops this reaching a user in the first place.
+        raise BackendError(str(e)) from e
+    return factory(model, api_key=api_key, base_url=base_url, http=http, runner=runner,
+                   timeout=timeout, max_tokens=max_tokens, claude_host=claude_host,
+                   claude_path=claude_path, effort=effort)
