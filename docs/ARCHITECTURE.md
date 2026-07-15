@@ -69,27 +69,28 @@ Two modules and a composition root make the seams real:
   markdown filename in four separate modules, and that is what pinned the store
   to a filesystem.
 - `core/app.py`: `Sluice(config)`, the composition root. Resolves the adapters
-  config names and exposes the pipeline operations. Adapters are built lazily on
-  first use, so an offline command still never constructs a browser, a store or a
-  backend.
+  config names -- store, fetcher, renderer, and backend (by ROLE: auto/primary/
+  fallback, over whichever provider config selects) -- and OWNS the pipeline
+  operations as value-returning methods: `ingest()`, `triage()`, `compose_cv()`,
+  `prep()`, `record()`, `track()`, `track_confirm()`, `normalize_statuses()`. It
+  also owns the state those operations need that is not itself an adapter: the
+  dossier cache (`dossier_cache()`), and track's file-backed seen-message set and
+  last-successful-run watermark. Adapters are built lazily on first use, so an
+  offline command still never constructs a browser, a store or a backend.
 
 Implementations live in `sluice/stores/`, `sluice/fetchers/` and
 `sluice/renderers/`, each self-registering on import exactly as
 `ingest/sources/` already did.
 
-There are two kinds of plugin, and only one of them is fully served today. An
-**adapter** plugin is something core calls (a store, a renderer, a fetcher); a
-**surface** plugin is something that calls core (a web UI, a TUI, a daemon). The
-registry serves adapters. Surfaces need a programmatic API to drive, and `Sluice`
-is only the first half of one: it resolves the adapters, so a surface no longer
-constructs a `Vault()` itself, but the backend construction, the dossier fetcher
-and the operations are still driven from `cli.py`. A web UI written today would
-still have to duplicate that wiring.
-
-Moving it into `Sluice` -- and adding `.triage()`, `.compose_cv()`, `.prep()`,
-`.record()`, `.track()` as value-returning methods -- is the follow-up that makes
-"a surface is a plugin" true. It touches every command and is deliberately a
-separate change.
+There are two kinds of plugin. An **adapter** plugin is something core calls (a
+store, a renderer, a fetcher, a backend); a **surface** plugin is something that
+calls core (a web UI, a TUI, a daemon). The registry serves adapters. Surfaces
+need a programmatic API to drive, and `Sluice` is that API: it resolves the
+adapters AND drives the pipeline, so a surface no longer constructs a `Vault()`
+or a `Camofox()`, builds a backend, or duplicates the triage/compose/prep/record/
+track wiring itself. `cli.py` is now a thin shell over `Sluice` -- each command
+builds one, calls one method, and formats the result for the terminal -- so a web
+UI written today has nothing left in `cli.py` worth forking.
 
 `tests/conformance/test_store_contract.py` is parameterised over every registered
 store and asserts never-clobber, never-regress, and slug/ref identity. Those

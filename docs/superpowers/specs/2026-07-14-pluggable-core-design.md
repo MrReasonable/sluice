@@ -194,25 +194,33 @@ the behaviour, not the implementation:
 Any future store passes this suite or it does not ship. That is the whole point: the invariants stop
 being a property of the vault and become a property of *being a store*.
 
-## Status after implementation (2026-07-14)
+## Status after implementation (2026-07-15)
 
-Adversarial review found that the composition root as built **resolves adapters but does
-not own the operations**: `_build_backend`, `_dossier_fetcher` and the seen/lastrun
-handling remain in `cli.py`, so a web UI would still duplicate that wiring. The
-"surface plugins are now possible" claim in this spec was therefore ahead of the code, and
-has been corrected in `core/app.py` and `docs/ARCHITECTURE.md`.
+Adversarial review of the first cut found that the composition root **resolved adapters
+but did not own the operations**: `_build_backend`, `_dossier_fetcher` and the
+seen/lastrun handling remained in `cli.py`, so a web UI would still have had to
+duplicate that wiring. The "surface plugins are now possible" claim in this spec was
+therefore ahead of the code at that point.
 
-Moving the wiring in, and adding `Sluice.triage()` / `.compose_cv()` / `.prep()` /
-`.record()` / `.track()`, is the follow-up that makes it true. It touches every command
-and deserves its own review, so it is a separate change rather than a late addition to
-this one.
+That gap is now closed. `Sluice` owns backend role-selection, the dossier cache, and
+track's seen/lastrun state, and exposes the pipeline itself as value-returning methods --
+`ingest()`, `triage()`, `compose_cv()`, `prep()`, `record()`, `track()`,
+`track_confirm()`, `normalize_statuses()`. `cli.py` was shrunk to match: every `cmd_*`
+function now builds a `Sluice(config)`, calls one method, and formats the result: it owns
+argument parsing and printing, nothing else. The per-command backend-construction
+wrappers (`_build_backend`, `_build_compose_backend`, `_track_backend`) and the lazy
+dossier-fetcher closure are deleted; their behaviour lives in `Sluice.backend()` and
+`Sluice.dossier_cache()`. A surface can now drive the full pipeline through `Sluice`
+without forking anything out of `cli.py` -- the "a surface is a plugin" claim this spec
+originally made is true rather than aspirational.
 
 ## Non-goals
 
 - No SQLite store. The seam is the deliverable; a second implementation is a separate piece of work
   and is what will prove the contract is right.
-- No web UI. Adapter resolution is available, but the façade required to drive pipeline
-  operations remains follow-up work.
+- No web UI. Adapter resolution AND the operation façade (`Sluice.triage()` and friends)
+  are both available now, but building an actual web UI on top of `Sluice` is separate
+  work this spec does not do.
 - No entry-point discovery / third-party plugins. Internal seams, in-tree implementations. Promoting
   to entry-point discovery later is additive (`importlib.metadata` is stdlib, ~5 lines).
 - Sources and backends keep their existing registries. They work; churning them buys nothing.

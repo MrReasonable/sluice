@@ -1,33 +1,31 @@
 """The composition root: `Sluice(config)`.
 
-This is the half of the plugin story a registry cannot provide.
+This is the plugin story a registry cannot provide on its own.
 
 **Adapter plugins** are things core CALLS (store, fetcher, renderer, backend). A registry
 covers those. **Surface plugins** are things that CALL core -- a web UI, a TUI, a daemon.
-A registry does nothing for them. They need a programmatic API to drive, and until now
-sluice had none: its API was `cli.py` functions with the signature `(args, config)` that
-constructed their own `Vault()` and `Camofox()` and printed to stderr. A web UI could not
-drive that, so "a web UI is a plugin" would have been a lie.
+A registry does nothing for them. They need a programmatic API to drive. Before this
+module existed, sluice had none: its API was `cli.py` functions with the signature
+`(args, config)` that constructed their own `Vault()` and `Camofox()`, drove the pipeline
+inline, and printed to stderr. A web UI could not drive that, so "a web UI is a plugin"
+would have been a lie.
 
-`Sluice` is the FIRST HALF of that API: it resolves every adapter the config names, so a
-surface no longer has to construct a `Vault()` or a `Camofox()` for itself.
+`Sluice` is that programmatic API. It resolves every adapter the config names -- store,
+fetcher, renderer, backend (by ROLE: auto/primary/fallback, over the config-selected
+provider) -- and it OWNS the pipeline operations as value-returning methods: `ingest(...)`,
+`triage(...)`, `compose_cv(...)`, `prep(...)`, `record(...)`, `track(...)`,
+`track_confirm(...)`, `normalize_statuses(...)`. It also owns the state those operations
+need that is not itself an adapter: the dossier cache (`dossier_cache`), and track's
+file-backed seen-message set and last-successful-run watermark. `cli.py` is now a thin
+shell over this class: each `cmd_*` function builds a `Sluice(config)`, calls one method,
+and formats the result for the terminal. A surface (a web UI, a TUI, a daemon) can do the
+same without duplicating any of that wiring -- `cli.py` has nothing left worth forking.
 
-Backend ROLE-selection (`Sluice.backend`) has made the same move: `cli.py`'s
-`_select_backend` and its provider-construction helpers now live here as
-`Sluice.backend`, so a surface resolves a judge backend the same way it resolves a
-store or a fetcher. The lazy dossier fetcher and the seen/lastrun file handling still
-live in `cli.py`, and the operations themselves (triage, compose, prep, record, track)
-are still driven from there. So a web UI written today would resolve its adapters
-(store, fetcher, renderer, backend) through `Sluice` and then have to duplicate the
-rest of `cli.py`'s wiring. Moving that wiring in -- and adding `Sluice.triage(...)`,
-`.compose_cv(...)` and friends as value-returning methods -- is the follow-up that makes
-"a surface is a plugin" true rather than nearly-true. It is deliberately a separate change:
-it touches every command, and it deserves its own review.
-
-Adapters are resolved LAZILY, on first use. That preserves the property `cli.py`'s
-inside-the-function imports were protecting: an offline command must never construct a
-browser, a store, or an LLM backend just by existing. `sluice triage run --no-llm` still
-touches no backend; `sluice ingest list-sources` still touches no vault.
+Adapters are resolved LAZILY, on first use, and operations that do not need a given
+adapter never build one. That preserves the property `cli.py`'s old inside-the-function
+imports were protecting: an offline command must never construct a browser, a store, or
+an LLM backend just by existing. `sluice triage run --no-llm` still touches no backend;
+`sluice ingest list-sources` still touches no vault.
 """
 import os
 
