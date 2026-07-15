@@ -121,3 +121,11 @@ Four points in the config are the seams for pluggable adapters.
 - **fetch**: `sluice/fetchers/`, selected by `fetcher:` (default `camofox`).
   Implementations: `camofox` (the headless-browser HTTP server).
 - **sources**: `ingest/sources/`, the registry all of the above are modelled on.
+
+`sluice doctor` is a read-only preflight over the backend seam: it enumerates every
+configured backend (primary and fallback, per sub-app), classifies each as
+`ok`/`degraded`/`dead`, and exits non-zero when a run-blocking backend is dead. The
+classification is role-aware -- a keyless fallback degrades (the sanctioned
+primary-only path, exit 0), while a keyed-but-broken backend is `dead` regardless of
+role, the silently-non-functional fallback the tool exists to catch. Live round-trip
+by default; `--offline` for a config-only check; `--strict` to also fail on degraded.
