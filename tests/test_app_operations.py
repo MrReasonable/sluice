@@ -1,3 +1,5 @@
+import os
+
 from sluice.apply.engine import PrepResult
 from sluice.core.app import Sluice
 from sluice.core.config import Config
@@ -7,6 +9,34 @@ class _FakeTab:
     def create_tab(self, url): return "t1"
     def evaluate(self, tab, js): return {"result": "JD BODY"}
     def close_tab(self, tab): return None
+
+
+class _FakeGoogle:
+    """Faithful fake of the client `track.engine.run` drives: the real method names
+    (engine.py:50 calls search_messages, :59 calls get_message; calendar_sync.py
+    calls list_events/insert_event/update_event/delete_event when an .ics attachment
+    is present), all inert. A fake missing a called method surfaces as an
+    AttributeError instead of exercising the test's actual assertion (tst-003)."""
+    auth_error = False
+
+    def search_messages(self, *a, **k): return []
+    def get_message(self, *a, **k): return {}
+    def list_events(self, *a, **k): return []
+    def insert_event(self, *a, **k): return "evt1"
+    def update_event(self, *a, **k): return "evt1"
+    def delete_event(self, *a, **k): return None
+
+
+def _track_config(tmp_path, monkeypatch):
+    """Point SLUICE_CONFIG at a track: block under tmp_path. load_track_config's
+    seen_db/token_path come ONLY from the YAML file at $SLUICE_CONFIG -- there is
+    no TRACK_SEEN_DB env override -- so this is the only way to steer them into
+    tmp_path for the test."""
+    seen_db = str(tmp_path / "track-seen.db")
+    cfgp = tmp_path / "cfg.yaml"
+    cfgp.write_text(f"track:\n  seen_db: {seen_db}\n")
+    monkeypatch.setenv("SLUICE_CONFIG", str(cfgp))
+    return seen_db
 
 
 def test_dossier_cache_fetches_jd_via_the_fetcher_seam(tmp_path, titles):
@@ -85,3 +115,25 @@ def test_record_unknown_lead_is_not_ok(tmp_path, monkeypatch):
     app = Sluice(Config())
     out = app.record(lead="ghost", dry_run=True)
     assert out["ok"] is False
+
+
+def test_track_dry_run_persists_nothing(tmp_path, monkeypatch):
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    seen_db = _track_config(tmp_path, monkeypatch)
+    app = Sluice(Config())
+    monkeypatch.setattr(app, "backend", lambda *a, **k: object())  # avoid real creds
+    rep = app.track(dry_run=True, client=_FakeGoogle(),
+                    now_iso="2026-07-15T00:00:00+00:00")
+    assert hasattr(rep, "msgs")
+    assert not os.path.exists(seen_db)
+
+
+def test_track_threads_the_track_config_into_the_backend(tmp_path, monkeypatch):
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    _track_config(tmp_path, monkeypatch)
+    app = Sluice(Config())
+    seen = {}
+    monkeypatch.setattr(app, "backend", lambda role, **kw: seen.update(role=role, **kw) or object())
+    app.track(dry_run=True, client=_FakeGoogle(), now_iso="2026-07-15T00:00:00+00:00")
+    assert seen["primary_model"] == "claude-sonnet-4-5"   # track uses claude_max_model
+    assert seen["effort"] == "medium"                     # ...and claude_max_effort
