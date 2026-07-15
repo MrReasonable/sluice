@@ -78,8 +78,8 @@ Two modules and a composition root make the seams real:
   last-successful-run watermark. Adapters are built lazily on first use, so an
   offline command still never constructs a browser, a store or a backend.
 
-Implementations live in `sluice/stores/`, `sluice/fetchers/` and
-`sluice/renderers/`, each self-registering on import exactly as
+Implementations live in `sluice/stores/`, `sluice/fetchers/`, `sluice/renderers/`
+and `sluice/backends/`, each self-registering on import exactly as
 `ingest/sources/` already did.
 
 There are two kinds of plugin. An **adapter** plugin is something core calls (a
@@ -102,9 +102,12 @@ suite or it does not ship.
 
 Four points in the config are the seams for pluggable adapters.
 
-- **backend**: `core/backends.py`; selected by ROLE (`primary` / `fallback`)
-  rather than by provider, via `make_backend(name, ...)`. Keeps its own
-  registry, which already worked.
+- **backend**: `sluice/backends/`, selected by provider name through the adapter
+  registry (`make_backend` is now a thin shim over `plugins.get("backend", name)`).
+  Implementations: `claude-max` (flat-rate `claude --print` CLI), `anthropic` (direct
+  Messages API), `deepseek` and `openai` (OpenAI-compatible). Role selection
+  (`auto`/`primary`/`fallback`) sits ABOVE the provider seam, in `Sluice.backend()`:
+  the config picks which provider fills each role, the role picks which backend runs.
 - **store**: `sluice/stores/`, selected by `store:` (default `vault`).
   Implementations: `vault` (the Obsidian-style markdown vault in
   `core/vault.py`). A SQLite store is the obvious next one, and the

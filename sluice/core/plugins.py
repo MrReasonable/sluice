@@ -1,9 +1,10 @@
 """The adapter registry: one name-keyed lookup per seam.
 
 `docs/ARCHITECTURE.md` names four adapter seams (backend, store, renderer, fetch).
-Until now three of them had no registry, so `cli.py` constructed the implementations
-itself -- twelve times -- and a second implementation of any seam meant editing
-`cli.py` rather than adding a plugin. This generalises the pattern
+All four are now registry-backed: store/renderer/fetch gained a registry when this
+module landed, and the backend seam joined them (`sluice/backends/`) once provider
+construction moved off `make_backend`'s inline ladder. A second implementation of any
+seam is now a drop-in plugin, not an edit to `cli.py`. This generalises the pattern
 `ingest/sources/__init__.py` already proves: a module registers itself at import, the
 package auto-imports its siblings, and one broken plugin is logged and skipped rather
 than sinking the registry.
