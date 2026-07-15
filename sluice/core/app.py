@@ -38,6 +38,7 @@ _log = get_logger("app")
 _STORE_SEAM = "store"
 _FETCHER_SEAM = "fetcher"
 _RENDERER_SEAM = "renderer"
+_BACKEND_SEAM = "backend"
 
 
 # ── track seen/lastrun persistence ───────────────────────────────────────────
@@ -436,6 +437,9 @@ def _import_plugins(seam: str) -> None:
         import sluice.fetchers  # noqa: F401
     elif seam == _RENDERER_SEAM:
         import sluice.renderers  # noqa: F401
+    elif seam == _BACKEND_SEAM:
+        import sluice.backends  # noqa: F401
     else:
-        raise plugins.UnknownAdapter("seam", seam,
-                                     [_STORE_SEAM, _FETCHER_SEAM, _RENDERER_SEAM])
+        raise plugins.UnknownAdapter(
+            "seam", seam,
+            [_STORE_SEAM, _FETCHER_SEAM, _RENDERER_SEAM, _BACKEND_SEAM])
