@@ -211,7 +211,8 @@ this one.
 
 - No SQLite store. The seam is the deliverable; a second implementation is a separate piece of work
   and is what will prove the contract is right.
-- No web UI. The façade makes one possible; building it is separate.
+- No web UI. Adapter resolution is available, but the façade required to drive pipeline
+  operations remains follow-up work.
 - No entry-point discovery / third-party plugins. Internal seams, in-tree implementations. Promoting
   to entry-point discovery later is additive (`importlib.metadata` is stdlib, ~5 lines).
 - Sources and backends keep their existing registries. They work; churning them buys nothing.
