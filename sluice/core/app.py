@@ -194,6 +194,34 @@ class Sluice:
             return {"jd": {"markdown": md or ""}, "glassdoor": {}}
         return DossierCache(dossier_dir, ttl_days, fetcher=fetch)
 
+    def triage(self, *, statuses=("new", "research"), limit=None, dry_run=False,
+               no_llm=False, backend_role="auto"):
+        """Run the triage sub-app end to end: classify, dossier-enrich the kept leads,
+        judge them, and write the audit trail. `no_llm` skips backend construction
+        entirely (`triage()`'s deterministic classify-only path), preserving the
+        offline guarantee `--no-llm` has always given `sluice triage run`.
+
+        The primary/fallback field mapping here (`claude_max_*` for primary,
+        `cheap_model` for fallback) is triage's own config shape -- other sub-apps
+        (cv, apply) have their own `*Config` with their own field names, so this
+        mapping is NOT shared and belongs in this method, not in `Sluice.backend`."""
+        import os
+        from sluice.triage.audit import AuditLog
+        from sluice.triage.config import load_triage_config
+        from sluice.triage.engine import run as _triage_run
+        tcfg = load_triage_config()
+        audit = AuditLog(os.environ.get("TRIAGE_AUDIT", "./triage-audit.jsonl"))
+        backend = None if no_llm else self.backend(
+            backend_role, primary_name=tcfg.primary_backend,
+            primary_model=tcfg.claude_max_model, effort=tcfg.claude_max_effort,
+            host=tcfg.claude_max_host, claude_path=tcfg.claude_max_path,
+            fallback_name=tcfg.fallback_backend, fallback_model=tcfg.cheap_model)
+        cache = self.dossier_cache(os.environ.get("DOSSIER_DIR", "./dossiers"),
+                                  tcfg.ttl_days)
+        return _triage_run(self.store(), tcfg, backend, cache, audit,
+                           statuses=tuple(statuses), limit=limit,
+                           dry_run=dry_run, no_llm=no_llm)
+
     # ── introspection ────────────────────────────────────────────────────────
     @staticmethod
     def available(seam: str) -> list:

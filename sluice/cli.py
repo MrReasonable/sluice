@@ -197,23 +197,11 @@ def cmd_triage_normalize(args, config) -> int:
 
 def cmd_triage_run(args, config) -> int:
     from sluice.core.app import Sluice
-    from sluice.triage.audit import AuditLog
-    from sluice.triage.config import load_triage_config
-    from sluice.core.dossier import DossierCache
-    from sluice.triage.engine import run as triage_run
 
-    tcfg = load_triage_config()
-    app = Sluice(config)
-    vault = app.store()
-    audit = AuditLog(_audit_path())
-    # args.backend was parsed but never forwarded before, so triage's --backend was
-    # a dead flag: every run silently got "auto" regardless of what was asked for.
-    backend = None if args.no_llm else _build_backend(tcfg, args.backend)
-    cache = DossierCache(_dossier_dir(), tcfg.ttl_days, fetcher=_dossier_fetcher(app))
     statuses = tuple(s.strip() for s in (args.status or "new,research").split(",") if s.strip())
-    report = triage_run(vault, tcfg, backend, cache, audit,
-                        statuses=statuses, limit=args.limit,
-                        dry_run=args.dry_run, no_llm=args.no_llm)
+    report = Sluice(config).triage(statuses=statuses, limit=args.limit,
+                                   dry_run=args.dry_run, no_llm=args.no_llm,
+                                   backend_role=args.backend)
     print(f"triage: {report.counts} judged={report.judged} "
           f"backend={report.backend} failures={len(report.failures)}", file=sys.stderr)
     notify(f"sluice triage: {report.counts} (backend {report.backend})", config=config)
