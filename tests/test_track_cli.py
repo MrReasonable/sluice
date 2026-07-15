@@ -7,8 +7,8 @@ from sluice.core.app import _load_lastrun, _save_lastrun
 
 
 def test_track_run_parses_flags():
-    a = _build_parser().parse_args(["track", "run", "--dry-run", "--limit", "5", "--json"])
-    assert a.group == "track" and a.cmd == "run" and a.dry_run and a.limit == 5 and a.json
+    a = _build_parser().parse_args(["track", "run", "--dry-run", "--backend", "primary"])
+    assert a.group == "track" and a.cmd == "run" and a.dry_run and a.backend == "primary"
 
 
 def test_track_confirm_parses_args():
