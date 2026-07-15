@@ -75,8 +75,11 @@ sluice doctor  (live round-trip)
 claude-max  claude-sonnet-4-5   ok        primary · triage, cv, track   (0.4s)
 deepseek    deepseek-v4-flash   degraded  fallback · triage, cv, track  DEEPSEEK_API_KEY unset — primary-only
 
-1 primary ok, 1 fallback degraded (primary-only). exit 0.
+1 ok, 1 degraded, 0 dead
 ```
+
+The exit code is `report.exit_code(strict)`; the summary line is a flat count
+(`N ok, N degraded, N dead`).
 
 ## Three states, role-aware (the crux)
 
@@ -115,7 +118,7 @@ Following the pure-module + thin-`Sluice`-method split the codebase already uses
   string + optional elapsed seconds), `DoctorReport` (the list of checks + `exit_code(strict: bool)`).
 - `enumerate_targets(triage_cfg, cv_cfg, track_cfg) -> list[BackendTarget]` — derives every
   sub-app × role target from the three config objects, then **dedupes** identical
-  `(provider, model, host)` targets into one, recording which sub-app roles each covers. This keeps
+  `(provider, model, host, claude_path)` targets into one, recording which sub-app roles each covers. This keeps
   the *live round-trip* to one call per distinct backend (cost discipline) while still enumerating
   per sub-app, so a per-sub-app model override (e.g. `cv.compose_model` retired while triage's is
   live) is caught — exactly the issue's "live model id, per sub-app". **Effort is excluded from the
