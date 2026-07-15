@@ -130,6 +130,26 @@ def test_deepseek_fallback_uses_the_documented_default_endpoint(key):
     assert be.api_key == "sk-test"
 
 
+# ── effort reaches the primary's cmd_template end to end ────────────────────
+# The per-sub-app spy tests in test_app_operations.py assert `effort` is *passed*
+# to Sluice.backend(); they stub backend() itself, so they cannot see whether the
+# value actually lands in the constructed ClaudeMaxBackend's cmd_template. These
+# two close that gap -- formerly covered by the now-deleted cli.py wrapper tests
+# (test_triage_backend_primary_uses_medium_effort, test_compose_backend_claude_max_uses_max_effort).
+def test_effort_medium_reaches_the_primary_cmd_template():
+    # Triage judges a large backlog; medium keeps a full run from taking hours.
+    be = _b("primary", effort="medium")
+    ct = be.cmd_template
+    assert ct[ct.index("--effort") + 1] == "medium"
+
+
+def test_effort_max_reaches_the_primary_cmd_template():
+    # cv compose needs full reasoning quality.
+    be = _b("primary", effort="max")
+    ct = be.cmd_template
+    assert ct[ct.index("--effort") + 1] == "max"
+
+
 # ── CLI-level coverage carried over unchanged ────────────────────────────────
 # Not about Sluice.backend() itself, but it was in the file being retired and
 # nothing else in the suite pins it: the `--backend` flag must exist (and
