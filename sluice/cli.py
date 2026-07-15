@@ -221,103 +221,20 @@ def cmd_triage_run(args, config) -> int:
 
 
 # ── backend construction ─────────────────────────────────────────────────────
-# Per-token providers authenticate with an API key and take an optional base_url
-# override, both from the environment. claude-max is deliberately absent: it
-# shells the flat-rate CLI and needs no credentials.
-_PROVIDER_ENV = {
-    "deepseek": ("DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL"),
-    "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"),
-    "openai": ("OPENAI_API_KEY", "OPENAI_BASE_URL"),
-}
-
-# `--backend` names a ROLE, not a provider: which of the two configured backends
-# to use. The old provider-flavoured values stay as aliases so existing crons and
-# muscle memory keep working after selection became config-driven.
-_BACKEND_ROLES = ("auto", "primary", "fallback")
-_BACKEND_ALIASES = {"claude-max": "primary", "deepseek": "fallback"}
-_BACKEND_CHOICES = [*_BACKEND_ROLES, *_BACKEND_ALIASES]
+# `--backend` names a ROLE (auto/primary/fallback), not a provider; the config
+# decides which provider fills each role. Role resolution -- and the provider-
+# construction helpers behind it -- now live in Sluice.backend(), which the three
+# per-command wrappers below delegate to. This literal is KEPT here so argparse
+# still has its `choices` without importing the moved role/alias tables.
+_BACKEND_CHOICES = ["auto", "primary", "fallback", "claude-max", "deepseek"]
 _BACKEND_HELP = (
     "which configured backend to use: auto (primary, falling back), primary, or "
     "fallback. claude-max/deepseek are deprecated aliases for primary/fallback.")
 
 
-def _provider_creds(name):
-    """(api_key, base_url) for a backend name, from the environment. An unset
-    *_BASE_URL yields "", which make_backend reads as "use the provider default"."""
-    key_var, url_var = _PROVIDER_ENV.get(name, ("", ""))
-    if not key_var:
-        return "", ""  # claude-max: flat-rate CLI, no credentials to resolve
-    return os.environ.get(key_var, ""), os.environ.get(url_var, "")
-
-
-def _make_primary(name, model, *, effort, host, claude_path):
-    from sluice.core.backends import make_backend
-    api_key, base_url = _provider_creds(name)
-    return make_backend(name, model, api_key=api_key, base_url=base_url,
-                        effort=effort, claude_host=host, claude_path=claude_path)
-
-
-def _make_fallback(name, model):
-    """Build the fallback leg, or None when its credentials are absent.
-
-    A missing key is not fatal: running primary-only (a claude-max setup with no
-    per-token key configured) is legitimate and must keep working. But it *is* a
-    degraded state -- the run has no safety net if the primary dies -- so warn
-    loudly at build time rather than letting it surface as a 401 at the exact
-    moment the primary goes down. When the fallback is explicitly *selected*
-    (`--backend fallback`) there is nothing to degrade to, so make_backend's
-    missing-key error is allowed to propagate; see _select_backend."""
-    from sluice.core.backends import make_backend
-    api_key, base_url = _provider_creds(name)
-    if name in _PROVIDER_ENV and not api_key:
-        _log.warning(
-            "fallback backend '%s' has no API key (%s unset): running with no "
-            "fallback -- a primary failure will now fail the run",
-            name, _PROVIDER_ENV[name][0])
-        return None
-    return make_backend(name, model, api_key=api_key, base_url=base_url)
-
-
-def _select_backend(choice, *, primary_name, primary_model, effort, host, claude_path,
-                    fallback_name, fallback_model):
-    """Resolve `--backend` against the configured primary/fallback pair.
-
-    auto     -> FallbackBackend(primary, fallback), or the bare primary if the
-                fallback has no credentials.
-    primary  -> the configured primary_backend alone.
-    fallback -> the configured fallback_backend alone (hard error if unusable).
-    """
-    from sluice.core.backends import BackendError, FallbackBackend
-    choice = _BACKEND_ALIASES.get(choice, choice or "auto")
-    # argparse guards the CLI, but this helper is called directly too. Without
-    # this an unrecognised choice ("primry") would match neither branch below and
-    # land silently in `auto` -- the same quiet-wrong-default this PR exists to
-    # remove, and the opposite of make_backend's fail-at-construction rule.
-    if choice not in _BACKEND_ROLES:
-        raise BackendError(
-            f"unknown backend choice '{choice}' (expected {', '.join(_BACKEND_CHOICES)})")
-
-    if choice == "fallback":
-        # Explicitly asked for it, so a missing key is fatal, not degradable.
-        return _make_fallback_strict(fallback_name, fallback_model)
-
-    primary = _make_primary(primary_name, primary_model, effort=effort, host=host,
-                            claude_path=claude_path)
-    if choice == "primary":
-        return primary
-
-    fallback = _make_fallback(fallback_name, fallback_model)
-    return FallbackBackend(primary, fallback) if fallback else primary
-
-
-def _make_fallback_strict(name, model):
-    from sluice.core.backends import make_backend
-    api_key, base_url = _provider_creds(name)
-    return make_backend(name, model, api_key=api_key, base_url=base_url)
-
-
 def _build_backend(tcfg, backend_choice="auto"):
-    return _select_backend(
+    from sluice.core.app import Sluice
+    return Sluice().backend(
         backend_choice,
         primary_name=tcfg.primary_backend, primary_model=tcfg.claude_max_model,
         effort=tcfg.claude_max_effort, host=tcfg.claude_max_host,
@@ -350,7 +267,8 @@ def _dossier_fetcher(app):
 
 # ── cv ────────────────────────────────────────────────────────────────────
 def _build_compose_backend(cvcfg, backend_choice="auto"):
-    return _select_backend(
+    from sluice.core.app import Sluice
+    return Sluice().backend(
         backend_choice,
         primary_name=cvcfg.primary_backend, primary_model=cvcfg.compose_model,
         effort=cvcfg.compose_effort, host=cvcfg.compose_host,
@@ -457,7 +375,8 @@ def cmd_apply_record(args, config) -> int:
 
 # ── track ────────────────────────────────────────────────────────────────────
 def _track_backend(tcfg, backend_choice="auto"):
-    return _select_backend(
+    from sluice.core.app import Sluice
+    return Sluice().backend(
         backend_choice,
         primary_name=tcfg.primary_backend, primary_model=tcfg.claude_max_model,
         effort=tcfg.claude_max_effort, host=tcfg.claude_max_host,
