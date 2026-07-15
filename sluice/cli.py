@@ -24,11 +24,9 @@ from sluice.ingest import sources as registry
 _log = get_logger("cli")
 
 
-# Read paths lazily (each call) so env overrides - and tests' monkeypatch - win.
-def _health_path() -> str:
-    return os.environ.get("SLUICE_HEALTH", "./sluice_health.json")
-
-
+# Read the disabled-overlay path lazily (each call) so env overrides - and tests'
+# monkeypatch - win. The health path's equivalent default now lives solely in
+# HealthStore.__init__ (sluice/core/health.py) -- see cmd_health/cmd_list_sources.
 def _disabled_path() -> str:
     return os.environ.get("SLUICE_DISABLED", "./sluice_disabled.json")
 
@@ -68,7 +66,7 @@ def _selected(args, config, disabled) -> list:
 # ── commands ─────────────────────────────────────────────────────────────────
 def cmd_list_sources(args, config) -> int:
     disabled = _load_disabled()
-    health = HealthStore(_health_path()) if getattr(args, "health", False) else None
+    health = HealthStore() if getattr(args, "health", False) else None
     for src in sorted(registry.all_sources(), key=lambda s: s.id):
         state = "enabled" if _is_enabled(src, config, disabled) else "disabled"
         line = f"{src.id:16} {src.kind:9} {state}"
@@ -97,7 +95,7 @@ def cmd_disable(args, config) -> int:
 
 
 def cmd_health(args, config) -> int:
-    health = HealthStore(_health_path())
+    health = HealthStore()
     for src in sorted(registry.all_sources(), key=lambda s: s.id):
         counts = health.counts(src.id)
         flag = " RETIRE" if health.should_retire(src.id) else ""
@@ -191,7 +189,9 @@ def cmd_triage_run(args, config) -> int:
 # construction that used to live here as per-command wrappers -- now lives
 # entirely in Sluice.backend(), which every cmd_* below calls via Sluice(config).
 # This literal is KEPT here so argparse still has its `choices` without importing
-# the moved role/alias tables.
+# the moved role/alias tables. MUST stay in sync with Sluice._BACKEND_ROLES +
+# Sluice._BACKEND_ALIASES (sluice/core/app.py) -- those own the roles/aliases,
+# this is only argparse's copy of the same choices.
 _BACKEND_CHOICES = ["auto", "primary", "fallback", "claude-max", "deepseek"]
 _BACKEND_HELP = (
     "which configured backend to use: auto (primary, falling back), primary, or "
