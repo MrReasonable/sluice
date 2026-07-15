@@ -20,7 +20,6 @@ from sluice.core.config import load_config
 from sluice.core.health import HealthStore
 from sluice.core.log import get_logger, notify
 from sluice.ingest import sources as registry
-from sluice.ingest.engine import run as engine_run
 
 _log = get_logger("cli")
 
@@ -118,26 +117,13 @@ def cmd_health(args, config) -> int:
 def cmd_run(args, config) -> int:
     # Imported here so offline commands (and their tests) never touch Camofox.
     from sluice.core.app import Sluice
-    from sluice.core.seendb import SeenDb
-    from sluice.ingest.base import Ctx
-    from sluice.ingest.sink import JsonSink, VaultSink
 
     disabled = _load_disabled()
     srcs = _selected(args, config, disabled)
     if not srcs:
         _log.warning("no enabled sources selected")
         return 1
-    app = Sluice(config)
-    ctx = Ctx(camofox=app.fetcher(), config=config)
-    seen = SeenDb()
-    health = HealthStore(_health_path())
-    if args.dry_run or args.sink == "json":
-        sink = JsonSink(sys.stdout)  # dry-run never writes the vault or seen.db
-    else:
-        # The store ensures its own Syncthing marker on the write path now, so cli.py
-        # no longer reaches into a vault-specific method no other store could implement.
-        sink = VaultSink(app.store(), seen)
-    report = engine_run(srcs, ctx, sink, seen, health)
+    report = Sluice(config).ingest(srcs, dry_run=args.dry_run, json_sink=(args.sink == "json"))
     _print_report(report)
     if report.degraded:
         notify(_format_degraded(report), config=config)
@@ -185,7 +171,7 @@ def _format_degraded(report) -> str:
 # ── triage ───────────────────────────────────────────────────────────────────
 def cmd_triage_normalize(args, config) -> int:
     from sluice.core.app import Sluice
-    summary = Sluice(config).store().normalize_all_statuses(dry_run=args.dry_run)
+    summary = Sluice(config).normalize_statuses(dry_run=args.dry_run)
     print(f"status normalize: changed={summary['changed']} "
           f"unchanged={summary['unchanged']} "
           f"conflicts={summary.get('conflicts', [])} "

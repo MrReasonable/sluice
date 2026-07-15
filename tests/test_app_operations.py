@@ -1,3 +1,4 @@
+import io
 import os
 
 from sluice.apply.engine import PrepResult
@@ -137,3 +138,32 @@ def test_track_threads_the_track_config_into_the_backend(tmp_path, monkeypatch):
     app.track(dry_run=True, client=_FakeGoogle(), now_iso="2026-07-15T00:00:00+00:00")
     assert seen["primary_model"] == "claude-sonnet-4-5"   # track uses claude_max_model
     assert seen["effort"] == "medium"                     # ...and claude_max_effort
+
+
+def test_normalize_statuses_dry_run_on_empty_vault(tmp_path, monkeypatch):
+    # Empty vault (no "Job Applications/Job Leads" dir at all) -- normalize_statuses
+    # must still return a well-formed summary rather than raise, same "empty is a
+    # legitimate no-op" contract the other operations give.
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    app = Sluice(Config())
+    summary = app.normalize_statuses(dry_run=True)
+    assert {"changed", "unchanged", "unknown"} <= summary.keys()
+    assert summary["changed"] == 0 and summary["unchanged"] == 0
+
+
+def test_ingest_dry_run_writes_nothing(tmp_path, monkeypatch):
+    # dry_run must route to JsonSink, never VaultSink -- so an empty source list
+    # touches neither the vault nor seen.db, mirroring the offline guarantee
+    # `sluice ingest run --dry-run` has always given. fetcher=object() proves the
+    # override seam is used rather than a real Camofox (Ctx always resolves
+    # self.fetcher(), even for zero sources -- see Sluice.ingest's docstring).
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    monkeypatch.setenv("SEEN_DB", str(tmp_path / "seen.db"))
+    monkeypatch.setenv("SLUICE_HEALTH", str(tmp_path / "health.json"))
+    app = Sluice(Config(), fetcher=object())
+    out = io.StringIO()
+    report = app.ingest([], dry_run=True, out=out)
+    assert report.sources == []
+    assert report.written == {"created": 0, "updated": 0, "skipped": 0}
+    assert out.getvalue() == ""
+    assert not os.path.exists(os.path.join(str(tmp_path), "Job Applications", "Job Leads"))
