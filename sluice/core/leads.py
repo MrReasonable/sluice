@@ -45,8 +45,10 @@ class Lead:
 
 
 def slug_matches(note, wanted: str) -> bool:
-    """Substring match of `wanted` against the note's company-role slug or its
-    path. Shared by `sluice cv` and `sluice apply` for `--lead <slug>`."""
+    """Substring match of `wanted` against the note's frontmatter company-role slug or the
+    store-issued `note.slug`. (It used to also match `note.path`; the store now issues an
+    opaque ref, so path-based matching is gone.) Shared by `sluice cv` and `sluice apply`
+    for `--lead <slug>`."""
     import re
     hay = re.sub(r"[^a-z0-9]+", "-",
                  f"{note.fm.get('company','')}-{note.fm.get('role','')}".lower()).strip("-")
