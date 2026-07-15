@@ -1,3 +1,4 @@
+from sluice.apply.engine import PrepResult
 from sluice.core.app import Sluice
 from sluice.core.config import Config
 
@@ -63,3 +64,24 @@ def test_compose_cv_threads_the_cv_config_into_the_backend(tmp_path, monkeypatch
     app.compose_cv(lead="x", dry_run=True)
     assert seen["primary_model"] == "claude-sonnet-4-5"   # cv uses compose_model
     assert seen["effort"] == "max"                        # ...and compose_effort
+
+
+def test_prep_all_shortlist_on_empty_vault_returns_a_prep_result_list(tmp_path, monkeypatch):
+    # No "Job Applications/Job Leads" dir at all -- Vault.read_leads tolerates a
+    # missing dir and returns []. all_shortlist must still come back as a (possibly
+    # empty) list of PrepResult, never None and never raise, so an empty vault is a
+    # legitimate "nothing to do" rather than an error.
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    app = Sluice(Config())
+    results = app.prep(all_shortlist=True)
+    assert isinstance(results, list)
+    assert all(isinstance(r, PrepResult) for r in results)
+
+
+def test_record_unknown_lead_is_not_ok(tmp_path, monkeypatch):
+    # apply is offline: record() must resolve straight to "no match" against the
+    # store with no backend/dossier involved, dry_run or not.
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    app = Sluice(Config())
+    out = app.record(lead="ghost", dry_run=True)
+    assert out["ok"] is False
