@@ -250,7 +250,7 @@ class Sluice:
 
         ctx = Ctx(camofox=self.fetcher(), config=self.config)
         seen = SeenDb()
-        health = HealthStore(os.environ.get("SLUICE_HEALTH", "./sluice_health.json"))
+        health = HealthStore()  # default path lives in HealthStore.__init__ (SLUICE_HEALTH)
         if dry_run or json_sink:
             sink = JsonSink(out or sys.stdout)
         else:
@@ -275,7 +275,6 @@ class Sluice:
         `cheap_model` for fallback) is triage's own config shape -- other sub-apps
         (cv, apply) have their own `*Config` with their own field names, so this
         mapping is NOT shared and belongs in this method, not in `Sluice.backend`."""
-        import os
         from sluice.triage.audit import AuditLog
         from sluice.triage.config import load_triage_config
         from sluice.triage.engine import run as _triage_run

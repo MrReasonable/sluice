@@ -17,8 +17,13 @@ class HealthStore:
 
     _KEEP = 30  # cap history per source
 
-    def __init__(self, path: str):
-        self.path = path
+    def __init__(self, path: str | None = None):
+        # Same pattern as SeenDb: an explicit path wins, otherwise fall back to the
+        # env var, otherwise the on-disk default. This is the ONE place that default
+        # lives -- app.py's ingest() and cli.py's cmd_health/cmd_list_sources all
+        # construct HealthStore() bare and get the same path, so the file `ingest`
+        # writes is always the file `health` reads.
+        self.path = path or os.environ.get("SLUICE_HEALTH", "./sluice_health.json")
         self._data = self._load()
 
     def _load(self) -> dict:
