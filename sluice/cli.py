@@ -347,55 +347,10 @@ def _track_backend(tcfg, backend_choice="auto"):
         fallback_name=tcfg.fallback_backend, fallback_model=tcfg.cheap_model)
 
 
-def _load_seen(path):
-    try:
-        with open(path) as f:
-            return set(line.strip() for line in f if line.strip())
-    except OSError:
-        return set()
-
-
-def _save_seen(path, seen):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        f.write("\n".join(sorted(seen)))
-
-
-def _load_lastrun(path):
-    """Read the ISO timestamp of the previous successful (non-dry-run) track run,
-    so the next run's Gmail query can be scoped since then (F10) instead of the
-    fixed lookback window. Missing/unreadable file just means "no prior run"."""
-    try:
-        with open(path) as f:
-            return f.read().strip() or None
-    except OSError:
-        return None
-
-
-def _save_lastrun(path, iso):
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w") as f:
-        f.write(iso)
-
-
 def cmd_track_run(args, config) -> int:
-    from datetime import datetime, timezone
     from sluice.core.app import Sluice
-    from sluice.track.config import load_track_config
-    from sluice.track.engine import run
-    from sluice.track.google_client import RealGoogleClient
 
-    tcfg = load_track_config()
-    lastrun_path = tcfg.seen_db + ".lastrun"
-    seen = _load_seen(tcfg.seen_db)
-    since_iso = _load_lastrun(lastrun_path)
-    client = RealGoogleClient(tcfg.token_path)
-    backend = _track_backend(tcfg, args.backend)
-    now_iso = datetime.now(timezone.utc).isoformat()
-    rep = run(Sluice(config).store(), tcfg, client, backend, seen=seen, now_iso=now_iso,
-              since_iso=since_iso, dry_run=args.dry_run)
-    if not args.dry_run:
-        _save_seen(tcfg.seen_db, seen)
+    rep = Sluice(config).track(dry_run=args.dry_run, backend_role=args.backend)
     if rep.auth_error:
         print("track: google reauth needed (token refresh failed)", file=sys.stderr)
         return 1
@@ -404,18 +359,14 @@ def cmd_track_run(args, config) -> int:
           file=sys.stderr)
     for p in rep.proposals:
         print(f"  PROPOSAL {p}", file=sys.stderr)
-    if not args.dry_run:
-        _save_lastrun(lastrun_path, now_iso)
     return 0
 
 
 def cmd_track_confirm(args, config) -> int:
     from sluice.core.app import Sluice
-    from sluice.track.config import load_track_config
-    from sluice.track.engine import confirm
 
-    out = confirm(Sluice(config).store(), load_track_config(), args.lead, args.to,
-                  when=args.when, dry_run=args.dry_run)
+    out = Sluice(config).track_confirm(lead=args.lead, to=args.to, when=args.when,
+                                       dry_run=args.dry_run)
     if out["ok"]:
         print(f"track-confirm: {args.lead} {out['from']} -> {out['to']}", file=sys.stderr)
         return 0
