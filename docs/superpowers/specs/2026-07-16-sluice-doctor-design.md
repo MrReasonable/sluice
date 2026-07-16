@@ -72,8 +72,8 @@ annotated with the sub-app roles it serves:
 ```
 sluice doctor  (live round-trip)
 
-claude-max  claude-sonnet-4-5   ok        primary · triage, cv, track   (0.4s)
-deepseek    deepseek-v4-flash   degraded  fallback · triage, cv, track  DEEPSEEK_API_KEY unset — primary-only
+claude-max  claude-sonnet-4-5   ok        primary: triage, cv, track   (0.4s)
+deepseek    deepseek-v4-flash   degraded  fallback: triage, cv, track  DEEPSEEK_API_KEY unset - primary-only
 
 1 ok, 1 degraded, 0 dead
 ```

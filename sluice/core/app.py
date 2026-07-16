@@ -470,7 +470,7 @@ class Sluice:
             # A local (no-host) backend that needs no key IS the claude-max CLI;
             # for the offline mode we can only check the binary exists on PATH.
             cli_present = None
-            if known and not needs_key and not t.host:
+            if offline and known and not needs_key and not t.host:
                 cli_present = shutil.which(t.claude_path) is not None
             # Round-trip ONLY when live AND buildable+testable: known provider,
             # creds satisfied. Everything else is classified from config alone.
