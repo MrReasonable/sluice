@@ -117,7 +117,8 @@ def test_noise_is_normalized_and_tokenized_not_used_raw():
 
 
 def test_noise_as_a_bare_str_raises():
-    # `location_noise_words: Remote` (a YAML scalar instead of a list) is an ordinary user error.
+    # #5's `location_noise_words: Remote` (a YAML scalar, not a list) is an ordinary user error.
+    # The key does not exist yet -- this guard is what lets #5 add it without re-deriving the shape.
     # Iterating a str yields single-letter tokens that strip nothing: inert, and silent.
     with pytest.raises(TypeError, match="not a str"):
         _compare_locations("Palmerburgh", "Clarkefurt", noise="Palmerburgh")
