@@ -49,11 +49,7 @@ specific cities do not -- these seven synthetic shapes reproduce the real corpus
 token-subset failure exactly. The derivation lives in
 docs/superpowers/specs/2026-07-16-location-identity-evidence.py.
 """
-import itertools
-
-import pytest
-
-from sluice.core.leads import DIFFERENT, SAME, UNKNOWN, _compare_locations, _norm_location
+from sluice.core.leads import _norm_location
 
 
 def test_norm_location_casefolds_collapses_and_strips():
@@ -88,11 +84,15 @@ def test_norm_location_keeps_non_ascii_letters_whole():
     assert len(_norm_location("København").split()) == 1
 ```
 
+**Import only what this task uses.** `ruff`'s `F401` is **not** relaxed for `tests/*` — `pyproject.toml`
+says so explicitly: *"F (unused import/var) is NOT relaxed here, so real cruft is still caught."*
+Importing Task 2's names now turns Step 6 red. Task 2 extends the import line when it adds its tests.
+
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `.venv/bin/python -m pytest tests/test_leads_location.py -q`
 
-Expected: collection error — `ImportError: cannot import name 'DIFFERENT' from 'sluice.core.leads'`.
+Expected: collection error — `ImportError: cannot import name '_norm_location' from 'sluice.core.leads'`.
 
 - [ ] **Step 3: Write the implementation**
 
@@ -121,31 +121,13 @@ def _norm_location(s: str) -> str:
     return re.sub(r"\W+", " ", s).strip()
 ```
 
-- [ ] **Step 4: Run the tests to verify they still fail on the import**
+- [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_leads_location.py -q`
 
-Expected: still a collection error — `cannot import name 'DIFFERENT'`. Task 2 adds the constants. This step exists to confirm you have not accidentally made the file importable with a stub.
+Expected: `4 passed`.
 
-- [ ] **Step 5: Verify `_norm_location` in isolation**
-
-Run:
-
-```bash
-.venv/bin/python -c "
-from sluice.core.leads import _norm_location as n
-assert n('  Palmerburgh  ') == 'palmerburgh'
-assert n('Palmerburgh\xa0∙ Choose area') == 'palmerburgh choose area'
-assert n('Zürich') == 'zurich'
-assert n('København') == 'københavn' and len(n('København').split()) == 1
-assert n('   ') == ''
-print('_norm_location OK')
-"
-```
-
-Expected output: `_norm_location OK`
-
-- [ ] **Step 6: Verify each mutation reddens its own witness — and only its own**
+- [ ] **Step 5: Verify each mutation reddens its own witness — and only its own**
 
 This is the step the whole spec exists for: a mutation list nobody ran certifies nothing.
 
@@ -179,12 +161,12 @@ no NFKD    Zürich->'zürich'     4a=False  København->'københavn'    4b=True
 
 If `no NFKD` shows `4b=False`, or `[^a-z0-9]` shows `4a=False`, the witnesses are not isolated — stop and re-read the docstring.
 
-- [ ] **Step 7: Lint**
+- [ ] **Step 6: Lint**
 
 Run: `ruff check sluice tests`
 Expected: `All checks passed!`
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add sluice/core/leads.py tests/test_leads_location.py
@@ -209,7 +191,18 @@ git commit -m "feat(leads): _norm_location — fold, casefold, collapse (#25)"
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `tests/test_leads_location.py`:
+First **replace** the import line at the top of `tests/test_leads_location.py` (Task 1 imported only
+what it used, because `ruff`'s `F401` is not relaxed for `tests/*`):
+
+```python
+import itertools
+
+import pytest
+
+from sluice.core.leads import DIFFERENT, SAME, UNKNOWN, _compare_locations, _norm_location
+```
+
+Then append:
 
 ```python
 # The seven shapes the real corpus renders a single city in. These reproduce the corpus's
@@ -416,10 +409,10 @@ git commit -m "feat(leads): _compare_locations — token overlap, tri-state verd
 | DoD | where |
 |---|---|
 | 1. pytest passes, offline, <2s | Task 2 Step 6 |
-| 2. `ruff check sluice tests` | Task 1 Step 7, Task 2 Step 7 |
+| 2. `ruff check sluice tests` | Task 1 Step 6, Task 2 Step 7 |
 | 3. evidence script reproduces every count | Task 2 Step 8 |
-| 4a. `_norm_location('Zürich') == 'zurich'` (NFKD witness) | Task 1 Steps 1, 6 |
-| 4b. `_norm_location('København')` one token (class witness) | Task 1 Steps 1, 6 |
+| 4a. `_norm_location('Zürich') == 'zurich'` (NFKD witness) | Task 1 Steps 1, 5 |
+| 4b. `_norm_location('København')` one token (class witness) | Task 1 Steps 1, 5 |
 | 5. corpus shape pairs all `SAME` (kills token-subset) | Task 2 Steps 1, 5 |
 | 6. `Remote`/city both directions; noise-emptied abstains (kills the hoist) | Task 2 Steps 1, 5 |
 | 7. noise case + arity + bare-str raise (kills raw noise) | Task 2 Steps 1, 5 |
