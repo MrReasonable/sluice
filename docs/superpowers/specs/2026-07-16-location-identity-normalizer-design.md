@@ -288,14 +288,23 @@ sub-app block. `config.py:43-50` records this lesson already paid for, in `basel
 *"once the store is resolved from the root Config, a `cv.baseline_rel` could not reach the store that
 has to honour it."* Citing the `locations:` precedent alone lands correctly for an unrelated reason.
 
-**The guard assertion must travel with the key, in the same change.**
+**The guard assertion must travel with the key, in the same change** — so it is written into #5's
+"Blocked on #6" section, beside the key, rather than mandated from here.
 `tests/test_sluice_neutral_defaults.py` is an *enumeration*: it ships green on keys nobody named, and
 its own comments record that escape **twice** (`:43-46` `locations` shipping `["Remote"]`, `:51-54`
 `baseline_rel` losing its assertion in a refactor) — both "caught by review", neither by the suite.
-`location_noise_words` is a geography key with no guard and no home, added by a spec that is parked.
-So #5's task list must include `assert c.location_noise_words == []` alongside the key. Better still,
-close the class rather than the instance: iterate `dataclasses.fields(Config)` and assert every
-list-typed preference defaults empty, so the next unguarded key cannot ship green.
+`location_noise_words` would be a geography key with no guard, so #5 now carries
+`assert c.location_noise_words == []` and the commented-out `sluice.yaml.example` line as part of the
+change that adds it.
+
+**Closing the whole class — sweeping the config dataclasses so the *next* unguarded key cannot ship
+green — is a separate issue, filed, and deliberately not attempted here.** It is a repo-wide test
+hardening unrelated to location identity, and this spec tried it once and got it wrong three ways at
+once: blind to `TriageConfig` where 672ad2a actually happened, blind to the `list[str]` annotation
+`location_noise_words` will most likely carry, and — read as a replacement rather than an addition —
+silently dropping `baseline_rel`'s absolute-path assertion, which is the very escape it cited. Those
+mistakes are worth a diff and a review of its own; they are not worth risking a guard test whose own
+comments record two escapes, in a spec about two pure functions.
 
 ## Neutrality
 
@@ -382,7 +391,7 @@ exactly.
 ## Definition of done
 
 **Items 1–3 are gates** (they pass on an empty diff — that is what gates are for). **4a–8 are
-mechanisms**, each verified red on the specific mutation it names. **9–10 are handoffs; 11–12 are
+mechanisms**, each verified red on the specific mutation it names. **9 is a handoff; 10–11 are
 contract.** The distinction is stated because "none can pass by accident" was claimed here once, of a
 list that included three CI gates, two prose items, and one inert guard.
 
@@ -420,38 +429,12 @@ in isolation, because the failure this spec is named after is a mutation list no
    a city token after subtraction, so correct and mutant agree. That claim was in the first draft and
    was false; the witness is item 6.)*
 
-Handoffs — **mechanisms, not prose.** Both of these reach across to #5, and the first draft left them
-as sentences in a document #5's implementer will never execute. That is this spec's own thesis one
-level up, so they are DoD items with a check:
+Handoff — **a mechanism, not prose.** This reaches across to #5, and a sentence in a document #5's
+implementer will never execute is this spec's own thesis one level up. So it is a DoD item with a
+check. *(A second handoff — sweeping the config dataclasses to close the unguarded-key class — was
+attempted here and cut; it is its own issue. See "Config-first" and Risks.)*
 
-9. **The guard closes the class, not the instance — ADDITIVELY.** A new sweep is **added to**
-    `tests/test_sluice_neutral_defaults.py`. **No existing assertion is removed or rewritten.** This
-    clause is the whole item: a loop-only rewrite drops `assert not c.baseline_rel.startswith("/")`
-    (str-typed, invisible to any list sweep) and `store`/`fetcher`, which is *exactly* the escape
-    `:51-54` records — `baseline_rel` losing its assertion in a refactor. Replacing an enumeration
-    with a sweep that cannot see what it asserted is guard-test-weakening, whatever it unblocks.
-
-    Two mechanics, both verified against the tree, both counter-intuitive:
-
-    - **Key on the default VALUE, not the annotation.** `f.type is list` is annotation-keyed and
-      `list[str]` is a `types.GenericAlias`, so it escapes. Today's `Config` uses bare `list`, so an
-      annotation-keyed sweep passes and *looks* live — and the first field to escape is
-      `location_noise_words`, written by #5's implementer, which is the field this item exists for.
-      Use `isinstance(default, list)` (resolving `default_factory`); it closes the `notify`-shaped
-      dict hole for free if widened.
-    - **Sweep every config dataclass, not just the root.** `dataclasses.fields(Config)` does not
-      reach `TriageConfig.target_locations` (`triage/config.py:23`) — **the actual 672ad2a site**.
-      Verified: reverting 672ad2a leaves a root-only sweep GREEN, caught only by the hand-written
-      `assert t.target_locations == []` the sweep was meant to supersede. Root `Config` (3),
-      `TriageConfig` (5) and `CvConfig` (3) all pass a value-keyed sweep today; `TrackConfig`'s
-      `ats_relay_domains` is dict-typed and legitimately non-empty, so the sweep stays list-only.
-
-    Adding a list-defaulting field with a non-empty default to **any** of the three must turn this
-    red — `list[str]`-annotated included. Reverting 672ad2a must turn this red.
-    *(Scope call, on the record: a test-only change outside the two functions. In scope because it
-    is the only version of the mandate that executes — but see Risks: this item has now been wrong
-    three ways, and it is the most likely thing here to be worth cutting.)*
-10. **#5's resumption instruction is corrected.** `#5:37` instructed "point rule 3 at #6's
+9. **#5's resumption instruction is corrected.** `#5:37` instructed "point rule 3 at #6's
     normalizer" and its rule table carried rule 2 as normalized-equal — the rule measured firing
     0/33. Executed from its own spec, #5 reintroduces the defect this spec exists to remove. So its
     "Blocked on #6" section carries the correction, and its rule table is annotated superseded (left
@@ -471,10 +454,10 @@ level up, so they are DoD items with a check:
 
 Contract:
 
-11. `SAME`/`DIFFERENT`/`UNKNOWN` are the three verdicts, matching #5's `same_opportunity` vocabulary
+10. `SAME`/`DIFFERENT`/`UNKNOWN` are the three verdicts, matching #5's `same_opportunity` vocabulary
     exactly, and `_compare_locations`'s docstring states that `DIFFERENT` is the only verdict #5 acts
     on.
-12. The diff adds no place name, country, or region to `sluice/`: neither function contains place
+11. The diff adds no place name, country, or region to `sluice/`: neither function contains place
     vocabulary, and no gazetteer, country list, or transliteration table ships. No new config key
     ships. *(Pre-existing neutral example searches in `ingest/sources/` — `hackajob.py:16`,
     `cord.py:25`, `remoteok.py:12` — are out of scope; the first draft's unscoped version of this
@@ -492,25 +475,28 @@ Contract:
 - **The `united` collision is structural.** Any two multi-word country names sharing a token merge at
   default. Safe direction, recovered by config, but it will recur on any new board that renders
   full country names.
-- **DoD 9 is the weakest item here and the most likely to be worth cutting.** It is the only part of
-  this spec that is not one of the two functions, and it has now been wrong three ways in one round:
-  blind to `TriageConfig` where 672ad2a actually happened, blind to `list[str]` — the annotation
-  `location_noise_words` will most likely carry — and, read as a replacement rather than an addition,
-  it silently drops `baseline_rel`'s absolute-path assertion. All three are fixed above and verified,
-  but the base rate is the finding. If it fails review again, it should become its own issue rather
-  than a fourth attempt: closing a class of config escape deserves its own diff and its own review,
-  which is exactly what it keeps demonstrating.
-- **This spec cannot finish #5's reconciliation, and should not try.** DoD 10 corrects #5's
-  resumption instruction; it does not re-derive #5's §2, Testing or DoD against the tri-state. Two
-  attempts to reach across that boundary from here have now produced a false claim each time.
+- **Everything this spec got wrong, it got wrong reaching outside its own two functions.** Round 3
+  found the rule, the normalizer, the tri-state and every mechanism item clean across five reviewers
+  — and found a Critical plus three Highs in the two cross-issue handoffs added a round earlier. The
+  config-guard sweep is now its own issue and the #5 reconciliation is scoped to the one instruction
+  it can actually correct. The remaining scope is two pure functions and their tests, and that is the
+  whole point of the boundary.
+- **This spec cannot finish #5's reconciliation, and should not try.** DoD 9 corrects #5's resumption
+  instruction; it does not re-derive #5's §2, Testing or DoD against the tri-state. Two attempts to
+  reach across that boundary from here produced a false claim each time.
 - **#6 needs re-titling and re-diagnosing** when this is filed, or the next reader re-derives the
   misdiagnosis. Its Problem section names a mechanism that is not the one failing.
 
 ## Process
 
-1. File the issue for this work. Also: retitle and re-diagnose #6 to the exact-match mechanism and
-   mark it blocked on a real captured payload; and file the fixture-neutrality question (real
-   locations in `tests/fixtures/`, pre-existing since `e94a9f9`).
+1. File four issues:
+   - **this work** (the normalizer and the comparison);
+   - **retitle and re-diagnose #6** to the exact-match mechanism, blocked on a real captured payload;
+   - **the fixture-neutrality question** (real locations in `tests/fixtures/`, pre-existing since
+     `e94a9f9`);
+   - **harden the neutral-defaults guard to close the class** — sweep the config dataclasses so an
+     unguarded list-typed preference cannot ship green. Cut from this spec after failing review three
+     ways at once; the findings are recorded in "Config-first" so the next attempt starts from them.
 2. Plan via `writing-plans`, then implement.
 3. Review with **both** `/review-pr` and CodeRabbit (per the standing cadence). Read the CodeRabbit
    rate-limit comment **before** triggering.
