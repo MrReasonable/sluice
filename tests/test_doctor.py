@@ -162,7 +162,7 @@ def test_exit_code_all_ok_is_zero():
 def test_format_roles_groups_by_role_in_order():
     uses = [RoleUse("triage", "primary"), RoleUse("cv", "primary"),
             RoleUse("track", "primary")]
-    assert format_roles(uses) == "primary · triage, cv, track"
+    assert format_roles(uses) == "primary: triage, cv, track"
 
 
 def test_enumerate_includes_claude_path_in_dedup_key():
@@ -187,7 +187,7 @@ def test_enumerate_merges_and_flags_mixed_primary_fallback_role():
     assert len(merged) == 1
     assert {u.role for u in merged[0].uses} == {"primary", "fallback"}
     assert merged[0].is_primary is True
-    assert format_roles(merged[0].uses) == "primary · triage; fallback · triage"
+    assert format_roles(merged[0].uses) == "primary: triage; fallback: triage"
 
 
 def test_classify_keyless_mixed_role_is_dead():
@@ -341,15 +341,35 @@ def test_doctor_keyless_primary_is_dead_through_wiring(monkeypatch):
     assert rep.exit_code() == 1
 
 
-# arc-001: doctor must probe the SAME backend a real run builds. Spy on
-# Sluice.backend to capture what each operation feeds it, and assert
-# enumerate_targets derives the identical primary/fallback per sub-app. This is
-# the drift guard for the config->backend field mapping that both this method and
-# the operation methods encode.
 def test_enumerate_matches_operation_backend_wiring(monkeypatch, tmp_path):
+    # Doctor must probe the SAME backend a real run builds. Spy on Sluice.backend
+    # to capture what each operation feeds it, and assert enumerate_targets derives
+    # the identical primary/fallback per sub-app. DISTINCT sentinel values per
+    # sub-app+field (via dataclasses.replace on the real configs, so unrelated
+    # fields like seen_db stay intact) make this pin the mapping tightly: a
+    # cross-field or cross-sub-app misread yields a value mismatch, not a silent
+    # pass on an equal default. This is the arc-001 drift guard.
+    import dataclasses
+
     from sluice.cv.config import load_cv_config
     from sluice.track.config import load_track_config
     from sluice.triage.config import load_triage_config
+
+    tri = dataclasses.replace(
+        load_triage_config(), primary_backend="tri-prov", claude_max_model="tri-model",
+        claude_max_host="tri-host", claude_max_path="tri-path",
+        fallback_backend="tri-fbprov", cheap_model="tri-fbmodel")
+    cvc = dataclasses.replace(
+        load_cv_config(), primary_backend="cv-prov", compose_model="cv-model",
+        compose_host="cv-host", compose_claude_path="cv-path",
+        fallback_backend="cv-fbprov", cheap_model="cv-fbmodel")
+    trk = dataclasses.replace(
+        load_track_config(), primary_backend="trk-prov", claude_max_model="trk-model",
+        claude_max_host="trk-host", claude_max_path="trk-path",
+        fallback_backend="trk-fbprov", cheap_model="trk-fbmodel")
+    monkeypatch.setattr("sluice.triage.config.load_triage_config", lambda: tri)
+    monkeypatch.setattr("sluice.cv.config.load_cv_config", lambda: cvc)
+    monkeypatch.setattr("sluice.track.config.load_track_config", lambda: trk)
 
     class _Stop(Exception):
         pass
@@ -377,8 +397,7 @@ def test_enumerate_matches_operation_backend_wiring(monkeypatch, tmp_path):
         "track": _capture(lambda: Sluice().track(client=object())),
     }
 
-    targets = enumerate_targets(load_triage_config(), load_cv_config(),
-                                load_track_config())
+    targets = enumerate_targets(tri, cvc, trk)
     derived = {}
     for t in targets:
         for u in t.uses:
@@ -389,8 +408,6 @@ def test_enumerate_matches_operation_backend_wiring(monkeypatch, tmp_path):
         assert (p.provider, p.model, p.host, p.claude_path) == w["primary"], subapp
         f = derived[(subapp, "fallback")]
         assert (f.provider, f.model) == w["fallback"], subapp
-        # enumerate carries the fallback's host/path as the _make_fallback
-        # defaults, since Sluice.backend does not forward them for the fallback.
         assert (f.host, f.claude_path) == ("", "claude"), subapp
 
 
