@@ -23,7 +23,7 @@ def _norm_location(s: str) -> str:
     for this goes inert. The NFKD fold makes 'Zürich' and 'Zurich' one token; without it they share
     no token and SPLIT. The unicode-aware `\\W` (not `[^a-z0-9]`) keeps letters that NFKD cannot
     fold whole: 'ø' is a distinct letter, not an accented 'o', so `[^a-z0-9]` would shred
-    'copenhagen' into 'k benhavn'. Neither witnesses the other; see tests/test_leads_location.py.
+    'københavn' into 'k benhavn'. Neither witnesses the other; see tests/test_leads_location.py.
     """
     s = unicodedata.normalize("NFKD", s.casefold())
     s = "".join(c for c in s if not unicodedata.combining(c))
