@@ -354,6 +354,11 @@ Run: `.venv/bin/python -m pytest tests/test_leads_location.py -q`
 
 Expected: `14 passed` (4 from Task 1, 10 from Task 2).
 
+> Drift note (post-execution): PR #32's review added a 15th test — the guard for the NFKD/casefold
+> *ordering*, which the two fold tests could not witness. Re-running the plan today gives `15 passed`
+> here and `591 passed` at Step 6. The counts above are left as executed rather than back-dated: the
+> 15th test is not Task 1's or Task 2's, and relabelling it as theirs would be a new falsehood.
+
 - [ ] **Step 5: Verify each mutation reddens the tests that name it**
 
 Run each mutation by hand against the suite. For each, edit `sluice/core/leads.py`, run the command, confirm the expected failures, then **revert the edit**.
@@ -366,7 +371,7 @@ Run each mutation by hand against the suite. For each, edit `sluice/core/leads.p
 
 Run after each: `.venv/bin/python -m pytest tests/test_leads_location.py -q`
 
-Expected: mutation 1 → 3 failed; mutation 2 → 2 failed; mutation 3 → 2 failed. **If any mutation shows `14 passed`, the test that names it is inert — stop and fix the test before continuing.**
+Expected: mutation 1 → 3 failed; mutation 2 → 2 failed; mutation 3 → 2 failed. **If any mutation shows a FULLY GREEN run, the test that names it is inert — stop and fix the test before continuing.** (Stated as "fully green" rather than a count: the count moved from 14 to 15 after this plan ran, and a sentinel keyed to a stale number silently stops sentinelling.)
 
 - [ ] **Step 6: Confirm the tree is back to correct and the whole suite is green**
 
