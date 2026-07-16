@@ -8,7 +8,14 @@ it, and that table is geography. Nothing here is imported by `sluice/` or `tests
 
 The first draft of the spec quoted counts (31 / 158 / 21 / 179) that no reader could reproduce,
 because the grouping silently dropped two cities. This file exists so that never recurs: the universe
-and the inclusion rule are explicit, and a value present in the fixtures but absent from CITY raises.
+and the inclusion rule are explicit, and `check_universe` raises in BOTH directions.
+
+Both directions are load-bearing, and the first draft of THIS FILE only asserted one. It checked
+`set(CITY) - found` -- table against fixtures -- while its docstring claimed the reverse. A new
+fixture city therefore passed silently and vanished from the universe: exactly the bug the file was
+added to prevent, with the comment claiming otherwise sitting directly above it. Three reviewers
+caught it independently. `assert found` matters too: the glob below is relative, so a run from the
+wrong cwd finds nothing, and a naive one-direction flip would report a green 0-value universe.
 """
 import glob
 import itertools
@@ -47,8 +54,19 @@ CITY = {
     'Sharjah - United Arab Emirates (UAE)': 'sharjah',
 }
 
+# Every distinct non-empty fixture value that names NO city. Deliberately excluded from the pair
+# space -- "same city" is undefined for them. Naming them explicitly is what lets check_universe
+# distinguish a deliberate exclusion from a forgotten one; without this set the fixtures-to-table
+# direction cannot be asserted at all.
+NOT_A_CITY = {
+    'Bahrain - Bahrain', 'India', 'Remote', 'Saudi Arabia - Saudi Arabia', 'UAE', 'USA', 'Ukraine',
+    'United Arab Emirates - United Arab Emirates', 'United Kingdom (Remote)',
+}
+
 # A sample `location_noise_words`. NOT a shipped default -- this is what a user with this geography
-# would configure. It ships nowhere; see the spec's Neutrality section.
+# would configure. It ships nowhere; see the spec's Neutrality section. Every token here is read from
+# a fixture value above EXCEPT 'uk', which is hand-added to cover the abbreviation the boards in this
+# corpus happen not to use -- so this set is very slightly more than the corpus discloses.
 GEO_NOISE = frozenset({
     'united', 'kingdom', 'uk', 'england', 'arab', 'emirates', 'uae', 'area', 'choose',
     'egypt', 'qatar', 'saudi', 'arabia', 'hybrid', 'remote', 'work', 'in', 'al', 'ain',
@@ -65,8 +83,13 @@ def norm(s):
 
 
 def compare(a, b, noise=frozenset()):
-    """The spec's `_compare_locations`."""
-    ta, tb = set(norm(a).split()) - noise, set(norm(b).split()) - noise
+    """The spec's `_compare_locations`. The noise set is normalized and tokenized through `norm`,
+    not subtracted raw: raw subtraction is the inert-knob bug the spec mandates three tests for, and
+    a model of the function that does not model that is not evidence for it."""
+    if isinstance(noise, str):
+        raise TypeError(f'noise must be a set of words, not a str: {noise!r}')
+    n = {tok for w in noise for tok in norm(w).split()}
+    ta, tb = set(norm(a).split()) - n, set(norm(b).split()) - n
     if not ta or not tb:
         return UNKNOWN
     return SAME if ta & tb else DIFFERENT
@@ -88,11 +111,28 @@ def fixture_values():
     return found
 
 
+def check_universe(found):
+    """Fail loudly rather than silently measuring a stale universe -- the bug this file exists for.
+
+    THREE assertions, because each catches a different way of going stale, and the first draft had
+    only the second one (while its docstring promised the first):
+      1. fixtures -> tables: a NEW fixture value must be classified, not silently dropped.
+      2. tables -> fixtures: a value that no longer exists must not pad the universe.
+      3. the corpus is non-empty: the glob is relative, so a wrong-cwd run must not report a green
+         zero-value universe.
+    """
+    assert found, 'no fixture locations found -- run this from the repo root; the glob is relative'
+    unclassified = found - set(CITY) - NOT_A_CITY
+    assert not unclassified, (
+        'fixture values are in neither CITY nor NOT_A_CITY, so the universe silently shrank: '
+        f'{sorted(unclassified)}')
+    stale = (set(CITY) | NOT_A_CITY) - found
+    assert not stale, f'the tables name values absent from the fixtures: {sorted(stale)}'
+
+
 def main():
     found = fixture_values()
-    missing = set(CITY) - found
-    # Fail loudly rather than silently measuring a stale universe -- the bug this file exists for.
-    assert not missing, f'CITY names values absent from the fixtures: {sorted(missing)}'
+    check_universe(found)
     vals = sorted(CITY)
     print(f'universe: {len(found)} distinct non-empty values; {len(vals)} name a city\n')
 
