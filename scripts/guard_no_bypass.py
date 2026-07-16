@@ -247,20 +247,34 @@ def _destination_matches_main(destination):
     but names it -- an exact `==` let a wildcard force-push main straight through. fnmatch is
     a strict generalisation of the old comparison: a destination with no glob characters
     matches exactly what `==` matched, so `fix/main-menu` still does not match `main` and
-    `feat/*` still does not either. `fnmatchcase`, not `fnmatch`, because the latter
-    normalises case per-platform -- on macOS it would quietly also match a branch named MAIN,
-    which is a different branch and not this guard's business.
+    `feat/*` still does not either.
 
-    BOTH spellings are tested because `_refspec_destination` strips only the LITERAL
-    `refs/heads/` prefix. A glob above that level (`refs/*:refs/*`) does not start with it, so
-    it survives whole -- and `*` does not match the `/` separators in `refs/heads/main`, so
-    checking the short name alone never catches it. Verified on git 2.55.0: `git push
-    --dry-run origin '+refs/*:refs/*'` reports `main -> main (forced update)`.
+    The destination is a PATTERN and the ref is the NAME, so both spellings of the name have
+    to be offered to it -- `_refspec_destination` strips only the LITERAL `refs/heads/`
+    prefix, and a glob above that level keeps it:
+
+        destination `*`      (from `refs/heads/*`, prefix stripped) -- matches `main`
+        destination `refs/*` (from `refs/*`, no prefix to strip)    -- does NOT match `main`,
+                                                                       because the PATTERN
+                                                                       carries a literal
+                                                                       `refs/` that the name
+                                                                       `main` lacks. It does
+                                                                       match `refs/heads/main`.
+
+    So neither clause is redundant: they catch disjoint sets, and dropping either reopens one.
+    Verified on git 2.55.0: `git push --dry-run origin '+refs/*:refs/*'` reports
+    `main -> main (forced update)`. (Note fnmatch's `*` DOES span `/`, unlike a shell glob --
+    which is why the `refs/*` case needs the second spelling rather than slash-counting.)
 
     Widening to the full ref cannot over-reach: `refs/tags/*` matches neither spelling, so a
     tag push stays allowed. The extra glob matches this admits over `==` are unreachable
     anyway -- git rejects every other metacharacter in a refspec destination (`m?in`,
     `ma[i]n` are each `fatal: invalid refspec`), so `*` is the only one that ever arrives.
+
+    `fnmatchcase`, not `fnmatch`: `fnmatch` folds case via `os.path.normcase`, which is
+    identity on POSIX and lowercasing on WINDOWS. So the two are identical wherever this
+    actually runs, and no test can tell them apart -- this is a deliberate choice against a
+    Windows-only surprise (a branch named MAIN is a different branch), not a live bug fix.
     """
     return fnmatchcase("main", destination) or fnmatchcase("refs/heads/main", destination)
 
