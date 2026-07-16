@@ -122,6 +122,10 @@ def check_universe(found):
          zero-value universe.
     """
     assert found, 'no fixture locations found -- run this from the repo root; the glob is relative'
+    both = set(CITY) & NOT_A_CITY
+    # Without this, a double-listed value passes BOTH checks below (one subtracts the tables, the
+    # other unions them) while still entering the pair space via sorted(CITY).
+    assert not both, f'values in both CITY and NOT_A_CITY: {sorted(both)}'
     unclassified = found - set(CITY) - NOT_A_CITY
     assert not unclassified, (
         'fixture values are in neither CITY nor NOT_A_CITY, so the universe silently shrank: '

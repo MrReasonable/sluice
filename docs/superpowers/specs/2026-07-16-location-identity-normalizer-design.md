@@ -67,8 +67,8 @@ contradicted the issue as filed." Two for two. The issues are written from prose
 
 ## The contract #5 needs
 
-The first draft of this spec claimed "#5's rule 3 points at it; nothing else calls it". **That was
-false, and it is why this returns a tri-state rather than a bool.** #5's `same_opportunity` is:
+**#5 consumes this in two rules, not one — which is why it returns a tri-state rather than a bool.**
+#5's `same_opportunity` is:
 
 ```
 both urls non-empty and normalized-equal      -> SAME       # proof
@@ -104,8 +104,8 @@ Two pure functions and three constants in `core/leads.py`, beside `_norm_url` an
 NFKD-normalize, drop combining marks, casefold, replace runs of non-word characters with a single
 space, strip. Unicode-aware `\W`, **not** `[^a-z0-9]`.
 
-Both halves are load-bearing, and **they are load-bearing for different reasons** — the first draft
-conflated them, which is what made its own guard test inert:
+Both halves are load-bearing, and **they are load-bearing for different reasons**. Conflating them is
+what makes a guard test inert, so each gets its own witness:
 
 ```
 NFKD fold        'Zürich'     -> 'zurich'      vs 'zürich' without it   (compares equal to 'Zurich')
@@ -219,9 +219,9 @@ varies is decoration. Overlap keys on the signal and ignores what defeated subse
 **0 regressions in every configuration.** The noise list is a pure **precision** knob: on this corpus
 it never converts a `SAME` into a split, it only recovers missed splits.
 
-**The 30 misses are not what the first draft claimed.** It said they were `Abu Dhabi` vs `Dubai`;
-that class is 6 of 30. The largest class is **18 of 30, a Gulf city against London, merging on the
-single shared token `united`** — *United Arab Emirates* against *United Kingdom*:
+**The 30 misses are mostly one structural class.** `Abu Dhabi` vs `Dubai` is only 6 of 30. The
+largest is **18 of 30, a Gulf city against London, merging on the single shared token `united`** —
+*United Arab Emirates* against *United Kingdom*:
 
 ```
  18 merged on ['united']                       <- Gulf city vs London
@@ -256,12 +256,11 @@ All verified, none hypothetical. The first four point the safe way; the last two
 than left to be re-derived. remoteok and weworkremotely **ship as sources**, so remote-vs-city is a
 shipped configuration, and splitting it by default manufactures a duplicate out of the box.
 
-The first draft claimed the config fix produces a **merge**. It produces an **abstain** — verified,
-and the stronger claim: `UNKNOWN` says "these may be the same job and I have no evidence either way",
-which is exactly true of a remote posting and a city posting. Getting this backwards mattered because
-it is the row the argument rests on, and because the `UNKNOWN` path it names — *noise subtraction
-emptying a side*, as opposed to an empty input string — is the one path the whole design has no other
-witness for. See DoD 6.
+**The config fix produces an abstain, not a merge** — `UNKNOWN` says "these may be the same job and I
+have no evidence either way", which is exactly true of a remote posting and a city posting. The
+distinction is load-bearing twice: it is the row this argument rests on, and the `UNKNOWN` path it
+names — *noise subtraction emptying a side*, as opposed to an empty input string — is the one path
+the design has no other witness for. See DoD 6.
 
 **The refusal to ship a `{remote, hybrid, onsite}` code default rests on non-monotonicity, not on
 neutrality.** This distinction matters: neutrality *would permit* work-arrangement vocabulary in
@@ -382,18 +381,23 @@ exactly.
 
 ## Definition of done
 
-The first draft claimed "None can pass by accident" of all nine items. That was false by its own
-standard — three were CI gates, two were prose, and one was inert. **Items 1–3 are gates; 4a–8 are
-mechanisms, each verified to go red on the specific mutation it names.**
+**Items 1–3 are gates** (they pass on an empty diff — that is what gates are for). **4a–8 are
+mechanisms**, each verified red on the specific mutation it names. **9–10 are handoffs; 11–12 are
+contract.** The distinction is stated because "none can pass by accident" was claimed here once, of a
+list that included three CI gates, two prose items, and one inert guard.
 
 Gates (they pass on an empty diff; that is what they are for):
 
 1. `python -m pytest` passes; the suite stays offline and under ~2s.
 2. `ruff check sluice tests` passes.
 3. `.venv/bin/python docs/superpowers/specs/2026-07-16-location-identity-evidence.py` runs and
-   reproduces every count in Evidence.
+   reproduces every count in Evidence. **A one-time derivation check, not an automated gate**: CI
+   runs `ruff check sluice tests` and pytest, and neither reaches `docs/`. Automating it is the wrong
+   fix — a pytest wrapper would import the hand-assigned city table into `tests/`, which Neutrality
+   refuses. Its own `check_universe` is what keeps it honest between runs.
 
-Mechanisms (each names the mutation that must turn it red — all four verified against real mutants):
+Mechanisms (each names the mutation that must turn it red — every one verified against a real mutant,
+in isolation, because the failure this spec is named after is a mutation list nobody ran):
 
 4. **(a)** `_norm_location('Zürich') == 'zurich'` — the exact **string**. Deleting the NFKD fold
    turns this red. *A token-count assertion does not: it is green under both single mutations.*
@@ -420,23 +424,50 @@ Handoffs — **mechanisms, not prose.** Both of these reach across to #5, and th
 as sentences in a document #5's implementer will never execute. That is this spec's own thesis one
 level up, so they are DoD items with a check:
 
-9. **The guard closes the class, not the instance.**
-   `test_ingest_defaults_carry_no_preference` iterates `dataclasses.fields(Config)` and asserts every
-   list-typed field defaults empty. This lands **here**, not in #5. `location_noise_words` is a
-   geography key whose guard the first draft delegated to #5 in prose — but `grep -ci noise` on #5's
-   spec returns **0**, its config section is titled "these constants stay literal", and this spec's
-   own "no new config key ships" is green by doing nothing. So #5 could add the key with a
-   `["remote"]`-shaped default and the enumeration would ship green: the 672ad2a escape, which
-   `test_sluice_neutral_defaults.py:43-46,51-54` records happening **twice**, both caught by review
-   and neither by the suite. Closing the class needs no edit to #5 and cannot be skipped. Adding a
-   list-typed `Config` field with a non-empty default must turn this red.
-   *(Scope call, on the record: this is a test-only change outside the two functions. It is in scope
-   because it is the only version of the mandate that executes.)*
-10. **#5's spec no longer contradicts this one.** `#5:37` instructs "point rule 3 at #6's normalizer"
-    and `#5:119-122` still carries rule 2 as normalized-equal — the rule measured firing 0/33.
-    Executed from its own spec, #5 reintroduces the defect this spec exists to remove. So its
-    "Blocked on #6" section and rule 2 are reconciled to the tri-state as part of **this** work.
-    (Only that section is touched; #5's reviewed design is not reopened.)
+9. **The guard closes the class, not the instance — ADDITIVELY.** A new sweep is **added to**
+    `tests/test_sluice_neutral_defaults.py`. **No existing assertion is removed or rewritten.** This
+    clause is the whole item: a loop-only rewrite drops `assert not c.baseline_rel.startswith("/")`
+    (str-typed, invisible to any list sweep) and `store`/`fetcher`, which is *exactly* the escape
+    `:51-54` records — `baseline_rel` losing its assertion in a refactor. Replacing an enumeration
+    with a sweep that cannot see what it asserted is guard-test-weakening, whatever it unblocks.
+
+    Two mechanics, both verified against the tree, both counter-intuitive:
+
+    - **Key on the default VALUE, not the annotation.** `f.type is list` is annotation-keyed and
+      `list[str]` is a `types.GenericAlias`, so it escapes. Today's `Config` uses bare `list`, so an
+      annotation-keyed sweep passes and *looks* live — and the first field to escape is
+      `location_noise_words`, written by #5's implementer, which is the field this item exists for.
+      Use `isinstance(default, list)` (resolving `default_factory`); it closes the `notify`-shaped
+      dict hole for free if widened.
+    - **Sweep every config dataclass, not just the root.** `dataclasses.fields(Config)` does not
+      reach `TriageConfig.target_locations` (`triage/config.py:23`) — **the actual 672ad2a site**.
+      Verified: reverting 672ad2a leaves a root-only sweep GREEN, caught only by the hand-written
+      `assert t.target_locations == []` the sweep was meant to supersede. Root `Config` (3),
+      `TriageConfig` (5) and `CvConfig` (3) all pass a value-keyed sweep today; `TrackConfig`'s
+      `ats_relay_domains` is dict-typed and legitimately non-empty, so the sweep stays list-only.
+
+    Adding a list-defaulting field with a non-empty default to **any** of the three must turn this
+    red — `list[str]`-annotated included. Reverting 672ad2a must turn this red.
+    *(Scope call, on the record: a test-only change outside the two functions. In scope because it
+    is the only version of the mandate that executes — but see Risks: this item has now been wrong
+    three ways, and it is the most likely thing here to be worth cutting.)*
+10. **#5's resumption instruction is corrected.** `#5:37` instructed "point rule 3 at #6's
+    normalizer" and its rule table carried rule 2 as normalized-equal — the rule measured firing
+    0/33. Executed from its own spec, #5 reintroduces the defect this spec exists to remove. So its
+    "Blocked on #6" section carries the correction, and its rule table is annotated superseded (left
+    in place, so the correction is legible rather than silently applied).
+
+    **This item does NOT claim "#5 no longer contradicts this spec", and the earlier draft's claim to
+    that effect was false.** Collapsing rules 2–4 changes what returns `DIFFERENT`, and the
+    consequences run past the rule table: `_compare_locations('X/Y', 'X:Y')` is `SAME` (`\W+` maps
+    both `/` and `:` to a space), so #5's REFUSE trigger recipe (`#5:501-504`, whose "`X/Y` and `X:Y`
+    both → `X-Y`, verified" is the exact pair) is unsatisfiable, and its control yields `updated`, not
+    `created`. REFUSE stays *reachable* (a ≥40-char non-word run still collides), so this is a stale
+    test recipe, not a design break. Re-deriving
+    #5's §2, Testing and DoD against the tri-state is **#5's resumption work** — it restarts review
+    anyway (Process step 4) — and pretending otherwise is how a DoD item passes while the thing it
+    names stays broken. `#5:60`'s "the block is the only open item" is therefore no longer true, and
+    #5 says so.
 
 Contract:
 
@@ -461,6 +492,17 @@ Contract:
 - **The `united` collision is structural.** Any two multi-word country names sharing a token merge at
   default. Safe direction, recovered by config, but it will recur on any new board that renders
   full country names.
+- **DoD 9 is the weakest item here and the most likely to be worth cutting.** It is the only part of
+  this spec that is not one of the two functions, and it has now been wrong three ways in one round:
+  blind to `TriageConfig` where 672ad2a actually happened, blind to `list[str]` — the annotation
+  `location_noise_words` will most likely carry — and, read as a replacement rather than an addition,
+  it silently drops `baseline_rel`'s absolute-path assertion. All three are fixed above and verified,
+  but the base rate is the finding. If it fails review again, it should become its own issue rather
+  than a fourth attempt: closing a class of config escape deserves its own diff and its own review,
+  which is exactly what it keeps demonstrating.
+- **This spec cannot finish #5's reconciliation, and should not try.** DoD 10 corrects #5's
+  resumption instruction; it does not re-derive #5's §2, Testing or DoD against the tri-state. Two
+  attempts to reach across that boundary from here have now produced a false claim each time.
 - **#6 needs re-titling and re-diagnosing** when this is filed, or the next reader re-derives the
   misdiagnosis. Its Problem section names a mechanism that is not the one failing.
 
