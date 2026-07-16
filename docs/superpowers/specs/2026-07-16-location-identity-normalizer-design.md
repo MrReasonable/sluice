@@ -249,7 +249,7 @@ gazetteer ships.
 
 ## The accepted cost — stated honestly
 
-All verified, none hypothetical. The first four point the safe way; the last two do not.
+All verified, none hypothetical. The first four point the safe way; the last three do not.
 
 | case | verdict | direction |
 |---|---|---|
@@ -259,6 +259,7 @@ All verified, none hypothetical. The first four point the safe way; the last two
 | `Cambridge, MA` / `Cambridge, UK` | `SAME` → merge | mis-merge. Acceptable. Token-subset got this one *right* — the trade was deliberate; the London corpus is worth more than this case. |
 | `Remote` / `London` | **`DIFFERENT` → split** | **mis-split — regression direction.** Ships as the documented default. Configuring `remote` as noise makes it `UNKNOWN` — an **abstain, not a merge**: subtraction empties one side, and an empty side is `UNKNOWN` by the design table's first row. On the record per the user decision of 2026-07-16. |
 | `København` / `Kobenhavn` | **`DIFFERENT` → split** | **mis-split — regression direction.** `ø` is a distinct letter, not an accented `o`, so NFKD cannot fold it. Rare, unattested in the corpus. Cheap remedy if it ever bites: a ~6-entry transliteration map (`ø→o, æ→ae, ß→ss, ð→d, þ→th, ł→l`). Not built — YAGNI. |
+| `UAE` / `United Arab Emirates - United Arab Emirates` | **`DIFFERENT` → split** | **mis-split — regression direction.** Both strings are attested. An abbreviation and its expansion share no token, so one country splits against itself. **This row is outside the measured pair space**: both values are `NOT_A_CITY` in the evidence script — correct for measuring *city* pairs, but the shipped function has no `NOT_A_CITY` concept and compares whatever a board hands it, so the 30-miss count never saw this class. Recovered like `Remote`: configuring either form as noise empties a side → `UNKNOWN`, an abstain rather than a merge. |
 
 `Remote` / `London` is the one that will be argued in review, so the reasoning is recorded here rather
 than left to be re-derived. remoteok and weworkremotely **ship as sources**, so remote-vs-city is a
