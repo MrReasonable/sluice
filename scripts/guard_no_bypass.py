@@ -49,6 +49,7 @@ import json
 import re
 import shlex
 import sys
+from fnmatch import fnmatchcase
 
 # `gh api` can address the merge endpoint directly, without going near `gh pr merge`. Match
 # the path inside any token so both `repos/o/r/pulls/1/merge` and a full API URL are caught.
@@ -90,7 +91,18 @@ _NO_VERIFY_WHY = (
 )
 _FORCE_MAIN_WHY = (
     "force-pushing main rewrites shared history. Never on the default branch. (This "
-    "includes the `+main` refspec form, which force-pushes without saying --force.)"
+    "includes the `+main` refspec form, which force-pushes without saying --force; the "
+    "`--all`/`--branches` forms, which push main without naming it; and a wildcard refspec "
+    "like `refs/heads/*`, whose destination matches main without spelling it.)"
+)
+# --mirror gets its own reason. The generic message above is true of it but incomplete, and
+# its parenthetical points at spellings --mirror does not use. Deleting refs is the part an
+# agent most needs told, because it is the part no other blocked form does.
+_MIRROR_WHY = (
+    "`git push --mirror` makes the remote match local exactly: it force-pushes every ref "
+    "AND DELETES remote refs that are absent locally -- branches, tags, and main among "
+    "them. There is no safe spelling of it, with or without --force, so it is refused "
+    "outright rather than parsed."
 )
 
 _REPORT_NOT_ROUTE_AROUND = (
@@ -215,6 +227,20 @@ def _short_cluster_has(token, letter):
     )
 
 
+def _destination_matches_main(destination):
+    """True when a refspec destination lands on `main`, including via a glob.
+
+    `refs/heads/*:refs/heads/*` parses to the destination `*`, which is not the STRING `main`
+    but names it -- an exact `==` let a wildcard force-push main straight through. fnmatch is
+    a strict generalisation of the old comparison: a destination with no glob characters
+    matches exactly what `==` matched, so `fix/main-menu` still does not match `main` and
+    `feat/*` still does not either. `fnmatchcase`, not `fnmatch`, because the latter
+    normalises case per-platform -- on macOS it would quietly also match a branch named MAIN,
+    which is a different branch and not this guard's business.
+    """
+    return fnmatchcase("main", destination)
+
+
 def _refspec_destination(refspec):
     """The branch a refspec writes to: `+src:dst` -> `dst`, `main` -> `main`."""
     spec = refspec[1:] if refspec.startswith("+") else refspec
@@ -233,27 +259,25 @@ def _force_pushes_main(segment):
     forced_flag = any(
         _flag_base(arg) in _FORCE_FLAGS or _short_cluster_has(arg, "f") for arg in args
     )
-    # `--mirror` and `--all` name no refspec, but unlike the bare push below their target is
-    # NOT ambiguous: both include `main` by definition rather than via a `push.default` that
-    # would have to be guessed. So the "cannot be known from the string alone" allowance does
-    # not reach them, and they are decided before the refspec parse ever runs.
+    # `--all` (and `--branches`, which `git push -h` documents as "alias of --all") name no
+    # refspec, so the refspec parse below never sees a destination to compare and they used to
+    # walk straight through. They are refused with a force flag.
     #
-    # --mirror carries no force flag because it does not need one: it makes the remote match
-    # local exactly, force-pushing every ref and DELETING remote refs absent locally. There is
-    # no safe spelling of it, so it is refused whether or not --force appears.
-    if _has_flag(segment, "--mirror"):
-        return True
-    # --all only rewrites history with a force flag. Without one it is an ordinary
-    # fast-forward push of every branch, and refusing that would block a routine command while
-    # claiming the caller was rewriting main.
-    if _has_flag(segment, "--all") and forced_flag:
+    # Note what is NOT claimed here: --all pushes refs under refs/heads/, i.e. LOCAL branches,
+    # so from a worktree with no local main it does not push main at all. The block is still
+    # right -- the string cannot tell which branches exist, and guessing wrong toward "allow"
+    # is the expensive direction -- but the reason it is right is that the target is UNKNOWN
+    # and dangerous, not that main is "included by definition". An earlier draft of this
+    # comment said the latter and was simply false.
+    if forced_flag and (_has_flag(segment, "--all") or _has_flag(segment, "--branches")):
         return True
     # The first positional is the remote; the rest are refspecs. A bare force-push names no
     # refspec, so its target cannot be known from the string alone -- allow it and let the
     # ruleset decide, rather than guess and be wrong.
     refspecs = [arg for arg in args if not arg.startswith("-")][1:]
     return any(
-        _refspec_destination(refspec) == "main" and (forced_flag or refspec.startswith("+"))
+        _destination_matches_main(_refspec_destination(refspec))
+        and (forced_flag or refspec.startswith("+"))
         for refspec in refspecs
     )
 
@@ -293,6 +317,11 @@ def blocked_reason(command):
             # form bypasses the pre-push hook, so only the long form is refused.
             if _has_flag(segment, "--no-verify"):
                 return _NO_VERIFY_WHY
+            # Checked before the force-push parse and reported separately: --mirror needs no
+            # force flag and no refspec, so neither of those mechanisms would see it, and its
+            # act (deleting remote refs) is not the one _FORCE_MAIN_WHY describes.
+            if _has_flag(segment, "--mirror"):
+                return _MIRROR_WHY
             if _force_pushes_main(segment):
                 return _FORCE_MAIN_WHY
     return None

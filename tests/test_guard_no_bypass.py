@@ -89,6 +89,18 @@ BLOCKED = [
     "git push -f --all origin",
     "git push --force-with-lease --all origin",
     "git push --all --force",  # the remote is optional; the danger is not
+    # `git push -h` says, verbatim: `--[no-]branches   alias of --all`. Matching the string
+    # `--all` alone closes one spelling of the escape and leaves its twin open, which is the
+    # over-claiming this guard exists to avoid. Verified against git 2.55.0: `git push
+    # --branches --dry-run origin` pushes main.
+    "git push --branches --force origin",
+    "git push --branches -f origin",
+    # A wildcard refspec names main without spelling it. `refs/heads/*:refs/heads/*` parses to
+    # destination `*`, which is not the string `main` but matches it. Verified: the dry-run
+    # pushes main.
+    "git push --force origin refs/heads/*:refs/heads/*",
+    "git push --force origin *:*",
+    "git push origin +refs/heads/*:refs/heads/*",  # the + form needs no --force
     # --mirror needs no force flag: it force-pushes every ref AND deletes remote refs that
     # are absent locally. It is the most destructive spelling here and the only one that
     # says nothing about force at all.
@@ -130,6 +142,12 @@ ALLOWED = [
     # paired here, deliberately: it force-pushes with no flag, so it has no safe spelling.
     "git push --all origin",
     "git push --all",
+    "git push --branches origin",  # the alias is not dangerous either, without force
+    # A wildcard that cannot match `main` must stay allowed: the destination is parsed and
+    # matched, not grepped for `main`. `feat/*` is the glob equivalent of the fix/main-menu
+    # regression below -- it is why this uses fnmatch on the parsed destination rather than
+    # treating every `*` as main.
+    "git push --force origin refs/heads/feat/*:refs/heads/feat/*",
 ]
 
 
@@ -164,6 +182,13 @@ def test_the_explanation_names_the_specific_act():
     assert "REST API" in blocked_reason("gh api -X PUT repos/acme/widget/pulls/1/merge")
     assert "--no-verify bypasses" in blocked_reason("git commit -n -m 'x'")
     assert "rewrites shared history" in blocked_reason("git push --force origin main")
+    # --mirror earns its own sentence. The generic force-push message is true of it but
+    # incomplete, and its parenthetical points at the +main refspec form -- an unrelated
+    # spelling. --mirror also DELETES remote refs that are absent locally, which no other
+    # blocked form does, and an agent told only "force-pushing main rewrites shared history"
+    # has not been told the thing that actually makes --mirror the worst of them.
+    assert "--mirror" in blocked_reason("git push --mirror origin")
+    assert "delete" in blocked_reason("git push --mirror origin").lower()
 
 
 def test_the_hook_contract_a_blocked_command_exits_2_and_explains():
