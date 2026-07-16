@@ -132,8 +132,15 @@ UNKNOWN = "unknown"
 ```
 
 The constants are **public** (`core/vault.py` reads the verdict #5's `same_opportunity` returns); the
-function is **private**, because its only consumer, `same_opportunity`, lives in this module. Promote
-it if #23 ever needs it out of module.
+function is **private**, because its only consumer, `same_opportunity`, lives in this module. That
+split matches the file's own precedent: `_norm_url` is private and in-module, `slug_matches` public
+and cross-module. Promote the function if #23 ever needs it out of module.
+
+**Why the constants ship here but the config knob does not** — the two rules look contradictory a
+paragraph apart, so: a dead **config key** is *silent*. Nothing reads it, nothing fails, and the user
+edits a knob that does nothing. A **return vocabulary** its own tests read is not dead: every test
+below asserts one of these three values, so a wrong or missing constant is loud immediately. The test
+for "ship it now" is not "does a cross-module consumer exist yet" but "does anything execute it".
 
 Normalize both, tokenize on whitespace, subtract `noise`, then:
 
@@ -242,12 +249,19 @@ All verified, none hypothetical. The first four point the safe way; the last two
 | **`<city> - United Arab Emirates` / `<city>, United Kingdom`** | **`SAME` → merge** | **mis-merge on the bare token `united` — 18 of the 30 misses, the largest class.** Structural for any two multi-word country names sharing a token. Recovered by configuring noise. |
 | `Abu Dhabi` / `Dubai` | `SAME` → merge | mis-merge on the shared country tokens; 6 of 30. Matches today. |
 | `Cambridge, MA` / `Cambridge, UK` | `SAME` → merge | mis-merge. Acceptable. Token-subset got this one *right* — the trade was deliberate; the London corpus is worth more than this case. |
-| `Remote` / `London` | **`DIFFERENT` → split** | **mis-split — regression direction.** Ships as the documented default; fixed by configuring `remote` as noise. On the record per the user decision of 2026-07-16. |
+| `Remote` / `London` | **`DIFFERENT` → split** | **mis-split — regression direction.** Ships as the documented default. Configuring `remote` as noise makes it `UNKNOWN` — an **abstain, not a merge**: subtraction empties one side, and an empty side is `UNKNOWN` by the design table's first row. On the record per the user decision of 2026-07-16. |
 | `København` / `Kobenhavn` | **`DIFFERENT` → split** | **mis-split — regression direction.** `ø` is a distinct letter, not an accented `o`, so NFKD cannot fold it. Rare, unattested in the corpus. Cheap remedy if it ever bites: a ~6-entry transliteration map (`ø→o, æ→ae, ß→ss, ð→d, þ→th, ł→l`). Not built — YAGNI. |
 
 `Remote` / `London` is the one that will be argued in review, so the reasoning is recorded here rather
 than left to be re-derived. remoteok and weworkremotely **ship as sources**, so remote-vs-city is a
 shipped configuration, and splitting it by default manufactures a duplicate out of the box.
+
+The first draft claimed the config fix produces a **merge**. It produces an **abstain** — verified,
+and the stronger claim: `UNKNOWN` says "these may be the same job and I have no evidence either way",
+which is exactly true of a remote posting and a city posting. Getting this backwards mattered because
+it is the row the argument rests on, and because the `UNKNOWN` path it names — *noise subtraction
+emptying a side*, as opposed to an empty input string — is the one path the whole design has no other
+witness for. See DoD 6.
 
 **The refusal to ship a `{remote, hybrid, onsite}` code default rests on non-monotonicity, not on
 neutrality.** This distinction matters: neutrality *would permit* work-arrangement vocabulary in
@@ -332,8 +346,12 @@ exactly.
   `<city B>, North Clarke Kingdom` returns `SAME` at default (the `united`-collision shape, 18 of 30)
   and `DIFFERENT` once the shared tokens are configured as noise.
 - `compare(a, b) == compare(b, a)` — symmetry.
-- `compare(a, a)` is `SAME` — reflexivity.
+- `compare(a, a)` is `SAME` **for any `a` with a surviving token** — reflexivity. The qualifier is
+  required, not pedantry: `compare('', '')` and `compare('Remote', 'Remote', {'remote'})` are both
+  `UNKNOWN`, so an unqualified claim is false in two ways.
 - `compare(a, '')`, `compare(a, '   ')`, `compare('', '')` are all `UNKNOWN` — absence never splits.
+  **These reach `UNKNOWN` via an empty input string.** The other route — noise subtraction emptying a
+  side — is a different code path and is covered only by DoD 6.
 - **Noise list, with a TWO-word region** — `'Palmerburgh, North Clarke'` vs `'Clarkefurt, North
   Clarke'` returns `SAME` with empty noise and `DIFFERENT` with `noise={'North Clarke'}`. The region
   must be two words or the arity assertion below cannot pass against correct code.
@@ -343,8 +361,13 @@ exactly.
   region is two.
 - **A bare `str` noise raises** — `compare(a, b, noise='Remote')` raises rather than silently
   iterating characters.
-- `compare('Remote', '<city>')` is `DIFFERENT` with empty noise and `SAME` with `{'remote'}` — the
-  accepted cost, pinned in both directions so it cannot be "fixed" by accident.
+- `compare('Remote', '<city>')` is `DIFFERENT` with empty noise and **`UNKNOWN`** with `{'remote'}` —
+  the accepted cost, pinned in both directions so it cannot be "fixed" by accident. `UNKNOWN`, not
+  `SAME`: subtraction empties one side. This bullet is also the **only** witness for the
+  empty-check-hoist mutant; see DoD 6.
+- `compare('Remote', 'Remote', {'remote'})` is `UNKNOWN` — two *identical* locations, both emptied by
+  noise. Under the hoist mutant this returns `DIFFERENT` and **splits**, which is the worst verdict
+  the design can produce and the reason this one-line test exists.
 
 ## Non-goals
 
@@ -379,19 +402,48 @@ Mechanisms (each names the mutation that must turn it red — all four verified 
    variable.
 5. Every corpus **shape** pair returns `SAME`. Reverting the rule to token-subset turns this red.
    (Verified achievable: synthetic shapes reproduce the 15-of-21 split exactly.)
-6. `compare('Remote', '<city>')` is `DIFFERENT` with empty noise and `SAME` with `{'remote'}`. A
-   code-default noise list turns this red.
+6. `compare('Remote', '<city>')` is `DIFFERENT` with empty noise and **`UNKNOWN`** with `{'remote'}`,
+   and `compare('Remote', 'Remote', {'remote'})` is `UNKNOWN`. A code-default noise list turns the
+   first half red. **Moving the empty check before noise subtraction turns the second half red** —
+   the mutant returns `DIFFERENT` and splits two identical locations. This item carries two mutants
+   because it is the only test that exercises `UNKNOWN` reached by *subtraction* rather than by an
+   empty input; the first draft asserted `SAME` here, which is unreachable, and pinned the hoist to
+   item 8, which cannot see it.
 7. The noise set works with wrong case **and** with a multi-word entry, against a **two-word** region.
    A raw-`noise` implementation turns this red. A bare-`str` noise raises.
-8. The `united`-collision shape returns `SAME` at default and `DIFFERENT` once configured. Hoisting
-   the empty check after noise subtraction, or dropping the overlap rule, turns this red.
+8. The `united`-collision shape returns `SAME` at default and `DIFFERENT` once configured. Dropping
+   the overlap rule turns this red. *(It does **not** witness the empty-check hoist — both sides keep
+   a city token after subtraction, so correct and mutant agree. That claim was in the first draft and
+   was false; the witness is item 6.)*
+
+Handoffs — **mechanisms, not prose.** Both of these reach across to #5, and the first draft left them
+as sentences in a document #5's implementer will never execute. That is this spec's own thesis one
+level up, so they are DoD items with a check:
+
+9. **The guard closes the class, not the instance.**
+   `test_ingest_defaults_carry_no_preference` iterates `dataclasses.fields(Config)` and asserts every
+   list-typed field defaults empty. This lands **here**, not in #5. `location_noise_words` is a
+   geography key whose guard the first draft delegated to #5 in prose — but `grep -ci noise` on #5's
+   spec returns **0**, its config section is titled "these constants stay literal", and this spec's
+   own "no new config key ships" is green by doing nothing. So #5 could add the key with a
+   `["remote"]`-shaped default and the enumeration would ship green: the 672ad2a escape, which
+   `test_sluice_neutral_defaults.py:43-46,51-54` records happening **twice**, both caught by review
+   and neither by the suite. Closing the class needs no edit to #5 and cannot be skipped. Adding a
+   list-typed `Config` field with a non-empty default must turn this red.
+   *(Scope call, on the record: this is a test-only change outside the two functions. It is in scope
+   because it is the only version of the mandate that executes.)*
+10. **#5's spec no longer contradicts this one.** `#5:37` instructs "point rule 3 at #6's normalizer"
+    and `#5:119-122` still carries rule 2 as normalized-equal — the rule measured firing 0/33.
+    Executed from its own spec, #5 reintroduces the defect this spec exists to remove. So its
+    "Blocked on #6" section and rule 2 are reconciled to the tri-state as part of **this** work.
+    (Only that section is touched; #5's reviewed design is not reopened.)
 
 Contract:
 
-9. `SAME`/`DIFFERENT`/`UNKNOWN` are the three verdicts, matching #5's `same_opportunity` vocabulary
-   exactly, and `_compare_locations`'s docstring states that `DIFFERENT` is the only verdict #5 acts
-   on.
-10. The diff adds no place name, country, or region to `sluice/`: neither function contains place
+11. `SAME`/`DIFFERENT`/`UNKNOWN` are the three verdicts, matching #5's `same_opportunity` vocabulary
+    exactly, and `_compare_locations`'s docstring states that `DIFFERENT` is the only verdict #5 acts
+    on.
+12. The diff adds no place name, country, or region to `sluice/`: neither function contains place
     vocabulary, and no gazetteer, country list, or transliteration table ships. No new config key
     ships. *(Pre-existing neutral example searches in `ingest/sources/` — `hackajob.py:16`,
     `cord.py:25`, `remoteok.py:12` — are out of scope; the first draft's unscoped version of this
