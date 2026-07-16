@@ -11,6 +11,16 @@ from sluice.core.doctor import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_sluice_config(monkeypatch):
+    # Hermeticity: the workflow docs instruct `export SLUICE_CONFIG=...`, and the
+    # Sluice.doctor / cmd_doctor tests below assert the *default* backend
+    # identities -- so a developer's exported config must not leak in and false-
+    # fail them. Same guard the config-test modules use (test_sluice_neutral_
+    # defaults.py, test_triage_config.py, test_config.py).
+    monkeypatch.delenv("SLUICE_CONFIG", raising=False)
+
+
 # ── fakes: minimal config objects with just the fields enumerate reads ────────
 @dataclass
 class _Triage:
@@ -435,3 +445,18 @@ def test_cli_doctor_offline_dead_when_claude_missing_exits_nonzero(monkeypatch):
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.setattr("shutil.which", lambda name: None)
     assert main(["doctor", "--offline"]) == 1
+
+
+def test_print_doctor_shows_elapsed_for_a_live_probe(capsys):
+    # cmd_doctor cannot inject a probe, so its CLI tests only ever run offline
+    # (elapsed=None). Exercise the live-elapsed format branch of _print_doctor
+    # directly with a synthetic report so `(0.4s)` is actually rendered.
+    from sluice.cli import _print_doctor
+
+    target = BackendTarget(provider="claude-max", model="m", host="",
+                           claude_path="claude", uses=[RoleUse("triage", "primary")])
+    report = DoctorReport(checks=[BackendCheck(target, OK, "round-trip ok", elapsed=0.4)])
+    _print_doctor(report, offline=False)
+    out = capsys.readouterr().out
+    assert "(0.4s)" in out
+    assert "1 ok, 0 degraded, 0 dead" in out
