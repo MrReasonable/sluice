@@ -94,7 +94,10 @@ class ClaudeMaxBackend:
             raise BackendError(f"claude-max invocation failed: {e}") from e
         if proc.returncode != 0:
             raise BackendError(f"claude-max exit {proc.returncode}: {proc.stderr[:200]}")
-        return proc.stdout.strip()
+        out = proc.stdout.strip()
+        if not out:
+            raise BackendError("claude-max returned an empty response")
+        return out
 
 
 class OpenAiCompatibleBackend:

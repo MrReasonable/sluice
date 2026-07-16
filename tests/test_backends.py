@@ -49,6 +49,14 @@ def test_claudemax_runner_nonzero_raises():
         be.complete("x")
 
 
+def test_claudemax_empty_response_raises():
+    class R:  # fake completed-process
+        returncode, stdout, stderr = 0, "   ", ""
+    be = ClaudeMaxBackend("m", cmd_template=["claude"], runner=lambda *a, **k: R())
+    with pytest.raises(BackendError, match="claude-max returned an empty response"):
+        be.complete("x")
+
+
 def test_openai_compatible_parses_choice():
     def http(url, data, headers, timeout):
         assert url == "http://x/api/v1/chat/completions"
