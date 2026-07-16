@@ -21,7 +21,7 @@ def _norm_url(u: str) -> str:
 
 
 def _norm_location(s: str) -> str:
-    """Canonicalize a location for comparison: NFKD-fold and drop combining marks, casefold, then
+    """Canonicalize a location for comparison: NFKD-fold, casefold, drop combining marks, then
     collapse runs of non-word characters to a single space. Blank-ish input becomes "", which is
     what lets an absent location abstain rather than read as evidence (`bool("   ")` is True).
 
@@ -30,8 +30,13 @@ def _norm_location(s: str) -> str:
     no token and SPLIT. The unicode-aware `\\W` (not `[^a-z0-9]`) keeps letters that NFKD cannot
     fold whole: 'ø' is a distinct letter, not an accented 'o', so `[^a-z0-9]` would shred
     'københavn' into 'k benhavn'. Neither witnesses the other; see tests/test_leads_location.py.
+
+    NFKD runs BEFORE casefold, and that ordering is itself load-bearing: 663 codepoints decompose
+    to an uppercase letter that a casefold which already ran can never reach ('№' -> 'No'). Folding
+    in the wrong order leaves '№5' as 'No5', which shares no token with 'no5' and SPLITS -- the one
+    verdict #5 acts on. Cheap to get backwards, and neither fold test above witnesses it.
     """
-    s = unicodedata.normalize("NFKD", s.casefold())
+    s = unicodedata.normalize("NFKD", s).casefold()
     s = "".join(c for c in s if not unicodedata.combining(c))
     return re.sub(r"\W+", " ", s).strip()
 

@@ -38,6 +38,17 @@ def test_norm_location_folds_accents():
     assert _norm_location("Zurich") == "zurich"
 
 
+def test_norm_location_folds_a_capital_that_only_nfkd_reveals():
+    # The ONLY guard for the ORDER of the fold: NFKD before casefold. 663 codepoints decompose to
+    # an uppercase letter, which a casefold that already ran can never reach. Neither fold test
+    # above witnesses this -- 'ü' and 'ø' are lowercase under either ordering, so both stay GREEN
+    # with the two calls swapped. Asserts the exact string; a token count is green under the
+    # mutant.
+    assert _norm_location("№5") == "no5"
+    # The consequence, and why this is not cosmetic: swapped, it fails toward DIFFERENT.
+    assert _compare_locations("№5", "No5") == SAME
+
+
 def test_norm_location_keeps_non_ascii_letters_whole():
     # The ONLY guard for `\W` vs `[^a-z0-9]`. "ø" has no NFKD decomposition -- it is a distinct
     # letter, not an accented "o" -- so the character class is the only live variable here.
