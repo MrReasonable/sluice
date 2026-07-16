@@ -1,6 +1,7 @@
 """The normalized lead - the unit every sub-app passes around."""
 import hashlib
 import re
+import unicodedata
 from dataclasses import dataclass, field
 
 
@@ -11,6 +12,22 @@ def _norm_url(u: str) -> str:
     jobs into one; and keeping the full link matches the format already stored in
     the legacy seen.db, so the cutover dedups cleanly instead of re-surfacing."""
     return u.strip().split("#")[0]
+
+
+def _norm_location(s: str) -> str:
+    """Canonicalize a location for comparison: NFKD-fold and drop combining marks, casefold, then
+    collapse runs of non-word characters to a single space. Blank-ish input becomes "", which is
+    what lets an absent location abstain rather than read as evidence (`bool("   ")` is True).
+
+    Both halves are load-bearing, for DIFFERENT reasons -- conflating them is how the guard test
+    for this goes inert. The NFKD fold makes 'Zürich' and 'Zurich' one token; without it they share
+    no token and SPLIT. The unicode-aware `\\W` (not `[^a-z0-9]`) keeps letters that NFKD cannot
+    fold whole: 'ø' is a distinct letter, not an accented 'o', so `[^a-z0-9]` would shred
+    'copenhagen' into 'k benhavn'. Neither witnesses the other; see tests/test_leads_location.py.
+    """
+    s = unicodedata.normalize("NFKD", s.casefold())
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return re.sub(r"\W+", " ", s).strip()
 
 
 @dataclass
