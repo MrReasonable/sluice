@@ -92,8 +92,9 @@ _NO_VERIFY_WHY = (
 _FORCE_MAIN_WHY = (
     "force-pushing main rewrites shared history. Never on the default branch. (This "
     "includes the `+main` refspec form, which force-pushes without saying --force; the "
-    "`--all`/`--branches` forms, which push main without naming it; and a wildcard refspec "
-    "like `refs/heads/*`, whose destination matches main without spelling it.)"
+    "`--all`/`--branches` forms, which push every LOCAL branch and so may carry main "
+    "without naming it; and a wildcard refspec like `refs/heads/*` or `refs/*`, whose "
+    "destination matches main without spelling it.)"
 )
 # --mirror gets its own reason. The generic message above is true of it but incomplete, and
 # its parenthetical points at spellings --mirror does not use. Deleting refs is the part an
@@ -209,6 +210,18 @@ def _starts_with(segment, *words):
 
 
 def _has_flag(segment, flag):
+    """Exact match on the flag's base name. Abbreviations are deliberately NOT matched.
+
+    git accepts any unambiguous prefix of a long option, so `git push --mir origin` IS
+    `--mirror` and this returns False for it -- verified on git 2.55.0, where `--mir
+    --dry-run` pushes main. That is a scope line, not an oversight, and it is the same one
+    drawn where an unparseable command fails open above: the threat model is a DRIFTING agent,
+    not an evader. An agent reaching for --mirror in good faith types `--mirror`; `--mir` is a
+    keystroke nobody saves by accident. Matching prefixes would mean modelling git's whole
+    option table and its ambiguity rules (`--forc` is ambiguous, `--mir` is not) to avoid
+    refusing flags that merely share a prefix -- a large surface added to catch an evader, who
+    is already caught by the server-side ruleset this guard only front-runs.
+    """
     return any(_flag_base(token) == flag for token in segment)
 
 
@@ -237,8 +250,19 @@ def _destination_matches_main(destination):
     `feat/*` still does not either. `fnmatchcase`, not `fnmatch`, because the latter
     normalises case per-platform -- on macOS it would quietly also match a branch named MAIN,
     which is a different branch and not this guard's business.
+
+    BOTH spellings are tested because `_refspec_destination` strips only the LITERAL
+    `refs/heads/` prefix. A glob above that level (`refs/*:refs/*`) does not start with it, so
+    it survives whole -- and `*` does not match the `/` separators in `refs/heads/main`, so
+    checking the short name alone never catches it. Verified on git 2.55.0: `git push
+    --dry-run origin '+refs/*:refs/*'` reports `main -> main (forced update)`.
+
+    Widening to the full ref cannot over-reach: `refs/tags/*` matches neither spelling, so a
+    tag push stays allowed. The extra glob matches this admits over `==` are unreachable
+    anyway -- git rejects every other metacharacter in a refspec destination (`m?in`,
+    `ma[i]n` are each `fatal: invalid refspec`), so `*` is the only one that ever arrives.
     """
-    return fnmatchcase("main", destination)
+    return fnmatchcase("main", destination) or fnmatchcase("refs/heads/main", destination)
 
 
 def _refspec_destination(refspec):

@@ -101,6 +101,13 @@ BLOCKED = [
     "git push --force origin refs/heads/*:refs/heads/*",
     "git push --force origin *:*",
     "git push origin +refs/heads/*:refs/heads/*",  # the + form needs no --force
+    # A glob ABOVE refs/heads/. Only the literal `refs/heads/` prefix is stripped, so `refs/*`
+    # survives whole -- and `*` does not match the `/` in `refs/heads/main`, so testing the
+    # short name alone never matches it. The destination is therefore matched against BOTH
+    # spellings. Verified on git 2.55.0: `git push --dry-run origin '+refs/*:refs/*'` reports
+    # `main -> main (forced update)`.
+    "git push origin +refs/*:refs/*",
+    "git push --force origin refs/*:refs/*",
     # --mirror needs no force flag: it force-pushes every ref AND deletes remote refs that
     # are absent locally. It is the most destructive spelling here and the only one that
     # says nothing about force at all.
@@ -148,6 +155,10 @@ ALLOWED = [
     # regression below -- it is why this uses fnmatch on the parsed destination rather than
     # treating every `*` as main.
     "git push --force origin refs/heads/feat/*:refs/heads/feat/*",
+    # A glob that lands outside refs/heads/ entirely cannot reach a branch, so matching the
+    # full-ref spelling must not over-reach into one. Without this, `refs/heads/main` matching
+    # could be widened carelessly until every `refs/`-prefixed push is refused.
+    "git push --force origin refs/tags/*:refs/tags/*",
 ]
 
 
