@@ -233,6 +233,21 @@ def _force_pushes_main(segment):
     forced_flag = any(
         _flag_base(arg) in _FORCE_FLAGS or _short_cluster_has(arg, "f") for arg in args
     )
+    # `--mirror` and `--all` name no refspec, but unlike the bare push below their target is
+    # NOT ambiguous: both include `main` by definition rather than via a `push.default` that
+    # would have to be guessed. So the "cannot be known from the string alone" allowance does
+    # not reach them, and they are decided before the refspec parse ever runs.
+    #
+    # --mirror carries no force flag because it does not need one: it makes the remote match
+    # local exactly, force-pushing every ref and DELETING remote refs absent locally. There is
+    # no safe spelling of it, so it is refused whether or not --force appears.
+    if _has_flag(segment, "--mirror"):
+        return True
+    # --all only rewrites history with a force flag. Without one it is an ordinary
+    # fast-forward push of every branch, and refusing that would block a routine command while
+    # claiming the caller was rewriting main.
+    if _has_flag(segment, "--all") and forced_flag:
+        return True
     # The first positional is the remote; the rest are refspecs. A bare force-push names no
     # refspec, so its target cannot be known from the string alone -- allow it and let the
     # ruleset decide, rather than guess and be wrong.

@@ -80,6 +80,20 @@ BLOCKED = [
     "GIT_DIR=/repo/.git git push --force origin main",
     # The `=value` spelling is the same flag.
     "gh pr merge 16 --admin=true",
+    # `--all` and `--mirror` push main without ever naming it, so the refspec parser below
+    # never sees a destination to compare. They are NOT the ambiguous bare-push case: `--all`
+    # pushes every local branch and `--mirror` every ref, so main is included by definition,
+    # not by a `push.default` that has to be guessed.
+    "git push --all --force origin",
+    "git push --force --all origin",  # flag order is not a semantic
+    "git push -f --all origin",
+    "git push --force-with-lease --all origin",
+    "git push --all --force",  # the remote is optional; the danger is not
+    # --mirror needs no force flag: it force-pushes every ref AND deletes remote refs that
+    # are absent locally. It is the most destructive spelling here and the only one that
+    # says nothing about force at all.
+    "git push --mirror origin",
+    "git push --mirror",
 ]
 
 ALLOWED = [
@@ -109,6 +123,13 @@ ALLOWED = [
     # Splitting on separators must not turn a neighbour into a false positive either.
     "cd /repo && git push -u origin feat/x",
     "git -C /repo push -u origin feat/x",
+    # --all WITHOUT a force flag rewrites nothing: it is an ordinary fast-forward push of
+    # every branch, and a non-fast-forward is what the server is for. Blocking it would make
+    # the guard refuse a routine command while claiming the caller was rewriting main --
+    # the v1 mistake this suite's regression block exists to prevent. `--mirror` is NOT
+    # paired here, deliberately: it force-pushes with no flag, so it has no safe spelling.
+    "git push --all origin",
+    "git push --all",
 ]
 
 
