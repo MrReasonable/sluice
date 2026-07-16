@@ -3,9 +3,11 @@
 - **Date**: 2026-07-16
 - **Status**: Design approved; plan-reviewed once (0 Critical / 6 High / 8 Medium / 3 Low, all
   folded). Unblocks #5.
-- **Origin**: split out of #6 on 2026-07-16 after the code contradicted #6 as filed (see Background).
-  #6 keeps the demashing half and is now blocked on capturing a real payload; this spec is the half
-  #5 actually waits on.
+- **Issue**: **#25**. Split out of #6 on 2026-07-16 after the code contradicted #6 as filed (see
+  Background). #6 keeps the demashing half, is re-diagnosed, and is blocked on capturing a real
+  payload; this spec is the half #5 actually waits on.
+- **Filed alongside**: **#26** (close the unguarded-preference class — cut from this spec, see
+  "Config-first"), **#27** (golden fixtures carry real locations; pre-existing).
 - **Consumer**: #5 (`docs/superpowers/specs/2026-07-16-lead-identity-write-path-design.md`), whose
   `same_opportunity` consumes this in **two** of its four rules — not one. See "The contract #5 needs".
 - **Evidence**: every count below is produced by
@@ -489,14 +491,11 @@ Contract:
 
 ## Process
 
-1. File four issues:
-   - **this work** (the normalizer and the comparison);
-   - **retitle and re-diagnose #6** to the exact-match mechanism, blocked on a real captured payload;
-   - **the fixture-neutrality question** (real locations in `tests/fixtures/`, pre-existing since
-     `e94a9f9`);
-   - **harden the neutral-defaults guard to close the class** — sweep the config dataclasses so an
-     unguarded list-typed preference cannot ship green. Cut from this spec after failing review three
-     ways at once; the findings are recorded in "Config-first" so the next attempt starts from them.
+1. ~~File the issues.~~ **Done 2026-07-16**: #25 (this work); #26 (close the unguarded-preference
+   class — cut from here, with the three verified mistakes recorded so the next attempt starts from
+   them); #27 (fixtures carry real locations; pre-existing). #6 re-titled and re-diagnosed to the
+   exact-match mechanism and blocked on a real captured payload; #5 told what its resumption actually
+   owes.
 2. Plan via `writing-plans`, then implement.
 3. Review with **both** `/review-pr` and CodeRabbit (per the standing cadence). Read the CodeRabbit
    rate-limit comment **before** triggering.
