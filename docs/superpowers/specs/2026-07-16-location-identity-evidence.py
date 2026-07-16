@@ -20,8 +20,15 @@ wrong cwd finds nothing, and a naive one-direction flip would report a green 0-v
 import glob
 import itertools
 import re
-import unicodedata
 from collections import Counter
+
+from sluice.core.leads import DIFFERENT, _compare_locations, _norm_location
+
+# SAME and UNKNOWN are the other two members of the shipped verdict vocabulary (also importable
+# from sluice.core.leads) but this script never compares against them directly -- DIFFERENT is the
+# only verdict #5 acts on (see _compare_locations's docstring), so it is the only one this script
+# needs to test against. The tri-state print below reports the raw dict Counter builds from
+# `_compare_locations`'s actual return values, which is why it shows the shipped lowercase strings.
 
 # Ground truth, assigned BY HAND. Every distinct non-empty `location` in tests/fixtures/*/raw.json
 # that names a city. Country-only ('UAE', 'India', 'Ukraine') and arrangement-only ('Remote') values
@@ -72,32 +79,14 @@ GEO_NOISE = frozenset({
     'egypt', 'qatar', 'saudi', 'arabia', 'hybrid', 'remote', 'work', 'in', 'al', 'ain',
 })
 
-SAME, DIFFERENT, UNKNOWN = 'SAME', 'DIFFERENT', 'UNKNOWN'
-
-
-def norm(s):
-    """The spec's `_norm_location`."""
-    s = unicodedata.normalize('NFKD', s.casefold())
-    s = ''.join(c for c in s if not unicodedata.combining(c))
-    return re.sub(r'\W+', ' ', s).strip()
-
-
-def compare(a, b, noise=frozenset()):
-    """The spec's `_compare_locations`. The noise set is normalized and tokenized through `norm`,
-    not subtracted raw: raw subtraction is the inert-knob bug the spec mandates three tests for, and
-    a model of the function that does not model that is not evidence for it."""
-    if isinstance(noise, str):
-        raise TypeError(f'noise must be a set of words, not a str: {noise!r}')
-    n = {tok for w in noise for tok in norm(w).split()}
-    ta, tb = set(norm(a).split()) - n, set(norm(b).split()) - n
-    if not ta or not tb:
-        return UNKNOWN
-    return SAME if ta & tb else DIFFERENT
-
 
 def rule2_as_written(a, b):
-    """#5's rule 2 BEFORE this spec: 'both locations non-empty and normalized-EQUAL -> SAME'."""
-    na, nb = norm(a), norm(b)
+    """#5's rule 2 BEFORE this spec: 'both locations non-empty and normalized-EQUAL -> SAME'.
+
+    This models a rule that does NOT exist in the shipped code -- #5's old rule, which this spec
+    replaces -- so it stays a local definition rather than an import. `_norm_location` IS the
+    shipped one (imported above): only the equality comparison it feeds is the rejected rule."""
+    na, nb = _norm_location(a), _norm_location(b)
     return bool(na) and bool(nb) and na == nb
 
 
@@ -145,21 +134,22 @@ def main():
 
     print(f'#5 rule 2 as written (normalized-EQUAL) fires {sum(rule2_as_written(a, b) for a, b in same)}'
           f'/{len(same)} same-city pairs  <- the defect this spec fixes')
-    print(f'tri-state _compare_locations  returns {dict(Counter(compare(a, b) for a, b in same))}'
-          f' on the same pairs\n')
+    print(f'tri-state _compare_locations  returns '
+          f'{dict(Counter(_compare_locations(a, b) for a, b in same))} on the same pairs\n')
 
     for label, noise in [('empty (the default)', frozenset()), ('geography configured', GEO_NOISE)]:
-        splits = sum(compare(a, b, noise) == DIFFERENT for a, b in same)
-        ok = sum(compare(a, b, noise) == DIFFERENT for a, b in diff)
-        merged = [(a, b) for a, b in diff if compare(a, b, noise) != DIFFERENT]
+        splits = sum(_compare_locations(a, b, noise) == DIFFERENT for a, b in same)
+        ok = sum(_compare_locations(a, b, noise) == DIFFERENT for a, b in diff)
+        merged = [(a, b) for a, b in diff if _compare_locations(a, b, noise) != DIFFERENT]
         print(f'{label}:')
         print(f'  same-city {len(same):4} pairs: {len(same) - splits:3} SAME (correct) / '
               f'{splits:3} DIFFERENT (REGRESSION)')
         print(f'  diff-city {len(diff):4} pairs: {ok:3} DIFFERENT (correct) / '
               f'{len(merged):3} merged (missed split)')
         if merged:
-            shared = Counter(frozenset((set(norm(a).split()) & set(norm(b).split())) - noise)
-                             for a, b in merged)
+            shared = Counter(
+                frozenset((set(_norm_location(a).split()) & set(_norm_location(b).split())) - noise)
+                for a, b in merged)
             for toks, n in shared.most_common():
                 print(f'      {n:3} merged on {sorted(toks)}')
         print()
