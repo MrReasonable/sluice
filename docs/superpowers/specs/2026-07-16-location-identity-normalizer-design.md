@@ -1,12 +1,15 @@
 # Location identity — a comparison #5 can key a split on
 
 - **Date**: 2026-07-16
-- **Status**: Design approved, not yet planned. Unblocks #5.
+- **Status**: Design approved; plan-reviewed once (0 Critical / 6 High / 8 Medium / 3 Low, all
+  folded). Unblocks #5.
 - **Origin**: split out of #6 on 2026-07-16 after the code contradicted #6 as filed (see Background).
   #6 keeps the demashing half and is now blocked on capturing a real payload; this spec is the half
   #5 actually waits on.
 - **Consumer**: #5 (`docs/superpowers/specs/2026-07-16-lead-identity-write-path-design.md`), whose
-  `same_opportunity` rule 3 points at `locations_differ` when this lands. Nothing else calls it.
+  `same_opportunity` consumes this in **two** of its four rules — not one. See "The contract #5 needs".
+- **Evidence**: every count below is produced by
+  `docs/superpowers/specs/2026-07-16-location-identity-evidence.py`. Run it; do not trust the tables.
 
 ## Goal
 
@@ -17,8 +20,8 @@ different, or abstain.** Not "same or different".
 
 - A wrong `DIFFERENT` **manufactures a duplicate note** for an ordinary cross-board re-post. That is
   a **regression** on today, where the same lead collides at `_path_for` and reports `updated`.
-- A wrong "not different" **merges** two leads into one note. That is exactly what happens today, it
-  needs company *and* title to also match, and it is recoverable.
+- A wrong `SAME` **merges** two leads into one note. That is exactly what happens today, it needs
+  company *and* title to also match, and it is recoverable.
 
 So abstaining is always safe and guessing `DIFFERENT` is not. Every choice below falls out of that
 asymmetry.
@@ -59,63 +62,119 @@ contradicted the issue as filed." Two for two. The issues are written from prose
 
 ## The governing rule
 
-> `locations_differ(a, b)` returns `True` **only** on positive evidence of difference. Equal,
-> overlapping, or either side empty — all return `False`. `False` means "same **or unsure**", never
-> "same".
+> `_compare_locations(a, b)` returns `DIFFERENT` **only** on positive evidence of difference.
+> Overlapping evidence returns `SAME`; absent evidence returns `UNKNOWN`. Neither ever splits.
+
+## The contract #5 needs
+
+The first draft of this spec claimed "#5's rule 3 points at it; nothing else calls it". **That was
+false, and it is why this returns a tri-state rather than a bool.** #5's `same_opportunity` is:
+
+```
+both urls non-empty and normalized-equal      -> SAME       # proof
+both locations non-empty and normalized-equal -> SAME       # rule 2: inference, re-post/cross-board
+both locations non-empty and differ           -> DIFFERENT  # rule 3: the only split
+otherwise                                     -> UNKNOWN    # never splits
+```
+
+Rule 2 is keyed on **normalized equality**, and measured against the real corpus it **fires 0 of 33
+same-city re-post pairs** — because real re-posts *overlap* but are never *equal* (`London` vs
+`London EC4Y`). Every one of them falls through to `UNKNOWN`. #5 calls `merged` "the one place the
+design knowingly loses data" and says its printed count "is its only signal"; routing 100% of
+ordinary re-posts into that counter destroys the signal. A bool expressing only rule 3 would have
+left rule 2 defeated and the defect invisible.
+
+So the seam is the trichotomy itself. `_compare_locations` returns #5's exact three verdicts, and
+#5's rules 2–4 collapse into one call:
+
+```
+both urls non-empty and normalized-equal -> SAME
+otherwise                                -> _compare_locations(note_location, lead_location, noise)
+```
+
+Measured: rule 2 goes from **0/33 to 33/33**, and `merged` returns to meaning what #5 says it means.
 
 ## Design
 
-Two pure functions in `core/leads.py`, beside `_norm_url` and matching its shape — deterministic,
-offline, standard-library only.
+Two pure functions and three constants in `core/leads.py`, beside `_norm_url` and matching its shape
+— deterministic, offline, standard-library only (`re`, `unicodedata`).
 
 ### 1. `_norm_location(s: str) -> str` — new, private
 
 NFKD-normalize, drop combining marks, casefold, replace runs of non-word characters with a single
 space, strip. Unicode-aware `\W`, **not** `[^a-z0-9]`.
 
-That last point is load-bearing and was chosen against evidence, not taste:
+Both halves are load-bearing, and **they are load-bearing for different reasons** — the first draft
+conflated them, which is what made its own guard test inert:
 
 ```
-'Zürich'   --[^a-z0-9]-->  'z rich'     # shredded into two junk tokens
-'Zürich'   --NFKD + \W -->  'zurich'    # one whole token; compares equal to 'Zurich'
+NFKD fold        'Zürich'     -> 'zurich'      vs 'zürich' without it   (compares equal to 'Zurich')
+\W not [^a-z0-9] 'København'  -> 'københavn'   vs 'k benhavn' under it  (one token, not shredded)
 ```
 
-Under `[^a-z0-9]`, `Zürich` vs `Zurich` shares no token, returns `DIFFERENT`, and **splits** — the
-regression direction, on a case that needs no board quirk to occur.
+`Zürich` cannot witness the character class: NFKD has already folded `ü` to `u`, so `[^a-z0-9]` has
+nothing left to shred and yields `zurich` either way. **`København` is the only witness for the
+class**, because `ø` has no NFKD decomposition — it is a distinct letter, not an accented `o`, so the
+class is the only live variable. Each half needs its own witness; see DoD 4a/4b.
+
+Deleting the NFKD fold is not cosmetic: it flips `_compare_locations('Zürich', 'Zurich')` to
+`DIFFERENT` and **splits**.
 
 Blank-ish input normalizes to `''`. This is what disarms `bool("   ") is True`: whitespace dirt
-cannot manufacture a difference, because an empty side abstains.
+cannot manufacture a difference, because an empty side returns `UNKNOWN`.
 
-### 2. `locations_differ(a, b, noise=frozenset()) -> bool` — new, public
+### 2. `_compare_locations(a, b, noise=frozenset()) -> str` — new, private
 
-Normalize both, tokenize on whitespace, subtract `noise`. Return `True` **only** when both token sets
-are non-empty and their intersection is empty. Everything else returns `False`.
+```python
+SAME = "same"           # module constants; status.py's convention is strings, not an enum
+DIFFERENT = "different"
+UNKNOWN = "unknown"
+```
+
+The constants are **public** (`core/vault.py` reads the verdict #5's `same_opportunity` returns); the
+function is **private**, because its only consumer, `same_opportunity`, lives in this module. Promote
+it if #23 ever needs it out of module.
+
+Normalize both, tokenize on whitespace, subtract `noise`, then:
+
+| condition | verdict |
+|---|---|
+| either token set empty | `UNKNOWN` — absence of evidence never splits |
+| token sets intersect | `SAME` — a shared token is the city; the rest is decoration |
+| token sets disjoint | `DIFFERENT` — the only verdict #5 splits on |
 
 `noise` is a set of words to ignore when comparing — work-arrangement and administrative-geography
-vocabulary that decorates a location without locating it. It defaults to empty and **no config key
-ships in this issue**; see "Config-first", below.
+vocabulary that decorates a location without locating it. It defaults to empty; no config key ships
+in this issue (see "Config-first").
 
-**`noise` is fed through `_norm_location` and tokenized, not used raw.** This is not a detail; taking
-it raw yields a knob that silently does nothing, in two ways that were both verified:
+**`noise` is fed through `_norm_location` and tokenized, not used raw**, and **a bare `str` raises.**
+Three ways a naive implementation yields a knob that silently does nothing, all verified:
 
 ```
-noise={'UK'}              -> never matches the token 'uk'          (case)
-noise={'United Kingdom'}  -> normalizes to the STRING 'united kingdom',
-                             which never equals a single token      (arity)
+noise={'UK'}              -> never matches the token 'uk'                       (case)
+noise={'United Kingdom'}  -> the STRING 'united kingdom' equals no single token  (arity)
+noise='Remote'            -> iterates CHARACTERS: {'r','e','m','o','t'}          (shape)
 ```
 
-Both fail toward merge — the safe direction — but they fail **silently**, which is the failure class
-this codebase most consistently engineers out. So the implementation must build the noise token set
-as `{tok for w in noise for tok in _norm_location(w).split()}`: the same normalizer, then split. A
-multi-word entry contributes each of its tokens. The user writes `location_noise_words:
-[United Kingdom, Remote]` in the natural way and it works.
+The first two fail toward merge — safe, but **silently**, which is the failure class this codebase
+most consistently engineers out. So build the noise token set as
+`{tok for w in noise for tok in _norm_location(w).split()}`; a multi-word entry contributes each of
+its tokens, and `location_noise_words: [United Kingdom, Remote]` works as written.
+
+The third is a shape error, not a content error: `location_noise_words: Remote` (a YAML scalar
+instead of a list) is an ordinary user mistake, and iterating it yields single-letter tokens that
+strip nothing. **Raise on a bare `str`, naming the expected shape** — the repo's fail-loudly-at-
+construction discipline, one line here instead of a config-coercion special case in #5. (`None`
+already raises `TypeError`, which is loud, so it needs nothing.)
 
 ## Evidence — why token-overlap, and why not the alternatives
 
-Three candidate rules were evaluated against the **real location values in `tests/fixtures/*/raw.json`**
-(the captured board payloads), not against invented examples. Method: extract every non-empty
-`location`, group the renderings that denote the same city, and count same-city pairs the rule would
-split (regressions) and different-city pairs it would merge (missed splits).
+Produced by `2026-07-16-location-identity-evidence.py`. **Universe**: the 34 distinct non-empty
+`location` values in `tests/fixtures/*/raw.json`; the **25 that name a city** form the pair space.
+Country-only (`UAE`, `India`, `Ukraine`) and arrangement-only (`Remote`) values are excluded — they
+denote no city, so "same city" is undefined for them. The city grouping is **assigned by hand** in
+that script: ground truth cannot be derived by the rule under test without begging the question. The
+script raises if a fixture value is missing from its table, so the universe cannot silently drift.
 
 **The alternatives each fail on a case that matters, and on different ones:**
 
@@ -123,8 +182,8 @@ split (regressions) and different-city pairs it would merge (missed splits).
 |---|---|---|
 | substring containment | `London` / `Londonderry` | merges two genuinely different places |
 | token-disjointness | `London, UK` / `Manchester, UK` | shares the `uk` token → abstains → defeats #5 on any board that suffixes a country |
-| **token-subset** | **15 of 21 same-city pairs** | **splits real re-posts — rejected** |
-| Jaccard threshold | no threshold exists | `Hybrid work in <city>`/`<city>` scores 0.25, below `London, UK`/`Manchester, UK` at 0.33 — the orders cross |
+| **token-subset** | **15 of 21 same-city London pairs** | **splits real re-posts — rejected** |
+| Jaccard threshold | no threshold exists | `Hybrid work in <city>`/`<city>` scores 0.25, below `London, UK`/`Manchester, UK` at 0.3333 — the orders cross |
 
 **Token-subset was recommended and then retracted.** It survived a hand-built table
 (`London` vs `London, UK`) because those examples are subset-shaped *by construction*. Real board
@@ -143,58 +202,87 @@ This is the repo's own named pattern, one level down: **the table certified the 
 table's author chose the cases.** The corpus is the tree; the table was the document.
 
 **Token-overlap holds unconditionally.** Every rendering of a city shares the *city token*; what
-varies is decoration. Overlap keys on the signal, and the decoration that defeated subset is
-precisely what it ignores:
+varies is decoration. Overlap keys on the signal and ignores what defeated subset:
 
-| noise list | same-city (regressions) | different-city (missed splits) |
+| noise list | same-city (33 pairs) | different-city (267 pairs) |
 |---|---|---|
-| **empty (the default)** | 31 abstain / **0 split** | 158 split / 21 merge |
-| geography configured | 31 abstain / **0 split** | 179 split / **0 merge** |
+| **empty (the default)** | 33 `SAME` / **0 split** | 237 split / 30 merged |
+| geography configured | 33 `SAME` / **0 split** | 267 split / **0 merged** |
 
-**0 regressions in every configuration.** The noise list is a pure **precision** knob: it never
-converts an abstain into a split on this corpus; it only recovers missed splits. The 21 misses at
-default are `Abu Dhabi` vs `Dubai` — both carry "United Arab Emirates", so they share country tokens
-and abstain. Those are mis-*merges*: today's behaviour, the acceptable direction.
+**0 regressions in every configuration.** The noise list is a pure **precision** knob: on this corpus
+it never converts a `SAME` into a split, it only recovers missed splits.
+
+**The 30 misses are not what the first draft claimed.** It said they were `Abu Dhabi` vs `Dubai`;
+that class is 6 of 30. The largest class is **18 of 30, a Gulf city against London, merging on the
+single shared token `united`** — *United Arab Emirates* against *United Kingdom*:
+
+```
+ 18 merged on ['united']                       <- Gulf city vs London
+  6 merged on ['arab', 'emirates', 'united']   <- the "Abu Dhabi vs Dubai" class
+  5 merged on ['arab', 'emirates', 'uae', 'united']
+  1 merged on ['arabia', 'saudi']
+```
+
+This is structural across any two multi-word country names sharing a leading token (UAE / UK / USA),
+not a quirk of one pair. It is a **merge**, so nothing is threatened — but it is the cost, and the
+cost table is the one place that must state it.
 
 The error asymmetry runs the right way by construction. Overlap needs only **one** shared token to
-abstain, so an *incomplete* noise list leaves more shared tokens, which yields more abstains, which
-yields more merges — the safe direction. A noise list can only be dangerous by stripping a genuine
-city token, which is why no gazetteer ships.
+return `SAME`, so an *incomplete* noise list leaves more shared tokens, yielding more merges — the
+safe direction. A noise list can only be dangerous by stripping a genuine city token, which is why no
+gazetteer ships.
 
 ## The accepted cost — stated honestly
 
-All verified, none hypothetical. The first three point the safe way; the last two do not.
+All verified, none hypothetical. The first four point the safe way; the last two do not.
 
 | case | verdict | direction |
 |---|---|---|
-| `York` / `New York` | abstain → merge | mis-merge. Acceptable: matches today, needs company *and* title to also match, recoverable. |
-| `Abu Dhabi` / `Dubai` | abstain → merge | mis-merge until noise is configured. Matches today. |
-| `Cambridge, MA` / `Cambridge, UK` | abstain → merge | mis-merge. Acceptable. Note token-subset got this one *right* — the trade was made deliberately, and the London corpus is worth more than this case. |
-| `Remote` / `London` | **DIFFERENT → split** | **mis-split — regression direction.** Ships as the documented default; fixed by adding `remote` to the noise list. On the record per the user decision of 2026-07-16. |
-| `København` / `Kobenhavn` | **DIFFERENT → split** | **mis-split — regression direction.** `ø` is a distinct letter, not an accented `o`, so NFKD cannot fold it. Rare, unattested in the corpus. Cheap remedy if it ever bites: a ~6-entry transliteration map (`ø→o, æ→ae, ß→ss, ð→d, þ→th, ł→l`). Not built — YAGNI. |
+| `York` / `New York` | `SAME` → merge | mis-merge. Acceptable: matches today, needs company *and* title to also match, recoverable. |
+| **`<city> - United Arab Emirates` / `<city>, United Kingdom`** | **`SAME` → merge** | **mis-merge on the bare token `united` — 18 of the 30 misses, the largest class.** Structural for any two multi-word country names sharing a token. Recovered by configuring noise. |
+| `Abu Dhabi` / `Dubai` | `SAME` → merge | mis-merge on the shared country tokens; 6 of 30. Matches today. |
+| `Cambridge, MA` / `Cambridge, UK` | `SAME` → merge | mis-merge. Acceptable. Token-subset got this one *right* — the trade was deliberate; the London corpus is worth more than this case. |
+| `Remote` / `London` | **`DIFFERENT` → split** | **mis-split — regression direction.** Ships as the documented default; fixed by configuring `remote` as noise. On the record per the user decision of 2026-07-16. |
+| `København` / `Kobenhavn` | **`DIFFERENT` → split** | **mis-split — regression direction.** `ø` is a distinct letter, not an accented `o`, so NFKD cannot fold it. Rare, unattested in the corpus. Cheap remedy if it ever bites: a ~6-entry transliteration map (`ø→o, æ→ae, ß→ss, ð→d, þ→th, ł→l`). Not built — YAGNI. |
 
-`Remote` / `London` is the one that will be argued in review, so the reasoning is recorded here
-rather than left to be re-derived. remoteok and weworkremotely **ship as sources**, so remote-vs-city
-is a shipped configuration, and splitting it by default manufactures a duplicate out of the box. It
-is accepted anyway because the alternative — a non-empty code default — is worse on two counts: it is
-non-monotone (stripping `remote` turns `Remote, US` vs `Remote, UK` from abstain into a **split**,
-a code default that *causes* the bad direction), and it contradicts `sluice.yaml.example:14`, where
-`locations: [Remote]` treats `Remote` as a real location value. The knob is the honest fix.
+`Remote` / `London` is the one that will be argued in review, so the reasoning is recorded here rather
+than left to be re-derived. remoteok and weworkremotely **ship as sources**, so remote-vs-city is a
+shipped configuration, and splitting it by default manufactures a duplicate out of the box.
+
+**The refusal to ship a `{remote, hybrid, onsite}` code default rests on non-monotonicity, not on
+neutrality.** This distinction matters: neutrality *would permit* work-arrangement vocabulary in
+code, because it encodes no opinion about which jobs are good. Recording the wrong reason here would
+entrench a rule that could later block a legitimate fix. The real reason is that stripping `remote`
+turns `Remote, US` vs `Remote, UK` from `SAME` into `DIFFERENT` — **a code default that causes the
+bad direction**, verified. The knob is the honest fix.
 
 ## Config-first: no knob ships in this issue
 
 The user chose "one knob, `location_noise_words`, code default empty, commented-out example in
-`sluice.yaml.example`" — following the `locations:` precedent verbatim.
+`sluice.yaml.example`" — following the `locations:` precedent.
 
 **That knob does not ship here, because nothing would read it.** #5 is the only consumer, and a
-config key parsed but ignored is exactly what #7 forbids. So:
+config key nothing reads is a dead knob — the same bug class as #7 ("no CLI flag may be parsed but
+ignored"), though #7 as filed is scoped to walking the argparse tree and does not literally cover
+config keys. CLAUDE.md's fail-loudly / no-quiet-default discipline covers it directly. So:
 
 - the empty default is encoded now as the **function parameter default** (`noise=frozenset()`);
-- **#5 adds `location_noise_words`** to config and threads it into `locations_differ` when it wires
-  rule 3 — the knob lands with its consumer, in the same change that gives it a reader.
+- **#5 adds `location_noise_words`** when it wires the consumer — the knob lands with its reader.
 
-The decision is recorded; only the wiring is deferred. When #5 adds it, `sluice.yaml.example` follows
-`sluice.yaml.example:11-14` exactly: commented out, no active value, because the file is copied.
+**It belongs on the root `Config`, and the reason is mechanical, not stylistic.** `Sluice.store()`
+resolves the store from `self.config` (`app.py:169`), so a key the store must honour cannot live in a
+sub-app block. `config.py:43-50` records this lesson already paid for, in `baseline_rel`'s comment:
+*"once the store is resolved from the root Config, a `cv.baseline_rel` could not reach the store that
+has to honour it."* Citing the `locations:` precedent alone lands correctly for an unrelated reason.
+
+**The guard assertion must travel with the key, in the same change.**
+`tests/test_sluice_neutral_defaults.py` is an *enumeration*: it ships green on keys nobody named, and
+its own comments record that escape **twice** (`:43-46` `locations` shipping `["Remote"]`, `:51-54`
+`baseline_rel` losing its assertion in a refactor) — both "caught by review", neither by the suite.
+`location_noise_words` is a geography key with no guard and no home, added by a spec that is parked.
+So #5's task list must include `assert c.location_noise_words == []` alongside the key. Better still,
+close the class rather than the instance: iterate `dataclasses.fields(Config)` and assert every
+list-typed preference defaults empty, so the next unguarded key cannot ship green.
 
 ## Neutrality
 
@@ -202,10 +290,16 @@ No place names ship in `sluice/`: no gazetteer, no country list, no transliterat
 is vocabulary-free — it keys on token overlap, not on knowing what a city is. The user's geography
 reaches the code only through `sluice.local.yaml`, exactly like `locations:`.
 
-`tests/fixtures/*/raw.json` already contains real location values as captured board payloads; this
-spec neither adds to them nor builds a city-grouping table on top of them (see Testing). Whether
-golden fixtures are themselves in tension with the neutrality rule is a **pre-existing question this
-spec deliberately does not open** — it is noted in Risks.
+`tests/fixtures/*/raw.json` already contains real location values (`London EC4Y`, `Abu Dhabi`,
+`Dubai`, `Riyadh`, `Doha`) as captured board payloads, dating to `e94a9f9 Initial public release`.
+This spec adds none, and deliberately refuses to propagate them into `tests/` via a city-grouping
+table — that grouping lives in the evidence script under `docs/`, alongside this prose. Its use of
+the corpus is read-only analysis of already-public data, so marginal disclosure is zero.
+
+The deferral stands — fixing it means re-capturing every golden fixture and would swamp two pure
+functions — but this spec is the first document to *attribute* that geography to a person ("the
+corpus is one user's"), which raises the salience of an exposure it does not resolve. So it gets a
+filed issue, not a shrug in Risks; see Process step 1.
 
 ## Testing
 
@@ -215,36 +309,42 @@ Unit tests, offline, using **synthetic** place names (`Palmerburgh`, `Clarkefurt
 - bare city; city + postcode; city + region + country + `(Hybrid)`; `Hybrid work in <city>`;
   `<city> ∙ Choose area` (including the real `\xa0` and `∙`).
 
-The corpus evaluation is **evidence in this spec, not a fixture**. A test that groups fixture values
-by city would have to name the cities, encoding the hunt geography in `tests/` — the thing neutrality
-forbids. The shapes carry the regression risk; the specific cities do not.
+The corpus evaluation is **evidence, not a fixture**. A test that groups fixture values by city would
+have to name the cities, encoding the hunt geography in `tests/`. The shapes carry the regression
+risk; the specific cities do not — verified: seven synthetic shapes reproduce the 15-of-21 split
+exactly.
 
 `_norm_location`:
 
 - casefolds; collapses whitespace runs; strips; `'   '` → `''`.
 - `\xa0` and `∙` are separators, not characters.
-- **`Zürich` → `zurich`, one token** — asserted directly, because `[^a-z0-9]` yields `'z rich'` and
-  this test is the only thing standing between the implementation and that regression.
-- `København` → `københavn`, one whole token (pins that non-ASCII letters are not shredded, and
-  documents the known limitation rather than hiding it).
+- `_norm_location('Zürich') == 'zurich'` — **the exact string, not the token count.** Token count is
+  green under both single mutations and catches neither; see DoD 4a.
+- `_norm_location('København')` is exactly one token — the guard for `\W` vs `[^a-z0-9]`, and the
+  only test that catches it. Not a footnote; see DoD 4b.
 
-`locations_differ`:
+`_compare_locations`:
 
-- **Same-shape pairs abstain** — every pair drawn from the corpus shapes above, with synthetic names.
-  This is the test that token-subset fails 15 times and is the reason the rule is what it is.
-- **Genuinely different cities return `True`** — `<city A>` vs `<city B>` sharing no token.
-- `differ(a, b) == differ(b, a)` — symmetry.
-- `differ(a, a)` is `False` — reflexivity.
-- `differ(a, '')`, `differ(a, '   ')`, `differ('', '')` are all `False` — absence never splits.
-- **Noise list**: `<city A>, <region>` vs `<city B>, <region>` returns `False` with an empty noise set
-  and `True` with `{region}` — pinning that the knob buys precision and that its default is the
-  conservative one.
-- **Noise is normalized and tokenized**: the same pair returns `True` with `{'<REGION>'}` (wrong case)
-  and with `{'<Region Of Two Words>'}` (multi-word). Both fail on a raw-`noise` implementation, and
-  both fail *silently* — so without these two assertions the knob can ship inert and the suite stays
-  green.
-- `differ('Remote', '<city>')` is `True` with an empty noise set and `False` with `{'remote'}` —
-  the accepted cost, pinned as deliberate so it cannot be "fixed" by accident.
+- **Same-shape pairs return `SAME`** — every pair drawn from the corpus shapes above, with synthetic
+  names. This is the test token-subset fails 15 times, and the reason the rule is what it is.
+- **Genuinely different cities return `DIFFERENT`** — `<city A>` vs `<city B>` sharing no token.
+- **Two multi-word country strings sharing a leading token** — `<city A> - North Clarke Republic` vs
+  `<city B>, North Clarke Kingdom` returns `SAME` at default (the `united`-collision shape, 18 of 30)
+  and `DIFFERENT` once the shared tokens are configured as noise.
+- `compare(a, b) == compare(b, a)` — symmetry.
+- `compare(a, a)` is `SAME` — reflexivity.
+- `compare(a, '')`, `compare(a, '   ')`, `compare('', '')` are all `UNKNOWN` — absence never splits.
+- **Noise list, with a TWO-word region** — `'Palmerburgh, North Clarke'` vs `'Clarkefurt, North
+  Clarke'` returns `SAME` with empty noise and `DIFFERENT` with `noise={'North Clarke'}`. The region
+  must be two words or the arity assertion below cannot pass against correct code.
+- **Noise is normalized and tokenized** — the same pair returns `DIFFERENT` with `{'NORTH CLARKE'}`
+  (pins case) and with `{'North Clarke'}` (pins arity). Both are green on a raw-`noise`
+  implementation and both go red on a correct one *if the region is one word* — which is why the
+  region is two.
+- **A bare `str` noise raises** — `compare(a, b, noise='Remote')` raises rather than silently
+  iterating characters.
+- `compare('Remote', '<city>')` is `DIFFERENT` with empty noise and `SAME` with `{'remote'}` — the
+  accepted cost, pinned in both directions so it cannot be "fixed" by accident.
 
 ## Non-goals
 
@@ -253,52 +353,75 @@ forbids. The shapes carry the regression risk; the specific cities do not.
   at this layer.
 - **Wiring the comparison into `Vault.upsert`.** That is #5, and it is where the config key lands.
 - **`existing_keys()` / the read path.** #23.
+- **Re-capturing the golden fixtures** to remove real locations from `tests/`. Filed, not fixed here.
 - **Deciding whether work arrangement deserves its own field.** `Remote`/`Hybrid` arriving inside
   `location` is arguably mashing of a second kind, related to #6 in spirit. Noted, not solved.
 
 ## Definition of done
 
-Each item below fails if the mechanism is absent. None can pass by accident — the 2026-07-16 lesson
-is that *a DoD item that can pass without fixing anything certifies the bug.*
+The first draft claimed "None can pass by accident" of all nine items. That was false by its own
+standard — three were CI gates, two were prose, and one was inert. **Items 1–3 are gates; 4a–8 are
+mechanisms, each verified to go red on the specific mutation it names.**
 
-1. `_norm_location` and `locations_differ` exist in `core/leads.py`, are pure, and import nothing
-   outside the standard library.
-2. `python -m pytest` passes; the suite stays offline and under ~2s.
-3. `ruff check sluice tests` passes.
-4. **A test asserts `_norm_location('Zürich')` has exactly one token.** Deleting the NFKD fold, or
-   swapping `\W` for `[^a-z0-9]`, must turn this test red.
-5. **A test asserts every corpus *shape* pair abstains.** Reverting the rule to token-subset must
-   turn this test red. (This is the item that would have caught the retracted design.)
-6. **A test asserts `differ('Remote', '<city>')` is `True` with empty noise and `False` with
-   `{'remote'}`.** The accepted cost is pinned in both directions, so a future change that silently
-   flips it fails the build.
-7. **A test asserts the noise set works with wrong case and with a multi-word entry.** Implementing
-   `noise` as a raw set must turn this test red — otherwise the knob ships inert and silent.
-8. No place name, country, or region appears in `sluice/`. No new config key ships.
-9. `locations_differ`'s docstring states that `False` means "same **or unsure**" and that `True` is
-   the only verdict #5 acts on.
+Gates (they pass on an empty diff; that is what they are for):
+
+1. `python -m pytest` passes; the suite stays offline and under ~2s.
+2. `ruff check sluice tests` passes.
+3. `.venv/bin/python docs/superpowers/specs/2026-07-16-location-identity-evidence.py` runs and
+   reproduces every count in Evidence.
+
+Mechanisms (each names the mutation that must turn it red — all four verified against real mutants):
+
+4. **(a)** `_norm_location('Zürich') == 'zurich'` — the exact **string**. Deleting the NFKD fold
+   turns this red. *A token-count assertion does not: it is green under both single mutations.*
+   **(b)** `_norm_location('København')` is exactly one token. Swapping `\W` for `[^a-z0-9]` turns
+   this red, and **nothing else does** — `ø` has no NFKD decomposition, so the class is the only live
+   variable.
+5. Every corpus **shape** pair returns `SAME`. Reverting the rule to token-subset turns this red.
+   (Verified achievable: synthetic shapes reproduce the 15-of-21 split exactly.)
+6. `compare('Remote', '<city>')` is `DIFFERENT` with empty noise and `SAME` with `{'remote'}`. A
+   code-default noise list turns this red.
+7. The noise set works with wrong case **and** with a multi-word entry, against a **two-word** region.
+   A raw-`noise` implementation turns this red. A bare-`str` noise raises.
+8. The `united`-collision shape returns `SAME` at default and `DIFFERENT` once configured. Hoisting
+   the empty check after noise subtraction, or dropping the overlap rule, turns this red.
+
+Contract:
+
+9. `SAME`/`DIFFERENT`/`UNKNOWN` are the three verdicts, matching #5's `same_opportunity` vocabulary
+   exactly, and `_compare_locations`'s docstring states that `DIFFERENT` is the only verdict #5 acts
+   on.
+10. The diff adds no place name, country, or region to `sluice/`: neither function contains place
+    vocabulary, and no gazetteer, country list, or transliteration table ships. No new config key
+    ships. *(Pre-existing neutral example searches in `ingest/sources/` — `hackajob.py:16`,
+    `cord.py:25`, `remoteok.py:12` — are out of scope; the first draft's unscoped version of this
+    item was already false and could never pass.)*
 
 ## Risks and notes
 
-- **The corpus is small and is one user's.** 31 same-city and 179 different-city pairs from the
-  shipped fixtures. It is real data, which beats invented data, but it is not a guarantee about
-  boards not yet captured. The mitigation is structural rather than statistical: overlap's error
-  direction is merge, and merge is today's behaviour.
-- **This ships with no caller.** Two pure functions and their tests, consumed by #5. That is
-  deliberate — it is the whole point of splitting #6 — but it means the functions are not exercised
-  end-to-end until #5 lands. The conformance suite in #5 is where that happens.
-- **`tests/fixtures/` holds real location values.** Pre-existing; golden parser fixtures are captured
-  payloads. This spec does not add to them and does not resolve whether they sit oddly beside "no
-  locations in `tests/`". Worth its own issue if anyone cares to open it.
+- **The corpus is small and is one user's.** 33 same-city and 267 different-city pairs from the
+  shipped fixtures. Real data beats invented data, but it is not a guarantee about boards not yet
+  captured. The mitigation is structural, not statistical: overlap's error direction is merge, and
+  merge is today's behaviour.
+- **This ships with no caller.** Two pure functions, three constants, and their tests, consumed by
+  #5. Deliberate — it is the point of splitting #6 — and architecturally sound: the functions are
+  pure and fully tested, so the tests *are* the caller and nothing defers to integration.
+- **The `united` collision is structural.** Any two multi-word country names sharing a token merge at
+  default. Safe direction, recovered by config, but it will recur on any new board that renders
+  full country names.
 - **#6 needs re-titling and re-diagnosing** when this is filed, or the next reader re-derives the
   misdiagnosis. Its Problem section names a mechanism that is not the one failing.
 
 ## Process
 
-1. File the issue for this work; retitle and re-diagnose #6 to the exact-match mechanism, and mark it
-   blocked on a real captured payload.
+1. File the issue for this work. Also: retitle and re-diagnose #6 to the exact-match mechanism and
+   mark it blocked on a real captured payload; and file the fixture-neutrality question (real
+   locations in `tests/fixtures/`, pre-existing since `e94a9f9`).
 2. Plan via `writing-plans`, then implement.
 3. Review with **both** `/review-pr` and CodeRabbit (per the standing cadence). Read the CodeRabbit
    rate-limit comment **before** triggering.
-4. On merge, unblock #5: point `same_opportunity` rule 3 at `locations_differ`, add
-   `location_noise_words`, and restart #5's review from the "Blocked on #6" question being closed.
+4. On merge, unblock #5. Its resumption is **not** "point rule 3 at the new function": rules 2–4
+   collapse into `_compare_locations`, so `same_opportunity` becomes "urls decide, else compare
+   locations". Add `location_noise_words` to the **root** `Config` with
+   `assert c.location_noise_words == []` in `test_ingest_defaults_carry_no_preference` in the same
+   change. Then restart #5's review from the "Blocked on #6" question being closed.
