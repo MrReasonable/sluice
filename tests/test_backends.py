@@ -49,6 +49,24 @@ def test_claudemax_runner_nonzero_raises():
         be.complete("x")
 
 
+@pytest.mark.parametrize("stdout", ["", "   \n  "])
+def test_claudemax_empty_stdout_on_exit_zero_raises(stdout):
+    # exit 0 with no text is a FAILED call that looks like a successful one -- the shape both
+    # siblings already refuse (test_openai_compatible_empty_content_raises,
+    # test_anthropic_empty_content_raises). Without this, complete() returns "" and the caller
+    # consumes it as a real completion.
+    #
+    # Whitespace-only is parametrised, not decorative: `.strip()` runs BEFORE the check, so a
+    # guard written as `if not proc.stdout` would pass the "" case and let "   \n  " through.
+    # The two cases are separate mutants; one alone cannot witness the other.
+    class R:
+        returncode, stderr = 0, ""
+    R.stdout = stdout
+    be = ClaudeMaxBackend("m", cmd_template=["claude"], runner=lambda *a, **k: R())
+    with pytest.raises(BackendError, match="no text"):
+        be.complete("x")
+
+
 def test_openai_compatible_parses_choice():
     def http(url, data, headers, timeout):
         assert url == "http://x/api/v1/chat/completions"
