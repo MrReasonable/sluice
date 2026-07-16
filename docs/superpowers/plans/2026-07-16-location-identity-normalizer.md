@@ -386,14 +386,45 @@ Expected: the counts the spec quotes — `0/33` for #5's rule 2 as written, `{'S
 
 - [ ] **Step 9: Confirm neutrality (DoD 11)**
 
+What DoD 11 forbids is place vocabulary in **data or logic** — a gazetteer, a country list, a
+transliteration table, or a rule whose behaviour depends on knowing what a city is. Illustrative
+place names **in a docstring** are permitted (user decision, 2026-07-16; see the spec's DoD 11 for
+the reasoning and the recorded dissent). So the check is scoped to executable lines, not comments.
+
 Run:
 
 ```bash
 git diff --stat main -- sluice/ tests/
-grep -rniE "london|dubai|abu dhabi|riyadh|doha|zurich|københavn|united kingdom|uae" sluice/core/leads.py tests/test_leads_location.py | grep -v "Zürich\|Zurich\|København"
+# Place vocabulary in EXECUTABLE code (strings/identifiers), ignoring comments and docstrings.
+.venv/bin/python - <<'PY'
+import ast, pathlib
+src = pathlib.Path("sluice/core/leads.py").read_text()
+banned = {"london", "dubai", "riyadh", "doha", "uae", "uk", "england", "remote", "hybrid"}
+tree = ast.parse(src)
+hits = []
+for node in ast.walk(tree):
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        # ast strips comments entirely; skip docstrings, which are the first stmt of a scope.
+        for w in banned:
+            if w in node.value.casefold().split() or node.value.casefold() == w:
+                hits.append((node.lineno, node.value[:40]))
+    if isinstance(node, ast.Name) and node.id.casefold() in banned:
+        hits.append((node.lineno, node.id))
+docstring_lines = set()
+for scope in [tree] + [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.ClassDef))]:
+    d = ast.get_docstring(scope, clean=False)
+    if d:
+        body0 = scope.body[0]
+        docstring_lines.update(range(body0.lineno, (body0.end_lineno or body0.lineno) + 1))
+real = [h for h in hits if h[0] not in docstring_lines]
+print("place vocabulary in executable code:", real or "NONE")
+PY
+grep -nE "GAZETTEER|COUNTRIES|_CITIES|TRANSLIT" sluice/core/leads.py || echo "no gazetteer/country/translit table: OK"
 ```
 
-Expected: the diff touches only `sluice/core/leads.py` and `tests/test_leads_location.py`; the grep returns **nothing**. `Zürich`/`København` are Unicode fixtures, not geography — they are there because `ü` folds and `ø` does not.
+Expected: the diff touches only `sluice/core/leads.py` and `tests/test_leads_location.py`; the AST
+check prints `NONE`; the grep reports no table. **A hit in executable code is a real Critical
+finding** — it would mean the rule stopped being vocabulary-free.
 
 - [ ] **Step 10: Commit**
 

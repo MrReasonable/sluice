@@ -459,11 +459,31 @@ Contract:
 10. `SAME`/`DIFFERENT`/`UNKNOWN` are the three verdicts, matching #5's `same_opportunity` vocabulary
     exactly, and `_compare_locations`'s docstring states that `DIFFERENT` is the only verdict #5 acts
     on.
-11. The diff adds no place name, country, or region to `sluice/`: neither function contains place
-    vocabulary, and no gazetteer, country list, or transliteration table ships. No new config key
-    ships. *(Pre-existing neutral example searches in `ingest/sources/` — `hackajob.py:16`,
-    `cord.py:25`, `remoteok.py:12` — are out of scope; the first draft's unscoped version of this
-    item was already false and could never pass.)*
+11. **No place vocabulary ships as DATA or LOGIC in `sluice/`**: no gazetteer, country list, or
+    transliteration table; neither function's behaviour depends on knowing what a city is; the rule
+    stays vocabulary-free. No new config key ships. The user's geography reaches the code only
+    through `sluice.local.yaml`.
+
+    **Illustrative place names in a docstring are permitted — user decision, 2026-07-16.** The
+    `_compare_locations` docstring cites `'London'`/`'London EC4Y'`/`'UK'`/`'United Kingdom'` to show
+    *why* the rule is overlap and *why* raw noise is inert. The reasoning: `sluice/` already ships
+    `location=London` in neutral example searches (`cord.py:25`, `hackajob.py:16`), so marginal
+    disclosure is ~zero; and a comment describing how boards render a city is prose about board
+    behaviour, not an expressed preference about which jobs are good — which is the property
+    neutrality actually protects.
+
+    **The dissent, recorded because this widens a hard rule and the next reader deserves both
+    sides:** `CLAUDE.md:97` says "locations" without qualification, and this item was deliberately
+    scoped by plan review to "the diff **adds** no place name", precisely so that pre-existing
+    example searches stayed out of scope while new geography stayed out of the tree. This diff adds
+    five names to the identity layer itself. Synthetic vocabulary (`Palmerburgh`, `North Clarke`)
+    was available at zero cost — the docstring's argument is identical either way. If a neutrality
+    reviewer wants them synthetic, that is a one-line comment edit with no behavioural risk.
+
+    *(Pre-existing neutral example searches in `ingest/sources/` — `hackajob.py:16`, `cord.py:25`,
+    `remoteok.py:12` — are out of scope. `Zürich`/`København` in `_norm_location`'s docstring are
+    Unicode fixtures, not geography: `ü` folds under NFKD and `ø` does not, which is the entire
+    reason the character class matters.)*
 
 ## Risks and notes
 
