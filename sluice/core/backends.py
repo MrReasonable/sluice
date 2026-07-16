@@ -94,7 +94,21 @@ class ClaudeMaxBackend:
             raise BackendError(f"claude-max invocation failed: {e}") from e
         if proc.returncode != 0:
             raise BackendError(f"claude-max exit {proc.returncode}: {proc.stderr[:200]}")
-        return proc.stdout.strip()
+        text = proc.stdout.strip()
+        # Exit 0 with no text is a FAILED call wearing a successful one's clothes. Both
+        # siblings already refuse it (OpenAiCompatibleBackend, AnthropicBackend); claude-max
+        # was the outlier, returning "" for the caller to notice by itself. Raising here means
+        # the same underlying condition triggers the documented fallback whichever provider
+        # hits it, instead of one raising and one handing back a useless string.
+        #
+        # Only the EMPTY half of the siblings' pair is portable: their other guard keys on
+        # finish_reason/stop_reason to catch a truncation, and a CLI exposes no such field.
+        # That is a real absence, not an oversight to fix later.
+        if not text:
+            raise BackendError(
+                f"claude-max returned no text (exit 0, {len(proc.stdout)} chars of whitespace)"
+            )
+        return text
 
 
 class OpenAiCompatibleBackend:
