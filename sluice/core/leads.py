@@ -4,6 +4,12 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 
+# The verdict vocabulary, shared with #5's `same_opportunity`. Strings, not an enum -- core/status.py
+# sets that convention. DIFFERENT is the ONLY verdict a caller may split on.
+SAME = "same"
+DIFFERENT = "different"
+UNKNOWN = "unknown"
+
 
 def _norm_url(u: str) -> str:
     """Canonicalize a URL for dedup by dropping only the #fragment, keeping the
@@ -28,6 +34,37 @@ def _norm_location(s: str) -> str:
     s = unicodedata.normalize("NFKD", s.casefold())
     s = "".join(c for c in s if not unicodedata.combining(c))
     return re.sub(r"\W+", " ", s).strip()
+
+
+def _compare_locations(a: str, b: str, noise=frozenset()) -> str:
+    """Compare two locations by token OVERLAP. Returns DIFFERENT only on positive evidence of
+    difference -- disjoint, non-empty token sets. Overlapping evidence is SAME; absent evidence is
+    UNKNOWN. **DIFFERENT is the only verdict #5 acts on**, so UNKNOWN and SAME are both safe to be
+    wrong about and DIFFERENT is not: a wrong DIFFERENT manufactures a second note for an ordinary
+    cross-board re-post, while a wrong SAME merges, which is what today already does.
+
+    Overlap, not subset or containment, and that is measured rather than chosen: boards decorate a
+    city differently on every re-post ('London', 'London EC4Y', 'London ∙ Choose area'), so neither
+    side is usually a subset of the other and token-subset splits 15 of 21 real same-city pairs.
+    Every rendering shares the CITY token; the rest is decoration. Overlap keys on the signal.
+    See docs/superpowers/specs/2026-07-16-location-identity-evidence.py to re-derive the numbers.
+
+    `noise` is vocabulary that decorates a location without locating it. It is fed through
+    _norm_location and TOKENIZED rather than used raw, because raw subtraction gives a knob that
+    silently does nothing: {'UK'} never matches the token 'uk' (case), and {'United Kingdom'} equals
+    no single token (arity). A bare str raises rather than iterating into characters (shape).
+    """
+    if isinstance(noise, str):
+        raise TypeError(f"noise must be a set of words, not a str: {noise!r}")
+    drop = {tok for w in noise for tok in _norm_location(w).split()}
+    ta = set(_norm_location(a).split()) - drop
+    tb = set(_norm_location(b).split()) - drop
+    # Emptiness is checked AFTER subtraction, deliberately: noise can empty a side, and that must
+    # abstain. Hoisting this check above the subtraction makes _compare_locations('Remote',
+    # 'Remote', {'remote'}) return DIFFERENT -- splitting two identical locations.
+    if not ta or not tb:
+        return UNKNOWN
+    return SAME if ta & tb else DIFFERENT
 
 
 @dataclass
