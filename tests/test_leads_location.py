@@ -32,10 +32,12 @@ def test_norm_location_treats_real_board_punctuation_as_separators():
 
 def test_norm_location_folds_accents():
     # Asserts the EXACT STRING, not the token count: a token-count assertion is GREEN under both
-    # single mutations and catches neither. Deleting the NFKD fold makes
-    # _compare_locations("Zürich", "Zurich") return DIFFERENT -- it SPLITS.
-    assert _norm_location("Zürich") == "zurich"
-    assert _norm_location("Zurich") == "zurich"
+    # single mutations and catches neither. Deleting the NFKD fold makes the accented and bare
+    # spellings share no token, so _compare_locations returns DIFFERENT -- it SPLITS.
+    # Synthetic, per this module's docstring: 'ä' carries the property under test (it NFKD-
+    # decomposes to 'a' + a combining mark); a real city would add geography the shape does not need.
+    assert _norm_location("Pälmerburgh") == "palmerburgh"
+    assert _norm_location("Palmerburgh") == "palmerburgh"
 
 
 def test_norm_location_folds_a_capital_that_only_nfkd_reveals():
@@ -52,9 +54,10 @@ def test_norm_location_folds_a_capital_that_only_nfkd_reveals():
 def test_norm_location_keeps_non_ascii_letters_whole():
     # The ONLY guard for `\W` vs `[^a-z0-9]`. "ø" has no NFKD decomposition -- it is a distinct
     # letter, not an accented "o" -- so the character class is the only live variable here.
-    # Under [^a-z0-9] this shreds to "k benhavn": two junk tokens where there was one word.
-    assert _norm_location("København") == "københavn"
-    assert len(_norm_location("København").split()) == 1
+    # Under [^a-z0-9] this shreds to "k benburgh": two junk tokens where there was one word.
+    # Synthetic, per this module's docstring: the "ø" is the property under test, not the city.
+    assert _norm_location("Købenburgh") == "købenburgh"
+    assert len(_norm_location("Købenburgh").split()) == 1
 
 
 # The seven shapes the real corpus renders a single city in. These reproduce the corpus's
