@@ -43,8 +43,8 @@ class RoleUse:
 @dataclass
 class BackendTarget:
     """One distinct configured backend, after deduping identical
-    (provider, model, host) across sub-apps and roles. `claude_path` is only
-    meaningful for the claude-max CLI; `host` is "" for a local backend."""
+    (provider, model, host, claude_path) across sub-apps and roles. `claude_path`
+    is only meaningful for the claude-max CLI; `host` is "" for a local backend."""
     provider: str
     model: str
     host: str
@@ -83,7 +83,7 @@ class DoctorReport:
 
 
 def enumerate_targets(triage_cfg, cv_cfg, track_cfg) -> list:
-    """Every sub-app × role backend, deduped by (provider, model, host).
+    """Every sub-app × role backend, deduped by (provider, model, host, claude_path).
 
     Apply is absent: it is offline by contract and has no backend. The fallback
     leg carries host="" and claude_path="claude" because that is exactly how
@@ -144,7 +144,7 @@ def classify(target, *, known, needs_key, key_present, key_var, cli_present,
     if needs_key and not key_present:
         if target.is_primary:
             return BackendCheck(target, DEAD, f"{key_var} unset")
-        return BackendCheck(target, DEGRADED, f"{key_var} unset — primary-only")
+        return BackendCheck(target, DEGRADED, f"{key_var} unset - primary-only")
     if offline:
         if cli_present is False:
             return BackendCheck(
@@ -157,7 +157,7 @@ def classify(target, *, known, needs_key, key_present, key_var, cli_present,
 
 def format_roles(uses: list) -> str:
     """Group a target's uses by role for display, primaries first:
-    "primary · triage, cv, track; fallback · cv"."""
+    "primary: triage, cv, track; fallback: cv"."""
     by_role: dict = {}
     for u in uses:
         by_role.setdefault(u.role, []).append(u.subapp)
@@ -165,5 +165,5 @@ def format_roles(uses: list) -> str:
     for role in ("primary", "fallback"):
         subs = by_role.get(role)
         if subs:
-            parts.append(f"{role} · {', '.join(subs)}")
+            parts.append(f"{role}: {', '.join(subs)}")
     return "; ".join(parts)
