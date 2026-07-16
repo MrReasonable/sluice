@@ -1,15 +1,21 @@
 # Location identity — a comparison #5 can key a split on
 
 - **Date**: 2026-07-16
-- **Status**: Design approved; plan-reviewed once (0 Critical / 6 High / 8 Medium / 3 Low, all
-  folded). Unblocks #5.
+- **Status**: **IMPLEMENTED.** Plan-reviewed three times by a five-specialist roster — 17 findings
+  (0 Critical / 6 High) → 13 (0 Critical / 9 High) → 13 (1 Critical / 4 High) — all folded, plus a
+  final whole-branch review (1 Important, fixed). Round 3 is the informative one: the rule, the
+  normalizer, the tri-state and every mechanism item came back clean from all five, and **every**
+  finding landed in the two cross-issue handoffs added a round earlier. Those were then cut (#26) and
+  scoped. Unblocks #5.
 - **Issue**: **#25**. Split out of #6 on 2026-07-16 after the code contradicted #6 as filed (see
   Background). #6 keeps the demashing half, is re-diagnosed, and is blocked on capturing a real
   payload; this spec is the half #5 actually waits on.
 - **Filed alongside**: **#26** (close the unguarded-preference class — cut from this spec, see
   "Config-first"), **#27** (golden fixtures carry real locations; pre-existing).
-- **Consumer**: #5 (`docs/superpowers/specs/2026-07-16-lead-identity-write-path-design.md`), whose
-  `same_opportunity` consumes this in **two** of its four rules — not one. See "The contract #5 needs".
+- **Consumer**: #5, whose `same_opportunity` consumes this in **two** of its four rules — not one.
+  See "The contract #5 needs". #5's design doc is **parked and unmerged** (branch
+  `fix/lead-identity-write-path`), so it is deliberately not in this change; the `#5:<line>` citations
+  below refer to it there. Nothing on `main` calls these functions yet — see Risks.
 - **Evidence**: every count below is produced by
   `docs/superpowers/specs/2026-07-16-location-identity-evidence.py`. Run it; do not trust the tables.
 
@@ -436,11 +442,17 @@ implementer will never execute is this spec's own thesis one level up. So it is 
 check. *(A second handoff — sweeping the config dataclasses to close the unguarded-key class — was
 attempted here and cut; it is its own issue. See "Config-first" and Risks.)*
 
-9. **#5's resumption instruction is corrected.** `#5:37` instructed "point rule 3 at #6's
-    normalizer" and its rule table carried rule 2 as normalized-equal — the rule measured firing
-    0/33. Executed from its own spec, #5 reintroduces the defect this spec exists to remove. So its
-    "Blocked on #6" section carries the correction, and its rule table is annotated superseded (left
-    in place, so the correction is legible rather than silently applied).
+9. **#5's resumption instruction is corrected — on the branch where #5's spec lives.** #5's design
+    doc is **not on `main`**: it is parked, unmerged, on `fix/lead-identity-write-path`. This PR
+    therefore cannot carry the correction, and an item claiming it did would be false the moment it
+    was written. The correction *is* made and *is* committed — it travels with #5's spec, in the same
+    tree, and lands whenever that spec does.
+
+    **What was wrong, recorded here because this spec is what makes it wrong:** #5 instructed "point
+    rule 3 at #6's normalizer", and its rule table keyed rule 2 on normalized *equality* — measured
+    firing **0 of 33** real same-city re-post pairs. Executed as written, #5 reintroduces the defect
+    this spec exists to remove. Its "Blocked on #6" section now carries the correction and its rule
+    table is annotated superseded (left in place, so the fix is legible rather than silently applied).
 
     **This item does NOT claim "#5 no longer contradicts this spec", and the earlier draft's claim to
     that effect was false.** Collapsing rules 2–4 changes what returns `DIFFERENT`, and the

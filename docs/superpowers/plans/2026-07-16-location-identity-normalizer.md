@@ -448,7 +448,7 @@ git commit -m "feat(leads): _compare_locations — token overlap, tri-state verd
 | 6. `Remote`/city both directions; noise-emptied abstains (kills the hoist) | Task 2 Steps 1, 5 |
 | 7. noise case + arity + bare-str raise (kills raw noise) | Task 2 Steps 1, 5 |
 | 8. `united`-collision shape (does **not** witness the hoist — item 6 does) | Task 2 Step 1 |
-| 9. #5's resumption instruction corrected | **Already done** — `2026-07-16-lead-identity-write-path-design.md`, "Blocked on #6" |
+| 9. #5's resumption instruction corrected | Done, but **not in this PR** — #5's spec is parked and unmerged on `fix/lead-identity-write-path`; the correction travels with it. A file that is not on `main` cannot be corrected on `main`. |
 | 10. verdict vocabulary + docstring states DIFFERENT is the only actionable verdict | Task 2 Step 3 |
 | 11. no place name/country/region added to `sluice/`; no config key | Task 2 Step 9 |
 
