@@ -6,6 +6,8 @@ import json
 import re
 from dataclasses import dataclass, field
 
+import logging
+
 from sluice.core.leads import slug_matches
 
 _TYPES = {"phone_screen", "interview", "rejection", "offer", "update", "not_job"}
@@ -83,5 +85,6 @@ def classify(msg, leads, backend, cfg, ics=None) -> Event:
         ev.summary = str(data.get("summary") or "")
         ev.lead_slug, ev.candidates = _resolve_lead(data.get("lead"), leads)
     except Exception:
+        logging.getLogger(__name__).exception("classify: msg %s failed with", msg.get("message_id", ""))
         return Event(message_id=msg.get("message_id", ""), thread_id=msg.get("thread_id", ""), ics=ics)
     return ev
