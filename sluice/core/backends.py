@@ -5,8 +5,8 @@ primary): set `host` to ssh there, or leave it empty to run `claude_path`
 locally. AnthropicBackend calls the Anthropic Messages API directly, and
 OpenAiCompatibleBackend calls an OpenAI-compatible chat/completions endpoint
 (per-token, the fallback). FallbackBackend tries the primary and, if it errors
-(primary host down, timeout, nonzero exit), falls back automatically so a run
-is never blocked. `make_backend` builds any backend by name -- delegating the
+(primary host down, timeout, nonzero exit, empty response), falls back
+automatically so a run is never blocked. `make_backend` builds any backend by name -- delegating the
 per-provider construction to the `backend` seam registry (`sluice/backends/`) so
 selection is config-driven and a new provider is a drop-in module. The subprocess
 runner and HTTP poster are injected, so everything is tested offline.
@@ -101,9 +101,14 @@ class ClaudeMaxBackend:
         # the same underlying condition triggers the documented fallback whichever provider
         # hits it, instead of one raising and one handing back a useless string.
         #
-        # Only the EMPTY half of the siblings' pair is portable: their other guard keys on
-        # finish_reason/stop_reason to catch a truncation, and a CLI exposes no such field.
-        # That is a real absence, not an oversight to fix later.
+        # Only the EMPTY half of the siblings' pair is implemented here. Their other guard keys on
+        # finish_reason/stop_reason to catch a TRUNCATION, and this backend has no equivalent
+        # because it runs the CLI in TEXT mode -- not because a CLI cannot report one:
+        # `claude --print --output-format json` returns exactly that, a `stop_reason` field (plus
+        # `is_error`/`subtype`). Adopting it would replace this whole parse path, so it is deferred,
+        # not impossible. The emptiness check is text-mode-coupled for the same reason: a JSON
+        # envelope is never empty, so under --output-format json a null `result` would sail through
+        # this guard untouched.
         if not text:
             raise BackendError(
                 f"claude-max returned no text (exit 0, {len(proc.stdout)} chars of whitespace)"
