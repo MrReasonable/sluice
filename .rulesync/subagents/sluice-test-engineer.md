@@ -34,9 +34,12 @@ worse than none.)
    - **Stale bytecode.** CPython invalidates a `.pyc` on *(source mtime, size)*, so a
      size-preserving edit restored within the same second runs the OLD bytecode against the NEW
      source. `text = ` → `return ` is exactly that shape. Run
-     `python -m compileall -q -f --invalidation-mode checked-hash sluice tests` once first and the
-     trap cannot recur. `inspect.getsource` will NOT reveal it — it re-reads the source file, not the
-     loaded bytecode.
+     `python -m compileall -q -f --invalidation-mode checked-hash sluice tests` once first; that
+     covers `sluice/`, which is where mutants go, and is durable — you do NOT need to re-run it
+     between mutants (measured: 90/90 stay hash-based across mutate → pytest → restore).
+     `inspect.getsource` will NOT reveal the trap — it re-reads the source file, not the loaded
+     bytecode, so it shows you corrected code while stale bytecode executes. Run the function and
+     look at what it returns instead.
    - **Run mutants serially, one at a time.** A probe running concurrently with a mutation reads a
      half-mutated tree and reports a result belonging to neither.
 
