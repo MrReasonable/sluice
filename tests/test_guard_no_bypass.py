@@ -80,10 +80,14 @@ BLOCKED = [
     "GIT_DIR=/repo/.git git push --force origin main",
     # The `=value` spelling is the same flag.
     "gh pr merge 16 --admin=true",
-    # `--all` and `--mirror` push main without ever naming it, so the refspec parser below
-    # never sees a destination to compare. They are NOT the ambiguous bare-push case: `--all`
-    # pushes every local branch and `--mirror` every ref, so main is included by definition,
-    # not by a `push.default` that has to be guessed.
+    # `--all`, `--branches` and `--mirror` name no refspec, so the refspec parser never sees a
+    # destination to compare and all three used to walk straight through. They are NOT the
+    # ambiguous bare-push case below, but for two DIFFERENT reasons, and the distinction is the
+    # whole point: `--mirror` is every ref by definition, so it is unconditional. `--all` is
+    # refused only when forced, and because it MAY carry a local main while the string cannot
+    # tell -- NOT because main is included by definition. It pushes refs under refs/heads/, so
+    # from a worktree with no local main it carries none. Guessing wrong toward "allow" is the
+    # expensive direction; guessing wrong toward "block" only costs a rerun.
     "git push --all --force origin",
     "git push --force --all origin",  # flag order is not a semantic
     "git push -f --all origin",
