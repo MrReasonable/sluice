@@ -24,7 +24,8 @@ python -m pytest tests/test_triage_engine.py            # one file
 python -m pytest tests/test_triage_engine.py -k judge   # one test
 ruff check sluice tests         # NB: ruff is NOT in [test]; pip install ruff==0.15.21 (the CI pin)
 
-# Run ONCE before mutating anything to prove a test can fail. See "Mutation testing" below.
+# Run ONCE before mutation testing: content-addresses sluice/'s .pyc cache so a mutant can't run
+# stale bytecode and lie green. Proving a test fails is the mutate-then-pytest step; see below.
 python -m compileall -q -f --invalidation-mode checked-hash sluice tests
 ```
 
@@ -37,12 +38,12 @@ deleted:
   equivalent mutant: the original still fires and the suite stays green.
 - **Stale bytecode.** CPython invalidates a `.pyc` on *(source mtime, size)*, so a size-preserving
   edit restored within the same second runs the OLD bytecode against the NEW source — silently.
-  `text = ` → `return ` is exactly that shape (both 7 chars), and it has already cost a debugging
-  session. The `compileall --invalidation-mode checked-hash` line above makes `sluice/`'s cache
-  content-addressed, which is what mutation testing needs, since mutants go in production code.
-  Measured: 90/90 stay hash-based across mutate → pytest → restore, so it is durable and costs
-  nothing measurable. Clearing `__pycache__` also works but is a discipline you must remember every
-  time, and forgetting it fails in the dangerous direction.
+  `text =` → `return` is exactly that shape (each carries a trailing space, so both are 7 bytes),
+  and it has already cost a debugging session. The `compileall --invalidation-mode checked-hash`
+  line above makes `sluice/`'s cache content-addressed, which is what mutation testing needs, since
+  mutants go in production code. Measured: 90/90 stay hash-based across mutate → pytest → restore,
+  so it is durable and costs nothing measurable. Clearing `__pycache__` also works but is a
+  discipline you must remember every time, and forgetting it fails in the dangerous direction.
 
   It does **not** cover `tests/`: pytest's assertion rewriter keeps its own
   `*-pytest-N.N.N.pyc` alongside, those are timestamp-based, and pytest imports *those*. So a
