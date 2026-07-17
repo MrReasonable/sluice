@@ -33,7 +33,7 @@ worse than none.)
      equivalent mutant: the original still fires and the suite stays green.
    - **Stale bytecode.** CPython invalidates a `.pyc` on *(source mtime, size)*, so a
      size-preserving edit restored within the same second runs the OLD bytecode against the NEW
-     source. `text = ` → `return ` is exactly that shape. Run
+     source. `text =` → `return` is exactly that shape (both 7 bytes with the trailing space). Run
      `python -m compileall -q -f --invalidation-mode checked-hash sluice tests` once first; that
      covers `sluice/`, which is where mutants go, and is durable — you do NOT need to re-run it
      between mutants (measured: 90/90 stay hash-based across mutate → pytest → restore).
