@@ -23,7 +23,28 @@ python -m pytest                # fast (well under a second), fully offline: no 
 python -m pytest tests/test_triage_engine.py            # one file
 python -m pytest tests/test_triage_engine.py -k judge   # one test
 ruff check sluice tests         # NB: ruff is NOT in [test]; pip install ruff==0.15.21 (the CI pin)
+
+# Run ONCE before mutating anything to prove a test can fail. See "Mutation testing" below.
+python -m compileall -q -f --invalidation-mode checked-hash sluice tests
 ```
+
+**Mutation testing.** The claim "this test would catch that" is worth nothing unverified, so the way
+to check a test is load-bearing is to break the code and watch it go red — not to reason about it.
+Two things make a mutant lie *green*, which reads as "this test is inert" and gets a real guard
+deleted:
+
+- **Mutate by MOVING or DELETING, never by ADDING.** A check added beside the original is an
+  equivalent mutant: the original still fires and the suite stays green.
+- **Stale bytecode.** CPython invalidates a `.pyc` on *(source mtime, size)*, so a size-preserving
+  edit restored within the same second runs the OLD bytecode against the NEW source — silently.
+  `text = ` → `return ` is exactly that shape (both 7 chars), and it has already cost a debugging
+  session. The `compileall --invalidation-mode checked-hash` line above makes the cache
+  content-addressed, so the trap cannot recur; it is durable across runs and costs nothing
+  measurable. Clearing `__pycache__` also works but is a discipline you must remember every time,
+  and forgetting it fails in the dangerous direction.
+
+`inspect.getsource` cannot diagnose the second one — it re-reads the source file, so it happily
+shows corrected code while stale bytecode executes. Run the function and look at what it returns.
 
 The suite is fast and hermetic — there is no reason not to run all of it. `run_tests.sh` is the same
 thing via `.venv/bin/python`, so it needs a `.venv/` (gitignored) to exist first. CI
