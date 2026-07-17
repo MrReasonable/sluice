@@ -20,8 +20,29 @@ worse than none.)
 
 2. **The invariants have tests.** Any change touching a write path, a status transition, the
    fabrication gate, or a config default must come with a test that would **fail** if the invariant
-   were broken. Ask concretely: if I reverted the invariant and kept the tests, would anything go
-   red? If no, the coverage is theatre.
+   were broken. Do not *reason* about whether it would — **revert the invariant and run the suite.**
+   An unfalsified claim that a test is load-bearing is worth nothing, and this repo has shipped that
+   mistake repeatedly: the code was right nearly every time and the claim about it was not. If no
+   test goes red, the coverage is theatre. Report the mutant and what it reddened, even when
+   everything behaves — that table is the evidence, and "I checked" is not.
+
+   Three traps, each of which makes a mutant lie **green** — which reads as "this test is inert" and
+   gets a working guard deleted:
+
+   - **Mutate by MOVING or DELETING, never by ADDING.** A check added beside the original is an
+     equivalent mutant: the original still fires and the suite stays green.
+   - **Stale bytecode.** CPython invalidates a `.pyc` on *(source mtime, size)*, so a
+     size-preserving edit restored within the same second runs the OLD bytecode against the NEW
+     source. `text = ` → `return ` is exactly that shape. Run
+     `python -m compileall -q -f --invalidation-mode checked-hash sluice tests` once first and the
+     trap cannot recur. `inspect.getsource` will NOT reveal it — it re-reads the source file, not the
+     loaded bytecode.
+   - **Run mutants serially, one at a time.** A probe running concurrently with a mutation reads a
+     half-mutated tree and reports a result belonging to neither.
+
+   **Restore the file afterwards and verify the tree is clean** (`git status`). Commit the fix
+   *before* mutating: `git checkout <file>` restores to HEAD, so mutating an uncommitted fix and then
+   "restoring" it deletes the fix.
 
 3. **Fixtures stay synthetic.** Job titles come from the seeded `faker` fixtures in
    `tests/conftest.py` (`titles`, `cfg_titles`), never hardcoded. No real companies, no real URLs,
