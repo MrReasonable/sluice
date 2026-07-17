@@ -49,6 +49,19 @@ def test_claudemax_runner_nonzero_raises():
         be.complete("x")
 
 
+def test_claudemax_transport_failure_raises_backend_error():
+    # The wrapper ONE LINE above the empty guard, and the same drift this file's other backends
+    # do not have: both siblings pin it (test_openai_compatible_transport_error_raises) and
+    # claude-max did not. It matters because FallbackBackend catches BackendError *only*, so a
+    # timeout or an ssh failure escaping as a raw OSError would CRASH the run instead of
+    # degrading to the fallback -- the exact opposite of what the module docstring promises.
+    def boom(*a, **k):
+        raise OSError("ssh: connect to host port 22: Connection refused")
+    be = ClaudeMaxBackend("m", cmd_template=["claude"], runner=boom)
+    with pytest.raises(BackendError, match="invocation failed"):
+        be.complete("x")
+
+
 @pytest.mark.parametrize("stdout", ["", "   \n  "])
 def test_claudemax_empty_stdout_on_exit_zero_raises(stdout):
     # exit 0 with no text is a FAILED call that looks like a successful one -- the shape both
@@ -57,8 +70,11 @@ def test_claudemax_empty_stdout_on_exit_zero_raises(stdout):
     # consumes it as a real completion.
     #
     # Whitespace-only is parametrised, not decorative: `.strip()` runs BEFORE the check, so a
-    # guard written as `if not proc.stdout` would pass the "" case and let "   \n  " through.
-    # The two cases are separate mutants; one alone cannot witness the other.
+    # guard written as `if not proc.stdout` -- or one that drops the .strip() -- passes the ""
+    # case and lets "   \n  " straight through. The whitespace param is the load-bearing one and
+    # kills a strict SUPERSET: "" uniquely witnesses nothing, because both params are byte-
+    # identical ("") by the time the guard sees them. It stays for the obvious reason -- it is the
+    # case a reader expects to see -- not because it earns its keep as a mutant.
     class R:
         returncode, stderr = 0, ""
     R.stdout = stdout
