@@ -38,10 +38,16 @@ deleted:
 - **Stale bytecode.** CPython invalidates a `.pyc` on *(source mtime, size)*, so a size-preserving
   edit restored within the same second runs the OLD bytecode against the NEW source — silently.
   `text = ` → `return ` is exactly that shape (both 7 chars), and it has already cost a debugging
-  session. The `compileall --invalidation-mode checked-hash` line above makes the cache
-  content-addressed, so the trap cannot recur; it is durable across runs and costs nothing
-  measurable. Clearing `__pycache__` also works but is a discipline you must remember every time,
-  and forgetting it fails in the dangerous direction.
+  session. The `compileall --invalidation-mode checked-hash` line above makes `sluice/`'s cache
+  content-addressed, which is what mutation testing needs, since mutants go in production code.
+  Measured: 90/90 stay hash-based across mutate → pytest → restore, so it is durable and costs
+  nothing measurable. Clearing `__pycache__` also works but is a discipline you must remember every
+  time, and forgetting it fails in the dangerous direction.
+
+  It does **not** cover `tests/`: pytest's assertion rewriter keeps its own
+  `*-pytest-N.N.N.pyc` alongside, those are timestamp-based, and pytest imports *those*. So a
+  size-preserving edit to a TEST file within the same second is still exposed. That is not the
+  mutation-testing case, but do not read the line above as protecting more than it does.
 
 `inspect.getsource` cannot diagnose the second one — it re-reads the source file, so it happily
 shows corrected code while stale bytecode executes. Run the function and look at what it returns.
