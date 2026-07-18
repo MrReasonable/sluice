@@ -118,6 +118,16 @@ def test_clamp_bytes_boundary_exact_and_too_small():
     assert _clamp_bytes("測", 2) == ""     # cannot fit even one whole char
 
 
+def test_clamp_bytes_non_positive_budget_yields_empty():
+    # A non-positive byte budget holds nothing. Without the guard the negative slice
+    # keeps all-but-the-last-few bytes (s.encode()[:-1]), silently defeating the cap;
+    # "" is the only correct answer. _name_max keeps production budgets positive, so
+    # this pins the pure helper's totality as defence-in-depth.
+    assert _clamp_bytes("hello", 0) == ""
+    assert _clamp_bytes("hello", -1) == ""
+    assert _clamp_bytes("hello", -4) == ""
+
+
 def test_long_non_ascii_name_fits_the_byte_budget(tmp_path):
     # A 120-CHARACTER CJK company is ~360 bytes — over NAME_MAX. Inject a small
     # budget so the assertion is filesystem-independent, then verify the written
@@ -161,6 +171,16 @@ def test_name_max_falls_back_when_pathconf_unsupported(tmp_path, monkeypatch):
     def _boom(*a):
         raise OSError("PC_NAME_MAX unsupported")
     monkeypatch.setattr(os, "pathconf", _boom)
+    assert v._name_max() == 255
+
+
+def test_name_max_falls_back_when_pathconf_returns_negative_one(tmp_path, monkeypatch):
+    # POSIX pathconf RETURNS -1 (a value, not an exception) when NAME_MAX is
+    # indeterminate. Uncaught, that -1 caches and drives _path_for's byte budget to -4,
+    # so _clamp_bytes negative-slices EVERY name -> a vault-wide rename/duplicate. A
+    # non-positive limit must take the 255 fallback, same as the exception path.
+    v = Vault(str(tmp_path))
+    monkeypatch.setattr(os, "pathconf", lambda *a: -1)
     assert v._name_max() == 255
 
 
