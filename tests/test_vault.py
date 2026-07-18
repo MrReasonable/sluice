@@ -1,3 +1,5 @@
+import os
+
 from sluice.core.leads import Lead
 from sluice.core.vault import Vault, _clamp_bytes
 
@@ -112,3 +114,49 @@ def test_clamp_bytes_never_splits_a_multibyte_codepoint():
 def test_clamp_bytes_boundary_exact_and_too_small():
     assert _clamp_bytes("測", 3) == "測"   # exact fit
     assert _clamp_bytes("測", 2) == ""     # cannot fit even one whole char
+
+
+def test_long_non_ascii_name_fits_the_byte_budget(tmp_path):
+    # A 120-CHARACTER CJK company is ~360 bytes — over NAME_MAX. Inject a small
+    # budget so the assertion is filesystem-independent, then verify the written
+    # filename fits it and decodes cleanly (no split codepoint).
+    v = Vault(str(tmp_path))
+    v._name_max_cache = 64
+    v.upsert(_lead(company="測" * 200, title="X"))
+    files = list(_leads_dir(tmp_path).glob("*.md"))
+    assert len(files) == 1
+    name = files[0].name
+    assert len(name.encode("utf-8")) <= 64        # whole filename within budget
+    name.encode("utf-8").decode("utf-8")          # valid UTF-8, no partial char
+
+
+def test_byte_clamp_is_a_noop_for_a_name_that_fits(tmp_path):
+    # never-clobber guard: a name already within the byte budget MUST keep the exact
+    # char-capped path it has today, or a re-scrape would create a duplicate note.
+    # Inject the budget (255) explicitly so the assertion does NOT silently ride the
+    # pathconf-failure fallback: _path_for is called directly here, so leads_dir does
+    # not exist yet and a real os.pathconf would raise.
+    v = Vault(str(tmp_path))
+    v._name_max_cache = 255
+    lead = _lead(company="X" * 200, title="Y")     # f-string -> 120 'X' after [:120]
+    expected = _leads_dir(tmp_path) / ("X" * 120 + ".md")
+    assert v._path_for(lead) == str(expected)
+
+
+def test_name_max_reads_pathconf(tmp_path, monkeypatch):
+    # The SUCCESS branch: _name_max returns the filesystem's real PC_NAME_MAX, not the
+    # 255 fallback. Mock pathconf to a non-255 value so a hardcoded-255 mutant reddens
+    # even on a 255-limit filesystem where the fallback would otherwise mask it.
+    v = Vault(str(tmp_path))
+    os.makedirs(v.leads_dir, exist_ok=True)        # pathconf needs an existing path
+    monkeypatch.setattr(os, "pathconf", lambda *a: 143)
+    assert v._name_max() == 143
+
+
+def test_name_max_falls_back_when_pathconf_unsupported(tmp_path, monkeypatch):
+    # The FALLBACK branch: pathconf unsupported (some network/FUSE mounts) -> 255.
+    v = Vault(str(tmp_path))
+    def _boom(*a):
+        raise OSError("PC_NAME_MAX unsupported")
+    monkeypatch.setattr(os, "pathconf", _boom)
+    assert v._name_max() == 255
