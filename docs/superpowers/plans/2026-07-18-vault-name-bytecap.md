@@ -21,8 +21,9 @@ Every task's requirements implicitly include these (copied verbatim from CLAUDE.
 - **Conventional commits** (`fix(vault): ...`, `test(vault): ...`), each ending with the trailer:
   `MrReasonable <4990954+MrReasonable@users.noreply.github.com>`
 - **Mutation discipline.** Before mutating anything to prove a test is load-bearing, run once:
-  `python -m compileall -q -f --invalidation-mode checked-hash sluice tests`
+  `.venv/bin/python -m compileall -q -f --invalidation-mode checked-hash sluice tests`
   Then mutate by **moving or deleting**, never by adding a check beside the original (an added check is an equivalent mutant and stays green). Run the mutant in isolation and look at what the function returns.
+  Use the **same** interpreter for `compileall` and pytest (both `.venv/bin/python`) — a bare `python` on a different CPython writes to a different `__pycache__` tag dir that pytest never imports, silently defeating the content-addressing. This needs the gitignored `.venv/` to exist; create it first (`python -m venv .venv && .venv/bin/pip install -e ".[test]"`), the same venv `run_tests.sh` uses.
 - **Tests are offline, hermetic, and assert on behaviour**, not merely that code runs.
 
 **Scope boundary:** The collision class (two distinct leads whose truncated names match → the second silently bumps the first's `last_seen`) is **out of scope** — it is issue #5. Do not add a discriminator here.
@@ -96,7 +97,7 @@ Expected: PASS (4 tests).
 - [ ] **Step 5: Prove the tests are load-bearing (mutation check)**
 
 ```bash
-python -m compileall -q -f --invalidation-mode checked-hash sluice tests
+.venv/bin/python -m compileall -q -f --invalidation-mode checked-hash sluice tests
 ```
 
 Mutate `_clamp_bytes` by **replacing** the body (move/delete, not add) with a naive char slice and confirm RED, then restore:
@@ -140,7 +141,7 @@ Wire `_clamp_bytes` into the note-naming path, sized to `os.pathconf`'s `PC_NAME
 
 - [ ] **Step 1: Write the failing tests**
 
-Add to `tests/test_vault.py` (reuse the existing `_lead` and `_leads_dir` helpers already at the top of the file):
+Add `import os` to the top of `tests/test_vault.py` (needed by the pathconf tests), then add (reuse the existing `_lead` and `_leads_dir` helpers already at the top of the file):
 
 ```python
 def test_long_non_ascii_name_fits_the_byte_budget(tmp_path):
@@ -160,16 +161,42 @@ def test_long_non_ascii_name_fits_the_byte_budget(tmp_path):
 def test_byte_clamp_is_a_noop_for_a_name_that_fits(tmp_path):
     # never-clobber guard: a name already within the byte budget MUST keep the exact
     # char-capped path it has today, or a re-scrape would create a duplicate note.
+    # Inject the budget (255) explicitly so the assertion does NOT silently ride the
+    # pathconf-failure fallback: _path_for is called directly here, so leads_dir does
+    # not exist yet and a real os.pathconf would raise.
     v = Vault(str(tmp_path))
+    v._name_max_cache = 255
     lead = _lead(company="X" * 200, title="Y")     # f-string -> 120 'X' after [:120]
     expected = _leads_dir(tmp_path) / ("X" * 120 + ".md")
     assert v._path_for(lead) == str(expected)
+
+
+def test_name_max_reads_pathconf(tmp_path, monkeypatch):
+    # The SUCCESS branch: _name_max returns the filesystem's real PC_NAME_MAX, not the
+    # 255 fallback. Mock pathconf to a non-255 value so a hardcoded-255 mutant reddens
+    # even on a 255-limit filesystem where the fallback would otherwise mask it.
+    v = Vault(str(tmp_path))
+    os.makedirs(v.leads_dir, exist_ok=True)        # pathconf needs an existing path
+    monkeypatch.setattr(os, "pathconf", lambda *a: 143)
+    assert v._name_max() == 143
+
+
+def test_name_max_falls_back_when_pathconf_unsupported(tmp_path, monkeypatch):
+    # The FALLBACK branch: pathconf unsupported (some network/FUSE mounts) -> 255.
+    v = Vault(str(tmp_path))
+    def _boom(*a):
+        raise OSError("PC_NAME_MAX unsupported")
+    monkeypatch.setattr(os, "pathconf", _boom)
+    assert v._name_max() == 255
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `.venv/bin/python -m pytest tests/test_vault.py -k "byte_budget or noop_for_a_name" -v`
-Expected: `test_long_non_ascii_name_fits_the_byte_budget` FAILs — either `AttributeError` on `_name_max_cache` (not yet in `__init__`) or the filename exceeds 64 bytes (no clamp yet). `test_byte_clamp_is_a_noop...` may already pass (char-cap already yields 120 'X') — that is expected; it guards Step 3 against regressing.
+Run: `.venv/bin/python -m pytest tests/test_vault.py -k "byte_budget or noop_for_a_name or name_max" -v`
+Expected, precisely (the RED is genuine; the *reason* matters so you don't misread the traceback):
+- `test_long_non_ascii_name_fits_the_byte_budget` ERRORS red: on a 255-byte-limit FS the old `_path_for` produces a ~360-byte basename and `v.upsert(...)` raises `OSError`/`ENAMETOOLONG` at `open()`, *before* the byte assertion runs. (Setting `v._name_max_cache = 64` on an instance whose `__init__` doesn't define the attribute is legal Python and harmless — the old `_path_for` never reads it — so there is no `AttributeError`.)
+- `test_name_max_reads_pathconf` and `test_name_max_falls_back_when_pathconf_unsupported` FAIL with `AttributeError: 'Vault' object has no attribute '_name_max'` (method not added yet).
+- `test_byte_clamp_is_a_noop_for_a_name_that_fits` PASSES already (the old `_path_for` yields `X*120.md`, and `_name_max_cache = 255` is an unread no-op on it) — expected; it is a regression guard for Step 3, not a fail-first test.
 
 - [ ] **Step 3: Implement the cache field, `_name_max`, and the clamp**
 
@@ -188,9 +215,10 @@ Add the `_name_max` method (next to `_path_for`):
 ```python
     def _name_max(self) -> int:
         """The filesystem's max filename length in BYTES for the leads dir, cached.
-        os.pathconf needs an existing path; upsert makes leads_dir before _path_for
-        runs (its only caller). 255 fallback where pathconf is unsupported (some
-        network/FUSE mounts)."""
+        os.pathconf needs an existing path; in the normal flow upsert makes leads_dir
+        before _path_for runs. A direct _path_for call before the dir exists (e.g. a
+        unit test) just takes the 255 fallback below, which also covers filesystems
+        where pathconf is unsupported (some network/FUSE mounts)."""
         if self._name_max_cache is None:
             try:
                 self._name_max_cache = os.pathconf(self.leads_dir, "PC_NAME_MAX")
@@ -221,12 +249,12 @@ Modify `_path_for` (currently line 83-87). The 120-char cap stays FIRST; the byt
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_vault.py -v`
-Expected: PASS — the two new tests plus every pre-existing vault test (the sanitize-slashes and create/update tests confirm the no-op holds for short names).
+Expected: PASS — the four new tests plus every pre-existing vault test (the sanitize-slashes and create/update tests confirm the no-op holds for short names).
 
 - [ ] **Step 5: Prove the tests are load-bearing (mutation check)**
 
 ```bash
-python -m compileall -q -f --invalidation-mode checked-hash sluice tests
+.venv/bin/python -m compileall -q -f --invalidation-mode checked-hash sluice tests
 ```
 
 Mutate `_path_for` by **removing** the clamp line (delete, not comment-beside):
@@ -234,7 +262,7 @@ Mutate `_path_for` by **removing** the clamp line (delete, not comment-beside):
         safe = f"{lead.company} - {lead.title}"[:120].replace("/", "-").replace(":", "-")
         return os.path.join(self.leads_dir, f"{safe}.md")
 ```
-Expected: `test_long_non_ascii_name_fits_the_byte_budget` FAILs (name ~360 bytes > 64).
+Expected: `test_long_non_ascii_name_fits_the_byte_budget` errors red — with no clamp, `upsert` writes a ~360-byte name and `open()` raises `ENAMETOOLONG` on a 255-limit FS (the injected 64 budget is unused once the clamp is gone). `test_name_max_reads_pathconf`/`_falls_back` stay green — they exercise `_name_max`, which this mutant leaves intact.
 
 Restore, then mutate to byte-cap ONLY (drop `[:120]` — the issue's literal proposal, the actual duplication trap):
 ```python
@@ -271,7 +299,7 @@ MrReasonable <4990954+MrReasonable@users.noreply.github.com>"
 Wrap the per-lead `upsert` so an `OSError` from any one lead becomes a counted `skipped`, is logged, and is left out of `seen.db` (so it retries next run) — instead of propagating and aborting the run.
 
 **Files:**
-- Modify: `sluice/ingest/sink.py` — add a module logger, wrap the loop body in `VaultSink.write` (line 23-38)
+- Modify: `sluice/ingest/sink.py` — add a module logger, wrap the loop body in `VaultSink.write` (line 23-38), and update the module docstring (it is the sink contract) for `skipped`'s new meaning
 - Test: `tests/test_sink.py`
 
 **Interfaces:**
@@ -314,7 +342,22 @@ def test_vaultsink_isolates_a_failing_write(tmp_path, monkeypatch):
 Run: `.venv/bin/python -m pytest tests/test_sink.py -k isolates_a_failing_write -v`
 Expected: FAIL — the `OSError` propagates out of `write`, so the assertion is never reached (test errors).
 
-- [ ] **Step 3: Add the logger and guard the loop**
+- [ ] **Step 3: Add the logger, update the docstring, and guard the loop**
+
+Update the module docstring (lines 1-7) so the sink contract describes `skipped`'s new meaning. Change the VaultSink sentence to:
+
+```python
+"""Sinks: where deduped, relevance-passed leads land.
+
+VaultSink stamps first_seen/last_seen, upserts each lead into the Obsidian vault
+(never clobbering status), then records it in seen.db so the next run dedups it.
+A lead the vault refuses to write (OSError - name too long on an odd FS,
+permissions, disk full) is counted `skipped`, logged, and kept OUT of seen.db so
+the next run retries it, rather than aborting the run. JsonSink emits one JSON
+object per line - for `--sink json` and the legacy-diff tool. Both return
+{created, updated, skipped}.
+"""
+```
 
 At the top of `sluice/ingest/sink.py`, after the existing imports, add:
 
@@ -343,7 +386,9 @@ Replace the loop body in `VaultSink.write` (line 23-38) with:
                 # A lead the store cannot write (name too long on an odd FS,
                 # permissions, disk full) must not sink the batch or the run. Count
                 # it, log it, and leave it OUT of `recorded` so it never enters
-                # seen.db and is retried next run. See #24.
+                # seen.db and is retried next run. See #24. OSError is the filesystem
+                # store's failure mode; a future SQLite store would raise sqlite3.Error,
+                # so this catch would need widening when that store arrives.
                 counts["skipped"] += 1
                 _log.warning("vault refused lead %r: %s", lead.dedup_key, e)
         if recorded:
@@ -361,7 +406,7 @@ Expected: PASS — the new isolation test plus the three pre-existing sink tests
 - [ ] **Step 5: Prove the test is load-bearing (mutation check)**
 
 ```bash
-python -m compileall -q -f --invalidation-mode checked-hash sluice tests
+.venv/bin/python -m compileall -q -f --invalidation-mode checked-hash sluice tests
 ```
 
 Mutate by **removing** the `try/except` (unguard the write — delete the wrapper, dedent the body):
@@ -392,7 +437,187 @@ MrReasonable <4990954+MrReasonable@users.noreply.github.com>"
 
 ---
 
-### Task 4: end-to-end blast-radius regression test
+### Task 4: unlink a partial note on create-failure (`Vault.upsert`)
+
+Task 3's guard makes a residual `OSError` (disk-full/interrupt mid-write) non-fatal — but `_write` opens `"w"`, which creates a truncated 0-byte file at open time. That partial file would be treated as a real note on the next re-scrape (`os.path.exists` True → `"updated"` → `last_seen` bumped on garbage, never re-created). Remove the partial on the create path so the retried lead is created cleanly.
+
+**Files:**
+- Modify: `sluice/core/vault.py` — the create branch of `Vault.upsert` (line 285)
+- Test: `tests/test_vault.py`
+
+**Interfaces:**
+- Consumes: `_path_for`, `_render_new`, `_write` (existing).
+- Produces: `Vault.upsert` unchanged in signature; a create whose write fails leaves no file behind and re-raises (so the sink counts it `skipped`).
+
+- [ ] **Step 1: Write the failing test**
+
+Add `import pytest` to the top of `tests/test_vault.py` (and `import os` if Task 2 has not already added it), then add:
+
+```python
+def test_upsert_removes_partial_note_when_create_write_fails(tmp_path, monkeypatch):
+    # A create whose write fails mid-way must not leave a partial file: open("w")
+    # truncates/creates at open time, and a lingering 0-byte note would be treated as
+    # real on the next re-scrape (exists -> "updated" -> last_seen bumped on garbage).
+    import sluice.core.vault as vault_mod
+    v = Vault(str(tmp_path))
+
+    def failing_write(p, text):
+        with open(p, "w", encoding="utf-8"):   # leave a 0-byte file, as open("w") does
+            pass
+        raise OSError("disk full mid-write")
+
+    monkeypatch.setattr(vault_mod, "_write", failing_write)
+    with pytest.raises(OSError):
+        v.upsert(_lead())
+    assert list(_leads_dir(tmp_path).glob("*.md")) == []   # partial artifact removed
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `.venv/bin/python -m pytest tests/test_vault.py -k removes_partial_note -v`
+Expected: FAIL — `upsert` re-raises the `OSError` (so `pytest.raises` is satisfied), but with no cleanup the 0-byte file lingers, so the final `glob("*.md") == []` assertion fails.
+
+- [ ] **Step 3: Guard the create write**
+
+In `Vault.upsert`, replace the create branch (currently `_write(path, self._render_new(lead)); return "created"`) with:
+
+```python
+        try:
+            _write(path, self._render_new(lead))
+        except OSError:
+            # A create whose write fails mid-way leaves open("w")'s truncated 0-byte
+            # file behind; a later re-scrape would see it exists and treat the garbage
+            # as a real note (bump last_seen, never re-create). Remove the partial so
+            # the retried lead is created cleanly, then re-raise so the sink counts it
+            # skipped and keeps it out of seen.db. See #24.
+            if os.path.exists(path):
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+            raise
+        return "created"
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `.venv/bin/python -m pytest tests/test_vault.py -k removes_partial_note -v`
+Expected: PASS.
+
+- [ ] **Step 5: Prove the test is load-bearing (mutation check)**
+
+```bash
+.venv/bin/python -m compileall -q -f --invalidation-mode checked-hash sluice tests
+```
+
+Mutate by **removing** the `try/except` (delete the wrapper, leave the bare `_write` + `return`):
+```python
+        _write(path, self._render_new(lead))
+        return "created"
+```
+Run: `.venv/bin/python -m pytest tests/test_vault.py -k removes_partial_note -v`
+Expected: FAIL — the partial 0-byte file is no longer unlinked, so `glob("*.md") == []` fails.
+
+Restore. Confirm green.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add sluice/core/vault.py tests/test_vault.py
+git commit -m "fix(vault): remove a partial note when a create write fails
+
+open(\"w\") creates a 0-byte file before bytes land, so a mid-write OSError
+(disk full, interrupt) leaves a partial note that a later re-scrape would treat
+as real. upsert now unlinks it and re-raises, so the sink retries the lead.
+
+Refs #24.
+
+MrReasonable <4990954+MrReasonable@users.noreply.github.com>"
+```
+
+---
+
+### Task 5: surface `skipped` in the ingest summary (`cli.py`)
+
+Task 3 makes `skipped` non-zero for the first time, but `cli._print_report` prints only created/updated — a run that refuses leads shows a clean-looking summary and the loss lives only in a per-lead log line. Surface it.
+
+**Files:**
+- Modify: `sluice/cli.py` — `_print_report` (line 147)
+- Test: `tests/test_cli.py`
+
+**Interfaces:**
+- Consumes: `report.written["skipped"]`.
+- Produces: the ingest summary line now includes the skipped count.
+
+- [ ] **Step 1: Write the failing test**
+
+Add to `tests/test_cli.py` (it already uses `capsys`):
+
+```python
+def test_print_report_surfaces_skipped(capsys):
+    from sluice.cli import _print_report
+
+    class _R:
+        sources = []
+        written = {"created": 1, "updated": 2, "skipped": 3}
+
+    _print_report(_R())
+    err = capsys.readouterr().err        # the summary prints to stderr
+    assert "3 skipped" in err
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `.venv/bin/python -m pytest tests/test_cli.py -k surfaces_skipped -v`
+Expected: FAIL — the summary omits skipped, so `"3 skipped"` is not in stderr.
+
+- [ ] **Step 3: Add skipped to the summary line**
+
+In `sluice/cli.py`, `_print_report`, replace:
+
+```python
+    print(f"written: {w['created']} created, {w['updated']} updated", file=sys.stderr)
+```
+with:
+```python
+    print(f"written: {w['created']} created, {w['updated']} updated, "
+          f"{w['skipped']} skipped", file=sys.stderr)
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `.venv/bin/python -m pytest tests/test_cli.py -k surfaces_skipped -v`
+Expected: PASS.
+
+- [ ] **Step 5: Prove the test is load-bearing (mutation check)**
+
+```bash
+.venv/bin/python -m compileall -q -f --invalidation-mode checked-hash sluice tests
+```
+
+Mutate by **deleting** the `, {w['skipped']} skipped` fragment (restore the original single-clause f-string).
+Run: `.venv/bin/python -m pytest tests/test_cli.py -k surfaces_skipped -v`
+Expected: FAIL — `"3 skipped"` absent from stderr.
+
+Restore. Confirm green.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add sluice/cli.py tests/test_cli.py
+git commit -m "fix(cli): show the skipped count in the ingest summary
+
+A run that refuses leads (a store OSError, now isolated per-lead) previously
+printed a clean-looking created/updated summary; the loss was only in a log line.
+
+Refs #24.
+
+MrReasonable <4990954+MrReasonable@users.noreply.github.com>"
+```
+
+---
+
+### Task 6: end-to-end blast-radius regression test
 
 Prove the whole-run guarantee the issue names: a store failure on one source's lead does not prevent a **later source** from being written. This exercises the real `VaultSink` inside `engine.run`, closing the loop between Task 3's unit fix and the run-level symptom in #24.
 
@@ -402,9 +627,9 @@ Prove the whole-run guarantee the issue names: a store failure on one source's l
 **Interfaces:**
 - Consumes: `engine.run(sources, ctx, sink, seen, health, *, retries=...)`, real `VaultSink`, real `Vault`, real `SeenDb`. No production code changes — this is a regression test over Task 3's fix.
 
-- [ ] **Step 1: Write the failing-then-passing test**
+- [ ] **Step 1: Write the regression test**
 
-Add to `tests/test_engine.py` (add the imports it needs at the top if absent: `from sluice.core.vault import Vault`, `from sluice.core.seendb import SeenDb`, `from sluice.ingest.sink import VaultSink`):
+This task adds no production code, so the test passes on arrival (Task 3 already landed the guard). It is a genuine regression guard, not a fail-first TDD test — its load-bearing proof is the Step 3 mutation, not a red Step 2. Add to `tests/test_engine.py` (add the imports it needs at the top if absent: `from sluice.core.vault import Vault`, `from sluice.core.seendb import SeenDb`, `from sluice.ingest.sink import VaultSink`):
 
 ```python
 def test_one_unwriteable_lead_does_not_stop_a_later_source(tmp_path, monkeypatch):
@@ -443,7 +668,7 @@ Expected: PASS (Task 3 already added the guard). If it FAILs with a propagating 
 - [ ] **Step 3: Prove the test is load-bearing (mutation check)**
 
 ```bash
-python -m compileall -q -f --invalidation-mode checked-hash sluice tests
+.venv/bin/python -m compileall -q -f --invalidation-mode checked-hash sluice tests
 ```
 
 Mutate `VaultSink.write` again by **removing** the `try/except` (as in Task 3, Step 5).
@@ -475,7 +700,7 @@ Expected: all pass (613 existing + the new tests).
 Run: `ruff check sluice tests`
 Expected: clean. (ruff is not in `[test]`; `pip install ruff==0.15.21` if absent.)
 
-- [ ] **Pre-push review** per the standing rule: run `/review-pr` BEFORE pushing the branch for CodeRabbit, since CodeRabbit is the scarce ~1h resource and the specialist team is free and parallel. Address findings, then push and open the PR (`Refs #24`, not `Fixes #24` unless the collision half is also closed — it is not; #24's byte-cap is the whole of its scope, so `Fixes #24` is correct here since #5 owns the collision).
+- [ ] **Pre-push review** per the standing rule: run `/review-pr` BEFORE pushing the branch for CodeRabbit, since CodeRabbit is the scarce ~1h resource and the specialist team is free and parallel. Address findings, then push and open the PR. Use **`Fixes #24`** in the PR body — the byte-cap + isolation is the whole of #24's scope (the collision class is separately owned by #5), so merging should auto-close #24. The individual task commits use `Refs #24` (which does not auto-close); only the PR's `Fixes #24` closes the issue on merge.
 
 ## Self-Review
 
@@ -485,9 +710,19 @@ Expected: clean. (ruff is not in `[test]`; `pip install ruff==0.15.21` if absent
 - Spec test 1 (byte-cap holds) → Task 2 `test_long_non_ascii_name_fits_the_byte_budget`. ✓
 - Spec test 2 (duplication-safety) → Task 2 `test_byte_clamp_is_a_noop_for_a_name_that_fits`. ✓
 - Spec test 3 (never split multibyte) → Task 1 `test_clamp_bytes_never_splits_a_multibyte_codepoint`. ✓
-- Spec test 4 (lead isolation: skipped, not in seen.db, run continues) → Task 3 + Task 4. ✓
-- Non-goals (collision → #5; broader sink isolation) → stated in Global Constraints scope boundary; not implemented. ✓
+- Spec test 4 (lead isolation: skipped, not in seen.db, run continues) → Task 3 + Task 6. ✓
+- Non-goals (collision → #5; moving `sink.write` inside the per-source `try`; `seendb.save` failures) → stated in the Global Constraints scope boundary; not implemented. ✓
 
-**Placeholder scan:** No TBD/TODO. Every code step shows complete code. The one honest caveat — that char-cap↔byte-clamp reordering is a provably equivalent mutant (both are prefix truncations; composition is commutative, verified empirically) — is documented in Task 2 Step 5 rather than papered over. The real duplication-safety property is pinned against the byte-cap-only mutant (the issue's literal proposal), which IS caught by `test_byte_clamp_is_a_noop_for_a_name_that_fits`.
+**Folded in from the 5-agent plan review (2026-07-18):**
+- `_name_max` pathconf **success** and **fallback** branches now tested → Task 2 `test_name_max_reads_pathconf` / `test_name_max_falls_back_when_pathconf_unsupported`; the noop test injects the budget explicitly instead of riding the fallback accidentally. ✓
+- Residual-`OSError` **partial file** closed on the create path → Task 4 (unlink + re-raise). ✓
+- `skipped` **surfaced** in the CLI summary → Task 5. ✓
+- Sink-contract **docstring** updated for `skipped`'s new meaning → Task 3 Step 3. ✓
+- **Interpreter unified** (`.venv/bin/python` for `compileall` + pytest); `.venv/` creation noted → Global Constraints. ✓
+- **`Fixes #24`** (the `Refs`/`Fixes` contradiction removed) → Final. ✓
+- Predicted RED **reasons corrected** (ENAMETOOLONG, not a byte-assertion or AttributeError) → Task 2 Steps 2/5. ✓
+- `_name_max` **"only caller" comment** corrected → Task 2 Step 3.
 
-**Type consistency:** `_clamp_bytes(s: str, limit: int) -> str` defined in Task 1, consumed identically in Task 2. `_name_max() -> int` defined and consumed in Task 2. `VaultSink.write` signature unchanged across Tasks 3-4. `_name_max_cache: int | None` initialised in `__init__`, read in `_name_max`. ✓
+**Placeholder scan:** No TBD/TODO. Every code step shows complete code. The one honest caveat — char-cap↔byte-clamp reordering is a provably equivalent mutant (both are prefix truncations; composition is commutative, verified empirically and independently re-verified in the plan review across 20k random inputs) — is documented in Task 2 Step 5. The duplication-safety property is pinned against the byte-cap-only mutant (the issue's literal proposal), which IS caught by `test_byte_clamp_is_a_noop_for_a_name_that_fits`.
+
+**Type consistency:** `_clamp_bytes(s: str, limit: int) -> str` defined in Task 1, consumed identically in Task 2. `_name_max() -> int` defined and consumed in Task 2. `VaultSink.write` signature unchanged across Tasks 3/6. `Vault.upsert` signature unchanged (Task 4). `_name_max_cache: int | None` initialised in `__init__`, read in `_name_max`. `_print_report` reads `report.written["skipped"]` (Task 5), which `RunReport.written` already defines. ✓
