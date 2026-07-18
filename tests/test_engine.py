@@ -1,8 +1,11 @@
 from sluice.core.health import HealthStore
 from sluice.core.leads import Lead
 from sluice.core.config import Config
+from sluice.core.seendb import SeenDb
+from sluice.core.vault import Vault
 from sluice.ingest.base import Ctx, Search
 from sluice.ingest.engine import run
+from sluice.ingest.sink import VaultSink
 
 
 class FakeSource:
@@ -136,3 +139,29 @@ def test_auto_retire_after_three_zero_runs(tmp_path):
         report = run([src], _ctx(), _FakeSink(), _FakeSeen(), h, retries=1)
     assert report.sources[0].retired is True
     assert src.enabled is False
+
+
+def test_one_unwriteable_lead_does_not_stop_a_later_source(tmp_path, monkeypatch):
+    # #24 blast radius: an OSError writing source A's lead must not abort the run
+    # or skip source B. With Task 3's per-lead guard, source B is still written.
+    src_a = FakeSource("aaa", [{"title": "Banker", "link": "http://x/1", "company": "Aye"}])
+    src_b = FakeSource("bbb", [{"title": "Banker", "link": "http://x/2", "company": "Bee"}])
+
+    vault = Vault(str(tmp_path / "vault"))
+    seen = SeenDb(str(tmp_path / "seen.db"))
+    sink = VaultSink(vault, seen, today=lambda: "2026-07-07")
+
+    real_upsert = vault.upsert
+
+    def flaky(lead):
+        if lead.url == "http://x/1":       # source A's lead only
+            raise OSError("simulated store refusal")
+        return real_upsert(lead)
+
+    monkeypatch.setattr(vault, "upsert", flaky)
+    report = run([src_a, src_b], _ctx(), sink, seen, _health(tmp_path), retries=1)
+
+    leads_dir = tmp_path / "vault" / "Job Applications" / "Job Leads"
+    assert (leads_dir / "Bee - Banker.md").exists()      # later source still written
+    assert not (leads_dir / "Aye - Banker.md").exists()  # failed lead not written
+    assert report.written["skipped"] == 1
