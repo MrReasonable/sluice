@@ -19,6 +19,7 @@ from datetime import date
 
 from sluice.core import status as _status
 from sluice.core.leads import Lead, _norm_url
+from sluice.core.log import get_logger
 from sluice.core.protocols import LeadNote
 
 _LEADS_SUBDIR = os.path.join("Job Applications", "Job Leads")
@@ -26,6 +27,8 @@ _EXP_SUBDIR = os.path.join("Job Applications", "Experience Library")
 _MYCV_BASELINE = os.path.join("My CV", "CV.md")
 _CRITERIA_RELPATH = os.path.join("Job Applications", "Judging Profile.md")
 _DEFAULT_VAULT = "./vault"
+
+_log = get_logger("core.vault")
 
 # Frontmatter is the `---`-fenced block at the very top of a note. Capture its
 # inner text and the body separately so updates can edit one key and leave the
@@ -323,8 +326,11 @@ class Vault:
             if os.path.exists(path):
                 try:
                     os.unlink(path)
-                except OSError:
-                    pass
+                except OSError as e:
+                    # Even the cleanup can fail (e.g. the FS remounted read-only). Log
+                    # it rather than swallow: the lingering partial note is a landmine a
+                    # later re-scrape would adopt as a real note, so it must be visible.
+                    _log.warning("could not remove partial note %s: %s", path, e)
             raise
         return "created"
 
