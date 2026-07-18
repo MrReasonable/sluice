@@ -42,3 +42,29 @@ def test_jsonsink_writes_one_json_line_per_lead():
     assert len(lines) == 2
     assert json.loads(lines[0])["url"] == "https://a/1"
     assert counts["created"] == 2
+
+
+def test_vaultsink_isolates_a_failing_write(tmp_path, monkeypatch):
+    # One lead the store cannot write must not sink the batch: it is counted
+    # `skipped`, kept OUT of seen.db (so it retries next run), and its neighbours
+    # are still written.
+    vault = Vault(str(tmp_path / "vault"))
+    seen = SeenDb(str(tmp_path / "seen.db"))
+    good1 = _lead(company="Aye", url="https://a/1")
+    bad = _lead(company="Bee", url="https://a/2")
+    good2 = _lead(company="Cee", url="https://a/3")
+
+    real_upsert = vault.upsert
+
+    def flaky(lead):
+        if lead.url == "https://a/2":
+            raise OSError("simulated store refusal")
+        return real_upsert(lead)
+
+    monkeypatch.setattr(vault, "upsert", flaky)
+    counts = VaultSink(vault, seen, today=lambda: "2026-07-07").write([good1, bad, good2])
+
+    assert counts == {"created": 2, "updated": 0, "skipped": 1}
+    loaded = seen.load()
+    assert "https://a/1" in loaded and "https://a/3" in loaded
+    assert "https://a/2" not in loaded            # retried next run, not swallowed
