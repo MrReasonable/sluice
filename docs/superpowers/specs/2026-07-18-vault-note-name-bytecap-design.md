@@ -227,8 +227,9 @@ python -m compileall -q -f --invalidation-mode checked-hash sluice tests
 Witnesses to prove non-inert:
 
 - Delete the `_clamp_bytes` call in `_path_for` → test 1 reddens (long non-ASCII overflows).
-- Reorder to byte-clamp-before-char-cap, or drop `[:120]` → test 2 reddens (a mid-band ASCII name
-  gets a different path). This is the inversion trap made a test.
+- Drop `[:120]` → test 2 reddens (a mid-band ASCII name gets a different path). This is the
+  inversion trap made a test. (Reordering byte-clamp and char-cap does NOT redden — the two are
+  prefix truncations that commute, so reordering is a provably equivalent mutant; see lines 72-77.)
 - Change `_clamp_bytes` to a naive `s[:limit]` (chars) or `s.encode()[:limit].decode()` without
   `errors="ignore"` → test 3 reddens (split codepoint / `UnicodeDecodeError`).
 - Remove the `try/except OSError` in `VaultSink.write` → test 4 reddens (run aborts).
