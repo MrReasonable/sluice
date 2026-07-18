@@ -39,3 +39,15 @@ def test_list_sources_health_flag(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("SLUICE_HEALTH", str(tmp_path / "h.json"))
     assert main(["ingest", "list-sources", "--health"]) == 0
     assert "baseline=" in capsys.readouterr().out
+
+
+def test_print_report_surfaces_skipped(capsys):
+    from sluice.cli import _print_report
+
+    class _R:
+        sources = []
+        written = {"created": 1, "updated": 2, "skipped": 3}
+
+    _print_report(_R())
+    err = capsys.readouterr().err        # the summary prints to stderr
+    assert "3 skipped" in err

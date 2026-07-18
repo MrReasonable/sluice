@@ -144,7 +144,8 @@ def _print_report(report) -> None:
               f"fresh={r.fresh} drift={r.drift or '-'}"
               f"{' RETIRED' if r.retired else ''}", file=sys.stderr)
     w = report.written
-    print(f"written: {w['created']} created, {w['updated']} updated", file=sys.stderr)
+    print(f"written: {w['created']} created, {w['updated']} updated, "
+          f"{w['skipped']} skipped", file=sys.stderr)
 
 
 def _format_degraded(report) -> str:
