@@ -493,11 +493,19 @@ In `Vault.upsert`, replace the create branch (currently `_write(path, self._rend
             if os.path.exists(path):
                 try:
                     os.unlink(path)
-                except OSError:
-                    pass
+                except OSError as e:
+                    # Even the cleanup can fail (e.g. the FS remounted read-only). Log
+                    # it rather than swallow: the lingering partial note is a landmine a
+                    # later re-scrape would adopt as a real note, so it must be visible.
+                    _log.warning("could not remove partial note %s: %s", path, e)
             raise
         return "created"
 ```
+
+This needs a module logger; wire `_log = get_logger("core.vault")` (import `from
+sluice.core.log import get_logger`) at module scope, mirroring `ingest/sink.py`. A failed
+cleanup must be logged, not silently swallowed — the run's write objective is that a lost
+write is always visible.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
@@ -693,7 +701,8 @@ MrReasonable <4990954+MrReasonable@users.noreply.github.com>"
 - [ ] **Run the whole suite** (fast, hermetic):
 
 Run: `.venv/bin/python -m pytest`
-Expected: all pass (613 existing + the new tests).
+Expected: the whole suite passes (green), the new tests included. Do not assert a fixed
+test count — it goes stale as tests change; require only that the current run is fully green.
 
 - [ ] **Lint:**
 
