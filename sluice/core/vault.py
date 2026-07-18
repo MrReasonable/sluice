@@ -392,3 +392,10 @@ def _fm_dict(inner: str | None) -> dict:
         if m:
             out[m.group(1)] = m.group(2).strip().strip('"').strip("'")
     return out
+
+
+def _clamp_bytes(s: str, limit: int) -> str:
+    """Largest UTF-8 prefix of `s` within `limit` bytes, never splitting a codepoint.
+    Slicing the encoded bytes can cut mid-sequence; decode(errors="ignore") then drops
+    the incomplete trailing bytes, which IS the 'never split a codepoint' guarantee."""
+    return s.encode("utf-8")[:limit].decode("utf-8", errors="ignore")

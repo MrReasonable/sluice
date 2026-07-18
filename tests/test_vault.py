@@ -1,5 +1,5 @@
 from sluice.core.leads import Lead
-from sluice.core.vault import Vault
+from sluice.core.vault import Vault, _clamp_bytes
 
 
 def _lead(**kw):
@@ -90,3 +90,25 @@ def test_ensure_stfolder(tmp_path):
     v = Vault(str(tmp_path))
     v.ensure_stfolder()
     assert (tmp_path / ".stfolder").is_dir()
+
+
+def test_clamp_bytes_keeps_string_within_budget_unchanged():
+    assert _clamp_bytes("hello", 100) == "hello"
+
+
+def test_clamp_bytes_truncates_ascii_to_byte_budget():
+    assert _clamp_bytes("hello", 3) == "hel"
+
+
+def test_clamp_bytes_never_splits_a_multibyte_codepoint():
+    # "測" encodes to 3 UTF-8 bytes. A 4-byte budget must keep exactly one whole
+    # char, never one-and-a-fraction — the guarantee _path_for relies on.
+    out = _clamp_bytes("測測", 4)
+    assert out == "測"
+    assert len(out.encode("utf-8")) <= 4
+    out.encode("utf-8").decode("utf-8")  # must be valid UTF-8 (no exception)
+
+
+def test_clamp_bytes_boundary_exact_and_too_small():
+    assert _clamp_bytes("測", 3) == "測"   # exact fit
+    assert _clamp_bytes("測", 2) == ""     # cannot fit even one whole char
