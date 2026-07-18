@@ -71,6 +71,7 @@ class Vault:
         self.dir = dir or os.environ.get("VAULT_DIR", _DEFAULT_VAULT)
         self.leads_dir = os.path.join(self.dir, _LEADS_SUBDIR)
         self.baseline_rel = baseline_rel
+        self._name_max_cache: int | None = None
 
     def _slug_for(self, path: str) -> str:
         """The lead's stable identity. For a markdown vault that is the filename without
@@ -80,10 +81,32 @@ class Vault:
         return name[:-3] if name.endswith(".md") else name
 
     # ── paths ────────────────────────────────────────────────────────────────
+    def _name_max(self) -> int:
+        """The filesystem's max filename length in BYTES for the leads dir, cached.
+        os.pathconf needs an existing path; in the normal flow upsert makes leads_dir
+        before _path_for runs. A direct _path_for call before the dir exists (e.g. a
+        unit test) just takes the 255 fallback below, which also covers filesystems
+        where pathconf is unsupported (some network/FUSE mounts)."""
+        if self._name_max_cache is None:
+            try:
+                self._name_max_cache = os.pathconf(self.leads_dir, "PC_NAME_MAX")
+            except (OSError, ValueError, AttributeError):
+                self._name_max_cache = 255
+        return self._name_max_cache
+
     def _path_for(self, lead: Lead) -> str:
-        """Match the old pipeline's naming exactly, so an existing note for
-        the same company+role is UPDATED in place rather than duplicated."""
+        """Match the old pipeline's naming exactly, so an existing note for the same
+        company+role is UPDATED in place rather than duplicated.
+
+        The cap is (1) 120 CHARACTERS then (2) a byte-clamp to NAME_MAX. The ORDER is
+        load-bearing: char-cap first makes the byte-clamp a no-op for every name already
+        on disk (each was written, so its stem is already <= NAME_MAX bytes), so no
+        existing note's identity moves. Only names that ENAMETOOLONG today change — and
+        they have no note to duplicate. Byte-capping *instead* of char-capping would keep
+        more of a 121-255 char ASCII name than today, renaming existing notes -> duplicates.
+        """
         safe = f"{lead.company} - {lead.title}"[:120].replace("/", "-").replace(":", "-")
+        safe = _clamp_bytes(safe, self._name_max() - len(b".md"))
         return os.path.join(self.leads_dir, f"{safe}.md")
 
     def ensure_stfolder(self) -> None:
