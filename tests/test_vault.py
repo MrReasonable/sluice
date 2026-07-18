@@ -1,5 +1,7 @@
 import os
 
+import pytest
+
 from sluice.core.leads import Lead
 from sluice.core.vault import Vault, _clamp_bytes
 
@@ -160,3 +162,21 @@ def test_name_max_falls_back_when_pathconf_unsupported(tmp_path, monkeypatch):
         raise OSError("PC_NAME_MAX unsupported")
     monkeypatch.setattr(os, "pathconf", _boom)
     assert v._name_max() == 255
+
+
+def test_upsert_removes_partial_note_when_create_write_fails(tmp_path, monkeypatch):
+    # A create whose write fails mid-way must not leave a partial file: open("w")
+    # truncates/creates at open time, and a lingering 0-byte note would be treated as
+    # real on the next re-scrape (exists -> "updated" -> last_seen bumped on garbage).
+    import sluice.core.vault as vault_mod
+    v = Vault(str(tmp_path))
+
+    def failing_write(p, text):
+        with open(p, "w", encoding="utf-8"):   # leave a 0-byte file, as open("w") does
+            pass
+        raise OSError("disk full mid-write")
+
+    monkeypatch.setattr(vault_mod, "_write", failing_write)
+    with pytest.raises(OSError):
+        v.upsert(_lead())
+    assert list(_leads_dir(tmp_path).glob("*.md")) == []   # partial artifact removed

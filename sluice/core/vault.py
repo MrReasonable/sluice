@@ -305,7 +305,20 @@ class Vault:
         if os.path.exists(path):
             self._bump_last_seen(path, lead.last_seen or _today())
             return "updated"
-        _write(path, self._render_new(lead))
+        try:
+            _write(path, self._render_new(lead))
+        except OSError:
+            # A create whose write fails mid-way leaves open("w")'s truncated 0-byte
+            # file behind; a later re-scrape would see it exists and treat the garbage
+            # as a real note (bump last_seen, never re-create). Remove the partial so
+            # the retried lead is created cleanly, then re-raise so the sink counts it
+            # skipped and keeps it out of seen.db. See #24.
+            if os.path.exists(path):
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+            raise
         return "created"
 
     def _bump_last_seen(self, path: str, last_seen: str) -> None:
