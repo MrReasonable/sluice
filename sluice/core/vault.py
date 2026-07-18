@@ -86,12 +86,19 @@ class Vault:
         os.pathconf needs an existing path; in the normal flow upsert makes leads_dir
         before _path_for runs. A direct _path_for call before the dir exists (e.g. a
         unit test) just takes the 255 fallback below, which also covers filesystems
-        where pathconf is unsupported (some network/FUSE mounts)."""
+        where pathconf is unsupported (some network/FUSE mounts).
+
+        pathconf can also RETURN -1 (a value, not an exception) when NAME_MAX is
+        indeterminate. Uncaught, a non-positive limit would drive _path_for's byte
+        budget negative and negative-slice every note's name -> a vault-wide rename.
+        So anything too small to hold a name plus its extension takes the 255 fallback
+        too, not just the exception path."""
         if self._name_max_cache is None:
             try:
-                self._name_max_cache = os.pathconf(self.leads_dir, "PC_NAME_MAX")
+                n = os.pathconf(self.leads_dir, "PC_NAME_MAX")
             except (OSError, ValueError, AttributeError):
-                self._name_max_cache = 255
+                n = -1
+            self._name_max_cache = n if n > len(b".md") else 255
         return self._name_max_cache
 
     def _path_for(self, lead: Lead) -> str:
@@ -432,6 +439,10 @@ def _fm_dict(inner: str | None) -> dict:
 
 def _clamp_bytes(s: str, limit: int) -> str:
     """Largest UTF-8 prefix of `s` within `limit` bytes, never splitting a codepoint.
-    Slicing the encoded bytes can cut mid-sequence; decode(errors="ignore") then drops
-    the incomplete trailing bytes, which IS the 'never split a codepoint' guarantee."""
+    A non-positive budget holds nothing -> "" (a NEGATIVE slice would instead keep all
+    but the last few bytes, silently defeating the cap). Slicing the encoded bytes can
+    cut mid-sequence; decode(errors="ignore") then drops the incomplete trailing bytes,
+    which IS the 'never split a codepoint' guarantee."""
+    if limit <= 0:
+        return ""
     return s.encode("utf-8")[:limit].decode("utf-8", errors="ignore")
