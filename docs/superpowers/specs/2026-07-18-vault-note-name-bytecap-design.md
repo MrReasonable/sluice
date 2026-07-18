@@ -59,9 +59,13 @@ re-scrape. That is exactly the wholesale-duplication never-clobber exists to pre
 Apply `[:120]` first, then clamp the result to the byte budget **only if it still exceeds it**. This
 is provably duplication-safe for the existing vault:
 
-- **Any note already on disk** was created via `[:120]` and did **not** crash, so its stem is
-  ≤ (NAME_MAX − 3) bytes. The byte-clamp condition is therefore **false** for it → the clamp is a
-  no-op → the path is byte-identical → **zero duplicates**.
+- **Any note already on disk** was created via `[:120]` and did **not** crash *on this filesystem*, so
+  its stem is ≤ (NAME_MAX − 3) bytes here. The byte-clamp condition is therefore **false** for it → the
+  clamp is a no-op → the path is byte-identical → **zero duplicates**. One premise: `NAME_MAX` is
+  stable. A note synced in from a larger-limit filesystem — this *is* a Syncthing vault — could carry a
+  stem between this FS's limit and its origin's and be re-truncated → a duplicate on re-scrape. That is
+  not a regression (such a note `ENAMETOOLONG`s on *every* re-scrape here today) and it falls to #5, but
+  it qualifies the word "proven".
 - The **only** names whose identity changes are ones that `ENAMETOOLONG` *today* — i.e. names with
   **no note to duplicate**. They move from crashing to being stored under a valid truncated name.
 
@@ -160,6 +164,13 @@ def write(self, leads) -> dict:
   remaining leads.
 - With Piece 1 landed, this catches only *residual* `OSError`s (permissions, disk full) — the
   name-length case no longer reaches it. Belt-and-suspenders, as the issue's second proposal intended.
+- **A create that fails mid-write leaves no partial note.** `_write` opens `"w"`, which creates a
+  0-byte file before bytes land; a residual `OSError` would otherwise leave a partial note that a later
+  re-scrape treats as real (`exists` → `"updated"`, `last_seen` bumped on garbage, never re-created). So
+  `upsert`'s create path unlinks the partial and re-raises, and the sink then counts it `skipped`.
+  (Surfaced by plan review — the guard above is precisely what makes this path reachable-and-silent.)
+- **`skipped` is surfaced, not just logged.** `cli._print_report` gains the count, so a run that
+  refuses leads no longer prints a clean-looking created/updated-only summary.
 - `VaultSink` needs a module logger. Add at module scope, matching `backends.py:21`'s dotted style:
   `from sluice.core.log import get_logger` and `_log = get_logger("ingest.sink")`. (`get_logger`
   prefixes `sluice.`, so the full name is `sluice.ingest.sink`.)
@@ -170,7 +181,11 @@ Kept out to honour the agreed minimal scope:
 
 - **The collision class** — two *distinct* leads whose first-120-char `company - title` match collide
   onto one filename; the second is treated as a re-scrape of the first (last_seen bumped, no note of
-  its own). This exists **today** with the char-cap; the byte-clamp neither creates nor removes it.
+  its own). This exists **today** with the char-cap. The byte-clamp leaves every *existing* note's
+  collisions untouched (those are among names that already have notes; never-clobber holds) — but it
+  truncates *tighter* than 120 chars for dense non-ASCII names, so it can **widen** the collision
+  surface among names that formerly `ENAMETOOLONG`ed (which had no note on disk). Still #5's class, not
+  a new one, but the widening is real and #5 should account for it.
   **This is already issue #5** (`a note must never silently absorb a different job`, parked, write-path
   only after the #23 rescope). #5 explicitly owns the truncation instance — "two different long titles
   sharing a 120-char prefix do not collide" is one of its own tests — and its open design question is
