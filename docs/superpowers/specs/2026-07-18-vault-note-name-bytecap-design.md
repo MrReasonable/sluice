@@ -101,20 +101,26 @@ Two new helpers:
 ```python
 def _clamp_bytes(s: str, limit: int) -> str:
     """Largest UTF-8 prefix of `s` within `limit` bytes, never splitting a codepoint.
-    encode -> slice -> decode(errors='ignore') drops any incomplete trailing
-    multibyte sequence, which IS the 'never split a codepoint' guarantee."""
+    A non-positive budget holds nothing -> "" (a negative slice would keep all but the
+    last few bytes). encode -> slice -> decode(errors='ignore') drops any incomplete
+    trailing multibyte sequence, which IS the 'never split a codepoint' guarantee."""
+    if limit <= 0:
+        return ""
     return s.encode("utf-8")[:limit].decode("utf-8", errors="ignore")
 ```
 
 ```python
 def _name_max(self) -> int:
     """The filesystem's max filename length in BYTES for the leads dir, cached.
-    255 fallback where pathconf is unsupported (some network/FUSE mounts)."""
+    255 fallback where pathconf is unsupported (some network/FUSE mounts) OR returns a
+    non-positive/too-small value: pathconf RETURNS -1 (a value, not an exception) for an
+    indeterminate limit, which uncaught would drive the byte budget negative."""
     if self._name_max_cache is None:
         try:
-            self._name_max_cache = os.pathconf(self.leads_dir, "PC_NAME_MAX")
+            n = os.pathconf(self.leads_dir, "PC_NAME_MAX")
         except (OSError, ValueError, AttributeError):
-            self._name_max_cache = 255
+            n = -1
+        self._name_max_cache = n if n > len(b".md") else 255
     return self._name_max_cache
 ```
 
@@ -240,9 +246,9 @@ Witnesses to prove non-inert:
 
 ## Relationship to #5 (both touch `_path_for`)
 
-#24 and #5 edit the same function. #24 is the narrow, ready-now change (byte-clamp + isolation);
-#5 is parked and blocked on the discriminator design decision. #24 lands first. When #5 resumes it
-rebases onto a main that already carries #24's byte-clamp, and its discriminator composes with it —
-the byte-clamp decides *how far* the name is truncated, the discriminator decides *what distinguishes*
-two leads whose truncated names still match. Neither obviates the other. No new issue is filed from
-this pass; the collision concern's home is #5.
+Both #24 and #5 edit the same function. #24 is the narrow, ready-now change (byte-clamp +
+isolation); #5 is parked and blocked on the discriminator design decision. #24 lands first.
+When #5 resumes it rebases onto a main that already carries #24's byte-clamp, and its
+discriminator composes with it — the byte-clamp decides *how far* the name is truncated, the
+discriminator decides *what distinguishes* two leads whose truncated names still match. Neither
+obviates the other. No new issue is filed from this pass; the collision concern's home is #5.
