@@ -116,30 +116,48 @@ lead carrying a location, must MERGE at candidate 1, never CREATE at candidate 2
 An empty-location lead can never yield `DIFFERENT` (`_compare_locations` returns UNKNOWN when either side is
 empty), so it always terminates at candidate 1 and never reaches REFUSE.
 
-**REFUSE is reachable only pathologically:** two locations that sanitize to the *same* filename suffix yet
-carry *disjoint* tokens under `_norm_location`, or a note whose frontmatter contradicts its own filename.
-Refusing loses the lead, so it must be loud, counted, and — critically — **retried** (§4).
+**REFUSE is reachable only pathologically, and only two ways.** A candidate-2 *filename* collision can
+never itself yield `DIFFERENT`: `sanitize` and `_norm_location` both treat `/ : -` as separators, so any two
+locations that sanitize to one suffix tokenize identically → `SAME`. So the parked draft's `X/Y` vs `X:Y`
+sanitize-collision recipe is **unconstructible** (plan-review High). The two reachable triggers are: (a) **a
+note whose frontmatter `location` contradicts its own filename** (legacy or a hand-edit), so both candidates
+read as existing notes proven `DIFFERENT`; and (b) a byte-clamp that collapses candidate 2 onto candidate 1
+(§3) when candidate 1 is already `DIFFERENT`. Refusing loses the lead, so it must be loud, counted, and —
+critically — **retried** (§4). The REFUSE test constructs case (a) directly (write candidate 2 with a
+frontmatter `location` disjoint from its filename suffix) — deterministic and filesystem-independent.
 
-### 3. Truncation — #24 does the byte-safety; this bounds the suffix
+### 3. Truncation — one shared name helper; #24 does the byte-safety
 
-Candidate 1 is `_path_for`, already byte-capped by #24 (`[:120]` char-cap, then
-`_clamp_bytes(name, _name_max() - len(b".md"))`). Candidate 2 must not let the suffix be eaten by the char
-cap, and must not let the stem budget go negative:
+Both candidates run through **one** name-building helper, so their sanitize + char-cap + byte-clamp can never
+drift (a candidate 2 that sanitized differently from candidate 1 would mis-key and reintroduce a duplicate —
+plan-review Medium). `_path_for` (candidate 1) is refactored to call it with an empty suffix; candidate 2
+passes the location suffix:
 
 ```
-suffix = sanitize(location)[:_SUFFIX_MAX]                       # _SUFFIX_MAX = 40, a literal (see Config-first)
-stem   = f"{company} - {title}"
-name   = stem[:120 - len(_SEP) - len(suffix)] + _SEP + suffix   # stem budget >= 77, never negative
-# then #24's byte-clamp for filesystem safety:
-name   = _clamp_bytes(name, self._name_max() - len(b".md"))
+_SEP = " - "                                                     # a literal (identity-determining; see Config-first)
+
+def _note_name(self, stem: str, suffix: str = "") -> str:
+    stem = stem.replace("/", "-").replace(":", "-")             # sanitize, exactly as _path_for always has
+    if suffix:
+        suffix = suffix.replace("/", "-").replace(":", "-")[:_SUFFIX_MAX]   # _SUFFIX_MAX = 40, a literal
+        name = stem[:120 - len(_SEP) - len(suffix)] + _SEP + suffix         # bound suffix FIRST -> stem budget >= 77
+    else:
+        name = stem[:120]                                       # candidate 1, char-for-char as today
+    return _clamp_bytes(name, self._name_max() - len(b".md"))   # #24's byte-safety, on BOTH candidates
 ```
 
-Bounding the suffix to `_SUFFIX_MAX` **before** the arithmetic is what guarantees the stem budget can never go
-negative (a negative index silently keeps "all but the last N chars", quietly breaking identity). Sanitizing
-matches `_path_for` (`/` and `:` → `-`). The parked draft's entire "ENAMETOOLONG escapes `sink.write`, filed
-as its own issue" section is **closed by #24**: its byte-clamp plus the sink's `OSError → skipped` already
-handle an over-long name at lead granularity. `_resolve_path` returns `path = None` for REFUSE — no correct
-path exists, and the REFUSE branch never dereferences it.
+Bounding the suffix to `_SUFFIX_MAX` **before** the arithmetic guarantees the stem budget can never go negative
+(a negative index silently keeps "all but the last N chars", quietly breaking identity). `.replace()` is a
+length-preserving per-character map, so `stem.replace()[:120]` equals today's `stem[:120].replace()` char for
+char — **candidate 1 is byte-identical to today's `_path_for`, so zero migration holds** (pinned by a test).
+The parked draft's "ENAMETOOLONG escapes `sink.write`, filed as its own issue" section is **closed by #24**.
+`_resolve_path` returns `path = None` for REFUSE — no correct path exists, and the branch never dereferences it.
+
+**Documented residual (plan-review Low):** on a small-`NAME_MAX` filesystem (e.g. eCryptfs's 143 bytes) a long
+multibyte stem can make `_clamp_bytes` drop the whole suffix, collapsing candidate 2 onto candidate 1. When
+candidate 1 is already `DIFFERENT`, the walk then REFUSEs rather than writing a second note — the honest
+outcome (loud, counted, retried), never a silent loss. The "two provably-different jobs → two notes" property
+is therefore stated for a filesystem whose `NAME_MAX` can hold a distinguishing suffix.
 
 ### 4. `Vault.upsert` — four honest outcomes, reconciled with #24's `skipped`
 
@@ -179,6 +197,11 @@ positively over "a note now exists" makes an unknown outcome fail safe (un-seen,
 `skipped` are **kept distinct**: different causes (deliberate decline vs physical write failure), both
 un-recorded and retried, each named for diagnostics.
 
+**Counts stay sparse.** The sink's initial dict keeps #24's `{created, updated, skipped: 0}`; `merged`/
+`refused` are added lazily via `counts.get(outcome, 0) + 1` only when they occur. So `test_sink.py`'s existing
+exact-equality `counts == {...}` assertions (which never trigger a merge/refuse) hold unchanged, and a clean
+run's report carries no `merged`/`refused` keys — hence every downstream read uses `.get(key, 0)`.
+
 **(b) `sluice/cli.py` prints the new counts.** #24 already prints `created`/`updated`/`skipped`. Extend
 `_print_report` to also print `merged`/`refused` **when non-zero**, `refused` named as a refusal. **MERGE's
 count is its only signal** — it does not log by construction (indistinguishable from a re-scrape at the
@@ -192,11 +215,18 @@ root Config, so a sub-app block cannot reach it):
 
 - `Config.location_noise_words: list = field(default_factory=list)` — **defaults `[]`** (abstain: no
   subtraction). Parsed in `load_config` (`data.get("location_noise_words") or []`).
-- Held on the `Vault` (constructed from root Config, like `baseline_rel`) and passed into `same_opportunity`.
+- **Threaded through the store factory.** `sluice/stores/vault.py::_make(config)` — which today passes only
+  `baseline_rel` — also passes `location_noise_words=config.location_noise_words`. `Vault.__init__` holds it as
+  `self._noise = frozenset(location_noise_words)` (like `baseline_rel`), and `_resolve_path` passes `self._noise`
+  into `same_opportunity`. Naming `_make` is load-bearing: it is the only seam where config reaches the store.
 - **`assert c.location_noise_words == []`** added to `test_ingest_defaults_carry_no_preference` — that guard
   file ships green on keys nobody names, so a new gate needs its own assertion in the same change.
 - A **commented** line in `sluice.yaml.example` (per the `locations:` precedent), so the knob is
   discoverable and the user can, e.g., make `Remote` vs `London` merge by adding `remote` to the list.
+- **An end-to-end test asserts config actually reaches a store verdict** — a `Vault` built via `_make` from a
+  Config carrying a noise word produces a different `upsert` outcome than one without. Without it the wiring can
+  be dead while every default-and-pure-function test passes: the loaded-gun class config-first exists to kill
+  (plan-review Medium).
 
 Empty-config-abstains holds: an empty list subtracts nothing, and `_compare_locations` behaves exactly as with
 no noise argument.
@@ -239,37 +269,52 @@ rather than buried, and pinned by a test, so a future change notices it rather t
 never-merge is the same class of property as never-clobber: a SQLite store keying on `(company, title)` would
 reintroduce this loss and pass every `Vault`-only test.
 
-- **`tests/conformance/test_store_contract.py`** — behavioural probes in `Store` terms:
+- **`tests/conformance/test_store_contract.py`** — **store-general** probes only, asserting **behaviour and
+  vocabulary membership**, never a filename or a Vault-specific outcome string (the suite forbids knowing a
+  lead is a file — plan-review Medium). Each asserts on the resulting slug/discriminator **set**, never a
+  positional `read_leads()[i]` (listdir order):
   - two different jobs sharing company+title **and differing in location** produce two notes, neither lost
-    (the location difference is what makes them *provably* different — stating it as "two different jobs"
-    alone contradicts the merge-on-same-location rule);
+    (the location difference is what makes them *provably* different — "two different jobs" alone contradicts
+    the merge-on-same-location rule);
   - identical strings with two non-empty URLs produce one note;
   - a re-scrape touches only `last_seen`;
   - two URL-less leads sharing company+title **but differing in location** produce two notes — an empty URL is
-    never proof of sameness;
-  - `upsert` never reports a write it did not perform, **and its return is always one of the four outcomes**
-    (the assertion that stops an out-of-vocabulary outcome reaching the sink allowlist).
-- **`tests/test_vault.py`** — filesystem specifics: the 120-char prefix collision resolving to two notes; the
-  suffix surviving truncation; the over-long-location bound; candidate naming.
-- **`tests/conftest.py`** — a seeded `locations` fixture beside `titles` (via `fake.city()`), and the `_lead()`
-  helpers in `test_vault.py` and `test_store_contract.py` source their location from it; `test_vault.py`'s
-  `location="London"` default is removed. (Scoped to **those two files** — not a grep over `tests/`, which
-  trips over legitimate `target_locations`/config-gate placenames elsewhere.)
-- **Idempotence across N≥3 `upsert` runs**, asserting the slug *set* (a mint-per-run scheme only manifests
-  across repeated runs).
+    never proof of sameness. **This is a Store-contract property, not an end-to-end guarantee:** the ingest
+    engine's location-independent `dedup_key` collapses URL-less same-company+title leads *before* `upsert`
+    (that dual-key edge is #23's), so the DoD does not claim the end-to-end split;
+  - `upsert`'s return is always a **member of** `{created, updated, merged, refused}` (membership, not a
+    specific string — the assertion that stops an out-of-vocabulary outcome reaching the sink allowlist), and
+    it never reports a write it did not perform. `created`/`updated` are MUST-support; `merged`/`refused` are
+    MAY-return (a DB store keyed on synthetic ids never merges-on-uncertainty or hits a naming collision).
+- **`tests/test_vault.py`** — the Vault/**filesystem specifics**, where asserting `== "merged"`/`== "refused"`
+  and reading filenames is legitimate: the 120-char prefix collision resolving to two notes; the suffix
+  surviving truncation; the over-long-location REFUSE-or-two-notes bound; candidate naming; the exact
+  `merged`/`refused` outcome strings; and the REFUSE trigger below.
+- **`tests/conftest.py`** — a `locations` fixture beside `titles`, exposed as an **importable module-level
+  constant** (the `_lead()` helpers are bare functions and cannot receive a pytest fixture). It uses its **own
+  seeded Faker** and guarantees at least two **token-disjoint** cities (mirror conftest's `_disjoint`), so the
+  "differ-in-location → two notes" probes assert the right count deterministically rather than flaking when two
+  `fake.city()` values happen to share a token. The `_lead()` helpers in `test_vault.py` and
+  `test_store_contract.py` source their location from that constant; `test_vault.py`'s `location="London"`
+  default is removed. (Scoped to **those two files** — not a grep over `tests/`, which trips over legitimate
+  `target_locations`/config-gate placenames elsewhere.)
+- **Idempotence across N≥3 `upsert` runs**, asserting the slug *set*.
 - **The note-side-empty class** — a note whose own frontmatter lacks `location`, met by a URL-less lead
   carrying one, MERGES at candidate 1 and is never orphaned.
-- **REFUSE's trigger is pinned** — construct the pathological case (two distinct locations that sanitize to
-  one suffix but carry disjoint `_norm_location` tokens), assert `"refused"`, that **nothing was written**,
-  and that the lead is **absent from `seen.db`** so the next run retries it. (The concrete input is derived in
-  the plan — the parked draft's `X/Y` vs `X:Y` recipe is stale, because `_norm_location` maps both to the same
-  tokens → SAME.)
-- **The accepted residual is pinned by a test** documenting the two-teams-one-city merge.
+- **REFUSE's trigger is pinned deterministically** (`test_vault.py`): write candidate 1 (`Company - Title.md`)
+  with frontmatter `location` = city A, and candidate 2 (`Company - Title - {cityB}.md`) with frontmatter
+  `location` = city C **disjoint from its own filename suffix B**; then upsert a lead with `location` = city B
+  disjoint from both. Both candidates read `DIFFERENT` → REFUSE. Assert `"refused"`, that **nothing new was
+  written**, and that the lead is **absent from `seen.db`** so the next run retries it. (This frontmatter-
+  contradicts-filename case is the only test-reachable REFUSE — a sanitize-collision recipe is unconstructible
+  because `sanitize` and `_norm_location` share separators, so any suffix collision tokenizes to `SAME`.)
+- **The accepted residual is pinned by a test** documenting the two-teams-one-city merge (reported `updated`).
 - **The empty-URL trap gets a direct `same_opportunity` test with a positive control**, naming its inputs.
 - **`merged` and `refused` counts are asserted at the CLI surface** (not merely in `report.written`), as
   counted numbers rather than by matching log prose (neutrality-safe).
-- **`location_noise_words` defaults `[]`** asserted in the neutral-defaults guard; a `noise`-populated
-  `same_opportunity` test shows subtraction changes a verdict.
+- **`location_noise_words` defaults `[]`** asserted in the neutral-defaults guard; an **end-to-end** test
+  (`Vault` built via `stores/vault.py::_make` from a noise-carrying Config) shows the knob changes an `upsert`
+  verdict, and a `noise`-populated `same_opportunity` unit test shows subtraction flips SAME↔DIFFERENT.
 - Fixtures stay synthetic; the suite stays offline.
 
 ## Non-goals
@@ -287,28 +332,36 @@ reintroduce this loss and pass every `Vault`-only test.
 
 Each item names the surface it is satisfied at (a DoD item that can pass without fixing anything certifies).
 
-- The conformance probes pass for `Vault`, stated in `Store` terms so a second store inherits them —
-  including that two provably-different jobs (differing location) produce two notes.
+- The conformance probes pass for `Vault`, stated in `Store` terms (behaviour + vocabulary **membership**, no
+  filenames, no Vault outcome strings) so a second store inherits them — including that two provably-different
+  jobs (differing location) produce two notes, asserted on the slug **set**.
 - `core/protocols.py` and `Store.upsert`'s docstring define what "already stored" means, name the four
-  outcomes, and mark `"refused"` **MAY-return** (it arises from filename candidates colliding, which a DB
-  store need not encounter) — pinned by the conformance vocabulary assertion, not prose alone.
+  outcomes, and mark **both `"merged"` and `"refused"` MAY-return** (a DB store keyed on synthetic ids never
+  merges-on-uncertainty or hits a naming collision) — described in store-general terms ("declines to place: no
+  safe identity"), pinned by the conformance membership assertion, not prose alone.
 - `ingest/sink.py`'s module docstring (updated by #24 for `skipped`) and the loop are updated for
-  `merged`/`refused`; the allowlist is stated positively over "a note now exists".
-- A `locations` fixture exists in `tests/conftest.py`; `_lead()` in `test_vault.py` and
+  `merged`/`refused`; the allowlist is stated positively over "a note now exists"; **counts stay sparse** so
+  `test_sink.py`'s existing exact-equality assertions still hold.
+- A `locations` fixture exists in `tests/conftest.py` as an importable module-level constant with its own
+  seeded Faker, guaranteeing ≥2 **token-disjoint** cities; `_lead()` in `test_vault.py` and
   `test_store_contract.py` sources its location from it; `test_vault.py`'s `location="London"` default is gone.
 - `_resolve_path` is idempotent across N≥3 runs, asserted on the slug set.
 - A note whose own frontmatter lacks a discriminator MERGES at candidate 1 — even when a later candidate is
   free — and is never orphaned.
-- **Two companies sharing one long location produce two notes, each naming its company, every name ≤120 chars
-  and within `NAME_MAX` bytes** — the *identity property*, not the absence of an exception.
-- The `"refused"` trigger test asserts `"refused"`, that nothing was written, and that the lead is absent from
-  `seen.db` and retried next run.
+- **Two companies sharing one long location produce two notes, each naming its company** (every name ≤120 chars
+  and within `NAME_MAX` bytes, on a filesystem whose `NAME_MAX` holds a distinguishing suffix) — the *identity
+  property*, not the absence of an exception.
+- The `"refused"` trigger test (a note whose frontmatter `location` contradicts its filename suffix) asserts
+  `"refused"`, that nothing new was written, and that the lead is absent from `seen.db` and retried next run.
 - `sluice/cli.py` prints `merged` and `refused`, verified by asserting the CLI output; every count read uses
   `.get(key, 0)` and a clean run does not `KeyError`.
 - `Config.location_noise_words` defaults `[]`, is asserted in `test_ingest_defaults_carry_no_preference`, has
-  a commented `sluice.yaml.example` line, and threads to `same_opportunity`; a populated-noise test shows it
-  changes a verdict.
-- `docs/ARCHITECTURE.md`'s conformance-guarantee list is updated to name the identity rule.
+  a commented `sluice.yaml.example` line, and **`sluice/stores/vault.py::_make` passes it to the `Vault`**; an
+  **end-to-end test** (`Vault` built via `_make` from a noise-carrying Config) shows the knob changes an
+  `upsert` verdict, so the wiring cannot be silently dead.
+- `docs/ARCHITECTURE.md`'s conformance-guarantee list is updated to name the identity rule. (`.rulesync/rules/
+  CLAUDE.md`'s write-contract description could also name the four outcomes, but `.rulesync/` is human-gated —
+  raised for the user, not edited here.)
 - ruff clean; full suite green and offline; every load-bearing guard mutation-witnessed.
 
 ## Risks and notes
