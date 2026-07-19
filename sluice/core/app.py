@@ -393,11 +393,13 @@ class Sluice:
         from datetime import datetime, timezone
         from sluice.track import engine as track_engine
         from sluice.track.config import load_track_config
+        from sluice.track.deadletter import DeadLetterDb, deadletter_path
         from sluice.track.google_client import RealGoogleClient
 
         tcfg = load_track_config()
         lastrun_path = tcfg.seen_db + ".lastrun"
         seen = _load_seen(tcfg.seen_db)
+        deadletter = DeadLetterDb(deadletter_path(tcfg.seen_db))
         since_iso = _load_lastrun(lastrun_path)
         client = client if client is not None else RealGoogleClient(tcfg.token_path)
         backend = self.backend(
@@ -407,7 +409,8 @@ class Sluice:
             fallback_name=tcfg.fallback_backend, fallback_model=tcfg.cheap_model)
         now_iso = now_iso or datetime.now(timezone.utc).isoformat()
         rep = track_engine.run(self.store(), tcfg, client, backend, seen=seen,
-                               now_iso=now_iso, since_iso=since_iso, dry_run=dry_run)
+                               deadletter=deadletter, now_iso=now_iso,
+                               since_iso=since_iso, dry_run=dry_run)
         if not dry_run:
             _save_seen(tcfg.seen_db, seen)
             if not rep.auth_error:
