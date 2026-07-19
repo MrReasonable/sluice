@@ -4,6 +4,7 @@ import pytest
 
 from sluice.core.leads import Lead
 from sluice.core.vault import Vault, _clamp_bytes
+from tests.conftest import LOCATIONS
 
 
 def _lead(**kw):
@@ -228,3 +229,49 @@ def test_make_threads_noise_words_from_config(tmp_path, monkeypatch):
     monkeypatch.setenv("VAULT_DIR", str(tmp_path))
     v = store_mod._make(Config(location_noise_words=["remote"]))
     assert v._noise == frozenset({"remote"})
+
+
+def _seed_note(tmp_path, name, location="", url=""):
+    from sluice.core.vault import _LEADS_SUBDIR
+    d = tmp_path / _LEADS_SUBDIR
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{name}.md").write_text(
+        f'---\ncompany: "X"\nrole: "Y"\nlocation: "{location}"\nurl: "{url}"\n---\n\nbody\n')
+
+
+def test_resolve_path_free_candidate1_creates(tmp_path):
+    v = Vault(str(tmp_path)); v._name_max_cache = 255
+    path, action = v._resolve_path(_lead(company="X", title="Y", location=LOCATIONS[0], url="https://a/1"))
+    assert action == "create" and path.endswith("X - Y.md")
+
+
+def test_resolve_path_same_url_updates(tmp_path):
+    v = Vault(str(tmp_path)); v._name_max_cache = 255
+    _seed_note(tmp_path, "X - Y", location=LOCATIONS[1], url="https://a/1")
+    _, action = v._resolve_path(_lead(company="X", title="Y", location=LOCATIONS[0], url="https://a/1"))
+    assert action == "update"
+
+
+def test_resolve_path_different_location_advances_to_candidate2_create(tmp_path):
+    v = Vault(str(tmp_path)); v._name_max_cache = 255
+    _seed_note(tmp_path, "X - Y", location=LOCATIONS[0], url="https://a/1")
+    lead = _lead(company="X", title="Y", location=LOCATIONS[1], url="https://a/2")
+    path, action = v._resolve_path(lead)
+    expected2 = os.path.join(v.leads_dir, v._note_name("X - Y", LOCATIONS[1]) + ".md")
+    assert action == "create" and path == expected2
+
+
+def test_resolve_path_absent_location_merges_at_candidate1(tmp_path):
+    v = Vault(str(tmp_path)); v._name_max_cache = 255
+    _seed_note(tmp_path, "X - Y", location=LOCATIONS[0], url="")   # note has a location; lead does not
+    _, action = v._resolve_path(_lead(company="X", title="Y", location="", url=""))
+    assert action == "merge"
+
+
+def test_resolve_path_refuses_when_frontmatter_contradicts_filename(tmp_path):
+    v = Vault(str(tmp_path)); v._name_max_cache = 255
+    _seed_note(tmp_path, "X - Y", location=LOCATIONS[0], url="")   # candidate 1: DIFFERENT from LOCATIONS[1]
+    c2 = v._note_name("X - Y", LOCATIONS[1])                        # candidate 2 filename for LOCATIONS[1]
+    _seed_note(tmp_path, c2, location=LOCATIONS[2], url="")         # fm location contradicts the filename
+    path, action = v._resolve_path(_lead(company="X", title="Y", location=LOCATIONS[1], url=""))
+    assert action == "refuse" and path is None
