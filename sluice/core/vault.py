@@ -351,13 +351,24 @@ class Vault:
         "created" | "updated" | "merged" | "refused". UPDATE and MERGE bump ONLY last_seen
         (never-clobber); REFUSE writes nothing -- every name candidate is a note proven
         DIFFERENT, so writing would clobber a different job. See #5."""
-        os.makedirs(self.leads_dir, exist_ok=True)
-        # The vault ensures its own Syncthing marker, on the WRITE path. This used to be
-        # a Store method cli.py called by hand, which leaked a Syncthing/Obsidian concept
-        # into a contract every other store would have had to pretend to implement. It
-        # belongs here and not in __init__: constructing a store must not touch the disk.
-        self.ensure_stfolder()
         path, action = self._resolve_path(lead)
+        if action == "refuse":
+            # Loud, not silent, and writes NOTHING -- not the note, and not the leads dir
+            # or Syncthing marker (below): every name candidate is a note proven DIFFERENT,
+            # so any write would clobber a different job. The sink counts this and keeps the
+            # lead out of seen.db, so it is retried (and re-reported) next run rather than
+            # lost. Reachable only pathologically (a note whose frontmatter contradicts its
+            # filename, or a byte-clamp collapse on a tiny NAME_MAX). See #5.
+            _log.warning("vault refused lead %r: every name candidate is a note proven different",
+                         lead.dedup_key)
+            return "refused"
+        # Every remaining action WRITES, so make the dir + Syncthing marker now -- after the
+        # refusal check, so a refusal leaves the filesystem untouched (REFUSE writes nothing).
+        # ensure_stfolder lives here and not in __init__: constructing a store must not touch
+        # the disk. It used to be a Store method cli.py called by hand, leaking a Syncthing/
+        # Obsidian concept into a contract every other store would have had to pretend to honour.
+        os.makedirs(self.leads_dir, exist_ok=True)
+        self.ensure_stfolder()
         if action == "update":
             self._bump_last_seen(path, lead.last_seen or _today())
             return "updated"
@@ -367,15 +378,6 @@ class Vault:
             # is only that the count is reported separately so the merge is visible.
             self._bump_last_seen(path, lead.last_seen or _today())
             return "merged"
-        if action == "refuse":
-            # Loud, not silent: every name candidate is a note proven DIFFERENT, so no path
-            # can be written without clobbering a different job. The sink counts this and
-            # keeps the lead out of seen.db, so it is retried (and re-reported) next run
-            # rather than lost. Reachable only pathologically (a note whose frontmatter
-            # contradicts its filename, or a byte-clamp collapse on a tiny NAME_MAX). See #5.
-            _log.warning("vault refused lead %r: every name candidate is a note proven different",
-                         lead.dedup_key)
-            return "refused"
         try:
             _write(path, self._render_new(lead))
         except OSError:

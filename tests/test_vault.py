@@ -305,10 +305,15 @@ def test_upsert_refuses_and_writes_nothing(tmp_path):
     _seed_note(tmp_path, "X - Y", location=LOCATIONS[0], url="")
     c2 = v._note_name("X - Y", LOCATIONS[1])
     _seed_note(tmp_path, c2, location=LOCATIONS[2], url="")     # fm contradicts filename -> both DIFFERENT
-    before = {p.name: p.read_text() for p in _leads_dir(tmp_path).glob("*.md")}
+
+    def _tree(root):   # snapshot every path, not just *.md, so a stray .stfolder is caught
+        return {str(p.relative_to(root)): (p.read_text() if p.is_file() else "<dir>")
+                for p in sorted(root.rglob("*"))}
+
+    before = _tree(tmp_path)
     assert v.upsert(_lead(company="X", title="Y", location=LOCATIONS[1], url="")) == "refused"
-    after = {p.name: p.read_text() for p in _leads_dir(tmp_path).glob("*.md")}
-    assert after == before, "refuse wrote or changed a note"
+    assert _tree(tmp_path) == before, "refuse mutated the filesystem"
+    assert not (tmp_path / ".stfolder").exists(), "refuse created the Syncthing marker"
 
 
 def test_noise_word_makes_a_split_merge_end_to_end(tmp_path, monkeypatch):
@@ -348,3 +353,17 @@ def test_note_name_sanitizes_backslash_no_traversal(tmp_path):
     v = Vault(str(tmp_path)); v._name_max_cache = 255
     assert v._note_name("..\\..\\etc - passwd") == "..-..-etc - passwd"
     assert "\\" not in v._note_name("a\\b - c")
+
+
+def test_long_titles_sharing_prefix_split_when_location_differs(tmp_path):
+    # #5's 120-char-prefix collision, resolved via the LOCATION discriminator: two distinct
+    # long titles that cap to the same stem still get two notes when their locations differ.
+    # (When location ALSO matches they merge -- a documented residual, same class as the
+    # accepted cost: the store cannot see the truncated title tail, so it has no evidence.)
+    v = Vault(str(tmp_path)); v._name_max_cache = 255
+    prefix = "Engineer " + "A" * 130                          # long enough that the tail truncates
+    title_a, title_b = prefix + " Alpha", prefix + " Bravo"   # DIFFERENT titles, SAME capped stem
+    assert v._note_name(f"X - {title_a}") == v._note_name(f"X - {title_b}")   # the prefix collides
+    assert v.upsert(_lead(company="X", title=title_a, location=LOCATIONS[0], url="")) == "created"
+    assert v.upsert(_lead(company="X", title=title_b, location=LOCATIONS[1], url="")) == "created"
+    assert len(list(_leads_dir(tmp_path).glob("*.md"))) == 2  # split on the location, not the lost tail
