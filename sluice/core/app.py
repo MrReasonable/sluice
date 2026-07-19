@@ -419,10 +419,14 @@ class Sluice:
 
     def track_confirm(self, *, lead, to, when=None, dry_run=False):
         """Run the track sub-app's confirm step: apply an operator-approved
-        proposal (a status advance the engine flagged rather than auto-applied)."""
+        proposal (a status advance the engine flagged rather than auto-applied),
+        clearing that lead's dead-letter entries on a successful advance."""
         from sluice.track import engine as track_engine
         from sluice.track.config import load_track_config
-        return track_engine.confirm(self.store(), load_track_config(), lead, to,
+        from sluice.track.deadletter import DeadLetterDb, deadletter_path
+        tcfg = load_track_config()
+        return track_engine.confirm(self.store(), tcfg, lead, to,
+                                    deadletter=DeadLetterDb(deadletter_path(tcfg.seen_db)),
                                     when=when, dry_run=dry_run)
 
     def doctor(self, *, offline=False, probe=None):

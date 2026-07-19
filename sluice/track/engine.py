@@ -125,7 +125,7 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
     return rep
 
 
-def confirm(vault, cfg, slug, to, when=None, dry_run=False) -> dict:
+def confirm(vault, cfg, slug, to, *, deadletter, when=None, dry_run=False) -> dict:
     matches = [n for n in vault.read_leads() if slug_matches(n, slug)]
     if not matches:
         return {"ok": False, "reason": "no_match"}
@@ -139,4 +139,8 @@ def confirm(vault, cfg, slug, to, when=None, dry_run=False) -> dict:
         if when:
             fields["interview_date"] = f'"{when}"'
         vault.update_fields(note.ref, fields)
+        # Clear only after can_advance passed AND the write happened: a refused
+        # confirm returned above and never reaches here, so it never deletes a row
+        # (deleting on a refused confirm would be #49's silent loss on the clear path).
+        deadletter.clear_lead(note.slug)
     return {"ok": True, "from": note.status, "to": _status.normalize(to)}
