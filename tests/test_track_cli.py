@@ -1,9 +1,11 @@
 import tempfile, pathlib
 from types import SimpleNamespace
-from sluice.cli import _build_parser, cmd_track_confirm
+import pytest
+from sluice.cli import _build_parser, cmd_track_confirm, cmd_track_dismiss
 # _load_lastrun/_save_lastrun moved from cli.py to core/app.py in Task 6 (they are
 # Sluice.track()'s file-backed state now, not cli.py wiring).
 from sluice.core.app import _load_lastrun, _save_lastrun
+from sluice.track.deadletter import DeadLetterDb, deadletter_path, Entry
 
 
 def test_track_run_parses_flags():
@@ -73,3 +75,74 @@ def test_cmd_track_run_lastrun_gating(monkeypatch, tmp_path):
     monkeypatch.setattr(teng, "run", lambda *a, **k: RunReport(auth_error=True))
     assert cmd_track_run(args(False), None) == 1
     assert not os.path.exists(lastrun)
+
+
+def test_track_dismiss_parses_mutually_exclusive_required():
+    a = _build_parser().parse_args(["track", "dismiss", "--id", "m1"])
+    assert a.group == "track" and a.cmd == "dismiss" and a.id == "m1"
+    a2 = _build_parser().parse_args(["track", "dismiss", "--lead", "tidemark", "--dry-run"])
+    assert a2.lead == "tidemark" and a2.dry_run
+    with pytest.raises(SystemExit):                       # both -> mutually exclusive
+        _build_parser().parse_args(["track", "dismiss", "--id", "m1", "--lead", "x"])
+    with pytest.raises(SystemExit):                       # neither -> required
+        _build_parser().parse_args(["track", "dismiss"])
+
+
+def test_track_dismiss_by_id_and_by_lead(monkeypatch, tmp_path):
+    from sluice.core.app import Sluice
+    from sluice.core.config import Config
+    seen_db = str(tmp_path / "track-seen.db")
+    cfgp = str(tmp_path / "cfg.yaml")
+    pathlib.Path(cfgp).write_text(f"track:\n  seen_db: {seen_db}\n")
+    monkeypatch.setenv("SLUICE_CONFIG", cfgp)
+    dl = DeadLetterDb(deadletter_path(seen_db))
+    dl.record(Entry("m1", "Tidemark - Analyst", "", "rejection", "x", "h", "2026-07-10", 1))
+    dl.record(Entry("m2", "", "A,B", "unknown", "y", "h", "2026-07-10", 1))
+    app = Sluice(Config())
+    # dry-run reports the count, deletes nothing
+    assert app.track_dismiss(message_id="m1", dry_run=True) == {"cleared": 1, "dry_run": True}
+    assert len(dl.open_entries()) == 2
+    # real dismiss by id (the only lever for the no-lead entry m2 is --id)
+    assert app.track_dismiss(message_id="m1") == {"cleared": 1, "dry_run": False}
+    assert {e.message_id for e in dl.open_entries()} == {"m2"}
+    assert app.track_dismiss(message_id="m2")["cleared"] == 1
+    assert dl.open_entries() == []
+
+
+def test_track_dismiss_requires_exactly_one_selector(monkeypatch, tmp_path):
+    # Finding 1/2 (review pass): neither-given must fail loudly rather than
+    # silently matching zero rows (clear_lead(None) -> `WHERE lead = NULL`,
+    # never true); both-given must fail loudly rather than letting the dry-run
+    # branch (union of id-or-lead) and the real branch (id-only) disagree.
+    from sluice.core.app import Sluice
+    from sluice.core.config import Config
+    seen_db = str(tmp_path / "track-seen.db")
+    cfgp = str(tmp_path / "cfg.yaml")
+    pathlib.Path(cfgp).write_text(f"track:\n  seen_db: {seen_db}\n")
+    monkeypatch.setenv("SLUICE_CONFIG", cfgp)
+    app = Sluice(Config())
+    with pytest.raises(ValueError):
+        app.track_dismiss(message_id=None, lead=None)
+    with pytest.raises(ValueError):
+        app.track_dismiss(message_id="m1", lead="tidemark")
+
+
+def test_cmd_track_dismiss_dry_run_then_real(monkeypatch, tmp_path):
+    # Mirrors test_cmd_track_confirm_advances: exercises the args -> Sluice
+    # pass-through and the process-exit contract at the cmd_track_dismiss
+    # level, which neither the argparse-only nor the Sluice-method-only
+    # dismiss tests above cover (finding 3).
+    seen_db = str(tmp_path / "track-seen.db")
+    cfgp = str(tmp_path / "cfg.yaml")
+    pathlib.Path(cfgp).write_text(f"track:\n  seen_db: {seen_db}\n")
+    monkeypatch.setenv("SLUICE_CONFIG", cfgp)
+    dl = DeadLetterDb(deadletter_path(seen_db))
+    dl.record(Entry("m1", "Tidemark - Analyst", "", "rejection", "x", "h", "2026-07-10", 1))
+
+    dry_args = SimpleNamespace(id="m1", lead=None, dry_run=True)
+    assert cmd_track_dismiss(dry_args, None) == 0
+    assert len(dl.open_entries()) == 1        # dry-run threaded through: deleted nothing
+
+    real_args = SimpleNamespace(id="m1", lead=None, dry_run=False)
+    assert cmd_track_dismiss(real_args, None) == 0
+    assert dl.open_entries() == []            # non-dry-run actually clears the row
