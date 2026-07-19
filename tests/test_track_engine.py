@@ -273,3 +273,26 @@ def test_confirm_lead_does_not_clear_ambiguous_candidates_entry():
     _seed(dl, mid="mAmb", lead="", candidates="Tidemark - Analyst,Other - Role")  # ambiguous: lead=""
     E.confirm(v, TrackConfig(), "Tidemark - Analyst", "interview", deadletter=dl)
     assert len(dl.open_entries()) == 1             # exact-match clear misses it; dismiss --id clears it
+
+
+def test_auto_advance_clears_dead_letter_for_that_lead():
+    v, _ = _vault("applied")
+    dl = _dl()
+    _seed(dl, mid="m_old", lead="Tidemark - Analyst")   # a pending soft-proposal from an earlier run
+    be = FakeBackend(json.dumps({"lead": "Tidemark", "type": "rejection", "confidence": 0.95,
+                                 "when": None, "links": [], "materials": [], "summary": "rejected"}))
+    rep = E.run(v, TrackConfig(), OneMsgClient(), be, seen=set(), deadletter=dl,
+                now_iso="2026-07-10T12:00:00+00:00")
+    assert rep.auto == 1                    # the lead auto-advanced (applied)
+    assert dl.open_entries() == []          # ...and its pending proposal was cleared
+
+
+def test_auto_advance_dry_run_does_not_clear():
+    v, _ = _vault("applied")
+    dl = _dl()
+    _seed(dl, mid="m_old", lead="Tidemark - Analyst")
+    be = FakeBackend(json.dumps({"lead": "Tidemark", "type": "rejection", "confidence": 0.95,
+                                 "when": None, "links": [], "materials": [], "summary": "rejected"}))
+    E.run(v, TrackConfig(), OneMsgClient(), be, seen=set(), deadletter=dl,
+          now_iso="2026-07-10T12:00:00+00:00", dry_run=True)
+    assert len(dl.open_entries()) == 1      # a dry-run preview clears nothing
