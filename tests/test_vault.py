@@ -309,3 +309,34 @@ def test_upsert_refuses_and_writes_nothing(tmp_path):
     assert v.upsert(_lead(company="X", title="Y", location=LOCATIONS[1], url="")) == "refused"
     after = {p.name: p.read_text() for p in _leads_dir(tmp_path).glob("*.md")}
     assert after == before, "refuse wrote or changed a note"
+
+
+def test_noise_word_makes_a_split_merge_end_to_end(tmp_path, monkeypatch):
+    # Config -> _make -> Vault -> same_opportunity: proves the noise knob reaches a verdict.
+    import sluice.stores.vault as store_mod
+    from sluice.core.config import Config
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    _seed_note(tmp_path, "X - Y", location="aaa", url="")
+    plain = store_mod._make(Config()); plain._name_max_cache = 255
+    assert plain.upsert(_lead(company="X", title="Y", location="bbb", url="")) == "created"  # aaa vs bbb -> split
+    for f in _leads_dir(tmp_path).glob("X - Y - *.md"):
+        f.unlink()
+    tuned = store_mod._make(Config(location_noise_words=["bbb"])); tuned._name_max_cache = 255
+    assert tuned.upsert(_lead(company="X", title="Y", location="bbb", url="")) == "merged"  # bbb noise -> UNKNOWN
+
+
+def test_accepted_cost_same_location_different_job_reports_updated(tmp_path):
+    # Two different teams, same company+title+location, different url -> SAME -> updated.
+    # The one silent case, documented and pinned.
+    v = Vault(str(tmp_path)); v._name_max_cache = 255
+    assert v.upsert(_lead(company="X", title="Y", location=LOCATIONS[0], url="https://a/1")) == "created"
+    assert v.upsert(_lead(company="X", title="Y", location=LOCATIONS[0], url="https://a/2")) == "updated"
+    assert len(list(_leads_dir(tmp_path).glob("*.md"))) == 1
+
+
+def test_upsert_is_idempotent_across_three_runs_on_the_slug_set(tmp_path):
+    v = Vault(str(tmp_path)); v._name_max_cache = 255
+    lead = _lead(company="X", title="Y", location=LOCATIONS[0], url="https://a/1")
+    for _ in range(3):
+        v.upsert(lead)
+    assert {p.name for p in _leads_dir(tmp_path).glob("*.md")} == {"X - Y.md"}
