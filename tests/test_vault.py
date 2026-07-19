@@ -3,7 +3,7 @@ import os
 import pytest
 
 from sluice.core.leads import Lead
-from sluice.core.vault import Vault, _clamp_bytes
+from sluice.core.vault import Vault, _clamp_bytes, _sanitize
 from tests.conftest import LOCATIONS
 
 
@@ -72,6 +72,33 @@ def test_update_adds_last_seen_when_missing(tmp_path):
     assert "status: research" in txt
     assert "last_seen: 2026-07-09" in txt
     assert "# body kept" in txt
+
+
+def test_upsert_does_not_regress_last_seen_on_older_rescrape(tmp_path):
+    # last_seen must be MONOTONIC. A board re-lists a role carrying a STALE date (older
+    # than the note's stored last_seen); the re-scrape must NOT drag the marker into the
+    # past -- the note WAS seen on the newer date. The upsert still reports "updated";
+    # only the write is suppressed.
+    v = Vault(str(tmp_path))
+    assert v.upsert(_lead(last_seen="2026-07-14")) == "created"
+    assert v.upsert(_lead(last_seen="2026-07-09")) == "updated"   # older re-scrape
+    txt = (_leads_dir(tmp_path) / "Acme - Analyst.md").read_text()
+    assert "last_seen: 2026-07-14" in txt          # newer stored value KEPT
+    assert "last_seen: 2026-07-09" not in txt      # older stamp did not overwrite
+
+
+def test_upsert_merge_does_not_regress_last_seen_on_older_rescrape(tmp_path):
+    # The MERGE branch (UNKNOWN verdict) also routes through _bump_last_seen, so it must
+    # honour the same monotonic guard. A url-less lead against a note that has a location
+    # merges; a newer merge, then an older re-scrape must keep the newer stamp.
+    v = Vault(str(tmp_path)); v._name_max_cache = 255
+    _seed_note(tmp_path, "X - Y", location=LOCATIONS[0], url="")   # note has a location; leads below do not
+    same = dict(company="X", title="Y", location="", url="")
+    assert v.upsert(_lead(**same, last_seen="2026-07-14")) == "merged"
+    assert v.upsert(_lead(**same, last_seen="2026-07-09")) == "merged"   # older re-scrape
+    txt = (_leads_dir(tmp_path) / "X - Y.md").read_text()
+    assert "last_seen: 2026-07-14" in txt
+    assert "last_seen: 2026-07-09" not in txt
 
 
 def test_existing_keys_returns_dedup_keys(tmp_path):
@@ -353,6 +380,33 @@ def test_note_name_sanitizes_backslash_no_traversal(tmp_path):
     v = Vault(str(tmp_path)); v._name_max_cache = 255
     assert v._note_name("..\\..\\etc - passwd") == "..-..-etc - passwd"
     assert "\\" not in v._note_name("a\\b - c")
+
+
+def test_sanitize_maps_every_windows_reserved_char():
+    # Windows forbids < > : " / \\ | ? * in filenames; any of them in a scraped
+    # company/title/location makes the note simply uncreatable there. Each maps to '-'.
+    for ch in '<>:"/\\|?*':
+        assert _sanitize(f"a{ch}b") == "a-b", f"{ch!r} was not sanitized"
+
+
+def test_sanitize_maps_c0_control_chars():
+    # C0 control chars (\x00-\x1f, incl. TAB, LF, CR) are illegal in filenames on Windows
+    # and hostile to Syncthing/Obsidian; map them to '-' too. \\x1f is the range boundary.
+    for code in (0x00, 0x09, 0x0a, 0x0d, 0x1f):
+        assert _sanitize(f"a{chr(code)}b") == "a-b", f"U+{code:04X} was not sanitized"
+
+
+def test_sanitize_leaves_ordinary_char_at_range_boundary_untouched():
+    # \\x20 (space) is the first char ABOVE the C0 range and must NOT be mapped -- else
+    # every "Company - Title" separator would be mangled. Pins the range's upper edge.
+    assert _sanitize("a b") == "a b"
+
+
+def test_sanitize_is_length_preserving():
+    # Length-preserving is load-bearing: candidate-1 note names stay byte-identical for
+    # every real name (which contains none of these), so no existing note migrates.
+    s = 'x<y>z:"|?*/\\w'
+    assert len(_sanitize(s)) == len(s)
 
 
 def test_long_titles_sharing_prefix_split_when_location_differs(tmp_path):

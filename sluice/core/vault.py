@@ -399,14 +399,26 @@ class Vault:
 
     def _bump_last_seen(self, path: str, last_seen: str) -> None:
         """Set the last_seen line inside existing frontmatter, preserving every
-        other key, its value formatting, and the whole body verbatim."""
+        other key, its value formatting, and the whole body verbatim.
+
+        last_seen is MONOTONIC: an incoming stamp OLDER-OR-EQUAL to the stored one is
+        ignored, never written back. The note WAS seen on the newer date; a board that
+        re-lists a role carrying a stale date must not drag the marker into the past.
+        A MISSING last_seen (first sighting, or a legacy note without one) always writes.
+        ISO YYYY-MM-DD sorts lexicographically = chronologically, so a plain string
+        compare IS the date compare. The upsert outcome ("updated"/"merged") is decided
+        by _resolve_path and is unaffected by whether the stamp actually moved."""
         inner, body = _split_frontmatter(_read(path))
         if inner is None:  # note without frontmatter - leave body, add a header
             inner, body = f"last_seen: {last_seen}", _read(path)
-        elif re.search(r"(?m)^\s*last_seen\s*:.*$", inner):
-            inner = re.sub(r"(?m)^\s*last_seen\s*:.*$", f"last_seen: {last_seen}", inner)
         else:
-            inner = f"{inner}\nlast_seen: {last_seen}"
+            m = re.search(r"(?m)^\s*last_seen\s*:\s*(.*)$", inner)
+            if m:
+                if last_seen <= m.group(1).strip().strip('"').strip("'"):
+                    return  # older-or-equal: never regress, write nothing
+                inner = re.sub(r"(?m)^\s*last_seen\s*:.*$", f"last_seen: {last_seen}", inner)
+            else:
+                inner = f"{inner}\nlast_seen: {last_seen}"
         _write(path, f"---\n{inner}\n---\n{body}")
 
     def _render_new(self, lead: Lead) -> str:
@@ -507,12 +519,18 @@ def _fm_dict(inner: str | None) -> dict:
 
 
 def _sanitize(s: str) -> str:
-    """Map the path separators `/ : \\` to '-'. `/` and `:` match _path_for's historical
-    sanitize; `\\` is added so a scraped `..\\..\\` company/title cannot traverse out of the
-    leads dir on Windows (on POSIX `\\` is a legal filename char, so it is defence-in-depth
-    there). Each is a single-char->single-char map, so the result is length-preserving --
-    candidate 1 stays byte-identical for every existing note (none of which contains `\\`)."""
-    return s.replace("/", "-").replace(":", "-").replace("\\", "-")
+    """Map every character illegal in a filename to '-': the path separators `/ \\` (a
+    scraped `../` or `..\\..\\` company/title must not traverse out of the leads dir), the
+    rest of the Windows-reserved set `< > : " | ? *`, and the C0 control chars \\x00-\\x1f
+    (illegal on Windows, hostile to Syncthing/Obsidian). `re.sub` maps each matched char to
+    one '-', so the result stays LENGTH-PRESERVING -- candidate 1 is byte-identical for
+    every existing note, since real company/title/location strings contain none of these.
+
+    On POSIX `< > " | ? *` were previously legal and passed through, so an existing note
+    whose name contains one would migrate (rename -> duplicate on next scrape). That
+    population is ~0 (job strings almost never carry these; #5's location suffixes are
+    brand new), which is why the fix is applied rather than narrowed. See #5, #44."""
+    return re.sub(r'[<>:"/\\|?*\x00-\x1f]', "-", s)
 
 
 def _clamp_bytes(s: str, limit: int) -> str:
