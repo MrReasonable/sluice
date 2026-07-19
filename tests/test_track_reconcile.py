@@ -2,7 +2,8 @@ import tempfile, pathlib
 from datetime import datetime, timezone
 from sluice.core.vault import Vault
 from sluice.track.config import TrackConfig
-from sluice.track.classify import Event
+from sluice.track.classify import Event, classify
+from tests.test_track_classify import RaisingBackend
 from sluice.track.ics import IcsEvent
 from sluice.track import reconcile as R
 from tests.test_track_google_client import FakeGoogleClient
@@ -68,3 +69,29 @@ def test_never_regress_refuses():
     ev = Event(lead_slug="Tidemark - EM", type="phone_screen", confidence=0.9, ics=_ics())
     res = R.reconcile(ev, notes, v, TrackConfig(), FakeGoogleClient(events=[]))
     assert res.status_to is None and "status: offer" in pathlib.Path(path).read_text()
+
+
+def test_unknown_event_proposes_with_an_honest_label_never_skipped():
+    # A classification we could not make (#40) must surface for a human. It is NOT the
+    # not_job/update shape that reconcile silently skips, so it proposes -- and with an
+    # honest label ("classification failed"), not the misleading "unmatched/ambiguous"
+    # that the generic unmatched path would attach.
+    v, notes, _ = _vault_with("Tidemark - EM", "applied")
+    ev = Event(lead_slug=None, type="unknown", summary="")
+    res = R.reconcile(ev, notes, v, TrackConfig(), FakeGoogleClient())
+    assert res.action == "proposed"
+    assert "classification failed" in res.proposal
+
+
+def test_applied_lead_with_unclassifiable_mail_is_not_silently_unchanged():
+    # The exact #40 failure, end to end: a rejection email whose classification THROWS used to
+    # become a confident not_job -> reconcile skipped it -> the lead sat at `applied` forever.
+    # Now classify yields `unknown`, reconcile proposes it for review, and the note is untouched
+    # -- surfaced, never skipped, never regressed.
+    v, notes, path = _vault_with("Tidemark - EM", "applied")
+    msg = {"headers": {"from": "hr@x", "subject": "Re: your application"}, "body_text": "",
+           "thread_id": "t1", "attachments": [], "message_id": "m1"}
+    ev = classify(msg, list(notes.values()), RaisingBackend(), TrackConfig())
+    res = R.reconcile(ev, notes, v, TrackConfig(), FakeGoogleClient())
+    assert res.action == "proposed"
+    assert "status: applied" in pathlib.Path(path).read_text()
