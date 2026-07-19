@@ -15,6 +15,12 @@ class FakeBackend:
     def complete(self, prompt): return self.reply
 
 
+class RaisingBackend:
+    # The whole point of #40: a backend that dies mid-classification must not be
+    # answered as a confident "not a job".
+    def complete(self, prompt): raise RuntimeError("backend down")
+
+
 def _msg(frm="jobs@company.com", subject="Interview", body="", thread="t1"):
     return {"headers": {"from": frm, "subject": subject}, "body_text": body,
             "thread_id": thread, "attachments": []}
@@ -47,18 +53,55 @@ def test_not_job_when_no_match():
     assert ev.type == "not_job" and ev.lead_slug is None
 
 
-def test_malformed_llm_output_is_not_job():
+def test_malformed_llm_output_is_unknown():
+    # No parseable JSON is a classification FAILURE, not a confident not_job (#40): the
+    # model returned nothing we can read, so we have no evidence about this email at all.
     leads = [_lead("Tidemark", "Analyst")]
     ev = C.classify(_msg(), leads, FakeBackend("not json at all"), TrackConfig(), ics=None)
-    assert ev.type == "not_job" and ev.confidence == 0.0
+    assert ev.type == "unknown" and ev.confidence == 0.0
 
 
-def test_wrongtyped_json_degrades_to_not_job():
+def test_wrongtyped_json_is_unknown_not_a_confident_not_job():
+    # A partially-corrupt response (confidence is not a number) can't be trusted for ANY
+    # field, including the type it claims -- so we surface `unknown` rather than manufacture
+    # a confident not_job that reconcile would silently skip (#40).
     leads = [_lead("Tidemark", "Analyst")]
     be = FakeBackend(json.dumps({"lead": "Tidemark", "type": "interview", "confidence": "high",
                                  "links": 5, "materials": None, "summary": "x"}))
     ev = C.classify(_msg(), leads, be, TrackConfig(), ics=None)
-    assert ev.type == "not_job" and ev.confidence == 0.0
+    assert ev.type == "unknown" and ev.confidence == 0.0
+
+
+def test_classify_failure_returns_unknown_not_a_confident_not_job():
+    # #40: a backend error must surface as `unknown`, never as the confident default that
+    # reconcile reads as "not a job email" and silently skips -- the path by which a
+    # rejection email vanishes and its lead sits at `applied` forever.
+    leads = [_lead("Tidemark", "Analyst")]
+    ev = C.classify(_msg(), leads, RaisingBackend(), TrackConfig(), ics=None)
+    assert ev.type == "unknown"
+    assert ev.lead_slug is None and ev.candidates == []
+
+
+def test_not_job_is_only_returned_on_evidence_never_on_exception():
+    # Pin the invariant behind #40: not_job is a CLAIM about the email, only ever returned
+    # when the model actually said so. An exception must never manufacture that claim.
+    leads = [_lead("Tidemark", "Analyst")]
+    said = FakeBackend(json.dumps({"lead": None, "type": "not_job", "confidence": 0.9,
+                                   "when": None, "links": [], "materials": [], "summary": "newsletter"}))
+    assert C.classify(_msg(), leads, said, TrackConfig()).type == "not_job"
+    assert C.classify(_msg(), leads, RaisingBackend(), TrackConfig()).type == "unknown"
+
+
+def test_model_returned_unknown_maps_to_not_job():
+    # `unknown` is a code-internal sentinel for a classification FAILURE (#40), and the failure
+    # signal must be un-forgeable from model output: a model that literally emits type="unknown"
+    # is a completed, evidence-bearing response, so the _TYPES clamp folds it to not_job and it
+    # never reaches reconcile's failure branch. Only the except path may produce `unknown`.
+    leads = [_lead("Tidemark", "Analyst")]
+    be = FakeBackend(json.dumps({"lead": None, "type": "unknown", "confidence": 0.9,
+                                 "when": None, "links": [], "materials": [], "summary": "x"}))
+    ev = C.classify(_msg(), leads, be, TrackConfig(), ics=None)
+    assert ev.type == "not_job"
 
 
 def test_when_falls_back_to_ics_start():
