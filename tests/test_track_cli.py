@@ -76,6 +76,13 @@ def test_cmd_track_run_lastrun_gating(monkeypatch, tmp_path):
     assert cmd_track_run(args(False), None) == 1
     assert not os.path.exists(lastrun)
 
+    # deadletter_error -> rc 0 (not an auth failure) but STILL no lastrun save (F3):
+    # a dead-letter write failure means the message never persisted, so advancing
+    # the watermark past it would drop it out of next run's Gmail `after:` window.
+    monkeypatch.setattr(teng, "run", lambda *a, **k: RunReport(deadletter_error=True))
+    assert cmd_track_run(args(False), None) == 0
+    assert not os.path.exists(lastrun)
+
 
 def test_track_dismiss_parses_mutually_exclusive_required():
     a = _build_parser().parse_args(["track", "dismiss", "--id", "m1"])

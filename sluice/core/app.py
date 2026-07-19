@@ -14,9 +14,10 @@ would have been a lie.
 fetcher, renderer, backend (by ROLE: auto/primary/fallback, over the config-selected
 provider) -- and it OWNS the pipeline operations as value-returning methods: `ingest(...)`,
 `triage(...)`, `compose_cv(...)`, `prep(...)`, `record(...)`, `track(...)`,
-`track_confirm(...)`, `normalize_statuses(...)`. It also owns the state those operations
-need that is not itself an adapter: the dossier cache (`dossier_cache`), and track's
-file-backed seen-message set and last-successful-run watermark. `cli.py` is now a thin
+`track_confirm(...)`, `track_dismiss(...)`, `normalize_statuses(...)`. It also owns the
+state those operations need that is not itself an adapter: the dossier cache
+(`dossier_cache`), track's file-backed seen-message set and last-successful-run
+watermark, and track's dead-letter store of un-acted-on proposals. `cli.py` is now a thin
 shell over this class: each `cmd_*` function builds a `Sluice(config)`, calls one method,
 and formats the result for the terminal. A surface (a web UI, a TUI, a daemon) can do the
 same without duplicating any of that wiring -- `cli.py` has nothing left worth forking.
@@ -387,9 +388,11 @@ class Sluice:
         Save-on-success mirrors cli.py's old cmd_track_run exactly: `_save_seen`
         runs on every non-dry-run call (the seen set is safe to persist even after
         an auth error -- it only ever grew by ids actually processed before the
-        break), but `_save_lastrun` is additionally gated on `not rep.auth_error`,
-        because advancing the lastrun watermark past a run that never got to
-        classify anything would silently skip messages next time."""
+        break), but `_save_lastrun` is additionally gated on `not rep.auth_error
+        and not rep.deadletter_error`: advancing the lastrun watermark past a run
+        that never got to classify anything (auth_error), or past a message whose
+        dead-letter write failed and so was never persisted (deadletter_error),
+        would silently skip that message next time (#49's write-path silent loss)."""
         from datetime import datetime, timezone
         from sluice.track import engine as track_engine
         from sluice.track.config import load_track_config
@@ -413,7 +416,7 @@ class Sluice:
                                since_iso=since_iso, dry_run=dry_run)
         if not dry_run:
             _save_seen(tcfg.seen_db, seen)
-            if not rep.auth_error:
+            if not rep.auth_error and not rep.deadletter_error:
                 _save_lastrun(lastrun_path, now_iso)
         return rep
 
