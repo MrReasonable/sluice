@@ -28,6 +28,9 @@ _MYCV_BASELINE = os.path.join("My CV", "CV.md")
 _CRITERIA_RELPATH = os.path.join("Job Applications", "Judging Profile.md")
 _DEFAULT_VAULT = "./vault"
 
+_SEP = " - "        # note-name separator; identity-determining, stays a literal (never config)
+_SUFFIX_MAX = 40    # max chars of the location suffix on candidate 2; identity-determining literal
+
 _log = get_logger("core.vault")
 
 # Frontmatter is the `---`-fenced block at the very top of a note. Capture its
@@ -104,20 +107,31 @@ class Vault:
             self._name_max_cache = n if n > len(b".md") else 255
         return self._name_max_cache
 
-    def _path_for(self, lead: Lead) -> str:
-        """Match the old pipeline's naming exactly, so an existing note for the same
-        company+role is UPDATED in place rather than duplicated.
+    def _note_name(self, stem: str, suffix: str = "") -> str:
+        """The note stem for a lead: sanitized, char-capped, then byte-clamped to NAME_MAX.
+        BOTH name candidates (#5's clean `Company - Title` and its `- Location` variant) go
+        through this one helper, so their truncation can never drift -- a candidate 2 that
+        sanitized or capped differently would mis-key and reintroduce a duplicate.
 
-        The cap is (1) 120 CHARACTERS then (2) a byte-clamp to NAME_MAX. The ORDER is
-        load-bearing: char-cap first makes the byte-clamp a no-op for every name already
-        on disk (each was written, so its stem is already <= NAME_MAX bytes), so no
-        existing note's identity moves. Only names that ENAMETOOLONG today change — and
-        they have no note to duplicate. Byte-capping *instead* of char-capping would keep
-        more of a 121-255 char ASCII name than today, renaming existing notes -> duplicates.
-        """
-        safe = f"{lead.company} - {lead.title}"[:120].replace("/", "-").replace(":", "-")
-        safe = _clamp_bytes(safe, self._name_max() - len(b".md"))
-        return os.path.join(self.leads_dir, f"{safe}.md")
+        `.replace` is a length-preserving per-char map, so `stem.replace()[:120]` equals the
+        old `[:120].replace()` char for char: candidate 1 stays byte-identical to the old
+        `_path_for`, so no existing note's identity moves (zero migration). The suffix is
+        bounded to _SUFFIX_MAX BEFORE the stem arithmetic, so the stem budget can never go
+        negative (a negative index silently keeps 'all but the last N chars'). The final
+        byte-clamp is #24's NAME_MAX safety, applied to both candidates."""
+        stem = stem.replace("/", "-").replace(":", "-")
+        if suffix:
+            suffix = suffix.replace("/", "-").replace(":", "-")[:_SUFFIX_MAX]
+            name = stem[:120 - len(_SEP) - len(suffix)] + _SEP + suffix
+        else:
+            name = stem[:120]
+        return _clamp_bytes(name, self._name_max() - len(b".md"))
+
+    def _path_for(self, lead: Lead) -> str:
+        """The clean `Company - Title` note path (candidate 1 of #5's walk). Unchanged in
+        output from before #5, so an existing note is UPDATED in place, never duplicated."""
+        name = self._note_name(f"{lead.company} - {lead.title}")
+        return os.path.join(self.leads_dir, f"{name}.md")
 
     def ensure_stfolder(self) -> None:
         """Syncthing silently refuses to sync a vault root missing its .stfolder
