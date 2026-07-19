@@ -2,7 +2,7 @@ import json, tempfile, pathlib, sqlite3
 from sluice.core.vault import Vault
 from sluice.track.config import TrackConfig
 from sluice.track import engine as E
-from sluice.track.deadletter import DeadLetterDb
+from sluice.track.deadletter import DeadLetterDb, Entry
 from tests.test_track_google_client import FakeGoogleClient
 
 
@@ -86,9 +86,9 @@ def test_run_resilient_to_bad_message():
 
 def test_confirm_never_clobber():
     v, path = _vault("interview")
-    assert E.confirm(v, TrackConfig(), "Tidemark - Analyst", "offer")["ok"] is True
+    assert E.confirm(v, TrackConfig(), "Tidemark - Analyst", "offer", deadletter=_dl())["ok"] is True
     assert "status: offer" in pathlib.Path(path).read_text()
-    assert E.confirm(v, TrackConfig(), "Tidemark - Analyst", "phone_screen")["ok"] is False  # backward refused
+    assert E.confirm(v, TrackConfig(), "Tidemark - Analyst", "phone_screen", deadletter=_dl())["ok"] is False  # backward refused
 
 
 def test_same_lead_two_messages_no_regression():
@@ -237,3 +237,39 @@ def test_record_failure_skips_seen_so_message_reprocesses():
                 now_iso="2026-07-10T12:00:00+00:00")
     assert rep.failures == 1        # the raise was caught per-message
     assert "m1" not in seen         # ...and seen.add was skipped -> re-processes next run
+
+
+def _seed(dl, mid="m1", lead="Tidemark - Analyst", candidates=""):
+    dl.record(Entry(message_id=mid, lead=lead, candidates=candidates, ev_type="rejection",
+                    proposal="soft", hint="h", first_seen="2026-07-10", times_surfaced=1))
+
+
+def test_confirm_clears_dead_letter_on_success():
+    v, _ = _vault("phone_screen")
+    dl = _dl(); _seed(dl)
+    out = E.confirm(v, TrackConfig(), "Tidemark - Analyst", "interview", deadletter=dl)
+    assert out["ok"] is True
+    assert dl.open_entries() == []                 # the lead's proposals are resolved
+
+
+def test_confirm_dry_run_does_not_clear():
+    v, _ = _vault("phone_screen")
+    dl = _dl(); _seed(dl)
+    E.confirm(v, TrackConfig(), "Tidemark - Analyst", "interview", deadletter=dl, dry_run=True)
+    assert len(dl.open_entries()) == 1             # a preview clears nothing
+
+
+def test_confirm_refused_advance_does_not_clear():
+    v, _ = _vault("interview")
+    dl = _dl(); _seed(dl)
+    out = E.confirm(v, TrackConfig(), "Tidemark - Analyst", "phone_screen", deadletter=dl)  # backward
+    assert out["ok"] is False
+    assert len(dl.open_entries()) == 1             # a refused confirm must NOT delete the row
+
+
+def test_confirm_lead_does_not_clear_ambiguous_candidates_entry():
+    v, _ = _vault("phone_screen")
+    dl = _dl()
+    _seed(dl, mid="mAmb", lead="", candidates="Tidemark - Analyst,Other - Role")  # ambiguous: lead=""
+    E.confirm(v, TrackConfig(), "Tidemark - Analyst", "interview", deadletter=dl)
+    assert len(dl.open_entries()) == 1             # exact-match clear misses it; dismiss --id clears it
