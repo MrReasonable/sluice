@@ -84,6 +84,12 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                 note_by_slug[ev.lead_slug].status = res.status_to
             if res.action == "applied":
                 rep.auto += 1
+                # Symmetric with confirm's clear-on-advance: an auto-resolved lead's
+                # pending proposals are resolved too, so its dead-letter entries stop
+                # re-surfacing with a now-un-runnable confirm hint (the lead is already
+                # terminal). Clear on ev.lead_slug -- the same key run() records under.
+                if not dry_run and ev.lead_slug:
+                    deadletter.clear_lead(ev.lead_slug)
             elif res.action == "proposed":
                 rep.proposed += 1
                 target = _PROPOSE_TARGET.get(ev.type, "")
