@@ -75,15 +75,15 @@ def test_vaultsink_records_merged_but_not_refused(tmp_path, monkeypatch):
     # name-collision decline) stays OUT so it retries next run.
     vault = Vault(str(tmp_path / "vault"))
     seen = SeenDb(str(tmp_path / "seen.db"))
-    created = _lead(company="Aye", url="https://a/1")
-    merged = _lead(company="Bee", url="https://a/2")
-    refused = _lead(company="Cee", url="https://a/3")
+    created = _lead(company="Aye", url="https://example.invalid/1")
+    merged = _lead(company="Bee", url="https://example.invalid/2")
+    refused = _lead(company="Cee", url="https://example.invalid/3")
 
     real = vault.upsert
     def fake(lead):
-        if lead.url == "https://a/2":
+        if lead.url == "https://example.invalid/2":
             return "merged"
-        if lead.url == "https://a/3":
+        if lead.url == "https://example.invalid/3":
             return "refused"
         return real(lead)
     monkeypatch.setattr(vault, "upsert", fake)
@@ -91,5 +91,5 @@ def test_vaultsink_records_merged_but_not_refused(tmp_path, monkeypatch):
     counts = VaultSink(vault, seen, today=lambda: "2026-07-07").write([created, merged, refused])
     assert counts.get("created") == 1 and counts.get("merged") == 1 and counts.get("refused") == 1
     loaded = seen.load()
-    assert "https://a/1" in loaded and "https://a/2" in loaded   # created + merged recorded
-    assert "https://a/3" not in loaded                            # refused -> retried, not swallowed
+    assert "https://example.invalid/1" in loaded and "https://example.invalid/2" in loaded   # recorded
+    assert "https://example.invalid/3" not in loaded                            # refused -> retried
