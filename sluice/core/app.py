@@ -429,6 +429,36 @@ class Sluice:
                                     deadletter=DeadLetterDb(deadletter_path(tcfg.seen_db)),
                                     when=when, dry_run=dry_run)
 
+    def track_dismiss(self, *, message_id=None, lead=None, dry_run=False):
+        """Clear a dead-letter entry a human decided needs no action. `message_id`
+        is the only lever for a no-lead entry (a classify-failure or an unmatched
+        proposal); `lead` clears a lead's entries without advancing status. A
+        dry-run reports the count it would delete without deleting."""
+        # The CLI's mutually-exclusive-required argparse group enforces "exactly
+        # one of --id/--lead" at that boundary, but a direct caller (test, script,
+        # future command) bypasses argparse entirely. Without this guard, both-None
+        # falls into clear_lead(None) -> `WHERE lead = NULL` (never true) -> a
+        # silent {"cleared": 0} instead of a loud error; both-given makes the
+        # dry-run branch count a union of id-or-lead matches while the real branch
+        # only ever acts on id (lead is dropped), so the two branches could report
+        # different numbers for the same call. Requiring exactly one selector here
+        # closes both: the real delete and the dry-run count key on the same
+        # single discriminator, so they can never disagree.
+        if (message_id is None) == (lead is None):
+            raise ValueError("track_dismiss requires exactly one of message_id or lead")
+        from sluice.track.config import load_track_config
+        from sluice.track.deadletter import DeadLetterDb, deadletter_path
+        tcfg = load_track_config()
+        dl = DeadLetterDb(deadletter_path(tcfg.seen_db))
+        if dry_run:
+            entries = dl.open_entries()
+            n = sum(1 for e in entries
+                    if (message_id is not None and e.message_id == message_id)
+                    or (lead is not None and e.lead == lead))
+            return {"cleared": n, "dry_run": True}
+        n = dl.clear_id(message_id) if message_id is not None else dl.clear_lead(lead)
+        return {"cleared": n, "dry_run": False}
+
     def doctor(self, *, offline=False, probe=None):
         """Preflight every configured backend (primary + fallback, per sub-app):
         is the provider known, is a model resolved, are the credentials present

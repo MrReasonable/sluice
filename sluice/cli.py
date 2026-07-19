@@ -314,6 +314,16 @@ def cmd_track_confirm(args, config) -> int:
     return 1
 
 
+def cmd_track_dismiss(args, config) -> int:
+    from sluice.core.app import Sluice
+
+    out = Sluice(config).track_dismiss(message_id=args.id, lead=args.lead, dry_run=args.dry_run)
+    verb = "would clear" if out["dry_run"] else "cleared"
+    noun = "entry" if out["cleared"] == 1 else "entries"
+    print(f"track-dismiss: {verb} {out['cleared']} {noun}", file=sys.stderr)
+    return 0
+
+
 # ── doctor ────────────────────────────────────────────────────────────────────
 def cmd_doctor(args, config) -> int:
     from sluice.core.app import Sluice
@@ -435,6 +445,12 @@ def _build_parser() -> argparse.ArgumentParser:
     tconf.add_argument("--when", default=None)
     tconf.add_argument("--dry-run", action="store_true")
     tconf.set_defaults(func=cmd_track_confirm)
+    tdis = track.add_parser("dismiss", help="clear a dead-letter proposal (no status change)")
+    tdg = tdis.add_mutually_exclusive_group(required=True)
+    tdg.add_argument("--id", help="Gmail message-id of the dead-letter entry to clear")
+    tdg.add_argument("--lead", help="clear a lead's dead-letter entries without advancing status")
+    tdis.add_argument("--dry-run", action="store_true")
+    tdis.set_defaults(func=cmd_track_dismiss)
 
     health = top.add_parser("health")
     health.set_defaults(func=cmd_health)
