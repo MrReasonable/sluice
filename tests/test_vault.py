@@ -220,3 +220,11 @@ def test_note_name_bounds_suffix_so_stem_budget_never_negative(tmp_path):
     out = v._note_name("C" * 200, "L" * 200)       # a 200-char location is clamped to _SUFFIX_MAX(40)
     stem, _, suffix = out.rpartition(" - ")
     assert len(suffix) == 40 and len(stem) == 120 - len(" - ") - 40
+
+
+def test_make_threads_noise_words_from_config(tmp_path, monkeypatch):
+    import sluice.stores.vault as store_mod
+    from sluice.core.config import Config
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    v = store_mod._make(Config(location_noise_words=["remote"]))
+    assert v._noise == frozenset({"remote"})

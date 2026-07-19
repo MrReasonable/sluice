@@ -73,11 +73,15 @@ VaultNote = LeadNote
 
 
 class Vault:
-    def __init__(self, dir: str | None = None, *, baseline_rel: str = _MYCV_BASELINE):
+    def __init__(self, dir: str | None = None, *, baseline_rel: str = _MYCV_BASELINE,
+                 location_noise_words=()):
         self.dir = dir or os.environ.get("VAULT_DIR", _DEFAULT_VAULT)
         self.leads_dir = os.path.join(self.dir, _LEADS_SUBDIR)
         self.baseline_rel = baseline_rel
         self._name_max_cache: int | None = None
+        # Fed raw into same_opportunity -> _compare_locations, which tokenizes it. #5's
+        # split policy knob; empty by default (abstain). See core/config.py.
+        self._noise = frozenset(location_noise_words or ())
 
     def _slug_for(self, path: str) -> str:
         """The lead's stable identity. For a markdown vault that is the filename without
