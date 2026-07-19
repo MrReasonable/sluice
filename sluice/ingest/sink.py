@@ -51,7 +51,10 @@ class VaultSink:
                 # store's failure mode; a future SQLite store would raise sqlite3.Error,
                 # so this catch would need widening when that store arrives.
                 counts["skipped"] += 1
-                _log.warning("vault refused lead %r: %s", lead.dedup_key, e)
+                # "skipped", not "refused": this is a physical WRITE failure (OSError), a
+                # different condition from #5's deliberate name-collision `refused`. Keep the
+                # log wording distinct so grepping for one does not surface the other.
+                _log.warning("vault skipped lead %r (write failed): %s", lead.dedup_key, e)
         if recorded:
             # Record everything the sink touched so the next run dedups it - some
             # updated leads (pre-existing vault notes) may not yet be in seen.db.
