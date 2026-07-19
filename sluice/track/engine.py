@@ -10,6 +10,7 @@ from sluice.track.classify import classify
 from sluice.track.reconcile import reconcile
 from sluice.track.ics import parse_ics
 from sluice.track.google_client import GoogleAuthError
+from sluice.track.deadletter import Entry
 
 _INFLIGHT = ("applied", "phone_screen", "interview", "offer")  # non-terminal application states
 
@@ -27,7 +28,7 @@ class RunReport:
     calendar_added: int = 0
     failures: int = 0
     results: list = field(default_factory=list)
-    proposals: list = field(default_factory=list)
+    open_proposals: list = field(default_factory=list)  # every currently-open dead-letter Entry
     auth_error: bool = False
 
 
@@ -41,8 +42,9 @@ def _gmail_query(cfg, now_iso, since_iso=None):
     return (q + " " + cfg.gmail_extra_query).strip()
 
 
-def run(vault, cfg, client, backend, *, seen, now_iso, since_iso=None, dry_run=False) -> RunReport:
+def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=None, dry_run=False) -> RunReport:
     rep = RunReport()
+    today = datetime.fromisoformat(now_iso).date().isoformat()
     leads = [n for n in vault.read_leads(set(_status.APPLICATION_OWNED))
              if n.status in _INFLIGHT]
     note_by_slug = {n.slug: n for n in leads}
@@ -51,6 +53,13 @@ def run(vault, cfg, client, backend, *, seen, now_iso, since_iso=None, dry_run=F
     except GoogleAuthError:
         rep.auth_error = True
         return rep
+    # Bump carried entries before any new record, so a row first recorded THIS run
+    # stays at times_surfaced=1. Outside the per-message try on purpose: a raise
+    # here (corrupt/unwritable store) aborts the run before seen/lastrun save --
+    # fail-safe, since nothing has been processed or seen.add'd yet.
+    if not dry_run:
+        deadletter.bump_surfaced()
+    new_entries = []
     for mid in ids:
         if mid in seen:
             continue
@@ -85,7 +94,15 @@ def run(vault, cfg, client, backend, *, seen, now_iso, since_iso=None, dry_run=F
                     hint = f"(ambiguous lead; pick one: sluice track confirm {opts})"
                 else:
                     hint = f'(no runnable action for type "{ev.type}" / lead "{res.lead}"; review manually)'
-                rep.proposals.append(f"{res.lead}: {res.proposal or ev.type} :: {hint}")
+                entry = Entry(message_id=mid, lead=ev.lead_slug or "",
+                              candidates=",".join(ev.candidates), ev_type=ev.type,
+                              proposal=res.proposal or ev.type, hint=hint,
+                              first_seen=today, times_surfaced=1)
+                new_entries.append(entry)
+                # record BEFORE seen.add: a write failure raises, the `except`
+                # below skips seen.add, and the message re-processes next run.
+                if not dry_run:
+                    deadletter.record(entry)
             if res.calendar in ("created", "updated"):
                 rep.calendar_added += 1
             if not dry_run:
@@ -95,6 +112,16 @@ def run(vault, cfg, client, backend, *, seen, now_iso, since_iso=None, dry_run=F
             break
         except Exception:
             rep.failures += 1
+    # Emit the full open set. Non-dry: the store already holds this run's new rows,
+    # so it is the single source of truth. Dry: union the persisted set with this
+    # run's computed-new (keyed by message_id, persisted wins), recording nothing.
+    if dry_run:
+        by_id = {e.message_id: e for e in new_entries}
+        for e in deadletter.open_entries():
+            by_id[e.message_id] = e
+        rep.open_proposals = sorted(by_id.values(), key=lambda e: (e.first_seen, e.message_id))
+    else:
+        rep.open_proposals = deadletter.open_entries()
     return rep
 
 

@@ -290,10 +290,15 @@ def cmd_track_run(args, config) -> int:
         print("track: google reauth needed (token refresh failed)", file=sys.stderr)
         return 1
     print(f"track: msgs={rep.msgs} classified={rep.classified} auto={rep.auto} "
-          f"proposed={rep.proposed} calendar_added={rep.calendar_added} failures={rep.failures}",
-          file=sys.stderr)
-    for p in rep.proposals:
-        print(f"  PROPOSAL {p}", file=sys.stderr)
+          f"proposed={rep.proposed} calendar_added={rep.calendar_added} "
+          f"failures={rep.failures} open={len(rep.open_proposals)}", file=sys.stderr)
+    if rep.open_proposals:
+        print("  OPEN PROPOSALS (awaiting action):", file=sys.stderr)
+        for e in rep.open_proposals:
+            tag = " (new)" if e.times_surfaced <= 1 else ""
+            label = e.lead or e.candidates or "?"
+            print(f"  [{e.first_seen} x{e.times_surfaced}{tag}] {label}: {e.proposal} :: {e.hint}",
+                  file=sys.stderr)
     return 0
 
 
