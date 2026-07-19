@@ -93,10 +93,12 @@ builds one, calls one method, and formats the result for the terminal -- so a we
 UI written today has nothing left in `cli.py` worth forking.
 
 `tests/conformance/test_store_contract.py` is parameterised over every registered
-store and asserts never-clobber, never-regress, and slug/ref identity. Those
-guarantees used to live inside `core/vault.py`; a second store would have shipped
-without them. They are now properties of the contract, and a store passes that
-suite or it does not ship.
+store and asserts never-clobber, never-regress, slug/ref identity, and never-merge
+(two provably-different jobs — a proven location difference — produce two notes;
+`upsert` never silently absorbs a lead into a note for a different opportunity, #5).
+Those guarantees used to live inside `core/vault.py`; a second store would have
+shipped without them. They are now properties of the contract, and a store passes
+that suite or it does not ship.
 
 ## Adapter-selector seams
 

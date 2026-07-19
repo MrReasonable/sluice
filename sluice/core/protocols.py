@@ -43,9 +43,17 @@ class Store(Protocol):
     def read_leads(self, statuses: set | None = None) -> list: ...
 
     def upsert(self, lead) -> str:
-        """Create a note for a genuinely new lead, or -- for one already stored --
-        touch ONLY its `last_seen` marker. Never its status, enrichment, or body.
-        This is never-clobber, and it is the reason sluice exists."""
+        """Reconcile an incoming lead against the stored notes. Returns one of:
+        "created" (a genuinely new note), "updated" (an existing note identified as the
+        same opportunity), "merged" (an existing note we could not prove same-or-different
+        from), or "refused" (no identity distinguishes this lead from a note proven
+        different, so nothing is written). On "updated" and "merged" ONLY `last_seen` may
+        change -- never status, enrichment, or body. This is never-clobber, and it is the
+        reason sluice exists.
+
+        "created"/"updated" are MUST-support. "merged"/"refused" are MAY-return: a store
+        keyed on synthetic ids never merges-on-uncertainty and never hits a naming
+        collision, so it need only ever create or update. See #5."""
         ...
 
     def update_fields(self, ref, fields: dict, *, append_note=None, note_tag=None) -> None:
