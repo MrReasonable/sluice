@@ -1,7 +1,10 @@
 # Track dead-letter — an un-acted-on proposal must never silently vanish
 
 - **Date**: 2026-07-19
-- **Status**: **READY TO PLAN.**
+- **Status**: **READY TO PLAN.** Revised after a 5-agent `/review-plan` (0 Critical / 3 High / 9 Medium
+  / 4 Low); all findings folded. The three High were all in the failure paths the feature adds — the
+  silent-loss class #49 exists to remove — now closed by the asymmetric failure semantics (§1) and the
+  advance-gated clear (§3).
 - **Origin**: issue #49, surfaced in the review of PR #42 (the #40 classify-failure fix) by the invariant
   reviewer (Low, `requires_human_judgment`) and confirmed by a fresh architect. Pre-existing; broader
   than #40.
@@ -51,17 +54,25 @@ outcome identically.
 
 ## Design
 
-### 1. `DeadLetterDb` — new, `sluice/core/deadletter.py`
+### 1. `DeadLetterDb` — new, `sluice/track/deadletter.py`
 
-A concrete class mirroring `SeenDb`'s shape (stdlib `sqlite3`, defensive `try/except`, path owned by
-`app.py`). Like `seen`/`lastrun`, this is **not** a `plugins.get` seam — there is exactly one
-implementation and no surface swaps it out (the same reasoning `app.py` already records for the track
-seen/lastrun state).
+A concrete class in the **track** sub-app (beside `config.py`/`classify.py`/`reconcile.py`) — it is
+track-only operational state, written by the track engine and read/cleared by track `confirm`/`dismiss`,
+touched by no other sub-app. It **follows `SeenDb`'s defensive conventions** (stdlib `sqlite3`,
+`_init`-on-write, a guarded read) but shares **no API and no schema** with it — `SeenDb` is the ingest
+scanner's store, and track's own `seen` is a plain **text** file (`app.py:_load_seen`), *not* `SeenDb`,
+so this must not read as reusing it. Like `seen`/`lastrun`, it is **not** a `plugins.get` seam — exactly
+one implementation and no surface swaps it out.
 
-**Path**: *derived* from the existing track state, `tcfg.seen_db + ".deadletter.db"`, exactly as
-`lastrun_path = tcfg.seen_db + ".lastrun"` is derived — so **no new config knob**. It is a local,
-gitignored SQLite file: the same class of private runtime state as `seen.db` and the vault, never
-committed.
+**Path**: *derived* from the existing track state via a named module constant
+`_DEADLETTER_SUFFIX = ".deadletter.db"` → `tcfg.seen_db + _DEADLETTER_SUFFIX`, exactly as
+`lastrun_path = tcfg.seen_db + ".lastrun"` is derived — so **no new config knob** (consistent with the
+track state paths, which already run on code defaults alone; a `TrackConfig` knob would be premature
+surface nobody sets). The suffix is a **named constant with a comment** because the "local, gitignored"
+property is load-bearing on the `.db` ending: `.gitignore`'s `*.db` covers it, but `.lastrun` is *not*
+ignored, so a future rename to a non-`.db` suffix would silently leak message-ids/slugs/proposal text
+(personal data) into a public repo. It is the same class of private runtime state as `seen.db` and the
+vault, never committed.
 
 **Schema** — one row per un-acted-on proposal, keyed by Gmail message-id:
 
@@ -93,8 +104,18 @@ Methods (shaped to the two call sites — `run` and `confirm`/`dismiss`):
 - `clear_lead(slug) -> int` — `DELETE WHERE lead = ?` (exact).
 - `clear_id(message_id) -> int` — `DELETE WHERE message_id = ?`.
 
-A read on a missing/corrupt db returns empty (mirrors `SeenDb.load`); a write initialises the table
-(mirrors `SeenDb._init`).
+**Failure semantics are deliberately asymmetric — this is the crux of the feature, not a `SeenDb` copy.**
+`SeenDb.load`'s bare `except → empty` is safe for `seen` because an empty read self-heals (messages
+re-process). It is *unsafe* here: every dead-lettered id is already in `seen` (see §2), so a re-run
+skips it at `engine.py:55` and never re-records — a silently-empty read drops the whole backlog
+**permanently**, re-creating #49's exact bug inside its fix. Therefore:
+
+- **Writes (`record`, `bump_surfaced`, `clear_*`) RAISE on failure.** A failing `record` must propagate
+  so `engine.py:96`'s per-message `except` skips `seen.add(mid)` and the message re-processes next run.
+  A swallowing write that let `seen.add` commit would lose the proposal forever — the anti-guarantee.
+- **Reads (`open_entries`) distinguish missing from corrupt.** A *missing* db (first run) → empty, fine.
+  A *corrupt/unreadable* db → **raise / fail loudly** (surfaced to the operator), never a silent empty.
+- `_init`-on-write creates the table (this part does mirror `SeenDb._init`).
 
 ### 2. Run-loop mechanics — `engine.py`
 
@@ -128,9 +149,15 @@ dead-letter. `applied`/`calendar` outcomes acted already and are not recorded.
 
 ### 3. Clearing — `app.py` + `cli.py`
 
-- **`track confirm --lead X`** — on a successful advance, `clear_lead(X)`. The human acted; that lead's
-  proposals are resolved. Wired in `Sluice.track_confirm` inside the same `not dry_run` block as the
-  `update_fields` write, so a `--dry-run` confirm previews without clearing.
+- **`track confirm --lead X`** — clears that lead's proposals **only when the advance actually
+  happens**. The clear lives **in `engine.confirm`** — where the `can_advance` gate and the
+  `update_fields` write already are (`engine.py:108-114`) — which gains an injected `deadletter` store
+  parameter, the same injected-dependency shape as `run()` (constructed by `Sluice.track_confirm` from
+  the derived path, never by the engine itself). It runs *after* `can_advance` passes and the write
+  succeeds, gated on `not dry_run`. **Gating on the advance succeeding, not on `not dry_run` alone, is
+  load-bearing**: a confirm that fails `can_advance` returns `ok:False` and must **not** delete the row,
+  or the human thinks they acted and the proposal silently vanishes — #49's bug on the clear path. A
+  `--dry-run` confirm previews without clearing.
 - **New `sluice track dismiss`** — `--id <message-id>` → `clear_id` (the only lever for no-lead entries:
   `unknown`, unmatched/ambiguous); `--lead <slug>` → `clear_lead` ("looked, no action needed", without
   advancing status). Exactly one of `--id`/`--lead` required. Follows the repo's dry-run convention:
@@ -147,6 +174,13 @@ dead-letter. `applied`/`calendar` outcomes acted already and are not recorded.
 first, under an `OPEN PROPOSALS (awaiting action)` header, each annotated with `first_seen` and
 `×times_surfaced`, with a `(new)` tag on entries first seen this run — so an aging backlog is visibly
 aging and the human knows what to `dismiss`. The summary line gains `open=<N>`.
+
+**Readers of the renamed field migrate, not just `cli.py`.** `cmd_track_run` (`cli.py:295`) moves to
+`open_proposals`, and the five existing hint-correctness assertions in
+`tests/test_track_engine.py:102,116-118,134` — which read `rep.proposals[0]` as a formatted string (no
+`<status>` placeholder, no fake `--lead "?"`, a real `--to rejected`) — migrate to assert the same
+guarantees on the structured `Entry.hint`. The old `proposals` field is **removed**, not kept alongside
+`open_proposals` (a dead, unpopulated field kept for a green suite is itself a finding).
 
 ## Invariant interactions
 
@@ -170,18 +204,46 @@ behaviour change #49 asks for, applied uniformly rather than special-cased.
 
 ## Testing
 
-Fully offline/hermetic (no Gmail, no backend); a temp SQLite db; synthetic fixtures.
+Fully offline/hermetic (no Gmail, no backend); a **real** temp SQLite `DeadLetterDb` (never a fake, so
+SQL bugs surface); synthetic fixtures pinned to the existing mechanisms — seeded-faker
+`titles`/`cfg_titles` (`tests/conftest.py`) for slugs/titles and `FakeClient` message dicts (as in
+`tests/test_track_engine.py`) for message-ids, so no real employer, message-id, or role is ever
+hardcoded into a dead-letter row.
 
 - **`DeadLetterDb` unit** — `record` then `open_entries` round-trips; `bump_surfaced` increments only
-  existing rows; `clear_lead`/`clear_id` delete the right rows and return counts; a missing/corrupt db
-  reads empty.
+  existing rows; `clear_lead`/`clear_id` delete the right rows and return counts.
+- **Failure semantics (the crux)** — a *missing* db reads empty; a *corrupt* db read **raises/surfaces**
+  (asserted, so a bare-except regression that swallowed it goes red — otherwise the test green-lights the
+  exact swallow class); a write failure **propagates** out of `record`.
+- **Record → `seen` ordering** — when `record` raises, `seen.add(mid)` does **not** fire and the message
+  is re-processed next run (the anti-silent-loss guarantee, witnessed end-to-end via the engine).
+- **`times_surfaced` mixed in one run** — a single run with one carried entry (→2) and one newly-recorded
+  entry (stays 1), so a record-before-bump regression is caught (bump-in-isolation alone would miss it).
 - **End-to-end `run` durability** — a proposal recorded in run 1 is re-emitted in run 2 (unacted), with
-  `times_surfaced` incremented; it disappears after `confirm`/`dismiss`. This is the regression test for
-  the silent-loss bug.
+  `times_surfaced` incremented; it disappears after `confirm`/`dismiss`. The regression test for the
+  silent-loss bug.
+- **Clearing paths** — a successful `confirm --lead X` clears X's entries; a `--dry-run` confirm and a
+  confirm that fails `can_advance` (`ok:False`) each clear **nothing**; the exact-match caveat is pinned
+  (`confirm --lead A` does **not** clear an ambiguous entry that only listed A in `candidates`).
+- **`dismiss` command** — exactly one of `--id`/`--lead` required (arg validation); `--dry-run` reports
+  the would-delete count without deleting.
+- **Report assembly, no double-count** — non-dry `open_proposals` count equals the open-row count (new +
+  carried, never duplicated); dry-run `open_proposals` unions persisted + computed-new keyed by
+  `message_id` and a shared id appears **exactly once**.
+- **Migrated guard tests** — the five `tests/test_track_engine.py` hint assertions now read `Entry.hint`,
+  asserting the same guarantees (no `<status>` placeholder, no fake `--lead "?"`, a real `--to rejected`).
 - **Never-regress** — a dead-lettered `unknown` (and an unmatched proposal) writes no status across runs.
-- **dry-run** — a dry-run records nothing and increments nothing, yet its `open_proposals` unions the
-  persisted open set with this run's computed-new proposals (the faithful-preview property).
 - Every guard mutation-witnessed (move/delete → red → restore byte-identical), per the repo cadence.
+
+## Docs to update (part of the work, not a follow-up)
+
+`docs/ARCHITECTURE.md` lands with the code, or it drifts the moment this merges:
+
+- the **track sub-app paragraph** gains *durable proposal surfacing* (not just fetch/classify/reconcile);
+- the `app.py` **owned-state sentence** ("file-backed seen-message set and last-successful-run
+  watermark") gains the **third** store, the dead-letter db;
+- the **method enumeration** gains **`track_dismiss`**;
+- the **module list** gains **`track/deadletter.py`**.
 
 ## Out of scope (separable future issues)
 
