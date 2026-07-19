@@ -6,9 +6,10 @@ import json
 import re
 from dataclasses import dataclass, field
 
-import logging
-
 from sluice.core.leads import slug_matches
+from sluice.core.log import get_logger
+
+_log = get_logger("track.classify")
 
 _TYPES = {"phone_screen", "interview", "rejection", "offer", "update", "not_job"}
 
@@ -85,6 +86,14 @@ def classify(msg, leads, backend, cfg, ics=None) -> Event:
         ev.summary = str(data.get("summary") or "")
         ev.lead_slug, ev.candidates = _resolve_lead(data.get("lead"), leads)
     except Exception:
-        logging.getLogger(__name__).exception("classify: msg %s failed with", msg.get("message_id", ""))
-        return Event(message_id=msg.get("message_id", ""), thread_id=msg.get("thread_id", ""), ics=ics)
+        # A classification we could NOT make is not evidence of "not a job" (#40). The default
+        # Event.type is `not_job`, and reconcile silently SKIPS an unmatched not_job/update --
+        # so returning the bare default here reports any backend error, malformed response, or
+        # parse bug as a confident "this is not a job email", and a rejection email vanishes
+        # while its lead sits at `applied` forever. `not_job` is a claim, and the exception
+        # path has no evidence for it. Surface `unknown` instead so reconcile proposes it for
+        # a human rather than swallowing it.
+        _log.exception("classify failed for message %s", msg.get("message_id", ""))
+        return Event(message_id=msg.get("message_id", ""), thread_id=msg.get("thread_id", ""),
+                     ics=ics, type="unknown")
     return ev

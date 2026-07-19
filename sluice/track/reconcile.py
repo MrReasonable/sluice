@@ -48,6 +48,15 @@ def _advance(vault, note, target, ev, dry_run=False):
 
 def reconcile(event, note_by_slug, vault, cfg, client, dry_run=False) -> ReconcileResult:
     r = ReconcileResult(lead=event.lead_slug or ",".join(event.candidates) or "?")
+    # Classification failed (#40): we have no trustworthy signal, so take no action beyond
+    # surfacing it. Handled first, before any lead lookup or additive write, so a failed
+    # classification can never advance status or stamp materials -- and gets an honest label
+    # ("classification failed"), not the misleading "unmatched/ambiguous" of the generic path.
+    if event.type == "unknown":
+        r.action = "proposed"
+        r.proposal = "classification failed -- review manually"
+        r.note = event.summary
+        return r
     # No confident lead match -> propose (or skip pure noise).
     if event.lead_slug is None or event.lead_slug not in note_by_slug:
         if event.type in ("not_job", "update") and not event.candidates:
