@@ -27,6 +27,7 @@ from sluice.core import plugins
 from sluice.core.app import Sluice
 from sluice.core.leads import Lead
 from tests.conformance.seeds import seed
+from tests.conftest import LOCATIONS
 
 _STORES = Sluice.available("store")
 
@@ -49,7 +50,7 @@ def _make_store(store_name, tmp_path, monkeypatch):
 
 def _lead(**kw):
     base = dict(source="testboard", search="s", title="Analyst", company="Solarflux",
-                location="Remote", salary="", url="https://example.invalid/jobs/1")
+                location=LOCATIONS[0], salary="", url="https://example.invalid/jobs/1")
     base.update(kw)
     return Lead(**base)
 
@@ -295,3 +296,29 @@ def test_reading_an_empty_store_is_not_an_error(store_name, tmp_path, monkeypatc
     store = _make_store(store_name, tmp_path, monkeypatch)
     assert store.read_leads() == []
     assert store.existing_keys() == set()
+
+
+# ── #5: a note must never silently absorb a different job ─────────────────────
+def test_two_jobs_differing_in_location_produce_two_notes(store_name, tmp_path, monkeypatch):
+    """Two provably-different jobs (a proven location difference) must not collapse into one
+    note. Stated in Store terms, on the slug SET, so a second store inherits the property."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    assert store.upsert(_lead(location=LOCATIONS[0], url="https://example.invalid/1")) == "created"
+    store.upsert(_lead(location=LOCATIONS[1], url="https://example.invalid/2"))
+    assert len({n.slug for n in store.read_leads()}) == 2, \
+        "two provably-different jobs collapsed into one note"
+
+
+def test_identical_strings_two_urls_produce_one_note(store_name, tmp_path, monkeypatch):
+    """Same company+title+location, two urls -> one note (the accepted cross-board merge)."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    assert store.upsert(_lead(url="https://example.invalid/1")) == "created"
+    assert store.upsert(_lead(url="https://example.invalid/2")) in ("updated", "merged")
+    assert len({n.slug for n in store.read_leads()}) == 1
+
+
+def test_upsert_return_is_within_the_vocabulary(store_name, tmp_path, monkeypatch):
+    """upsert returns a MEMBER of the four-outcome vocabulary -- the assertion that stops an
+    out-of-vocab outcome slipping past the sink's allowlist. Membership, not a fixed string."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    assert store.upsert(_lead()) in ("created", "updated", "merged", "refused")
