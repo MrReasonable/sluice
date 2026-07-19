@@ -27,7 +27,8 @@ class FakeSource:
     def parse(self, raw, search):
         return [
             Lead(source=self.id, search=search.label, title=r["title"],
-                 company=r.get("company", ""), url=r["link"])
+                 company=r.get("company", ""), url=r.get("link", ""),
+                 location=r.get("location", ""))
             for r in raw["result"]
         ]
 
@@ -72,6 +73,20 @@ def test_writes_relevant_leads_to_sink(tmp_path):
     report = run([src], _ctx(), sink, _FakeSeen(), _health(tmp_path), retries=1)
     assert len(sink.leads) == 2
     assert report.written["created"] == 2
+
+
+def test_urlless_leads_differing_in_location_both_survive_dedup(tmp_path):
+    # #23 end-to-end: two url-less leads sharing title+company but at DIFFERENT cities must
+    # BOTH reach the sink. The engine's read-key must not collapse them before the store's
+    # #5 split runs -- otherwise the second city is silently dropped one layer too early.
+    src = FakeSource("demo", [
+        {"title": "Eng Mgr", "company": "Acme", "link": "", "location": "Palmerburgh"},
+        {"title": "Eng Mgr", "company": "Acme", "link": "", "location": "Clarkefurt"},
+    ])
+    sink = _FakeSink()
+    run([src], _ctx(), sink, _FakeSeen(), _health(tmp_path), retries=1)
+    assert len(sink.leads) == 2
+    assert {lead.location for lead in sink.leads} == {"Palmerburgh", "Clarkefurt"}
 
 
 def test_source_error_is_isolated(tmp_path):
