@@ -18,7 +18,7 @@ import re
 from datetime import date
 
 from sluice.core import status as _status
-from sluice.core.leads import Lead, _norm_url
+from sluice.core.leads import SAME, UNKNOWN, Lead, _norm_url, same_opportunity
 from sluice.core.log import get_logger
 from sluice.core.protocols import LeadNote
 
@@ -136,6 +136,31 @@ class Vault:
         output from before #5, so an existing note is UPDATED in place, never duplicated."""
         name = self._note_name(f"{lead.company} - {lead.title}")
         return os.path.join(self.leads_dir, f"{name}.md")
+
+    def _resolve_path(self, lead: Lead) -> tuple[str | None, str]:
+        """Walk the nameable candidates and return (path, action), action one of
+        "create"/"update"/"merge"/"refuse". Candidate 1 is the clean `Company - Title`
+        name (always); candidate 2 adds the location suffix (only when location is
+        non-empty). Every verdict terminates in place EXCEPT DIFFERENT, which advances --
+        so a note is split only on PROVEN difference, never on the absence of evidence.
+        Running out of candidates (every one a note proven different) is REFUSE: no path
+        can be written without clobbering a different job, so path is None. See #5."""
+        stem = f"{lead.company} - {lead.title}"
+        names = [self._note_name(stem)]
+        if lead.location:
+            names.append(self._note_name(stem, lead.location))
+        for name in names:
+            path = os.path.join(self.leads_dir, f"{name}.md")
+            if not os.path.exists(path):
+                return path, "create"
+            inner, _ = _split_frontmatter(_read(path))
+            verdict = same_opportunity(_fm_dict(inner), lead, self._noise)
+            if verdict == SAME:
+                return path, "update"
+            if verdict == UNKNOWN:
+                return path, "merge"
+            # DIFFERENT -> advance to the next nameable candidate
+        return None, "refuse"
 
     def ensure_stfolder(self) -> None:
         """Syncthing silently refuses to sync a vault root missing its .stfolder
