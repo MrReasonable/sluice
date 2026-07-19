@@ -304,7 +304,7 @@ def test_two_jobs_differing_in_location_produce_two_notes(store_name, tmp_path, 
     note. Stated in Store terms, on the slug SET, so a second store inherits the property."""
     store = _make_store(store_name, tmp_path, monkeypatch)
     assert store.upsert(_lead(location=LOCATIONS[0], url="https://example.invalid/1")) == "created"
-    store.upsert(_lead(location=LOCATIONS[1], url="https://example.invalid/2"))
+    assert store.upsert(_lead(location=LOCATIONS[1], url="https://example.invalid/2")) == "created"
     assert len({n.slug for n in store.read_leads()}) == 2, \
         "two provably-different jobs collapsed into one note"
 
@@ -324,13 +324,16 @@ def test_two_url_less_leads_differing_in_location_produce_two_notes(store_name, 
     read-key half is #23; this pins the store contract, which is what a 2nd store inherits."""
     store = _make_store(store_name, tmp_path, monkeypatch)
     assert store.upsert(_lead(location=LOCATIONS[0], url="")) == "created"
-    store.upsert(_lead(location=LOCATIONS[1], url=""))
+    assert store.upsert(_lead(location=LOCATIONS[1], url="")) == "created"
     assert len({n.slug for n in store.read_leads()}) == 2, \
         "two url-less jobs differing in location collapsed into one note"
 
 
-def test_upsert_return_is_within_the_vocabulary(store_name, tmp_path, monkeypatch):
-    """upsert returns a MEMBER of the four-outcome vocabulary -- the assertion that stops an
-    out-of-vocab outcome slipping past the sink's allowlist. Membership, not a fixed string."""
+def test_upsert_return_is_always_within_the_vocabulary(store_name, tmp_path, monkeypatch):
+    """EVERY upsert returns a MEMBER of the four-outcome vocabulary -- the assertion that stops
+    an out-of-vocab outcome slipping past the sink's allowlist. Membership, not a fixed string;
+    exercised across create AND the same-lead re-scrape (update/merge), not just the create path."""
+    vocab = ("created", "updated", "merged", "refused")
     store = _make_store(store_name, tmp_path, monkeypatch)
-    assert store.upsert(_lead()) in ("created", "updated", "merged", "refused")
+    assert store.upsert(_lead()) in vocab                       # create
+    assert store.upsert(_lead(last_seen="2026-07-14")) in vocab  # re-scrape -> update/merge
