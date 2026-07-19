@@ -19,8 +19,9 @@ def test_matching_nonempty_urls_are_proof_of_same():
     assert same_opportunity(fm, _lead(url="https://a/1?utm=x", location="aaa"), frozenset()) == SAME
 
 
-def test_empty_urls_are_never_proof_the_google_trap():
-    # Two url-less leads (google carries url:"") must NOT match on empty urls -> defer to location.
+def test_empty_urls_are_never_proof():
+    # Two url-less leads (some sources emit url:"") must NOT match on empty urls -> defer
+    # to location, or every url-less lead sharing a company+title would silently merge.
     fm = {"url": "", "location": "bbb"}
     assert same_opportunity(fm, _lead(url="", location="aaa"), frozenset()) == DIFFERENT
 

@@ -317,6 +317,18 @@ def test_identical_strings_two_urls_produce_one_note(store_name, tmp_path, monke
     assert len({n.slug for n in store.read_leads()}) == 1
 
 
+def test_two_url_less_leads_differing_in_location_produce_two_notes(store_name, tmp_path, monkeypatch):
+    """An empty URL is never proof of sameness: two url-less leads sharing company+title but
+    differing in location must split into two notes at the STORE, on LOCATION alone (not a
+    url difference). End-to-end the engine's dedup_key collapses url-less leads first -- that
+    read-key half is #23; this pins the store contract, which is what a 2nd store inherits."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    assert store.upsert(_lead(location=LOCATIONS[0], url="")) == "created"
+    store.upsert(_lead(location=LOCATIONS[1], url=""))
+    assert len({n.slug for n in store.read_leads()}) == 2, \
+        "two url-less jobs differing in location collapsed into one note"
+
+
 def test_upsert_return_is_within_the_vocabulary(store_name, tmp_path, monkeypatch):
     """upsert returns a MEMBER of the four-outcome vocabulary -- the assertion that stops an
     out-of-vocab outcome slipping past the sink's allowlist. Membership, not a fixed string."""
