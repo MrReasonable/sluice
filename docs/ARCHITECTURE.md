@@ -93,9 +93,14 @@ builds one, calls one method, and formats the result for the terminal -- so a we
 UI written today has nothing left in `cli.py` worth forking.
 
 `tests/conformance/test_store_contract.py` is parameterised over every registered
-store and asserts never-clobber, never-regress, slug/ref identity, and never-merge
-(two provably-different jobs — a proven location difference — produce two notes;
-`upsert` never silently absorbs a lead into a note for a different opportunity, #5).
+store and asserts never-clobber, never-regress, slug/ref identity, and
+never-silently-absorb-a-different-opportunity: two jobs with a proven **location**
+difference produce two notes, and when identity is uncertain `upsert` returns an
+explicit `merged` rather than absorbing the lead silently (#5). `merged` is a
+permitted outcome — the property forbids the *silent* absorb, not the merge. Location
+is the discriminator, so two distinct long titles that share the 120-char filename
+prefix **and** location still merge (a bounded residual; the store cannot see the
+truncated title tail).
 Those guarantees used to live inside `core/vault.py`; a second store would have
 shipped without them. They are now properties of the contract, and a store passes
 that suite or it does not ship.
