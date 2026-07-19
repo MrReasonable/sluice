@@ -68,3 +68,23 @@ def test_vaultsink_isolates_a_failing_write(tmp_path, monkeypatch):
     loaded = seen.load()
     assert "https://a/1" in loaded and "https://a/3" in loaded
     assert "https://a/2" not in loaded            # retried next run, not swallowed
+
+
+def test_vaultsink_records_merged_but_not_refused(tmp_path, monkeypatch):
+    # A refused lead (a name-collision decline) must stay OUT of seen.db so it retries;
+    # created/updated/merged mean a note now exists and are recorded.
+    vault = Vault(str(tmp_path / "vault"))
+    seen = SeenDb(str(tmp_path / "seen.db"))
+    good = _lead(company="Aye", url="https://a/1")
+    refused = _lead(company="Bee", url="https://a/2")
+
+    real = vault.upsert
+    def fake(lead):
+        return "refused" if lead.url == "https://a/2" else real(lead)
+    monkeypatch.setattr(vault, "upsert", fake)
+
+    counts = VaultSink(vault, seen, today=lambda: "2026-07-07").write([good, refused])
+    assert counts.get("created") == 1 and counts.get("refused") == 1
+    loaded = seen.load()
+    assert "https://a/1" in loaded            # recorded
+    assert "https://a/2" not in loaded        # refused -> retried, not swallowed
