@@ -1,4 +1,4 @@
-import os, tempfile, pathlib
+import os, tempfile, pathlib, sqlite3
 import pytest
 from sluice.track.deadletter import DeadLetterDb, Entry, deadletter_path, _DEADLETTER_SUFFIX
 
@@ -84,3 +84,18 @@ def test_record_write_failure_propagates():
     os.mkdir(dbpath)        # a directory where the db file should be -> the write raises
     with pytest.raises(Exception):
         DeadLetterDb(dbpath).record(_entry())
+
+
+def test_open_entries_on_existing_tableless_db_raises_not_silent_empty():
+    # F1: an existing-but-tableless file (a valid sqlite db that simply never got
+    # `record`ed into) must RAISE on read, not silently create the table and
+    # return []. Only `record` is the store's sole table creator; a read that
+    # papered over this would hide a real anomaly (wrong file, botched migration).
+    d = tempfile.mkdtemp()
+    dbpath = str(pathlib.Path(d, "track-seen.db.deadletter.db"))
+    con = sqlite3.connect(dbpath)
+    con.execute("CREATE TABLE other(x)")
+    con.commit()
+    con.close()
+    with pytest.raises(Exception):
+        DeadLetterDb(dbpath).open_entries()

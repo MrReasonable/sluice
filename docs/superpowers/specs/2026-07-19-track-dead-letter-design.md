@@ -113,11 +113,22 @@ skips it at `engine.py:55` and never re-records — a silently-empty read drops 
 **permanently**, re-creating #49's exact bug inside its fix. Therefore:
 
 - **Writes (`record`, `bump_surfaced`, `clear_*`) RAISE on failure.** A failing `record` must propagate
-  so `engine.py:96`'s per-message `except` skips `seen.add(mid)` and the message re-processes next run.
-  A swallowing write that let `seen.add` commit would lose the proposal forever — the anti-guarantee.
+  so `engine.py`'s per-message `except` skips `seen.add(mid)`. A swallowing write that let `seen.add`
+  commit would lose the proposal forever — the anti-guarantee.
+- **A caught per-message write failure must ALSO hold the `lastrun` watermark.** Skipping `seen.add` on
+  its own does *not* deliver the "re-processes next run" guarantee: the run completes normally, `app.py`
+  advances the watermark, and the next Gmail `after:` query no longer returns that message — the same
+  watermark trap as the key finding above, recurring on the write path. So the two **in-loop** dead-letter
+  writes (`record` in the proposed branch, and the auto-advance `clear_lead`) go through a `_dl_write`
+  wrapper that sets `RunReport.deadletter_error` before re-raising, and `app.py` skips `_save_lastrun`
+  when that flag is set (it still saves `seen`). The wrapper is scoped to those two writes **only** — a
+  non-dead-letter per-message error (a Gmail hiccup) must *not* hold the watermark. Both directions are
+  pinned by regression tests.
 - **Reads (`open_entries`) distinguish missing from corrupt.** A *missing* db (first run) → empty, fine.
   A *corrupt/unreadable* db → **raise / fail loudly** (surfaced to the operator), never a silent empty.
-- `_init`-on-write creates the table (this part does mirror `SeenDb._init`).
+- **`record` is the sole creator.** Only `record` runs the schema DDL (`_connect`: makedirs +
+  `CREATE TABLE`). Reads and the guarded no-op writes use a plain `_open()` and never create the table,
+  so an existing-but-tableless file raises rather than silently self-healing on a read.
 
 The two calls *outside* the per-message `try` — `bump_surfaced()` at run start (§2 step 1) and
 `open_entries()` at report assembly (§2 step 3) — raise straight out of `run()` before `app.py`'s

@@ -54,7 +54,8 @@ Shared by every sub-app:
    guess on ambiguity), and reconcile it against lead status
    (never-regress: a status can only move forward). Un-acted-on proposals
    are durably surfaced via `track/deadletter.py` -- a sqlite dead-letter
-   re-emitted every run until `track confirm`/`track dismiss` clears it --
+   re-emitted every run until `track confirm`/`track dismiss` clears it, or a
+   lead's own proposals are cleared automatically when it auto-advances --
    so a proposal never vanishes after a single report.
 
 ## The plugin core

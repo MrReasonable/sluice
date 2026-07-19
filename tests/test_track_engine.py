@@ -1,4 +1,5 @@
 import json, tempfile, pathlib, sqlite3
+import pytest
 from sluice.core.vault import Vault
 from sluice.track.config import TrackConfig
 from sluice.track import engine as E
@@ -237,6 +238,27 @@ def test_record_failure_skips_seen_so_message_reprocesses():
                 now_iso="2026-07-10T12:00:00+00:00")
     assert rep.failures == 1        # the raise was caught per-message
     assert "m1" not in seen         # ...and seen.add was skipped -> re-processes next run
+    assert rep.deadletter_error is True  # ...and app.py must hold the lastrun watermark (F3)
+
+
+class BoomBumpDL(DeadLetterDb):
+    def bump_surfaced(self):
+        raise sqlite3.OperationalError("disk full")
+
+
+def test_bump_failure_aborts_run_before_any_save():
+    # bump_surfaced() runs OUTSIDE the per-message try (before the loop even
+    # starts), so a failure there must propagate out of run() entirely rather
+    # than being caught -- app.py never reaches _save_seen/_save_lastrun. This
+    # pins the existing fail-safe (no code change; a no-op bump on a missing
+    # db would hide the bug, so seed the store first).
+    v, _ = _vault("phone_screen")
+    dl = _dl()
+    _seed(dl, mid="m_old")
+    boom = BoomBumpDL(dl.path)
+    with pytest.raises(Exception):
+        E.run(v, TrackConfig(), OneMsgRejectClient(), _soft_reject_backend(),
+              seen=set(), deadletter=boom, now_iso="2026-07-10T12:00:00+00:00")
 
 
 def _seed(dl, mid="m1", lead="Tidemark - Analyst", candidates=""):
@@ -296,3 +318,44 @@ def test_auto_advance_dry_run_does_not_clear():
     E.run(v, TrackConfig(), OneMsgClient(), be, seen=set(), deadletter=dl,
           now_iso="2026-07-10T12:00:00+00:00", dry_run=True)
     assert len(dl.open_entries()) == 1      # a dry-run preview clears nothing
+
+
+class BoomClearDL(DeadLetterDb):
+    def clear_lead(self, slug):
+        raise sqlite3.OperationalError("disk full")
+
+
+def test_clear_failure_holds_watermark():
+    # Mirrors test_auto_advance_clears_dead_letter_for_that_lead, but the store's
+    # clear_lead raises instead of succeeding: _dl_write must set deadletter_error
+    # and re-raise into the per-message `except`, so seen.add is skipped and
+    # app.py (per #49) holds the lastrun watermark rather than losing the message.
+    v, _ = _vault("applied")
+    dl = BoomClearDL(_dl().path)
+    _seed(dl, mid="m_old", lead="Tidemark - Analyst")  # record() is inherited and still works;
+                                                        # only clear_lead is overridden to fail
+    be = FakeBackend(json.dumps({"lead": "Tidemark", "type": "rejection", "confidence": 0.95,
+                                 "when": None, "links": [], "materials": [], "summary": "rejected"}))
+    seen = set()
+    rep = E.run(v, TrackConfig(), OneMsgClient(), be, seen=seen, deadletter=dl,
+                now_iso="2026-07-10T12:00:00+00:00")
+    assert rep.auto == 1  # the lead DID auto-advance (action=="applied"), reaching clear_lead
+    assert rep.deadletter_error is True
+    assert rep.failures == 1
+    assert "m1" not in seen
+
+
+def test_non_deadletter_error_does_not_set_flag():
+    # Anti-over-reach pin for _dl_write's scope: a per-message failure that has
+    # nothing to do with the dead-letter store (a Gmail get_message hiccup) must
+    # NOT set deadletter_error, or a transient Gmail error would wrongly hold the
+    # whole watermark alongside genuine dead-letter write failures.
+    v, _ = _vault("applied")
+
+    class Boom(OneMsgClient):
+        def get_message(self, mid): raise RuntimeError("gmail hiccup")
+
+    rep = E.run(v, TrackConfig(), Boom(), FakeBackend("{}"), seen=set(), deadletter=_dl(),
+                now_iso="2026-07-10T12:00:00+00:00")
+    assert rep.failures == 1
+    assert rep.deadletter_error is False
