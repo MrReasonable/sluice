@@ -63,6 +63,18 @@ class Config:
         return self.sources.get(id, SourceConfig())
 
 
+def _str_list(value, name: str) -> list:
+    """A list of strings from config, failing loudly. `None`/absent -> []. A YAML SCALAR
+    (`location_noise_words: remote`) would otherwise `list()`-explode into single characters
+    and silently mis-configure the gate; a clear error at construction is the house style
+    (see _select_backend). Rejects a non-list and any non-string entry."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or any(not isinstance(x, str) for x in value):
+        raise ValueError(f"{name} must be a list of strings, got {value!r}")
+    return list(value)
+
+
 def load_config(path: str | None = None) -> Config:
     data = {}
     path = path or os.environ.get("SLUICE_CONFIG")
@@ -101,4 +113,5 @@ def load_config(path: str | None = None) -> Config:
                   fetcher=str(data.get("fetcher") or "camofox"),
                   relevance_keep=list(data.get("relevance_keep") or []),
                   relevance_drop=list(data.get("relevance_drop") or []),
-                  location_noise_words=list(data.get("location_noise_words") or []))
+                  location_noise_words=_str_list(data.get("location_noise_words"),
+                                                 "location_noise_words"))
