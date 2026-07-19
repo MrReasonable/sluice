@@ -13,6 +13,7 @@ in), so sluice leads are indistinguishable from the current pipeline's output.
 The engine's Lead model is source-agnostic (title, job_type); the vault schema's
 `role`/`role_type` naming is a translation that lives here at the sink boundary.
 """
+import hashlib
 import os
 import re
 from datetime import date
@@ -115,16 +116,17 @@ class Vault:
 
     def _note_name(self, stem: str, suffix: str = "") -> str:
         """The note stem for a lead: sanitized, char-capped, then byte-clamped to NAME_MAX.
-        BOTH name candidates (#5's clean `Company - Title` and its `- Location` variant) go
-        through this one helper, so their truncation can never drift -- a candidate 2 that
-        sanitized or capped differently would mis-key and reintroduce a duplicate.
+        ALL name candidates (#5's clean `Company - Title`, its `- Location` variant, and the
+        `- <title-digest>` variant) go through this one helper, so their truncation can never
+        drift -- a suffixed candidate that sanitized or capped differently would mis-key and
+        reintroduce a duplicate.
 
         `.replace` is a length-preserving per-char map, so `stem.replace()[:120]` equals the
         old `[:120].replace()` char for char: candidate 1 stays byte-identical to the old
         `_path_for`, so no existing note's identity moves (zero migration). The suffix is
         bounded to _SUFFIX_MAX BEFORE the stem arithmetic, so the stem budget can never go
         negative (a negative index silently keeps 'all but the last N chars'). The final
-        byte-clamp is #24's NAME_MAX safety, applied to both candidates."""
+        byte-clamp is #24's NAME_MAX safety, applied to every candidate."""
         stem = _sanitize(stem)
         if suffix:
             suffix = _sanitize(suffix)[:_SUFFIX_MAX]
@@ -141,27 +143,55 @@ class Vault:
 
     def _resolve_path(self, lead: Lead) -> tuple[str | None, str]:
         """Walk the nameable candidates and return (path, action), action one of
-        "create"/"update"/"merge"/"refuse". Candidate 1 is the clean `Company - Title`
-        name (always); candidate 2 adds the location suffix (only when location is
-        non-empty). Every verdict terminates in place EXCEPT DIFFERENT, which advances --
-        so a note is split only on PROVEN difference, never on the absence of evidence.
-        Running out of candidates (every one a note proven different) is REFUSE: no path
-        can be written without clobbering a different job, so path is None. See #5."""
+        "create"/"update"/"merge"/"refuse". Candidate 1 is the clean `Company - Title` name
+        (always); a location suffix (only when location is non-empty) and -- when the title
+        is CAPPED -- a title-digest suffix add further candidates. Every verdict terminates in
+        place EXCEPT DIFFERENT, which advances -- so a note is split only on PROVEN difference,
+        never on the absence of evidence. Running out of candidates (every one a note proven
+        different) is REFUSE: no path can be written without clobbering a different job, so
+        path is None. See #5.
+
+        `capped` closes #5's same-location residual: when the 120-char cap drops part of the
+        title, cand1 (and the location candidate, which shares that truncated prefix) can seat
+        a DIFFERENT job. A stable digest of the FULL title is then a further discriminator,
+        tried AFTER the location suffix -- so LOCATION (proven evidence) stays the primary
+        split, a note #5 already placed at its location name is still found in place (no
+        migration duplicate), and the digest only catches a same-location title collision the
+        location suffix cannot. A short title carries its whole self in cand1, so `capped` is
+        False and both the digest candidate and the `title_lost` advance below are dormant --
+        short-title resolution is byte-identical to before. (`capped` measures the CHAR cap,
+        not the byte-clamp, so a title under 120 chars but over NAME_MAX bytes still merges --
+        a negligible ASCII-population sub-residual that fails toward merge, never a clobber.)"""
         stem = f"{lead.company} - {lead.title}"
+        capped = len(_sanitize(stem)) > _CHAR_CAP
         names = [self._note_name(stem)]
         if lead.location:
             names.append(self._note_name(stem, lead.location))
+        if capped:
+            names.append(self._note_name(stem, _title_digest(lead.title)))
         for name in names:
             path = os.path.join(self.leads_dir, f"{name}.md")
             if not os.path.exists(path):
                 return path, "create"
             inner, _ = _split_frontmatter(_read(path))
-            verdict = same_opportunity(_fm_dict(inner), lead, self._noise)
-            if verdict == SAME:
+            fm = _fm_dict(inner)
+            verdict = same_opportunity(fm, lead, self._noise)
+            # A capped filename can seat a note whose FULL title differs -- only the truncated
+            # prefix matched. Treat that as advance, exactly like a proven-different location:
+            # never update/merge across a title the filename lost. BUT a matching non-empty URL
+            # is same_opportunity's DEFINITIVE proof of the same posting, so a drifted title tail
+            # on a url-stable posting must still update in place, not mint a digest note per
+            # drift -- `title_lost` never overrides a url match. Gated on `capped`, so a short
+            # title (whose filename carries its whole self) never triggers it.
+            url_proven = (bool(lead.url) and bool(fm.get("url"))
+                          and _norm_url(lead.url) == _norm_url(fm.get("url", "")))
+            title_lost = (capped and not url_proven
+                          and _title_key(fm.get("role", "")) != _title_key(lead.title))
+            if verdict == SAME and not title_lost:
                 return path, "update"
-            if verdict == UNKNOWN:
+            if verdict == UNKNOWN and not title_lost:
                 return path, "merge"
-            # DIFFERENT -> advance to the next nameable candidate
+            # DIFFERENT location, or a capped-title mismatch -> advance to the next candidate
         return None, "refuse"
 
     def ensure_stfolder(self) -> None:
@@ -554,6 +584,21 @@ def _fm_dict(inner: str | None) -> dict:
         if m:
             out[m.group(1)] = m.group(2).strip().strip('"').strip("'")
     return out
+
+
+def _title_key(t: str) -> str:
+    """Whitespace-normalised title, used for BOTH the capped-collision comparison and its
+    digest, so trailing/duplicate spaces from parsing variance neither spuriously split a
+    >120-char title nor let two spellings of it drift to different digests."""
+    return " ".join(t.split())
+
+
+def _title_digest(t: str) -> str:
+    """A short, STABLE discriminator for a title the 120-char filename cap truncated -- same
+    title always yields the same digest, so a re-scrape re-keys to the same note (unlike a
+    per-scrape URL hash, which would mint one note per run). Closes #5's same-prefix residual
+    when the location does not already split the two titles."""
+    return hashlib.sha256(_title_key(t).encode("utf-8")).hexdigest()[:8]
 
 
 def _sanitize(s: str) -> str:
