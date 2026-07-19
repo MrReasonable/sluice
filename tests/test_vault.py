@@ -10,7 +10,7 @@ from tests.conftest import LOCATIONS
 def _lead(**kw):
     base = dict(
         source="cord", search="Analyst", title="Analyst", company="Acme",
-        url="https://a/1", location="London", salary="£100k",
+        url="https://a/1", location=LOCATIONS[0], salary="£100k",
         job_type="permanent", first_seen="2026-07-07", last_seen="2026-07-07",
     )
     base.update(kw)
