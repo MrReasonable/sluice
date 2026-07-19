@@ -9,7 +9,10 @@ silently-empty read would drop the whole backlog permanently. Therefore:
     `seen.add(mid)` and the message re-processes next run;
   - a CORRUPT read RAISES; only a MISSING db reads empty;
   - no-op writes (bump/clear on a missing db) create no file, so a `confirm`
-    on a system that never recorded a proposal leaves nothing behind.
+    on a system that never recorded a proposal leaves nothing behind;
+  - `record` is the store's SOLE table creator (`_connect`, with DDL) -- every
+    read/bump/clear goes through `_open` (no DDL), so an existing-but-tableless
+    file RAISES on a read instead of silently getting its table created (F1).
 """
 import os
 import sqlite3
@@ -45,9 +48,9 @@ class DeadLetterDb:
         self.path = path
 
     def _connect(self) -> sqlite3.Connection:
-        # Used by every write and by a read of an EXISTING db. Creates the parent
-        # dir and the table on demand (mirrors SeenDb._init) -- the first `record`
-        # is what materialises the store.
+        # Used ONLY by `record` -- the store's sole table creator. Creates the
+        # parent dir and the table on demand (mirrors SeenDb._init); every guarded
+        # read/bump/clear below goes through `_open` instead, which runs no DDL.
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
         db = sqlite3.connect(self.path)
         db.execute(
@@ -57,12 +60,19 @@ class DeadLetterDb:
         )
         return db
 
+    def _open(self):
+        # No DDL: the caller has already guarded os.path.exists, and only `record`
+        # creates the store. An existing-but-tableless/corrupt file therefore RAISES
+        # here (fail-loud), never silently gets its table created on a read.
+        return sqlite3.connect(self.path)
+
     def open_entries(self) -> list[Entry]:
         # MISSING db -> empty (first run), without creating it. CORRUPT/unreadable
-        # db -> RAISE (the SELECT below throws); never a silent empty.
+        # db, or an existing file with no track_deadletter table -> RAISE (the
+        # SELECT below throws); never a silent empty (F1).
         if not os.path.exists(self.path):
             return []
-        db = self._connect()
+        db = self._open()
         try:
             rows = db.execute(
                 f"SELECT {_COLS} FROM track_deadletter ORDER BY first_seen, message_id"
@@ -74,7 +84,7 @@ class DeadLetterDb:
     def bump_surfaced(self) -> None:
         if not os.path.exists(self.path):   # nothing to bump; do not create the store
             return
-        db = self._connect()
+        db = self._open()
         try:
             db.execute("UPDATE track_deadletter SET times_surfaced = times_surfaced + 1")
             db.commit()
@@ -96,7 +106,7 @@ class DeadLetterDb:
     def clear_lead(self, slug: str) -> int:
         if not os.path.exists(self.path):
             return 0
-        db = self._connect()
+        db = self._open()
         try:
             cur = db.execute("DELETE FROM track_deadletter WHERE lead = ?", (slug,))
             db.commit()
@@ -107,7 +117,7 @@ class DeadLetterDb:
     def clear_id(self, message_id: str) -> int:
         if not os.path.exists(self.path):
             return 0
-        db = self._connect()
+        db = self._open()
         try:
             cur = db.execute("DELETE FROM track_deadletter WHERE message_id = ?", (message_id,))
             db.commit()

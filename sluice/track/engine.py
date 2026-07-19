@@ -30,6 +30,22 @@ class RunReport:
     results: list = field(default_factory=list)
     open_proposals: list = field(default_factory=list)  # every currently-open dead-letter Entry
     auth_error: bool = False
+    deadletter_error: bool = False  # a dead-letter WRITE raised this run; app.py must hold
+                                     # the lastrun watermark so the un-persisted message
+                                     # re-queries next run instead of aging out of Gmail's
+                                     # advancing `after:` window (#49's write-path silent loss)
+
+
+def _dl_write(rep, op):
+    # A dead-letter WRITE failure must both skip seen.add (re-raise into the per-message
+    # except) and hold the lastrun watermark (rep.deadletter_error -> app.py skips
+    # _save_lastrun), so the un-persisted message re-queries next run instead of falling
+    # out of the advancing Gmail `after:` window. #49's silent-loss on the write path.
+    try:
+        op()
+    except Exception:
+        rep.deadletter_error = True
+        raise
 
 
 def _gmail_query(cfg, now_iso, since_iso=None):
@@ -89,7 +105,7 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                 # re-surfacing with a now-un-runnable confirm hint (the lead is already
                 # terminal). Clear on ev.lead_slug -- the same key run() records under.
                 if not dry_run and ev.lead_slug:
-                    deadletter.clear_lead(ev.lead_slug)
+                    _dl_write(rep, lambda: deadletter.clear_lead(ev.lead_slug))
             elif res.action == "proposed":
                 rep.proposed += 1
                 target = _PROPOSE_TARGET.get(ev.type, "")
@@ -108,7 +124,7 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                 # record BEFORE seen.add: a write failure raises, the `except`
                 # below skips seen.add, and the message re-processes next run.
                 if not dry_run:
-                    deadletter.record(entry)
+                    _dl_write(rep, lambda: deadletter.record(entry))
             if res.calendar in ("created", "updated"):
                 rep.calendar_added += 1
             if not dry_run:

@@ -428,6 +428,10 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                 new_entries.append(entry)
                 # record BEFORE seen.add: a write failure raises, the `except`
                 # below skips seen.add, and the message re-processes next run.
+                # SUPERSEDED by "Post-review refinement" at the end of this plan:
+                # skipping seen.add alone does NOT guarantee re-processing (the
+                # watermark still advances), so the shipped code routes this write
+                # through `_dl_write`, which also holds the watermark.
                 if not dry_run:
                     deadletter.record(entry)
             if res.calendar in ("created", "updated"):
@@ -913,3 +917,42 @@ git commit -m "docs(track): document the dead-letter store and track dismiss (#4
 **3. Type consistency:** `Entry` fields, `DeadLetterDb` method names (`open_entries`/`bump_surfaced`/`record`/`clear_lead`/`clear_id`), `deadletter_path`, and the `run`/`confirm` signatures (`*, deadletter, ...`) are identical across Tasks 1-4. `RunReport.open_proposals` is used consistently in engine, cli, and tests. ✓
 
 **Note for the implementer:** `deadletter` is a *required* keyword-only argument on both `run` and `confirm` (fail-loud, per Global Constraints). Every call site — including the ~10 existing `E.run`/`E.confirm` calls in `tests/test_track_engine.py` — must pass it; Task 2 Step 1 and Task 3 Step 1 enumerate them.
+
+---
+
+## Post-review refinement (pre-push `/review-pr`, shipped in `fix(track): hold watermark …`)
+
+The pre-push review found that Task 2's failure contract, as written above, does **not** deliver its own
+"the message re-processes next run" guarantee, and Task 1's "record is the sole creator" claim was not
+true of the *table*. Both were fixed before the branch was pushed; the shipped code differs from the
+Task 2/Task 1 listings above in exactly these ways.
+
+**1. A caught dead-letter write failure holds the `lastrun` watermark.**
+Skipping `seen.add(mid)` is necessary but not sufficient: the per-message `except` swallows the raise, the
+run completes, and `app.py` advances the watermark — so the next Gmail `after:` query no longer returns
+the un-persisted message and it is lost anyway. Shipped instead:
+
+- `RunReport` gains `deadletter_error: bool = False`.
+- A module-level `_dl_write(rep, op)` helper wraps the **two in-loop** dead-letter writes — `record(entry)`
+  in the proposed branch and `clear_lead(ev.lead_slug)` in the auto-advance branch. On failure it sets
+  `rep.deadletter_error = True` and re-raises (so the existing per-message `except` still skips `seen.add`).
+- `app.py`'s `track()` gates the watermark save: `if not rep.auth_error and not rep.deadletter_error:
+  _save_lastrun(...)`. `_save_seen` stays unconditional — `seen` only ever grew by successfully-processed
+  ids, so holding just the watermark is correct.
+- The wrapper is deliberately scoped to those two writes. A non-dead-letter per-message error (a Gmail
+  `get_message` hiccup) must leave `deadletter_error` False, or one transient Gmail error would hold the
+  whole watermark and force a needless re-scan.
+- `bump_surfaced()` needs no flag: it runs at run start, outside the per-message `try`, so a failure
+  propagates straight out of `run()` and `app.py` never reaches either save — already fail-safe.
+
+Regression tests: a `record` failure sets the flag and keeps the id out of `seen`; a `clear_lead` failure
+does the same on the auto-advance path; a Gmail-error message leaves the flag False (the anti-over-reach
+pin); a `bump_surfaced` failure hard-aborts the run; and the app-level watermark gate is pinned alongside
+the existing `auth_error` case.
+
+**2. Reads run no schema DDL.**
+`open_entries`/`bump_surfaced`/`clear_*` originally went through `_connect()`, which runs
+`CREATE TABLE IF NOT EXISTS` — a read performing DDL, and it meant a read could silently create the table
+on an existing-but-tableless file. Shipped: those four use a plain `_open()` (no DDL) and only `record`
+uses `_connect()`, so `record` is the sole creator of both the file and the table, and an anomalous
+tableless file now raises instead of self-healing. Pinned by a regression test.
