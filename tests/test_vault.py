@@ -340,3 +340,11 @@ def test_upsert_is_idempotent_across_three_runs_on_the_slug_set(tmp_path):
     for _ in range(3):
         v.upsert(lead)
     assert {p.name for p in _leads_dir(tmp_path).glob("*.md")} == {"X - Y.md"}
+
+
+def test_note_name_sanitizes_backslash_no_traversal(tmp_path):
+    # A scraped company/title carrying a Windows separator must not traverse out of the
+    # leads dir; backslash is mapped to '-' like '/' and ':'.
+    v = Vault(str(tmp_path)); v._name_max_cache = 255
+    assert v._note_name("..\\..\\etc - passwd") == "..-..-etc - passwd"
+    assert "\\" not in v._note_name("a\\b - c")
