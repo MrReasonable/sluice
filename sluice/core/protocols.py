@@ -46,8 +46,10 @@ class Store(Protocol):
         """Reconcile an incoming lead against the stored notes. Returns one of:
         "created" (a genuinely new note), "updated" (an existing note identified as the
         same opportunity), "merged" (an existing note we could not prove same-or-different
-        from), or "refused" (no identity distinguishes this lead from a note proven
-        different, so nothing is written). On "updated" and "merged" ONLY `last_seen` may
+        from), or "refused" (the store cannot write this lead WITHOUT clobbering a different
+        one, so it writes nothing -- either because no identity distinguishes it from a note
+        proven different, or because a concurrent writer keeps winning the create race; the
+        two causes are distinguished only in the log). On "updated" and "merged" ONLY `last_seen` may
         change -- never status, enrichment, or body -- and it may only move FORWARD: a
         re-scrape carrying an older date leaves the newer stored value untouched
         (`last_seen` is monotonic). This is never-clobber, and it is the reason sluice
