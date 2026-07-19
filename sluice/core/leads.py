@@ -112,3 +112,17 @@ def slug_matches(note, wanted: str) -> bool:
     hay = re.sub(r"[^a-z0-9]+", "-",
                  f"{note.fm.get('company','')}-{note.fm.get('role','')}".lower()).strip("-")
     return wanted.lower() in hay or wanted.lower() in note.slug.lower()
+
+
+def same_opportunity(note_fm: dict, lead: "Lead", noise=frozenset()) -> str:
+    """Whether an EXISTING note and an incoming lead are the same opportunity, as a
+    SAME/DIFFERENT/UNKNOWN verdict. A matching NON-EMPTY url is the only proof (SAME);
+    otherwise defer to the location comparison. DIFFERENT is the only verdict #5 splits
+    on, so a wrong SAME/UNKNOWN merely merges (today's behaviour) while a wrong DIFFERENT
+    is a visible extra note. Both urls must be non-empty: google leads carry url:"" and
+    _norm_url("") == _norm_url(""), so "urls match -> same" would merge every url-less
+    lead sharing a company+title -- the exact loss this removes."""
+    note_url = note_fm.get("url", "")
+    if lead.url and note_url and _norm_url(lead.url) == _norm_url(note_url):
+        return SAME
+    return _compare_locations(note_fm.get("location", ""), lead.location, noise)
