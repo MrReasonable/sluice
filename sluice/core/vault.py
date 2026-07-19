@@ -30,6 +30,7 @@ _DEFAULT_VAULT = "./vault"
 
 _SEP = " - "        # note-name separator; identity-determining, stays a literal (never config)
 _SUFFIX_MAX = 40    # max chars of the location suffix on candidate 2; identity-determining literal
+_CHAR_CAP = 120     # max chars of a note stem before the byte-clamp; identity-determining literal
 
 _log = get_logger("core.vault")
 
@@ -123,12 +124,12 @@ class Vault:
         bounded to _SUFFIX_MAX BEFORE the stem arithmetic, so the stem budget can never go
         negative (a negative index silently keeps 'all but the last N chars'). The final
         byte-clamp is #24's NAME_MAX safety, applied to both candidates."""
-        stem = stem.replace("/", "-").replace(":", "-")
+        stem = _sanitize(stem)
         if suffix:
-            suffix = suffix.replace("/", "-").replace(":", "-")[:_SUFFIX_MAX]
-            name = stem[:120 - len(_SEP) - len(suffix)] + _SEP + suffix
+            suffix = _sanitize(suffix)[:_SUFFIX_MAX]
+            name = stem[:_CHAR_CAP - len(_SEP) - len(suffix)] + _SEP + suffix
         else:
-            name = stem[:120]
+            name = stem[:_CHAR_CAP]
         return _clamp_bytes(name, self._name_max() - len(b".md"))
 
     def _path_for(self, lead: Lead) -> str:
@@ -501,6 +502,15 @@ def _fm_dict(inner: str | None) -> dict:
         if m:
             out[m.group(1)] = m.group(2).strip().strip('"').strip("'")
     return out
+
+
+def _sanitize(s: str) -> str:
+    """Map the path separators `/ : \\` to '-'. `/` and `:` match _path_for's historical
+    sanitize; `\\` is added so a scraped `..\\..\\` company/title cannot traverse out of the
+    leads dir on Windows (on POSIX `\\` is a legal filename char, so it is defence-in-depth
+    there). Each is a single-char->single-char map, so the result is length-preserving --
+    candidate 1 stays byte-identical for every existing note (none of which contains `\\`)."""
+    return s.replace("/", "-").replace(":", "-").replace("\\", "-")
 
 
 def _clamp_bytes(s: str, limit: int) -> str:
