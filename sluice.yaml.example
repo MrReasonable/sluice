@@ -29,6 +29,12 @@ baseline_rel: My CV/CV.md
 # Configure it to make ingest cheap. Placeholders below are generated nonsense.
 relevance_keep: ['horticultural consultant']   # keep only titles containing one of these
 relevance_drop: ['sport and exercise psychologist']   # ...then drop any containing one of these
+
+# Words that decorate a location without locating it (a work-mode, a board's furniture),
+# subtracted before #5 decides whether two same-title postings are the same job. Empty by
+# default -> nothing subtracted. Uncomment to, e.g., merge a "Remote" and a city listing.
+# location_noise_words:
+#   - remote
 # sources:
 #   workinstartups: { enabled: false }
 #   linkedin:

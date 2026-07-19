@@ -75,3 +75,10 @@ def test_yaml_source_searches_override(tmp_path):
         ["My SM Remote", "https://example.com/sm"],
     ]
     assert cfg.source("reed").searches == []  # unlisted → no override
+
+
+def test_load_config_reads_location_noise_words(tmp_path, monkeypatch):
+    monkeypatch.delenv("SLUICE_CONFIG", raising=False)
+    p = tmp_path / "s.yaml"
+    p.write_text("location_noise_words:\n  - remote\n  - hybrid\n")
+    assert load_config(str(p)).location_noise_words == ["remote", "hybrid"]

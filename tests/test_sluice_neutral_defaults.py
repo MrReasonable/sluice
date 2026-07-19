@@ -48,6 +48,7 @@ def test_ingest_defaults_carry_no_preference(monkeypatch):
     assert c.locations == []
     assert c.relevance_keep == []
     assert c.relevance_drop == []
+    assert c.location_noise_words == []   # #5 gate abstains: no noise subtracted by default
     # baseline_rel moved here from CvConfig (only the store can honour it, and
     # Sluice.store() only ever sees the root Config). The assertion had to move WITH it:
     # the refactor deleted it from the CvConfig test and nothing replaced it, so a
@@ -69,6 +70,7 @@ def test_ingest_defaults_carry_no_preference(monkeypatch):
     assert loaded.locations == []
     assert loaded.relevance_keep == []
     assert loaded.relevance_drop == []
+    assert loaded.location_noise_words == []
 
 
 def test_config_overlay_restores_neutralized_defaults(tmp_path, monkeypatch):
