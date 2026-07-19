@@ -51,3 +51,15 @@ def test_print_report_surfaces_skipped(capsys):
     _print_report(_R())
     err = capsys.readouterr().err        # the summary prints to stderr
     assert "3 skipped" in err
+
+
+def test_print_report_surfaces_merged_and_refused(capsys):
+    from sluice.cli import _print_report
+
+    class _R:
+        sources = []
+        written = {"created": 1, "updated": 0, "merged": 2, "refused": 3, "skipped": 0}
+
+    _print_report(_R())
+    err = capsys.readouterr().err
+    assert "2 merged" in err and "3 refused" in err
