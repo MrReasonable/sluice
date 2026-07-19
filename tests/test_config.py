@@ -82,3 +82,25 @@ def test_load_config_reads_location_noise_words(tmp_path, monkeypatch):
     p = tmp_path / "s.yaml"
     p.write_text("location_noise_words:\n  - remote\n  - hybrid\n")
     assert load_config(str(p)).location_noise_words == ["remote", "hybrid"]
+
+
+def test_location_noise_words_rejects_a_scalar(tmp_path, monkeypatch):
+    import pytest
+
+    from sluice.core.config import load_config
+    monkeypatch.delenv("SLUICE_CONFIG", raising=False)
+    p = tmp_path / "s.yaml"
+    p.write_text("location_noise_words: remote\n")   # a scalar, not a list
+    with pytest.raises(ValueError, match="location_noise_words"):
+        load_config(str(p))
+
+
+def test_location_noise_words_rejects_non_string_entries(tmp_path, monkeypatch):
+    import pytest
+
+    from sluice.core.config import load_config
+    monkeypatch.delenv("SLUICE_CONFIG", raising=False)
+    p = tmp_path / "s.yaml"
+    p.write_text("location_noise_words:\n  - 42\n")   # a non-string entry
+    with pytest.raises(ValueError, match="location_noise_words"):
+        load_config(str(p))
