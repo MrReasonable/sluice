@@ -346,18 +346,35 @@ class Vault:
 
     # ── upsert ───────────────────────────────────────────────────────────────
     def upsert(self, lead: Lead) -> str:
-        """Create a new note or bump last_seen on an existing one. Returns
-        "created" | "updated"."""
+        """Reconcile an incoming lead against the existing notes. Returns one of
+        "created" | "updated" | "merged" | "refused". UPDATE and MERGE bump ONLY last_seen
+        (never-clobber); REFUSE writes nothing -- every name candidate is a note proven
+        DIFFERENT, so writing would clobber a different job. See #5."""
         os.makedirs(self.leads_dir, exist_ok=True)
         # The vault ensures its own Syncthing marker, on the WRITE path. This used to be
         # a Store method cli.py called by hand, which leaked a Syncthing/Obsidian concept
         # into a contract every other store would have had to pretend to implement. It
         # belongs here and not in __init__: constructing a store must not touch the disk.
         self.ensure_stfolder()
-        path = self._path_for(lead)
-        if os.path.exists(path):
+        path, action = self._resolve_path(lead)
+        if action == "update":
             self._bump_last_seen(path, lead.last_seen or _today())
             return "updated"
+        if action == "merge":
+            # We could not prove same-or-different, so we do NOT split (that would mint a
+            # note per scrape -- unbounded). Bump last_seen like an update; the difference
+            # is only that the count is reported separately so the merge is visible.
+            self._bump_last_seen(path, lead.last_seen or _today())
+            return "merged"
+        if action == "refuse":
+            # Loud, not silent: every name candidate is a note proven DIFFERENT, so no path
+            # can be written without clobbering a different job. The sink counts this and
+            # keeps the lead out of seen.db, so it is retried (and re-reported) next run
+            # rather than lost. Reachable only pathologically (a note whose frontmatter
+            # contradicts its filename, or a byte-clamp collapse on a tiny NAME_MAX). See #5.
+            _log.warning("vault refused lead %r: every name candidate is a note proven different",
+                         lead.dedup_key)
+            return "refused"
         try:
             _write(path, self._render_new(lead))
         except OSError:
