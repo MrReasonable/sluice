@@ -52,7 +52,10 @@ Shared by every sub-app:
 5. **track** (`sluice/track/`): fetch Gmail and Google Calendar since the
    last run, classify each message into an `Event` (refuse rather than
    guess on ambiguity), and reconcile it against lead status
-   (never-regress: a status can only move forward).
+   (never-regress: a status can only move forward). Un-acted-on proposals
+   are durably surfaced via `track/deadletter.py` -- a sqlite dead-letter
+   re-emitted every run until `track confirm`/`track dismiss` clears it --
+   so a proposal never vanishes after a single report.
 
 ## The plugin core
 
@@ -72,10 +75,11 @@ Two modules and a composition root make the seams real:
   config names -- store, fetcher, renderer, and backend (by ROLE: auto/primary/
   fallback, over whichever provider config selects) -- and OWNS the pipeline
   operations as value-returning methods: `ingest()`, `triage()`, `compose_cv()`,
-  `prep()`, `record()`, `track()`, `track_confirm()`, `normalize_statuses()`. It
-  also owns the state those operations need that is not itself an adapter: the
-  dossier cache (`dossier_cache()`), and track's file-backed seen-message set and
-  last-successful-run watermark. Adapters are built lazily on first use, so an
+  `prep()`, `record()`, `track()`, `track_confirm()`, `track_dismiss()`,
+  `normalize_statuses()`. It also owns the state those operations need that is
+  not itself an adapter: the dossier cache (`dossier_cache()`), and track's
+  file-backed seen-message set, last-successful-run watermark, and dead-letter
+  store of un-acted-on proposals. Adapters are built lazily on first use, so an
   offline command still never constructs a browser, a store or a backend.
 
 Implementations live in `sluice/stores/`, `sluice/fetchers/`, `sluice/renderers/`
