@@ -3,7 +3,7 @@ import os
 import pytest
 
 from sluice.core.leads import Lead
-from sluice.core.vault import _CREATE_RACE_RETRIES, Vault, _clamp_bytes, _sanitize
+from sluice.core.vault import _CREATE_RACE_RETRIES, Vault, _clamp_bytes, _sanitize, _title_digest
 from tests.conftest import LOCATIONS
 
 
@@ -502,8 +502,6 @@ def test_sanitize_is_length_preserving():
 def test_long_titles_sharing_prefix_split_when_location_differs(tmp_path):
     # #5's 120-char-prefix collision, resolved via the LOCATION discriminator: two distinct
     # long titles that cap to the same stem still get two notes when their locations differ.
-    # (When location ALSO matches they merge -- a documented residual, same class as the
-    # accepted cost: the store cannot see the truncated title tail, so it has no evidence.)
     v = Vault(str(tmp_path)); v._name_max_cache = 255
     prefix = "Engineer " + "A" * 130                          # long enough that the tail truncates
     title_a, title_b = prefix + " Alpha", prefix + " Bravo"   # DIFFERENT titles, SAME capped stem
@@ -511,3 +509,75 @@ def test_long_titles_sharing_prefix_split_when_location_differs(tmp_path):
     assert v.upsert(_lead(company="X", title=title_a, location=LOCATIONS[0], url="")) == "created"
     assert v.upsert(_lead(company="X", title=title_b, location=LOCATIONS[1], url="")) == "created"
     assert len(list(_leads_dir(tmp_path).glob("*.md"))) == 2  # split on the location, not the lost tail
+
+
+def test_long_titles_sharing_prefix_and_location_split(tmp_path):
+    # The residual #5 left open, now CLOSED: two DISTINCT long titles that cap to the same
+    # filename AND share a location no longer merge. The FIRST keeps its clean, digest-less
+    # name (zero migration); the second gets its own note (here via the location suffix, since
+    # location is the primary discriminator -- see the digest-specific tests below).
+    v = Vault(str(tmp_path)); v._name_max_cache = 255
+    prefix = "Engineer " + "A" * 130
+    title_a, title_b = prefix + " Alpha", prefix + " Bravo"   # different titles, same capped stem
+    clean = v._note_name(f"X - {title_a}")                    # candidate 1, the clean name
+    assert v._note_name(f"X - {title_b}") == clean            # cand1 collides for both
+    assert v.upsert(_lead(company="X", title=title_a, location=LOCATIONS[0], url="")) == "created"
+    assert v.upsert(_lead(company="X", title=title_b, location=LOCATIONS[0], url="")) == "created"  # SAME loc
+    names = {p.name for p in _leads_dir(tmp_path).glob("*.md")}
+    assert len(names) == 2, "two distinct long titles at one location must not merge"
+    assert f"{clean}.md" in names, "the first-seen title must keep its clean, digest-less name"
+
+
+def test_long_titles_no_location_split_via_digest(tmp_path):
+    # With NO location, the title-digest is the ONLY extra discriminator: two distinct long
+    # titles must still split onto their stable digest names (without the digest candidate the
+    # second would REFUSE and be dropped). The first keeps its clean name.
+    v = Vault(str(tmp_path)); v._name_max_cache = 255
+    prefix = "Engineer " + "A" * 130
+    title_a, title_b = prefix + " Alpha", prefix + " Bravo"
+    clean = v._note_name(f"X - {title_a}")
+    assert v.upsert(_lead(company="X", title=title_a, location="", url="")) == "created"
+    assert v.upsert(_lead(company="X", title=title_b, location="", url="")) == "created"
+    names = {p.name for p in _leads_dir(tmp_path).glob("*.md")}
+    assert len(names) == 2, "two distinct long titles with no location must split on the digest"
+    assert f"{clean}.md" in names, "the first-seen title keeps its clean, digest-less name"
+    assert v._note_name(f"X - {title_b}", _title_digest(title_b)) + ".md" in names
+
+
+def test_three_long_titles_same_location_split_via_digest(tmp_path):
+    # THREE distinct long titles at one location: the location suffix distinguishes only the
+    # second, so the THIRD relies on the title-digest. Without the digest candidate the third
+    # would REFUSE -- a job silently dropped. All three must get their own note.
+    v = Vault(str(tmp_path)); v._name_max_cache = 255
+    prefix = "Engineer " + "A" * 130
+    for tail in ("Alpha", "Bravo", "Charlie"):
+        assert v.upsert(_lead(company="X", title=prefix + " " + tail,
+                              location=LOCATIONS[0], url="")) == "created"
+    assert len(list(_leads_dir(tmp_path).glob("*.md"))) == 3, \
+        "three distinct long titles at one location must all get a note"
+
+
+def test_long_title_digest_split_is_idempotent(tmp_path):
+    # Re-scraping both distinct long titles must NOT keep minting notes: each resolves back to
+    # its own note across runs.
+    v = Vault(str(tmp_path)); v._name_max_cache = 255
+    prefix = "Engineer " + "A" * 130
+    a = dict(company="X", title=prefix + " Alpha", location="", url="")
+    b = dict(company="X", title=prefix + " Bravo", location="", url="")
+    for _ in range(3):
+        v.upsert(_lead(**a))
+        v.upsert(_lead(**b))
+    assert len(list(_leads_dir(tmp_path).glob("*.md"))) == 2
+
+
+def test_url_stable_capped_title_updates_when_tail_drifts(tmp_path):
+    # A matching non-empty URL is DEFINITIVE proof of the same posting. A >120-char title whose
+    # tail drifts across scrapes on a url-stable posting must UPDATE in place -- title_lost must
+    # NOT override the url match and mint a fresh digest note per drift.
+    v = Vault(str(tmp_path)); v._name_max_cache = 255
+    prefix = "Engineer " + "A" * 130
+    assert v.upsert(_lead(company="X", title=prefix + " Alpha",
+                          location=LOCATIONS[0], url="https://a/1")) == "created"
+    assert v.upsert(_lead(company="X", title=prefix + " Bravo",   # same URL, drifted tail
+                          location=LOCATIONS[0], url="https://a/1")) == "updated"
+    assert len(list(_leads_dir(tmp_path).glob("*.md"))) == 1, "a url-stable posting must not split on title drift"

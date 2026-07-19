@@ -99,10 +99,11 @@ so `last_seen` is monotonic), never-regress, slug/ref identity, and
 never-silently-absorb-a-different-opportunity: two jobs with a proven **location**
 difference produce two notes, and when identity is uncertain `upsert` returns an
 explicit `merged` rather than absorbing the lead silently (#5). `merged` is a
-permitted outcome — the property forbids the *silent* absorb, not the merge. Location
-is the discriminator, so two distinct long titles that share the 120-char filename
-prefix **and** location still merge (a bounded residual; the store cannot see the
-truncated title tail).
+permitted outcome — the property forbids the *silent* absorb, not the merge. The
+contract's identity is url + location; it does not compare titles, so "distinct titles
+at one company+location split" is **not** a conformance property (a store keyed on
+url+location could absorb them and still pass). The `vault` store escapes that only
+because the title is in the filename — see the store-seam note below.
 Location is decided one layer up too: the ingest **read** key (`Lead.dedup_key`, for
 URL-less leads) folds in `_norm_location(location)`, so the engine's own dedup does not
 collapse two cities *before* the store's split can run (#23). The two layers use two
@@ -126,7 +127,14 @@ Four points in the config are the seams for pluggable adapters.
 - **store**: `sluice/stores/`, selected by `store:` (default `vault`).
   Implementations: `vault` (the Obsidian-style markdown vault in
   `core/vault.py`). A SQLite store is the obvious next one, and the
-  conformance suite is what it must pass.
+  conformance suite is what it must pass. The `vault` store derives note
+  identity from the filename, so it needs discriminators the contract does
+  not: on a `Company - Title` collision it appends the location, and — when
+  the 120-char cap truncated the title — a stable digest of the full title,
+  so two distinct long titles at one location still split. The first-seen
+  keeps the clean, digest-less name (zero migration); only the collider is
+  suffixed. This is a vault filename concern, not a Store property — a store
+  with real keys distinguishes those rows without it.
 - **renderer**: `sluice/renderers/`, selected by `cv.renderer:` (default
   `script`). Implementations: `script` (shells out to the external WeasyPrint
   script at `cv.render_script`) and `weasyprint` (bundled, in-process, needs
