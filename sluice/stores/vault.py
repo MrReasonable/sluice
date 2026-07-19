@@ -12,7 +12,8 @@ def _make(config):
     """Build the vault store. `dir` stays None so Vault keeps reading VAULT_DIR from the
     environment, exactly as before -- config selects WHICH store, the store still resolves
     its own location."""
-    return Vault(baseline_rel=config.baseline_rel)
+    return Vault(baseline_rel=config.baseline_rel,
+                 location_noise_words=config.location_noise_words)
 
 
 register("vault", _make)
