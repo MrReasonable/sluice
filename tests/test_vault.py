@@ -275,3 +275,37 @@ def test_resolve_path_refuses_when_frontmatter_contradicts_filename(tmp_path):
     _seed_note(tmp_path, c2, location=LOCATIONS[2], url="")         # fm location contradicts the filename
     path, action = v._resolve_path(_lead(company="X", title="Y", location=LOCATIONS[1], url=""))
     assert action == "refuse" and path is None
+
+
+def test_upsert_splits_two_cities_into_two_notes(tmp_path):
+    v = Vault(str(tmp_path)); v._name_max_cache = 255
+    assert v.upsert(_lead(company="X", title="Y", location=LOCATIONS[0], url="https://a/1")) == "created"
+    assert v.upsert(_lead(company="X", title="Y", location=LOCATIONS[1], url="https://a/2")) == "created"
+    names = {p.name for p in _leads_dir(tmp_path).glob("*.md")}
+    assert len(names) == 2
+    assert "X - Y.md" in names                             # candidate 1: the first-seen clean name
+    assert any(n.startswith("X - Y - ") for n in names)    # candidate 2: the split
+
+
+def test_upsert_merge_bumps_only_last_seen(tmp_path):
+    import re
+    v = Vault(str(tmp_path)); v._name_max_cache = 255
+    _seed_note(tmp_path, "X - Y", location=LOCATIONS[0], url="")
+    f = _leads_dir(tmp_path) / "X - Y.md"
+    before = f.read_text()
+    assert v.upsert(_lead(company="X", title="Y", location="", url="", last_seen="2026-07-19")) == "merged"
+    after = f.read_text()
+    assert "last_seen: 2026-07-19" in after
+    strip = lambda t: re.sub(r"(?m)^\s*last_seen:.*$\n?", "", t)
+    assert strip(after) == strip(before), "merge changed a field other than last_seen"
+
+
+def test_upsert_refuses_and_writes_nothing(tmp_path):
+    v = Vault(str(tmp_path)); v._name_max_cache = 255
+    _seed_note(tmp_path, "X - Y", location=LOCATIONS[0], url="")
+    c2 = v._note_name("X - Y", LOCATIONS[1])
+    _seed_note(tmp_path, c2, location=LOCATIONS[2], url="")     # fm contradicts filename -> both DIFFERENT
+    before = {p.name: p.read_text() for p in _leads_dir(tmp_path).glob("*.md")}
+    assert v.upsert(_lead(company="X", title="Y", location=LOCATIONS[1], url="")) == "refused"
+    after = {p.name: p.read_text() for p in _leads_dir(tmp_path).glob("*.md")}
+    assert after == before, "refuse wrote or changed a note"
