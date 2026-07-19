@@ -103,6 +103,12 @@ permitted outcome — the property forbids the *silent* absorb, not the merge. L
 is the discriminator, so two distinct long titles that share the 120-char filename
 prefix **and** location still merge (a bounded residual; the store cannot see the
 truncated title tail).
+Location is decided one layer up too: the ingest **read** key (`Lead.dedup_key`, for
+URL-less leads) folds in `_norm_location(location)`, so the engine's own dedup does not
+collapse two cities *before* the store's split can run (#23). The two layers use two
+notions of sameness — an equality hash upstream, token overlap in the store — but the
+upstream key can only *over*-split relative to the store, which is the safe direction:
+anything the engine lets through, the store re-merges.
 Those guarantees used to live inside `core/vault.py`; a second store would have
 shipped without them. They are now properties of the contract, and a store passes
 that suite or it does not ship.

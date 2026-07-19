@@ -1,7 +1,8 @@
 """Google Jobs (google.com/search?...&ibp=htl;jobs). Searches carry a URL, so the
 query->url transform is applied here at import via `_url`. Google job cards carry
-no stable outbound link, so these leads dedup by title+company (Lead.dedup_key's
-hash fallback). Override the built-in example with your own searches via
+no stable outbound link, so these leads dedup by title+company+location (Lead.dedup_key's
+hash fallback; location keeps two cities apart -- see #23). Override the built-in example
+with your own searches via
 `sources.google.searches` in config.
 """
 from urllib.parse import quote
