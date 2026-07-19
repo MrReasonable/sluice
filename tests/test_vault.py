@@ -3,7 +3,7 @@ import os
 import pytest
 
 from sluice.core.leads import Lead
-from sluice.core.vault import Vault, _clamp_bytes, _sanitize
+from sluice.core.vault import _CREATE_RACE_RETRIES, Vault, _clamp_bytes, _sanitize
 from tests.conftest import LOCATIONS
 
 
@@ -212,22 +212,112 @@ def test_name_max_falls_back_when_pathconf_returns_negative_one(tmp_path, monkey
     assert v._name_max() == 255
 
 
-def test_upsert_removes_partial_note_when_create_write_fails(tmp_path, monkeypatch):
-    # A create whose write fails mid-way must not leave a partial file: open("w")
-    # truncates/creates at open time, and a lingering 0-byte note would be treated as
-    # real on the next re-scrape (exists -> "updated" -> last_seen bumped on garbage).
+class _WriteFails:
+    """A file wrapper whose .write() raises but .close() works -- simulates an open that
+    SUCCEEDED (a real file was created) and a write that then failed mid-way."""
+    def __init__(self, f): self._f = f
+    def write(self, *_): raise OSError("disk full mid-write")
+    def close(self): self._f.close()
+
+
+def test_upsert_create_write_failure_leaves_no_partial(tmp_path, monkeypatch):
+    # #24: a create whose WRITE fails mid-way (the exclusive open succeeded, so a 0-byte file
+    # exists) must leave no partial -- a lingering 0-byte note would be adopted as real on the
+    # next re-scrape. _write removes its own partial; upsert propagates the OSError (skipped).
     import sluice.core.vault as vault_mod
     v = Vault(str(tmp_path))
+    real_open = open
 
-    def failing_write(p, text):
-        with open(p, "w", encoding="utf-8"):   # leave a 0-byte file, as open("w") does
-            pass
-        raise OSError("disk full mid-write")
+    def fake_open(p, mode="r", **kw):
+        if mode == "x":                                   # the exclusive create opens...
+            return _WriteFails(real_open(p, mode, **kw))  # ...succeeds, but the write below fails
+        return real_open(p, mode, **kw)
 
-    monkeypatch.setattr(vault_mod, "_write", failing_write)
+    monkeypatch.setattr(vault_mod, "open", fake_open, raising=False)
     with pytest.raises(OSError):
         v.upsert(_lead())
-    assert list(_leads_dir(tmp_path).glob("*.md")) == []   # partial artifact removed
+    monkeypatch.undo()
+    assert list(_leads_dir(tmp_path).glob("*.md")) == []   # our partial removed
+
+
+def test_upsert_create_open_failure_does_not_clobber_a_racer_note(tmp_path, monkeypatch):
+    # The clobber this closes (CodeRabbit): if the create's exclusive OPEN fails (EACCES/ENOSPC,
+    # NOT FileExistsError) while a concurrent writer lands a note at the path in the same window,
+    # nothing must delete that note. The old os.path.exists-based cleanup would have -- it cannot
+    # tell a racer's note from our own partial. The cleanup now lives in _write and fires ONLY
+    # when OUR exclusive open returned a handle, so a failed open unlinks nothing.
+    import sluice.core.vault as vault_mod
+    v = Vault(str(tmp_path)); v._name_max_cache = 255
+    os.makedirs(v.leads_dir, exist_ok=True)
+    path = os.path.join(v.leads_dir, "X - Y.md")
+    real_open = open
+
+    def fake_open(p, mode="r", **kw):
+        if mode == "x" and p == path:
+            with real_open(path, "w", encoding="utf-8") as rf:   # a racer lands a note...
+                rf.write("RACER'S NOTE")
+            raise OSError("EACCES: exclusive open failed")        # ...and OUR open fails, creating nothing
+        return real_open(p, mode, **kw)
+
+    monkeypatch.setattr(vault_mod, "open", fake_open, raising=False)
+    with pytest.raises(OSError):
+        v.upsert(_lead(company="X", title="Y", location=LOCATIONS[0], url="https://a/1"))
+    monkeypatch.undo()
+    assert (_leads_dir(tmp_path) / "X - Y.md").read_text() == "RACER'S NOTE", \
+        "the create's failed open clobbered a concurrent writer's note"
+
+
+def test_upsert_create_race_does_not_clobber_a_concurrently_created_note(tmp_path, monkeypatch):
+    # #16 TOCTOU: a concurrent writer (another `ingest run`, or a human in Obsidian) creates
+    # the note in the window between _resolve_path's existence check and the create write.
+    # The create must NOT truncate it -- that is never-clobber, now under concurrency. It
+    # must re-reconcile against the note that now exists.
+    v = Vault(str(tmp_path)); v._name_max_cache = 255
+    os.makedirs(v.leads_dir, exist_ok=True)
+    racer_path = os.path.join(v.leads_dir, "X - Y.md")           # candidate 1 for the lead
+    lead = _lead(company="X", title="Y", location=LOCATIONS[0], url="https://a/1")
+
+    # _render_new runs AFTER _resolve_path and BEFORE the write, so a side effect here
+    # occupies the TOCTOU window exactly: the racer lands an ENRICHED note mid-upsert.
+    real_render = v._render_new
+
+    def racing_render(incoming):
+        text = real_render(incoming)
+        with open(racer_path, "w", encoding="utf-8") as f:
+            f.write('---\ncompany: "X"\nrole: "Y"\nstatus: applied\n'
+                    'url: "https://a/1"\nlast_seen: 2026-07-01\n---\n\nenriched body\n')
+        return text
+
+    monkeypatch.setattr(v, "_render_new", racing_render)
+    outcome = v.upsert(lead)
+
+    txt = (_leads_dir(tmp_path) / "X - Y.md").read_text()
+    assert "status: applied" in txt              # the racer's enrichment survived
+    assert "enriched body" in txt                # ...body too
+    assert outcome in ("updated", "merged")      # re-reconciled, not "created" over the top
+
+
+def test_upsert_refuses_when_the_create_races_repeatedly(tmp_path, monkeypatch):
+    # #16 exhaustion tail: if EVERY create attempt loses the race (sustained create/delete
+    # flapping -- the note keeps being created under us and vanishing before we re-resolve),
+    # upsert must give up bounded, with "refused", writing NOTHING. It must NOT spin (the
+    # loop is bounded) and must NOT falsely report "created" -- a never-written lead recorded
+    # into seen.db would be silently lost.
+    import sluice.core.vault as vault_mod
+    v = Vault(str(tmp_path)); v._name_max_cache = 255
+    os.makedirs(v.leads_dir, exist_ok=True)
+    attempts = 0
+
+    def always_taken(p, text, *, exclusive=False):
+        nonlocal attempts
+        attempts += 1
+        raise FileExistsError(p)   # the exclusive create always finds the path occupied
+
+    monkeypatch.setattr(vault_mod, "_write", always_taken)
+    outcome = v.upsert(_lead(company="X", title="Y", location=LOCATIONS[0], url="https://a/1"))
+    assert outcome == "refused"
+    assert attempts == _CREATE_RACE_RETRIES == 3, "the create must be bounded to a fixed retry count"
+    assert list(_leads_dir(tmp_path).glob("*.md")) == []   # nothing written
 
 
 def test_note_name_candidate1_matches_path_for(tmp_path):
