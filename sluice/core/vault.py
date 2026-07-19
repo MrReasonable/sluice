@@ -31,6 +31,7 @@ _DEFAULT_VAULT = "./vault"
 _SEP = " - "        # note-name separator; identity-determining, stays a literal (never config)
 _SUFFIX_MAX = 40    # max chars of the location suffix on candidate 2; identity-determining literal
 _CHAR_CAP = 120     # max chars of a note stem before the byte-clamp; identity-determining literal
+_CREATE_RACE_RETRIES = 3  # #16: bounded re-reconciles when a create loses the TOCTOU race
 
 _log = get_logger("core.vault")
 
@@ -350,52 +351,66 @@ class Vault:
         """Reconcile an incoming lead against the existing notes. Returns one of
         "created" | "updated" | "merged" | "refused". UPDATE and MERGE bump ONLY last_seen
         (never-clobber); REFUSE writes nothing -- every name candidate is a note proven
-        DIFFERENT, so writing would clobber a different job. See #5."""
-        path, action = self._resolve_path(lead)
-        if action == "refuse":
-            # Loud, not silent, and writes NOTHING -- not the note, and not the leads dir
-            # or Syncthing marker (below): every name candidate is a note proven DIFFERENT,
-            # so any write would clobber a different job. The sink counts this and keeps the
-            # lead out of seen.db, so it is retried (and re-reported) next run rather than
-            # lost. Reachable only pathologically (a note whose frontmatter contradicts its
-            # filename, or a byte-clamp collapse on a tiny NAME_MAX). See #5.
-            _log.warning("vault refused lead %r: every name candidate is a note proven different",
-                         lead.dedup_key)
-            return "refused"
-        # Every remaining action WRITES, so make the dir + Syncthing marker now -- after the
-        # refusal check, so a refusal leaves the filesystem untouched (REFUSE writes nothing).
-        # ensure_stfolder lives here and not in __init__: constructing a store must not touch
-        # the disk. It used to be a Store method cli.py called by hand, leaking a Syncthing/
-        # Obsidian concept into a contract every other store would have had to pretend to honour.
-        os.makedirs(self.leads_dir, exist_ok=True)
-        self.ensure_stfolder()
-        if action == "update":
-            self._bump_last_seen(path, lead.last_seen or _today())
-            return "updated"
-        if action == "merge":
-            # We could not prove same-or-different, so we do NOT split (that would mint a
-            # note per scrape -- unbounded). Bump last_seen like an update; the difference
-            # is only that the count is reported separately so the merge is visible.
-            self._bump_last_seen(path, lead.last_seen or _today())
-            return "merged"
-        try:
-            _write(path, self._render_new(lead))
-        except OSError:
-            # A create whose write fails mid-way leaves open("w")'s truncated 0-byte
-            # file behind; a later re-scrape would see it exists and treat the garbage
-            # as a real note (bump last_seen, never re-create). Remove the partial so
-            # the retried lead is created cleanly, then re-raise so the sink counts it
-            # skipped and keeps it out of seen.db. See #24.
-            if os.path.exists(path):
-                try:
-                    os.unlink(path)
-                except OSError as e:
-                    # Even the cleanup can fail (e.g. the FS remounted read-only). Log
-                    # it rather than swallow: the lingering partial note is a landmine a
-                    # later re-scrape would adopt as a real note, so it must be visible.
-                    _log.warning("could not remove partial note %s: %s", path, e)
-            raise
-        return "created"
+        DIFFERENT, so writing would clobber a different job. See #5.
+
+        The create is EXCLUSIVE (`_write(..., exclusive=True)`): if a concurrent writer (another `ingest run`,
+        or a human/Obsidian) creates the note in the window between _resolve_path's existence
+        check and the write, the create raises FileExistsError instead of TRUNCATING that
+        note, and we loop to re-reconcile against it. This closes the TOCTOU clobber (#16).
+        The loop is bounded because a re-resolve finds the path now occupied, so it terminates
+        -- as update/merge, a fresh "created" at the NEXT name candidate (when the raced note
+        is a DIFFERENT job, so _resolve_path advances past it), or refuse. Only sustained
+        create/delete flapping exhausts the retries, which refuses loudly (writing nothing)
+        rather than clobbering or spinning."""
+        for _ in range(_CREATE_RACE_RETRIES):
+            path, action = self._resolve_path(lead)
+            if action == "refuse":
+                # Loud, not silent, and writes NOTHING -- not the note, and not the leads dir
+                # or Syncthing marker (below): every name candidate is a note proven DIFFERENT,
+                # so any write would clobber a different job. The sink counts this and keeps the
+                # lead out of seen.db, so it is retried (and re-reported) next run rather than
+                # lost. Reachable only pathologically (a note whose frontmatter contradicts its
+                # filename, or a byte-clamp collapse on a tiny NAME_MAX). See #5.
+                _log.warning("vault refused lead %r: every name candidate is a note proven different",
+                             lead.dedup_key)
+                return "refused"
+            # Every remaining action WRITES, so make the dir + Syncthing marker now -- after the
+            # refusal check, so a DIRECT refusal (the common case, pinned by
+            # test_upsert_refuses_and_writes_nothing) leaves the filesystem untouched. (A refusal
+            # reached only AFTER a create lost the TOCTOU race may have made these in the racing
+            # iteration -- harmless: no lead note is written, the racer already created the dir,
+            # and .stfolder is idempotent.)
+            # ensure_stfolder lives here and not in __init__: constructing a store must not touch
+            # the disk. It used to be a Store method cli.py called by hand, leaking a Syncthing/
+            # Obsidian concept into a contract every other store would have had to pretend to honour.
+            os.makedirs(self.leads_dir, exist_ok=True)
+            self.ensure_stfolder()
+            if action == "update":
+                self._bump_last_seen(path, lead.last_seen or _today())
+                return "updated"
+            if action == "merge":
+                # We could not prove same-or-different, so we do NOT split (that would mint a
+                # note per scrape -- unbounded). Bump last_seen like an update; the difference
+                # is only that the count is reported separately so the merge is visible.
+                self._bump_last_seen(path, lead.last_seen or _today())
+                return "merged"
+            try:
+                _write(path, self._render_new(lead), exclusive=True)
+                return "created"
+            except FileExistsError:
+                # #16 TOCTOU: a concurrent writer created this note between _resolve_path's
+                # existence check and this exclusive create. Truncating it (the old open("w"))
+                # would clobber a note we never reconciled against -- never-clobber, under
+                # concurrency. Loop to re-resolve against the note that now exists.
+                continue
+            # A non-FileExistsError OSError (disk full, permissions) propagates out: _write has
+            # already removed any 0-byte partial IT created (#24) -- and, crucially, removes it
+            # ONLY when its own exclusive open succeeded, so it never unlinks a note a concurrent
+            # writer owns. The sink then counts the lead skipped and keeps it out of seen.db.
+        # Every attempt lost the create race (the note kept being created then deleted under
+        # us). Refuse loudly rather than clobber or spin; the sink keeps it out of seen.db.
+        _log.warning("vault could not create lead %r: create raced repeatedly", lead.dedup_key)
+        return "refused"
 
     def _bump_last_seen(self, path: str, last_seen: str) -> None:
         """Set the last_seen line inside existing frontmatter, preserving every
@@ -456,9 +471,32 @@ def _read(path: str) -> str:
         return f.read()
 
 
-def _write(path: str, text: str) -> None:
-    with open(path, "w", encoding="utf-8") as f:
+def _write(path: str, text: str, *, exclusive: bool = False) -> None:
+    """Write `text` to `path`. `exclusive=True` opens with mode "x" (O_CREAT|O_EXCL, atomic at
+    the OS level) so a CREATE cannot silently truncate a note a concurrent writer landed in the
+    TOCTOU window between _resolve_path's existence check and here -- "x" raises FileExistsError
+    instead, which upsert re-reconciles against (#16). Every other write (last_seen bumps, field
+    edits) targets a note already reconciled against, so it uses the default truncating "w".
+
+    On an exclusive create, if the OPEN succeeds but the WRITE then fails, the 0-byte partial we
+    created is removed before re-raising -- a lingering partial would be adopted as a real note
+    on the next re-scrape (#24). A FAILED open (FileExistsError, or EACCES/ENOSPC) creates
+    nothing, so nothing is removed: ownership is 'our open returned a handle', NOT os.path.exists
+    (which a race could fool into unlinking a note a concurrent writer just landed)."""
+    f = open(path, "x" if exclusive else "w", encoding="utf-8")  # a failed open creates nothing
+    try:
         f.write(text)
+        f.close()
+    except OSError:
+        f.close()  # close before unlink: an open file cannot be removed on Windows
+        if exclusive:
+            try:
+                os.unlink(path)  # our exclusive open succeeded, so this partial is OURS
+            except OSError as e:
+                # Even the cleanup can fail (e.g. the FS remounted read-only). Log rather than
+                # swallow: a lingering partial note is a landmine a re-scrape would adopt as real.
+                _log.warning("could not remove partial note %s: %s", path, e)
+        raise
 
 
 def _split_frontmatter(text: str) -> tuple[str | None, str]:
