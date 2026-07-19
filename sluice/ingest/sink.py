@@ -1,12 +1,12 @@
 """Sinks: where deduped, relevance-passed leads land.
 
 VaultSink stamps first_seen/last_seen, upserts each lead into the Obsidian vault
-(never clobbering status), then records it in seen.db so the next run dedups it.
-A lead the vault refuses to write (OSError - name too long on an odd FS,
-permissions, disk full) is counted `skipped`, logged, and kept OUT of seen.db so
-the next run retries it, rather than aborting the run. JsonSink emits one JSON
-object per line - for `--sink json` and the legacy-diff tool. Both return
-{created, updated, skipped}.
+(never clobbering status). upsert returns created/updated/merged/refused; only the
+first three mean a note now EXISTS, so only those are recorded in seen.db. `refused`
+(a #5 name-collision decline) and `skipped` (a #24 OSError write failure) stay OUT of
+seen.db so the next run retries them, rather than aborting the run. JsonSink emits one
+JSON object per line - for `--sink json` and the legacy-diff tool. Both return sparse
+count dicts (merged/refused keys appear only when non-zero).
 """
 import json
 from dataclasses import asdict
@@ -36,9 +36,13 @@ class VaultSink:
                 lead.first_seen = stamp
             lead.last_seen = stamp
             try:
-                outcome = self.vault.upsert(lead)  # "created" | "updated"
+                outcome = self.vault.upsert(lead)  # created | updated | merged | refused
                 counts[outcome] = counts.get(outcome, 0) + 1
-                recorded.append(lead)
+                if outcome in ("created", "updated", "merged"):
+                    # Allowlist over "a note now exists", stated positively so an unknown
+                    # outcome fails safe: refused (and the OSError->skipped below) stay OUT
+                    # of `recorded` -> never enter seen.db -> retried next run. See #5.
+                    recorded.append(lead)
             except OSError as e:
                 # A lead the store cannot write (name too long on an odd FS,
                 # permissions, disk full) must not sink the batch or the run. Count
