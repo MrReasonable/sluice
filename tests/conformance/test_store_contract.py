@@ -81,7 +81,11 @@ def test_rescrape_touches_last_seen_AND_NOTHING_ELSE(store_name, tmp_path, monke
     back.
     """
     store = _make_store(store_name, tmp_path, monkeypatch)
-    assert store.upsert(_lead()) == "created"
+    # Create with an EXPLICIT early date, not the _today() default, so the forward
+    # re-scrape below is deterministic and does not depend on when the suite runs (the
+    # re-scrape date must be LATER than the stored one for last_seen to move at all --
+    # last_seen is monotonic, see test_rescrape_never_regresses_last_seen).
+    assert store.upsert(_lead(first_seen="2026-07-10", last_seen="2026-07-10")) == "created"
     _enrich(store, store.read_leads()[0].ref)
     store.append_body_section(store.read_leads()[0].ref, "d-1",
                               "## Dossier <!--d-1-->\n\nbody")
@@ -89,7 +93,7 @@ def test_rescrape_touches_last_seen_AND_NOTHING_ELSE(store_name, tmp_path, monke
     before = store.read_leads()[0]
     before_fm = dict(before.fm)
 
-    # The lead comes back on the next scrape, as it will every day it stays posted.
+    # The lead comes back on a LATER scrape, as it will every day it stays posted.
     assert store.upsert(_lead(last_seen="2026-07-14")) == "updated"
 
     after = store.read_leads()[0]
@@ -100,6 +104,22 @@ def test_rescrape_touches_last_seen_AND_NOTHING_ELSE(store_name, tmp_path, monke
     assert after_fm == before_fm, "a re-scrape changed a field other than last_seen"
     assert after.body == before.body, "a re-scrape rewrote the note body"
     assert after.status == "applied", "a re-scrape clobbered an application-owned status"
+
+
+def test_rescrape_never_regresses_last_seen(store_name, tmp_path, monkeypatch):
+    """last_seen is MONOTONIC: a re-scrape carrying a date OLDER than the stored one must
+    leave the newer value in place. "Last seen" moving into the past is incoherent -- the
+    lead WAS seen on the newer date -- and a board that re-lists a role with a stale date
+    must not drag the marker backwards. Stated on the CONTRACT, next to the never-clobber
+    invariant it belongs with, so a second store inherits it rather than silently regressing.
+    """
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    assert store.upsert(_lead(last_seen="2026-07-14")) == "created"
+    # The board re-lists the role with a STALE date. Update or merge -- either way the
+    # stamp must not move into the past.
+    assert store.upsert(_lead(last_seen="2026-07-09")) in ("updated", "merged")
+    assert store.read_leads()[0].fm.get("last_seen") == "2026-07-14", \
+        "an older re-scrape regressed last_seen into the past"
 
 
 def test_update_fields_sets_only_the_named_keys_and_preserves_body(store_name, tmp_path,

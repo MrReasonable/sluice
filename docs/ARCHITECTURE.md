@@ -93,7 +93,9 @@ builds one, calls one method, and formats the result for the terminal -- so a we
 UI written today has nothing left in `cli.py` worth forking.
 
 `tests/conformance/test_store_contract.py` is parameterised over every registered
-store and asserts never-clobber, never-regress, slug/ref identity, and
+store and asserts never-clobber (a re-scrape touches only `last_seen`, and that
+marker may only move **forward** — an older re-scrape leaves the newer stored value,
+so `last_seen` is monotonic), never-regress, slug/ref identity, and
 never-silently-absorb-a-different-opportunity: two jobs with a proven **location**
 difference produce two notes, and when identity is uncertain `upsert` returns an
 explicit `merged` rather than absorbing the lead silently (#5). `merged` is a

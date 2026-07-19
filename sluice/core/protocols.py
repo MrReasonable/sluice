@@ -48,8 +48,10 @@ class Store(Protocol):
         same opportunity), "merged" (an existing note we could not prove same-or-different
         from), or "refused" (no identity distinguishes this lead from a note proven
         different, so nothing is written). On "updated" and "merged" ONLY `last_seen` may
-        change -- never status, enrichment, or body. This is never-clobber, and it is the
-        reason sluice exists.
+        change -- never status, enrichment, or body -- and it may only move FORWARD: a
+        re-scrape carrying an older date leaves the newer stored value untouched
+        (`last_seen` is monotonic). This is never-clobber, and it is the reason sluice
+        exists.
 
         "created"/"updated" are MUST-support. "merged"/"refused" are MAY-return: a store
         keyed on synthetic ids never merges-on-uncertainty and never hits a naming
