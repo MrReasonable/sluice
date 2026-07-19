@@ -89,11 +89,26 @@ class Lead:
     @property
     def dedup_key(self) -> str:
         """Stable identity. Prefer the normalized URL; fall back to a hash of
-        title+company so URL-less leads still dedup."""
+        title+company+LOCATION so URL-less leads still dedup.
+
+        Location is in the key because without it the engine collapses two jobs sharing a
+        title+company but at DIFFERENT cities BEFORE the store's #5 location split can run,
+        silently dropping one a layer too early (#23). It is fed through _norm_location --
+        the same canonicalisation the store compares with -- so pure case/NFKD variants of
+        one city still share a key (collapse), while genuinely different cities split.
+        Over-splitting here is safe: two same-city leads that slip through merge at the
+        store. Note this changes the key for existing URL-less seen.db entries, so they
+        re-surface ONCE (a no-op never-clobber update), then re-key stably.
+
+        The fields are LENGTH-PREFIXED (netstring-style) rather than `|`-joined so a
+        delimiter inside a field cannot forge a collision: title="a"/company="b|c" and
+        title="a|b"/company="c" both flatten to "a|b|c" under a naive join, which would
+        silently drop one genuinely different lead as "already seen"."""
         if self.url:
             return _norm_url(self.url)
-        digest = hashlib.sha1(f"{self.title}|{self.company}".lower().encode()).hexdigest()
-        return "h:" + digest
+        fields = (self.title.lower(), self.company.lower(), _norm_location(self.location))
+        key = "".join(f"{len(v)}:{v}" for v in fields)
+        return "h:" + hashlib.sha1(key.encode()).hexdigest()
 
     @property
     def slug(self) -> str:
