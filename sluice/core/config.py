@@ -54,6 +54,9 @@ class Config:
     # gate passes everything through rather than applying someone else's taste.
     relevance_keep: list = field(default_factory=list)
     relevance_drop: list = field(default_factory=list)
+    # Words that decorate a location without locating it, subtracted before #5 compares
+    # two postings for a split. Empty by default -> nothing subtracted (abstain).
+    location_noise_words: list = field(default_factory=list)
 
     def source(self, id: str) -> SourceConfig:
         """Config for a source id; unlisted sources default to enabled + no tuning."""
@@ -97,4 +100,5 @@ def load_config(path: str | None = None) -> Config:
                   baseline_rel=str(data.get("baseline_rel") or "My CV/CV.md"),
                   fetcher=str(data.get("fetcher") or "camofox"),
                   relevance_keep=list(data.get("relevance_keep") or []),
-                  relevance_drop=list(data.get("relevance_drop") or []))
+                  relevance_drop=list(data.get("relevance_drop") or []),
+                  location_noise_words=list(data.get("location_noise_words") or []))
