@@ -200,3 +200,23 @@ def test_upsert_removes_partial_note_when_create_write_fails(tmp_path, monkeypat
     with pytest.raises(OSError):
         v.upsert(_lead())
     assert list(_leads_dir(tmp_path).glob("*.md")) == []   # partial artifact removed
+
+
+def test_note_name_candidate1_matches_path_for(tmp_path):
+    v = Vault(str(tmp_path))
+    v._name_max_cache = 255
+    assert v._note_name("Acme - Analyst") == "Acme - Analyst"
+
+
+def test_note_name_suffix_appends_sanitized_location(tmp_path):
+    v = Vault(str(tmp_path))
+    v._name_max_cache = 255
+    assert v._note_name("Acme - Analyst", "aaa/bbb") == "Acme - Analyst - aaa-bbb"
+
+
+def test_note_name_bounds_suffix_so_stem_budget_never_negative(tmp_path):
+    v = Vault(str(tmp_path))
+    v._name_max_cache = 255
+    out = v._note_name("C" * 200, "L" * 200)       # a 200-char location is clamped to _SUFFIX_MAX(40)
+    stem, _, suffix = out.rpartition(" - ")
+    assert len(suffix) == 40 and len(stem) == 120 - len(" - ") - 40
