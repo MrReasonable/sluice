@@ -97,6 +97,14 @@ built from is non-empty:
 There is deliberately **no URL-hashed candidate** — a volatile URL (`_norm_url` keeps the query string) would
 mint a fresh note every run, the unbounded growth this design's governing rule forbids.
 
+**The 120-char prefix collision is resolved through the *location* discriminator, not a title one.** Two
+distinct long titles that cap to the same stem split into two notes **when their locations differ** (candidate
+2 differs). When company, capped prefix **and** location all coincide they merge — a **bounded residual**, the
+same class as the accepted cost below: the store cannot see the truncated title tail, so it has no positive
+evidence of difference. (A *title*-digest fallback candidate would recover that evidence, and — unlike the
+rejected URL hash — a title digest is stable across scrapes, so it would not mint a note per run. It is left
+as a possible follow-up, not built here.)
+
 The walk visits candidates in order. **Every verdict terminates in place except `DIFFERENT`:**
 
 | At a candidate | Action | Terminates? |
@@ -287,7 +295,8 @@ reintroduce this loss and pass every `Vault`-only test.
     it never reports a write it did not perform. `created`/`updated` are MUST-support; `merged`/`refused` are
     MAY-return (a DB store keyed on synthetic ids never merges-on-uncertainty or hits a naming collision).
 - **`tests/test_vault.py`** — the Vault/**filesystem specifics**, where asserting `== "merged"`/`== "refused"`
-  and reading filenames is legitimate: the 120-char prefix collision resolving to two notes; the suffix
+  and reading filenames is legitimate: the 120-char prefix collision resolving to two notes **when the
+  locations differ**; the suffix
   surviving truncation; the over-long-location REFUSE-or-two-notes bound; candidate naming; the exact
   `merged`/`refused` outcome strings; and the REFUSE trigger below.
 - **`tests/conftest.py`** — a `locations` fixture beside `titles`, exposed as an **importable module-level
