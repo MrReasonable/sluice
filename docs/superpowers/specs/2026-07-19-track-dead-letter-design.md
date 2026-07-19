@@ -1,10 +1,11 @@
 # Track dead-letter — an un-acted-on proposal must never silently vanish
 
 - **Date**: 2026-07-19
-- **Status**: **READY TO PLAN.** Revised after a 5-agent `/review-plan` (0 Critical / 3 High / 9 Medium
-  / 4 Low); all findings folded. The three High were all in the failure paths the feature adds — the
-  silent-loss class #49 exists to remove — now closed by the asymmetric failure semantics (§1) and the
-  advance-gated clear (§3).
+- **Status**: **READY TO PLAN.** Round 1 `/review-plan` (5 agents): 0 Critical / 3 High / 9 Medium / 4
+  Low — all folded. Round 2 re-review (4 agents): 0 Critical / 0 High / 0 Medium / 4 Low — every round-1
+  High and Medium verified resolved against the code, the four new Lows (clarity only) folded. The three
+  High were all in the failure paths the feature adds — the silent-loss class #49 exists to remove —
+  closed by the asymmetric failure semantics (§1) and the advance-gated clear (§3).
 - **Origin**: issue #49, surfaced in the review of PR #42 (the #40 classify-failure fix) by the invariant
   reviewer (Low, `requires_human_judgment`) and confirmed by a fresh architect. Pre-existing; broader
   than #40.
@@ -83,7 +84,8 @@ track_deadletter(
   candidates     TEXT,               -- comma-joined slugs for an ambiguous proposal; else ""
   ev_type        TEXT,               -- classification type (rejection, unknown, offer, update, ...)
   proposal       TEXT,               -- the human-readable proposal line
-  hint           TEXT,               -- the runnable `sluice track confirm ...` hint
+  hint           TEXT,               -- report guidance: a runnable `track confirm ...` cmd OR a
+                                     --   non-runnable "...; review manually" note (no-action cases)
   first_seen     TEXT,               -- ISO date first recorded
   times_surfaced INTEGER             -- run-count it has been surfaced (staleness signal)
 )
@@ -116,6 +118,14 @@ skips it at `engine.py:55` and never re-records — a silently-empty read drops 
 - **Reads (`open_entries`) distinguish missing from corrupt.** A *missing* db (first run) → empty, fine.
   A *corrupt/unreadable* db → **raise / fail loudly** (surfaced to the operator), never a silent empty.
 - `_init`-on-write creates the table (this part does mirror `SeenDb._init`).
+
+The two calls *outside* the per-message `try` — `bump_surfaced()` at run start (§2 step 1) and
+`open_entries()` at report assembly (§2 step 3) — raise straight out of `run()` before `app.py`'s
+`_save_seen`/`_save_lastrun` (`app.py:411-414`) execute. That is **fail-safe, not a gap**: nothing has
+been `seen.add`'d, the watermark is unadvanced, the backlog is untouched, and the whole run re-runs
+cleanly next invocation (idempotent `INSERT OR IGNORE` `record` makes a crash after commit but before
+`seen.add` a no-op). The only loss a swallowed `bump` could cause is a staleness *counter*, never a
+proposal.
 
 ### 2. Run-loop mechanics — `engine.py`
 
@@ -178,9 +188,11 @@ aging and the human knows what to `dismiss`. The summary line gains `open=<N>`.
 **Readers of the renamed field migrate, not just `cli.py`.** `cmd_track_run` (`cli.py:295`) moves to
 `open_proposals`, and the five existing hint-correctness assertions in
 `tests/test_track_engine.py:102,116-118,134` — which read `rep.proposals[0]` as a formatted string (no
-`<status>` placeholder, no fake `--lead "?"`, a real `--to rejected`) — migrate to assert the same
-guarantees on the structured `Entry.hint`. The old `proposals` field is **removed**, not kept alongside
-`open_proposals` (a dead, unpopulated field kept for a green suite is itself a finding).
+`<status>` placeholder, no fake `--lead "?"`, a real `--to rejected`, and — line 118 — a no-runnable-
+action outcome carrying a `review manually` note) — migrate to assert the same guarantees on the
+structured `Entry.hint` (which holds that same guidance line, runnable command *or* review note). The
+old `proposals` field is **removed**, not kept alongside `open_proposals` (a dead, unpopulated field
+kept for a green suite is itself a finding).
 
 ## Invariant interactions
 
@@ -204,8 +216,10 @@ behaviour change #49 asks for, applied uniformly rather than special-cased.
 
 ## Testing
 
-Fully offline/hermetic (no Gmail, no backend); a **real** temp SQLite `DeadLetterDb` (never a fake, so
-SQL bugs surface); synthetic fixtures pinned to the existing mechanisms — seeded-faker
+Fully offline/hermetic (no Gmail, no backend); a **real** temp SQLite `DeadLetterDb` as the default so
+SQL bugs surface — the failure-semantics tests below are the deliberate exception, injecting a store
+double whose `record`/`open_entries` raises, the only way to exercise the raise-then-skip-`seen` path;
+synthetic fixtures pinned to the existing mechanisms — seeded-faker
 `titles`/`cfg_titles` (`tests/conftest.py`) for slugs/titles and `FakeClient` message dicts (as in
 `tests/test_track_engine.py`) for message-ids, so no real employer, message-id, or role is ever
 hardcoded into a dead-letter row.
@@ -239,11 +253,12 @@ hardcoded into a dead-letter row.
 
 `docs/ARCHITECTURE.md` lands with the code, or it drifts the moment this merges:
 
-- the **track sub-app paragraph** gains *durable proposal surfacing* (not just fetch/classify/reconcile);
+- the **track sub-app paragraph** gains *durable proposal surfacing* and names the new
+  `track/deadletter.py` module (track is described in prose — do **not** add it to the `## core/`
+  bulleted module list, which would re-create the core/-vs-track/ confusion arch-001 resolved);
 - the `app.py` **owned-state sentence** ("file-backed seen-message set and last-successful-run
   watermark") gains the **third** store, the dead-letter db;
-- the **method enumeration** gains **`track_dismiss`**;
-- the **module list** gains **`track/deadletter.py`**.
+- the **method enumeration** gains **`track_dismiss`**.
 
 ## Out of scope (separable future issues)
 
