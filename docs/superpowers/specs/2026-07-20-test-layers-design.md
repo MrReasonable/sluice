@@ -1,164 +1,226 @@
-# Test layers — functional, end-to-end, and executable acceptance
+# Test layers — finishing three seams, then e2e, functional and acceptance
 
 - **Date**: 2026-07-20
-- **Status**: DRAFT — awaiting `/review-plan`.
-- **Goal**: give sluice a test layer above the unit/contract suite: a full-pipeline end-to-end run, a
-  functional layer that invokes CLI handlers, and executable acceptance scenarios phrased as user
-  outcomes. This spec designs **all three** but scopes **PR 1 (harness + e2e)** for execution.
+- **Status**: REVISED after round 1 `/review-plan` (5 agents: 0C / 11H / 11M / 8L — all folded).
+  Awaiting round 2.
+- **Goal**: add a test layer above the unit/contract suite — a full-pipeline e2e run, a functional
+  layer over the CLI handlers, and executable acceptance scenarios. Four PRs; **PR 0 and PR 1** are
+  designed here in full, PR 2 and PR 3 in outline.
 
-## What exists today, and what does not
+## Corrections to round 1, recorded rather than quietly fixed
 
-721 tests: per-module unit tests, a store conformance suite, and golden parser fixtures. Two gaps,
-both verified rather than assumed:
+Round 1 found the plan's motivation partly false and three of its four mutation witnesses inert.
+Both errors are the same shape — a claim asserted from a sample rather than checked — so they are
+recorded here rather than silently repaired.
 
-**1. There is no functional layer.** The eight files that look like CLI tests are
-**argparse-parsing tests only** — `tests/test_cv_cli.py` calls `_build_parser().parse_args([...])`
-and asserts on the resulting `Namespace`. No handler is ever invoked. The wiring *between* argparse
-and the handlers has no coverage.
+- **"The eight CLI-test files are argparse-parsing tests only; no handler is ever invoked" was
+  FALSE.** It generalised from one file. `tests/test_apply_cli.py` calls `cmd_apply_prep` /
+  `cmd_apply_record`; `tests/test_track_cli.py` calls three `cmd_track_*`; `tests/test_cli.py` and
+  `tests/test_triage_cli.py` call `main([...])`, the full dispatch path. **Only `test_cv_cli.py` is
+  parse-only.** PR 2 and #7 survive on different grounds — see §PR 2.
+- **The second gap holds:** no test spans `ingest → triage → cv → apply → track`. Verified by two
+  reviewers. PR 1's motivation is unaffected.
+- **Three of four mutation witnesses would have stayed green.** See §Mutation witnesses, which now
+  specifies the *scenario shape* that makes each observable, not just the mutation.
+- **The backend row of the substitution table cited `app.py:386`**, which documents the Gmail
+  `client` and explicitly contrasts it *with* the backend. Three reviewers caught it.
 
-That is exactly **issue #7** ("no CLI flag may be parsed but ignored"), whose body records three real
-instances: `triage --backend` parsed and never forwarded; a `backend_choice` parameter no CLI caller
-could set; an unrecognised `--backend` value falling through to a default. Each was invisible because
-both ends read correctly and only the wiring was absent.
+## PR 0 — finish three seams
 
-**2. Nothing spans the pipeline.** Five test files touch more than one sub-app, but all are
-config/doctor/backend-selection tests. No test walks `ingest → triage → cv → apply → track`.
+Not test accommodations. Two are seams the codebase already declares and fails to wire; the third is
+a gap three existing features already feel. Each lands as its own commit with its own justification,
+and each is mutation-witnessed independently of the harness.
 
-## Decisions (user-confirmed)
+### 0.1 `Sluice.backend()` must honour `_overrides`
 
-- **E2E boundary: seam-faked, real everything else.** No live tier. The suite stays offline,
-  deterministic and in CI, per CLAUDE.md's testing invariant.
-- **UAT means executable acceptance scenarios**, not a manual checklist and not an inspectable
-  artefact directory. A checklist nobody runs rots silently; scenarios in CI cannot.
-- **Sequence A**: harness + e2e first, then functional, then acceptance. The harness is the
-  load-bearing piece, and e2e is its most demanding consumer — designing it against the *least*
-  demanding consumer risks a reshape later.
-- **#7 is closed by PR 2**, not left open beside near-identical machinery.
+`__init__` accepts `**overrides` and stores them; `_resolve` honours them for store, fetcher and
+renderer. `backend()` never calls `_resolve` and never reads `_overrides`, so
+`Sluice(config, backend=X)` is **accepted and silently ignored**.
 
-## The substitution points already exist
+That is the failure mode `backend()`'s own comment says it exists to prevent — it raises on an
+unrecognised role rather than "land silently in `auto`", calling that "the same quiet-wrong-default
+this method exists to remove". The constructor advertising an override it drops is that same class.
 
-No monkeypatching and no production change is required. Verified against the code:
+Fix: consult `_overrides` at the top of `backend()`. Inert in production (nothing passes one today).
+**Per-instance, and it never touches the global registry** — so
+`tests/test_backend_registry.py`'s set-equality assertion is untouched. That guard is precisely why
+registering a fake backend is not an option (round 1, two reviewers).
 
-| Seam | Substitution point |
-| --- | --- |
-| store | a real `Vault` on `tmp_path` — real markdown I/O, real `_resolve_path` walk, real never-clobber |
-| fetcher | `plugins` seam, config key `fetcher` (`core/app.py:172`) |
-| renderer | `plugins` seam, config key `cv.renderer` (`core/app.py:178`) |
-| backend | `Sluice.backend()` — documented in-code (`app.py:386`) as "the test seam rather than a `plugins.get` lookup" |
-| Gmail | `client` is already an explicit constructor argument, documented at `app.py:383` as the test seam |
+### 0.2 `Sluice.ingest()` must pass `Ctx.sleep`
 
-**Fakes are registered through the public `register()` API from `tests/`, not patched around the
-seams.** Two consequences worth stating: it respects the architecture rule that new implementations
-route *through* the seams; and `docs/ARCHITECTURE.md` currently records that the fetcher and renderer
-seams have one implementation each with "no runtime selection exercised yet" — this harness becomes
-the second implementation of both, so the seams stop being an untested claim.
+`ingest/base.py:33` declares `sleep: Callable = field(default=time.sleep)` with the docstring "an
+injectable sleep so tests don't actually wait for page settle". `core/app.py:253` builds
+`Ctx(camofox=..., config=...)` and drops it, so a shipped source costs ~4-5s of real sleep per
+search — against a whole suite that runs in ~3.5s.
 
-**The fakes live in `tests/`, never in `sluice/`.** Shipping a `scripted` fetcher inside a
-stdlib-only production package would be test-only code in the shipped artefact.
+Fix: thread it through as an explicit constructor argument, following the house convention already
+documented for track's Gmail `client`: "a plain constructor argument, not a registered adapter seam."
+
+### 0.3 An injectable clock
+
+The only genuinely new seam, and the weakest case, so it is stated plainly. Its justification is not
+the harness but three existing date-dependent behaviours with no app-level test:
+`Vault._bump_last_seen`'s monotonicity (#45), the `lastrun` watermark (#49), and lead staleness (#9)
+if it lands. `ingest/sink.py` calls a module-level `_today()`; nothing above it can move the clock.
+
+Fix: an injectable `today` on the same explicit-constructor-argument pattern.
+
+**Why seams rather than monkeypatch:** monkeypatch binds to *where a symbol was imported*, so
+patching `sink._today` works until someone imports it elsewhere and it silently stops patching. A
+finished seam cannot rot that way. And 0.1 is a live defect regardless of testing.
 
 ## PR 1 — the harness and the e2e run
 
-### 1. Harness (`tests/e2e/adapters.py`, `tests/e2e/conftest.py`)
+### 1.1 Substitution points (corrected)
 
-- **`scripted` fetcher** — returns canned raw payloads keyed by `(source_id, search)`. Because it
-  substitutes only `fetch`, the real pure `Source.parse` runs against them, so the parser layer is
-  exercised rather than bypassed.
-- **`recording` renderer** — records every `cv_text` it is asked to render and writes a stub file.
-  Recording (not discarding) is what keeps "no CV was rendered when the gate failed" assertable; a
-  renderer that silently no-ops would make the fabrication-gate assertion vacuous.
-- **`ScriptedBackend`** — deterministic `complete(prompt)` returning canned responses keyed by prompt
-  shape (triage verdict / CV composition / track classification). Records every prompt so a test can
-  assert what the model was actually asked.
-- **`FakeGoogleClient`** — matches `RealGoogleClient`'s surface, serves canned messages.
-- **Real config on `tmp_path`** written as YAML and pointed at by `SLUICE_CONFIG`, so config layering
-  (code defaults < file < env) runs for real.
-
-### 2. The e2e test (`tests/e2e/test_pipeline.py`)
-
-One run through `ingest → triage → cv → apply → track`, asserting **user-visible outcomes** at each
-hop: notes created in the vault, statuses moving along the ladder, a CV composed and gated, a
-rejection email advancing a lead, an un-acted-on proposal reaching the dead-letter.
-
-### 3. The re-run case
-
-Run `ingest` a second time over the same leads and assert **only `last_seen` moved** — never-clobber
-across a real pipeline rather than at unit level. No current test covers this end to end.
-
-## Proving the e2e test can fail
-
-A green end-to-end test that would stay green under a real regression is worse than no test: it
-reports coverage it does not have. So the harness is only accepted once each of the four load-bearing
-invariants is **witnessed** — the invariant is broken in production code and the e2e test observed
-red, then restored byte-identically.
-
-Run `python -m compileall -q -f --invalidation-mode checked-hash sluice tests` once first. Mutate by
-moving or deleting.
-
-| # | Mutation in production code | Expected |
+| Point | How | Notes |
 | --- | --- | --- |
-| 1 | `Vault.upsert` rewrites the note body on re-scrape (never-clobber) | re-run test red |
-| 2 | `can_advance` permits a backward move on the ladder (never-regress) | e2e red |
-| 3 | `cv/engine.py` renders despite a non-empty violation list (fabrication gate) | e2e red |
-| 4 | A preference gate rejects when unconfigured (the `672ad2a` abstain shape) | e2e red |
+| store | real `Vault` on `tmp_path` | real markdown I/O, real `_resolve_path`, real never-clobber |
+| fetcher | `plugins` seam, config key `fetcher` | **it is a browser *client*** (`create_tab`/`evaluate`/`scroll`/`close_tab`) consumed *by* `BrowserListSource.fetch`, keyed by URL and extractor JS — not by `(source_id, search)` |
+| renderer | `plugins` seam, config key `cv.renderer` | recording, not no-op — see 1.2 |
+| backend | `Sluice(backend=...)` override, enabled by PR 0.1 | never register a fake backend |
+| Gmail | `client` constructor argument (`app.py:383`) | already an explicit test seam |
+| sleep / clock | constructor arguments, enabled by PR 0.2 / 0.3 | |
 
-If any mutation leaves the e2e test green, that invariant is **not** covered by it and the test is
-extended or the gap is recorded — not quietly accepted.
+**Never register a fake store.** `tests/conformance/test_store_contract.py:32` parameterises over
+every registered store, so a fake would be silently pulled into the conformance suite and asserted
+against the full Store contract. Same reasoning bars a fake backend (registry guard).
 
-## PR 2 — functional layer, and #7
+Fetcher and renderer *are* registered through the public `register()` API: selection is name-keyed
+from config, neither registry has an enumerating guard, and direct injection would leave
+`plugins.get` and the config-key wiring untested — which is much of the point.
 
-Invoke each command's handler (not the parser) against the harness, asserting on files written, exit
-codes and stdout. Plus the sweep #7 asks for: walk the argparse tree and assert every declared `dest`
-is read by the handler it dispatches to, with an explicit opt-out list that must carry a justification
-per entry.
+### 1.2 Harness (`tests/harness/`)
 
-**Constraint carried from #26's review:** the sweep must be **additive**. It does not replace any
-existing parse-level assertion — #26 records an escape where a sweep silently dropped what the
-enumeration it replaced had asserted.
+`tests/harness/`, not `tests/e2e/adapters.py`: PR 2 and PR 3 consume it too, and putting it under one
+layer's directory bakes in a move.
 
-## PR 3 — executable acceptance scenarios (`tests/uat/`)
+- **`recording` renderer** — records every `cv_text`. Recording rather than discarding is what keeps
+  "no CV was rendered when the gate failed" assertable; a no-op renderer makes that assertion vacuous.
+- **`scripted` browser client** — serves canned DOM payloads keyed by URL, so a **shipped**
+  `BrowserListSource` runs its real `fetch` and its real pure `parse`.
+- **`ScriptedBackend`** — keyed by an explicit discriminator, **not** "prompt shape". Round 1 flagged
+  that as a placeholder: the triage prompt embeds vault-sourced text, so substring keying is
+  unstable. The rule: dispatch on the first line of the prompt's task header, and **raise on an
+  unrecognised prompt** rather than returning a default — a silent default would let a mis-wired call
+  pass as success.
+- **`FakeGoogleClient`** — matches `RealGoogleClient`'s surface.
+- **Config factory** — writes YAML to `tmp_path`, `SLUICE_CONFIG` points at it, and
+  **`cv.output_dir` is pinned inside `tmp_path`**. It defaults to `./cv-output`, relative to pytest's
+  cwd, so an unpinned run writes CV output into the repo.
 
-Scenarios named and asserted in the user's terms rather than the code's, over the same harness:
+### 1.3 The e2e test
 
-- a shortlisted lead's composed CV contains no figure absent from the bundle;
-- a rejection email moves that lead to `rejected` and clears its dead-letter entry;
-- an empty config bins nothing — every lead survives triage;
-- a re-scrape of a lead already triaged does not disturb the decision;
-- a CV that fails the gate is never written to the output directory.
+One run through `ingest → triage → cv → apply → track`, asserting user-visible outcomes at each hop.
+**It includes one lead whose composed CV fails the gate** — not deferred to PR 3, because witness M3
+needs it (§Mutation witnesses).
 
-Each maps to a load-bearing invariant, so the acceptance layer states in user language what the
-invariant tests state in code terms.
+## Mutation witnesses — the mutation *and* the scenario
+
+Round 1's table named mutations without the scenario that makes them observable, and three would have
+stayed green. Each row now carries its enabling scenario; a row without one is not a witness.
+
+Run `python -m compileall -q -f --invalidation-mode checked-hash sluice tests` once first.
+
+| # | Mutation | Enabling scenario — **required** |
+| --- | --- | --- |
+| M1 | `Vault.upsert` rewrites the note body on re-scrape | Re-run with a **fresh `seen_db`** and an **advanced clock**. `_run_source` skips a seen key *before* `sink.write`, so `upsert` never executes and the mutant never runs. Assert `written['updated'] == 1` as a **precondition** that the vault was reached, then assert a hand-edited body survived. |
+| M2 | `can_advance` drops its terminal/backward guard | A seeded **`interview`** lead receiving a **phone-screen** signal. `applied → rejected` is forward-to-terminal — real and mutant both return `True`, so the only scenario in round 1's plan could not distinguish them. |
+| M3 | `cv/engine.py` renders despite a non-empty violation list | The **gate-failing lead** from 1.3. `render` is reached only past `if gate_msgs: return`, so on a passing lead the mutation is a no-op. Assert on the **recorder**, not just on `status`. |
+| M4 | A preference gate rejects when unconfigured | A config variant leaving `target_locations` **empty** *and* a lead carrying a location. If the harness config sets every gate, the mutant is masked. |
+
+If any mutation leaves the suite green, that invariant is **not** covered — extend the scenario or
+record the gap. Do not accept it quietly.
 
 ## Fixtures — neutrality
 
-All fixture data synthetic: the `Example ...` company family and `conftest.py`'s `Alfa`/`Bravo`/
-`Charlie` locations. **Company names are checked against the real world before use** — PR #51 landed
-`Solarflux` and `Trueverse` as "obviously invented" fixtures and both are real registered companies,
-caught only by a web-capable reviewer. Nothing is copied from a real render, a real CV, a real job
-posting, or `sluice.local.yaml`. Job descriptions and emails in fixtures are written for the test.
+The harness creates more PII-shaped surface than anything recently merged: postings, JDs, CV bundle
+entries, rejection emails, a whole vault. Round 1 found the previous draft constrained company names
+only.
 
-## Definition of done (PR 1)
+| Artefact | Convention |
+| --- | --- |
+| Company names | `Example ...` family |
+| Domains, emails, URLs | `example.invalid` (already this repo's convention — `tests/test_sink.py`, `tests/conformance/seeds.py`) |
+| Locations | `conftest.py`'s `LOCATIONS` (`Alfa`/`Bravo`/`Charlie`) |
+| Job titles | `conftest.py`'s seeded-faker title fixtures |
+| Salaries, metrics | synthetic, round numbers |
 
-- `python -m pytest` green; the e2e tier adds no network and no browser.
-- Suite stays fast. **The e2e tier's own wall-clock is recorded in the PR**; if it materially changes
-  the suite's character, that is a decision to surface, not absorb silently.
-- `ruff check sluice tests` clean.
-- Every mutation in the table above run, its stated outcome observed, then restored byte-identically.
-- No production code changed. If PR 1 turns out to need one, that is a finding about the seams and is
-  raised rather than patched in passing.
-- `docs/ARCHITECTURE.md` updated: the fetcher and renderer seams now have a second implementation.
+**Preference values are sourced from `tests/conftest.py`'s existing fixtures, never invented.** The
+harness config must carry `accept_titles` / `target_locations` / pay floors to drive triage, and that
+is exactly where the maintainer's real preferences would enter. PR 3 sharpens the risk: scenarios
+phrased in the user's terms are where an author reaches for the roles and cities they actually want,
+because that is what makes them read true. Scenario *names* stay in user language; scenario *values*
+come from the fixtures.
+
+**Name check — with a mechanism.** "Check names against the real world" was a round-1 placeholder: no
+owner, no method, no consequence, and addressed to reviewers who have no web access. Replaced with:
+(a) prefer structurally unclaimable names so the check is rarely load-bearing; (b) the **author**
+runs the check and lists what was checked in the PR body; (c) a hit means replace, not justify.
+
+**Note for whoever writes fixtures:** `Solarflux` and `Trueverse` are still live at HEAD in
+`tests/test_cv_bundle.py` and `tests/test_core_vault_cv.py` (PR #51 fixed only the three files it
+touched). Both are real registered companies. Do not copy them as a convention.
+
+## PR 2 — functional layer, and #7
+
+**Motivation re-grounded.** The round-1 claim was false. The real gap: handler-level tests exist but
+are ad hoc — no shared harness, monkeypatch-heavy, inconsistent depth (`test_cv_cli.py` never invokes
+a handler at all), and there is no sweep asserting every declared `dest` is read by the handler it
+dispatches to. That sweep is #7.
+
+**Constraint from #26's review:** the sweep is **additive**. It removes no existing parse-level
+assertion; #26 records an escape where a sweep silently dropped what the enumeration it replaced had
+asserted.
+
+## PR 3 — executable acceptance scenarios (`tests/uat/`)
+
+Scenarios named in the user's terms over the same harness — a shortlisted lead's CV contains no figure
+absent from the bundle; a rejection email moves that lead to `rejected` and clears its dead-letter
+entry; an empty config bins nothing; a re-scrape does not disturb a triaged decision; a CV failing the
+gate never reaches the output directory. Each maps to a load-bearing invariant.
+
+## Definition of done
+
+**PR 0:** each seam its own commit; each mutation-witnessed (revert the fix, watch a test go red);
+`sluice.yaml.example` untouched (no new config knob — these are constructor arguments, not tunables);
+suite green; ruff clean.
+
+**PR 1:** suite green with no network and no browser; **the e2e tier's wall-clock recorded in the PR
+body** — if it materially changes the suite's character that is a decision to surface, not absorb;
+every mutation row run with its enabling scenario and the stated outcome observed, restored
+byte-identically; ruff clean.
+
+## Docs
+
+`docs/ARCHITECTURE.md` already lists **two** renderer implementations (`script`, `weasyprint`), so a
+harness fake would be a third — and a test fake does not belong in that document's `Implementations:`
+lists at all, which enumerate what config can select. The stale sentence is
+`.rulesync/rules/CLAUDE.md:157` ("no runtime selection is exercised yet"), which is canonical; the
+root `CLAUDE.md` is generated from it. **`.rulesync/` is human-gated — this edit is proposed, not
+applied, and escalated for approval.**
+
+What PR 1 *can* honestly claim: the **fetcher** seam's runtime selection is exercised for the first
+time.
 
 ## Out of scope
 
-- Any live tier (real Camofox, real LLM, real Gmail). Explicitly declined.
-- **#39** (the backend seam has three implementations and no conformance suite) — adjacent and real,
-  but a different piece of work: it is about conformance across providers, not pipeline coverage.
-- Performance or load testing.
-- Changing any production behaviour. This spec adds tests only.
+- Any live tier (real Camofox, LLM, Gmail). Declined.
+- **#39** (backend seam, three implementations, no conformance suite) — adjacent, and round 1 showed
+  it is not *cleanly* separable, since the backend registry's enumerating guard is what bars a fake.
+  PR 0.1 sidesteps it via per-instance override rather than resolving it. Recorded, not folded.
+- Performance/load testing; any production behaviour change beyond PR 0's three seams.
 
-## Commits (PR 1)
+## Commits
 
-1. `test(e2e): scripted fetcher and recording renderer for the adapter seams`
-2. `test(e2e): deterministic backend and fake Google client`
-3. `test(e2e): walk the full pipeline in one run`
-4. `test(e2e): a re-scrape touches only last_seen end to end`
-5. `docs(architecture): record the second fetcher and renderer implementations`
+**PR 0**
+1. `fix(core): Sluice.backend honours a constructor override (#7-adjacent)`
+2. `fix(ingest): Sluice.ingest threads Ctx.sleep`
+3. `feat(core): an injectable clock for date-dependent behaviour`
+
+**PR 1**
+4. `test(harness): recording renderer and scripted browser client`
+5. `test(harness): scripted backend and fake Google client`
+6. `test(harness): synthetic fixture set and config factory`
+7. `test(e2e): walk the full pipeline in one run`
+8. `test(e2e): a re-scrape reaches the vault and touches only last_seen`
