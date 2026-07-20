@@ -238,15 +238,31 @@ The port is where this plan can quietly go wrong, so it is constrained:
   currently fails 5 tests loudly but leaves 3 `skipped-gate` tests vacuous. Assert
   `validate(CLEAN_CV, …) == []` directly so the fixture's validity is stated, not implied.
 
-## Definition of done
+## Definition of done — met
 
-- `python -m pytest` green (712 today; +6 before the port).
-- `ruff check sluice tests` clean.
-- Every row of the mutation table run, its stated outcome observed, then restored byte-identical.
-- Every port test→mutation pair run and observed red; any pair without a killing mutation reported.
-- Every assertion present in `tests/test_cv_validate.py` before the port present after it.
-- The three touched test files' fixtures are regenerated; `rg -n 'LONDON' tests/test_cv_validate.py
-  tests/test_cv_engine.py tests/test_cv_slop.py` returns nothing.
+- `python -m pytest` green: **719** (712 + 4 in commit 1 + 3 in commit 2). ✅
+- `ruff check sluice tests` clean. ✅
+- All 8 mutation rows run, stated outcome observed, restored byte-identical (sha256-checked). ✅
+- All 10 port test→mutation pairs run and observed red. ✅ — see the finding below.
+- Every assertion present in `tests/test_cv_validate.py` before the port present after it. ✅
+- Fixtures regenerated in the three files; `rg -n 'LONDON|08/2001|Early career'` over them returns
+  nothing, and the descending-start-year property still holds (`[2024, 2022, 2020, 2019]`). ✅
+- Guard rows and port pairs **re-run after** the fixture regeneration, because a fixture change is
+  exactly how a surviving assertion goes inert. ✅
+
+### Finding produced by the port discipline
+
+`test_id_digits_not_counted_as_metric` had **no killing mutation**: it cited `[TV1]` from a digit-free
+bullet, so `bullet_nums` was empty and `invented = bullet_nums - union` was empty regardless of what
+the id token contributed. It stayed green under the very mutation it names (`after = line[m.end():]`
+→ `after = line`).
+
+Checked against `main` rather than assumed: it was **already inert before this branch**, so the port
+exposed it rather than causing it. Fixed in its own commit — the original assertion is kept, and a
+second bullet using `1` (a digit appearing only inside the code `[TV1]`) makes it load-bearing.
+
+This is the case the "report, do not quietly keep" rule exists for, and it is the concrete return on
+running the pairs instead of naming them.
 
 ## Out of scope
 
@@ -258,11 +274,14 @@ The port is where this plan can quietly go wrong, so it is constrained:
 - Any change to `render_bundle`'s *output*. The renderer marks every section; the parser is the half
   that ignored the marking.
 
-## Commits
+## Commits — as landed
 
 1. `fix(cv): a bundle section header ends the entry it follows (#31)` — §1 + §3 + Tests 1, 2, 2b, 3.
 2. `fix(cv): only a generated [id] code opens a bundle entry (#31)` — §2 + Tests 4, 5, 6.
-3. `test(cv): build validate fixtures through render_bundle (#31)` — the port.
-4. `test(cv): regenerate cv test fixtures from synthetic values (#31)` — the neutrality rewrite across
+3. `test(cv): build validate fixtures through render_bundle (#31)` — the port, structural only: no
+   assertion changes, no value changes, so the diff can be read purely for behaviour preservation.
+4. `test(cv): make the id-digit guard load-bearing (#31)` — **not in the original plan**; added
+   because running the port pairs surfaced an inert guard (see DoD).
+5. `test(cv): regenerate cv test fixtures from synthetic values (#31)` — the neutrality rewrite across
    the three files. Split from the port: `test_cv_engine.py` and `test_cv_slop.py` are not ported,
    and a message naming only the port would misdescribe them.
