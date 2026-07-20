@@ -37,9 +37,26 @@ def _statuses(vault):
     return {n.fm["company"]: n.status for n in vault.read_leads()}
 
 
+def _repo_root_snapshot(cwd):
+    """name -> (size, mtime_ns) for each regular file at the repo root, None for
+    dirs. Compared before/after the run so the hermeticity check catches not just a
+    NEW or removed entry but a MODIFICATION of a pre-existing cwd-relative default
+    -- e.g. a leaked write appending to a `./triage-audit.jsonl` that already
+    exists -- which a bare entry-set comparison would miss."""
+    snap = {}
+    for name in os.listdir(cwd):
+        p = os.path.join(cwd, name)
+        if os.path.isfile(p):
+            st = os.stat(p)
+            snap[name] = (st.st_size, st.st_mtime_ns)
+        else:
+            snap[name] = None
+    return snap
+
+
 def test_full_pipeline_walk(tmp_path, monkeypatch):
     cwd = os.getcwd()
-    repo_root_before = set(os.listdir(cwd))
+    repo_root_before = _repo_root_snapshot(cwd)
 
     h = build_harness(tmp_path, monkeypatch, board_url=BOARD_URL, rows=ROWS)
     backend = ScriptedBackend(
@@ -101,4 +118,4 @@ def test_full_pipeline_walk(tmp_path, monkeypatch):
     assert _statuses(h.vault)["Example Foundry"] == "rejected"
 
     # ── nothing leaked into the repo: every cwd-relative default was pinned ──
-    assert set(os.listdir(cwd)) == repo_root_before
+    assert _repo_root_snapshot(cwd) == repo_root_before
