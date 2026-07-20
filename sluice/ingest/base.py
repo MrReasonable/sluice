@@ -8,7 +8,7 @@ subclasses / duck-types `Source` directly.
 """
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Protocol
 from urllib.parse import urlparse
 
@@ -30,7 +30,17 @@ class Ctx:
     injectable sleep so tests don't actually wait for page settle."""
     camofox: object
     config: object = None
-    sleep: Callable = field(default=time.sleep)
+    # None means "nothing to inject, give me the real one" -- the same tolerance
+    # VaultSink(today=None) already has. Without it a caller holding an optional
+    # sleep must build a conditional kwargs dict, and the obvious tidy-up of that
+    # (`sleep=self._sleep`) passes None straight through: the suite stays green
+    # while every real ingest run dies on the first `ctx.sleep(wait)`. Cheaper to
+    # make the value safe here than to guard every construction site.
+    sleep: Callable | None = None
+
+    def __post_init__(self):
+        if self.sleep is None:
+            self.sleep = time.sleep
 
 
 class Source(Protocol):

@@ -157,9 +157,9 @@ class Sluice:
         self.config = config if config is not None else Config()
         # Fail loudly on a misspelled seam rather than accepting the key and then never
         # using it -- the same quiet-wrong-default class make_backend's unknown-provider
-        # raise exists to remove. The live trap is `fetch`: docs/ARCHITECTURE.md calls
-        # the seam that, while the key here is `fetcher`, so the plausible typo is the
-        # documented word and would have been silently ignored forever.
+        # raise exists to remove. The live trap was `fetch`: ARCHITECTURE.md labelled the
+        # seam that while the config key is `fetcher`, so the plausible typo was the
+        # documented word. Validating here is what made that mismatch worth fixing.
         unknown = sorted(set(overrides) - set(_SEAMS))
         if unknown:
             # Reuses the seam-resolution error so the message shape matches what
@@ -283,8 +283,7 @@ class Sluice:
         # for one remoteok search, against a whole suite that runs in ~1.2s). Without
         # the second, nothing above the sink can move the clock, so date-dependent
         # behaviour -- `last_seen` monotonicity especially -- is untestable from here.
-        ctx = Ctx(camofox=self.fetcher(), config=self.config,
-                  **({} if self._sleep is None else {"sleep": self._sleep}))
+        ctx = Ctx(camofox=self.fetcher(), config=self.config, sleep=self._sleep)
         seen = SeenDb()
         health = HealthStore()  # default path lives in HealthStore.__init__ (SLUICE_HEALTH)
         if dry_run or json_sink:
