@@ -5,8 +5,7 @@ from sluice.cv.validate import validate
 # Sample employer roster / decoy list a caller (CvConfig.employers /
 # CvConfig.fabrication_decoys) would supply; validate() itself ships with no
 # hardcoded employers or decoys, so tests exercising those gates pass them in.
-EMPLOYERS = ["Novacraft", "Solarflux", "Driftwave", "Coalridge Media",
-             "Roxwell Fashion", "Trueverse", "Early career (various)"]
+EMPLOYERS = ["Acme Systems", "Borealis Data", "Cindershore", "Dunmoor Labs"]
 FABRICATION_DECOYS = ["Larkspur"]
 
 # Built through the real renderer rather than by hand. The hand-written version
@@ -27,21 +26,21 @@ BUNDLE = render_bundle(build_bundle(
     prefix_map={"Solarflux": "SF", "Trueverse": "TV"}))
 
 def _cv(work):
-    L = ["Phone number: +44", "Email address: x@y", "Web: https://x", "", "JANE ROE",
+    L = ["Phone number: +00 000", "Email address: x@y", "Web: https://x", "", "JANE ROE",
          "", "PROFILE", "I lead.", "", "WORK EXPERIENCE", ""]
     for co, dl, bs in work:
         L += [co, dl] + bs + [""]
     L += ["CERTIFICATES", "- CSM", "", "EDUCATION", "- Uni"]
     return "\n".join(L)
 
+# Synthetic throughout. Only the descending start years matter to the gate
+# (validate.py:39); the count, roles, cities and employers are arbitrary.
 FULL = [
-    ("Novacraft", "12/2025–present | LONDON | Founder", ["- Shipped it [SF1]"]),
-    ("Solarflux", "01/2025–04/2026 | LONDON | EM", ["- Grew team from 3 to 8 [SF1]"]),
-    ("Driftwave", "11/2022–04/2024 | LONDON | Lead", ["- Coached [SF1]"]),
-    ("Coalridge Media", "09/2020–10/2022 | LONDON | Lead", ["- CI [SF1]"]),
-    ("Roxwell Fashion", "04/2017–12/2019 | LONDON | EM", ["- Led [SF1]"]),
-    ("Trueverse", "05/2015–03/2017 | LONDON | CTO", ["- Uptime [SF1]"]),
-    ("Early career (various)", "08/2001–03/2015 | UK", ["- Various [SF1]"]),
+    ("Acme Systems", "03/2024–present | Alfa | Engineer", ["- Shipped it [SF1]"]),
+    ("Borealis Data", "07/2022–02/2024 | Bravo | Analyst",
+     ["- Grew team from 3 to 8 [SF1]"]),
+    ("Cindershore", "11/2020–06/2022 | Charlie | Engineer", ["- Coached [SF1]"]),
+    ("Dunmoor Labs", "05/2019–10/2020 | Alfa | Analyst", ["- CI [SF1]"]),
 ]
 
 def test_clean_passes():
@@ -54,7 +53,7 @@ def test_employer_and_decoy_gates_are_off_by_default():
     # runs when the caller supplies a list.
     assert validate(_cv(FULL[:-1]), BUNDLE) == []
     f = [x[:] for x in FULL]
-    f[0] = ("Novacraft", "12/2025–present | LONDON | Founder", ["- Built at Larkspur [SF1]"])
+    f[0] = ("Acme Systems", "03/2024–present | Alfa | Engineer", ["- Built at Larkspur [SF1]"])
     assert validate(_cv(f), BUNDLE) == []
 
 def test_id_digits_not_counted_as_metric():
@@ -68,29 +67,31 @@ def test_id_digits_not_counted_as_metric():
     # port's test->mutation pairs is what surfaced it. Kept (it still pins that a
     # digit-free citing bullet is clean) and paired with the load-bearing half.
     f = [x[:] for x in FULL]
-    f[5] = ("Trueverse", "05/2015–03/2017 | LONDON | CTO", ["- Owned direction [TV1]"])
+    f[3] = ("Dunmoor Labs", "05/2019–10/2020 | Alfa | Analyst",
+            ["- Owned direction [TV1]"])
     assert validate(_cv(f), BUNDLE) == []
 
     # `1` appears ONLY inside the id token [TV1]; TV1's metrics are 90 and 99. If
     # the parser scanned the id token too, the code's own digits would silently
     # become permitted figures, so this bullet MUST be flagged.
-    f[5] = ("Trueverse", "05/2015–03/2017 | LONDON | CTO", ["- Owned 1 direction [TV1]"])
+    f[3] = ("Dunmoor Labs", "05/2019–10/2020 | Alfa | Analyst",
+            ["- Owned 1 direction [TV1]"])
     assert any("INVENTED" in x for x in validate(_cv(f), BUNDLE))
 
 def test_multi_citation_union():
     f = [x[:] for x in FULL]
-    f[5] = ("Trueverse", "05/2015–03/2017 | LONDON | CTO",
+    f[3] = ("Dunmoor Labs", "05/2019–10/2020 | Alfa | Analyst",
             ["- Lifted uptime 90 to 99 across a 15-person team [TV1] [TV2]"])
     assert validate(_cv(f), BUNDLE) == []
 
 def test_invented_metric_flagged():
     f = [x[:] for x in FULL]
-    f[1] = ("Solarflux", "01/2025–04/2026 | LONDON | EM", ["- Grew team from 3 to 23 [SF1]"])
+    f[1] = ("Borealis Data", "07/2022–02/2024 | Bravo | Analyst", ["- Grew team from 3 to 23 [SF1]"])
     assert any("INVENTED" in x for x in validate(_cv(f), BUNDLE))
 
 def test_uncited_flagged():
     f = [x[:] for x in FULL]
-    f[1] = ("Solarflux", "01/2025–04/2026 | LONDON | EM", ["- Grew team from 3 to 8"])
+    f[1] = ("Borealis Data", "07/2022–02/2024 | Bravo | Analyst", ["- Grew team from 3 to 8"])
     assert any("UNCITED" in x for x in validate(_cv(f), BUNDLE))
 
 def test_missing_employer_flagged():
@@ -99,14 +100,14 @@ def test_missing_employer_flagged():
 
 def test_larkspur_flagged():
     f = [x[:] for x in FULL]
-    f[0] = ("Novacraft", "12/2025–present | LONDON | Founder", ["- Built at Larkspur [SF1]"])
+    f[0] = ("Acme Systems", "03/2024–present | Alfa | Engineer", ["- Built at Larkspur [SF1]"])
     assert any("Larkspur" in x for x in
                validate(_cv(f), BUNDLE, fabrication_decoys=FABRICATION_DECOYS))
 
 def test_larkspur_case_insensitive_flagged():
     # lowercase/mixed-case "larkspur" must not slip past a case-sensitive check.
     f = [x[:] for x in FULL]
-    f[0] = ("Novacraft", "12/2025–present | LONDON | Founder", ["- Built at larkspur [SF1]"])
+    f[0] = ("Acme Systems", "03/2024–present | Alfa | Engineer", ["- Built at larkspur [SF1]"])
     assert any("FABRICATED" in x or "Larkspur" in x for x in
                validate(_cv(f), BUNDLE, fabrication_decoys=FABRICATION_DECOYS))
 
@@ -117,7 +118,7 @@ def test_bullet_marker_uncited_flagged():
     # '-') this bullet was invisible to the gate -- no violation was raised, so
     # a fabricated/uncited claim would sail through. It must be caught here too.
     f = [x[:] for x in FULL]
-    f[1] = ("Solarflux", "01/2025–04/2026 | LONDON | EM", ["• Grew team from 3 to 8"])
+    f[1] = ("Borealis Data", "07/2022–02/2024 | Bravo | Analyst", ["• Grew team from 3 to 8"])
     assert any("UNCITED" in x for x in validate(_cv(f), BUNDLE))
 
 

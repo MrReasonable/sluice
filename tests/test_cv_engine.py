@@ -50,15 +50,14 @@ def _cfg():
     c.prefix_map = {"Solarflux": "SF"}
     return c
 
+# Synthetic throughout; only the descending start years are load-bearing.
 CLEAN_CV = "\n".join([
     "JANE ROE", "", "WORK EXPERIENCE", "",
-    "Novacraft", "12/2025–present | LONDON | Founder", "- Shipped [SF1]", "",
-    "Solarflux", "01/2025–04/2026 | LONDON | EM", "- Grew team from 3 to 8 [SF1]", "",
-    "Driftwave", "11/2022–04/2024 | LONDON | Lead", "- Coached [SF1]", "",
-    "Coalridge Media", "09/2020–10/2022 | LONDON | Lead", "- CI [SF1]", "",
-    "Roxwell Fashion", "04/2017–12/2019 | LONDON | EM", "- Led [SF1]", "",
-    "Trueverse", "05/2015–03/2017 | LONDON | CTO", "- Uptime [SF1]", "",
-    "Early career (various)", "08/2001–03/2015 | UK", "- Various [SF1]", "",
+    "Acme Systems", "03/2024–present | Alfa | Engineer", "- Shipped [SF1]", "",
+    "Borealis Data", "07/2022–02/2024 | Bravo | Analyst",
+    "- Grew team from 3 to 8 [SF1]", "",
+    "Cindershore", "11/2020–06/2022 | Charlie | Engineer", "- Coached [SF1]", "",
+    "Dunmoor Labs", "05/2019–10/2020 | Alfa | Analyst", "- CI [SF1]", "",
     "CERTIFICATES", "- CSM", "EDUCATION", "- Uni",
 ])
 
