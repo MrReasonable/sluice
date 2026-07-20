@@ -10,7 +10,7 @@ def test_double_hyphen_is_error():
     assert any(l == "DOUBLE-HYPHEN-DASH" for _, l, _ in errs)
 
 def test_en_dash_date_range_is_clean():
-    errs, warns = check_text("12/2025–present | LONDON | Founder")
+    errs, warns = check_text("03/2024–present | Alfa | Engineer")
     assert errs == []
 
 def test_ai_phrase_is_advisory_warning_not_error():
