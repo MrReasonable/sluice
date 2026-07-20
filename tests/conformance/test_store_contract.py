@@ -273,6 +273,13 @@ def test_read_experience_entries_honours_verified_only(store_name, tmp_path, mon
         "then validate an invented metric against agent-authored 'evidence' and RENDER it"
     assert all(e.get("verified") for e in verified)
     assert {e["title"] for e in verified} == {"SF1"}
+    # The employer must survive the round trip. It did not: the seeder wrote an
+    # `Employer:` key while `read_experience_entries` reads `Company:`, so every
+    # entry came back with company="" and the seeder's employer argument was dead
+    # on arrival. Nothing asserted it, so nothing noticed -- the same vacuity this
+    # test's own docstring was written about. The bundle cites entries by company,
+    # so a store that drops it feeds the fabrication gate anonymous evidence.
+    assert {e["company"] for e in verified} == {"Example Foundry"}
 
 
 def test_read_criteria_abstains_when_unset(store_name, tmp_path, monkeypatch):
