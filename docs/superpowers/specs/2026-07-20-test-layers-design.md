@@ -1,8 +1,9 @@
 # Test layers — finishing three seams, then e2e, functional and acceptance
 
 - **Date**: 2026-07-20
-- **Status**: REVISED after round 1 `/review-plan` (5 agents: 0C / 11H / 11M / 8L — all folded).
-  Awaiting round 2.
+- **Status**: REVISED after two `/review-plan` rounds. R1 (5 agents): 0C/11H/11M/8L. R2 (5 agents,
+  anti-flattery brief): 0C/8H/9M/4L. All folded. R2 **executed** M1/M2a/M4 (red) and measured 0.2's
+  timing claim. Ready to build.
 - **Goal**: add a test layer above the unit/contract suite — a full-pipeline e2e run, a functional
   layer over the CLI handlers, and executable acceptance scenarios. Four PRs; **PR 0 and PR 1** are
   designed here in full, PR 2 and PR 3 in outline.
@@ -25,49 +26,74 @@ recorded here rather than silently repaired.
 - **The backend row of the substitution table cited `app.py:386`**, which documents the Gmail
   `client` and explicitly contrasts it *with* the backend. Three reviewers caught it.
 
-## PR 0 — finish three seams
+## PR 0 — three dropped injection points
 
-Not test accommodations. Two are seams the codebase already declares and fails to wire; the third is
-a gap three existing features already feel. Each lands as its own commit with its own justification,
-and each is mutation-witnessed independently of the harness.
+**Round-2 correction:** the previous draft called 0.3 "the only genuinely new seam" and argued it
+against YAGNI. That was wrong, and asserted without reading the signature — three reviewers found it
+independently. `VaultSink.__init__` already takes `*, today=None` (`sink.py:25`, used by 6 tests) and
+`Sluice.track` already takes `now_iso=None` (`app.py:378`). So all three items are **the same
+defect in three places: the composition root accepts, or could accept, an injection point and drops
+it.** No new seam is introduced, and the YAGNI question disappears.
 
 ### 0.1 `Sluice.backend()` must honour `_overrides`
 
-`__init__` accepts `**overrides` and stores them; `_resolve` honours them for store, fetcher and
-renderer. `backend()` never calls `_resolve` and never reads `_overrides`, so
-`Sluice(config, backend=X)` is **accepted and silently ignored**.
+`__init__` stores `**overrides`; `_resolve` honours them for store/fetcher/renderer; `backend()`
+never calls `_resolve`, so `Sluice(config, backend=X)` is accepted and silently ignored — the
+quiet-wrong-default class `backend()`'s own comment says it exists to remove.
 
-That is the failure mode `backend()`'s own comment says it exists to prevent — it raises on an
-unrecognised role rather than "land silently in `auto`", calling that "the same quiet-wrong-default
-this method exists to remove". The constructor advertising an override it drops is that same class.
+**Placement is load-bearing.** The check goes **after** the role-validation raise (`app.py:199-202`),
+not at the top. Three reviewers independently verified that checking first makes
+`Sluice(cfg, backend=X).backend("primry", ...)` return `X` instead of raising — the fix for one
+quiet-wrong-default installing another. `test_unknown_role_raises_rather_than_defaulting_to_auto`
+passes no override, so it stays green; a new test pins the override-plus-bad-role case.
 
-Fix: consult `_overrides` at the top of `backend()`. Inert in production (nothing passes one today).
-**Per-instance, and it never touches the global registry** — so
-`tests/test_backend_registry.py`'s set-equality assertion is untouched. That guard is precisely why
-registering a fake backend is not an option (round 1, two reviewers).
+**`backend()` must NOT route through `_resolve`.** `_resolve` memoizes per seam, and `backend()` is
+deliberately uncached (its own comment, `app.py:190-192`) because each sub-app passes different
+config — caching would hand cv triage's model.
 
 ### 0.2 `Sluice.ingest()` must pass `Ctx.sleep`
 
-`ingest/base.py:33` declares `sleep: Callable = field(default=time.sleep)` with the docstring "an
-injectable sleep so tests don't actually wait for page settle". `core/app.py:253` builds
-`Ctx(camofox=..., config=...)` and drops it, so a shipped source costs ~4-5s of real sleep per
-search — against a whole suite that runs in ~3.5s.
+`ingest/base.py:33` declares `sleep: Callable = field(default=time.sleep)` — "an injectable sleep so
+tests don't actually wait for page settle". `app.py:253` drops it.
 
-Fix: thread it through as an explicit constructor argument, following the house convention already
-documented for track's Gmail `client`: "a plain constructor argument, not a registered adapter seam."
+**Measured, not estimated:** a shipped `BrowserListSource` (remoteok, `wait=4`, `scrolls=2`) takes
+**5.013s** with real sleep and **11µs** with a no-op, against a suite that runs in **1.16s** total.
 
-### 0.3 An injectable clock
+### 0.3 `Sluice.ingest()` must pass `today` to `VaultSink`
 
-The only genuinely new seam, and the weakest case, so it is stated plainly. Its justification is not
-the harness but three existing date-dependent behaviours with no app-level test:
-`Vault._bump_last_seen`'s monotonicity (#45), the `lastrun` watermark (#49), and lead staleness (#9)
-if it lands. `ingest/sink.py` calls a module-level `_today()`; nothing above it can move the clock.
+One line: `app.py:259` builds `VaultSink(self.store(), seen)` and drops the `today=` the sink already
+accepts. Identical in shape to 0.2. A new `Sluice`-level clock would have been *worse* — a second
+clock beside `now_iso` in a different shape (date string vs UTC ISO timestamp), which is the
+inconsistency PR 0 exists to remove.
 
-Fix: an injectable `today` on the same explicit-constructor-argument pattern.
+**Hazard checked and cleared:** an injectable clock could in principle let a caller move time
+backwards and defeat `_bump_last_seen` monotonicity. Executed — create at 2026-07-09, re-scrape at
+2026-07-01 — `last_seen` stayed at 2026-07-09 and nothing was written. Not a new hazard.
 
-**Why seams rather than monkeypatch:** monkeypatch binds to *where a symbol was imported*, so
-patching `sink._today` works until someone imports it elsewhere and it silently stops patching. A
-finished seam cannot rot that way. And 0.1 is a live defect regardless of testing.
+### 0.4 Validate override keys
+
+`__init__` filters `None` out of `**overrides` but never validates the keys, so after 0.1 a
+correctly-spelled override works and a misspelled one is *still* silently ignored — the same defect
+one level up. Live trap: the docs call the seam `fetch`, the key is `fetcher`. Validate against the
+four seam names and raise `UnknownAdapter`, listing them, per the fail-loudly-at-construction rule.
+
+**Ordering constraint this creates:** `sleep` and `today` must be explicit keyword-only parameters,
+not `**overrides` members, or key validation rejects them.
+
+### 0.5 `tests/conformance/seeds.py` — remove `Solarflux`
+
+The fixture table below cites `seeds.py` as the `example.invalid` exemplar, and that same file seeds
+a real registered company name. A harness author following this plan would copy the bad convention
+from the file the plan praises. **Scope decision (user-confirmed): fix `seeds.py` only.** The name is
+live in five sites; the other four are a repo-wide pass and are named in §Fixtures as known-bad, not
+silently left.
+
+### PR 0's own tests
+
+**Round-2 finding (dependency-order):** PR 0's DoD demanded "revert the fix, watch a test go red",
+but nothing at HEAD constructs `Sluice(config, backend=...)`, so reverting 0.1 leaves the suite
+green. PR 0 therefore ships **three small unit tests of its own** — one per injection point, plus one
+for 0.4's key validation — so each fix is witnessed without depending on PR 1's harness.
 
 ## PR 1 — the harness and the e2e run
 
@@ -101,8 +127,10 @@ layer's directory bakes in a move.
   `BrowserListSource` runs its real `fetch` and its real pure `parse`.
 - **`ScriptedBackend`** — keyed by an explicit discriminator, **not** "prompt shape". Round 1 flagged
   that as a placeholder: the triage prompt embeds vault-sourced text, so substring keying is
-  unstable. The rule: dispatch on the first line of the prompt's task header, and **raise on an
-  unrecognised prompt** rather than returning a default — a silent default would let a mis-wired call
+  unstable. The rule: dispatch on a stable **prefix** of the prompt's first line, and **raise on an unrecognised prompt**.
+  Round 2: exact first-line matching works for triage and track (stable literals) but NOT cv —
+  `cv/compose.py:49` is `f"Compose a tailored CV for {name} applying for {role} at {company}."`,
+  fully interpolated, so exact matching would raise on every CV call and M3 could not run rather than returning a default — a silent default would let a mis-wired call
   pass as success.
 - **`FakeGoogleClient`** — matches `RealGoogleClient`'s surface.
 - **Config factory** — writes YAML to `tmp_path`, `SLUICE_CONFIG` points at it, and
@@ -115,22 +143,27 @@ One run through `ingest → triage → cv → apply → track`, asserting user-v
 **It includes one lead whose composed CV fails the gate** — not deferred to PR 3, because witness M3
 needs it (§Mutation witnesses).
 
-## Mutation witnesses — the mutation *and* the scenario
+## Mutation witnesses — mutation, scenario, and the test that must go red
 
-Round 1's table named mutations without the scenario that makes them observable, and three would have
-stayed green. Each row now carries its enabling scenario; a row without one is not a witness.
+Round 1: three of four would have stayed green. Round 2 executed the rebuilt set and found two more
+problems, both folded below.
 
-Run `python -m compileall -q -f --invalidation-mode checked-hash sluice tests` once first.
+**Methodology, from round 2 — this is the part that generalises.** A mutation killed by a
+*pre-existing* test witnesses nothing about the new tier. M3's mutant is already caught by four
+`test_cv_engine.py` tests, so "watch it go red" merely re-observed the old suite. **Every witness
+names the specific test that must go red, and is run with that test deselected to confirm the
+mutation is otherwise green.** Run `compileall --invalidation-mode checked-hash` once first; mutate
+by moving or deleting.
 
-| # | Mutation | Enabling scenario — **required** |
-| --- | --- | --- |
-| M1 | `Vault.upsert` rewrites the note body on re-scrape | Re-run with a **fresh `seen_db`** and an **advanced clock**. `_run_source` skips a seen key *before* `sink.write`, so `upsert` never executes and the mutant never runs. Assert `written['updated'] == 1` as a **precondition** that the vault was reached, then assert a hand-edited body survived. |
-| M2 | `can_advance` drops its terminal/backward guard | A seeded **`interview`** lead receiving a **phone-screen** signal. `applied → rejected` is forward-to-terminal — real and mutant both return `True`, so the only scenario in round 1's plan could not distinguish them. |
-| M3 | `cv/engine.py` renders despite a non-empty violation list | The **gate-failing lead** from 1.3. `render` is reached only past `if gate_msgs: return`, so on a passing lead the mutation is a no-op. Assert on the **recorder**, not just on `status`. |
-| M4 | A preference gate rejects when unconfigured | A config variant leaving `target_locations` **empty** *and* a lead carrying a location. If the harness config sets every gate, the mutant is masked. |
-
-If any mutation leaves the suite green, that invariant is **not** covered — extend the scenario or
-record the gap. Do not accept it quietly.
+| # | Mutation | Enabling scenario — required | Status |
+| --- | --- | --- | --- |
+| M1 | `Vault.upsert` rewrites the body on re-scrape | Fresh `seen_db` + advanced clock + `written['updated']==1` as a **precondition**. `_run_source:93` skips seen keys before `sink.write:60`, so without this `upsert` never runs. | **executed, red** |
+| M2a | `can_advance` backward/rank guard → `return True` | seeded `interview` lead + phone-screen signal | **executed, red** |
+| M2b | `can_advance` **terminal** guard deleted | seeded **`rejected`** lead + phone-screen signal | **round-2 addition.** M2a alone is green for this mutant — and it is the never-regress case with the worst failure, a rejected lead resurrected |
+| M3 | `cv/engine.py` renders despite violations | the gate-failing lead; assert on the **recorder** | red, but 4 pre-existing tests also kill it — **must be run with those deselected** |
+| M4 | preference gate rejects when unconfigured | empty `target_locations` + a lead carrying a location | **executed, red** |
+| M5 | `triage/apply.py::_guarded` → `False` | a lead already at `applied`. Executed by round 2: triage then returns `"applied"` and writes `{'status': 'new'}` over an application-owned lead. | **round-2 addition** — previously unwitnessed |
+| M6 | `can_apply` weakened | apply attempted from a non-`shortlist` status | **round-2 addition.** `can_apply` is deliberately a different predicate from `can_advance` and had no witness |
 
 ## Fixtures — neutrality
 
@@ -145,6 +178,31 @@ only.
 | Locations | `conftest.py`'s `LOCATIONS` (`Alfa`/`Bravo`/`Charlie`) |
 | Job titles | `conftest.py`'s seeded-faker title fixtures |
 | Salaries, metrics | synthetic, round numbers |
+
+**Round-2 additions — three gaps in the table above.**
+
+- **The CV author's identity was missing entirely, and it is the most PII-dense artefact here.**
+  `cv/engine.py:60` calls `vault.read_baseline()` and `:68` passes `name=cvcfg.name,
+  contact=cvcfg.contact`. So the cv hop needs a **synthetic baseline CV seeded into the tmp vault**
+  plus synthetic `cv.name` / `cv.contact`. `CvConfig.contact` ships `""` with the comment "Entirely
+  personal, so the code ships with no contact info" — the harness must not be where that gets filled
+  in with anything real.
+- **Nine config paths default relative to cwd, not one.** `cv.output_dir`, `cv.served_dir`,
+  `cv.dossier_dir`, `cv.render_home`, `triage.dossier_dir`, `triage.audit_jsonl`, `track.seen_db`
+  (plus its `.lastrun` / `.deadletter.db`), `track.token_path` (`./google_token.json` —
+  credential-shaped), and `core/seendb.py`'s `_DEFAULT = "./seen.db"`. **All are pinned inside
+  `tmp_path`, and the run asserts the repo-root listing is unchanged afterwards.** The `seen.db`
+  default also breaks witness M1, which requires a fresh one.
+- **Pay floors have no fixture, so "values come from `conftest.py`" is unimplementable for them.**
+  `conftest.py` supplies titles and `LOCATIONS` but nothing for `contract_floor_gbp_day` /
+  `perm_floor_gbp`. Resolution: pay floors are **synthetic round numbers chosen for the scenario**,
+  stated as the one deliberate exception, because a currency-denominated personal number is exactly
+  what must not be copied from real config.
+
+**Known-bad, deliberately not fixed here:** `Solarflux` is live in five sites. PR 0.5 fixes
+`tests/conformance/seeds.py` only — the one this spec cites as an exemplar. `test_cv_bundle.py`,
+`test_core_vault_cv.py` and the remainder stay, and `Zenith` / `Novacraft` are unassessed. Do not
+copy any of them as a convention.
 
 **Preference values are sourced from `tests/conftest.py`'s existing fixtures, never invented.** The
 harness config must carry `accept_titles` / `target_locations` / pay floors to drive triage, and that
@@ -214,7 +272,9 @@ time.
 ## Commits
 
 **PR 0**
-1. `fix(core): Sluice.backend honours a constructor override (#7-adjacent)`
+1. `fix(core): Sluice.backend honours a constructor override`
+   *(round 2: the earlier `(#7-adjacent)` suffix is dropped — GitHub linkifies a bare `#7` and would
+   cross-reference an issue this commit does not address.)*
 2. `fix(ingest): Sluice.ingest threads Ctx.sleep`
 3. `feat(core): an injectable clock for date-dependent behaviour`
 
