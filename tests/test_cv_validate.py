@@ -166,3 +166,31 @@ def test_baseline_numbers_are_not_permitted_in_a_bullet():
     b = _bundle(baseline="Baseline mentions 777 deployments.")
     v = validate(_work_cv("- Led 777 deployments [AC1]"), b)
     assert any("INVENTED METRIC" in x for x in v), v
+
+
+def test_a_bracket_led_body_line_is_not_a_citable_id():
+    # `body` and `baseline` are user free text spliced into the bundle verbatim.
+    # An unanchored bracket match turned any bracket-led line into a citable id,
+    # so a bullet could cite a YEAR and inherit whatever numbers followed it.
+    e = [dict(_ENTRIES[0], body="[2019] Rebuilt the pipeline to 250 nodes"), _ENTRIES[1]]
+    v = validate(_work_cv("- Ran 250 nodes [2019]"), _bundle(entries=e))
+    assert any("BAD CITATION" in x for x in v), v
+
+
+def test_a_bracket_led_body_lines_numbers_join_the_enclosing_entry():
+    # The other half: refusing to treat it as an id must not DISCARD its numbers.
+    # The line is part of the entry's body, so 250 belongs to that entry.
+    e = [dict(_ENTRIES[0], body="[2019] Rebuilt the pipeline to 250 nodes"), _ENTRIES[1]]
+    assert validate(_work_cv("- Ran 250 nodes [AC1]"), _bundle(entries=e)) == []
+
+
+def test_an_id_shaped_bracket_in_free_text_is_still_a_citable_id():
+    # CHARACTERISATION, not desired behaviour. Anchoring to the generated shape
+    # NARROWS the free-text bypass; it does not close it, because a body line can
+    # still happen to look like a real code. Closing it needs validate() to be
+    # handed the true id list, which is a signature change (see #31's spec).
+    # This test therefore has no killing mutation in this change -- by design: it
+    # is expected to go RED the day someone closes the residual, which makes that
+    # a visible, deliberate change rather than a silent one.
+    e = [dict(_ENTRIES[0], body="[QQ7] fabricated 500 users"), _ENTRIES[1]]
+    assert validate(_work_cv("- Scaled to 500 users [QQ7]"), _bundle(entries=e)) == []
