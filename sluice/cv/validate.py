@@ -11,11 +11,24 @@ known-hallucination-string check. Configure both via the `cv:` block of
 sluice.yaml for the same behavior a fixed list gave before."""
 import re
 
+# render_bundle emits `=== SECTION ===` headers; NEGATIVE CONSTRAINTS is the one that
+# lands AFTER the last [id]. Without a reset its lines fall through to `elif cur` and
+# union the do-not-say numbers into the last-ranked entry's allowlist -- so the one
+# guard aimed at those figures stops firing on exactly them. The `[^=]` guards require
+# a non-'=' character inside each delimiter, so a bare setext underline (`======`) in a
+# pasted entry body does not reset. A body line genuinely shaped like a section header
+# still would, and that fails CLOSED: the entry's later numbers drop and a legitimate
+# bullet is flagged INVENTED METRIC -- visible and fixable, never a silent pass. (#31)
+_SECTION_RE = re.compile(r"^\s*={3,}[^=].*[^=]={3,}\s*$")
+
 
 def _bundle_ids_and_nums(bundle_text):
     ids, nums = {}, {}
     cur = None
     for line in bundle_text.splitlines():
+        if _SECTION_RE.match(line):
+            cur = None                      # this entry's lines have ended
+            continue
         m = re.match(r"\[([^\]]+)\]", line)
         if m:
             cur = m.group(1)
