@@ -1,5 +1,7 @@
 # tests/test_cv_engine.py
+from sluice.cv.bundle import build_bundle, render_bundle
 from sluice.cv.engine import run_one, run_batch
+from sluice.cv.validate import validate
 from sluice.core.backends import BackendError, FallbackBackend, OpenAiCompatibleBackend
 
 class Note:
@@ -60,6 +62,20 @@ CLEAN_CV = "\n".join([
     "Dunmoor Labs", "05/2019–10/2020 | Alfa | Analyst", "- CI [SF1]", "",
     "CERTIFICATES", "- CSM", "EDUCATION", "- Uni",
 ])
+
+
+def test_clean_cv_is_actually_clean():
+    # CLEAN_CV's validity is a PREMISE of every skipped-gate test below: those
+    # assert the engine skips when the gate fails, and they keep passing if
+    # CLEAN_CV silently stops being clean -- vacuously, for the wrong reason.
+    # Measured: breaking its first start year fails 5 tests loudly but leaves 3
+    # of these passing on a false premise. State the premise instead of implying
+    # it, because a fixture regeneration is exactly when it would quietly break.
+    bundle_text = render_bundle(build_bundle(
+        entries=ENTRIES, baseline="BASELINE", negatives=[],
+        jd_keywords=[], prefix_map={"Solarflux": "SF"}))
+    assert validate(CLEAN_CV, bundle_text) == []
+
 
 def test_application_owned_lead_is_refused():
     v = FakeVault(ENTRIES)

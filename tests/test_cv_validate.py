@@ -219,3 +219,21 @@ def test_an_id_shaped_bracket_in_free_text_is_still_a_citable_id():
     # a visible, deliberate change rather than a silent one.
     e = [dict(_ENTRIES[0], body="[QQ7] fabricated 500 users"), _ENTRIES[1]]
     assert validate(_work_cv("- Scaled to 500 users [QQ7]"), _bundle(entries=e)) == []
+
+
+def test_an_id_shaped_line_in_a_later_body_shadows_the_real_entry():
+    # The sharp edge of the same residual, and worse than minting a spurious id:
+    # when the free-text line looks like an EARLIER, REAL code, it OVERWRITES that
+    # entry's allowlist rather than adding to it (`nums[cur] = ...` on the id line).
+    # Both directions then go wrong at once -- the fabricated figure passes, AND
+    # the entry's genuine metric is reported as INVENTED.
+    #
+    # Pre-existing: main behaves identically, so this is a documented bound and not
+    # a regression from the anchor. Closing it needs validate() to be handed the
+    # true id list, which is a signature change and out of scope here. Pinned so
+    # the bound is MEASURED rather than assumed -- an earlier draft of this file
+    # described the residual as narrower than it is.
+    e = [_ENTRIES[0], dict(_ENTRIES[1], body="[AC1] fabricated 500 users")]
+    b = _bundle(entries=e)
+    assert validate(_work_cv("- Scaled to 500 users [AC1]"), b) == []
+    assert any("INVENTED" in x for x in validate(_work_cv("- Held 90 uptime [AC1]"), b))

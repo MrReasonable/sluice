@@ -132,8 +132,29 @@ documented two commits later is a gap, not a sequence.
 
 Round-2 correction: the third row previously read as a closure. It is not. A body line
 `[QQ7] fabricated 500 users` still mints a citable id, and `- Scaled to 500 users [QQ7]` returns `[]`.
-Closing it needs `validate()` to receive the real id list — a signature change, out of scope. The
-residual is bounded, documented, and **pinned by Test 6** so it cannot silently widen.
+
+**Pre-push correction — the residual is wider than the above states, in two ways.** Raised
+independently by the invariant reviewer and the CodeRabbit CLI pass, then measured directly. When the
+free-text line matches an **earlier, real** code, the id branch does `nums[cur] = ...` rather than
+`|=`, so it **overwrites** that entry's allowlist:
+
+```
+body of entry 2: "[AC1] fabricated 500 users"
+nums -> {'AC1': {'500'}, 'BO1': {'12'}}      # AC1's genuine 90 is GONE
+"- Scaled to 500 users [AC1]"  -> []                        # fabricated figure PASSES
+"- Held 90 uptime [AC1]"       -> INVENTED METRIC ['90']    # genuine figure FLAGGED
+```
+
+So the residual is a false-pass *and* a false-flag, not merely a spurious extra id. `main` behaves
+identically, so this is pre-existing and not a regression from the anchor — but the earlier draft of
+this spec, the code comment, and Test 6 all described it as narrower than it is. Now pinned by
+**Test 6b**, and the code comment states both halves.
+
+Closing it needs `validate()` to receive the real id list — a signature change, deliberately out of
+scope. Both CodeRabbit findings ("do not discover citation entries from free text"; "restrict resets
+to renderer-owned headers") point at that same change, which is the honest reading: the durable fix
+is to stop inferring structure from rendered text at all. Recorded in the PR body as the known
+follow-up rather than half-done here.
 
 `validate()`'s signature, purity and determinism are untouched. No config knob, so no
 `sluice.yaml.example` change; `docs/ARCHITECTURE.md` describes the cv gate only generically
@@ -245,8 +266,12 @@ The port is where this plan can quietly go wrong, so it is constrained:
 - All 8 mutation rows run, stated outcome observed, restored byte-identical (sha256-checked). ✅
 - All 10 port test→mutation pairs run and observed red. ✅ — see the finding below.
 - Every assertion present in `tests/test_cv_validate.py` before the port present after it. ✅
-- Fixtures regenerated in the three files; `rg -n 'LONDON|08/2001|Early career'` over them returns
-  nothing, and the descending-start-year property still holds (`[2024, 2022, 2020, 2019]`). ✅
+- Fixtures regenerated in the three files: grepping them for each of the previous fixture's location
+  literal, earliest date token and closing employer label returns nothing, and the
+  descending-start-year property still holds (`[2024, 2022, 2020, 2019]`). ✅
+  *(The check is described rather than spelled out. Writing the literals into a verification step
+  would put them back in the tree — this document would then be the only place they survived, which
+  is the same mistake as stating them in the narrative, relocated into a checklist.)*
 - Guard rows and port pairs **re-run after** the fixture regeneration, because a fixture change is
   exactly how a surviving assertion goes inert. ✅
 
