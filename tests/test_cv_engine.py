@@ -40,26 +40,26 @@ class FakeBackend:
         # first call = compose, later audit; return CV then audit
         return self.cv_out if "SOURCE BUNDLE" in prompt and "auditing" not in prompt else self.audit_out
 
-ENTRIES = [{"title": "Grew team", "company": "Solarflux", "best_for": "delivery",
+ENTRIES = [{"title": "Grew team", "company": "Example Foundry", "best_for": "delivery",
             "category": "people", "metrics": "3 8", "body": "Grew 3 to 8."}]
 
 def _cfg():
     from sluice.cv.config import CvConfig
     c = CvConfig(); c.output_dir = "/tmp/cvout"; c.served_dir = "/tmp/cvserved"
-    # prefix_map now defaults to {}; CLEAN_CV's citations are hardcoded to [SF1],
-    # so the single ENTRIES company must still code to "SF1" (2-letter fallback
-    # coding of "Solarflux" alone would yield "SO1").
-    c.prefix_map = {"Solarflux": "SF"}
+    # prefix_map now defaults to {}; CLEAN_CV's citations are hardcoded to [EF1],
+    # so the single ENTRIES company must still code to "EF1" (the 2-letter
+    # fallback for "Example Foundry" would yield "EX1").
+    c.prefix_map = {"Example Foundry": "EF"}
     return c
 
 # Synthetic throughout; only the descending start years are load-bearing.
 CLEAN_CV = "\n".join([
     "JANE ROE", "", "WORK EXPERIENCE", "",
-    "Acme Systems", "03/2024–present | Alfa | Engineer", "- Shipped [SF1]", "",
-    "Borealis Data", "07/2022–02/2024 | Bravo | Analyst",
-    "- Grew team from 3 to 8 [SF1]", "",
-    "Cindershore", "11/2020–06/2022 | Charlie | Engineer", "- Coached [SF1]", "",
-    "Dunmoor Labs", "05/2019–10/2020 | Alfa | Analyst", "- CI [SF1]", "",
+    "Example Systems", "02/2023–present | Alfa | Staff Engineer", "- Shipped [EF1]", "",
+    "Example Analytics", "06/2020–01/2023 | Bravo | Senior Engineer",
+    "- Grew team from 3 to 8 [EF1]", "",
+    "Example Robotics", "09/2017–05/2020 | Charlie | Engineer", "- Coached [EF1]", "",
+    "Example Cartography", "07/2015–08/2017 | Alfa | Junior Engineer", "- CI [EF1]", "",
     "CERTIFICATES", "- CSM", "EDUCATION", "- Uni",
 ])
 
@@ -73,7 +73,7 @@ def test_clean_cv_is_actually_clean():
     # it, because a fixture regeneration is exactly when it would quietly break.
     bundle_text = render_bundle(build_bundle(
         entries=ENTRIES, baseline="BASELINE", negatives=[],
-        jd_keywords=[], prefix_map={"Solarflux": "SF"}))
+        jd_keywords=[], prefix_map={"Example Foundry": "EF"}))
     assert validate(CLEAN_CV, bundle_text) == []
 
 
@@ -90,10 +90,10 @@ def test_gate_failure_skips_and_never_renders():
     # "never rendered" claim in the test name unassertable -- an unconditional
     # renderer.render() before the gate check passed the entire suite.
     # compose returns an uncited CV -> validate fails both attempts -> skip
-    bad = CLEAN_CV.replace("- Grew team from 3 to 8 [SF1]", "- Grew team from 3 to 8")
+    bad = CLEAN_CV.replace("- Grew team from 3 to 8 [EF1]", "- Grew team from 3 to 8")
     v = FakeVault(ENTRIES)
     rend = FakeRenderer()
-    r = run_one(Note({"status": "shortlist", "company": "Solarflux", "role": "Analyst"}),
+    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
                 v, _cfg(), FakeBackend(bad), FakeCache(), renderer=rend)
     assert r.status == "skipped-gate"
     assert any("UNCITED" in x for x in r.violations)
@@ -106,7 +106,7 @@ def test_gate_failure_skips_and_never_renders():
 
 def test_dry_run_reports_but_writes_nothing():
     v = FakeVault(ENTRIES)
-    r = run_one(Note({"status": "shortlist", "company": "Solarflux", "role": "Analyst"}),
+    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
                 v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(), renderer=FakeRenderer(), dry_run=True)
     assert r.status == "dry-run"
     assert v.written == {}
@@ -133,7 +133,7 @@ def test_drifted_work_header_fails_closed():
     drifted = CLEAN_CV.replace("WORK EXPERIENCE", "PROFESSIONAL EXPERIENCE")
     v = FakeVault(ENTRIES)
     rend = FakeRenderer()
-    r = run_one(Note({"status": "shortlist", "company": "Solarflux", "role": "Analyst"}),
+    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
                 v, _cfg(), FakeBackend(drifted), FakeCache(), renderer=rend)
     assert r.status == "skipped-gate"
     assert any("STRUCTURAL" in x for x in r.violations)
@@ -147,7 +147,7 @@ def test_happy_path_renders_and_records(monkeypatch):
     monkeypatch.setattr(_render_mod, "serve",
                         lambda *a, **k: "Jane_Roe_CV_deadbeef.pdf")
     v = FakeVault(ENTRIES)
-    note = Note({"status": "shortlist", "company": "Solarflux", "role": "Analyst"})
+    note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
     r = run_one(note, v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(), renderer=FakeRenderer())
     assert r.status == "rendered"
     assert r.served == "Jane_Roe_CV_deadbeef.pdf"
@@ -169,7 +169,7 @@ def test_no_serve_renders_but_does_not_mark_lead():
     cfg.served_dir = ""  # emulates --no-serve
     v = FakeVault(ENTRIES)
     rend = FakeRenderer()
-    r = run_one(Note({"status": "shortlist", "company": "Solarflux", "role": "Analyst"}),
+    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
                 v, cfg, FakeBackend(CLEAN_CV), FakeCache(), renderer=rend)
     assert r.status == "rendered"
     assert rend.rendered == [CLEAN_CV]   # the render still happened; only serving was skipped
@@ -181,7 +181,7 @@ def test_slop_only_failure_fails_gate_and_feeds_retry():
     # bullet contains an em dash -- a slop HARD error. Proves (a) a slop-only
     # failure still fails the gate, and (b) the SLOP message reaches the retry
     # prompt via prior_violations.
-    slop_cv = CLEAN_CV.replace("- Shipped [SF1]", "- Shipped, launched \u2014 and iterated [SF1]")
+    slop_cv = CLEAN_CV.replace("- Shipped [EF1]", "- Shipped, launched \u2014 and iterated [EF1]")
 
     class RecordingBackend:
         def __init__(self, cv):
@@ -195,7 +195,7 @@ def test_slop_only_failure_fails_gate_and_feeds_retry():
     be = RecordingBackend(slop_cv)
     v = FakeVault(ENTRIES)
     rend = FakeRenderer()
-    r = run_one(Note({"status": "shortlist", "company": "Solarflux", "role": "Analyst"}),
+    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
                 v, _cfg(), be, FakeCache(), renderer=rend)
     assert r.status == "skipped-gate"
     assert r.slop                      # slop error surfaced
@@ -209,10 +209,10 @@ def test_slop_only_failure_fails_gate_and_feeds_retry():
 def test_retry_happens_exactly_once():
     # A persistently gate-failing CV must be composed exactly twice: the initial
     # attempt plus the single retry, then skip -- never a third attempt.
-    bad = CLEAN_CV.replace("- Grew team from 3 to 8 [SF1]", "- Grew team from 3 to 8")
+    bad = CLEAN_CV.replace("- Grew team from 3 to 8 [EF1]", "- Grew team from 3 to 8")
     v = FakeVault(ENTRIES)
     backend = FakeBackend(bad)
-    r = run_one(Note({"status": "shortlist", "company": "Solarflux", "role": "Analyst"}),
+    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
                 v, _cfg(), backend, FakeCache(), renderer=FakeRenderer())
     assert r.status == "skipped-gate"
     assert backend.calls == 2   # audit is never reached on skipped-gate, so this
@@ -240,7 +240,7 @@ def test_advisory_audit_failure_does_not_block_render(monkeypatch):
             raise RuntimeError("backend timeout during advisory audit")
 
     v = FakeVault(ENTRIES)
-    r = run_one(Note({"status": "shortlist", "company": "Solarflux", "role": "Analyst"}),
+    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
                 v, _cfg(), AuditRaisingBackend(CLEAN_CV), FakeCache(), renderer=FakeRenderer())
     assert r.status == "rendered"
     assert r.audit_flags == []

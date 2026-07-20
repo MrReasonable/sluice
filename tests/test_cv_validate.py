@@ -5,25 +5,29 @@ from sluice.cv.validate import validate
 # Sample employer roster / decoy list a caller (CvConfig.employers /
 # CvConfig.fabrication_decoys) would supply; validate() itself ships with no
 # hardcoded employers or decoys, so tests exercising those gates pass them in.
-EMPLOYERS = ["Acme Systems", "Borealis Data", "Cindershore", "Dunmoor Labs"]
+EMPLOYERS = ["Example Systems", "Example Analytics", "Example Robotics",
+             "Example Cartography"]
 FABRICATION_DECOYS = ["Larkspur"]
 
 # Built through the real renderer rather than by hand. The hand-written version
 # this replaces had no `=== ... ===` headers, no entry bodies, no baseline and no
 # negatives -- so validate() had never once been exercised against the text
 # render_bundle actually produces, which is how a defect in the contract between
-# them survived the whole suite. Ids are SF1/TV1/TV2 (assign_codes sequences per
+# them survived the whole suite. Ids are EF1/ET1/ET2 (assign_codes sequences per
 # prefix from 1); `jd_keywords=[]` and an explicit prefix_map are both required to
 # make them deterministic, because build_bundle ranks before it assigns codes.
 _LEGACY_ENTRIES = [
-    {"company": "Solarflux", "title": "EM", "metrics": "3 8", "best_for": "", "category": ""},
-    {"company": "Trueverse", "title": "CTO", "metrics": "90 99", "best_for": "", "category": ""},
-    {"company": "Trueverse", "title": "Lead", "metrics": "15", "best_for": "", "category": ""},
+    {"company": "Example Foundry", "title": "EM", "metrics": "3 8",
+     "best_for": "", "category": ""},
+    {"company": "Example Telemetry", "title": "CTO", "metrics": "90 99",
+     "best_for": "", "category": ""},
+    {"company": "Example Telemetry", "title": "Lead", "metrics": "15",
+     "best_for": "", "category": ""},
 ]
 BUNDLE = render_bundle(build_bundle(
     entries=_LEGACY_ENTRIES, baseline="Baseline prose.",
     negatives=["never claim 400 users"], jd_keywords=[],
-    prefix_map={"Solarflux": "SF", "Trueverse": "TV"}))
+    prefix_map={"Example Foundry": "EF", "Example Telemetry": "ET"}))
 
 def _cv(work):
     L = ["Phone number: +00 000", "Email address: x@y", "Web: https://x", "", "JANE ROE",
@@ -36,11 +40,11 @@ def _cv(work):
 # Synthetic throughout. Only the descending start years matter to the gate
 # (validate.py:39); the count, roles, cities and employers are arbitrary.
 FULL = [
-    ("Acme Systems", "03/2024–present | Alfa | Engineer", ["- Shipped it [SF1]"]),
-    ("Borealis Data", "07/2022–02/2024 | Bravo | Analyst",
-     ["- Grew team from 3 to 8 [SF1]"]),
-    ("Cindershore", "11/2020–06/2022 | Charlie | Engineer", ["- Coached [SF1]"]),
-    ("Dunmoor Labs", "05/2019–10/2020 | Alfa | Analyst", ["- CI [SF1]"]),
+    ("Example Systems", "02/2023–present | Alfa | Staff Engineer", ["- Shipped it [EF1]"]),
+    ("Example Analytics", "06/2020–01/2023 | Bravo | Senior Engineer",
+     ["- Grew team from 3 to 8 [EF1]"]),
+    ("Example Robotics", "09/2017–05/2020 | Charlie | Engineer", ["- Coached [EF1]"]),
+    ("Example Cartography", "07/2015–08/2017 | Alfa | Junior Engineer", ["- CI [EF1]"]),
 ]
 
 def test_clean_passes():
@@ -53,11 +57,11 @@ def test_employer_and_decoy_gates_are_off_by_default():
     # runs when the caller supplies a list.
     assert validate(_cv(FULL[:-1]), BUNDLE) == []
     f = [x[:] for x in FULL]
-    f[0] = ("Acme Systems", "03/2024–present | Alfa | Engineer", ["- Built at Larkspur [SF1]"])
+    f[0] = ("Example Systems", "02/2023–present | Alfa | Staff Engineer", ["- Built at Larkspur [EF1]"])
     assert validate(_cv(f), BUNDLE) == []
 
 def test_id_digits_not_counted_as_metric():
-    # The `1` in [TV1] is part of the citation CODE, not a metric of that entry --
+    # The `1` in [ET1] is part of the citation CODE, not a metric of that entry --
     # `_bundle_ids_and_nums` scans only the text AFTER the id token for that reason.
     #
     # The first assertion below is the one this test shipped with, and it was
@@ -67,31 +71,31 @@ def test_id_digits_not_counted_as_metric():
     # port's test->mutation pairs is what surfaced it. Kept (it still pins that a
     # digit-free citing bullet is clean) and paired with the load-bearing half.
     f = [x[:] for x in FULL]
-    f[3] = ("Dunmoor Labs", "05/2019–10/2020 | Alfa | Analyst",
-            ["- Owned direction [TV1]"])
+    f[3] = ("Example Cartography", "07/2015–08/2017 | Alfa | Junior Engineer",
+            ["- Owned direction [ET1]"])
     assert validate(_cv(f), BUNDLE) == []
 
-    # `1` appears ONLY inside the id token [TV1]; TV1's metrics are 90 and 99. If
+    # `1` appears ONLY inside the id token [ET1]; ET1's metrics are 90 and 99. If
     # the parser scanned the id token too, the code's own digits would silently
     # become permitted figures, so this bullet MUST be flagged.
-    f[3] = ("Dunmoor Labs", "05/2019–10/2020 | Alfa | Analyst",
-            ["- Owned 1 direction [TV1]"])
+    f[3] = ("Example Cartography", "07/2015–08/2017 | Alfa | Junior Engineer",
+            ["- Owned 1 direction [ET1]"])
     assert any("INVENTED" in x for x in validate(_cv(f), BUNDLE))
 
 def test_multi_citation_union():
     f = [x[:] for x in FULL]
-    f[3] = ("Dunmoor Labs", "05/2019–10/2020 | Alfa | Analyst",
-            ["- Lifted uptime 90 to 99 across a 15-person team [TV1] [TV2]"])
+    f[3] = ("Example Cartography", "07/2015–08/2017 | Alfa | Junior Engineer",
+            ["- Lifted uptime 90 to 99 across a 15-person team [ET1] [ET2]"])
     assert validate(_cv(f), BUNDLE) == []
 
 def test_invented_metric_flagged():
     f = [x[:] for x in FULL]
-    f[1] = ("Borealis Data", "07/2022–02/2024 | Bravo | Analyst", ["- Grew team from 3 to 23 [SF1]"])
+    f[1] = ("Example Analytics", "06/2020–01/2023 | Bravo | Senior Engineer", ["- Grew team from 3 to 23 [EF1]"])
     assert any("INVENTED" in x for x in validate(_cv(f), BUNDLE))
 
 def test_uncited_flagged():
     f = [x[:] for x in FULL]
-    f[1] = ("Borealis Data", "07/2022–02/2024 | Bravo | Analyst", ["- Grew team from 3 to 8"])
+    f[1] = ("Example Analytics", "06/2020–01/2023 | Bravo | Senior Engineer", ["- Grew team from 3 to 8"])
     assert any("UNCITED" in x for x in validate(_cv(f), BUNDLE))
 
 def test_missing_employer_flagged():
@@ -100,14 +104,14 @@ def test_missing_employer_flagged():
 
 def test_larkspur_flagged():
     f = [x[:] for x in FULL]
-    f[0] = ("Acme Systems", "03/2024–present | Alfa | Engineer", ["- Built at Larkspur [SF1]"])
+    f[0] = ("Example Systems", "02/2023–present | Alfa | Staff Engineer", ["- Built at Larkspur [EF1]"])
     assert any("Larkspur" in x for x in
                validate(_cv(f), BUNDLE, fabrication_decoys=FABRICATION_DECOYS))
 
 def test_larkspur_case_insensitive_flagged():
     # lowercase/mixed-case "larkspur" must not slip past a case-sensitive check.
     f = [x[:] for x in FULL]
-    f[0] = ("Acme Systems", "03/2024–present | Alfa | Engineer", ["- Built at larkspur [SF1]"])
+    f[0] = ("Example Systems", "02/2023–present | Alfa | Staff Engineer", ["- Built at larkspur [EF1]"])
     assert any("FABRICATED" in x or "Larkspur" in x for x in
                validate(_cv(f), BUNDLE, fabrication_decoys=FABRICATION_DECOYS))
 
@@ -118,7 +122,7 @@ def test_bullet_marker_uncited_flagged():
     # '-') this bullet was invisible to the gate -- no violation was raised, so
     # a fabricated/uncited claim would sail through. It must be caught here too.
     f = [x[:] for x in FULL]
-    f[1] = ("Borealis Data", "07/2022–02/2024 | Bravo | Analyst", ["• Grew team from 3 to 8"])
+    f[1] = ("Example Analytics", "06/2020–01/2023 | Bravo | Senior Engineer", ["• Grew team from 3 to 8"])
     assert any("UNCITED" in x for x in validate(_cv(f), BUNDLE))
 
 
@@ -127,12 +131,12 @@ def test_bullet_marker_uncited_flagged():
 # reason to exercise -- entry bodies, a baseline block, and negatives carrying
 # digits -- because those are where the two defects #31 fixes actually lived.
 
-_PREFIX_MAP = {"Acme Systems": "AC", "Borealis Data": "BO"}
+_PREFIX_MAP = {"Example Systems": "ES", "Example Analytics": "EA"}
 
 _ENTRIES = [
-    {"company": "Acme Systems", "title": "Engineer", "metrics": "90",
+    {"company": "Example Systems", "title": "Engineer", "metrics": "90",
      "body": "Ran 42 services in the platform group.", "best_for": "", "category": ""},
-    {"company": "Borealis Data", "title": "Analyst", "metrics": "12",
+    {"company": "Example Analytics", "title": "Analyst", "metrics": "12",
      "body": "Owned 8 dashboards.", "best_for": "", "category": ""},
 ]
 
@@ -141,7 +145,7 @@ def _bundle(entries=None, baseline="Baseline prose, no digits.", negatives=None)
     # jd_keywords=[] AND an explicit prefix_map are BOTH required for stable ids:
     # build_bundle ranks before assign_codes, so ranking decides the numbering.
     # With no keywords every entry scores 0 and the (stable) sort preserves order,
-    # giving AC1 then BO1 -- so BO1 is the last-ranked entry the negatives block
+    # giving ES1 then EA1 -- so EA1 is the last-ranked entry the negatives block
     # would otherwise be attributed to.
     return render_bundle(build_bundle(
         entries=_ENTRIES if entries is None else entries,
@@ -153,7 +157,7 @@ def _bundle(entries=None, baseline="Baseline prose, no digits.", negatives=None)
 def _work_cv(*bullets):
     return "\n".join(["JANE ROE", "", "PROFILE", "I build things.", "",
                       "WORK EXPERIENCE", "",
-                      "Acme Systems", "03/2024–present | Alfa | Engineer",
+                      "Example Systems", "02/2023–present | Alfa | Staff Engineer",
                       *bullets, "",
                       "CERTIFICATES", "- Cert", "", "EDUCATION", "- School"])
 
@@ -163,7 +167,7 @@ def test_negatives_block_does_not_widen_the_last_entrys_allowlist():
     # that entry lets a bullet cite it and carry a figure that exists ONLY in the
     # do-not-say list -- the one class of number the negatives exist to suppress.
     b = _bundle(negatives=["never claim 500 users"])
-    v = validate(_work_cv("- Scaled the platform to 500 users [BO1]"), b)
+    v = validate(_work_cv("- Scaled the platform to 500 users [EA1]"), b)
     assert any("INVENTED METRIC" in x for x in v), v
 
 
@@ -173,7 +177,7 @@ def test_a_body_sourced_number_stays_permitted():
     # is parsed on the same line that sets `cur`, so a metrics-sourced number is
     # unreachable by any cur-clearing change and cannot detect an over-broad one.
     b = _bundle(negatives=["never claim 500 users"])
-    assert validate(_work_cv("- Ran 42 services [AC1]"), b) == []
+    assert validate(_work_cv("- Ran 42 services [ES1]"), b) == []
 
 
 def test_a_setext_underline_in_a_body_does_not_end_the_entry():
@@ -181,7 +185,7 @@ def test_a_setext_underline_in_a_body_does_not_end_the_entry():
     # entry body. It is not a section header, so it must not end the entry and
     # strand the numbers that follow it.
     e = [dict(_ENTRIES[0], body="Highlights\n======\nCut latency to 250 ms"), _ENTRIES[1]]
-    assert validate(_work_cv("- Cut latency to 250 ms [AC1]"), _bundle(entries=e)) == []
+    assert validate(_work_cv("- Cut latency to 250 ms [ES1]"), _bundle(entries=e)) == []
 
 
 def test_baseline_numbers_are_not_permitted_in_a_bullet():
@@ -189,7 +193,7 @@ def test_baseline_numbers_are_not_permitted_in_a_bullet():
     # the first [id], so its numbers are attributed to no entry. Permitting them
     # is #30's design question, and this test makes that a deliberate change.
     b = _bundle(baseline="Baseline mentions 777 deployments.")
-    v = validate(_work_cv("- Led 777 deployments [AC1]"), b)
+    v = validate(_work_cv("- Led 777 deployments [ES1]"), b)
     assert any("INVENTED METRIC" in x for x in v), v
 
 
@@ -206,7 +210,7 @@ def test_a_bracket_led_body_lines_numbers_join_the_enclosing_entry():
     # The other half: refusing to treat it as an id must not DISCARD its numbers.
     # The line is part of the entry's body, so 250 belongs to that entry.
     e = [dict(_ENTRIES[0], body="[2019] Rebuilt the pipeline to 250 nodes"), _ENTRIES[1]]
-    assert validate(_work_cv("- Ran 250 nodes [AC1]"), _bundle(entries=e)) == []
+    assert validate(_work_cv("- Ran 250 nodes [ES1]"), _bundle(entries=e)) == []
 
 
 def test_an_id_shaped_bracket_in_free_text_is_still_a_citable_id():
@@ -233,7 +237,7 @@ def test_an_id_shaped_line_in_a_later_body_shadows_the_real_entry():
     # true id list, which is a signature change and out of scope here. Pinned so
     # the bound is MEASURED rather than assumed -- an earlier draft of this file
     # described the residual as narrower than it is.
-    e = [_ENTRIES[0], dict(_ENTRIES[1], body="[AC1] fabricated 500 users")]
+    e = [_ENTRIES[0], dict(_ENTRIES[1], body="[ES1] fabricated 500 users")]
     b = _bundle(entries=e)
-    assert validate(_work_cv("- Scaled to 500 users [AC1]"), b) == []
-    assert any("INVENTED" in x for x in validate(_work_cv("- Held 90 uptime [AC1]"), b))
+    assert validate(_work_cv("- Scaled to 500 users [ES1]"), b) == []
+    assert any("INVENTED" in x for x in validate(_work_cv("- Held 90 uptime [ES1]"), b))

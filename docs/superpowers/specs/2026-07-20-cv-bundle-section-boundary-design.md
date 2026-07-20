@@ -216,29 +216,34 @@ the mutant loaded, each restored byte-identical.
 
 ## Neutrality
 
-Fixture content in the touched files is **generated for the test** — labels, dates, locations, role
-titles, and the overall structure alike. Nothing is adapted from any real document, render, CV, or
-`sluice.local.yaml`. Three files are in scope because this change rewrites the relevant lines in each:
+**Corrected after review.** An earlier revision of this section claimed the fixtures' career
+*structure* was real and had been confirmed as such. **That was wrong.** The confirmation came from a
+leading question of mine; the author has since stated plainly that the companies, dates and
+progression were all invented. There was no personal-data exposure in the fixture structure, and the
+git-history concern that followed from it does not exist. Recorded here rather than quietly deleted,
+because the mistake — building a chain of consequences on an answer to a question I had framed badly
+— is the more useful thing to keep.
 
-- `tests/test_cv_validate.py` — ported and regenerated (§Commit 3/4).
-- `tests/test_cv_engine.py` — fixture regenerated.
-- `tests/test_cv_slop.py:13` — fixture regenerated. Round-2 finding: this line was initially swept
-  into the "location literal, out of scope" narrowing below, but it differs in kind — it carries a
-  fixture value, not a bare location. Its assertion needs only an en-dash date range, so any synthetic
-  string satisfies it.
+Two real issues remain, and both are about the *values*, not the shape:
 
-Only the **descending-start-year** property is load-bearing: `sluice/cv/validate.py:39` extracts
-`\d{2}/(\d{4})\s*[–-]` and nothing else. Everything above that is free to be regenerated.
+- **Real company names.** `Solarflux` and `Trueverse` are actual registered companies, so the
+  fixtures did not meet the synthetic-only rule. Caught by the CodeRabbit CLI pass, which checked the
+  names against the world; two neutrality review rounds had cleared them as invented precisely
+  because they *look* invented. Every fixture company in the touched files moves to the unambiguous
+  `Example ...` placeholder family.
+- **A bare location literal.** `LONDON` in `tests/`, which CLAUDE.md forbids regardless of whose city
+  it is. This is the existing #27 class. Locations use `conftest.py`'s `Alfa`/`Bravo`/`Charlie`.
 
-**Scope narrowing, stated honestly:** a bare `LONDON` location literal appears in 9 test files
-(CLAUDE.md forbids locations in `tests/`; `conftest.py` establishes `Alfa`/`Bravo`/`Charlie`). This
-change fixes it in the three files it already rewrites and leaves the other six. That is a partial
-remediation of a repo-wide class, not a closure. (#27 covers `tests/fixtures/*/raw.json` — captured
-payloads, a separate question.)
+The fixture career is rebuilt as one coherent invented developer starting 2015, with contiguous
+non-overlapping tenures — the fixture it replaces had two roles overlapping by five months, which is
+itself evidence it was constructed for the test rather than transcribed. Only the descending start
+years are read by the gate (`validate.py:39`); the rest is plausibility, not requirement.
 
-**Pre-existing copies outside the working tree** are recorded separately and deliberately not
-enumerated here; remediating the working tree does not reach them, and the PR body will say so
-without restating the content.
+**Scope narrowing, stated honestly.** Both classes are fixed only in the three files this change
+already rewrites. A bare location literal remains in six other test files, and the real-company names
+remain in four more (`test_cv_bundle.py`, `test_cv_compose.py`, `test_core_vault_cv.py`,
+`tests/conformance/`). Those are a repo-wide pass, not this diff. (#27 covers
+`tests/fixtures/*/raw.json` separately, as captured payloads.)
 
 ## Port discipline
 
@@ -261,7 +266,7 @@ The port is where this plan can quietly go wrong, so it is constrained:
 
 ## Definition of done — met
 
-- `python -m pytest` green: **719** (712 + 4 in commit 1 + 3 in commit 2). ✅
+- `python -m pytest` green: **721** (712 + 4 in commit 1 + 3 in commit 2 + 2 folded from the pre-push review). ✅
 - `ruff check sluice tests` clean. ✅
 - All 8 mutation rows run, stated outcome observed, restored byte-identical (sha256-checked). ✅
 - All 10 port test→mutation pairs run and observed red. ✅ — see the finding below.
