@@ -58,9 +58,24 @@ def test_employer_and_decoy_gates_are_off_by_default():
     assert validate(_cv(f), BUNDLE) == []
 
 def test_id_digits_not_counted_as_metric():
+    # The `1` in [TV1] is part of the citation CODE, not a metric of that entry --
+    # `_bundle_ids_and_nums` scans only the text AFTER the id token for that reason.
+    #
+    # The first assertion below is the one this test shipped with, and it was
+    # INERT: a digit-free bullet leaves bullet_nums empty, so `invented` is empty
+    # whatever the id token contributes, and the assertion held under every
+    # mutation. It was already inert before the render_bundle port; running the
+    # port's test->mutation pairs is what surfaced it. Kept (it still pins that a
+    # digit-free citing bullet is clean) and paired with the load-bearing half.
     f = [x[:] for x in FULL]
     f[5] = ("Trueverse", "05/2015–03/2017 | LONDON | CTO", ["- Owned direction [TV1]"])
     assert validate(_cv(f), BUNDLE) == []
+
+    # `1` appears ONLY inside the id token [TV1]; TV1's metrics are 90 and 99. If
+    # the parser scanned the id token too, the code's own digits would silently
+    # become permitted figures, so this bullet MUST be flagged.
+    f[5] = ("Trueverse", "05/2015–03/2017 | LONDON | CTO", ["- Owned 1 direction [TV1]"])
+    assert any("INVENTED" in x for x in validate(_cv(f), BUNDLE))
 
 def test_multi_citation_union():
     f = [x[:] for x in FULL]
