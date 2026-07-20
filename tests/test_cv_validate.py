@@ -9,11 +9,22 @@ EMPLOYERS = ["Novacraft", "Solarflux", "Driftwave", "Coalridge Media",
              "Roxwell Fashion", "Trueverse", "Early career (various)"]
 FABRICATION_DECOYS = ["Larkspur"]
 
-BUNDLE = "\n".join([
-    "[SF3] (Solarflux) Grew team from 3 to 8 | metrics=3 8",
-    "[TV1] (Trueverse) uptime 90 to 99 | metrics=90 99",
-    "[TV4] (Trueverse) team of 15 | metrics=15",
-])
+# Built through the real renderer rather than by hand. The hand-written version
+# this replaces had no `=== ... ===` headers, no entry bodies, no baseline and no
+# negatives -- so validate() had never once been exercised against the text
+# render_bundle actually produces, which is how a defect in the contract between
+# them survived the whole suite. Ids are SF1/TV1/TV2 (assign_codes sequences per
+# prefix from 1); `jd_keywords=[]` and an explicit prefix_map are both required to
+# make them deterministic, because build_bundle ranks before it assigns codes.
+_LEGACY_ENTRIES = [
+    {"company": "Solarflux", "title": "EM", "metrics": "3 8", "best_for": "", "category": ""},
+    {"company": "Trueverse", "title": "CTO", "metrics": "90 99", "best_for": "", "category": ""},
+    {"company": "Trueverse", "title": "Lead", "metrics": "15", "best_for": "", "category": ""},
+]
+BUNDLE = render_bundle(build_bundle(
+    entries=_LEGACY_ENTRIES, baseline="Baseline prose.",
+    negatives=["never claim 400 users"], jd_keywords=[],
+    prefix_map={"Solarflux": "SF", "Trueverse": "TV"}))
 
 def _cv(work):
     L = ["Phone number: +44", "Email address: x@y", "Web: https://x", "", "JANE ROE",
@@ -24,13 +35,13 @@ def _cv(work):
     return "\n".join(L)
 
 FULL = [
-    ("Novacraft", "12/2025–present | LONDON | Founder", ["- Shipped it [SF3]"]),
-    ("Solarflux", "01/2025–04/2026 | LONDON | EM", ["- Grew team from 3 to 8 [SF3]"]),
-    ("Driftwave", "11/2022–04/2024 | LONDON | Lead", ["- Coached [SF3]"]),
-    ("Coalridge Media", "09/2020–10/2022 | LONDON | Lead", ["- CI [SF3]"]),
-    ("Roxwell Fashion", "04/2017–12/2019 | LONDON | EM", ["- Led [SF3]"]),
-    ("Trueverse", "05/2015–03/2017 | LONDON | CTO", ["- Uptime [SF3]"]),
-    ("Early career (various)", "08/2001–03/2015 | UK", ["- Various [SF3]"]),
+    ("Novacraft", "12/2025–present | LONDON | Founder", ["- Shipped it [SF1]"]),
+    ("Solarflux", "01/2025–04/2026 | LONDON | EM", ["- Grew team from 3 to 8 [SF1]"]),
+    ("Driftwave", "11/2022–04/2024 | LONDON | Lead", ["- Coached [SF1]"]),
+    ("Coalridge Media", "09/2020–10/2022 | LONDON | Lead", ["- CI [SF1]"]),
+    ("Roxwell Fashion", "04/2017–12/2019 | LONDON | EM", ["- Led [SF1]"]),
+    ("Trueverse", "05/2015–03/2017 | LONDON | CTO", ["- Uptime [SF1]"]),
+    ("Early career (various)", "08/2001–03/2015 | UK", ["- Various [SF1]"]),
 ]
 
 def test_clean_passes():
@@ -43,7 +54,7 @@ def test_employer_and_decoy_gates_are_off_by_default():
     # runs when the caller supplies a list.
     assert validate(_cv(FULL[:-1]), BUNDLE) == []
     f = [x[:] for x in FULL]
-    f[0] = ("Novacraft", "12/2025–present | LONDON | Founder", ["- Built at Larkspur [SF3]"])
+    f[0] = ("Novacraft", "12/2025–present | LONDON | Founder", ["- Built at Larkspur [SF1]"])
     assert validate(_cv(f), BUNDLE) == []
 
 def test_id_digits_not_counted_as_metric():
@@ -54,12 +65,12 @@ def test_id_digits_not_counted_as_metric():
 def test_multi_citation_union():
     f = [x[:] for x in FULL]
     f[5] = ("Trueverse", "05/2015–03/2017 | LONDON | CTO",
-            ["- Lifted uptime 90 to 99 across a 15-person team [TV1] [TV4]"])
+            ["- Lifted uptime 90 to 99 across a 15-person team [TV1] [TV2]"])
     assert validate(_cv(f), BUNDLE) == []
 
 def test_invented_metric_flagged():
     f = [x[:] for x in FULL]
-    f[1] = ("Solarflux", "01/2025–04/2026 | LONDON | EM", ["- Grew team from 3 to 23 [SF3]"])
+    f[1] = ("Solarflux", "01/2025–04/2026 | LONDON | EM", ["- Grew team from 3 to 23 [SF1]"])
     assert any("INVENTED" in x for x in validate(_cv(f), BUNDLE))
 
 def test_uncited_flagged():
@@ -73,14 +84,14 @@ def test_missing_employer_flagged():
 
 def test_larkspur_flagged():
     f = [x[:] for x in FULL]
-    f[0] = ("Novacraft", "12/2025–present | LONDON | Founder", ["- Built at Larkspur [SF3]"])
+    f[0] = ("Novacraft", "12/2025–present | LONDON | Founder", ["- Built at Larkspur [SF1]"])
     assert any("Larkspur" in x for x in
                validate(_cv(f), BUNDLE, fabrication_decoys=FABRICATION_DECOYS))
 
 def test_larkspur_case_insensitive_flagged():
     # lowercase/mixed-case "larkspur" must not slip past a case-sensitive check.
     f = [x[:] for x in FULL]
-    f[0] = ("Novacraft", "12/2025–present | LONDON | Founder", ["- Built at larkspur [SF3]"])
+    f[0] = ("Novacraft", "12/2025–present | LONDON | Founder", ["- Built at larkspur [SF1]"])
     assert any("FABRICATED" in x or "Larkspur" in x for x in
                validate(_cv(f), BUNDLE, fabrication_decoys=FABRICATION_DECOYS))
 
@@ -95,12 +106,10 @@ def test_bullet_marker_uncited_flagged():
     assert any("UNCITED" in x for x in validate(_cv(f), BUNDLE))
 
 
-# --- Renderer-backed fixtures (#31) ------------------------------------------
-# The BUNDLE constant above is hand-written: no `=== ... ===` section headers, no
-# entry bodies, no baseline and no negatives. That unrealism is precisely why a
-# defect in the bundle-parser/renderer contract survived this suite -- validate()
-# had never once been run against real render_bundle output. These build through
-# build_bundle + render_bundle so the two cannot drift apart again.
+# --- Fixtures for the section-boundary and id-anchor guards (#31) -------------
+# BUNDLE above covers the legacy assertions; these add the regions it has no
+# reason to exercise -- entry bodies, a baseline block, and negatives carrying
+# digits -- because those are where the two defects #31 fixes actually lived.
 
 _PREFIX_MAP = {"Acme Systems": "AC", "Borealis Data": "BO"}
 
