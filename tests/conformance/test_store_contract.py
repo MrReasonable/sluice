@@ -49,7 +49,7 @@ def _make_store(store_name, tmp_path, monkeypatch):
 
 
 def _lead(**kw):
-    base = dict(source="testboard", search="s", title="Analyst", company="Solarflux",
+    base = dict(source="testboard", search="s", title="Analyst", company="Example Foundry",
                 location=LOCATIONS[0], salary="", url="https://example.invalid/jobs/1")
     base.update(kw)
     return Lead(**base)
@@ -217,8 +217,8 @@ def test_ref_round_trips_through_every_write_method(store_name, tmp_path, monkey
 
 def test_slug_is_issued_stable_and_unique(store_name, tmp_path, monkeypatch):
     store = _make_store(store_name, tmp_path, monkeypatch)
-    store.upsert(_lead(company="Solarflux", title="Analyst", url="https://example.invalid/1"))
-    store.upsert(_lead(company="Zenith", title="Engineer", url="https://example.invalid/2"))
+    store.upsert(_lead(company="Example Foundry", title="Analyst", url="https://example.invalid/1"))
+    store.upsert(_lead(company="Example Analytics", title="Engineer", url="https://example.invalid/2"))
 
     slugs = [n.slug for n in store.read_leads()]
     assert len(set(slugs)) == 2 and all(slugs), "slugs must exist and be unique per lead"

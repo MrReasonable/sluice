@@ -267,8 +267,8 @@ def test_batch_survives_a_single_lead_exception(monkeypatch):
     notes = [
         Note({"status": "shortlist", "company": "Acme", "role": "Analyst"},
              path="Job Applications/Job Leads/Acme - Analyst.md"),
-        Note({"status": "shortlist", "company": "Zenith", "role": "Analyst"},
-             path="Job Applications/Job Leads/Zenith - Analyst.md"),
+        Note({"status": "shortlist", "company": "Example Analytics", "role": "Analyst"},
+             path="Job Applications/Job Leads/Example Analytics - Analyst.md"),
     ]
     v = FakeVault(ENTRIES, notes=notes)
     results = run_batch(v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(), renderer=FlakyRenderer())
