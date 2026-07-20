@@ -24,7 +24,7 @@ status: applied
 score: 0
 url: "https://remoteok.example/jobs/1"
 applied_date: 2026-07-01
-ats: greenhouse
+ats: example-ats
 relevance_notes: ""
 ---
 
