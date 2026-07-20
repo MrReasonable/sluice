@@ -21,6 +21,19 @@ import re
 # bullet is flagged INVENTED METRIC -- visible and fixable, never a silent pass. (#31)
 _SECTION_RE = re.compile(r"^\s*={3,}[^=].*[^=]={3,}\s*$")
 
+# assign_codes/_prefix guarantee exactly two A-Z letters plus a sequence number, so
+# anchoring to that shape costs nothing real and closes a second widening: `body` and
+# `baseline` are user free text spliced into the bundle verbatim, and an unanchored
+# bracket match turned a line like `[2019] Rebuilt the pipeline to 250 nodes` into a
+# citable id owning 250 -- a bullet could cite a YEAR and carry a fabricated figure
+# past the gate. Fails CLOSED: a bullet citing an id this rejects is now an unknown
+# citation, which is already a BAD CITATION violation. cv/render.py's _CITE_RE has
+# assumed this same shape all along, so this aligns the parser with the strip step.
+# NB this NARROWS the free-text bypass rather than closing it -- a body line that
+# happens to look like a real code is still read as one. See test_an_id_shaped_
+# bracket_in_free_text_is_still_a_citable_id, which pins that bound. (#31)
+_ID_RE = re.compile(r"^\[([A-Z]{2}\d+)\]")
+
 
 def _bundle_ids_and_nums(bundle_text):
     ids, nums = {}, {}
@@ -29,7 +42,7 @@ def _bundle_ids_and_nums(bundle_text):
         if _SECTION_RE.match(line):
             cur = None                      # this entry's lines have ended
             continue
-        m = re.match(r"\[([^\]]+)\]", line)
+        m = _ID_RE.match(line)
         if m:
             cur = m.group(1)
             ids[cur] = line
