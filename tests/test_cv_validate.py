@@ -1,4 +1,5 @@
 # tests/test_cv_validate.py
+from sluice.cv.bundle import build_bundle, render_bundle
 from sluice.cv.validate import validate
 
 # Sample employer roster / decoy list a caller (CvConfig.employers /
@@ -92,3 +93,76 @@ def test_bullet_marker_uncited_flagged():
     f = [x[:] for x in FULL]
     f[1] = ("Solarflux", "01/2025–04/2026 | LONDON | EM", ["• Grew team from 3 to 8"])
     assert any("UNCITED" in x for x in validate(_cv(f), BUNDLE))
+
+
+# --- Renderer-backed fixtures (#31) ------------------------------------------
+# The BUNDLE constant above is hand-written: no `=== ... ===` section headers, no
+# entry bodies, no baseline and no negatives. That unrealism is precisely why a
+# defect in the bundle-parser/renderer contract survived this suite -- validate()
+# had never once been run against real render_bundle output. These build through
+# build_bundle + render_bundle so the two cannot drift apart again.
+
+_PREFIX_MAP = {"Acme Systems": "AC", "Borealis Data": "BO"}
+
+_ENTRIES = [
+    {"company": "Acme Systems", "title": "Engineer", "metrics": "90",
+     "body": "Ran 42 services in the platform group.", "best_for": "", "category": ""},
+    {"company": "Borealis Data", "title": "Analyst", "metrics": "12",
+     "body": "Owned 8 dashboards.", "best_for": "", "category": ""},
+]
+
+
+def _bundle(entries=None, baseline="Baseline prose, no digits.", negatives=None):
+    # jd_keywords=[] AND an explicit prefix_map are BOTH required for stable ids:
+    # build_bundle ranks before assign_codes, so ranking decides the numbering.
+    # With no keywords every entry scores 0 and the (stable) sort preserves order,
+    # giving AC1 then BO1 -- so BO1 is the last-ranked entry the negatives block
+    # would otherwise be attributed to.
+    return render_bundle(build_bundle(
+        entries=_ENTRIES if entries is None else entries,
+        baseline=baseline,
+        negatives=[] if negatives is None else negatives,
+        jd_keywords=[], prefix_map=_PREFIX_MAP))
+
+
+def _work_cv(*bullets):
+    return "\n".join(["JANE ROE", "", "PROFILE", "I build things.", "",
+                      "WORK EXPERIENCE", "",
+                      "Acme Systems", "03/2024–present | Alfa | Engineer",
+                      *bullets, "",
+                      "CERTIFICATES", "- Cert", "", "EDUCATION", "- School"])
+
+
+def test_negatives_block_does_not_widen_the_last_entrys_allowlist():
+    # render_bundle appends the negatives AFTER the last [id]. Attributing them to
+    # that entry lets a bullet cite it and carry a figure that exists ONLY in the
+    # do-not-say list -- the one class of number the negatives exist to suppress.
+    b = _bundle(negatives=["never claim 500 users"])
+    v = validate(_work_cv("- Scaled the platform to 500 users [BO1]"), b)
+    assert any("INVENTED METRIC" in x for x in v), v
+
+
+def test_a_body_sourced_number_stays_permitted():
+    # Guards the opposite failure: a fix that narrows the allowlist to nothing.
+    # The number MUST come from the entry's body, not its metrics= line -- metrics
+    # is parsed on the same line that sets `cur`, so a metrics-sourced number is
+    # unreachable by any cur-clearing change and cannot detect an over-broad one.
+    b = _bundle(negatives=["never claim 500 users"])
+    assert validate(_work_cv("- Ran 42 services [AC1]"), b) == []
+
+
+def test_a_setext_underline_in_a_body_does_not_end_the_entry():
+    # `======` is a markdown setext-H1 underline and is plausible in a pasted
+    # entry body. It is not a section header, so it must not end the entry and
+    # strand the numbers that follow it.
+    e = [dict(_ENTRIES[0], body="Highlights\n======\nCut latency to 250 ms"), _ENTRIES[1]]
+    assert validate(_work_cv("- Cut latency to 250 ms [AC1]"), _bundle(entries=e)) == []
+
+
+def test_baseline_numbers_are_not_permitted_in_a_bullet():
+    # Pins today's behaviour rather than changing it: the baseline block precedes
+    # the first [id], so its numbers are attributed to no entry. Permitting them
+    # is #30's design question, and this test makes that a deliberate change.
+    b = _bundle(baseline="Baseline mentions 777 deployments.")
+    v = validate(_work_cv("- Led 777 deployments [AC1]"), b)
+    assert any("INVENTED METRIC" in x for x in v), v

@@ -43,6 +43,14 @@ def build_bundle(entries, baseline, negatives, jd_keywords, prefix_map) -> dict:
 
 
 def render_bundle(bundle: dict) -> str:
+    """Render the bundle as the prompt text the model actually sees.
+
+    Two conventions here are a contract with `cv/validate.py`, which parses this
+    text back: the `[id]` codes above, and the `=== SECTION ===` headers below --
+    a header TERMINATES the entry it follows. That matters because the negative
+    constraints are emitted after the last entry, and attributing their numbers to
+    that entry would widen the very allowlist the fabrication gate relies on.
+    Change either convention and `validate` must change with it."""
     lines = ["=== BASELINE CV (authoritative for dates/employers/certs) ===",
              bundle["baseline"], "",
              "=== VERIFIED EXPERIENCE ENTRIES (the ONLY permitted source; cite by [id]) ==="]
