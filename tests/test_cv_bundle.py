@@ -45,13 +45,13 @@ def test_unknown_company_gets_two_letter_fallback():
     assert coded[0]["id"] == "AC1"
 
 def test_same_company_entries_are_sequenced_not_hardcoded_to_one():
-    two_solarflux = [
+    two_at_one_company = [
         {"title": "Grew team", "company": "Example Foundry", "best_for": "leadership",
          "category": "people", "metrics": "3 8", "body": "Grew from 3 to 8."},
         {"title": "Cut costs", "company": "Example Foundry", "best_for": "delivery",
          "category": "delivery", "metrics": "20%", "body": "Cut costs by 20%."},
     ]
-    coded = B.assign_codes(two_solarflux, PREFIX)
+    coded = B.assign_codes(two_at_one_company, PREFIX)
     assert [e["id"] for e in coded] == ["EF1", "EF2"]
 
 def test_single_alpha_unmapped_company_still_yields_two_letter_code():
