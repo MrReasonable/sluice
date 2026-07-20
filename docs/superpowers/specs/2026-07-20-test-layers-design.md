@@ -233,7 +233,9 @@ after 0.5. The miscount is itself the argument against an honour-based name chec
 ## PR 2 — functional layer, and #7
 
 One PR, two deliverables: **D1**, the #7 dest-sweep; **D2**, a `tests/functional/` tier over the
-shared harness with a **full additive re-home** of the five existing CLI-test files.
+shared harness with a **full additive re-home** of the five existing CLI-test files. It also carries
+**one small production change** (§D1's `--all`/`--source` fix), surfaced BY the sweep — so the tier is
+mostly-but-not-purely test-only, and that is called out where it lands, not buried.
 
 **Motivation re-grounded — a SECOND correction, recorded not silently fixed.** Round 1 already
 falsified "the eight CLI-test files are argparse-only." A survey of the five files (2026-07-21)
@@ -276,10 +278,22 @@ which is the property #7 wants.
   A read is `args.X` (an `ast.Attribute` on `Name('args')`) or `getattr(args, "X", …)` (an
   `ast.Call` to `getattr` with `Name('args')` and a string-constant name).
 - **Assert** `declared ⊆ read ∪ opt_out` for every leaf.
-- **The opt-out list — exactly one justified entry:** `("ingest run", "all")`. `--all` is the
-  explicit form of the default (no `--source` ⇒ every source); `_selected` keys off
-  `getattr(args, "source", None)`, so `args.all` is deliberately never read. Every other declared
-  dest at HEAD is read.
+- **The one thing the sweep finds at HEAD, and the production fix it forces.** The only genuinely
+  unread dest is `("ingest run", "all")`, and review established it is NOT a benign "explicit form of
+  the default": `--all` and `--source` are not mutually exclusive (`cli.py:368-369`) and `_selected`
+  keys solely off `getattr(args, "source", None)` (`cli.py:59-64`), so `ingest run --source reed
+  --all` silently runs only `reed` and ignores `--all` — a silent-degrade of exactly the
+  declared-but-unread class #7 exists to catch. The **production fix (this PR):** put `--all` and
+  `--source` in a `mutually_exclusive_group`, so the ambiguous combination now *errors* instead of
+  silently dropping `--all`. This also brings the code in line with the module docstring, which
+  already documents the interface as `run [--all|--source ID ...]` — the `|` claimed an exclusion the
+  code never enforced.
+- **The opt-out survives the fix — and that is honest, not a gap.** Mutual exclusion is argparse-level
+  validation; the *handler* still never reads `args.all` (it is the explicit spelling of the default
+  all-sources path, which `_selected` reaches when `args.source` is falsy). So `("ingest run", "all")`
+  stays the sweep's single opt-out, now with an accurate justification: unread because it selects the
+  default, and no longer a silent-degrade because the dangerous combination is rejected at parse time.
+  Every other declared dest at HEAD is read.
 - **Additive, and anti-#26 at its own level.** The sweep *adds* to the existing parse-only
   argparse-attribute assertions (`args.lead == "acme-em"`, `args.backend == "deepseek"`, the
   required-mutually-exclusive `SystemExit` cases); it removes none — parsing and reading are
@@ -287,10 +301,23 @@ which is the property #7 wants.
   leaf+dest that is genuinely unread. A stale entry (the flag was removed, or is now read) fails.
   That closes, at the sweep's own level, the #26 escape where a sweep silently suppressed what it
   replaced.
-- **Anti-vacuity witnesses (build-time, each run twice — the named test RED, then isolated):**
-  (a) add an unread `--foo` to any subparser → RED; (b) delete a real read (`dry_run=args.dry_run`
-  in `cmd_track_run`) → RED; (c) remove `--all` from the parser but leave it in opt-out →
-  stale-opt-out RED; (d) make `args.all` read → now-read-opt-out RED. Mutate by MOVING/DELETING.
+- **Anti-vacuity witnesses (build-time, each run twice — the named test RED, then isolated; run
+  `compileall --invalidation-mode checked-hash sluice tests` first, since the enumeration half walks
+  the imported `_build_parser()` bytecode while the read half is AST over source — a same-second
+  size-preserving edit could skew them):**
+  (a) add a declared-but-unread `--foo` to a subparser → RED (this is an ADD, and correctly so: for a
+  completeness checker `declared ⊆ read`, injecting an un-read element is the checker's own failure
+  mode — it enlarges the *input set the checker quantifies over*, not a check placed beside an
+  existing one, so the MOVE/DELETE discipline below does not apply to it);
+  (b) delete a real read (`dry_run=args.dry_run` in `cmd_track_run`) → RED;
+  (c) **delete the transitive `source` read inside `_selected`** → `ingest run`'s `source` becomes
+  unread (it has NO direct read — `getattr(args,"source",None)` at `cli.py:60-61` is its only one,
+  reached only via the `cmd_run → _selected` follow) → RED. **This is the load-bearing witness the
+  first draft lacked:** without it the entire transitive-follow mechanism — the sweep's most
+  error-prone part — is inert-testable, and an over-broad follow would stay green at HEAD;
+  (d) remove `--all` from the parser but leave it in opt-out → stale-opt-out RED;
+  (e) make `args.all` read → now-read-opt-out RED.
+  Witnesses (b)–(e) mutate by MOVING/DELETING production code or the opt-out list, never by ADDING.
 
 ### D2 — the functional tier (`tests/functional/`, mirrors `tests/e2e/`)
 
@@ -302,14 +329,24 @@ which is the property #7 wants.
     PR 1's ordering guarantee: force each seam's `autoload` before snapshotting, or restore drops the
     production impls permanently.
   - **a `cli` driver fixture** built on `build_harness(...)`, exposing `run(argv) -> (rc, out, err)`
-    (capturing via `capsys`) and the `Harness` (its `vault`, `paths`, `recorder`).
+    (capturing via `capsys`) and the `Harness` (its `vault`, `paths`, `recorder`). It **forwards the
+    preference knobs** (`target_locations`, `accept_titles`, `reject_titles`, pay floors) through to
+    `build_harness` so a test can set the gate config its scenario needs — which requires
+    `build_harness` to grow a `reject_titles` param (defaulting **empty**, i.e. abstain; the shipped
+    factory today sets only `accept_titles`/`target_locations`/floors). This is load-bearing for the
+    triage neutral-defaults re-home below, which must run with `target_locations=()`.
 - **The bounded constructor patch — the accepted backend bridge.** Handlers build their own
   `Sluice(config)` and the CLI exposes no backend injection point; `main(argv)` passes no override,
   and registering a fake backend is barred (`test_backend_registry` asserts set-equality). The
-  driver therefore `monkeypatch.setattr`s `sluice.core.app.Sluice` to a wrapper that `setdefault`s
+  driver therefore `monkeypatch.setattr`s `sluice.core.app.Sluice` to **a subclass of the captured
+  real class** (NOT a delegating function or proxy) whose `__init__` `setdefault`s
   `backend=<the test's ScriptedBackend>`, `sleep=<noop>` (so ingest's page-settle costs nothing —
-  PR 0.2 measured 5.013s real) and `today` when a test needs a fixed clock, delegating to the real
-  `Sluice`. It works because every handler does a **lazy** `from sluice.core.app import Sluice` at
+  PR 0.2 measured 5.013s real) and `today` when a test needs a fixed clock, then calls `super()`.
+  A subclass, not a proxy, because the patched name is the *module global* and `Sluice`'s own methods
+  resolve it at call time — `doctor()` self-references `Sluice.available("backend")`
+  (`app.py:535`), a classmethod a bare-callable wrapper would not carry (`AttributeError` in a
+  functional `doctor` test). It works because every handler does a **lazy** `from sluice.core.app
+  import Sluice` at
   call time (the "cli.py imports heavy modules inside command functions" convention), so the patched
   attribute is what they get. It binds only composition-root seams — the CLI-tier equivalent of
   PR 1's `harness.sluice()`; **all business logic stays real,** and backend-free handlers never touch
@@ -335,16 +372,43 @@ which is the property #7 wants.
 | Old file | → functional tier (handler behaviour) | → unit/app/store (below-CLI, re-homed not dropped) |
 | --- | --- | --- |
 | `test_cv_cli.py` (parse-only, 2) | `cv run` for real (via `main` + the scripted backend) + kept choices/default parser assertions | — |
-| `test_cli.py` (7) | `list-sources`, `enable`/`disable` persistence, `health` | `_print_report(_R())` → a `_print_report` unit test |
-| `test_triage_cli.py` (2) | `normalize-status --dry-run` (negative side-effect), `run --no-llm` vault mutation | — |
-| `test_apply_cli.py` (10) | `prep` lead / all-shortlist / dry-run — incl. the load-bearing pin `"apply-prep: northwind dry-run" in err` AND `"previewed" not in err`; `record` status-flip / refused | — |
-| `test_track_cli.py` (9) | `run` four-branch lastrun gating (engine stub), `confirm` status-advance | `_load/_save_lastrun`, `track_dismiss` dict-returns + deadletter `open_entries()` state + the `ValueError` selector guard → app/store unit test |
+| `test_cli.py` (7) | `list-sources`; `enable`/`disable` persistence; `health`; **`ingest run` no-enabled-sources → rc 1** (new — unwitnessed at HEAD, `cli.py:114-116`); **`--all`/`--source` mutual-exclusion → `SystemExit`** (new, pins the production fix) | **both** `_print_report` behaviours — `surfaces_skipped` AND the sparse merged/refused `#5` guard (`cli.py:147-155`) → a `_print_report` unit test |
+| `test_triage_cli.py` (2) | `normalize-status --dry-run` (negative side-effect); **`run --no-llm` with explicit `target_locations=()`** — dismiss a location-bearing lead via a synthetic `reject_titles`, assert the dismissal is *attributable* (same lead is NOT dismissed without the reject) | — |
+| `test_apply_cli.py` (10) | `prep` lead / all-shortlist / dry-run — incl. the load-bearing pin `"apply-prep: northwind dry-run" in err` AND `"previewed" not in err`; **`prep` no-match → rc 1 + `"skipped"`** (`cli.py:266-267`); `record` status-flip / refused | — |
+| `test_track_cli.py` (9) | `run` four-branch lastrun gating (engine stub); `confirm` status-advance; **`dismiss` dry-run-then-real dispatch** via `main(["track","dismiss",…])` — rc contract + `open_entries()` unchanged-then-cleared (test 9, added by a prior review as its "finding 3"; it has no other home) | `_load/_save_lastrun`, `track_dismiss` dict-returns + deadletter `open_entries()` state + the `ValueError` selector guard → app/store unit test |
 
-The assertion kinds that MUST survive verbatim: return codes 0/1; stdout AND stderr substrings (the
-summary prints to stderr); the load-bearing `apply-prep` wording pin (`"dry-run"` present AND
-`"previewed"` absent); filesystem positive/negative side-effects
-(`CV.pdf` staged or not, `lastrun` present or not); front-matter mutations (`status: applied`,
-`status: offer`, dry-run leaving `dismissed` untouched, `Vault.read_leads()[0].status == "dismiss"`);
+**Every migrated fixture identity value is re-expressed in the vetted conventions**, carrying over
+only the behavioural assertion, not the literal string: `Tidemark` → the `Example …` family;
+`--ats greenhouse` → `example-ats` (the one-line #55 fix); the hardcoded `reject_titles` value
+(`"aid/development worker"`) → a synthetic title from `conftest.py`'s seeded-faker fixtures. The
+author name-check runs over the **five re-homed files**, not only PR 1's set — because the spec's
+neutrality convention below governs *new* fixtures, and without this clause the re-home ships with no
+neutrality gate over the exact files it copies.
+
+**Additivity is verified by a per-assertion LEDGER, not by "assertion kind present."** A kinds
+checklist cannot catch a dropped *instance* whose kind survives in another test — which is exactly how
+`test_cmd_track_dismiss_dry_run_then_real`, one of the two `_print_report` cases, and the apply
+no-match branch nearly vanished above while `return-code` / `stderr-substring` stayed green elsewhere.
+The DoD therefore requires a written **old assertion → new home** ledger for all five files (each old
+assertion mapped to a named new functional test or a specific re-homed unit test, counts preserved),
+plus the belt-and-braces check of **running the old five files alongside the new tier for one commit**
+to confirm zero net assertion loss before deleting them.
+
+**The ledger records PRECONDITIONS, not just assertion strings.** The sharpest near-miss is the
+triage neutral-defaults test: its assertion `Vault.read_leads()[0].status == "dismiss"` is
+load-bearing ONLY under the precondition `target_locations == ()` (empty) — that is what proves the
+unconfigured location gate abstains (the `672ad2a` invariant, per the test's own comment). Re-home it
+onto `build_harness`'s default `target_locations=("remote",)` — *the literal `672ad2a` bug value* — and
+the same lead is binned by the *location* gate, the assertion still passes, and the test greenly
+demonstrates the historical bug instead of guarding against it. So the ledger entry for it carries the
+precondition (`target_locations=()`) and the attribution check (not dismissed without the reject),
+not merely the status string.
+
+The assertion kinds that must all appear in the ledger: return codes 0/1; stdout AND stderr
+substrings (the summary prints to stderr); the `apply-prep` wording pin (`"dry-run"` present AND
+`"previewed"` absent); filesystem positive/negative side-effects (`CV.pdf` staged or not, `lastrun`
+present or not); front-matter mutations (`status: applied`, `status: offer`, dry-run leaving
+`dismissed` untouched, `Vault.read_leads()[0].status == "dismiss"` under empty `target_locations`);
 deadletter store counts/sets/empty; `track_dismiss` dict returns; `pytest.raises(SystemExit)` for
 argparse and `pytest.raises(ValueError)` for the dismiss selector guard; the pure argparse-attribute
 assertions.
@@ -356,13 +420,23 @@ The sweep is **static** ("every declared dest is read on some path"); the functi
 `Sluice` **directly**, never through `cli.py`, so `cmd_cv_run`'s own handler logic (its stderr
 formatting, the `--all-shortlist` empty→rc1 branch, the notify) is covered by nothing today and
 nothing in e2e. The `--backend`-parsed-but-not-forwarded bug that motivates #7 is caught **both**
-statically (the sweep: `args.backend` unread → red) and behaviourally (a forwarding test observing
-which role the scripted backend was built for).
+statically (the sweep: `args.backend` unread → red) and behaviourally — but the behavioural witness
+must be an **invalid role**, `main([…, "--backend", "not-a-role"]) → rc 1 / `BackendError``, with a
+valid role succeeding. "Observe which role the scripted backend was built for" does NOT work: the
+per-instance override short-circuits `Sluice.backend()` for *every* valid role after only a role-name
+guard (`app.py:213-238`), so a dropped `--backend` (defaulting to `auto`) returns the same object as a
+forwarded one. Only the invalid-role path is behaviourally observable — it reaches the role guard iff
+`args.backend` was forwarded — and it is a genuinely different failure surface from the sweep's
+(the sweep catches "handler never reads `args.backend`"; this catches "handler reads it but forwards a
+wrong/absent value").
 
 ### Neutrality and harness-reuse gotchas (carried from PR 1)
 
-- New scenario fixtures follow `build_harness`'s vetted conventions: `Example …` companies,
-  `example.invalid` domains/emails, the `Remote` work-arrangement token, synthetic round pay floors.
+- **Both new AND migrated** fixtures follow `build_harness`'s vetted conventions: `Example …`
+  companies, `example.invalid` domains/emails, the `Remote` work-arrangement token, synthetic round
+  pay floors, and preference-list values (titles) from `conftest.py`'s seeded-faker fixtures. The
+  re-home is where this bites hardest, because "preserve the assertion verbatim" pushes an implementer
+  to copy a real-looking name unchanged — see the re-expression clause in the migration map above.
 - `ScriptedBackend` keys composed CVs by **company** — fine for single-lead functional tests; lift
   only if a scenario needs two different CVs at one company.
 - The scripted browser client matches `document.body.innerText` **exactly**, not by substring.
@@ -370,10 +444,16 @@ which role the scripted backend was built for).
 ### DoD
 
 Suite green with no network and no browser; ruff clean; `sluice.yaml.example` untouched (the driver
-uses constructor arguments, not a new config knob). The four D1 witnesses run twice each (named test
-RED, then isolated); every migrated assertion kind above verified present. One CodeRabbit slot (per
-the merge gate). The stale `.rulesync/rules/CLAUDE.md` lines ("no runtime selection exercised yet";
-`fetch` for the `fetcher` key) are noted human-gated — proposed to the user, not applied here.
+uses constructor arguments, not a new config knob — `build_harness`'s new `reject_titles` param is a
+factory argument, not a shipped tunable). **One production change**, called out here rather than
+buried: the `--all`/`--source` `mutually_exclusive_group` in `cli.py`'s parser, pinned by a new
+`SystemExit` test; no other production behaviour changes. The **five** D1 witnesses (a)–(e) each run
+twice — named test RED, then isolated — after `compileall --invalidation-mode checked-hash sluice
+tests`; witness (c) specifically proves the transitive-follow is live. The migration **ledger
+balances** (every old assertion mapped to a new home, zero net loss, verified by running old+new
+together for one commit), including the triage `target_locations=()` precondition. One CodeRabbit slot
+(per the merge gate). The stale `.rulesync/rules/CLAUDE.md` lines ("no runtime selection exercised
+yet"; `fetch` for the `fetcher` key) are noted human-gated — proposed to the user, not applied here.
 
 ## PR 3 — executable acceptance scenarios (`tests/uat/`)
 
@@ -437,12 +517,19 @@ time.
 7. `test(e2e): walk the full pipeline in one run`
 8. `test(e2e): a re-scrape reaches the vault and touches only last_seen`
 
-**PR 2** (additive; D1 = the sweep, D2 = the functional tier + re-home)
+**PR 2** (D1 = the sweep + its one production fix, D2 = the functional tier + re-home)
 1. `test(harness): lift the registry-isolation fixture out of the e2e conftest` — shared by both
    tiers, e2e now imports it; no behaviour change.
-2. `test(functional): #7 dest-sweep — every declared flag is read by its handler` — D1, closes #7.
-3. `test(functional): a cli driver over the harness` — conftest + the bounded constructor patch.
-4. `test(functional): re-home the ingest and health CLI tests` (+ the `_print_report` unit test).
-5. `test(functional): re-home the triage and cv CLI tests`.
-6. `test(functional): re-home the apply CLI tests`.
-7. `test(functional): re-home the track CLI tests` (+ the lastrun / `track_dismiss` unit tests).
+2. `fix(ingest): --all and --source are mutually exclusive` — the one production change; lands BEFORE
+   the sweep so the tree never has the sweep blessing a live silent-degrade. Pinned by a `SystemExit`
+   test.
+3. `test(functional): #7 dest-sweep — every declared flag is read by its handler` — D1, closes #7
+   (opt-out list = the now-honest `("ingest run","all")`).
+4. `test(functional): a cli driver over the harness` — conftest + the bounded constructor patch
+   (subclass), and `build_harness`'s `reject_titles` knob.
+5. `test(functional): re-home the ingest and health CLI tests` (+ the `_print_report` unit test, the
+   no-sources→rc1 and mutual-exclusion coverage).
+6. `test(functional): re-home the triage and cv CLI tests` (triage with explicit `target_locations=()`).
+7. `test(functional): re-home the apply CLI tests` (+ the prep no-match branch).
+8. `test(functional): re-home the track CLI tests` (+ the `dismiss` dispatch test and the lastrun /
+   `track_dismiss` unit tests).
