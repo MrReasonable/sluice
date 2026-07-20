@@ -29,9 +29,12 @@ _SECTION_RE = re.compile(r"^\s*={3,}[^=].*[^=]={3,}\s*$")
 # past the gate. Fails CLOSED: a bullet citing an id this rejects is now an unknown
 # citation, which is already a BAD CITATION violation. cv/render.py's _CITE_RE has
 # assumed this same shape all along, so this aligns the parser with the strip step.
-# NB this NARROWS the free-text bypass rather than closing it -- a body line that
-# happens to look like a real code is still read as one. See test_an_id_shaped_
-# bracket_in_free_text_is_still_a_citable_id, which pins that bound. (#31)
+# NB this NARROWS the free-text bypass rather than closing it. A body line shaped
+# like a real code is still read as one, and if it matches an EARLIER entry's code
+# it OVERWRITES that entry's numbers (`nums[cur] = ...` below, not `|=`) -- so the
+# fabricated figure passes AND the entry's genuine metric is reported INVENTED.
+# Both halves are pre-existing, measured, and pinned by tests rather than assumed;
+# the real close is handing validate() the true id list, a signature change. (#31)
 _ID_RE = re.compile(r"^\[([A-Z]{2}\d+)\]")
 
 
