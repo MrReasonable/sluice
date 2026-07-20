@@ -5,8 +5,11 @@
   anti-flattery brief): 0C/8H/9M/4L. All folded. R2 **executed** M1/M2a/M4 (red) and measured 0.2's
   timing claim. Ready to build.
 - **Goal**: add a test layer above the unit/contract suite — a full-pipeline e2e run, a functional
-  layer over the CLI handlers, and executable acceptance scenarios. Four PRs; **PR 0 and PR 1** are
-  designed here in full, PR 2 and PR 3 in outline.
+  layer over the CLI handlers, and executable acceptance scenarios. Four PRs; **PR 0, PR 1 and PR 2**
+  are designed here in full, PR 3 in outline.
+- **PR 2 design (2026-07-21)**: written after PR 0/PR 1 shipped, grounded in a survey of the five
+  existing CLI-test files rather than the outline's assumptions — which corrected the outline's
+  "monkeypatch-heavy" premise (see §PR 2). PR 2 mechanics executed against `main` @ `9d60849`.
 
 ## Corrections to round 1, recorded rather than quietly fixed
 
@@ -229,14 +232,148 @@ after 0.5. The miscount is itself the argument against an honour-based name chec
 
 ## PR 2 — functional layer, and #7
 
-**Motivation re-grounded.** The round-1 claim was false. The real gap: handler-level tests exist but
-are ad hoc — no shared harness, monkeypatch-heavy, inconsistent depth (`test_cv_cli.py` never invokes
-a handler at all), and there is no sweep asserting every declared `dest` is read by the handler it
-dispatches to. That sweep is #7.
+One PR, two deliverables: **D1**, the #7 dest-sweep; **D2**, a `tests/functional/` tier over the
+shared harness with a **full additive re-home** of the five existing CLI-test files.
 
-**Constraint from #26's review:** the sweep is **additive**. It removes no existing parse-level
-assertion; #26 records an escape where a sweep silently dropped what the enumeration it replaced had
-asserted.
+**Motivation re-grounded — a SECOND correction, recorded not silently fixed.** Round 1 already
+falsified "the eight CLI-test files are argparse-only." A survey of the five files (2026-07-21)
+falsifies the outline's other premise, **"monkeypatch-heavy."** Across all five there is exactly
+**one** `monkeypatch.setattr` (`sluice.track.engine.run`, returning a canned `RunReport`); everything
+else is `monkeypatch.setenv` config plus real objects against temp vaults and DBs. So the tier's
+value is NOT "remove monkeypatching" — there is almost none. The real defects are:
+
+- **Inconsistent depth.** One file mixes up to three tiers: `test_track_cli.py` calls `main([...])`
+  dispatch, direct `cmd_*(SimpleNamespace, None)`, AND direct `Sluice`-method / core-helper calls.
+  `test_cv_cli.py` invokes no handler at all (parse-only); the rest span the spectrum.
+- **Duplicated ad-hoc scaffolding.** Each file hand-rolls its config: `_env`, `_note`,
+  `tempfile.mkdtemp` vs `tmp_path`, inline YAML strings, per-file env-var pinning. There is no shared
+  harness or config factory — PR 1 built exactly that and no CLI test consumes it.
+- **No dest-sweep** asserting every declared `dest` is read by the handler it dispatches to. That is
+  #7.
+
+The honest win of the tier is therefore **one config factory, one registry-isolation fixture, one
+`(rc, out, err)` driver, one home** — replacing five files' bespoke scaffolding at a consistent depth
+(real `main(argv)` against the harness), with one documented, principled exception (track-run's
+engine stub, below).
+
+### D1 — the dest-sweep (#7)
+
+`tests/functional/test_cli_contract.py` — **pure and static, consumes no harness.** The mechanism is
+AST, not runtime tracing: a runtime proxy only observes the branch a given invocation takes
+(`cmd_apply_prep` reads different dests down its `all_shortlist` / `dry_run` / else arms), so a
+dest read only on an untaken path would look unread. Static analysis answers "read on SOME path,"
+which is the property #7 wants.
+
+- **Enumerate leaf parsers.** Walk `_build_parser()`; a **leaf** is a parser with `func` in its
+  `_defaults` (this identifies all 15 handlers — the two-level `ingest run` and the one-level
+  `health`/`doctor` alike). Its declared dests are the `_actions` minus the `-h` help action /
+  `SUPPRESS`. `group`, `cmd` and `func` never appear in a leaf's own `_actions` (they belong to the
+  parent subparser action, or to `_defaults`), so the structural dests are excluded for free —
+  **enumerate from `_actions`, never from a parsed `Namespace`,** which would surface them.
+- **Collect reads.** AST-analyze each leaf's bound `func`, **transitively following any module-level
+  `sluice.cli` function it calls with `args` passed positionally** — mapped by argument position to
+  the callee's parameter name (the one real case at HEAD is `cmd_run → _selected(args, …)`).
+  A read is `args.X` (an `ast.Attribute` on `Name('args')`) or `getattr(args, "X", …)` (an
+  `ast.Call` to `getattr` with `Name('args')` and a string-constant name).
+- **Assert** `declared ⊆ read ∪ opt_out` for every leaf.
+- **The opt-out list — exactly one justified entry:** `("ingest run", "all")`. `--all` is the
+  explicit form of the default (no `--source` ⇒ every source); `_selected` keys off
+  `getattr(args, "source", None)`, so `args.all` is deliberately never read. Every other declared
+  dest at HEAD is read.
+- **Additive, and anti-#26 at its own level.** The sweep *adds* to the existing parse-only
+  argparse-attribute assertions (`args.lead == "acme-em"`, `args.backend == "deepseek"`, the
+  required-mutually-exclusive `SystemExit` cases); it removes none — parsing and reading are
+  different properties. And the **opt-out list is itself validated**: every entry must name a real
+  leaf+dest that is genuinely unread. A stale entry (the flag was removed, or is now read) fails.
+  That closes, at the sweep's own level, the #26 escape where a sweep silently suppressed what it
+  replaced.
+- **Anti-vacuity witnesses (build-time, each run twice — the named test RED, then isolated):**
+  (a) add an unread `--foo` to any subparser → RED; (b) delete a real read (`dry_run=args.dry_run`
+  in `cmd_track_run`) → RED; (c) remove `--all` from the parser but leave it in opt-out →
+  stale-opt-out RED; (d) make `args.all` read → now-read-opt-out RED. Mutate by MOVING/DELETING.
+
+### D2 — the functional tier (`tests/functional/`, mirrors `tests/e2e/`)
+
+- **`tests/functional/conftest.py`** provides two things:
+  - **the registry-isolation autouse fixture, LIFTED into `tests/harness/`** as a shared helper both
+    tiers import. PR 1's copy lives in `tests/e2e/conftest.py`; a functional tier needs the identical
+    behaviour (the harness registers `scripted`/`recording` through the real `register()` API), so the
+    fixture moves to the harness and e2e imports it too — one implementation, no drift. It MUST keep
+    PR 1's ordering guarantee: force each seam's `autoload` before snapshotting, or restore drops the
+    production impls permanently.
+  - **a `cli` driver fixture** built on `build_harness(...)`, exposing `run(argv) -> (rc, out, err)`
+    (capturing via `capsys`) and the `Harness` (its `vault`, `paths`, `recorder`).
+- **The bounded constructor patch — the accepted backend bridge.** Handlers build their own
+  `Sluice(config)` and the CLI exposes no backend injection point; `main(argv)` passes no override,
+  and registering a fake backend is barred (`test_backend_registry` asserts set-equality). The
+  driver therefore `monkeypatch.setattr`s `sluice.core.app.Sluice` to a wrapper that `setdefault`s
+  `backend=<the test's ScriptedBackend>`, `sleep=<noop>` (so ingest's page-settle costs nothing —
+  PR 0.2 measured 5.013s real) and `today` when a test needs a fixed clock, delegating to the real
+  `Sluice`. It works because every handler does a **lazy** `from sluice.core.app import Sluice` at
+  call time (the "cli.py imports heavy modules inside command functions" convention), so the patched
+  attribute is what they get. It binds only composition-root seams — the CLI-tier equivalent of
+  PR 1's `harness.sluice()`; **all business logic stays real,** and backend-free handlers never touch
+  the bound backend. This is the tier's single patch, and it is NOT a production test-seam: adding an
+  `app_factory=` parameter to `main` would itself be the "capability reachable only from tests" that
+  #7 exists to catch, so it is deliberately avoided.
+- **track-run's Gmail edge.** `Sluice.track(client=…)` is a *method* argument, not a constructor
+  seam, so the constructor patch does not reach it. The migrated track-run tests **preserve the
+  existing `sluice.track.engine.run` stub** (returning a canned `RunReport`) to exercise the
+  handler's stderr formatting and the four-branch lastrun-gating contract (success → lastrun written;
+  dry-run → none; `auth_error` → rc 1, none; `deadletter_error` → rc 0 but none, so the watermark
+  never advances past an unpersisted message). This is the one legitimate sub-engine stub — the
+  correct seam for post-engine handler logic, which a live Gmail+LLM run could not test
+  deterministically anyway. It is documented as such, not left to read as ad-hoc depth.
+- **Drive via real `main(argv)`,** not direct `cmd_*(SimpleNamespace, None)`: real parse + dispatch,
+  and `config` is always `load_config()` (never the `None` the old direct-call tests passed). Each
+  functional test seeds its own scenario lead notes into the harness vault (the harness supplies
+  config + a seeded baseline/experience vault; the test supplies the scenario), exactly as the e2e
+  tests do. This also makes each handler test a *dynamic* complement to the static sweep.
+
+### Migration map — every assertion preserved (#26 zone)
+
+| Old file | → functional tier (handler behaviour) | → unit/app/store (below-CLI, re-homed not dropped) |
+| --- | --- | --- |
+| `test_cv_cli.py` (parse-only, 2) | `cv run` for real (via `main` + the scripted backend) + kept choices/default parser assertions | — |
+| `test_cli.py` (7) | `list-sources`, `enable`/`disable` persistence, `health` | `_print_report(_R())` → a `_print_report` unit test |
+| `test_triage_cli.py` (2) | `normalize-status --dry-run` (negative side-effect), `run --no-llm` vault mutation | — |
+| `test_apply_cli.py` (10) | `prep` lead / all-shortlist / dry-run — incl. the load-bearing pin `"apply-prep: northwind dry-run" in err` AND `"previewed" not in err`; `record` status-flip / refused | — |
+| `test_track_cli.py` (9) | `run` four-branch lastrun gating (engine stub), `confirm` status-advance | `_load/_save_lastrun`, `track_dismiss` dict-returns + deadletter `open_entries()` state + the `ValueError` selector guard → app/store unit test |
+
+The assertion kinds that MUST survive verbatim: return codes 0/1; stdout AND stderr substrings (the
+summary prints to stderr); the load-bearing `apply-prep` wording pin (`"dry-run"` present AND
+`"previewed"` absent); filesystem positive/negative side-effects
+(`CV.pdf` staged or not, `lastrun` present or not); front-matter mutations (`status: applied`,
+`status: offer`, dry-run leaving `dismissed` untouched, `Vault.read_leads()[0].status == "dismiss"`);
+deadletter store counts/sets/empty; `track_dismiss` dict returns; `pytest.raises(SystemExit)` for
+argparse and `pytest.raises(ValueError)` for the dismiss selector guard; the pure argparse-attribute
+assertions.
+
+### Non-duplication
+
+The sweep is **static** ("every declared dest is read on some path"); the functional tests are
+**behavioural** ("the handler forwards its args and produces the right effect"); the e2e tier drives
+`Sluice` **directly**, never through `cli.py`, so `cmd_cv_run`'s own handler logic (its stderr
+formatting, the `--all-shortlist` empty→rc1 branch, the notify) is covered by nothing today and
+nothing in e2e. The `--backend`-parsed-but-not-forwarded bug that motivates #7 is caught **both**
+statically (the sweep: `args.backend` unread → red) and behaviourally (a forwarding test observing
+which role the scripted backend was built for).
+
+### Neutrality and harness-reuse gotchas (carried from PR 1)
+
+- New scenario fixtures follow `build_harness`'s vetted conventions: `Example …` companies,
+  `example.invalid` domains/emails, the `Remote` work-arrangement token, synthetic round pay floors.
+- `ScriptedBackend` keys composed CVs by **company** — fine for single-lead functional tests; lift
+  only if a scenario needs two different CVs at one company.
+- The scripted browser client matches `document.body.innerText` **exactly**, not by substring.
+
+### DoD
+
+Suite green with no network and no browser; ruff clean; `sluice.yaml.example` untouched (the driver
+uses constructor arguments, not a new config knob). The four D1 witnesses run twice each (named test
+RED, then isolated); every migrated assertion kind above verified present. One CodeRabbit slot (per
+the merge gate). The stale `.rulesync/rules/CLAUDE.md` lines ("no runtime selection exercised yet";
+`fetch` for the `fetcher` key) are noted human-gated — proposed to the user, not applied here.
 
 ## PR 3 — executable acceptance scenarios (`tests/uat/`)
 
@@ -299,3 +436,13 @@ time.
 6. `test(harness): synthetic fixture set and config factory`
 7. `test(e2e): walk the full pipeline in one run`
 8. `test(e2e): a re-scrape reaches the vault and touches only last_seen`
+
+**PR 2** (additive; D1 = the sweep, D2 = the functional tier + re-home)
+1. `test(harness): lift the registry-isolation fixture out of the e2e conftest` — shared by both
+   tiers, e2e now imports it; no behaviour change.
+2. `test(functional): #7 dest-sweep — every declared flag is read by its handler` — D1, closes #7.
+3. `test(functional): a cli driver over the harness` — conftest + the bounded constructor patch.
+4. `test(functional): re-home the ingest and health CLI tests` (+ the `_print_report` unit test).
+5. `test(functional): re-home the triage and cv CLI tests`.
+6. `test(functional): re-home the apply CLI tests`.
+7. `test(functional): re-home the track CLI tests` (+ the lastrun / `track_dismiss` unit tests).
