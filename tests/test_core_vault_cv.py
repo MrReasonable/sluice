@@ -14,20 +14,20 @@ def _vault_with(entries, baseline="BASELINE"):
 
 def test_read_experience_verified_only_skips_unverified_and_inbox():
     v, _ = _vault_with([
-        ("good", 'Company: "Solarflux"\nBest For: "leadership"\nMetrics: "3 8"\nverified: 2026-07-01', "Grew team 3 to 8."),
+        ("good", 'Company: "Example Foundry"\nBest For: "leadership"\nMetrics: "3 8"\nverified: 2026-07-01', "Grew team 3 to 8."),
         ("bad", 'Company: "Halberd Group"\nBest For: "leadership"', "130-person programme."),
     ])
     entries = v.read_experience_entries(verified_only=True)
     titles = [e["title"] for e in entries]
     assert titles == ["good"]
-    assert entries[0]["company"] == "Solarflux"
+    assert entries[0]["company"] == "Example Foundry"
     assert entries[0]["best_for"] == "leadership"
     assert entries[0]["metrics"] == "3 8"
     assert entries[0]["body"] == "Grew team 3 to 8."
 
 def test_read_experience_parses_block_list_category():
     v, _ = _vault_with([
-        ("blocklist", 'Company: "Solarflux"\nCategory:\n  - Process\n  - Leadership\nverified: 2026-07-01', "Body."),
+        ("blocklist", 'Company: "Example Foundry"\nCategory:\n  - Process\n  - Leadership\nverified: 2026-07-01', "Body."),
     ])
     e = v.read_experience_entries(verified_only=True)[0]
     assert e["category"] and "Process" in e["category"] and "Leadership" in e["category"]
