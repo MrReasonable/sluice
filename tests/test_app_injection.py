@@ -13,6 +13,7 @@ from sluice.core import plugins
 from sluice.core.app import Sluice
 from sluice.core.backends import BackendError
 from sluice.core.config import Config
+from sluice.ingest.base import Search
 
 
 class _Recorder:
@@ -39,7 +40,10 @@ class _SleepySource:
     kind = "list"
 
     def searches(self):
-        return [{"label": "s", "url": "https://example.invalid/jobs"}]
+        # A real `Search`, not a dict: engine.py reads `search.label` on the failure
+        # path, so a dict here would surface an AttributeError that masks the actual
+        # cause whenever one of these tests exercises a fetch failure.
+        return [Search(label="s", url="https://example.invalid/jobs")]
 
     def fetch(self, ctx, search):
         ctx.sleep(0.25)
@@ -83,9 +87,9 @@ def test_backend_override_does_not_bypass_the_role_guard():
 # ── 0.4 override-key validation ───────────────────────────────────────────────
 
 def test_a_misspelled_seam_override_raises_rather_than_being_ignored():
-    # `fetch` is the plausible typo, not an arbitrary one: docs/ARCHITECTURE.md calls
-    # the seam `fetch` while the key is `fetcher`, so the documented word is the wrong
-    # one. Accepting it would drop the override silently forever.
+    # `fetch` is the plausible typo, not an arbitrary one: ARCHITECTURE.md labelled this
+    # seam `fetch` while the key is `fetcher` (fixed in this same PR, once validation
+    # made the mismatch load-bearing). Accepting it would drop the override forever.
     with pytest.raises(plugins.UnknownAdapter) as e:
         Sluice(Config(), fetch=object())
     assert "fetcher" in str(e.value)   # the error lists the valid names
@@ -106,13 +110,27 @@ def test_ingest_threads_the_injected_sleep(tmp_path, monkeypatch):
     assert waited == [0.25], "Ctx.sleep was not threaded; the source slept for real"
 
 
-def test_ingest_without_an_injected_sleep_uses_the_real_one(tmp_path, monkeypatch):
-    # The default must stay `time.sleep`: a source that skips its page-settle wait in
-    # production is a scraper that reads a half-rendered DOM.
+def test_ingest_without_an_injected_sleep_hands_the_source_the_real_one(tmp_path, monkeypatch):
+    # Pins the composition root, not the dataclass default. An earlier version of this
+    # test asserted `Ctx(camofox=None).sleep is time.sleep` -- which tests ingest/base.py
+    # and stays green under the plausible tidy-up of passing `sleep=self._sleep`
+    # unconditionally. That variant sends None into Ctx on every uninjected run and
+    # TypeErrors on the first `ctx.sleep(wait)`, so a production-breaking change looked
+    # clean. Recording what the SOURCE actually receives is what closes that.
     import time
+    _pin(tmp_path, monkeypatch)
+    seen = []
 
-    from sluice.ingest.base import Ctx
-    assert Ctx(camofox=None).sleep is time.sleep
+    class _Recording(_SleepySource):
+        def fetch(self, ctx, search):
+            seen.append(ctx.sleep)
+            return {"items": []}
+
+    Sluice(Config(), fetcher=object(), store=_FakeStore()).ingest([_Recording()],
+                                                                 dry_run=True)
+    assert seen == [time.sleep], (
+        "a source ran with something other than the real sleep; in production that is "
+        "either a scraper reading a half-rendered DOM, or None and a TypeError")
 
 
 # ── 0.3 the sink's clock ──────────────────────────────────────────────────────

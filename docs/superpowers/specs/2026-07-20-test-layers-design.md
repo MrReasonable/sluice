@@ -163,7 +163,7 @@ by moving or deleting.
 | M3 | `cv/engine.py` renders despite violations | the gate-failing lead; assert on the **recorder** | red, but 4 pre-existing tests also kill it — **must be run with those deselected** |
 | M4 | preference gate rejects when unconfigured | empty `target_locations` + a lead carrying a location | **executed, red** |
 | M5 | `triage/apply.py::_guarded` → `False` | a lead already at `applied`. Executed by round 2: triage then returns `"applied"` and writes `{'status': 'new'}` over an application-owned lead. | **round-2 addition** — previously unwitnessed |
-| M6 | `can_apply` weakened | apply attempted from a non-`shortlist` status | **round-2 addition.** `can_apply` is deliberately a different predicate from `can_advance` and had no witness |
+| M6 | `can_apply` weakened — **name the exact guard change when PR 1 builds it**; "weakened" is not reproducible as written | apply attempted from a non-`shortlist` status | **round-2 addition.** `can_apply` is deliberately a different predicate from `can_advance` and had no witness |
 
 ## Fixtures — neutrality
 
@@ -216,9 +216,13 @@ owner, no method, no consequence, and addressed to reviewers who have no web acc
 (a) prefer structurally unclaimable names so the check is rarely load-bearing; (b) the **author**
 runs the check and lists what was checked in the PR body; (c) a hit means replace, not justify.
 
-**Note for whoever writes fixtures:** `Solarflux` and `Trueverse` are still live at HEAD in
-`tests/test_cv_bundle.py` and `tests/test_core_vault_cv.py` (PR #51 fixed only the three files it
-touched). Both are real registered companies. Do not copy them as a convention.
+**Note for whoever writes fixtures.** After PR 0.5, real registered company names remain live in
+**three** files: `tests/test_cv_bundle.py`, `tests/test_core_vault_cv.py`, and
+`tests/conformance/test_store_contract.py` — the last being in the *same directory* as the seed
+fixture 0.5 cleans, so it is the nearest wrong example to hand. `Solarflux`, `Trueverse` and
+`Zenith` are all real marks. Do not copy any of them as a convention.
+(An earlier count of "five sites" was wrong: it is 4 files / 12 occurrences at `main`, 3 files
+after 0.5. The miscount is itself the argument against an honour-based name check — see below.)
 
 ## PR 2 — functional layer, and #7
 
@@ -240,7 +244,11 @@ gate never reaches the output directory. Each maps to a load-bearing invariant.
 
 ## Definition of done
 
-**PR 0:** each seam its own commit; each mutation-witnessed (revert the fix, watch a test go red);
+**PR 0:** each fix mutation-witnessed twice — the named new test RED, and the suite with that test
+file deselected GREEN. **Landed as one production commit, not three:** validating override keys
+forces `sleep`/`today` to be explicit keyword-only params rather than `**overrides` members, so
+0.4 cannot land apart from 0.2/0.3 (§0.4's ordering constraint).
+Also required:
 `sluice.yaml.example` untouched (no new config knob — these are constructor arguments, not tunables);
 suite green; ruff clean.
 
@@ -271,8 +279,12 @@ time.
 
 ## Commits
 
-**PR 0**
-1. `fix(core): Sluice.backend honours a constructor override`
+**PR 0** (as landed)
+1. `fix(core): the composition root must not drop injected dependencies` — 0.1–0.4 together,
+   for the ordering constraint above
+2. `test(conformance): drop a real company name from the seed fixture` — 0.5
+3. `docs(architecture): distinguish adapter seams from injected collaborators`
+   *(superseded plan: `fix(core): Sluice.backend honours a constructor override`)*
    *(round 2: the earlier `(#7-adjacent)` suffix is dropped — GitHub linkifies a bare `#7` and would
    cross-reference an issue this commit does not address.)*
 2. `fix(ingest): Sluice.ingest threads Ctx.sleep`
