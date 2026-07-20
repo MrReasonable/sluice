@@ -92,8 +92,10 @@ silently left.
 
 **Round-2 finding (dependency-order):** PR 0's DoD demanded "revert the fix, watch a test go red",
 but nothing at HEAD constructs `Sluice(config, backend=...)`, so reverting 0.1 leaves the suite
-green. PR 0 therefore ships **three small unit tests of its own** — one per injection point, plus one
-for 0.4's key validation — so each fix is witnessed without depending on PR 1's harness.
+green. PR 0 therefore ships **its own unit tests** — covering the three injection points (backend
+override, `Ctx.sleep`, the sink's clock) and 0.4's key validation, in both its accept and reject
+directions — so each fix is witnessed without depending on PR 1's harness. Seven test cases in one
+file, `tests/test_app_injection.py`.
 
 ## PR 1 — the harness and the e2e run
 
@@ -216,8 +218,9 @@ owner, no method, no consequence, and addressed to reviewers who have no web acc
 (a) prefer structurally unclaimable names so the check is rarely load-bearing; (b) the **author**
 runs the check and lists what was checked in the PR body; (c) a hit means replace, not justify.
 
-**Note for whoever writes fixtures.** After PR 0.5, real registered company names remain live in
-**three** files: `tests/test_cv_bundle.py`, `tests/test_core_vault_cv.py`, and
+**Note for whoever writes fixtures.** This is a **known rule violation tracked as #53**, not an
+accepted state: CLAUDE.md requires synthetic fixtures and these are not. After PR 0.5, real
+registered company names remain live in **three** files: `tests/test_cv_bundle.py`, `tests/test_core_vault_cv.py`, and
 `tests/conformance/test_store_contract.py` — the last being in the *same directory* as the seed
 fixture 0.5 cleans, so it is the nearest wrong example to hand. `Solarflux`, `Trueverse` and
 `Zenith` are all real marks. Do not copy any of them as a convention.
@@ -280,15 +283,15 @@ time.
 ## Commits
 
 **PR 0** (as landed)
-1. `fix(core): the composition root must not drop injected dependencies` — 0.1–0.4 together,
-   for the ordering constraint above
+1. `fix(core): the composition root must not drop injected dependencies` — 0.1 through 0.4 in one
+   commit, per the ordering constraint in §0.4
 2. `test(conformance): drop a real company name from the seed fixture` — 0.5
 3. `docs(architecture): distinguish adapter seams from injected collaborators`
-   *(superseded plan: `fix(core): Sluice.backend honours a constructor override`)*
-   *(round 2: the earlier `(#7-adjacent)` suffix is dropped — GitHub linkifies a bare `#7` and would
-   cross-reference an issue this commit does not address.)*
-2. `fix(ingest): Sluice.ingest threads Ctx.sleep`
-3. `feat(core): an injectable clock for date-dependent behaviour`
+4. `fix(ingest): Ctx tolerates sleep=None instead of trusting its callers` — pre-push review fold
+5. `fix(conformance): the seed fixture wrote a frontmatter key the store never reads` — review fold
+
+*(The originally planned split — one commit per seam — is superseded: validating override keys forces
+`sleep`/`today` to be explicit keyword-only params, so 0.4 cannot land apart from 0.2/0.3.)*
 
 **PR 1**
 4. `test(harness): recording renderer and scripted browser client`

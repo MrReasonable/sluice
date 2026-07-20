@@ -28,7 +28,7 @@ def _seed_vault(store, *, experience=(), criteria="", conflicted_status=None):
         body = (
             "---\n"
             f"id: {entry['id']}\n"
-            f"Employer: {entry.get('employer', 'Example Foundry')}\n"
+            f"Company: {entry.get('employer', 'Example Foundry')}\n"
             f"verified: {'true' if entry.get('verified') else ''}\n"
             "---\n"
             f"{entry.get('body', 'Did a thing.')}\n"
