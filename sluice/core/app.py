@@ -40,6 +40,9 @@ _STORE_SEAM = "store"
 _FETCHER_SEAM = "fetcher"
 _RENDERER_SEAM = "renderer"
 _BACKEND_SEAM = "backend"
+# Every seam a constructor override may name. Used to reject a misspelled key at
+# construction instead of dropping it silently (see Sluice.__init__).
+_SEAMS = (_STORE_SEAM, _FETCHER_SEAM, _RENDERER_SEAM, _BACKEND_SEAM)
 
 
 # ── track seen/lastrun persistence ───────────────────────────────────────────
@@ -144,12 +147,28 @@ class Sluice:
     _BACKEND_ROLES = ("auto", "primary", "fallback")
     _BACKEND_ALIASES = {"claude-max": "primary", "deepseek": "fallback"}
 
-    def __init__(self, config=None, **overrides):
+    # `sleep` and `today` are explicit keyword-only params rather than members of
+    # **overrides: they are injected VALUES, not adapters resolved by name, and the
+    # seam-key validation below would (correctly) reject them.
+    def __init__(self, config=None, *, sleep=None, today=None, **overrides):
         # A composition root with no config uses the code defaults, exactly as the
         # adapters did when cli.py constructed them bare. Callers (and tests) that pass
         # None must get a working Sluice, not an AttributeError deep inside a factory.
         self.config = config if config is not None else Config()
+        # Fail loudly on a misspelled seam rather than accepting the key and then never
+        # using it -- the same quiet-wrong-default class make_backend's unknown-provider
+        # raise exists to remove. The live trap is `fetch`: docs/ARCHITECTURE.md calls
+        # the seam that, while the key here is `fetcher`, so the plausible typo is the
+        # documented word and would have been silently ignored forever.
+        unknown = sorted(set(overrides) - set(_SEAMS))
+        if unknown:
+            # Reuses the seam-resolution error so the message shape matches what
+            # `plugins.get` raises for an unknown adapter NAME: same failure class,
+            # one level up (an unknown seam rather than an unknown name within one).
+            raise plugins.UnknownAdapter("seam override", unknown[0], _SEAMS)
         self._overrides = {k: v for k, v in overrides.items() if v is not None}
+        self._sleep = sleep
+        self._today = today
         self._cache: dict = {}
 
     # ── adapter resolution ───────────────────────────────────────────────────
@@ -200,6 +219,14 @@ class Sluice:
             raise BackendError(
                 f"unknown backend choice '{role}' (expected "
                 f"{', '.join([*self._BACKEND_ROLES, *self._BACKEND_ALIASES])})")
+        # A constructor override wins -- but only AFTER the role guard above. Checking
+        # first would make `Sluice(cfg, backend=X).backend("primry", ...)` return X
+        # instead of raising, reinstating the exact quiet-wrong-default the guard exists
+        # to remove. Unlike store/fetcher/renderer this cannot go through `_resolve`:
+        # that memoizes per seam, and `backend()` is deliberately uncached because each
+        # sub-app passes different construction params (see the docstring above).
+        if _BACKEND_SEAM in self._overrides:
+            return self._overrides[_BACKEND_SEAM]
         if role == "fallback":
             # Explicitly asked for it, so a missing key is fatal, not degradable.
             return _make_fallback_strict(fallback_name, fallback_model)
@@ -250,13 +277,20 @@ class Sluice:
         from sluice.ingest.engine import run as _ingest_run
         from sluice.ingest.sink import JsonSink, VaultSink
 
-        ctx = Ctx(camofox=self.fetcher(), config=self.config)
+        # `Ctx.sleep` and `VaultSink(today=)` are injection points those types already
+        # declare; this root simply never passed them. Without the first, a shipped
+        # BrowserListSource costs its real page-settle wait per search (measured: 5.0s
+        # for one remoteok search, against a whole suite that runs in ~1.2s). Without
+        # the second, nothing above the sink can move the clock, so date-dependent
+        # behaviour -- `last_seen` monotonicity especially -- is untestable from here.
+        ctx = Ctx(camofox=self.fetcher(), config=self.config,
+                  **({} if self._sleep is None else {"sleep": self._sleep}))
         seen = SeenDb()
         health = HealthStore()  # default path lives in HealthStore.__init__ (SLUICE_HEALTH)
         if dry_run or json_sink:
             sink = JsonSink(out or sys.stdout)
         else:
-            sink = VaultSink(self.store(), seen)
+            sink = VaultSink(self.store(), seen, today=self._today)
         return _ingest_run(sources, ctx, sink, seen, health)
 
     def normalize_statuses(self, *, dry_run=False) -> dict:
