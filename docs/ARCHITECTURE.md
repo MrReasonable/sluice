@@ -146,9 +146,40 @@ Four points in the config are the seams for pluggable adapters.
   `pip install 'sluice[render]'`). Note the shipped `render_script` default
   points at a file that does not exist in the repo; `script` now says so at
   construction rather than dying after a CV has been composed and gated.
-- **fetch**: `sluice/fetchers/`, selected by `fetcher:` (default `camofox`).
-  Implementations: `camofox` (the headless-browser HTTP server).
+- **fetcher**: `sluice/fetchers/`, selected by `fetcher:` (default `camofox`).
+  Implementations: `camofox` (the headless-browser HTTP server). (This bullet
+  read **fetch** until the seam-key validation below landed, which made the
+  mismatch load-bearing: `fetch` was the documented word and the wrong key.)
 - **sources**: `ingest/sources/`, the registry all of the above are modelled on.
+
+## Injected collaborators — the other kind of seam
+
+The four above are *adapter* seams: a config key selects an implementation by
+name from a registry. A second, smaller set of injection points looks similar
+and is deliberately not the same thing. These are constructor arguments on
+`Sluice`, with no config key and no registry:
+
+- **`client`** (`Sluice.track`) — the Google API client.
+- **`sleep`** — threaded into `ingest.base.Ctx`; the page-settle wait.
+- **`today`** — threaded into `ingest.sink.VaultSink`; the date stamp.
+
+The rule for a new dependency: **does a user legitimately choose among
+implementations?** If yes it is an adapter seam and belongs in the registry,
+where an unknown name raises and lists the valid ones. If there is exactly one
+real shape and the only other caller is a test, it is a constructor argument.
+
+That line is a safety property rather than a stylistic one. A registry entry is
+reachable from config, and config is user-facing: a selectable `sleep` would let
+someone set `sleep: none` and scrape a board until it bans them; a selectable
+`today` would let them freeze the clock and quietly break the `last_seen`
+monotonicity the store contract guarantees. There is likewise one Google, so a
+name-keyed lookup would advertise a choice that does not exist.
+
+Both kinds fail loudly at construction, by different mechanisms. An unknown
+adapter key raises `UnknownAdapter` listing the four valid seams; collaborators
+are keyword-only parameters, so a misspelling is a `TypeError` from Python
+itself rather than a silently dropped argument. Neither may be accepted and
+ignored — that was the defect this section was written after fixing.
 
 `sluice doctor` is a read-only preflight over the backend seam: it enumerates every
 configured backend (primary and fallback, per sub-app), classifies each as
