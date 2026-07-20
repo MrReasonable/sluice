@@ -15,7 +15,7 @@ def _vault_with(entries, baseline="BASELINE"):
 def test_read_experience_verified_only_skips_unverified_and_inbox():
     v, _ = _vault_with([
         ("good", 'Company: "Example Foundry"\nBest For: "leadership"\nMetrics: "3 8"\nverified: 2026-07-01', "Grew team 3 to 8."),
-        ("bad", 'Company: "Halberd Group"\nBest For: "leadership"', "130-person programme."),
+        ("bad", 'Company: "Example Systems"\nBest For: "leadership"', "130-person programme."),
     ])
     entries = v.read_experience_entries(verified_only=True)
     titles = [e["title"] for e in entries]

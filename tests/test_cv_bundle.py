@@ -55,7 +55,9 @@ def test_same_company_entries_are_sequenced_not_hardcoded_to_one():
     assert [e["id"] for e in coded] == ["EF1", "EF2"]
 
 def test_single_alpha_unmapped_company_still_yields_two_letter_code():
-    coded = B.assign_codes([{"title": "x", "company": "3M", "metrics": "", "body": ""}], {})
+    # "4Z" is chosen for its SHAPE: exactly one alphabetic character, so _prefix
+    # must pad rather than truncate. Any readable replacement loses the case.
+    coded = B.assign_codes([{"title": "x", "company": "4Z", "metrics": "", "body": ""}], {})
     assert re.match(r"^[A-Z]{2}[0-9]+$", coded[0]["id"])
 
 def test_prefix_map_override_is_coerced_to_two_letters():
