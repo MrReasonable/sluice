@@ -131,6 +131,7 @@ def build_harness(tmp_path, monkeypatch, *, board_url, rows,
         "apply_upload": str(tmp_path / "cv-host"),
         "track_seen_db": str(tmp_path / "track-seen.db"),
         "track_token": str(tmp_path / "google_token.json"),
+        "disabled": str(tmp_path / "sluice_disabled.json"),
     }
 
     # Every cwd-relative default a run could write to is pinned, across two
@@ -177,6 +178,9 @@ def build_harness(tmp_path, monkeypatch, *, board_url, rows,
     monkeypatch.setenv("SLUICE_HEALTH", p["health"])
     monkeypatch.setenv("DOSSIER_DIR", p["triage_dossiers"])
     monkeypatch.setenv("TRIAGE_AUDIT", p["triage_audit"])
+    # The operator on/off overlay defaults to ./sluice_disabled.json (cwd-relative);
+    # the functional enable/disable handlers WRITE it, so pin it into tmp_path too.
+    monkeypatch.setenv("SLUICE_DISABLED", p["disabled"])
 
     _seed_vault(p["vault"], baseline=baseline, experience=experience)
 
