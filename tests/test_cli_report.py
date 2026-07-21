@@ -12,8 +12,11 @@ def test_print_report_surfaces_skipped(capsys):
         written = {"created": 1, "updated": 2, "skipped": 3}
 
     _print_report(_R())
-    err = capsys.readouterr().err        # the summary prints to stderr, not stdout
-    assert "3 skipped" in err
+    cap = capsys.readouterr()
+    assert cap.out == ""                 # the summary prints to stderr, not stdout
+    assert "3 skipped" in cap.err
+    # sparse (#5): merged/refused print ONLY when non-zero, so a clean run omits them
+    assert "merged" not in cap.err and "refused" not in cap.err
 
 
 def test_print_report_surfaces_merged_and_refused(capsys):
