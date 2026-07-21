@@ -344,7 +344,7 @@ which is the property #7 wants.
   PR 0.2 measured 5.013s real) and `today` when a test needs a fixed clock, then calls `super()`.
   A subclass, not a proxy, because the patched name is the *module global* and `Sluice`'s own methods
   resolve it at call time — `doctor()` self-references `Sluice.available("backend")`
-  (`app.py:535`), a classmethod a bare-callable wrapper would not carry (`AttributeError` in a
+  (`app.py:535`), a staticmethod a bare-callable wrapper would not carry (`AttributeError` in a
   functional `doctor` test). It works because every handler does a **lazy** `from sluice.core.app
   import Sluice` at
   call time (the "cli.py imports heavy modules inside command functions" convention), so the patched
@@ -379,8 +379,8 @@ which is the property #7 wants.
 
 **Every migrated fixture identity value is re-expressed in the vetted conventions**, carrying over
 only the behavioural assertion, not the literal string: `Tidemark` → the `Example …` family;
-`--ats greenhouse` → `example-ats` (the one-line #55 fix); the hardcoded `reject_titles` value
-(`"aid/development worker"`) → a synthetic title from `conftest.py`'s seeded-faker fixtures. The
+`--ats greenhouse` → `example-ats` (the one-line #55 fix); the old test's hardcoded `reject_titles`
+value (a real job-category preference — not repeated here) → a synthetic, opinion-free title. The
 author name-check runs over the **five re-homed files**, not only PR 1's set — because the spec's
 neutrality convention below governs *new* fixtures, and without this clause the re-home ships with no
 neutrality gate over the exact files it copies.
