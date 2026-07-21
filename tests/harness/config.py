@@ -108,7 +108,7 @@ def _seed_vault(vault_dir, *, baseline, experience):
 def build_harness(tmp_path, monkeypatch, *, board_url, rows,
                   source_id="remoteok",
                   jd_text="Synthetic job description for the harness.",
-                  accept_titles=(), target_locations=("remote",),
+                  accept_titles=(), reject_titles=(), target_locations=("remote",),
                   perm_floor_gbp=50000, contract_floor_gbp_day=400,
                   cv_name="Jane Roe", prefix_map=None,
                   experience=None, baseline="Synthetic baseline CV for the harness."):
@@ -144,6 +144,7 @@ def build_harness(tmp_path, monkeypatch, *, board_url, rows,
         "sources": {source_id: {"searches": [["harness", board_url]]}},
         "triage": {
             "accept_titles": list(accept_titles),
+            "reject_titles": list(reject_titles),
             "target_locations": list(target_locations),
             "perm_floor_gbp": perm_floor_gbp,
             "contract_floor_gbp_day": contract_floor_gbp_day,
