@@ -30,15 +30,20 @@ def _cfg(tmp_path, monkeypatch):
 def test_track_dismiss_by_id_and_by_lead(tmp_path, monkeypatch):
     seen_db = _cfg(tmp_path, monkeypatch)
     dl = DeadLetterDb(deadletter_path(seen_db))
-    dl.record(Entry("m1", "Example Telemetry - Analyst", "", "rejection", "x", "h", "2026-07-10", 1))
+    lead = "Example Telemetry - Analyst"      # two entries share it; m2 has none
+    dl.record(Entry("m1", lead, "", "rejection", "x", "h", "2026-07-10", 1))
+    dl.record(Entry("m3", lead, "", "rejection", "x", "h", "2026-07-10", 1))
     dl.record(Entry("m2", "", "A,B", "unknown", "y", "h", "2026-07-10", 1))
     app = Sluice(Config())
-    # dry-run reports the count, deletes nothing
+    # by id, dry-run: reports the count, deletes nothing
     assert app.track_dismiss(message_id="m1", dry_run=True) == {"cleared": 1, "dry_run": True}
-    assert len(dl.open_entries()) == 2
-    # real dismiss by id (the only lever for the no-lead entry m2 is --id)
-    assert app.track_dismiss(message_id="m1") == {"cleared": 1, "dry_run": False}
+    assert len(dl.open_entries()) == 3
+    # by lead: clears EVERY entry under that lead (m1 + m3); dry-run counts, deletes nothing
+    assert app.track_dismiss(lead=lead, dry_run=True) == {"cleared": 2, "dry_run": True}
+    assert len(dl.open_entries()) == 3
+    assert app.track_dismiss(lead=lead) == {"cleared": 2, "dry_run": False}
     assert {e.message_id for e in dl.open_entries()} == {"m2"}
+    # by id: the only lever for the no-lead entry m2
     assert app.track_dismiss(message_id="m2")["cleared"] == 1
     assert dl.open_entries() == []
 
