@@ -99,7 +99,7 @@ def test_judge_prompt_is_composed_from_vault_criteria(tmp_path):
 
 def test_dry_run_writes_nothing(tmp_path):
     v = Vault(str(tmp_path / "vault"))
-    _note(v, "dir.md", _fields("Beta", "International aid/development worker"))
+    _note(v, "dir.md", _fields("Beta", "Banker"))
     audit = AuditLog(str(tmp_path / "audit.jsonl"))
     run(v, TriageConfig(), _Backend(), _cache(tmp_path), audit,
         statuses=("new",), dry_run=True)
