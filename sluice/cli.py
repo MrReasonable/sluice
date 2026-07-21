@@ -365,8 +365,14 @@ def _build_parser() -> argparse.ArgumentParser:
     ls.set_defaults(func=cmd_list_sources)
 
     run = ingest.add_parser("run")
-    run.add_argument("--source", action="append", help="source id (repeatable)")
-    run.add_argument("--all", action="store_true")
+    # --all and --source name the same selection two ways, and _selected keys off
+    # args.source ALONE -- so `run --source X --all` silently ran only X and dropped
+    # --all. Make them mutually exclusive so the ambiguous combination errors instead
+    # of degrading silently (the module docstring's `run [--all|--source ID ...]`
+    # already claimed the exclusion). NOT required: bare `run` still means all sources.
+    sel = run.add_mutually_exclusive_group()
+    sel.add_argument("--source", action="append", help="source id (repeatable)")
+    sel.add_argument("--all", action="store_true")
     run.add_argument("--sink", choices=["vault", "json"], default="vault")
     run.add_argument("--dry-run", action="store_true")
     run.set_defaults(func=cmd_run)
