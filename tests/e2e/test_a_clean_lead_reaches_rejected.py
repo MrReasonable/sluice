@@ -11,6 +11,7 @@ gate, so the recording renderer can witness that no CV was ever rendered for it
 """
 import os
 
+from sluice.cv.engine import _slug
 from sluice.ingest import sources as _sources
 
 from tests.harness import (
@@ -93,6 +94,12 @@ def test_a_clean_lead_reaches_rejected(tmp_path, monkeypatch):
     # saw exactly the one clean CV -- exact equality, so it catches both a
     # spurious extra render and the drifted CV being rendered past the gate.
     assert h.recorder.rendered == [PASSING_CV]
+    # On disk: the clean lead's CV reached the output dir; the gate-failing lead's
+    # never did. (A global "output dir empty" check would be wrong -- the clean
+    # lead renders a real PDF there.)
+    cv_out = h.paths["cv_output"]
+    assert os.path.isdir(os.path.join(cv_out, _slug("Example Foundry", "Staff Engineer")))
+    assert not os.path.exists(os.path.join(cv_out, _slug("Example Telemetry", "Senior Engineer")))
     # The rendered lead now carries a tailored_cv marker; the gate-failing one does not.
     tailored = {n.fm["company"]: n.fm.get("tailored_cv", "") for n in h.vault.read_leads()}
     assert tailored["Example Foundry"] and not tailored["Example Telemetry"]
