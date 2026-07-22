@@ -117,6 +117,23 @@ BLOCKED = [
     # says nothing about force at all.
     "git push --mirror origin",
     "git push --mirror",
+    # Deleting main is a DIFFERENT act from force-pushing it: a deletion carries no force flag
+    # and no leading `+`, so `_force_pushes_main` never fires and every spelling below used to
+    # walk straight through (#35). The empty-source refspec `:main` is the delete form;
+    # `--delete`/`-d` name the same act with a bare refspec. Both the short name and its
+    # `refs/heads/main` spelling, because `_destination_matches_main` accepts either.
+    "git push origin :main",
+    "git push origin :refs/heads/main",
+    "git push --delete origin main",
+    "git push --delete origin refs/heads/main",
+    "git push -d origin main",  # -d is the short form of --delete for push
+    # `heads/main` is git's DWIM abbreviation for `refs/heads/main` (the `refs/%s` rule), so it
+    # deletes AND force-pushes main just like the bare and fully-qualified spellings -- verified:
+    # `git push origin :heads/main` reports `- [deleted] main`. `_destination_matches_main` must
+    # accept this THIRD spelling, on both the delete and the (shared) force path.
+    "git push origin :heads/main",
+    "git push --delete origin heads/main",
+    "git push --force origin heads/main",
 ]
 
 ALLOWED = [
@@ -163,6 +180,27 @@ ALLOWED = [
     # full-ref spelling must not over-reach into one. Without this, `refs/heads/main` matching
     # could be widened carelessly until every `refs/`-prefixed push is refused.
     "git push --force origin refs/tags/*:refs/tags/*",
+    # Deleting a NON-main branch is routine and must stay allowed: the delete forms are matched
+    # on the PARSED destination, not grepped for `main`. `:fix/main-menu` is the substring trap
+    # of the fix/main-menu regression above, now in its delete spelling.
+    "git push origin :feat/x",
+    "git push origin :fix/main-menu",
+    "git push --delete origin feat/x",
+    "git push -d origin feat/x",
+    "git push origin :refs/heads/feat/x",
+    # A NON-main `heads/` branch stays allowed: matching is on the parsed destination, so the
+    # `heads/main` spelling above does not over-reach. `heads/main-menu` is the substring trap of
+    # the fix/main-menu regression, in the abbreviated spelling.
+    "git push origin :heads/feature",
+    "git push origin :heads/main-menu",
+    # A `--`-separated refspec whose SOURCE starts with `-` (`-topic:main`) is dropped by
+    # `_push_refspecs` and so not blocked -- correctly. Only a delete (`:main`, empty source) or
+    # a force-push can destroy main; a delete's refspec never starts with `-`, and a force-push
+    # needs a source that RESOLVES -- git rejects every `-`-prefixed source outright (`error: src
+    # refspec -topic does not match any`). So git refuses this before any push, and blocking it
+    # would be a false positive with a wrong explanation. Pins the deliberate non-handling of
+    # `--`: "fixing" `_push_refspecs` to keep this token reddens here, via the force path.
+    "git push --force origin -- -topic:main",
 ]
 
 
@@ -204,6 +242,20 @@ def test_the_explanation_names_the_specific_act():
     # has not been told the thing that actually makes --mirror the worst of them.
     assert "--mirror" in blocked_reason("git push --mirror origin")
     assert "delete" in blocked_reason("git push --mirror origin").lower()
+    # Deleting main earns its own sentence. Force-pushing "rewrites shared history", which is
+    # the WRONG explanation for a deletion -- nothing is rewritten, the branch is removed --
+    # and a deletion trips no force flag, so it must be reported as its own act, not folded
+    # into _FORCE_MAIN_WHY. Both the refspec form and the flag form return that reason.
+    assert "deletes the default branch" in blocked_reason("git push origin :main").lower()
+    assert "deletes the default branch" in blocked_reason(
+        "git push --delete origin main"
+    ).lower()
+    # `+:main` satisfies BOTH the delete predicate and the force predicate, so this one line
+    # pins two claims a mere BLOCKED entry cannot (the command is refused either way -- only the
+    # WORDING tells them apart): the leading-`+` strip in `_refspec_deletes`, without which it
+    # reads as a force-push, and the `_deletes_main`-before-`_force_pushes_main` ordering, which
+    # is the ONLY case that exercises it. Drop either and this flips to _FORCE_MAIN_WHY.
+    assert "deletes the default branch" in blocked_reason("git push origin +:main").lower()
 
 
 def test_the_hook_contract_a_blocked_command_exits_2_and_explains():
