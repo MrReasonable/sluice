@@ -8,29 +8,9 @@ no-op). Run 2's HIGH-confidence rejection auto-advances the lead to `rejected`
 and clears its entry. The two emails carry distinct message ids because the runs
 share a persisted `seen` set.
 """
-import os
-
-from tests.harness import FakeGoogleClient, ScriptedBackend, build_harness
+from tests.harness import FakeGoogleClient, ScriptedBackend, build_harness, seed_lead_note
 
 BOARD_URL = "https://remoteok.example/harness"
-
-_APPLIED_NOTE = """---
-base: "[[Job Leads.base]]"
-company: "Example Foundry"
-role: "Staff Engineer"
-location: "Remote"
-status: applied
-score: 0
-url: "https://remoteok.example/jobs/1"
-applied_date: 2026-07-01
-ats: example-ats
-relevance_notes: ""
----
-
-# Example Foundry - Staff Engineer
-
-Application in flight.
-"""
 
 # Run 1: a soft/low-confidence rejection -> proposed (records a dead-letter entry).
 # Run 2: a high-confidence rejection -> auto-advance to rejected (clears it).
@@ -48,11 +28,7 @@ def _msg(subject, marker):
 
 def test_a_rejection_clears_my_backlog(tmp_path, monkeypatch):
     h = build_harness(tmp_path, monkeypatch, board_url=BOARD_URL, rows=[])
-    leads_dir = os.path.join(h.paths["vault"], "Job Applications", "Job Leads")
-    os.makedirs(leads_dir, exist_ok=True)
-    with open(os.path.join(leads_dir, "Example Foundry - Staff Engineer.md"),
-              "w", encoding="utf-8") as f:
-        f.write(_APPLIED_NOTE)
+    seed_lead_note(h.paths["vault"], status="applied", body="Application in flight.")
     slug = h.vault.read_leads()[0].slug
 
     backend = ScriptedBackend(track_response=[("PROPOSAL-SIGNAL", _PROPOSAL),

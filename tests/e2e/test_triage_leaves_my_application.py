@@ -11,37 +11,13 @@ This closes a real gap: the guard was unwitnessed end to end -- the existing
 triage-engine tests only ever seed `new` leads, so nothing exercised the
 application-owned branch.
 """
-import os
-
-from tests.harness import ScriptedBackend, build_harness
-
-_APPLIED_NOTE = """---
-base: "[[Job Leads.base]]"
-company: "Example Foundry"
-role: "Staff Engineer"
-location: "Remote"
-status: applied
-score: 0
-url: "https://remoteok.example/jobs/1"
-applied_date: 2026-07-01
-ats: example-ats
-relevance_notes: ""
----
-
-# Example Foundry - Staff Engineer
-
-Application in flight.
-"""
+from tests.harness import ScriptedBackend, build_harness, seed_lead_note
 
 
 def test_triage_leaves_my_application(tmp_path, monkeypatch):
     h = build_harness(tmp_path, monkeypatch, board_url="https://remoteok.example/x",
                       rows=[])
-    leads_dir = os.path.join(h.paths["vault"], "Job Applications", "Job Leads")
-    os.makedirs(leads_dir, exist_ok=True)
-    note_path = os.path.join(leads_dir, "Example Foundry - Staff Engineer.md")
-    with open(note_path, "w", encoding="utf-8") as f:
-        f.write(_APPLIED_NOTE)
+    note_path = seed_lead_note(h.paths["vault"], status="applied", body="Application in flight.")
     before = open(note_path, encoding="utf-8").read()
 
     # A judge that shortlists everything it is handed -- so if the guard let this
