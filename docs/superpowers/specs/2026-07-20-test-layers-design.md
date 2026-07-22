@@ -455,12 +455,17 @@ together for one commit), including the triage `target_locations=()` preconditio
 (per the merge gate). The stale `.rulesync/rules/CLAUDE.md` lines ("no runtime selection exercised
 yet"; `fetch` for the `fetcher` key) are noted human-gated — proposed to the user, not applied here.
 
-## PR 3 — executable acceptance scenarios (`tests/uat/`)
+## PR 3 — designed in its own doc (revised: no `tests/uat/`)
 
-Scenarios named in the user's terms over the same harness — a shortlisted lead's CV contains no figure
-absent from the bundle; a rejection email moves that lead to `rejected` and clears its dead-letter
-entry; an empty config bins nothing; a re-scrape does not disturb a triaged decision; a CV failing the
-gate never reaches the output directory. Each maps to a load-bearing invariant.
+**This outline is superseded.** PR 3 was brainstormed 2026-07-22 into a full design that **revises the
+`tests/uat/` decision**: an acceptance tier that walks the same pipeline over the same harness as
+`tests/e2e/` *is* the e2e tier, so a parallel directory would be the duplication this arc exists to
+avoid. PR 3 instead **completes the `tests/e2e/` acceptance suite** — one user-named scenario per
+product promise, no new tier, no production change. Scenarios: an empty config bins nothing; a
+rejection moves a lead to `rejected` and clears its dead-letter entry; a CV citing an unbacked figure
+never ships; a re-scrape does not disturb a triaged decision; a rejected terminal cannot be dragged
+back. See `docs/superpowers/specs/2026-07-22-e2e-acceptance-completion-design.md` (converged after
+three `/review-plan` rounds).
 
 ## Definition of done
 
