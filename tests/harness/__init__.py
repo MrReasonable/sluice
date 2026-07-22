@@ -13,6 +13,7 @@ from tests.harness.config import (
     build_harness,
 )
 from tests.harness.google import FakeGoogleClient
+from tests.harness.notes import seed_lead_note
 from tests.harness.renderer import Recorder, RecordingRenderer, install_recording_renderer
 
 __all__ = [
@@ -27,4 +28,5 @@ __all__ = [
     "build_harness",
     "PASSING_CV",
     "GATE_FAILING_CV",
+    "seed_lead_note",
 ]
