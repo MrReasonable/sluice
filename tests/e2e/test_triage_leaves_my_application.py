@@ -34,7 +34,7 @@ Application in flight.
 """
 
 
-def test_triage_leaves_an_application_owned_lead_untouched(tmp_path, monkeypatch):
+def test_triage_leaves_my_application(tmp_path, monkeypatch):
     h = build_harness(tmp_path, monkeypatch, board_url="https://remoteok.example/x",
                       rows=[])
     leads_dir = os.path.join(h.paths["vault"], "Job Applications", "Job Leads")

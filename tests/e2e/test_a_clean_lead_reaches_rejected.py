@@ -54,7 +54,7 @@ def _repo_root_snapshot(cwd):
     return snap
 
 
-def test_full_pipeline_walk(tmp_path, monkeypatch):
+def test_a_clean_lead_reaches_rejected(tmp_path, monkeypatch):
     cwd = os.getcwd()
     repo_root_before = _repo_root_snapshot(cwd)
 
