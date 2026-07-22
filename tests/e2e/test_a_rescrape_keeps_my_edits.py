@@ -21,7 +21,7 @@ ROWS = [{"title": "Staff Engineer", "company": "Example Foundry",
          "link": "https://remoteok.example/jobs/1", "salary": ""}]
 
 
-def test_rescrape_touches_only_last_seen(tmp_path, monkeypatch):
+def test_a_rescrape_keeps_my_edits(tmp_path, monkeypatch):
     h = build_harness(tmp_path, monkeypatch, board_url=BOARD_URL, rows=ROWS)
     src = _sources.get("remoteok")
     backend = ScriptedBackend()  # ingest never calls the backend
