@@ -105,6 +105,16 @@ _MIRROR_WHY = (
     "them. There is no safe spelling of it, with or without --force, so it is refused "
     "outright rather than parsed."
 )
+# Deletion gets its own reason. _FORCE_MAIN_WHY ("rewrites shared history") is the WRONG
+# explanation for it -- nothing is rewritten, the branch is removed -- and the acts differ, so
+# widening the force predicate to cover it would report the wrong thing. See #35.
+_DELETE_MAIN_WHY = (
+    "`git push origin :main` -- and its `--delete`/`-d` spelling -- DELETES THE DEFAULT BRANCH "
+    "rather than rewriting it. That is a different act from a force-push: a deletion carries no "
+    "force flag and no leading `+`, so the force-push guard never sees it, and 'rewrites shared "
+    "history' would be the wrong thing to tell you -- nothing is rewritten, main is removed. "
+    "main is not yours to delete from a client."
+)
 
 _REPORT_NOT_ROUTE_AROUND = (
     "\n\nIf a gate genuinely cannot be satisfied -- a rate-limited reviewer, a sole "
@@ -249,8 +259,8 @@ def _destination_matches_main(destination):
     matches exactly what `==` matched, so `fix/main-menu` still does not match `main` and
     `feat/*` still does not either.
 
-    The destination is a PATTERN and the ref is the NAME, so both spellings of the name have
-    to be offered to it -- `_refspec_destination` strips only the LITERAL `refs/heads/`
+    The destination is a PATTERN and the ref is the NAME, so all three spellings of the name
+    have to be offered to it -- `_refspec_destination` strips only the LITERAL `refs/heads/`
     prefix, and a glob above that level keeps it:
 
         destination `*`      (from `refs/heads/*`, prefix stripped) -- matches `main`
@@ -261,7 +271,13 @@ def _destination_matches_main(destination):
                                                                        `main` lacks. It does
                                                                        match `refs/heads/main`.
 
-    So neither clause is redundant: they catch disjoint sets, and dropping either reopens one.
+    The third name `heads/main` is git's own DWIM abbreviation: the `refs/%s` rule in
+    `ref_rev_parse_rules` expands it to `refs/heads/main`, so git accepts it as a destination
+    for both a delete and a force-push. Verified on git 2.x: `git push origin :heads/main`
+    reports `- [deleted] main`, and `git push --force origin heads/main` targets
+    `refs/heads/main`. Without offering `heads/main` to the matcher, both slip past the guard.
+
+    So no clause is redundant: they catch disjoint sets, and dropping any one reopens a spelling.
     Verified on git 2.55.0: `git push --dry-run origin '+refs/*:refs/*'` reports
     `main -> main (forced update)`. (Note fnmatch's `*` DOES span `/`, unlike a shell glob --
     which is why the `refs/*` case needs the second spelling rather than slash-counting.)
@@ -276,7 +292,11 @@ def _destination_matches_main(destination):
     actually runs, and no test can tell them apart -- this is a deliberate choice against a
     Windows-only surprise (a branch named MAIN is a different branch), not a live bug fix.
     """
-    return fnmatchcase("main", destination) or fnmatchcase("refs/heads/main", destination)
+    return (
+        fnmatchcase("main", destination)
+        or fnmatchcase("heads/main", destination)
+        or fnmatchcase("refs/heads/main", destination)
+    )
 
 
 def _refspec_destination(refspec):
@@ -285,6 +305,37 @@ def _refspec_destination(refspec):
     destination = spec.split(":")[-1]
     prefix = "refs/heads/"
     return destination[len(prefix) :] if destination.startswith(prefix) else destination
+
+
+def _refspec_deletes(refspec):
+    """True for the empty-SOURCE refspec that deletes its destination: `:main`, `:refs/heads/x`.
+
+    `src:dst` pushes src onto dst and a bare `dst` fast-forwards it; only an empty left-hand
+    side is a deletion. The leading `+` is stripped first so `+:main` -- a redundant but legal
+    spelling -- is read as the deletion it is rather than a force-push of an empty source.
+    """
+    spec = refspec[1:] if refspec.startswith("+") else refspec
+    return spec.startswith(":")
+
+
+def _push_refspecs(args):
+    """The refspec positionals of a `git push`: the args after `push`, minus flags and remote.
+
+    The first positional is the remote; the rest are refspecs. A bare push names no refspec, so
+    this is empty then and both callers below match nothing -- correct, since the target cannot
+    be known from the string alone and the ruleset decides. Shared by _force_pushes_main and
+    _deletes_main precisely so the two cannot drift: both judge the same parsed destinations.
+
+    This drops EVERY `-`-prefixed token, including a refspec that starts with `-` after a `--`
+    end-of-options separator (`git push --force origin -- -topic:main`). That is deliberate and
+    safe, not an oversight. A destructive push to main is either a DELETION -- whose refspec is
+    `:main`, an EMPTY source that does not start with `-` and so is kept -- or a FORCE-push,
+    which needs a source ref that RESOLVES, and git rejects every `-`-prefixed source outright
+    (`error: src refspec -topic does not match any`, verified on git 2.x). So the only refspecs
+    this drops are ones git itself refuses to push; blocking them would be a false positive with
+    a wrong explanation, the failure this guard most guards against.
+    """
+    return [arg for arg in args if not arg.startswith("-")][1:]
 
 
 def _force_pushes_main(segment):
@@ -309,14 +360,36 @@ def _force_pushes_main(segment):
     # comment said the latter and was simply false.
     if forced_flag and (_has_flag(segment, "--all") or _has_flag(segment, "--branches")):
         return True
-    # The first positional is the remote; the rest are refspecs. A bare force-push names no
-    # refspec, so its target cannot be known from the string alone -- allow it and let the
-    # ruleset decide, rather than guess and be wrong.
-    refspecs = [arg for arg in args if not arg.startswith("-")][1:]
     return any(
         _destination_matches_main(_refspec_destination(refspec))
         and (forced_flag or refspec.startswith("+"))
-        for refspec in refspecs
+        for refspec in _push_refspecs(args)
+    )
+
+
+def _deletes_main(segment):
+    """True when a push DELETES a ref that lands on `main` (#35).
+
+    Deleting main is a distinct act from force-pushing it -- the branch is removed, not
+    rewritten -- and carries neither a force flag nor a leading `+`, so `_force_pushes_main`
+    never fires on it. Two spellings name the same act:
+
+        the empty-source refspec   `git push origin :main` / `:refs/heads/main`
+        the --delete / -d flag      `git push --delete origin main` / `-d origin main`
+
+    Both are matched on the PARSED destination via the same `_push_refspecs` as the force-push
+    path, so deleting a feature branch (`:feat/x`, `--delete origin feat/x`) stays allowed and
+    the `:fix/main-menu` substring trap does not misfire. A bare `--delete` with no refspec (git
+    rejects it) names no destination, so it matches nothing.
+    """
+    args = segment[2:]  # everything after `git push`
+    delete_flag = _has_flag(segment, "--delete") or any(
+        _short_cluster_has(arg, "d") for arg in args
+    )
+    return any(
+        _destination_matches_main(_refspec_destination(refspec))
+        and (delete_flag or _refspec_deletes(refspec))
+        for refspec in _push_refspecs(args)
     )
 
 
@@ -360,6 +433,10 @@ def blocked_reason(command):
             # act (deleting remote refs) is not the one _FORCE_MAIN_WHY describes.
             if _has_flag(segment, "--mirror"):
                 return _MIRROR_WHY
+            # Checked before the force-push parse: a deletion trips no force flag and no `+`, so
+            # _force_pushes_main would miss it, and its reason names the wrong act for it.
+            if _deletes_main(segment):
+                return _DELETE_MAIN_WHY
             if _force_pushes_main(segment):
                 return _FORCE_MAIN_WHY
     return None
