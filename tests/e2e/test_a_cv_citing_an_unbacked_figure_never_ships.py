@@ -11,29 +11,19 @@ skipped-gate under the numeric-check mutation and the witness would go inert.
 """
 from sluice.ingest import sources as _sources
 
-from tests.harness import ScriptedBackend, build_harness
+from tests.harness import PASSING_CV, ScriptedBackend, build_harness
 
 BOARD_URL = "https://remoteok.example/harness"
 ROWS = [{"title": "Staff Engineer", "company": "Example Foundry",
          "link": "https://remoteok.example/jobs/1", "salary": ""}]
 
-# PASSING_CV with ONE bullet changed to cite 42 -- absent from the cited [EF1]
-# entry (metrics "3 8"). Everything else is clean: reverse-chronological, every
-# bullet cited, no AI-slop tokens, correct header. So the ONLY violation is 42.
-NUMERIC_VIOLATION_CV = "\n".join([
-    "JANE ROE", "",
-    "WORK EXPERIENCE", "",
-    "Example Systems",
-    "02/2023–present | Remote | Staff Engineer",
-    "- Cut deploy time by 42 percent [EF1]",
-    "",
-    "Example Analytics",
-    "06/2020–01/2023 | Remote | Senior Engineer",
-    "- Grew the team from 3 to 8 engineers [EF1]",
-    "",
-    "CERTIFICATES", "- CSM",
-    "EDUCATION", "- Example University, 2015 | BSc",
-])
+# PASSING_CV with ONE bullet changed to cite "42" -- absent from the cited [EF1]
+# entry (metrics "3 8"). Deriving from PASSING_CV (rather than re-transcribing it)
+# structurally guarantees the CV is otherwise identical to the passing baseline, so
+# the ONLY violation is the invented 42.
+NUMERIC_VIOLATION_CV = PASSING_CV.replace(
+    "- Shipped the billing service to production [EF1]",
+    "- Cut deploy time by 42 percent [EF1]")
 
 
 def test_a_cv_citing_an_unbacked_figure_never_ships(tmp_path, monkeypatch):
