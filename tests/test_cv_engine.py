@@ -150,7 +150,8 @@ def test_missing_profile_header_is_structural():
     r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
                 v, _cfg(), FakeBackend(no_profile), FakeCache(), renderer=rend)
     assert r.status == "skipped-gate"
-    assert any("STRUCTURAL" in x for x in r.violations)
+    assert ("STRUCTURAL: composed CV lacks the exact 'PROFILE' header, so the "
+            "profile fabrication check did not run") in r.violations
     assert rend.rendered == [], "a CV with no PROFILE header was RENDERED"
 
 def test_happy_path_renders_and_records(monkeypatch):
