@@ -162,6 +162,18 @@ def _work_cv(*bullets):
                       "CERTIFICATES", "- Cert", "", "EDUCATION", "- School"])
 
 
+def _cv_with_profile(profile, *bullets):
+    # A CV whose PROFILE line is caller-controlled, over the _ENTRIES bundle
+    # (ES1 metrics=90 body "Ran 42 services…"; EA1 metrics=12 body "Owned 8
+    # dashboards."). Default bullet is clean (42 is in ES1's body). One WORK entry,
+    # so the reverse-chronology check sees a single start year and passes.
+    return "\n".join(["JANE ROE", "", "PROFILE", profile, "",
+                      "WORK EXPERIENCE", "",
+                      "Example Systems", "02/2023–present | Alfa | Staff Engineer",
+                      *(bullets or ["- Ran 42 services [ES1]"]), "",
+                      "CERTIFICATES", "- Cert", "", "EDUCATION", "- School"])
+
+
 def test_negatives_block_does_not_widen_the_last_entrys_allowlist():
     # render_bundle appends the negatives AFTER the last [id]. Attributing them to
     # that entry lets a bullet cite it and carry a figure that exists ONLY in the
@@ -241,3 +253,64 @@ def test_an_id_shaped_line_in_a_later_body_shadows_the_real_entry():
     b = _bundle(entries=e)
     assert validate(_work_cv("- Scaled to 500 users [ES1]"), b) == []
     assert any("INVENTED" in x for x in validate(_work_cv("- Held 90 uptime [ES1]"), b))
+
+
+# --- Numeric floor on the PROFILE region (#30) --------------------------------
+
+def test_invented_profile_metric_flagged():
+    # 500 appears nowhere in the bundle -> flagged. The core new coverage.
+    v = validate(_cv_with_profile("I scaled platforms to 500 users."), _bundle())
+    assert any("INVENTED PROFILE METRIC" in x for x in v), v
+
+
+def test_profile_number_from_baseline_is_permitted():
+    b = _bundle(baseline="Baseline mentions 777 deployments.")
+    # In the PROFILE, 777 (a baseline aggregate) is permitted...
+    assert validate(_cv_with_profile("I led 777 deployments."), b) == []
+    # ...but in a WORK BULLET the same baseline number is still flagged. Bullets
+    # stay strict (the #5 divergence); assert both to make the asymmetry explicit.
+    v = validate(_cv_with_profile("I build.", "- Led 777 deployments [ES1]"), b)
+    assert any("INVENTED METRIC" in x for x in v), v
+
+
+def test_profile_number_from_an_entry_is_permitted():
+    # 8 comes from EA1's body -> in the profile pool (union of all entries).
+    assert validate(_cv_with_profile("I built 8 dashboards across teams."), _bundle()) == []
+
+
+def test_profile_number_from_negatives_is_flagged():
+    b = _bundle(negatives=["never claim 500 users"])
+    v = validate(_cv_with_profile("I scaled to 500 users."), b)
+    assert any("INVENTED PROFILE METRIC" in x for x in v), v
+
+
+def test_profile_decoy_flagged():
+    # Characterisation: the decoy check is already GLOBAL, so a decoy in the profile
+    # is flagged without new code. Guards against a future change scoping it to a region.
+    v = validate(_cv_with_profile("I built systems at Larkspur."), _bundle(),
+                 fabrication_decoys=["Larkspur"])
+    assert any("FABRICATED" in x for x in v), v
+
+
+def test_a_profile_id_citation_code_is_not_an_invented_metric():
+    # A stray id-shaped [ES1] in the profile: render strips it, so the reader never
+    # sees the '1' (which is not in the pool); the gate must not count it.
+    assert validate(_cv_with_profile("I led the platform team [ES1]."), _bundle()) == []
+
+
+def test_a_profile_non_id_bracketed_number_is_flagged():
+    # [500] is NOT id-shaped, so render leaves it in the PDF; the reader sees 500, so
+    # it must be checked. This distinguishes the narrow (render-matching) strip from
+    # the broad WORK strip -- the inv-001 fail-open.
+    v = validate(_cv_with_profile("I scaled to [500] users."), _bundle())
+    assert any("INVENTED PROFILE METRIC" in x for x in v), v
+
+
+def test_profile_strip_matches_render_citation_shape():
+    # The profile strip must remove exactly what the renderer removes, or a token
+    # validate strips but render delivers reopens the [500] fail-open. Pin equality.
+    from sluice.cv.render import _CITE_RE as _RENDER_CITE_RE
+    from sluice.cv.validate import _CITE_RE as _VALIDATE_CITE_RE
+    for s in ("I scaled [ES1] fast", "I scaled [500] users", "count [es1] here",
+              "value [AB12] ok", "unicode [ES१] digit", "plain text"):
+        assert _VALIDATE_CITE_RE.sub("", s) == _RENDER_CITE_RE.sub("", s), s
