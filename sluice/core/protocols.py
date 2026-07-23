@@ -74,13 +74,23 @@ class Store(Protocol):
         ...
 
     def update_fields(self, ref, fields: dict, *, append_note=None, note_tag=None) -> None:
-        """Set exactly the named frontmatter keys, leaving the body byte-for-byte
-        intact. This is the sanctioned write path for triage, cv, apply and track."""
+        """Set exactly the named frontmatter keys, leaving the body byte-for-byte intact.
+        This is the sanctioned write path for triage, cv, apply and track. MAY raise
+        VaultConflict if the note changed under a sustained concurrent edit and the store
+        could not re-apply without clobbering (see VaultConflict; #16). Callers treat that
+        as non-fatal."""
         ...
 
-    def append_body_section(self, ref, tag: str, section_md: str) -> bool: ...
+    def append_body_section(self, ref, tag: str, section_md: str) -> bool:
+        """Append a tagged section to the body, idempotently (returns False if `tag` is
+        already present). MAY raise VaultConflict on sustained concurrent edit (#16)."""
+        ...
 
-    def set_tailored_cv(self, ref, value: str) -> None: ...
+    def set_tailored_cv(self, ref, value: str, *, only_if_absent: bool = False) -> bool:
+        """Set the served-CV pointer. When `only_if_absent`, do not overwrite an existing
+        one (returns False without writing). Returns whether a write happened. MAY raise
+        VaultConflict on sustained concurrent edit (#16)."""
+        ...
 
     def read_experience_entries(self, verified_only: bool = True) -> list: ...
 
@@ -105,7 +115,14 @@ class Store(Protocol):
 
     def existing_keys(self) -> set: ...
 
-    def normalize_all_statuses(self, dry_run: bool = False) -> dict: ...
+    def normalize_all_statuses(self, dry_run: bool = False) -> dict:
+        """Canonicalize every note's status vocabulary; return a `changed`/`unchanged`/
+        `unknown`/`conflicts` summary. A note whose duplicate status lines disagree is
+        left untouched and reported under `conflicts`, never auto-resolved. Unlike the
+        other writers here, a sustained VaultConflict on one note is ABSORBED rather than
+        raised -- that note is reported under `summary["skipped"]` instead -- so one
+        conflicting note never aborts the sweep over the rest (#16)."""
+        ...
 
 
 class Fetcher(Protocol):
