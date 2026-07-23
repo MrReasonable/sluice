@@ -37,28 +37,49 @@ _SECTION_RE = re.compile(r"^\s*={3,}[^=].*[^=]={3,}\s*$")
 # the real close is handing validate() the true id list, a signature change. (#31)
 _ID_RE = re.compile(r"^\[([A-Z]{2}\d+)\]")
 
+# The PROFILE is prose, not bullets, so its citation strip must match what the
+# RENDERER delivers, not the WORK-bullet strip. render.strip_citations removes only
+# id-shaped [XX9] codes (render._CITE_RE), so a NON-id bracket like [500] SURVIVES
+# into the PDF and the profile check must see and check it. This pattern is
+# byte-identical to render._CITE_RE (render.py:10); test_profile_strip_matches_render_
+# citation_shape pins that equality, because a comment cannot enforce it and a drift
+# silently reopens a fabricated-number-ships fail-open. Deliberately DISTINCT from
+# _ID_RE: _ID_RE parses bundle-GENERATED codes (uppercase via _prefix); _CITE_RE
+# mirrors render's LENIENT strip of whatever the model emitted ([A-Za-z]). (#30)
+_CITE_RE = re.compile(r"\s*\[[A-Za-z]{2}[0-9]+\]")
+
 
 def _bundle_ids_and_nums(bundle_text):
-    ids, nums = {}, {}
+    ids, nums, baseline = {}, {}, set()
     cur = None
+    seen_id = False
     for line in bundle_text.splitlines():
         if _SECTION_RE.match(line):
             cur = None                      # this entry's lines have ended
             continue
         m = _ID_RE.match(line)
         if m:
+            seen_id = True
             cur = m.group(1)
             ids[cur] = line
             after = line[m.end():]          # exclude the id token itself
             nums[cur] = set(re.findall(r"\d+", after))
         elif cur:
             nums[cur] |= set(re.findall(r"\d+", line))
-    return ids, nums
+        elif not seen_id:
+            # Numbers before the first [id] are the BASELINE block -- a permitted
+            # SOURCE for the PROFILE (an aggregate summary) but NOT for a WORK bullet,
+            # which must trace to its specific cited entry. Negatives are NOT captured
+            # here: they land after the last [id] (seen_id True, cur cleared by their
+            # === header ===), so they fall into neither pool and stay excluded -- the
+            # same exclusion #31 established for bullets. (#30)
+            baseline |= set(re.findall(r"\d+", line))
+    return ids, nums, baseline
 
 
 def validate(cv_text, bundle_text, employers=None, fabrication_decoys=None):
     v = []
-    ids, nums = _bundle_ids_and_nums(bundle_text)
+    ids, nums, baseline = _bundle_ids_and_nums(bundle_text)
     for decoy in (fabrication_decoys or []):
         if decoy.lower() in cv_text.lower():
             v.append(f"FABRICATED: contains '{decoy}'")
@@ -68,14 +89,34 @@ def validate(cv_text, bundle_text, employers=None, fabrication_decoys=None):
     years = [int(y) for y in re.findall(r"\d{2}/(\d{4})\s*[–-]", cv_text.split("WORK EXPERIENCE")[-1])]
     if years != sorted(years, reverse=True):
         v.append(f"NOT REVERSE-CHRONOLOGICAL: start years {years}")
+    # Permitted numbers for PROFILE prose: any figure the bundle actually contains as
+    # a source -- every entry's allowlist plus the baseline block -- but NOT the
+    # negatives (excluded by the parse). Broader than a WORK bullet, which is tied to
+    # its cited entry, because a profile is an aggregate summary. (#30)
+    profile_permitted = baseline.union(*nums.values())
     in_work = False
+    in_profile = False
     for line in cv_text.splitlines():
         u = line.strip().upper()
+        if u == "PROFILE":
+            in_profile = True
+            continue
         if u == "WORK EXPERIENCE":
-            in_work = True
+            in_work, in_profile = True, False
             continue
         if u in ("CERTIFICATES", "EDUCATION"):
-            in_work = False
+            in_work, in_profile = False, False
+        if in_profile:
+            # Prose, NOT a bullet: no citation required or expected (requiring [id]
+            # on prose invites a fake-citation launder). Strip citations with render's
+            # EXACT shape (_CITE_RE) so the check sees what the reader sees -- narrower
+            # than the WORK strip on purpose: a non-id bracket like [500] survives to
+            # the PDF and MUST be checked, and the profile has no BAD-CITATION backstop
+            # behind the strip. (#30)
+            prose = _CITE_RE.sub("", line)
+            for n in re.findall(r"\d+", prose):
+                if n not in profile_permitted:
+                    v.append(f"INVENTED PROFILE METRIC {n} not in bundle: {prose.strip()[:50]}")
         # Must match cv_render_v2.py's bullet markers exactly -- the renderer treats
         # '-', '•', and '*' all as bullets, so a WORK bullet composed with '•' or '*'
         # is delivered in the rendered PDF and MUST be citation-checked here too.
