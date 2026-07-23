@@ -54,7 +54,7 @@ def _cfg():
 
 # Synthetic throughout; only the descending start years are load-bearing.
 CLEAN_CV = "\n".join([
-    "JANE ROE", "", "WORK EXPERIENCE", "",
+    "JANE ROE", "", "PROFILE", "I build reliable systems.", "", "WORK EXPERIENCE", "",
     "Example Systems", "02/2023–present | Alfa | Staff Engineer", "- Shipped [EF1]", "",
     "Example Analytics", "06/2020–01/2023 | Bravo | Senior Engineer",
     "- Grew team from 3 to 8 [EF1]", "",
@@ -139,6 +139,19 @@ def test_drifted_work_header_fails_closed():
     assert any("STRUCTURAL" in x for x in r.violations)
     assert v.written == {}
     assert rend.rendered == [], "a CV was RENDERED despite an open fabrication gate"
+
+def test_missing_profile_header_is_structural():
+    # A composed CV with no PROFILE header: the profile sweep never runs (fail-open),
+    # so the engine must HARD-fail the gate and render nothing. Mirror of
+    # test_drifted_work_header_fails_closed.
+    no_profile = CLEAN_CV.replace("PROFILE\nI build reliable systems.\n\n", "")
+    v = FakeVault(ENTRIES)
+    rend = FakeRenderer()
+    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
+                v, _cfg(), FakeBackend(no_profile), FakeCache(), renderer=rend)
+    assert r.status == "skipped-gate"
+    assert any("STRUCTURAL" in x for x in r.violations)
+    assert rend.rendered == [], "a CV with no PROFILE header was RENDERED"
 
 def test_happy_path_renders_and_records(monkeypatch):
     import sluice.cv.render as _render_mod

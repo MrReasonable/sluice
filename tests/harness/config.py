@@ -34,8 +34,17 @@ from tests.harness.renderer import Recorder, install_recording_renderer
 # A fully-cited, slop-free, reverse-chronological CV that PASSES cv/validate.py
 # against a bundle whose single verified entry (Example Foundry) codes to [EF1].
 # En-dash date ranges (U+2013) are fine; only em-dash / "--" are slop errors.
+# The PROFILE line is number-free (mirrors test_cv_engine.py's CLEAN_CV) so it
+# trips neither the numeric floor nor engine.py's PROFILE structural guard (#30)
+# -- without it, engine.py's guard STRUCTURAL-fails this canned CV and every e2e/
+# functional test built on it, including the numeric-violation witness in
+# test_a_cv_citing_an_unbacked_figure_never_ships, whose own precision depends on
+# exactly one violation.
 PASSING_CV = "\n".join([
     "JANE ROE",
+    "",
+    "PROFILE",
+    "I build reliable systems.",
     "",
     "WORK EXPERIENCE",
     "",
