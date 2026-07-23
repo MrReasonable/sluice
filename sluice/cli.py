@@ -174,6 +174,7 @@ def cmd_triage_normalize(args, config) -> int:
     print(f"status normalize: changed={summary['changed']} "
           f"unchanged={summary['unchanged']} "
           f"conflicts={summary.get('conflicts', [])} "
+          f"skipped={summary.get('skipped', [])} "
           f"unknown={sorted(set(summary['unknown']))}"
           f"{' (dry-run)' if args.dry_run else ''}")
     return 0

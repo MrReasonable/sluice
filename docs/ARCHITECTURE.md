@@ -16,7 +16,11 @@ Shared by every sub-app:
   content-CAS plus an atomic replace, re-deriving the edit from fresh
   content on a bounded number of lost races, and refusing loudly
   (`VaultConflict`) rather than clobbering if the conflict is sustained
-  (#16).
+  (#16). This is best-effort, not absolute: a residual micro-window
+  remains between the freshness compare and the `os.replace`, so a lost
+  update is still possible in that ~2-syscall gap. It is a large
+  improvement over the pre-#16 whole-function window, not a guarantee --
+  an advisory lock was considered and declined as YAGNI.
 - `backends.py`: LLM clients. `ClaudeMaxBackend` shells out to a `claude`
   CLI, local or over SSH; `AnthropicBackend` calls the Anthropic Messages
   API directly; `OpenAiCompatibleBackend` calls any OpenAI-compatible HTTP
@@ -136,6 +140,13 @@ last_seen-monotonicity. The CAS *mechanism* that makes the outcome possible --
 content-compare, atomic replace, bounded re-apply -- is vault-specific and not itself
 asserted; a store keyed on real rows (a database transaction, say) can satisfy the
 same outcome by a wholly different route (#16).
+
+A third absorption shape sits beside those two: a batch sweep over many notes
+(`normalize_all_statuses`) folds a per-note sustained conflict into a `skipped`
+report rather than raising or aborting, so one racing note never aborts the whole
+sweep. A race a bounded re-derive can resolve still commits (counted `changed`); a
+race that makes the collapse a genuine no-op is an abstain (counted `unchanged`,
+not `changed` -- nothing was written, so there is nothing to report as a change).
 
 ## Adapter-selector seams
 
