@@ -126,7 +126,7 @@ Those guarantees used to live inside `core/vault.py`; a second store would have
 shipped without them. They are now properties of the contract, and a store passes
 that suite or it does not ship.
 
-A fourth property joins those three: **the conflict outcome**. A modify-write that
+Another property joins those: **the conflict outcome**. A modify-write that
 keeps losing the race against a concurrent editor (a human in Obsidian, Syncthing, a
 second `sluice` process) must refuse loudly rather than clobber -- raising
 `VaultConflict` for the field-writers, or folding into `upsert`'s `refused` outcome
