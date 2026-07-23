@@ -26,19 +26,19 @@ def test_codes_are_short_company_prefixed_and_sequenced():
     assert by_co["Example Telemetry"] == "ET1"
 
 def test_full_set_included_ranking_orders_not_excludes():
-    b = B.build_bundle(ENTRIES, "BASELINE", ["Larkspur"], ["leadership"], PREFIX)
+    b = B.build_bundle(ENTRIES, "BASELINE", ["Example Decoy"], ["leadership"], PREFIX)
     # all 3 entries present even though only 2 match the keyword
     assert len(b["entries"]) == 3
     # leadership-matching entries rank first
     assert b["entries"][0]["best_for"] == "leadership"
 
 def test_render_bundle_has_codes_and_negatives_and_bodies():
-    b = B.build_bundle(ENTRIES, "BASELINE CV TEXT", ["No Larkspur Health."], ["leadership"], PREFIX)
+    b = B.build_bundle(ENTRIES, "BASELINE CV TEXT", ["No Example Decoy Health."], ["leadership"], PREFIX)
     text = B.render_bundle(b)
     assert "BASELINE CV TEXT" in text
     assert "[EF1] (Example Foundry) Grew team | metrics=3 8" in text
     assert "Grew from 3 to 8." in text            # body included for the number gate
-    assert "No Larkspur Health." in text           # negatives block
+    assert "No Example Decoy Health." in text           # negatives block
 
 def test_unknown_company_gets_two_letter_fallback():
     coded = B.assign_codes([{"title": "x", "company": "Acme Corp", "metrics": "", "body": ""}], {})

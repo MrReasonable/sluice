@@ -7,7 +7,7 @@ from sluice.cv.validate import validate
 # hardcoded employers or decoys, so tests exercising those gates pass them in.
 EMPLOYERS = ["Example Systems", "Example Analytics", "Example Robotics",
              "Example Cartography"]
-FABRICATION_DECOYS = ["Larkspur"]
+FABRICATION_DECOYS = ["Example Decoy"]
 
 # Built through the real renderer rather than by hand. The hand-written version
 # this replaces had no `=== ... ===` headers, no entry bodies, no baseline and no
@@ -57,7 +57,7 @@ def test_employer_and_decoy_gates_are_off_by_default():
     # runs when the caller supplies a list.
     assert validate(_cv(FULL[:-1]), BUNDLE) == []
     f = [x[:] for x in FULL]
-    f[0] = ("Example Systems", "02/2023–present | Alfa | Staff Engineer", ["- Built at Larkspur [EF1]"])
+    f[0] = ("Example Systems", "02/2023–present | Alfa | Staff Engineer", ["- Built at Example Decoy [EF1]"])
     assert validate(_cv(f), BUNDLE) == []
 
 def test_id_digits_not_counted_as_metric():
@@ -102,17 +102,17 @@ def test_missing_employer_flagged():
     assert any("MISSING EMPLOYER" in x for x in
                validate(_cv(FULL[:-1]), BUNDLE, employers=EMPLOYERS))
 
-def test_larkspur_flagged():
+def test_decoy_flagged():
     f = [x[:] for x in FULL]
-    f[0] = ("Example Systems", "02/2023–present | Alfa | Staff Engineer", ["- Built at Larkspur [EF1]"])
-    assert any("Larkspur" in x for x in
+    f[0] = ("Example Systems", "02/2023–present | Alfa | Staff Engineer", ["- Built at Example Decoy [EF1]"])
+    assert any("Example Decoy" in x for x in
                validate(_cv(f), BUNDLE, fabrication_decoys=FABRICATION_DECOYS))
 
-def test_larkspur_case_insensitive_flagged():
-    # lowercase/mixed-case "larkspur" must not slip past a case-sensitive check.
+def test_decoy_case_insensitive_flagged():
+    # lowercase/mixed-case "example decoy" must not slip past a case-sensitive check.
     f = [x[:] for x in FULL]
-    f[0] = ("Example Systems", "02/2023–present | Alfa | Staff Engineer", ["- Built at larkspur [EF1]"])
-    assert any("FABRICATED" in x or "Larkspur" in x for x in
+    f[0] = ("Example Systems", "02/2023–present | Alfa | Staff Engineer", ["- Built at example decoy [EF1]"])
+    assert any("FABRICATED" in x or "Example Decoy" in x for x in
                validate(_cv(f), BUNDLE, fabrication_decoys=FABRICATION_DECOYS))
 
 def test_bullet_marker_uncited_flagged():
@@ -287,8 +287,8 @@ def test_profile_number_from_negatives_is_flagged():
 def test_profile_decoy_flagged():
     # Characterisation: the decoy check is already GLOBAL, so a decoy in the profile
     # is flagged without new code. Guards against a future change scoping it to a region.
-    v = validate(_cv_with_profile("I built systems at Larkspur."), _bundle(),
-                 fabrication_decoys=["Larkspur"])
+    v = validate(_cv_with_profile("I built systems at Example Decoy."), _bundle(),
+                 fabrication_decoys=["Example Decoy"])
     assert any("FABRICATED" in x for x in v), v
 
 
