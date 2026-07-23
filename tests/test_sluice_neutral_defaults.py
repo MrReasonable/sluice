@@ -1,5 +1,11 @@
-from sluice.core.config import Config, load_config
+import dataclasses
+import importlib
+from pathlib import Path
+
+from sluice.apply.config import ApplyConfig
+from sluice.core.config import Config, SourceConfig, load_config
 from sluice.cv.config import CvConfig, load_cv_config
+from sluice.track.config import TrackConfig
 from sluice.triage.config import TriageConfig, load_triage_config
 
 
@@ -101,3 +107,110 @@ def test_config_overlay_restores_neutralized_defaults(tmp_path, monkeypatch):
     assert ccfg.name == "Someone"
     assert ccfg.negatives == ["X"]
     assert ccfg.prefix_map == {"Foo": "FO"}
+
+
+# --- #26: the unguarded-preference SWEEP -------------------------------------
+# The four tests above are an ENUMERATION: they assert named fields, so they ship
+# green on any preference key nobody named. That has escaped TWICE (see the
+# comments at `locations` and `baseline_rel` above). The sweep below closes the
+# class: EVERY list-defaulting field on EVERY config dataclass must default empty,
+# so the next list-typed preference cannot ship a stranger's taste baked into
+# source. It is strictly ADDITIVE -- it removes none of the assertions above. A
+# loop-only rewrite that dropped the str-typed checks (baseline_rel not absolute,
+# store/fetcher) or the loader half would be the very `:51-54` escape #26 cites,
+# recurring inside its own fix, so those stay hand-written and untouched.
+
+# Explicit, reviewable roster of every config dataclass a fresh install builds.
+# test_swept_configs_covers_every_config_dataclass pins that this list is COMPLETE:
+# an enumeration of DATACLASSES ships green on a config nobody named -- #26's own
+# critique, one level up -- so a new sub-app's *Config must be added here or CI
+# reddens. It is deliberately broader than the four sub-app load targets: ApplyConfig
+# (all-str today, like TrackConfig) and the nested SourceConfig (whose `searches`
+# override is an abstain-preference) are configs too, and a list preference landing
+# on either must not ship green for want of a name in this list.
+_SWEPT_CONFIGS = [Config, SourceConfig, TriageConfig, CvConfig, TrackConfig, ApplyConfig]
+
+
+def _list_defaulting_fields(cls):
+    """(name, default) for each field of `cls` whose zero-arg default is a list.
+    Keyed on the default VALUE via isinstance, read off an instance so a
+    default_factory is resolved -- NOT on the annotation. `f.type is list` is
+    annotation-keyed, and `list[str]` is a types.GenericAlias (not `list`), so an
+    annotation-keyed sweep silently misses the first `list[str]` field written;
+    today every field is bare `list`, so such a sweep would LOOK live while being
+    inert. dict-typed defaults (TrackConfig.ats_relay_domains, legitimately
+    non-empty) are excluded: the sweep is list-only by construction."""
+    obj = cls()
+    for f in dataclasses.fields(cls):
+        value = getattr(obj, f.name)
+        if isinstance(value, list):
+            yield f.name, value
+
+
+def test_every_list_defaulting_config_field_defaults_empty():
+    # An unconfigured preference gate must ABSTAIN (pass every lead through), not
+    # match-nothing -- getting this backwards silently binned an entire job hunt
+    # once (672ad2a). So every list-defaulting field, across every config, is empty.
+    offenders = {
+        f"{cls.__name__}.{name}": value
+        for cls in _SWEPT_CONFIGS
+        for name, value in _list_defaulting_fields(cls)
+        if value != []
+    }
+    assert offenders == {}, (
+        "every list-defaulting config field must default empty (an unconfigured "
+        "preference gate abstains); these ship a non-empty default -- a stranger's "
+        f"taste baked into source: {offenders}"
+    )
+
+
+def _discover_config_dataclasses():
+    """Every module-level @dataclass named *Config in a sluice */config.py file.
+    Globs the source tree (deterministic, and NOT pkgutil.walk_packages, which
+    would import ingest source modules that drive Camofox) and imports only
+    config.py modules -- each imports just os + a guarded yaml, so this stays
+    offline. The __module__ guard counts only dataclasses DEFINED in the module,
+    never one imported into it."""
+    pkg = Path(__file__).resolve().parent.parent / "sluice"
+    found = {}
+    for path in sorted(pkg.rglob("config.py")):
+        dotted = ".".join(path.relative_to(pkg.parent).with_suffix("").parts)
+        module = importlib.import_module(dotted)
+        for name, obj in vars(module).items():
+            if (name.endswith("Config") and dataclasses.is_dataclass(obj)
+                    and getattr(obj, "__module__", None) == module.__name__):
+                found[name] = obj
+    return found
+
+
+def test_swept_configs_covers_every_config_dataclass():
+    # The sweep is only as complete as _SWEPT_CONFIGS, so pin that the roster is
+    # EVERY *Config dataclass in a sluice */config.py module (discovery's enforced
+    # scope -- a *Config defined outside a config.py escapes both, but config.py is
+    # the convention every sub-app follows). This closes two ways the sweep could
+    # silently narrow: adding a sub-app config without sweeping it reddens here,
+    # and narrowing the roster to [Config] -- the root-only trap, where
+    # dataclasses.fields(Config) never reaches TriageConfig.target_locations (the
+    # actual 672ad2a site) -- reddens here too.
+    discovered = set(_discover_config_dataclasses().values())
+    assert discovered == set(_SWEPT_CONFIGS), (
+        "_SWEPT_CONFIGS must be every *Config dataclass in a sluice */config.py "
+        f"module; drift between discovered={sorted(c.__name__ for c in discovered)} "
+        f"and swept={sorted(c.__name__ for c in _SWEPT_CONFIGS)}"
+    )
+
+
+def test_sweep_keys_on_the_default_value_not_the_annotation():
+    # Trap 2, pinned permanently: the sweep must catch a `list[str]`-annotated field,
+    # not just bare `list`. `list[str]` is a types.GenericAlias, so a sweep keyed on
+    # `f.type is list` would miss it. Build a throwaway dataclass carrying BOTH
+    # annotation shapes with non-empty defaults; the value-keyed helper must surface
+    # both. If the helper ever regressed to annotation-keying, `parametrized` would
+    # drop out and this assertion would fail.
+    @dataclasses.dataclass
+    class _Sample:
+        bare: list = dataclasses.field(default_factory=lambda: ["x"])
+        parametrized: list[str] = dataclasses.field(default_factory=lambda: ["y"])
+        scalar: str = "not-a-list"
+
+    assert dict(_list_defaulting_fields(_Sample)) == {"bare": ["x"], "parametrized": ["y"]}
