@@ -311,6 +311,8 @@ def test_profile_strip_matches_render_citation_shape():
     # validate strips but render delivers reopens the [500] fail-open. Pin equality.
     from sluice.cv.render import _CITE_RE as _RENDER_CITE_RE
     from sluice.cv.validate import _CITE_RE as _VALIDATE_CITE_RE
+    assert _VALIDATE_CITE_RE.pattern == _RENDER_CITE_RE.pattern
+    assert _VALIDATE_CITE_RE.flags == _RENDER_CITE_RE.flags
     for s in ("I scaled [ES1] fast", "I scaled [500] users", "count [es1] here",
               "value [AB12] ok", "unicode [ES१] digit", "plain text"):
         assert _VALIDATE_CITE_RE.sub("", s) == _RENDER_CITE_RE.sub("", s), s
