@@ -84,11 +84,11 @@ def _leads_dir(tmp_path):
     return tmp_path / "Job Applications" / "Job Leads"
 
 
-def _seed_note(tmp_path, name="Acme - Analyst.md", extra=""):
+def _seed_note(tmp_path, name="Example Foundry - Analyst.md", extra=""):
     d = _leads_dir(tmp_path)
     d.mkdir(parents=True, exist_ok=True)
     (d / name).write_text(
-        f"---\ncompany: \"Acme\"\nrole: \"Analyst\"\nstatus: new\n{extra}---\n\n# body\n",
+        f"---\ncompany: \"Example Foundry\"\nrole: \"Analyst\"\nstatus: new\n{extra}---\n\n# body\n",
         encoding="utf-8")
     return d / name
 
@@ -169,12 +169,12 @@ def test_set_tailored_cv_overwrites_by_default(tmp_path):
 
 def test_normalize_self_heals_a_concurrent_non_status_edit(tmp_path, monkeypatch):
     d = _leads_dir(tmp_path); d.mkdir(parents=True, exist_ok=True)
-    f = d / "Acme - Analyst.md"
-    f.write_text('---\ncompany: "Acme"\nstatus: "new"\n---\n\n# body\n', encoding="utf-8")
+    f = d / "Example Foundry - Analyst.md"
+    f.write_text('---\ncompany: "Example Foundry"\nstatus: "new"\n---\n\n# body\n', encoding="utf-8")
     v = Vault(str(tmp_path))
     def racer():
         f.write_text(f.read_text(encoding="utf-8").replace(
-            'company: "Acme"', 'company: "Acme"\nscore: 7'), encoding="utf-8")
+            'company: "Example Foundry"', 'company: "Example Foundry"\nscore: 7'), encoding="utf-8")
     racing_read(monkeypatch, str(f), racer)
     v.normalize_all_statuses(dry_run=False)
     txt = f.read_text(encoding="utf-8")
@@ -184,8 +184,8 @@ def test_normalize_self_heals_a_concurrent_non_status_edit(tmp_path, monkeypatch
 
 def test_normalize_abstains_when_a_race_introduces_a_conflict(tmp_path, monkeypatch):
     d = _leads_dir(tmp_path); d.mkdir(parents=True, exist_ok=True)
-    f = d / "Acme - Analyst.md"
-    f.write_text('---\ncompany: "Acme"\nstatus: "new"\n---\n\n# body\n', encoding="utf-8")
+    f = d / "Example Foundry - Analyst.md"
+    f.write_text('---\ncompany: "Example Foundry"\nstatus: "new"\n---\n\n# body\n', encoding="utf-8")
     v = Vault(str(tmp_path))
     def racer():  # concurrent edit introduces a DISAGREEING second status line
         f.write_text(f.read_text(encoding="utf-8").replace(
@@ -212,8 +212,8 @@ def test_normalize_skips_and_reports_a_sustained_race(tmp_path, monkeypatch):
     # abort every note after this one); it logs and reports the note under "skipped",
     # counts it neither changed nor unchanged, and leaves the note unwritten.
     d = _leads_dir(tmp_path); d.mkdir(parents=True, exist_ok=True)
-    f = d / "Acme - Analyst.md"
-    f.write_text('---\ncompany: "Acme"\nstatus: "new"\n---\n\n# body\n', encoding="utf-8")
+    f = d / "Example Foundry - Analyst.md"
+    f.write_text('---\ncompany: "Example Foundry"\nstatus: "new"\n---\n\n# body\n', encoding="utf-8")
     v = Vault(str(tmp_path))
     counter = {"n": 0}
     def churn():
@@ -222,11 +222,11 @@ def test_normalize_skips_and_reports_a_sustained_race(tmp_path, monkeypatch):
         # collapsible file.
         counter["n"] += 1
         f.write_text(
-            f'---\ncompany: "Acme"\nstatus: "new"\nstatus: dismiss-{counter["n"]}\n---\n\n# body\n',
+            f'---\ncompany: "Example Foundry"\nstatus: "new"\nstatus: dismiss-{counter["n"]}\n---\n\n# body\n',
             encoding="utf-8")
     racing_read(monkeypatch, str(f), churn, once=False)
     summary = v.normalize_all_statuses(dry_run=False)
-    assert "Acme - Analyst.md" in summary["skipped"]
+    assert "Example Foundry - Analyst.md" in summary["skipped"]
     assert summary["changed"] == 0
     # not rewritten: the ORIGINAL single "new" status line from the up-front scan's
     # capture never got collapsed onto disk (the racer's own churned content did land,
@@ -241,7 +241,7 @@ def test_upsert_absorbs_a_bump_conflict_into_refused(tmp_path, monkeypatch):
     from sluice.core.leads import Lead
     f = _seed_note(tmp_path, extra="last_seen: 2026-07-10\nurl: \"https://example.invalid/1\"\n")
     v = Vault(str(tmp_path))
-    lead = Lead(source="b", search="s", title="Analyst", company="Acme",
+    lead = Lead(source="b", search="s", title="Analyst", company="Example Foundry",
                 location="", salary="", url="https://example.invalid/1",
                 last_seen="2026-07-20")
     counter = {"n": 0}
@@ -268,7 +268,7 @@ def test_upsert_merge_absorbs_a_bump_conflict_into_refused(tmp_path, monkeypatch
     from sluice.core.leads import Lead
     f = _seed_note(tmp_path, extra="last_seen: 2026-07-10\nurl: \"https://example.invalid/1\"\n")
     v = Vault(str(tmp_path))
-    lead = Lead(source="b", search="s", title="Analyst", company="Acme",
+    lead = Lead(source="b", search="s", title="Analyst", company="Example Foundry",
                 location="", salary="", url="https://example.invalid/2",  # differs -> not SAME
                 last_seen="2026-07-20")
     counter = {"n": 0}
@@ -298,7 +298,7 @@ def test_ingest_sink_survives_a_bump_conflict_and_keeps_the_lead_unrecorded(tmp_
     v = Vault(str(tmp_path))
     seen = _SeenSpy()
     sink = VaultSink(v, seen, today=lambda: "2026-07-20")
-    conflicting = Lead(source="b", search="s", title="Analyst", company="Acme",
+    conflicting = Lead(source="b", search="s", title="Analyst", company="Example Foundry",
                        location="", salary="", url="https://example.invalid/1")
     counter = {"n": 0}
     def churn():

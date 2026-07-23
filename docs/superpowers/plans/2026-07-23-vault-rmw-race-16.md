@@ -1023,6 +1023,14 @@ def test_a_sustained_write_conflict_refuses_rather_than_clobbers(store_name, tmp
     assert after.get("status") == before.get("status"), "a refused write still clobbered status"
 ```
 
+**Round-2 CodeRabbit fold (post-merge, still #16):** `churn` appends `\nrace: {n}` to the note on
+every interposed read, so a comparison of PARSED frontmatter alone (`after == before`) passes even
+though the raw file kept growing underneath it -- a body clobber by the refused write would be
+invisible to that assertion. The shipped test has `churn` also record the last raw text it wrote
+(`last["raw"]`); after restoring `_read`, it asserts the on-disk RAW bytes equal that last write
+(`real(ref) == last["raw"]`), placed BEFORE the parsed-fm/company/url/"shortlist"-absent
+assertions, which remain as targeted diagnostics underneath.
+
 - [ ] **Step 2: Run to verify pass (behaviour already implemented in Tasks 1-6)**
 
 Run: `python -m pytest tests/conformance/test_store_contract.py -q -k conflict`
