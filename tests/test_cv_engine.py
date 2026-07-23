@@ -12,24 +12,45 @@ class Note:
 
 class FakeVault:
     def __init__(self, entries, notes=None):
-        self._entries = entries; self._notes = notes or []; self.written = {}
+        self._entries = entries; self._notes = notes or []; self.written = {}; self.fields = {}
     def read_experience_entries(self, verified_only=True): return self._entries
     # Signature must track protocols.Store EXACTLY. This fake carrying the old
     # read_baseline(rel=...) is what let a real TypeError ship green.
     def read_baseline(self): return "BASELINE"
     def read_leads(self, statuses=None): return self._notes
+    def _fresh(self, ref): return next((n for n in self._notes if n.ref == ref), None)
     def set_tailored_cv(self, ref, value, *, only_if_absent=False):
         # Mirrors the real Vault.set_tailored_cv (#16 cv long-window): only_if_absent
         # checks the FRESH note in self._notes -- not the `note` object the caller
         # (run_one) is holding, which may be a stale snapshot from before a concurrent
         # writer's set_tailored_cv landed. Returns whether a write happened.
-        fresh = next((n for n in self._notes if n.ref == ref), None)
+        fresh = self._fresh(ref)
         if only_if_absent and fresh is not None and fresh.fm.get("tailored_cv"):
             return False
         self.written[ref] = value
         if fresh is not None:
             fresh.fm["tailored_cv"] = value
         return True
+    def update_fields(self, ref, fields, *, append_note=None, note_tag=None):
+        # Surgical named-key set. Records to self.fields for assertion and applies to the
+        # fresh note (mirrors the real store setting frontmatter without touching the body).
+        self.fields.setdefault(ref, {}).update(fields)
+        fresh = self._fresh(ref)
+        if fresh is not None:
+            fresh.fm.update(fields)
+    def sign_off(self, ref, *, accept=True):
+        # Mirrors Vault.sign_off's outcome verdict on the fresh note (#60).
+        fresh = self._fresh(ref)
+        pending = fresh.fm.get("pending_cv") if fresh is not None else None
+        if not pending:
+            return "nothing"
+        fresh.fm.pop("pending_cv", None); fresh.fm.pop("needs_signoff", None)
+        if not accept:
+            return "discarded"
+        if fresh.fm.get("tailored_cv"):
+            return "collision"
+        fresh.fm["tailored_cv"] = pending
+        return "promoted"
 
 class FakeCache:
     def get_or_build(self, fm): return {"jd": {"markdown": "we value delivery"}}
@@ -255,20 +276,104 @@ def test_advisory_audit_failure_does_not_block_render(monkeypatch):
 
     class AuditRaisingBackend:
         def __init__(self, cv):
-            self.cv = cv; self.last_backend = "primary"
+            self.cv = cv; self.last_backend = "primary"; self.audited = False
         def complete(self, prompt):
             # compose call succeeds with a clean, fully-cited CV; the audit call
             # (same routing rule as FakeBackend: contains "SOURCE BUNDLE" AND
             # "auditing") raises, simulating a backend timeout/error.
             if "SOURCE BUNDLE" in prompt and "auditing" not in prompt:
                 return self.cv
+            self.audited = True
             raise RuntimeError("backend timeout during advisory audit")
 
     v = FakeVault(ENTRIES)
-    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
-                v, _cfg(), AuditRaisingBackend(CLEAN_CV), FakeCache(), renderer=FakeRenderer())
+    note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
+    be = AuditRaisingBackend(CLEAN_CV)
+    # _cfg() carries require_signoff's default (True), so this ALSO pins the #60 fail-open:
+    # when the audit backend errors, run_audit swallows it -> no blockers -> the pointer is
+    # STILL set and the CV serves. The gate is best-effort, never harder than the audit ran.
+    r = run_one(note, v, _cfg(), be, FakeCache(), renderer=FakeRenderer())
     assert r.status == "rendered"
     assert r.audit_flags == []
+    assert be.audited, "the audit was never invoked; the fail-open assertion would be vacuous"
+    assert note.ref in v.written, "fail-open must still set the send-ready pointer (#60)"
+
+
+# --- #60 sign-off gate: engine behaviour (withhold, sticky, require_signoff) ---
+
+def _served(monkeypatch, served="Jane_Roe_CV_deadbeef.pdf"):
+    import sluice.cv.render as _render_mod
+    monkeypatch.setattr(_render_mod, "render", lambda *a, **k: "/tmp/x/Jane Roe CV.pdf")
+    monkeypatch.setattr(_render_mod, "serve", lambda *a, **k: served)
+
+
+def test_unsupported_flag_withholds_pointer_and_marks_needs_signoff(monkeypatch):
+    # An `unsupported` audit flag WITHHOLDS the send-ready tailored_cv pointer (apply keys
+    # on it) and records pending_cv + needs_signoff for a human to sign off. The CV still
+    # rendered and served (it passed the HARD gate) -- only the pointer is withheld. Uses
+    # _cfg()'s DEFAULT require_signoff.
+    import json
+    _served(monkeypatch)
+    note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
+    v = FakeVault(ENTRIES, notes=[note])
+    be = FakeBackend(CLEAN_CV, audit_out="unsupported\tMotivated by placeholder\tNONE")
+    r = run_one(note, v, _cfg(), be, FakeCache(), renderer=FakeRenderer())
+    assert r.status == "needs-signoff"
+    assert r.served == "Jane_Roe_CV_deadbeef.pdf"            # rendered + served
+    assert note.ref not in v.written                          # tailored_cv WITHHELD
+    assert "tailored_cv" not in note.fm
+    assert note.fm.get("pending_cv", "").startswith("Jane_Roe_CV_deadbeef.pdf")
+    assert json.loads(note.fm["needs_signoff"]) == ["unsupported\tMotivated by placeholder\tNONE"]
+
+
+def test_paraphrase_only_still_renders_and_sets_pointer(monkeypatch):
+    # `paraphrase` is legitimate tailoring, not a fabrication -- it must NOT block. A CV
+    # whose only audit flags are paraphrase/supported serves normally.
+    _served(monkeypatch)
+    note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
+    v = FakeVault(ENTRIES, notes=[note])
+    be = FakeBackend(CLEAN_CV, audit_out="paraphrase\tgrew it\tEF1\nsupported\tled\tEF1")
+    r = run_one(note, v, _cfg(), be, FakeCache(), renderer=FakeRenderer())
+    assert r.status == "rendered"
+    assert note.ref in v.written                              # pointer SET
+    assert "pending_cv" not in note.fm and "needs_signoff" not in note.fm
+
+
+def test_require_signoff_false_serves_despite_unsupported(monkeypatch):
+    # The off-switch restores the old auto-serve: with require_signoff False, an
+    # `unsupported` flag no longer withholds the pointer.
+    _served(monkeypatch)
+    cfg = _cfg(); cfg.require_signoff = False
+    note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
+    v = FakeVault(ENTRIES, notes=[note])
+    be = FakeBackend(CLEAN_CV, audit_out="unsupported\tMotivated by placeholder\tNONE")
+    r = run_one(note, v, cfg, be, FakeCache(), renderer=FakeRenderer())
+    assert r.status == "rendered"
+    assert note.ref in v.written and "pending_cv" not in note.fm
+
+
+def test_pending_lead_is_sticky_and_not_recomposed(monkeypatch):
+    # THE LATCH (#60): a lead already carrying pending_cv is held out of BOTH cv paths
+    # BEFORE compose, so a re-run cannot re-roll the non-deterministic audit into a
+    # send-ready pointer. Assert the backend's compose was never called.
+    _served(monkeypatch)
+    fm = {"status": "shortlist", "company": "Example Foundry", "role": "Analyst",
+          "pending_cv": "Jane_Roe_CV_old.pdf (2026-07-24)",
+          "needs_signoff": '["unsupported\\tMotivated by placeholder\\tNONE"]'}
+    note = Note(dict(fm))
+    v = FakeVault(ENTRIES, notes=[note])
+    be = FakeBackend(CLEAN_CV, audit_out="supported\tx\tEF1")
+    r = run_one(note, v, _cfg(), be, FakeCache(), renderer=FakeRenderer())
+    assert r.status == "skipped-needs-signoff"
+    assert be.calls == 0, "a held (pending) lead was recomposed -- the audit could re-roll clean"
+    assert note.ref not in v.written and "tailored_cv" not in note.fm
+    # ...and the batch path (which routes through run_one) skips it identically.
+    note2 = Note(dict(fm))
+    vb = FakeVault(ENTRIES, notes=[note2])
+    beb = FakeBackend(CLEAN_CV, audit_out="supported\tx\tEF1")
+    batch = run_batch(vb, _cfg(), beb, FakeCache(), renderer=FakeRenderer())
+    assert [b.status for b in batch] == ["skipped-needs-signoff"]
+    assert beb.calls == 0
 
 def test_batch_survives_a_single_lead_exception(monkeypatch):
     # The triage engine records per-lead failures and continues; the CV engine
