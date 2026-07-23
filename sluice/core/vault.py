@@ -616,6 +616,18 @@ def _atomic_write(path: str, text: str) -> None:
     otherwise a modify-write would narrow the note's permissions. On any failure the temp
     is removed before re-raising.
 
+    Metadata beyond the mode is NOT carried across the inode swap, by design. The mode is
+    the security-relevant permission (CWE-732) and is preserved. uid/gid is left to
+    os.replace: for the single-user Obsidian vault this store targets the note's owner and
+    the writing process are the same user, so it is unchanged -- and a non-privileged
+    process could not restore a foreign uid via os.chown anyway. ACLs and security xattrs
+    (e.g. macOS Finder tags) are not part of a note's content that sluice manages, are not
+    portably copyable in the standard library (os.*xattr is Linux-only; ACLs have no stdlib
+    API), and shutil.copystat is unusable here because it would also copy the OLD mtime onto
+    a note we just modified -- freezing the timestamp Syncthing/Obsidian watch for changes.
+    The atomic replace is required for the torn-file safety this module's CAS depends on, so
+    the inode swap is not optional; the metadata trade-off is the accepted cost.
+
     A FRESH create (no pre-existing `path`, so `mode` stays None) instead lands at
     mkstemp's own 0600 rather than the umask-default mode `_write(exclusive=True)` gives
     a newly-created lead note. That is a deliberate, harmless narrowing: the only caller
