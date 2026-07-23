@@ -341,8 +341,9 @@ class Sluice:
         compose_host/compose_claude_path -- NOT triage's claude_max_* fields. That
         mapping belongs here, not in Sluice.backend, same reasoning as `triage()`."""
         from sluice.cv.config import load_cv_config
-        from sluice.cv.engine import run_batch, run_one
+        from sluice.cv.engine import CvResult, run_batch, run_one
         from sluice.core.leads import slug_matches
+        from sluice.core.protocols import VaultConflict
 
         cvcfg = load_cv_config()
         if no_serve:
@@ -362,8 +363,16 @@ class Sluice:
         notes = [n for n in store.read_leads({"shortlist"}) if slug_matches(n, lead)]
         if not notes:
             return []
-        return [run_one(notes[0], store, cvcfg, backend, cache, renderer=renderer,
-                        dry_run=dry_run)]
+        # The direct single-lead path intentionally overwrites (guard_existing_cv
+        # defaults False, unlike run_batch) -- a user re-tailoring one lead by name means
+        # it. Under sustained write-race exhaustion set_tailored_cv still raises
+        # VaultConflict (#16); that must not escape to the CLI as an unhandled traceback.
+        try:
+            return [run_one(notes[0], store, cvcfg, backend, cache, renderer=renderer,
+                            dry_run=dry_run)]
+        except VaultConflict as e:
+            _log.warning("cv re-tailor for %s lost the write race: %s", notes[0].ref, e)
+            return [CvResult(notes[0].ref, "error")]
 
     def prep(self, *, lead=None, all_shortlist=False, limit=None, dry_run=False):
         """Run the apply sub-app's prep step: stage the tailored CV and build an
