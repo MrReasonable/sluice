@@ -78,6 +78,13 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
         if not any(line.strip().upper() == "WORK EXPERIENCE" for line in cv_text.splitlines()):
             violations = ["STRUCTURAL: composed CV lacks the exact 'WORK EXPERIENCE' "
                           "header, so the citation gate did not run"] + violations
+        # Symmetric with the WORK-EXPERIENCE guard above: the profile fabrication
+        # sweep in validate() is keyed on the exact "PROFILE" header, so a composed CV
+        # that drops the header has an empty profile region and is swept -- a silent
+        # fail-open. Catch it here and HARD-fail the gate. (#30)
+        if not any(line.strip().upper() == "PROFILE" for line in cv_text.splitlines()):
+            violations = ["STRUCTURAL: composed CV lacks the exact 'PROFILE' header, "
+                          "so the profile fabrication check did not run"] + violations
         slop_err, _warns = _slop(cv_text)
         gate_msgs = violations + [f"SLOP {lbl}: {snip}" for _ln, lbl, snip in slop_err]
         if not gate_msgs:
