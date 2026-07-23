@@ -366,18 +366,38 @@ class Vault:
         lines the legacy judge writers left behind into a single canonical line.
         A note whose duplicate status lines DISAGREE (e.g. dismiss vs shortlist)
         is left untouched and reported under "conflicts" for manual resolution,
-        never auto-guessed. Body untouched; unknown values reported."""
+        never auto-guessed. Body untouched; unknown values reported.
+
+        Per-note writes go through _cas_write, so a concurrent edit is re-collapsed from
+        fresh content and a race-introduced conflict is abstained on (#16); one conflicting
+        note never aborts the sweep.
+
+        Walks the leads dir directly (rather than through self.read_leads()) so each note
+        is read exactly ONCE before the changed/unchanged/conflicts decision -- read_leads()
+        builds a LeadNote whose flat fm dict can't carry duplicate status lines anyway, so a
+        SECOND raw re-read would be needed regardless. A second, independent re-read here
+        would observe whatever a concurrent writer already did between the two reads, so the
+        snapshot this decision is based on would silently drift out from under it -- the
+        summary must reflect ONE moment in time, with any race after that moment handled by
+        _cas_write's own re-derivation, never by an extra read racing without CAS protection."""
         summary = {"changed": 0, "unchanged": 0, "unknown": [], "conflicts": []}
-        for note in self.read_leads():
-            inner, body = _split_frontmatter(_read(note.ref))
+        if not os.path.isdir(self.leads_dir):
+            return summary
+        for name in sorted(os.listdir(self.leads_dir)):
+            if not name.endswith(".md"):
+                continue
+            path = os.path.join(self.leads_dir, name)
+            try:
+                inner, _ = _split_frontmatter(_read(path))
+            except OSError:
+                continue
             if inner is None:
                 summary["unchanged"] += 1
                 continue
             raws = re.findall(r"(?m)^\s*status\s*:\s*(.*)$", inner)
             norms = [_status.normalize(r.strip()) for r in raws]
             if len(set(norms)) > 1:  # conflicting duplicate statuses -> hands off
-                summary["conflicts"].append(
-                    (os.path.basename(note.ref), sorted(set(norms))))
+                summary["conflicts"].append((name, sorted(set(norms))))
                 continue
             canonical = norms[0] if norms else ""
             if not _status.is_canonical(canonical):
@@ -387,11 +407,14 @@ class Vault:
             already = len(status_lines) == 1 and status_lines[0].strip() == f"status: {canonical}"
             if already:
                 summary["unchanged"] += 1
-            else:
-                summary["changed"] += 1
-                if not dry_run:
-                    _write(note.ref,
-                           f"---\n{_collapse_status_lines(inner, canonical)}\n---\n{body}")
+                continue
+            summary["changed"] += 1
+            if dry_run:
+                continue
+            try:
+                _cas_write(path, _normalize_status_transform)
+            except VaultConflict:
+                summary.setdefault("skipped", []).append(name)
         return summary
 
     # ── upsert ───────────────────────────────────────────────────────────────
@@ -642,6 +665,22 @@ def _collapse_status_lines(inner: str, canonical: str) -> str:
     if not inserted:
         out.append(f"status: {canonical}")
     return "\n".join(out)
+
+
+def _normalize_status_transform(text: str) -> str:
+    """Collapse a note's status lines to their single canonical value, recomputed from the
+    CURRENT text. Abstain (return text unchanged -> a _cas_write no-op) when the fresh
+    status lines DISAGREE: a concurrent edit that introduced a conflict must be reported,
+    never auto-guessed (never-regress). #16: derive from fresh, never from the snapshot."""
+    inner, body = _split_frontmatter(text)
+    if inner is None:
+        return text
+    norms = [_status.normalize(r.strip())
+             for r in re.findall(r"(?m)^\s*status\s*:\s*(.*)$", inner)]
+    if len(set(norms)) > 1:
+        return text
+    canonical = norms[0] if norms else ""
+    return f"---\n{_collapse_status_lines(inner, canonical)}\n---\n{body}"
 
 
 def _fm_dict(inner: str | None) -> dict:

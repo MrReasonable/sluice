@@ -159,3 +159,35 @@ def test_set_tailored_cv_overwrites_by_default(tmp_path):
     v = Vault(str(tmp_path))
     assert v.set_tailored_cv(str(f), "NEW.pdf") is True
     assert "NEW.pdf" in f.read_text(encoding="utf-8")
+
+
+def test_normalize_self_heals_a_concurrent_non_status_edit(tmp_path, monkeypatch):
+    d = _leads_dir(tmp_path); d.mkdir(parents=True, exist_ok=True)
+    f = d / "Acme - Analyst.md"
+    f.write_text('---\ncompany: "Acme"\nstatus: "new"\n---\n\n# body\n', encoding="utf-8")
+    v = Vault(str(tmp_path))
+    def racer():
+        f.write_text(f.read_text(encoding="utf-8").replace(
+            'company: "Acme"', 'company: "Acme"\nscore: 7'), encoding="utf-8")
+    racing_read(monkeypatch, str(f), racer)
+    v.normalize_all_statuses(dry_run=False)
+    txt = f.read_text(encoding="utf-8")
+    assert "status: new" in txt      # canonicalised, quotes dropped
+    assert "score: 7" in txt         # racer's edit preserved
+
+
+def test_normalize_abstains_when_a_race_introduces_a_conflict(tmp_path, monkeypatch):
+    d = _leads_dir(tmp_path); d.mkdir(parents=True, exist_ok=True)
+    f = d / "Acme - Analyst.md"
+    f.write_text('---\ncompany: "Acme"\nstatus: "new"\n---\n\n# body\n', encoding="utf-8")
+    v = Vault(str(tmp_path))
+    def racer():  # concurrent edit introduces a DISAGREEING second status line
+        f.write_text(f.read_text(encoding="utf-8").replace(
+            'status: "new"', 'status: "new"\nstatus: dismiss'), encoding="utf-8")
+    racing_read(monkeypatch, str(f), racer)
+    v.normalize_all_statuses(dry_run=False)
+    txt = f.read_text(encoding="utf-8")
+    # abstained: NO write happened at all, so both disagreeing lines survive verbatim
+    # (the original stays quoted -- abstain must not canonicalise even the line it agrees
+    # with, or a partial rewrite would silently narrow "disagreement" to "trust line 1").
+    assert 'status: "new"' in txt and "status: dismiss" in txt
