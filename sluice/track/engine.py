@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 
 from sluice.core import status as _status
 from sluice.core.leads import slug_matches
+from sluice.core.protocols import VaultConflict
 from sluice.track.classify import classify
 from sluice.track.reconcile import reconcile
 from sluice.track.ics import parse_ics
@@ -160,9 +161,16 @@ def confirm(vault, cfg, slug, to, *, deadletter, when=None, dry_run=False) -> di
         fields = {"status": _status.normalize(to), "last_signal": date.today().isoformat()}
         if when:
             fields["interview_date"] = f'"{when}"'
-        vault.update_fields(note.ref, fields)
-        # Clear only after can_advance passed AND the write happened: a refused
-        # confirm returned above and never reaches here, so it never deletes a row
-        # (deleting on a refused confirm would be #49's silent loss on the clear path).
+        try:
+            vault.update_fields(note.ref, fields)
+        except VaultConflict:
+            # #16: a concurrent edit won the write race; return BEFORE clear_lead,
+            # so the dead-letter row survives (clearing it here would be #49's
+            # silent loss -- the confirm never actually took effect).
+            return {"ok": False, "reason": "conflict"}
+        # Clear only after can_advance passed AND the write succeeded: a refused
+        # confirm returned above and never reaches here, and a conflicted write
+        # returns above too, so neither path ever deletes a row (deleting on a
+        # non-write would be #49's silent loss on the clear path).
         deadletter.clear_lead(note.slug)
     return {"ok": True, "from": note.status, "to": _status.normalize(to)}

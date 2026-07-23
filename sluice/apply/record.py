@@ -3,6 +3,7 @@ other status is refused. Stamps additive provenance frontmatter."""
 from datetime import date
 
 from sluice.core import status as _status
+from sluice.core.protocols import VaultConflict
 from sluice.apply.cvfile import parse_artifact
 from sluice.apply.packet import listing_host
 
@@ -24,5 +25,10 @@ def record(vault, note, cfg, *, ats=None, url=None, dry_run=False):
         literals = dict(fields)
         if url:
             literals["applied_url"] = f'"{url}"'   # URLs need quoting
-        vault.update_fields(note.ref, literals)
+        try:
+            vault.update_fields(note.ref, literals)
+        except VaultConflict:
+            # #16: a concurrent edit won the write race; the lead is left in its
+            # prior (shortlist) state, so `apply` can be re-attempted.
+            return {"ok": False, "reason": "conflict"}
     return {"ok": True, "fields": fields}

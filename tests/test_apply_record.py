@@ -1,4 +1,5 @@
 import tempfile, pathlib, re
+from sluice.core.protocols import VaultConflict
 from sluice.core.vault import Vault
 from sluice.apply.config import ApplyConfig
 from sluice.apply import record as rec
@@ -44,3 +45,19 @@ def test_record_dry_run_writes_nothing():
     out = rec.record(v, note, ApplyConfig(), dry_run=True)
     assert out["ok"] is True and out["fields"]["status"] == "applied"
     assert "status: shortlist" in pathlib.Path(note.ref).read_text()  # untouched
+
+
+def test_record_returns_conflict_on_vault_conflict(monkeypatch):
+    # #16 Task 6: a sustained write-race in update_fields must not escape record()
+    # as an unhandled traceback -- it becomes a first-class refused outcome, same
+    # shape as every other refusal this function returns.
+    v = _lead(_SHORTLIST)
+    note = v.read_leads({"shortlist"})[0]
+
+    def boom(*a, **k):
+        raise VaultConflict("x")
+    monkeypatch.setattr(v, "update_fields", boom)
+
+    out = rec.record(v, note, ApplyConfig(), ats="greenhouse", url="https://x/apply")
+    assert out == {"ok": False, "reason": "conflict"}
+    assert "status: applied" not in pathlib.Path(note.ref).read_text()  # untouched
