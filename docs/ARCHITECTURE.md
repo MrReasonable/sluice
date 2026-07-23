@@ -9,7 +9,14 @@ Shared by every sub-app:
 - `vault.py`: the lead/experience store. Reads and writes an Obsidian-style
   markdown vault without clobbering status, scores, or notes a human or
   another agent has already set: a fresh scrape touches only a `last_seen`
-  marker on an existing note.
+  marker on an existing note. A create races the filesystem via an
+  exclusive (`O_CREAT|O_EXCL`) write and re-reconciles on `FileExistsError`;
+  a modify (`update_fields`, `append_body_section`, `set_tailored_cv`,
+  status normalization) goes through the same shape one level in --
+  content-CAS plus an atomic replace, re-deriving the edit from fresh
+  content on a bounded number of lost races, and refusing loudly
+  (`VaultConflict`) rather than clobbering if the conflict is sustained
+  (#16).
 - `backends.py`: LLM clients. `ClaudeMaxBackend` shells out to a `claude`
   CLI, local or over SSH; `AnthropicBackend` calls the Anthropic Messages
   API directly; `OpenAiCompatibleBackend` calls any OpenAI-compatible HTTP
@@ -118,6 +125,17 @@ anything the engine lets through, the store re-merges.
 Those guarantees used to live inside `core/vault.py`; a second store would have
 shipped without them. They are now properties of the contract, and a store passes
 that suite or it does not ship.
+
+A fourth property joins those three: **the conflict outcome**. A modify-write that
+keeps losing the race against a concurrent editor (a human in Obsidian, Syncthing, a
+second `sluice` process) must refuse loudly rather than clobber -- raising
+`VaultConflict` for the field-writers, or folding into `upsert`'s `refused` outcome
+-- and write nothing. `test_a_sustained_write_conflict_refuses_rather_than_clobbers`
+pins this at the contract, the same altitude as never-clobber and
+last_seen-monotonicity. The CAS *mechanism* that makes the outcome possible --
+content-compare, atomic replace, bounded re-apply -- is vault-specific and not itself
+asserted; a store keyed on real rows (a database transaction, say) can satisfy the
+same outcome by a wholly different route (#16).
 
 ## Adapter-selector seams
 

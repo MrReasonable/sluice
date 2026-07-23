@@ -364,3 +364,34 @@ def test_upsert_return_is_always_within_the_vocabulary(store_name, tmp_path, mon
     store = _make_store(store_name, tmp_path, monkeypatch)
     assert store.upsert(_lead()) in vocab                       # create
     assert store.upsert(_lead(last_seen="2026-07-14")) in vocab  # re-scrape -> update/merge
+
+
+# ── modify-write conflict (#16) ───────────────────────────────────────────────
+def test_a_sustained_write_conflict_refuses_rather_than_clobbers(store_name, tmp_path, monkeypatch):
+    """The conflict OUTCOME is a contract property (§2a of the #16 design): a modify-write
+    that keeps losing the race must refuse loudly (raise VaultConflict for the field-writers,
+    or return `refused` from upsert) and write nothing -- never a partial clobber. Skipped
+    for stores whose write is not read-modify-write (they cannot exhibit the race)."""
+    from sluice.core.protocols import VaultConflict
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    store.upsert(_lead())
+    ref = store.read_leads()[0].ref
+    before = store.read_leads()[0].fm
+    # Interpose the vault read so every capture sees a moved file (filesystem store only).
+    import sluice.core.vault as vaultmod
+    if getattr(store, "__class__", None).__module__ != vaultmod.__name__:
+        pytest.skip("conflict simulation is filesystem-store specific")
+    real = vaultmod._read
+    n = {"i": 0}
+    def churn(path):
+        text = real(path)
+        if str(path) == str(ref):
+            n["i"] += 1
+            vaultmod._write(path, text + f"\nrace: {n['i']}")
+        return text
+    monkeypatch.setattr(vaultmod, "_read", churn)
+    with pytest.raises(VaultConflict):
+        store.update_fields(ref, {"status": "shortlist"})
+    monkeypatch.setattr(vaultmod, "_read", real)
+    after = store.read_leads()[0].fm
+    assert after.get("status") == before.get("status"), "a refused write still clobbered status"
