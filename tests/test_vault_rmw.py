@@ -8,7 +8,7 @@ import stat
 
 import pytest
 
-from sluice.core.vault import _atomic_write, _cas_write
+from sluice.core.vault import Vault, _atomic_write, _cas_write
 from sluice.core.protocols import VaultConflict
 from tests.conftest import racing_read
 
@@ -78,9 +78,6 @@ def test_cas_write_does_not_return_a_stale_no_op(tmp_path, monkeypatch):
     body = p.read_text(encoding="utf-8")
     assert "TAG" in body      # re-derived onto the racer's content
     assert result is True      # a write happened, not a stale no-op
-
-
-from sluice.core.vault import Vault
 
 
 def _leads_dir(tmp_path):

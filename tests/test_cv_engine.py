@@ -18,7 +18,7 @@ class FakeVault:
     # read_baseline(rel=...) is what let a real TypeError ship green.
     def read_baseline(self): return "BASELINE"
     def read_leads(self, statuses=None): return self._notes
-    def set_tailored_cv(self, ref, value): self.written[ref] = value
+    def set_tailored_cv(self, ref, value, *, only_if_absent=False): self.written[ref] = value
 
 class FakeCache:
     def get_or_build(self, fm): return {"jd": {"markdown": "we value delivery"}}
