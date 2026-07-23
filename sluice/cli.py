@@ -231,6 +231,33 @@ def cmd_cv_run(args, config) -> int:
     return 0
 
 
+def cmd_cv_signoff(args, config) -> int:
+    from sluice.core.app import Sluice
+
+    app = Sluice(config)
+    peek = app.peek_signoff(lead=args.lead)
+    if peek is None:
+        print(f"cv signoff: no shortlist lead matching '{args.lead}'", file=sys.stderr)
+        return 1
+    slug, pending, claims = peek
+    if not pending:
+        print(f"cv signoff: {slug} has nothing pending", file=sys.stderr)
+        return 0
+    if not args.discard and not args.yes:
+        # Review the flagged claims before promoting a possibly-fabricated CV to send-ready;
+        # only the candidate knows whether an aspirational claim is true (#60).
+        print(f"cv signoff: {slug} has {len(claims)} unsupported claim(s):", file=sys.stderr)
+        for c in claims:
+            print(f"  - {c}", file=sys.stderr)
+        print(f"served CV: {pending}", file=sys.stderr)
+        if input(f"sign off {slug}? [y/N] ").strip().lower() not in ("y", "yes"):
+            print("cv signoff: aborted", file=sys.stderr)
+            return 0
+    _slug, outcome = app.sign_off_cv(lead=args.lead, accept=not args.discard)
+    print(f"cv signoff: {slug} {outcome}", file=sys.stderr)
+    return 0
+
+
 # ── apply ────────────────────────────────────────────────────────────────────
 def cmd_apply_prep(args, config) -> int:
     from sluice.core.app import Sluice
@@ -420,6 +447,13 @@ def _build_parser() -> argparse.ArgumentParser:
                        help=_BACKEND_HELP)
     cvrun.add_argument("--no-serve", action="store_true")
     cvrun.set_defaults(func=cmd_cv_run)
+    cvsign = cv.add_parser("signoff")
+    cvsign.add_argument("--lead", required=True,
+                        help="sign off (or --discard) the CV held for the shortlist lead matching this slug")
+    cvsign.add_argument("--discard", action="store_true",
+                        help="reject the held CV instead of promoting it, freeing a fresh compose")
+    cvsign.add_argument("--yes", action="store_true", help="skip the interactive confirmation")
+    cvsign.set_defaults(func=cmd_cv_signoff)
 
     apply_ = top.add_parser("apply", help="application prep + tracking").add_subparsers(
         dest="cmd", required=True)
