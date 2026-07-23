@@ -143,7 +143,7 @@ Expected: all pass, including the pre-existing `test_prompt_contains_bundle_jd_a
 - [ ] **Step 6: Run the full suite**
 
 Run: `python -m pytest -q`
-Expected: all green (previous count + 2).
+Expected: the two new tests pass and the full suite stays green.
 
 - [ ] **Step 7: Lint**
 
@@ -396,7 +396,7 @@ Expected: all pass — the 8 new tests AND every pre-existing test, in particula
 - [ ] **Step 8: Run the full suite and lint**
 
 Run: `python -m pytest -q && ruff check sluice tests`
-Expected: all green (previous count + 8), lint clean.
+Expected: the eight new tests pass and the full suite stays green, lint clean.
 
 - [ ] **Step 9: Commit**
 
@@ -523,7 +523,7 @@ Expected: PASS (`status == "skipped-gate"`, a `STRUCTURAL` violation present, no
 - [ ] **Step 7: Run the full suite and lint**
 
 Run: `python -m pytest -q && ruff check sluice tests`
-Expected: all green (previous count + 1), lint clean. This is the re-run **after** the `CLEAN_CV` fixture edit that §8 of the spec requires.
+Expected: the new test passes and the full suite stays green, lint clean. This is the re-run **after** the `CLEAN_CV` fixture edit that §8 of the spec requires.
 
 - [ ] **Step 8: Commit**
 
@@ -563,7 +563,7 @@ Run `python -m compileall -q -f --invalidation-mode checked-hash sluice tests` o
 python -m pytest -q
 ruff check sluice tests
 ```
-Expected: all pass (previous total + 11 new tests: Tests 1–5, 6a, 6b, 6c, 7, 8, 9). No new dependency; `sluice/` still standard-library only.
+Expected: the full suite passes (it includes the new Tests 1–5, 6a, 6b, 6c, 7, 8, 9). No new dependency; `sluice/` still standard-library only.
 
 - [ ] **Confirm the invariants held**
 
