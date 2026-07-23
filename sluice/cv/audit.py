@@ -19,3 +19,12 @@ def run_audit(backend, cv_text, bundle_text):
     flagged = [line for line in report.splitlines()
                if line.strip().lower().startswith(("unsupported", "paraphrase"))]
     return report, flagged
+
+
+def unsupported_claims(flagged):
+    """The `unsupported` subset of run_audit's flagged lines -- the only verdict the
+    #60 sign-off gate gives a consequence. `paraphrase` (same fact, reworded) is
+    legitimate tailoring: blocking on it would fire on nearly every CV and train
+    rubber-stamping, so it stays advisory. Pure over run_audit's output; run_audit
+    and CvResult.audit_flags (both verdicts) are unchanged."""
+    return [line for line in flagged if line.strip().lower().startswith("unsupported")]

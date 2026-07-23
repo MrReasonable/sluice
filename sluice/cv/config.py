@@ -39,6 +39,11 @@ class CvConfig:
     prefix_map: dict = field(default_factory=lambda: dict(_PREFIX_MAP))
     negatives: list = field(default_factory=lambda: list(_NEGATIVES))
     ttl_days: int = 7
+    # Whether an `unsupported` profile audit flag WITHHOLDS the send-ready pointer until a
+    # human signs off (`sluice cv signoff`), rather than auto-serving a possibly-fabricated
+    # CV (#60). A safety valve, not a job preference, so it ships LIVE (True); set False to
+    # restore the old auto-serve. The hard validate gate is unaffected either way.
+    require_signoff: bool = True
     dossier_dir: str = "./dossiers"
     # Which renderer fills the seam. "script" is today's external WeasyPrint shell-out
     # and stays the default so an operator with a working script is unaffected;
