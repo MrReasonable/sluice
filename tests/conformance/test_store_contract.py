@@ -366,6 +366,52 @@ def test_upsert_return_is_always_within_the_vocabulary(store_name, tmp_path, mon
     assert store.upsert(_lead(last_seen="2026-07-14")) in vocab  # re-scrape -> update/merge
 
 
+# ── #60: profile-audit sign-off (outcome verdict + never-clobber) ─────────────
+def test_sign_off_reports_each_outcome_and_never_clobbers(store_name, tmp_path, monkeypatch):
+    """sign_off's four outcomes are a CONTRACT property, like upsert's vocabulary: the
+    store reports what it did on FRESH content (promoted|discarded|collision|nothing), so a
+    caller never reconstructs the verdict from a stale snapshot. And every branch is
+    surgical -- only pending_cv/needs_signoff (and, on promote, tailored_cv) change; an
+    existing tailored_cv is NEVER clobbered. Asserted on the WHOLE frontmatter dict per
+    branch, per this file's opening lesson."""
+    import json
+    store = _make_store(store_name, tmp_path, monkeypatch)
+
+    def _pending(ref, pending):
+        store.update_fields(ref, {"pending_cv": pending,
+                                  "needs_signoff": json.dumps(["unsupported\tMotivated by placeholder\tNONE"])})
+
+    # nothing: no pending_cv -> no write, no field change.
+    store.upsert(_lead())
+    ref = store.read_leads()[0].ref
+    before = dict(store.read_leads()[0].fm)
+    assert store.sign_off(ref) == "nothing"
+    assert dict(store.read_leads()[0].fm) == before
+
+    # promoted: pending_cv -> tailored_cv, markers cleared, EVERY other key identical.
+    _pending(ref, "CV_ab12.pdf (2026-07-24)")
+    base = dict(store.read_leads()[0].fm)
+    assert store.sign_off(ref) == "promoted"
+    fm = dict(store.read_leads()[0].fm)
+    expected = {k: v for k, v in base.items() if k not in ("pending_cv", "needs_signoff")}
+    expected["tailored_cv"] = "CV_ab12.pdf (2026-07-24)"
+    assert fm == expected, "promote touched a key other than pending_cv/needs_signoff/tailored_cv"
+
+    # discarded: markers cleared, tailored_cv NOT promoted (the earlier pointer stands).
+    _pending(ref, "CV_disc.pdf (2026-07-24)")
+    assert store.sign_off(ref, accept=False) == "discarded"
+    fm = dict(store.read_leads()[0].fm)
+    assert "pending_cv" not in fm and "needs_signoff" not in fm
+    assert fm.get("tailored_cv") == "CV_ab12.pdf (2026-07-24)", "discard promoted a pending CV"
+
+    # collision: a stale pending over an existing tailored_cv -> pointer kept UNCHANGED.
+    _pending(ref, "CV_STALE.pdf (2026-07-24)")
+    assert store.sign_off(ref) == "collision"
+    fm = dict(store.read_leads()[0].fm)
+    assert fm.get("tailored_cv") == "CV_ab12.pdf (2026-07-24)", "collision clobbered the real pointer"
+    assert "pending_cv" not in fm and "needs_signoff" not in fm
+
+
 # ── modify-write conflict (#16) ───────────────────────────────────────────────
 def test_a_sustained_write_conflict_refuses_rather_than_clobbers(store_name, tmp_path, monkeypatch):
     """The conflict OUTCOME is a contract property (§2a of the #16 design): a modify-write

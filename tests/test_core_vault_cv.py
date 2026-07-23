@@ -1,5 +1,14 @@
+import json
 import pathlib, tempfile
-from sluice.core.vault import Vault
+from sluice.core.vault import Vault, _fm_dict, _split_frontmatter
+
+
+def _lead_note(fm_lines, body="BODY TEXT\n"):
+    root = tempfile.mkdtemp()
+    leads = pathlib.Path(root, "Job Applications", "Job Leads"); leads.mkdir(parents=True)
+    note = leads / "Acme - Analyst.md"
+    note.write_text("---\n" + fm_lines + "\n---\n\n" + body)
+    return Vault(root), str(note), note
 
 def _vault_with(entries, baseline="BASELINE"):
     root = tempfile.mkdtemp()
@@ -47,3 +56,58 @@ def test_set_tailored_cv_is_additive_and_preserves_body():
     assert "tailored_cv: Jane_Roe_CV_ab12cd34.pdf (2026-07-08)" in text
     assert "status: shortlist" in text  # untouched
     assert "BODY TEXT" in text          # body preserved
+
+
+# --- #60 sign-off gate: the sign_off Store method (outcome string, never-clobber) ---
+
+def test_sign_off_promotes_pending_and_clears_markers_body_intact():
+    v, ref, note = _lead_note(
+        'company: "Acme"\nstatus: shortlist\n'
+        'pending_cv: CV_ab12.pdf (2026-07-24)\nneeds_signoff: ["unsupported\\tMotivated by placeholder\\tNONE"]')
+    assert v.sign_off(ref) == "promoted"
+    text = note.read_text()
+    assert "tailored_cv: CV_ab12.pdf (2026-07-24)" in text
+    assert "pending_cv:" not in text and "needs_signoff:" not in text
+    assert "status: shortlist" in text and "BODY TEXT" in text  # body + other keys intact
+
+
+def test_sign_off_discard_clears_markers_without_promoting():
+    v, ref, note = _lead_note(
+        'status: shortlist\npending_cv: CV_ab12.pdf (2026-07-24)\nneeds_signoff: ["x"]')
+    assert v.sign_off(ref, accept=False) == "discarded"
+    text = note.read_text()
+    assert "pending_cv:" not in text and "needs_signoff:" not in text
+    assert "tailored_cv:" not in text  # discard never promotes
+
+
+def test_sign_off_collision_leaves_existing_tailored_cv_unchanged():
+    # A real CV appeared since the flagged compose (a direct `sluice cv --lead X` after
+    # discard+recompose). Accept must NOT clobber it: clear the stale markers, report
+    # collision, mirror set_tailored_cv(only_if_absent=...). Asserting the VALUE (not
+    # merely that markers cleared) is what catches a naive promote (arch-004 / W3).
+    v, ref, note = _lead_note(
+        'status: shortlist\ntailored_cv: CV_REAL.pdf (2026-07-24)\n'
+        'pending_cv: CV_STALE.pdf (2026-07-24)\nneeds_signoff: ["x"]')
+    assert v.sign_off(ref) == "collision"
+    text = note.read_text()
+    assert "tailored_cv: CV_REAL.pdf (2026-07-24)" in text  # UNCHANGED
+    assert "CV_STALE" not in text                            # stale pending not promoted
+    assert "pending_cv:" not in text and "needs_signoff:" not in text
+
+
+def test_sign_off_nothing_when_no_pending_is_a_noop():
+    v, ref, note = _lead_note('status: shortlist\ncompany: "Acme"')
+    before = note.read_text()
+    assert v.sign_off(ref) == "nothing"
+    assert note.read_text() == before  # no write at all
+
+
+def test_needs_signoff_json_scalar_survives_quote_and_colon():
+    # needs_signoff is a single-line JSON scalar so a claim carrying a quote or colon
+    # cannot corrupt the flat frontmatter. Round-trips update_fields -> _fm_dict -> json.
+    claim = 'unsupported\tMotivated by "impact": scale\tNONE'
+    v, ref, note = _lead_note('status: shortlist\ncompany: "Acme"')
+    v.update_fields(ref, {"needs_signoff": json.dumps([claim])})
+    inner, _ = _split_frontmatter(note.read_text())
+    assert json.loads(_fm_dict(inner)["needs_signoff"]) == [claim]
+    assert "status: shortlist" in note.read_text()  # other keys + body untouched

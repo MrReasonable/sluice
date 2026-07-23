@@ -92,6 +92,16 @@ class Store(Protocol):
         VaultConflict on sustained concurrent edit (#16)."""
         ...
 
+    def sign_off(self, ref, *, accept: bool = True) -> str:
+        """Resolve a #60 profile-audit hold, reporting the OUTCOME on FRESH content:
+        'promoted' (accept, no existing pointer -> pending_cv becomes tailored_cv,
+        markers cleared), 'discarded' (accept=False -> markers cleared, no pointer),
+        'collision' (accept but a tailored_cv already exists -> that pointer is left
+        intact, stale markers cleared), or 'nothing' (no pending_cv -> no write). The
+        outcome is the store's own verdict, like upsert's, so a caller never
+        reconstructs it from a stale snapshot. MAY raise VaultConflict (#16)."""
+        ...
+
     def read_experience_entries(self, verified_only: bool = True) -> list: ...
 
     def read_baseline(self) -> str:

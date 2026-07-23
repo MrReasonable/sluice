@@ -360,6 +360,41 @@ class Vault:
             return f"---\n{inner}\n---\n{body}"
         return _cas_write(ref, transform)
 
+    def sign_off(self, ref, *, accept: bool = True) -> str:
+        """Resolve a #60 needs-signoff hold and report the OUTCOME derived from FRESH
+        content: 'promoted' | 'discarded' | 'collision' | 'nothing' (the way upsert
+        returns a verdict, so the caller never reconstructs it from a stale snapshot).
+        With pending_cv present: clear pending_cv + needs_signoff, then -- accept=False
+        -> 'discarded'; accept and tailored_cv ABSENT -> set tailored_cv = pending_cv,
+        'promoted'; accept but tailored_cv already PRESENT -> leave it (a real CV
+        appeared since -- a direct set_tailored_cv), 'collision'. No pending_cv ->
+        unchanged, 'nothing'. The tailored_cv check lives inside the transform (atomic
+        under CAS, mirroring set_tailored_cv(only_if_absent=...)), so the pointer is
+        never clobbered. The returned string is DISTINCT from _cas_write's
+        write-happened bool: the collision case WRITES (clears markers) yet is not
+        'promoted'. May raise VaultConflict (#16)."""
+        outcome = ["nothing"]  # reset per transform run so a CAS retry reports the final branch
+        def transform(text: str) -> str:
+            outcome[0] = "nothing"
+            inner, body = _split_frontmatter(text)
+            if inner is None:
+                return text
+            pending = _fm_value(inner, "pending_cv")
+            if not pending:
+                return text  # nothing to resolve -> _cas_write no-op
+            inner = _del_fm(inner, "pending_cv")
+            inner = _del_fm(inner, "needs_signoff")
+            if not accept:
+                outcome[0] = "discarded"
+            elif _fm_value(inner, "tailored_cv"):
+                outcome[0] = "collision"  # a real CV won the race; stale markers cleared, pointer kept
+            else:
+                inner = _set_fm(inner, "tailored_cv", pending)
+                outcome[0] = "promoted"
+            return f"---\n{inner}\n---\n{body}"
+        _cas_write(ref, transform)
+        return outcome[0]
+
     def normalize_all_statuses(self, dry_run: bool = False) -> dict:
         """Canonicalize every lead note's status: fix value drift (dismissed ->
         dismiss) and quoting ("new" -> new), and collapse the DUPLICATE status
@@ -704,6 +739,15 @@ def _set_fm(inner: str, key: str, literal: str) -> str:
     if re.search(pat, inner):
         return re.sub(pat, f"{key}: {literal}", inner, count=1)
     return f"{inner}\n{key}: {literal}" if inner else f"{key}: {literal}"
+
+
+def _del_fm(inner: str, key: str) -> str:
+    """Remove `key`'s line(s) from a frontmatter block; return `inner` unchanged if
+    absent. The counterpart to _set_fm, which only replaces/appends -- sign_off (#60)
+    needs a true delete to clear a resolved marker. Line-based (like
+    _collapse_status_lines) so it leaves no stray blank line and cannot disturb the body."""
+    pat = re.compile(rf"^\s*{re.escape(key)}\s*:")
+    return "\n".join(ln for ln in inner.split("\n") if not pat.match(ln))
 
 
 def _collapse_status_lines(inner: str, canonical: str) -> str:
