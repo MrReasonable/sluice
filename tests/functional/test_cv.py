@@ -51,3 +51,77 @@ def test_cv_run_no_matching_lead_returns_1(cli):
     rc, _out, err = run(["cv", "run", "--lead", "no-such-lead"])
     assert rc == 1
     assert "no shortlist lead matching" in err
+
+
+# --- #60 `sluice cv signoff` -------------------------------------------------
+
+def _seed_pending_lead(vault_dir, company, role, *, pending="CV_ab12.pdf (2026-07-24)"):
+    leads = os.path.join(vault_dir, "Job Applications", "Job Leads")
+    os.makedirs(leads, exist_ok=True)
+    fm = [f'company: "{company}"', f'role: "{role}"', "status: shortlist",
+          'url: "https://example.invalid/jobs/1"',
+          f"pending_cv: {pending}",
+          'needs_signoff: ["unsupported\\tMotivated by placeholder\\tNONE"]']
+    with open(os.path.join(leads, f"{company} - {role}.md"), "w", encoding="utf-8") as f:
+        f.write("---\n" + "\n".join(fm) + "\n---\n# body\n")
+
+
+def _lead_text(vault_dir, company, role):
+    with open(os.path.join(vault_dir, "Job Applications", "Job Leads",
+                           f"{company} - {role}.md"), encoding="utf-8") as f:
+        return f.read()
+
+
+def test_cv_signoff_parses_lead_discard_yes():
+    args = _build_parser().parse_args(
+        ["cv", "signoff", "--lead", "acme-em", "--discard", "--yes"])
+    assert args.group == "cv" and args.cmd == "signoff"
+    assert args.lead == "acme-em" and args.discard and args.yes
+
+
+def test_cv_signoff_promotes_with_yes(cli):
+    # signoff needs no backend: it resolves the lead and calls store.sign_off. --yes
+    # skips the interactive confirm.
+    h, run = cli(backend=ScriptedBackend())
+    _seed_pending_lead(h.paths["vault"], "Example Foundry", "Staff Engineer")
+    rc, _out, err = run(["cv", "signoff", "--lead", "example-foundry", "--yes"])
+    assert rc == 0 and "promoted" in err
+    text = _lead_text(h.paths["vault"], "Example Foundry", "Staff Engineer")
+    assert "tailored_cv: CV_ab12.pdf (2026-07-24)" in text   # promoted -> apply can see it
+    assert "pending_cv:" not in text and "needs_signoff:" not in text
+
+
+def test_cv_signoff_discard_clears_without_promoting(cli):
+    h, run = cli(backend=ScriptedBackend())
+    _seed_pending_lead(h.paths["vault"], "Example Foundry", "Staff Engineer")
+    rc, _out, err = run(["cv", "signoff", "--lead", "example-foundry", "--discard"])
+    assert rc == 0 and "discarded" in err
+    text = _lead_text(h.paths["vault"], "Example Foundry", "Staff Engineer")
+    assert "tailored_cv:" not in text                        # discard never promotes
+    assert "pending_cv:" not in text and "needs_signoff:" not in text
+
+
+def test_cv_signoff_nothing_pending(cli):
+    h, run = cli(backend=ScriptedBackend())
+    _seed_shortlist_lead(h.paths["vault"], "Example Foundry", "Staff Engineer")  # no pending_cv
+    rc, _out, err = run(["cv", "signoff", "--lead", "example-foundry", "--yes"])
+    assert rc == 0 and "nothing" in err.lower()
+    assert "tailored_cv:" not in _lead_text(h.paths["vault"], "Example Foundry", "Staff Engineer")
+
+
+def test_cv_signoff_no_match_returns_1(cli):
+    h, run = cli(backend=ScriptedBackend())
+    rc, _out, err = run(["cv", "signoff", "--lead", "no-such-lead", "--yes"])
+    assert rc == 1 and "no shortlist lead matching" in err
+
+
+def test_cv_signoff_prompt_aborts_on_no(cli, monkeypatch):
+    # Without --yes an accept must review + confirm; a "no" leaves the hold intact.
+    monkeypatch.setattr("builtins.input", lambda *a, **k: "n")
+    h, run = cli(backend=ScriptedBackend())
+    _seed_pending_lead(h.paths["vault"], "Example Foundry", "Staff Engineer")
+    rc, _out, err = run(["cv", "signoff", "--lead", "example-foundry"])
+    assert rc == 0 and "abort" in err.lower()
+    text = _lead_text(h.paths["vault"], "Example Foundry", "Staff Engineer")
+    assert "pending_cv:" in text and "tailored_cv:" not in text   # unchanged
+    assert "Motivated by placeholder" in err   # the flagged claim was shown for review

@@ -377,6 +377,48 @@ class Sluice:
             _log.warning("cv re-tailor for %s lost the write race: %s", notes[0].ref, e)
             return [CvResult(notes[0].ref, "error")]
 
+    def peek_signoff(self, *, lead):
+        """Read-only: resolve a shortlisted lead by slug and report its #60 sign-off hold
+        as (slug, pending_cv, claims), or None if no lead matched. `pending_cv` is "" when
+        the lead is not held. Lets the CLI show the flagged claims for review before an
+        accept, without touching the store."""
+        import json
+
+        from sluice.core.leads import slug_matches
+        notes = [n for n in self.store().read_leads({"shortlist"}) if slug_matches(n, lead)]
+        if not notes:
+            return None
+        note = notes[0]
+        raw = note.fm.get("needs_signoff")
+        claims = []
+        if raw:
+            try:
+                claims = json.loads(raw)
+            except (ValueError, TypeError):
+                claims = [str(raw)]
+        return note.slug, note.fm.get("pending_cv") or "", claims
+
+    def sign_off_cv(self, *, lead, accept=True):
+        """Resolve a shortlisted lead by slug and resolve its #60 sign-off hold via the
+        store: accept -> promote pending_cv to the send-ready `tailored_cv` pointer;
+        `accept=False` (discard) -> clear the markers, freeing a fresh compose. Returns
+        (slug, outcome) where outcome is the store's OWN verdict
+        (promoted|discarded|collision|nothing) -- never reconstructed from a stale snapshot
+        -- or None if no lead matched, or (slug, 'conflict') on a sustained write race (#16),
+        never an unhandled traceback."""
+        from sluice.core.leads import slug_matches
+        from sluice.core.protocols import VaultConflict
+        store = self.store()
+        notes = [n for n in store.read_leads({"shortlist"}) if slug_matches(n, lead)]
+        if not notes:
+            return None
+        note = notes[0]
+        try:
+            return note.slug, store.sign_off(note.ref, accept=accept)
+        except VaultConflict as e:
+            _log.warning("cv signoff for %s lost the write race: %s", note.ref, e)
+            return note.slug, "conflict"
+
     def prep(self, *, lead=None, all_shortlist=False, limit=None, dry_run=False):
         """Run the apply sub-app's prep step: stage the tailored CV and build an
         application packet for one shortlisted lead, or preview the whole ready
