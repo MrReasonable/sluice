@@ -249,33 +249,35 @@ class Vault:
     def update_fields(self, ref, fields: dict, *,
                       append_note: str | None = None,
                       note_tag: str | None = None) -> None:
-        """Surgically set frontmatter keys (values are literal YAML scalars) and
-        leave the body byte-for-byte intact. Optionally append a guarded note to
-        relevance_notes: skipped if note_tag is already present, so re-runs are
-        idempotent. Callers control quoting (matching _render_new's literal lines)."""
-        inner, body = _split_frontmatter(_read(ref))
-        if inner is None:
-            inner, body = "", _read(ref)
-        for key, literal in fields.items():
-            inner = _set_fm(inner, key, literal)
-        if append_note and note_tag:
-            current = _fm_value(inner, "relevance_notes")
-            if note_tag not in current:
-                merged = (current + " " + append_note).strip()
-                inner = _set_fm(inner, "relevance_notes", f'"{merged}"')
-        _write(ref, f"---\n{inner}\n---\n{body}")
+        """Surgically set frontmatter keys (literal YAML scalars), body byte-for-byte
+        intact. Optionally append a guarded note to relevance_notes (skipped if note_tag
+        is present, so re-runs are idempotent). Routed through _cas_write: the edit is
+        re-derived from the CURRENT note on each attempt, so a concurrent writer's other
+        keys and body survive. May raise VaultConflict on sustained conflict (#16)."""
+        def transform(text: str) -> str:
+            inner, body = _split_frontmatter(text)
+            if inner is None:
+                inner, body = "", text
+            for key, literal in fields.items():
+                inner = _set_fm(inner, key, literal)
+            if append_note and note_tag:
+                current = _fm_value(inner, "relevance_notes")
+                if note_tag not in current:
+                    merged = (current + " " + append_note).strip()
+                    inner = _set_fm(inner, "relevance_notes", f'"{merged}"')
+            return f"---\n{inner}\n---\n{body}"
+        _cas_write(ref, transform)
 
     def append_body_section(self, ref, tag: str, section_md: str) -> bool:
-        """Append a markdown section to the note body, idempotently: if `tag` is
-        already anywhere in the file, do nothing and return False. Body/frontmatter
-        otherwise untouched. Callers embed `tag` in `section_md` (e.g. an HTML
-        comment) so re-runs are detected."""
-        text = _read(ref)
-        if tag in text:
-            return False
-        sep = "" if text.endswith("\n") else "\n"
-        _write(ref, f"{text}{sep}\n{section_md}\n")
-        return True
+        """Append a markdown section to the body, idempotently: if `tag` is anywhere in
+        the FRESH file, do nothing and return False. Routed through _cas_write, so the
+        tag re-check runs against current content. May raise VaultConflict (#16)."""
+        def transform(text: str) -> str:
+            if tag in text:
+                return text
+            sep = "" if text.endswith("\n") else "\n"
+            return f"{text}{sep}\n{section_md}\n"
+        return _cas_write(ref, transform)
 
     # ── cv sub-app reads/writes ──────────────────────────────────────────────
     def read_experience_entries(self, verified_only: bool = True) -> list[dict]:
@@ -333,7 +335,7 @@ class Vault:
         if os.path.isabs(rel) or os.path.commonpath([root, path]) != root:
             raise ValueError(f"write_document: '{rel}' escapes the store root")
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        _write(path, text)
+        _atomic_write(path, text)
         return path
 
     def read_baseline(self) -> str:
@@ -341,9 +343,22 @@ class Vault:
         store), not a path a caller passes in."""
         return _read(os.path.join(self.dir, self.baseline_rel))
 
-    def set_tailored_cv(self, ref, value: str) -> None:
-        """Additive: set the tailored_cv frontmatter field, body byte-for-byte intact."""
-        self.update_fields(ref, {"tailored_cv": value})
+    def set_tailored_cv(self, ref, value: str, *, only_if_absent: bool = False) -> bool:
+        """Set the tailored_cv frontmatter field, body byte-for-byte intact. When
+        `only_if_absent`, do NOT overwrite a tailored_cv that is already present in the
+        FRESH content (return False) -- the batch cv path uses this to avoid clobbering a
+        CV produced during its compose+render window; the check lives in the transform so
+        it is atomic under CAS. Returns whether a write happened. May raise VaultConflict
+        (#16, #16 cv long-window)."""
+        def transform(text: str) -> str:
+            inner, body = _split_frontmatter(text)
+            if inner is None:
+                inner, body = "", text
+            if only_if_absent and _fm_value(inner, "tailored_cv"):
+                return text
+            inner = _set_fm(inner, "tailored_cv", value)
+            return f"---\n{inner}\n---\n{body}"
+        return _cas_write(ref, transform)
 
     def normalize_all_statuses(self, dry_run: bool = False) -> dict:
         """Canonicalize every lead note's status: fix value drift (dismissed ->
@@ -446,28 +461,25 @@ class Vault:
         return "refused"
 
     def _bump_last_seen(self, path: str, last_seen: str) -> None:
-        """Set the last_seen line inside existing frontmatter, preserving every
-        other key, its value formatting, and the whole body verbatim.
-
-        last_seen is MONOTONIC: an incoming stamp OLDER-OR-EQUAL to the stored one is
-        ignored, never written back. The note WAS seen on the newer date; a board that
-        re-lists a role carrying a stale date must not drag the marker into the past.
-        A MISSING last_seen (first sighting, or a legacy note without one) always writes.
-        ISO YYYY-MM-DD sorts lexicographically = chronologically, so a plain string
-        compare IS the date compare. The upsert outcome ("updated"/"merged") is decided
-        by _resolve_path and is unaffected by whether the stamp actually moved."""
-        inner, body = _split_frontmatter(_read(path))
-        if inner is None:  # note without frontmatter - leave body, add a header
-            inner, body = f"last_seen: {last_seen}", _read(path)
-        else:
+        """Set the last_seen line inside existing frontmatter, preserving every other key
+        and the whole body verbatim. last_seen is MONOTONIC: an incoming stamp older-or-
+        equal to the stored one is ignored. Routed through _cas_write, so the monotonic
+        decision is re-derived from the FRESH last_seen each attempt -- a concurrent newer
+        bump is respected, never regressed (#16). May raise VaultConflict; upsert absorbs
+        it (Task 4)."""
+        def transform(text: str) -> str:
+            inner, body = _split_frontmatter(text)
+            if inner is None:
+                return f"---\nlast_seen: {last_seen}\n---\n{text}"
             m = re.search(r"(?m)^\s*last_seen\s*:\s*(.*)$", inner)
             if m:
                 if last_seen <= m.group(1).strip().strip('"').strip("'"):
-                    return  # older-or-equal: never regress, write nothing
+                    return text  # older-or-equal: never regress, write nothing
                 inner = re.sub(r"(?m)^\s*last_seen\s*:.*$", f"last_seen: {last_seen}", inner)
             else:
                 inner = f"{inner}\nlast_seen: {last_seen}"
-        _write(path, f"---\n{inner}\n---\n{body}")
+            return f"---\n{inner}\n---\n{body}"
+        _cas_write(path, transform)
 
     def _render_new(self, lead: Lead) -> str:
         first = lead.first_seen or _today()
