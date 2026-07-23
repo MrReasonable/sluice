@@ -457,13 +457,27 @@ class Vault:
             os.makedirs(self.leads_dir, exist_ok=True)
             self.ensure_stfolder()
             if action == "update":
-                self._bump_last_seen(path, lead.last_seen or _today())
+                try:
+                    self._bump_last_seen(path, lead.last_seen or _today())
+                except VaultConflict:
+                    # #16: the last_seen bump lost the race repeatedly. Absorb into the
+                    # store's existing concurrency-loss vocabulary (like the FileExistsError
+                    # create-race above) so no exception crosses the ingest sink; the lead
+                    # stays out of seen.db and is retried next run.
+                    _log.warning("vault refused lead %r: last_seen bump raced repeatedly",
+                                 lead.dedup_key)
+                    return "refused"
                 return "updated"
             if action == "merge":
                 # We could not prove same-or-different, so we do NOT split (that would mint a
                 # note per scrape -- unbounded). Bump last_seen like an update; the difference
                 # is only that the count is reported separately so the merge is visible.
-                self._bump_last_seen(path, lead.last_seen or _today())
+                try:
+                    self._bump_last_seen(path, lead.last_seen or _today())
+                except VaultConflict:
+                    _log.warning("vault refused lead %r: last_seen bump raced repeatedly",
+                                 lead.dedup_key)
+                    return "refused"
                 return "merged"
             try:
                 _write(path, self._render_new(lead), exclusive=True)

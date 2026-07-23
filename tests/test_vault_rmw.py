@@ -191,3 +191,57 @@ def test_normalize_abstains_when_a_race_introduces_a_conflict(tmp_path, monkeypa
     # (the original stays quoted -- abstain must not canonicalise even the line it agrees
     # with, or a partial rewrite would silently narrow "disagreement" to "trust line 1").
     assert 'status: "new"' in txt and "status: dismiss" in txt
+
+
+def test_upsert_absorbs_a_bump_conflict_into_refused(tmp_path, monkeypatch):
+    # #16 Task 4: upsert's update branch must not let a sustained _bump_last_seen race
+    # (VaultConflict) escape as a raw exception -- it absorbs into the store's existing
+    # concurrency-loss vocabulary ("refused"), same as the create-race exhaustion above.
+    from sluice.core.leads import Lead
+    f = _seed_note(tmp_path, extra="last_seen: 2026-07-10\nurl: \"https://example.invalid/1\"\n")
+    v = Vault(str(tmp_path))
+    lead = Lead(source="b", search="s", title="Analyst", company="Acme",
+                location="", salary="", url="https://example.invalid/1",
+                last_seen="2026-07-20")
+    counter = {"n": 0}
+    def churn():
+        # Anchored on the "last_seen: " key prefix (not a bare value split) so the
+        # replace cannot be fooled by the date coincidentally appearing elsewhere.
+        counter["n"] += 1
+        cur = f.read_text(encoding="utf-8")
+        prev = cur.split("last_seen: ")[1].split("\n")[0]
+        f.write_text(cur.replace(f"last_seen: {prev}", f"last_seen: 2026-08-{counter['n']:02d}"),
+                     encoding="utf-8")
+    racing_read(monkeypatch, str(f), churn, once=False)
+    assert v.upsert(lead) == "refused"   # not an uncaught VaultConflict
+
+
+def test_ingest_sink_survives_a_bump_conflict_and_keeps_the_lead_unrecorded(tmp_path, monkeypatch):
+    # Integration: the raced conflict must not escape through VaultSink.write either --
+    # the sink catches only OSError, so an uncaught VaultConflict would abort the whole
+    # ingest batch. The lead must be counted refused and stay OUT of seen.db so it is
+    # retried (and re-reported) next run rather than silently lost.
+    from sluice.core.leads import Lead
+    from sluice.ingest.sink import VaultSink
+
+    class _SeenSpy:
+        def __init__(self): self.saved = []
+        def save(self, leads): self.saved.extend(leads)
+
+    f = _seed_note(tmp_path, extra="last_seen: 2026-07-10\nurl: \"https://example.invalid/1\"\n")
+    v = Vault(str(tmp_path))
+    seen = _SeenSpy()
+    sink = VaultSink(v, seen, today=lambda: "2026-07-20")
+    conflicting = Lead(source="b", search="s", title="Analyst", company="Acme",
+                       location="", salary="", url="https://example.invalid/1")
+    counter = {"n": 0}
+    def churn():
+        counter["n"] += 1
+        cur = f.read_text(encoding="utf-8")
+        prev = cur.split("last_seen: ")[1].split("\n")[0]
+        f.write_text(cur.replace(f"last_seen: {prev}", f"last_seen: 2026-08-{counter['n']:02d}"),
+                     encoding="utf-8")
+    racing_read(monkeypatch, str(f), churn, once=False)
+    counts = sink.write([conflicting])
+    assert counts.get("refused") == 1        # counted, batch did not abort
+    assert conflicting not in seen.saved     # stays out of seen.db -> retried next run
