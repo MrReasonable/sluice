@@ -389,16 +389,25 @@ def test_a_sustained_write_conflict_refuses_rather_than_clobbers(store_name, tmp
         pytest.skip("conflict simulation is filesystem-store specific")
     real = vaultmod._read
     n = {"i": 0}
+    last = {"raw": None}
     def churn(path):
         text = real(path)
         if str(path) == str(ref):
             n["i"] += 1
-            vaultmod._write(path, text + f"\nrace: {n['i']}")
+            new = text + f"\nrace: {n['i']}"
+            vaultmod._write(path, new)
+            last["raw"] = new
         return text
     monkeypatch.setattr(vaultmod, "_read", churn)
     with pytest.raises(VaultConflict):
         store.update_fields(ref, {"status": "shortlist"})
     monkeypatch.setattr(vaultmod, "_read", real)
+    # RAW bytes first: `churn` appends `\nrace: {n}` on every interposed read, so the parsed
+    # frontmatter comparisons below (`after == before`) hold even though the raw file keeps
+    # growing -- a body clobber by the refused write would be invisible to them. Prove
+    # instead that the file on disk is EXACTLY the racer's last write: nothing from the
+    # refused `update_fields` landed on top of it.
+    assert real(ref) == last["raw"], "a refused write clobbered the racer's last content"
     after = store.read_leads()[0].fm
     assert after == before, \
         f"a refused write touched a field other than none: {sorted(k for k in set(after) | set(before) if after.get(k) != before.get(k))}"

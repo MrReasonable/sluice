@@ -121,7 +121,10 @@ class Store(Protocol):
         left untouched and reported under `conflicts`, never auto-resolved. Unlike the
         other writers here, a sustained VaultConflict on one note is ABSORBED rather than
         raised -- that note is reported under `summary["skipped"]` instead -- so one
-        conflicting note never aborts the sweep over the rest (#16)."""
+        conflicting note never aborts the sweep over the rest (#16). `conflicts` reports
+        disagreements observed during the up-front scan; a disagreement introduced
+        concurrently AFTER the scan instead makes the CAS transform abstain (a no-op),
+        which is counted `unchanged`, not added to `conflicts`."""
         ...
 
 
