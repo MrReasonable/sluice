@@ -14,6 +14,19 @@ from dataclasses import dataclass
 from typing import Protocol
 
 
+class VaultConflict(RuntimeError):
+    """A modify-write refused because the stored note changed since it was read.
+
+    The store re-derived its surgical edit from the moved content up to a bounded number
+    of times; sustained flapping means it wrote nothing. This is never-clobber under
+    filesystem concurrency (a human editing in Obsidian, Syncthing, or a second sluice
+    process). Callers treat it as non-fatal: the lead is left in its prior state and
+    re-attempted next run. `upsert` absorbs its own occurrence into the `refused` outcome
+    rather than raising. The CAS *mechanism* is vault-specific, but this *outcome* is a
+    store-agnostic contract property, the same altitude as last_seen-monotonicity. See #16.
+    """
+
+
 @dataclass
 class LeadNote:
     """One lead read back from the store.

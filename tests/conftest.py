@@ -60,3 +60,23 @@ LOCATIONS = ("Alfa", "Bravo", "Charlie")
 def locations():
     """Three synthetic, token-disjoint placeholder locations (the LOCATIONS constant)."""
     return list(LOCATIONS)
+
+
+def racing_read(monkeypatch, target_path, on_race, *, once=True):
+    """Interpose sluice.core.vault._read to simulate a concurrent writer landing in the
+    capture->commit window (#16), without threads. `on_race()` performs one out-of-band
+    edit to the file. It fires after the FIRST read of target_path (once=True) or on
+    EVERY read (once=False, for exhaustion -- on_race must then change the content each
+    call). The read returns the PRE-edit bytes, so it is robust to a mutant that deletes
+    _cas_write's second (compare) read. Returns the fired-state dict."""
+    import sluice.core.vault as vaultmod
+    real_read = vaultmod._read
+    state = {"fired": False}
+    def racer(path):
+        text = real_read(path)
+        if str(path) == str(target_path) and (not once or not state["fired"]):
+            state["fired"] = True
+            on_race()
+        return text
+    monkeypatch.setattr(vaultmod, "_read", racer)
+    return state

@@ -16,12 +16,14 @@ The engine's Lead model is source-agnostic (title, job_type); the vault schema's
 import hashlib
 import os
 import re
+import stat
+import tempfile
 from datetime import date
 
 from sluice.core import status as _status
 from sluice.core.leads import SAME, UNKNOWN, Lead, _norm_url, same_opportunity
 from sluice.core.log import get_logger
-from sluice.core.protocols import LeadNote
+from sluice.core.protocols import LeadNote, VaultConflict
 
 _LEADS_SUBDIR = os.path.join("Job Applications", "Job Leads")
 _EXP_SUBDIR = os.path.join("Job Applications", "Experience Library")
@@ -33,6 +35,7 @@ _SEP = " - "        # note-name separator; identity-determining, stays a literal
 _SUFFIX_MAX = 40    # max chars of the location suffix on candidate 2; identity-determining literal
 _CHAR_CAP = 120     # max chars of a note stem before the byte-clamp; identity-determining literal
 _CREATE_RACE_RETRIES = 3  # #16: bounded re-reconciles when a create loses the TOCTOU race
+_RMW_RACE_RETRIES = 3  # #16: bounded re-derivations before a modify-write refuses loudly
 
 _log = get_logger("core.vault")
 
@@ -527,6 +530,58 @@ def _write(path: str, text: str, *, exclusive: bool = False) -> None:
                 # swallow: a lingering partial note is a landmine a re-scrape would adopt as real.
                 _log.warning("could not remove partial note %s: %s", path, e)
         raise
+
+
+def _atomic_write(path: str, text: str) -> None:
+    """Replace `path`'s contents atomically: write a temp sibling, then os.replace.
+
+    os.replace is atomic (rename(2)) on POSIX and Windows, so a concurrent reader/writer
+    always sees a whole file, never a torn one -- the write half of #16's modify-path
+    safety. The temp is a SAME-DIRECTORY sibling so os.replace stays on one filesystem (a
+    cross-device rename raises OSError). A fresh temp carries umask-default mode, so when
+    the target already exists its mode is copied onto the temp before the replace --
+    otherwise a modify-write would silently change the note's permissions. On any failure
+    the temp is removed before re-raising."""
+    d = os.path.dirname(path) or "."
+    try:
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+    except FileNotFoundError:
+        mode = None
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".sluice-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        if mode is not None:
+            os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _cas_write(path: str, transform, *, retries: int = _RMW_RACE_RETRIES) -> bool:
+    """Apply a surgical edit under compare-and-set. `transform(current_text) -> new_text`
+    is re-derived from the CURRENT bytes each iteration. Commit (atomic replace) only if
+    the file is byte-unchanged since capture; otherwise re-derive from the fresh content
+    and retry. Returns True if a change was committed, False if the transform was a no-op
+    (new == text -- an older-or-equal last_seen, an already-present tag, an only_if_absent
+    field already set). Raises VaultConflict after `retries` lost races. This is the
+    modify-path twin of upsert's create-race loop (#16). The second _read is NOT redundant
+    with the first: an external process can write during `transform`, and re-deriving from
+    the fresh bytes each iteration is what makes the new==text no-op correct rather than a
+    silently dropped edit."""
+    for _ in range(retries):
+        text = _read(path)
+        new = transform(text)
+        if new == text:
+            return False
+        if _read(path) == text:
+            _atomic_write(path, new)
+            return True
+    raise VaultConflict(path)
 
 
 def _split_frontmatter(text: str) -> tuple[str | None, str]:
