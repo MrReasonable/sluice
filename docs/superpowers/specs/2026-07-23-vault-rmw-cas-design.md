@@ -116,12 +116,12 @@ def _cas_write(path: str, transform, *, retries: int = _RMW_RACE_RETRIES) -> boo
     for _ in range(retries):
         text = _read(path)                     # capture
         new = transform(text)                  # derive the edit from CURRENT bytes
+        if _read(path) != text:                # changed under us since capture?
+            continue                           # re-derive from the fresh content next iteration
         if new == text:
-            return False                       # idempotent no-op — write nothing
-        if _read(path) == text:                # still unchanged since capture?
-            _atomic_write(path, new)
-            return True
-        # changed under us — loop, re-derive from the fresh content
+            return False                       # genuine no-op against the CURRENT content
+        _atomic_write(path, new)
+        return True
     raise VaultConflict(path)
 ```
 
