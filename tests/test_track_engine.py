@@ -1,5 +1,6 @@
 import json, tempfile, pathlib, sqlite3
 import pytest
+from sluice.core.protocols import VaultConflict
 from sluice.core.vault import Vault
 from sluice.track.config import TrackConfig
 from sluice.track import engine as E
@@ -287,6 +288,23 @@ def test_confirm_refused_advance_does_not_clear():
     out = E.confirm(v, TrackConfig(), "Tidemark - Analyst", "phone_screen", deadletter=dl)  # backward
     assert out["ok"] is False
     assert len(dl.open_entries()) == 1             # a refused confirm must NOT delete the row
+
+
+def test_confirm_returns_conflict_on_vault_conflict(monkeypatch):
+    # #16 Task 6: a sustained write-race in update_fields must not escape confirm()
+    # as an unhandled traceback -- it becomes a first-class refused outcome. CRITICAL:
+    # clear_lead must not run on a conflicted write (that would be #49's silent loss
+    # on the clear path), so also assert the dead-letter row survives untouched.
+    v, _ = _vault("interview")
+    dl = _dl(); _seed(dl)
+
+    def boom(*a, **k):
+        raise VaultConflict("x")
+    monkeypatch.setattr(v, "update_fields", boom)
+
+    out = E.confirm(v, TrackConfig(), "Tidemark - Analyst", "offer", deadletter=dl)
+    assert out == {"ok": False, "reason": "conflict"}
+    assert len(dl.open_entries()) == 1             # NOT cleared on a conflicted write
 
 
 def test_confirm_lead_does_not_clear_ambiguous_candidates_entry():
