@@ -479,7 +479,7 @@ is **not** in scope here.
 
 ## §12 — Definition of done
 
-- `python -m pytest` green, with the count stated (761 + the new tests), fast/offline.
+- `python -m pytest` green, fast/offline (count-independent: a changing suite total does not invalidate a green run).
 - `ruff check sluice tests` clean.
 - All §7 mutation rows (1–10) run, each stated outcome observed, each restored byte-identical.
 - Every new test's witness isolated **by node id** (review tst-003): run the specific new test (e.g.
