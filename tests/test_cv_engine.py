@@ -18,7 +18,18 @@ class FakeVault:
     # read_baseline(rel=...) is what let a real TypeError ship green.
     def read_baseline(self): return "BASELINE"
     def read_leads(self, statuses=None): return self._notes
-    def set_tailored_cv(self, ref, value, *, only_if_absent=False): self.written[ref] = value
+    def set_tailored_cv(self, ref, value, *, only_if_absent=False):
+        # Mirrors the real Vault.set_tailored_cv (#16 cv long-window): only_if_absent
+        # checks the FRESH note in self._notes -- not the `note` object the caller
+        # (run_one) is holding, which may be a stale snapshot from before a concurrent
+        # writer's set_tailored_cv landed. Returns whether a write happened.
+        fresh = next((n for n in self._notes if n.ref == ref), None)
+        if only_if_absent and fresh is not None and fresh.fm.get("tailored_cv"):
+            return False
+        self.written[ref] = value
+        if fresh is not None:
+            fresh.fm["tailored_cv"] = value
+        return True
 
 class FakeCache:
     def get_or_build(self, fm): return {"jd": {"markdown": "we value delivery"}}
@@ -317,6 +328,52 @@ def test_batch_records_error_when_fallback_response_is_truncated():
     assert len(results) == 1
     assert results[0].status == "error"
     assert v.written == {}   # never marked tailored off a truncated partial
+
+
+def test_run_one_batch_guard_skips_when_cv_appeared_during_render(monkeypatch):
+    # Simulates the #16 cv long-window race: `note` is the snapshot run_one composed
+    # against (no tailored_cv at read time), but by the time the served write happens a
+    # concurrent writer has already set tailored_cv on the FRESH note. FakeVault tracks
+    # that fresh state in self._notes, separately from the `note` object passed in --
+    # exactly the gap between "what we read" and "what's there now" that only_if_absent
+    # closes atomically in the real vault.
+    import sluice.cv.render as _render_mod
+    monkeypatch.setattr(_render_mod, "render", lambda *a, **k: "/tmp/x/Jane Roe CV.pdf")
+    monkeypatch.setattr(_render_mod, "serve",
+                        lambda *a, **k: "Jane_Roe_CV_deadbeef.pdf")
+
+    note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
+    fresh = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst",
+                 "tailored_cv": "PREEXISTING.pdf (2026-07-10)"}, path=note.ref)
+    v = FakeVault(ENTRIES, notes=[fresh])
+    rend = FakeRenderer()
+    r = run_one(note, v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(), renderer=rend,
+                guard_existing_cv=True)
+    assert r.status == "skipped-has-cv"
+    # The render itself still happened -- the CV passed the gate and was rendered/served
+    # before the write race was discovered; only the note pointer write was withheld.
+    assert rend.rendered == [CLEAN_CV]
+    assert note.ref not in v.written
+    assert v.read_leads()[0].fm.get("tailored_cv") == "PREEXISTING.pdf (2026-07-10)"
+
+
+def test_run_one_direct_path_overwrites(monkeypatch):
+    # Same fresh-note setup as the guard test above, but run_one is called WITHOUT
+    # guard_existing_cv (default False) -- the direct single-lead cv path, which must
+    # keep its current unconditional-overwrite behaviour.
+    import sluice.cv.render as _render_mod
+    monkeypatch.setattr(_render_mod, "render", lambda *a, **k: "/tmp/x/Jane Roe CV.pdf")
+    monkeypatch.setattr(_render_mod, "serve",
+                        lambda *a, **k: "Jane_Roe_CV_deadbeef.pdf")
+
+    note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
+    fresh = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst",
+                 "tailored_cv": "PREEXISTING.pdf (2026-07-10)"}, path=note.ref)
+    v = FakeVault(ENTRIES, notes=[fresh])
+    r = run_one(note, v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(), renderer=FakeRenderer())
+    assert r.status == "rendered"
+    assert v.read_leads()[0].fm.get("tailored_cv") != "PREEXISTING.pdf (2026-07-10)"
+    assert "Jane_Roe_CV_deadbeef.pdf" in v.read_leads()[0].fm.get("tailored_cv")
 
 
 def test_the_fake_vault_conforms_to_the_real_store_signature():

@@ -41,7 +41,8 @@ def _jd_keywords(role: str, jd: str) -> list:
     return sorted({w for w in re.findall(r"[a-z]{4,}", f"{role} {jd or ''}".lower())})
 
 
-def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=False) -> CvResult:
+def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=False,
+           guard_existing_cv=False) -> CvResult:
     fm = note.fm
     # Process ONLY shortlist leads. This enforces the shortlist-only constraint and
     # inherently never touches (never clobbers) application-owned leads.
@@ -116,7 +117,15 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
     served = (_render.serve(pdf, cvcfg.served_dir, served_prefix=cvcfg.served_prefix)
               if cvcfg.served_dir else None)
     if served:
-        vault.set_tailored_cv(note.ref, f"{served} ({date.today().isoformat()})")
+        wrote = vault.set_tailored_cv(
+            note.ref, f"{served} ({date.today().isoformat()})",
+            only_if_absent=guard_existing_cv)
+        if guard_existing_cv and not wrote:
+            # A CV appeared for this lead during our compose+render window; do not clobber
+            # it. The served PDF we rendered is left in served_dir (it passed the gate);
+            # only the note pointer is withheld. See #16 cv long-window.
+            return CvResult(note.ref, "skipped-has-cv", audit_flags=audit_flags,
+                            backend=backend_used)
     return CvResult(note.ref, "rendered", audit_flags=audit_flags,
                     served=served, backend=backend_used)
 
@@ -132,7 +141,8 @@ def run_batch(vault, cvcfg, backend, dossier_cache, *, renderer, limit=None, dry
         # the rest of the batch -- mirrors the triage engine's per-lead resilience.
         try:
             results.append(run_one(note, vault, cvcfg, backend, dossier_cache,
-                                   renderer=renderer, dry_run=dry_run))
+                                   renderer=renderer, dry_run=dry_run,
+                                   guard_existing_cv=True))
         except Exception as e:
             _log.warning("cv run failed for %s: %s", note.ref, e)
             results.append(CvResult(note.ref, "error"))
