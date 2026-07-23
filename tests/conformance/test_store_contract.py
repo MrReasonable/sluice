@@ -371,7 +371,13 @@ def test_a_sustained_write_conflict_refuses_rather_than_clobbers(store_name, tmp
     """The conflict OUTCOME is a contract property (§2a of the #16 design): a modify-write
     that keeps losing the race must refuse loudly (raise VaultConflict for the field-writers,
     or return `refused` from upsert) and write nothing -- never a partial clobber. Skipped
-    for stores whose write is not read-modify-write (they cannot exhibit the race)."""
+    for stores whose write is not read-modify-write (they cannot exhibit the race).
+
+    Assert the WHOLE note, not a sample -- this file's own opening lesson, re-learned here:
+    the first version of this test asserted only `status`, which a store that refused the
+    status write but still clobbered some OTHER field (company, url, or the body) would pass
+    outright. The identifying keys and the attempted value get their own assertions too, so a
+    fix that merely makes `status` survive is not enough to satisfy this test."""
     from sluice.core.protocols import VaultConflict
     store = _make_store(store_name, tmp_path, monkeypatch)
     store.upsert(_lead())
@@ -394,4 +400,10 @@ def test_a_sustained_write_conflict_refuses_rather_than_clobbers(store_name, tmp
         store.update_fields(ref, {"status": "shortlist"})
     monkeypatch.setattr(vaultmod, "_read", real)
     after = store.read_leads()[0].fm
-    assert after.get("status") == before.get("status"), "a refused write still clobbered status"
+    assert after == before, \
+        f"a refused write touched a field other than none: {sorted(k for k in set(after) | set(before) if after.get(k) != before.get(k))}"
+    assert after.get("company") == before.get("company"), \
+        "a refused write lost the identifying company key"
+    assert after.get("url") == before.get("url"), "a refused write lost the identifying url key"
+    assert "shortlist" not in after.values(), \
+        "the attempted write left a trace even though it raised VaultConflict"
