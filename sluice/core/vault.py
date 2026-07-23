@@ -538,10 +538,10 @@ def _atomic_write(path: str, text: str) -> None:
     os.replace is atomic (rename(2)) on POSIX and Windows, so a concurrent reader/writer
     always sees a whole file, never a torn one -- the write half of #16's modify-path
     safety. The temp is a SAME-DIRECTORY sibling so os.replace stays on one filesystem (a
-    cross-device rename raises OSError). A fresh temp carries umask-default mode, so when
+    cross-device rename raises OSError). A fresh temp is created 0600 by mkstemp, so when
     the target already exists its mode is copied onto the temp before the replace --
-    otherwise a modify-write would silently change the note's permissions. On any failure
-    the temp is removed before re-raising."""
+    otherwise a modify-write would narrow the note's permissions. On any failure the temp
+    is removed before re-raising."""
     d = os.path.dirname(path) or "."
     try:
         mode = stat.S_IMODE(os.stat(path).st_mode)
@@ -570,17 +570,21 @@ def _cas_write(path: str, transform, *, retries: int = _RMW_RACE_RETRIES) -> boo
     (new == text -- an older-or-equal last_seen, an already-present tag, an only_if_absent
     field already set). Raises VaultConflict after `retries` lost races. This is the
     modify-path twin of upsert's create-race loop (#16). The second _read is NOT redundant
-    with the first: an external process can write during `transform`, and re-deriving from
-    the fresh bytes each iteration is what makes the new==text no-op correct rather than a
-    silently dropped edit."""
+    with the first: an external process can write during `transform`, and the freshness
+    check now guards BOTH outcomes -- the no-op AND the commit -- so a decision is never
+    made against the stale capture. Without it, a presence/absence transform (e.g.
+    append-if-tag-absent) that reads as a no-op against the STALE text (tag present at
+    capture) but is NOT a no-op against the LIVE text (a racer concurrently removed the
+    tag) would silently return False and drop the needed edit."""
     for _ in range(retries):
         text = _read(path)
         new = transform(text)
+        if _read(path) != text:
+            continue  # changed under us since capture -> re-derive from the fresh content
         if new == text:
-            return False
-        if _read(path) == text:
-            _atomic_write(path, new)
-            return True
+            return False  # genuine no-op on the CURRENT content
+        _atomic_write(path, new)
+        return True
     raise VaultConflict(path)
 
 
