@@ -78,3 +78,87 @@ def test_cas_write_does_not_return_a_stale_no_op(tmp_path, monkeypatch):
     body = p.read_text(encoding="utf-8")
     assert "TAG" in body      # re-derived onto the racer's content
     assert result is True      # a write happened, not a stale no-op
+
+
+from sluice.core.vault import Vault
+
+
+def _leads_dir(tmp_path):
+    return tmp_path / "Job Applications" / "Job Leads"
+
+
+def _seed_note(tmp_path, name="Acme - Analyst.md", extra=""):
+    d = _leads_dir(tmp_path)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).write_text(
+        f"---\ncompany: \"Acme\"\nrole: \"Analyst\"\nstatus: new\n{extra}---\n\n# body\n",
+        encoding="utf-8")
+    return d / name
+
+
+def test_update_fields_self_heals_a_concurrent_different_key(tmp_path, monkeypatch):
+    f = _seed_note(tmp_path)
+    v = Vault(str(tmp_path))
+    # Racer sets a DIFFERENT key (score) during our status write.
+    def racer():
+        f.write_text(f.read_text(encoding="utf-8").replace(
+            "status: new", "status: new\nscore: 9"), encoding="utf-8")
+    racing_read(monkeypatch, str(f), racer)
+    v.update_fields(str(f), {"status": "shortlist"})
+    txt = f.read_text(encoding="utf-8")
+    assert "status: shortlist" in txt   # ours, re-applied
+    assert "score: 9" in txt            # racer's, preserved
+    assert "# body" in txt              # body intact
+
+
+def test_append_body_section_self_heals(tmp_path, monkeypatch):
+    f = _seed_note(tmp_path)
+    v = Vault(str(tmp_path))
+    def racer():
+        f.write_text(f.read_text(encoding="utf-8").replace(
+            "status: new", "status: shortlist"), encoding="utf-8")
+    racing_read(monkeypatch, str(f), racer)
+    assert v.append_body_section(str(f), "<!--t-->", "<!--t-->\nsection") is True
+    txt = f.read_text(encoding="utf-8")
+    assert "status: shortlist" in txt   # racer's frontmatter edit preserved
+    assert "section" in txt             # our append landed
+
+
+def test_bump_last_seen_does_not_regress_under_a_concurrent_newer_bump(tmp_path, monkeypatch):
+    # THE concurrent guarantee (distinct from the sequential monotonic tests in test_vault.py):
+    # a newer bump landing mid-write must win, not be regressed by our re-derive.
+    f = _seed_note(tmp_path, extra="last_seen: 2026-07-10\n")
+    v = Vault(str(tmp_path))
+    def racer():
+        f.write_text(f.read_text(encoding="utf-8").replace(
+            "last_seen: 2026-07-10", "last_seen: 2026-07-15"), encoding="utf-8")
+    racing_read(monkeypatch, str(f), racer)
+    v._bump_last_seen(str(f), "2026-07-12")   # older than the racer's concurrent bump
+    assert "last_seen: 2026-07-15" in f.read_text(encoding="utf-8")
+
+
+def test_raced_frontmatter_edit_leaves_body_byte_identical(tmp_path, monkeypatch):
+    f = _seed_note(tmp_path)
+    original_body = "\n# body\n"
+    v = Vault(str(tmp_path))
+    def racer():
+        f.write_text(f.read_text(encoding="utf-8").replace(
+            "status: new", "status: new\nscore: 3"), encoding="utf-8")
+    racing_read(monkeypatch, str(f), racer)
+    v.update_fields(str(f), {"status": "research"})
+    assert f.read_text(encoding="utf-8").endswith(original_body)
+
+
+def test_set_tailored_cv_only_if_absent_skips_when_present(tmp_path):
+    f = _seed_note(tmp_path, extra="tailored_cv: EXISTING.pdf\n")
+    v = Vault(str(tmp_path))
+    assert v.set_tailored_cv(str(f), "NEW.pdf", only_if_absent=True) is False
+    assert "EXISTING.pdf" in f.read_text(encoding="utf-8")
+    assert "NEW.pdf" not in f.read_text(encoding="utf-8")
+
+
+def test_set_tailored_cv_overwrites_by_default(tmp_path):
+    f = _seed_note(tmp_path, extra="tailored_cv: EXISTING.pdf\n")
+    v = Vault(str(tmp_path))
+    assert v.set_tailored_cv(str(f), "NEW.pdf") is True
+    assert "NEW.pdf" in f.read_text(encoding="utf-8")
