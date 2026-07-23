@@ -11,6 +11,7 @@ from datetime import date
 
 from sluice.core import status as _status
 from sluice.core.log import get_logger
+from sluice.core.protocols import VaultConflict
 from sluice.triage.apply import apply_classification, apply_verdict
 from sluice.triage.audit import render_rejected_note
 from sluice.triage.classify import classify
@@ -53,8 +54,18 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
             report.counts["keep"] += 1
             keeps.append(note)
             continue
-        outcome = "skipped" if dry_run else apply_classification(
-            vault, note, decision, reason)
+        if dry_run:
+            outcome = "skipped"
+        else:
+            try:
+                outcome = apply_classification(vault, note, decision, reason)
+            except VaultConflict as e:
+                # #16: a concurrent edit won the write race; leave the lead as-is,
+                # retried next run. except VaultConflict (not broad Exception) so a
+                # real apply-layer logic bug is not silently counted as a transient
+                # conflict. continue skips the counting/audit below for this lead.
+                report.failures.append(f"apply {note.ref}: {e}")
+                continue
         key = "skipped" if outcome == "skipped" else (
             "dismiss" if decision == "reject" else "needs_review")
         report.counts[key] = report.counts.get(key, 0) + 1
@@ -89,8 +100,15 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
             if note is None:
                 continue
             dossier = by_id.get(verdict["lead_id"], {})
-            outcome = "skipped" if dry_run else apply_verdict(
-                vault, note, verdict, dossier)
+            if dry_run:
+                outcome = "skipped"
+            else:
+                try:
+                    outcome = apply_verdict(vault, note, verdict, dossier)
+                except VaultConflict as e:
+                    # Symmetric with the classify-pass site above.
+                    report.failures.append(f"apply {note.ref}: {e}")
+                    continue
             key = "skipped" if outcome == "skipped" else _status.normalize(
                 verdict.get("verdict", ""))
             report.counts[key] = report.counts.get(key, 0) + 1
