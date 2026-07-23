@@ -134,16 +134,22 @@ def test_bump_last_seen_does_not_regress_under_a_concurrent_newer_bump(tmp_path,
     assert "last_seen: 2026-07-15" in f.read_text(encoding="utf-8")
 
 
-def test_raced_frontmatter_edit_leaves_body_byte_identical(tmp_path, monkeypatch):
+def test_raced_body_edit_survives_a_concurrent_frontmatter_write(tmp_path, monkeypatch):
+    # A racer that touches only FRONTMATTER never exercises whether the BODY survives --
+    # the body is untouched by update_fields's transform regardless of whether the write
+    # is CAS-safe or a naive whole-file overwrite, so a racer confined to frontmatter
+    # passes even against the pre-#16 read-transform-write with no re-derivation at all.
+    # The racer here edits the BODY (as Obsidian or a human would), so only the CAS
+    # re-derive -- not mere non-interference -- can make both edits survive.
     f = _seed_note(tmp_path)
-    original_body = "\n# body\n"
     v = Vault(str(tmp_path))
     def racer():
-        f.write_text(f.read_text(encoding="utf-8").replace(
-            "status: new", "status: new\nscore: 3"), encoding="utf-8")
+        f.write_text(f.read_text(encoding="utf-8") + "RACER BODY LINE\n", encoding="utf-8")
     racing_read(monkeypatch, str(f), racer)
     v.update_fields(str(f), {"status": "research"})
-    assert f.read_text(encoding="utf-8").endswith(original_body)
+    txt = f.read_text(encoding="utf-8")
+    assert "status: research" in txt      # our frontmatter edit landed
+    assert "RACER BODY LINE" in txt       # the racer's body edit survived the re-derive
 
 
 def test_set_tailored_cv_only_if_absent_skips_when_present(tmp_path):
@@ -185,12 +191,47 @@ def test_normalize_abstains_when_a_race_introduces_a_conflict(tmp_path, monkeypa
         f.write_text(f.read_text(encoding="utf-8").replace(
             'status: "new"', 'status: "new"\nstatus: dismiss'), encoding="utf-8")
     racing_read(monkeypatch, str(f), racer)
-    v.normalize_all_statuses(dry_run=False)
+    summary = v.normalize_all_statuses(dry_run=False)
     txt = f.read_text(encoding="utf-8")
     # abstained: NO write happened at all, so both disagreeing lines survive verbatim
     # (the original stays quoted -- abstain must not canonicalise even the line it agrees
     # with, or a partial rewrite would silently narrow "disagreement" to "trust line 1").
     assert 'status: "new"' in txt and "status: dismiss" in txt
+    # An abstained _cas_write (the race made the collapse a no-op against the FRESH,
+    # now-conflicting content) must NOT be counted "changed" -- nothing was written this
+    # run. It is reported "unchanged", not invisible: the up-front scan's own summary is
+    # what a caller sees, and "changed" claiming a write that never happened is exactly
+    # the double-count/invisibility bug #16's review fold closes.
+    assert summary["changed"] == 0
+    assert summary["unchanged"] == 1
+
+
+def test_normalize_skips_and_reports_a_sustained_race(tmp_path, monkeypatch):
+    # A SUSTAINED race (on every read, not just the first) exhausts _cas_write's
+    # retries -> VaultConflict. The sweep must not let that escape uncaught (it would
+    # abort every note after this one); it logs and reports the note under "skipped",
+    # counts it neither changed nor unchanged, and leaves the note unwritten.
+    d = _leads_dir(tmp_path); d.mkdir(parents=True, exist_ok=True)
+    f = d / "Acme - Analyst.md"
+    f.write_text('---\ncompany: "Acme"\nstatus: "new"\n---\n\n# body\n', encoding="utf-8")
+    v = Vault(str(tmp_path))
+    counter = {"n": 0}
+    def churn():
+        # Unique content every call (once=False, for exhaustion) -- each write leaves
+        # the status line disagreeing in a NEW way, so no attempt ever sees a settled,
+        # collapsible file.
+        counter["n"] += 1
+        f.write_text(
+            f'---\ncompany: "Acme"\nstatus: "new"\nstatus: dismiss-{counter["n"]}\n---\n\n# body\n',
+            encoding="utf-8")
+    racing_read(monkeypatch, str(f), churn, once=False)
+    summary = v.normalize_all_statuses(dry_run=False)
+    assert "Acme - Analyst.md" in summary["skipped"]
+    assert summary["changed"] == 0
+    # not rewritten: the ORIGINAL single "new" status line from the up-front scan's
+    # capture never got collapsed onto disk (the racer's own churned content did land,
+    # since churn writes directly -- but no CAS-committed rewrite from us is in there).
+    assert "status: \"new\"\nstatus: dismiss-" in f.read_text(encoding="utf-8")
 
 
 def test_upsert_absorbs_a_bump_conflict_into_refused(tmp_path, monkeypatch):
@@ -207,6 +248,31 @@ def test_upsert_absorbs_a_bump_conflict_into_refused(tmp_path, monkeypatch):
     def churn():
         # Anchored on the "last_seen: " key prefix (not a bare value split) so the
         # replace cannot be fooled by the date coincidentally appearing elsewhere.
+        counter["n"] += 1
+        cur = f.read_text(encoding="utf-8")
+        prev = cur.split("last_seen: ")[1].split("\n")[0]
+        f.write_text(cur.replace(f"last_seen: {prev}", f"last_seen: 2026-08-{counter['n']:02d}"),
+                     encoding="utf-8")
+    racing_read(monkeypatch, str(f), churn, once=False)
+    assert v.upsert(lead) == "refused"   # not an uncaught VaultConflict
+
+
+def test_upsert_merge_absorbs_a_bump_conflict_into_refused(tmp_path, monkeypatch):
+    # F2: the merge branch shares _bump_last_seen_or_refuse with update -- extracting
+    # that helper is only a real dedup if BOTH call sites are witnessed, not just update's
+    # (deleting the helper's try/except must redden this test too, not merely the one
+    # above). Same churn shape as test_upsert_absorbs_a_bump_conflict_into_refused; the
+    # only difference is the seeded note/lead pair, set up so _resolve_path returns
+    # "merge" (a differing url with NO location on either side -> same_opportunity
+    # abstains UNKNOWN) rather than "update" (a matching url -> SAME).
+    from sluice.core.leads import Lead
+    f = _seed_note(tmp_path, extra="last_seen: 2026-07-10\nurl: \"https://example.invalid/1\"\n")
+    v = Vault(str(tmp_path))
+    lead = Lead(source="b", search="s", title="Analyst", company="Acme",
+                location="", salary="", url="https://example.invalid/2",  # differs -> not SAME
+                last_seen="2026-07-20")
+    counter = {"n": 0}
+    def churn():
         counter["n"] += 1
         cur = f.read_text(encoding="utf-8")
         prev = cur.split("last_seen: ")[1].split("\n")[0]

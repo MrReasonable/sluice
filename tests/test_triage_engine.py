@@ -115,7 +115,7 @@ def test_triage_classify_conflict_is_counted_and_batch_continues(tmp_path, title
     # conflicted lead is left untouched, while the next lead still gets applied.
     accept, reject = titles
     v = Vault(str(tmp_path / "vault"))
-    _note(v, "aaa.md", _fields("Alpha", reject[0].title()))  # sorts first -> conflicts
+    _note(v, "aaa.md", _fields("Example Conflict Co", reject[0].title()))  # sorts first -> conflicts
     _note(v, "bbb.md", _fields("Beta", reject[0].title()))   # sorts second -> survivor
     audit = AuditLog(str(tmp_path / "audit.jsonl"))
     cfg = TriageConfig()
@@ -135,7 +135,7 @@ def test_triage_classify_conflict_is_counted_and_batch_continues(tmp_path, title
 
     assert any("apply" in f for f in report.failures)   # the conflict was recorded
     statuses = {n.fm["company"]: n.status for n in v.read_leads()}
-    assert statuses["Alpha"] == "new"       # conflicted lead left in its prior state
+    assert statuses["Example Conflict Co"] == "new"       # conflicted lead left in its prior state
     assert statuses["Beta"] == "dismiss"    # survivor still applied (batch continued)
 
 
@@ -144,7 +144,7 @@ def test_triage_judge_conflict_is_counted_and_batch_continues(tmp_path, titles, 
     # site (engine.py:92).
     accept, reject = titles
     v = Vault(str(tmp_path / "vault"))
-    _note(v, "aaa.md", _fields("Alpha", accept[0].title()))  # sorts first -> conflicts
+    _note(v, "aaa.md", _fields("Example Conflict Co", accept[0].title()))  # sorts first -> conflicts
     _note(v, "bbb.md", _fields("Beta", accept[0].title()))   # sorts second -> survivor
     audit = AuditLog(str(tmp_path / "audit.jsonl"))
     cfg = TriageConfig()
@@ -164,5 +164,5 @@ def test_triage_judge_conflict_is_counted_and_batch_continues(tmp_path, titles, 
 
     assert any("apply" in f for f in report.failures)   # the conflict was recorded
     statuses = {n.fm["company"]: n.status for n in v.read_leads()}
-    assert statuses["Alpha"] == "new"          # conflicted lead left in its prior state
+    assert statuses["Example Conflict Co"] == "new"          # conflicted lead left in its prior state
     assert statuses["Beta"] == "shortlist"     # survivor still applied (_Backend's verdict)

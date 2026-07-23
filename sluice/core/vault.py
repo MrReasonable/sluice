@@ -369,8 +369,16 @@ class Vault:
         never auto-guessed. Body untouched; unknown values reported.
 
         Per-note writes go through _cas_write, so a concurrent edit is re-collapsed from
-        fresh content and a race-introduced conflict is abstained on (#16); one conflicting
-        note never aborts the sweep.
+        fresh content; one conflicting note never aborts the sweep. Three DISTINCT
+        concurrent outcomes are counted, not conflated: a race that _cas_write can
+        re-derive around still commits (changed); a race that makes the collapse a
+        genuine no-op against the FRESH content (e.g. a concurrent editor already
+        canonicalized it) is an abstain, counted unchanged -- nothing was written
+        this run, so there is nothing to log, and a real disagreement introduced
+        after this note's scan is left for the NEXT run's up-front scan to see and
+        report; a SUSTAINED race that exhausts _cas_write's retries raises
+        VaultConflict, which is logged and the note name recorded under "skipped"
+        rather than aborting the sweep or letting the exception escape to the CLI.
 
         Walks the leads dir directly (rather than through self.read_leads()) so each note
         is read exactly ONCE before the changed/unchanged/conflicts decision -- read_leads()
@@ -408,13 +416,28 @@ class Vault:
             if already:
                 summary["unchanged"] += 1
                 continue
-            summary["changed"] += 1
             if dry_run:
+                summary["changed"] += 1  # report intent only; nothing is written
                 continue
             try:
-                _cas_write(path, _normalize_status_transform)
+                committed = _cas_write(path, _normalize_status_transform)
             except VaultConflict:
+                # Retries exhausted against a concurrent writer that never let this
+                # note settle. Log for the operator and report it under "skipped"
+                # rather than raising -- one sustained race must not abort the sweep
+                # or crash the CLI command (#16).
+                _log.warning("vault normalize skipped %s: status write raced repeatedly", name)
                 summary.setdefault("skipped", []).append(name)
+                continue
+            if committed:
+                summary["changed"] += 1
+            else:
+                # A concurrent edit made the collapse a no-op against the FRESH
+                # content (e.g. a race that itself introduced a disagreement
+                # _normalize_status_transform abstains on). Nothing was written
+                # this run, so this is unchanged, not changed-but-invisible; a
+                # surviving disagreement is caught by the next run's own scan.
+                summary["unchanged"] += 1
         return summary
 
     # ── upsert ───────────────────────────────────────────────────────────────
@@ -457,28 +480,14 @@ class Vault:
             os.makedirs(self.leads_dir, exist_ok=True)
             self.ensure_stfolder()
             if action == "update":
-                try:
-                    self._bump_last_seen(path, lead.last_seen or _today())
-                except VaultConflict:
-                    # #16: the last_seen bump lost the race repeatedly. Absorb into the
-                    # store's existing concurrency-loss vocabulary (like the FileExistsError
-                    # create-race above) so no exception crosses the ingest sink; the lead
-                    # stays out of seen.db and is retried next run.
-                    _log.warning("vault refused lead %r: last_seen bump raced repeatedly",
-                                 lead.dedup_key)
-                    return "refused"
-                return "updated"
+                return self._bump_last_seen_or_refuse(
+                    path, lead.last_seen or _today(), "updated", lead.dedup_key)
             if action == "merge":
                 # We could not prove same-or-different, so we do NOT split (that would mint a
                 # note per scrape -- unbounded). Bump last_seen like an update; the difference
                 # is only that the count is reported separately so the merge is visible.
-                try:
-                    self._bump_last_seen(path, lead.last_seen or _today())
-                except VaultConflict:
-                    _log.warning("vault refused lead %r: last_seen bump raced repeatedly",
-                                 lead.dedup_key)
-                    return "refused"
-                return "merged"
+                return self._bump_last_seen_or_refuse(
+                    path, lead.last_seen or _today(), "merged", lead.dedup_key)
             try:
                 _write(path, self._render_new(lead), exclusive=True)
                 return "created"
@@ -496,6 +505,21 @@ class Vault:
         # us). Refuse loudly rather than clobber or spin; the sink keeps it out of seen.db.
         _log.warning("vault could not create lead %r: create raced repeatedly", lead.dedup_key)
         return "refused"
+
+    def _bump_last_seen_or_refuse(self, path: str, last_seen: str, outcome: str,
+                                  dedup_key: str) -> str:
+        """Bump last_seen, mapping a sustained CAS conflict to the store's `refused`
+        concurrency-loss outcome (like the FileExistsError create-race) so no exception
+        crosses the ingest sink. Shared by upsert's update AND merge branches -- they
+        differ only in which outcome string a successful bump reports, so this is the
+        one place that decision can drift; deleting it un-deduplicates the two branches
+        back into the copy this replaces. #16."""
+        try:
+            self._bump_last_seen(path, last_seen)
+        except VaultConflict:
+            _log.warning("vault refused lead %r: last_seen bump raced repeatedly", dedup_key)
+            return "refused"
+        return outcome
 
     def _bump_last_seen(self, path: str, last_seen: str) -> None:
         """Set the last_seen line inside existing frontmatter, preserving every other key
@@ -590,7 +614,14 @@ def _atomic_write(path: str, text: str) -> None:
     cross-device rename raises OSError). A fresh temp is created 0600 by mkstemp, so when
     the target already exists its mode is copied onto the temp before the replace --
     otherwise a modify-write would narrow the note's permissions. On any failure the temp
-    is removed before re-raising."""
+    is removed before re-raising.
+
+    A FRESH create (no pre-existing `path`, so `mode` stays None) instead lands at
+    mkstemp's own 0600 rather than the umask-default mode `_write(exclusive=True)` gives
+    a newly-created lead note. That is a deliberate, harmless narrowing: the only caller
+    that can reach this function with no pre-existing target is `write_document`'s
+    rejected-leads digest, a store-managed document rather than a lead note, and every
+    other create path in this module goes through `_write`, not here."""
     d = os.path.dirname(path) or "."
     try:
         mode = stat.S_IMODE(os.stat(path).st_mode)
