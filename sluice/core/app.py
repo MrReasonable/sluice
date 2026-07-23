@@ -363,10 +363,13 @@ class Sluice:
         notes = [n for n in store.read_leads({"shortlist"}) if slug_matches(n, lead)]
         if not notes:
             return []
-        # The direct single-lead path intentionally overwrites (guard_existing_cv
-        # defaults False, unlike run_batch) -- a user re-tailoring one lead by name means
-        # it. Under sustained write-race exhaustion set_tailored_cv still raises
-        # VaultConflict (#16); that must not escape to the CLI as an unhandled traceback.
+        # The direct single-lead path overwrites an existing tailored_cv (guard_existing_cv
+        # defaults False, unlike run_batch) -- a user re-tailoring one lead by name means it.
+        # A lead HELD for sign-off (pending_cv set) is the exception: run_one skips it before
+        # compose (#60 latch), so re-running `cv --lead` will NOT re-tailor it -- the
+        # sanctioned way to force a fresh compose of a held lead is `cv signoff --discard`.
+        # Under sustained write-race exhaustion set_tailored_cv still raises VaultConflict
+        # (#16); that must not escape to the CLI as an unhandled traceback.
         try:
             return [run_one(notes[0], store, cvcfg, backend, cache, renderer=renderer,
                             dry_run=dry_run)]

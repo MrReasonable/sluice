@@ -4,6 +4,7 @@
 bundle; a HARD-gate failure triggers exactly one retry with the violations fed back,
 then the lead is skipped (never rendered ungated). dry_run computes and reports but
 writes nothing."""
+import json
 import re
 from dataclasses import dataclass, field
 from datetime import date
@@ -12,7 +13,7 @@ from sluice.core import status as _status
 from sluice.core.log import get_logger
 from sluice.cv import bundle as _bundle
 from sluice.cv import compose as _compose
-from sluice.cv.audit import run_audit
+from sluice.cv.audit import run_audit, unsupported_claims
 from sluice.cv.slop import check_text as _slop
 from sluice.cv.validate import validate as _validate
 
@@ -22,6 +23,8 @@ _log = get_logger("cv.engine")
 @dataclass
 class CvResult:
     """status is one of: rendered, skipped-gate, skipped-selection, skipped-has-cv,
+    needs-signoff (an unsupported profile audit flag withheld the send-ready pointer,
+    #60), skipped-needs-signoff (a re-run over a lead already held for sign-off),
     dry-run, error (a single lead's exception caught by run_batch -- see run_batch --
     so one bad lead never aborts the rest of the batch)."""
     lead: str
@@ -48,6 +51,15 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
     # inherently never touches (never clobbers) application-owned leads.
     if _status.normalize(fm.get("status", "")) != "shortlist":
         return CvResult(note.ref, "skipped-selection")
+
+    # THE LATCH (#60): a lead already held for sign-off (pending_cv set) must NOT be
+    # recomposed. run_audit is non-deterministic, so a re-run could re-roll a clean
+    # verdict and set tailored_cv without a human ever signing off -- the gate would be
+    # a dice reroll, not a hold. Skip BEFORE compose. Both cv paths route through
+    # run_one (single-lead calls it directly; run_batch calls it per lead), so this one
+    # early return covers both. `sluice cv signoff [--discard]` is the only way out.
+    if fm.get("pending_cv"):
+        return CvResult(note.ref, "skipped-needs-signoff")
 
     company, role = fm.get("company", ""), fm.get("role", "")
     jd = ""
@@ -116,6 +128,22 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
     pdf = renderer.render(cv_text, out_dir, neutral_name=cvcfg.neutral_filename)
     served = (_render.serve(pdf, cvcfg.served_dir, served_prefix=cvcfg.served_prefix)
               if cvcfg.served_dir else None)
+    # An `unsupported` audit flag WITHHOLDS the send-ready pointer until a human signs off
+    # (#60). The audit stays advisory to the model; only this consequence is new, and only
+    # `unsupported` (never `paraphrase`, which is legitimate tailoring) blocks. Fail-open:
+    # an audit backend error already yields no flags above, so a possibly-fabricated CV
+    # still serves -- the gate is best-effort, never harder than the audit ran.
+    blockers = unsupported_claims(audit_flags) if cvcfg.require_signoff else []
+    if served and blockers:
+        # Record what to promote (pending_cv) and what to review (needs_signoff, a
+        # single-line JSON scalar so a claim's quote/colon can't corrupt the frontmatter);
+        # withhold tailored_cv. The served PDF stays in served_dir (it passed the HARD gate)
+        # but is inert -- apply/select returns no_artifact without the pointer.
+        vault.update_fields(note.ref, {
+            "pending_cv": f"{served} ({date.today().isoformat()})",
+            "needs_signoff": json.dumps(blockers)})
+        return CvResult(note.ref, "needs-signoff", audit_flags=audit_flags,
+                        served=served, backend=backend_used)
     if served:
         wrote = vault.set_tailored_cv(
             note.ref, f"{served} ({date.today().isoformat()})",
