@@ -65,3 +65,16 @@ def test_cas_write_raises_on_sustained_race(tmp_path, monkeypatch):
     racing_read(monkeypatch, str(p), churn, once=False)
     with pytest.raises(VaultConflict):
         _cas_write(str(p), lambda t: t + "OURS\n")
+
+
+def test_cas_write_does_not_return_a_stale_no_op(tmp_path, monkeypatch):
+    # A presence/absence transform (append-if-tag-absent). At capture the tag is present
+    # (a would-be no-op), but a racer REMOVES it in the capture->decision window. _cas_write
+    # must detect the change and re-derive, not return a stale False that leaves the tag gone.
+    p = tmp_path / "n.md"
+    p.write_text("TAG\n", encoding="utf-8")
+    racing_read(monkeypatch, str(p), lambda: p.write_text("plain\n", encoding="utf-8"))
+    result = _cas_write(str(p), lambda t: t if "TAG" in t else t + "TAG\n")
+    body = p.read_text(encoding="utf-8")
+    assert "TAG" in body      # re-derived onto the racer's content
+    assert result is True      # a write happened, not a stale no-op
