@@ -226,7 +226,7 @@ def _cas_write(path: str, transform, *, retries: int = _RMW_RACE_RETRIES) -> boo
 - [ ] **Step 6: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_vault_rmw.py -q`
-Expected: PASS (6 passed).
+Expected: PASS — every test in the file green (no reliance on a specific count).
 
 - [ ] **Step 7: Commit**
 
