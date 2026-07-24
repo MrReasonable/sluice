@@ -341,7 +341,7 @@ MrReasonable <4990954+MrReasonable@users.noreply.github.com>"
 
 ---
 
-### Task 3: Verification — ruff, full suite, and the seven-mutant witness sweep
+### Task 3: Verification — ruff, full suite, and the mutation-witness sweep
 
 Prove the tests are load-bearing, not inert. The implementation is already committed (Tasks 1-2), so mutants are restored via `Edit`, never `git checkout` (which would wipe uncommitted work — a documented past hazard).
 
@@ -361,9 +361,9 @@ number of tests this plan adds — do not hard-assert an exact total, which drif
 Run: `python -m compileall -q -f --invalidation-mode checked-hash sluice tests scripts`
 Expected: no output (success). This makes `sluice/`'s `.pyc` content-addressed so a mutant cannot run stale bytecode and lie green.
 
-- [ ] **Step 3: Run the seven mutation witnesses**
+- [ ] **Step 3: Run the mutation witnesses**
 
-For each mutant: apply the `Edit` (MOVE/DELETE only), run the named test by node id, confirm it **FAILS (red)**, then restore with the inverse `Edit`. Do NOT run the whole suite — run only the named node so the witness is attributable.
+For **each row in the mutation table below** (its size grows as review findings fold — take the set from the table, not a fixed count): apply the `Edit` (MOVE/DELETE only), run the named test by node id, confirm it **FAILS (red)**, then restore with the inverse `Edit`. Do NOT run the whole suite — run only the named node so the witness is attributable.
 
 | # | Mutation (delete/move in `sluice/core/backends.py`) | Named test — must go RED |
 |---|---|---|
@@ -391,7 +391,7 @@ Expected: suite passes (no failures), ruff clean. Working tree contains only the
 
 ## Self-review
 
-- **Spec coverage:** `_redact` (spec §Design 1) → Task 1. `_scrub` + three raise sites + comment (§Design 2-4) → Task 2. Synthetic-fixture constraint, straddle-via-`complete()`, overlap shorter-key-first, timeout test, scoped guarantee (§Testing, all folded findings) → Tasks 1-2. Seven mutation witnesses + DoD (§Definition of done) → Task 3. No spec section unmapped.
+- **Spec coverage:** `_redact` (spec §Design 1) → Task 1. `_scrub` + three raise sites + comment (§Design 2-4) → Task 2. Synthetic-fixture constraint, straddle-via-`complete()`, overlap shorter-key-first, timeout test, scoped guarantee (§Testing, all folded findings) → Tasks 1-2. The mutation witnesses + DoD (§Definition of done) → Task 3. No spec section unmapped.
 - **Placeholder scan:** none — every code step shows complete code; every command shows expected output.
 - **Type consistency:** `_redact(text, secrets)` and `_scrub(self, text)` signatures identical in plan and spec; labels `<host>`/`<path>`; node ids match the test names defined in Tasks 1-2.
 - **Non-goals honoured:** no change to the other three backends, no config knob, no `--output-format json`, no general scrubber.
