@@ -12,6 +12,7 @@ selection is config-driven and a new provider is a drop-in module. The subproces
 runner and HTTP poster are injected, so everything is tested offline.
 """
 import json
+import re
 import subprocess
 import urllib.error
 import urllib.request
@@ -65,19 +66,29 @@ def _redact(text: str, secrets: dict[str, str]) -> str:
     """Replace each sensitive value with a label, so a backend error keeps its
     diagnostic shape without disclosing the host or an absolute path -- both reach
     proc.stderr on an ssh/exec failure (and str(a runner exception)) and fan out to
-    WARNING logs (FallbackBackend, judge) and the doctor health report. A secret is
-    SKIPPED when it is empty (a local run leaves host empty), shorter than 3 chars
-    (would mangle common substrings of legitimate stderr), or the exact generic default
-    'claude' (a substring of both ordinary CLI diagnostics and of 'claude-max' itself).
+    WARNING logs (FallbackBackend, judge) and the doctor health report.
 
-    Secrets are replaced LONGEST-first so that when one is a substring of another
-    (the host can appear inside the absolute claude_path) the longer is caught whole
-    before the shorter can fragment it -- otherwise the shorter replace would alter the
-    longer's text and its remaining, possibly username-bearing, fragment would survive.
+    Matching is TOKEN-AWARE: a value is replaced only where it stands as a whole token
+    (`(?<!\\w)value(?!\\w)`), never inside a longer word. That is what lets a genuinely
+    short host -- `db`, `qa` -- be scrubbed without a length floor mangling every `db`
+    inside `database`; a plain substring replace could not have both. The lookaround
+    (not `\\b`) is deliberate: `\\b` cannot anchor a value that begins with a non-word
+    char, so an absolute claude_path (`/home/.../claude`) would never match under `\\b`.
+
+    A secret is SKIPPED only when it is empty (a local run leaves host empty) or is the
+    exact literal 'claude': that is claude_path's generic default (the CLI's own binary
+    name, non-sensitive, and a token in ordinary diagnostics), and the same guard means a
+    host improbably NAMED 'claude' is left unscrubbed -- an accepted, documented residual,
+    because at that point the host is indistinguishable from the tool's own name.
+
+    Secrets are replaced LONGEST-first so that when one is a substring of another (the
+    host can appear inside the absolute claude_path) the longer is caught whole before the
+    shorter can fragment it -- otherwise the shorter replace would alter the longer's text
+    and its remaining, possibly username-bearing, fragment would survive.
     """
     for value, label in sorted(secrets.items(), key=lambda kv: len(kv[0]), reverse=True):
-        if value and len(value) >= 3 and value != "claude":
-            text = text.replace(value, label)
+        if value and value != "claude":
+            text = re.sub(rf"(?<!\w){re.escape(value)}(?!\w)", label, text)
     return text
 
 
@@ -126,7 +137,15 @@ class ClaudeMaxBackend:
             # (["ssh", host, claude_path, ...]) and FileNotFoundError names the binary.
             # A hung host times out here, NOT at the exit-code branch, so this leak route
             # is real; scrub before the message reaches a WARNING log or the health report.
-            raise BackendError(f"claude-max invocation failed: {self._scrub(str(e))}") from e
+            #
+            # `from None`, not `from e`: the scrubbed message already carries the diagnostic,
+            # but the RAW cause `e` would remain chained -- and track/classify.py logs a failed
+            # complete() with `_log.exception`, which renders the whole chain, re-leaking the
+            # unscrubbed argv the message just scrubbed. `from None` suppresses the chain
+            # (`__cause__` and the implicit `__context__`) so no traceback-logging sink can
+            # surface it. This is the residual an earlier round wrongly called "safe on the
+            # premise no sink uses exc_info" -- one does; closed here at the source.
+            raise BackendError(f"claude-max invocation failed: {self._scrub(str(e))}") from None
         if proc.returncode != 0:
             raise BackendError(
                 f"claude-max exit {proc.returncode}: {self._scrub(proc.stderr)[:200]}")

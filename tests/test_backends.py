@@ -1,4 +1,5 @@
 import subprocess
+import traceback
 import pytest
 from sluice.core.backends import (
     BackendError, ClaudeMaxBackend, FallbackBackend, OpenAiCompatibleBackend,
@@ -411,9 +412,25 @@ def test_redact_keeps_empty_host():
     assert _redact("some diagnostic", {"": "<host>"}) == "some diagnostic"
 
 
-def test_redact_keeps_short_value():
-    # A <3-char value is too generic; replacing it would mangle common substrings.
-    assert _redact("a banana", {"an": "<host>"}) == "a banana"
+def test_redact_short_host_scrubbed_as_whole_token():
+    # A genuinely short host (2 chars) MUST still be scrubbed -- the token-aware match
+    # replaces it where it stands alone, so no length floor is needed to leave it exposed.
+    assert _redact("ssh: connect to host db port 22", {"db": "<host>"}) \
+        == "ssh: connect to host <host> port 22"
+
+
+def test_redact_short_host_not_matched_inside_a_word():
+    # ...but token-awareness means the same short host does NOT mangle a longer word that
+    # merely contains it: `db` inside `db2`/`database` is left intact (a plain substring
+    # replace -- the pre-token-aware form -- would have corrupted both).
+    assert _redact("db2 and database down", {"db": "<host>"}) == "db2 and database down"
+
+
+def test_redact_keeps_host_named_claude():
+    # The `!= "claude"` guard protects claude_path's generic default; the same guard means
+    # a host improbably NAMED 'claude' is left unscrubbed -- an accepted, documented residual,
+    # since at that point the host is indistinguishable from the CLI's own binary name.
+    assert _redact("cannot reach claude now", {"claude": "<host>"}) == "cannot reach claude now"
 
 
 def test_redact_overlap_scrubs_both_longest_first():
@@ -451,6 +468,21 @@ def test_claudemax_timeout_scrubs_host_and_path_from_message():
     msg = str(ei.value)
     assert _SYNTH_HOST not in msg and _SYNTH_PATH not in msg
     assert "<host>" in msg and "<path>" in msg
+
+
+def test_claudemax_timeout_chain_carries_no_secret():
+    # rev-001: str(BackendError) is scrubbed, but `from e` would leave the raw TimeoutExpired
+    # CHAINED -- and track/classify.py logs a failed complete() with _log.exception, which
+    # renders the whole chain, re-leaking the argv the message just scrubbed. `from None` must
+    # sever the chain so no traceback-logging sink surfaces the host/path. This asserts on the
+    # FULL formatted chain (what _log.exception emits), not just str(err).
+    def boom(cmd, **k):
+        raise subprocess.TimeoutExpired(cmd, 1)
+    with pytest.raises(BackendError) as ei:
+        _claude(boom).complete("x")
+    err = ei.value
+    chain = "".join(traceback.format_exception(type(err), err, err.__traceback__))
+    assert _SYNTH_HOST not in chain and _SYNTH_PATH not in chain
 
 
 def test_claudemax_nonzero_exit_scrubs_host_keeps_diagnostic():
@@ -503,3 +535,21 @@ def test_claudemax_redacts_before_truncating():
     with pytest.raises(BackendError) as ei:
         _claude(lambda *a, **k: R(), host=straddle_host).complete("x")
     assert "HOST-SENTINEL" not in str(ei.value)
+
+
+def test_claudemax_empty_response_redacts_before_truncating():
+    # tst-001: symmetric to the test above but for the EMPTY-RESPONSE branch (exit 0, no
+    # stdout), whose scrubbed-stderr append uses the same redact-then-truncate ordering
+    # (self._scrub(proc.stderr).strip()[:200]). Without this the branch's [:200] is
+    # unwitnessed -- a slice-then-redact swap on it alone stayed green. Host straddles 200.
+    straddle_host = "HOST-SENTINEL-EXAMPLE.invalid"
+
+    class R:
+        returncode, stdout = 0, "   \n"  # whitespace-only -> reaches the empty-response branch
+        stderr = "." * 180 + straddle_host
+
+    with pytest.raises(BackendError) as ei:
+        _claude(lambda *a, **k: R(), host=straddle_host).complete("x")
+    msg = str(ei.value)
+    assert "no text" in msg              # still the empty-response branch
+    assert "HOST-SENTINEL" not in msg
