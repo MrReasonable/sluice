@@ -10,7 +10,13 @@
 
 **Spec:** `docs/superpowers/specs/2026-07-24-backend-stderr-redaction-design.md` (reviewed twice, all findings folded).
 
-**Plan review:** `/review-plan` on this implementation plan — 5 specialists, **0 findings**; all seven mutation witnesses independently traced as valid (2026-07-24).
+**Plan review:** `/review-plan` on this implementation plan — 5 specialists, **0 findings**; all mutation witnesses independently traced as valid (2026-07-24).
+
+> **AMENDED post-`/review-pr` (commit `c8b9b53`).** The pre-push `/review-pr` folded two changes the task bodies below **predate**, so read the shipped code (and the spec) as authoritative where they differ:
+> 1. **`_redact` is token-aware**, not the `len(value) >= 3` / `str.replace` form Task 1 shows: it uses `re.sub(rf"(?<!\w){re.escape(value)}(?!\w)", label, text)` (drops the length floor so a short host like `db` is scrubbed as a whole token; keeps `!= "claude"`). The Task-1 snippet and the Task-3 witness-table row for the `len >= 3` clause are **superseded** — the live witness is `re.sub`→`str.replace` reddening `test_redact_short_host_not_matched_inside_a_word`.
+> 2. **The invocation-failed raise uses `from None`**, not `from e` (Task 2): it severs the argv-bearing `TimeoutExpired` chain that `track/classify.py:96`'s `_log.exception` would otherwise render. Pinned by `test_claudemax_timeout_chain_carries_no_secret`.
+>
+> The snippets flagged below are annotated inline; the task bodies otherwise stand as the record of the original three-task implementation.
 
 ## Global Constraints
 
@@ -117,6 +123,10 @@ def _redact(text: str, secrets: dict[str, str]) -> str:
     longer's text and its remaining, possibly username-bearing, fragment would survive.
     """
     for value, label in sorted(secrets.items(), key=lambda kv: len(kv[0]), reverse=True):
+        # SUPERSEDED post-review (c8b9b53): shipped TOKEN-AWARE, dropping the `len >= 3` floor so a
+        # short host (`db`) is scrubbed as a whole token instead of leaking. See the shipped code:
+        #     if value and value != "claude":
+        #         text = re.sub(rf"(?<!\w){re.escape(value)}(?!\w)", label, text)
         if value and len(value) >= 3 and value != "claude":
             text = text.replace(value, label)
     return text
@@ -263,7 +273,9 @@ Edit the invocation-failed branch (currently line 93-94):
             # (["ssh", host, claude_path, ...]) and FileNotFoundError names the binary.
             # A hung host times out here, NOT at the exit-code branch, so this leak route
             # is real; scrub before the message reaches a WARNING log or the health report.
-            raise BackendError(f"claude-max invocation failed: {self._scrub(str(e))}") from e
+            # SUPERSEDED post-review (c8b9b53): shipped as `from None`, not `from e` -- `from e`
+            # keeps the raw argv-bearing cause chained, which classify.py's _log.exception renders.
+            raise BackendError(f"claude-max invocation failed: {self._scrub(str(e))}") from None
 ```
 
 Edit the nonzero-exit branch (currently line 95-96):
@@ -351,10 +363,12 @@ For each mutant: apply the `Edit` (MOVE/DELETE only), run the named test by node
 | 1 | `_scrub` wrap at invocation-failed → `f"...: {str(e)}"` | `tests/test_backends.py::test_claudemax_timeout_scrubs_host_and_path_from_message` |
 | 2 | `_scrub` wrap at nonzero-exit → `{proc.stderr[:200]}` | `tests/test_backends.py::test_claudemax_nonzero_exit_scrubs_host_keeps_diagnostic` |
 | 3 | drop the `+ (f"; stderr: {detail}" if detail else "")` append (revert to `"...whitespace)"`) | `tests/test_backends.py::test_claudemax_empty_response_regains_scrubbed_diagnostic` |
-| 4 | delete the ` and value != "claude"` clause in `_redact` | `tests/test_backends.py::test_redact_keeps_default_claude` |
-| 5 | delete the ` and len(value) >= 3` clause in `_redact` | `tests/test_backends.py::test_redact_keeps_short_value` |
+| 4 | delete the ` and value != "claude"` clause in `_redact` | `tests/test_backends.py::test_redact_keeps_default_claude` (+ `::test_redact_keeps_host_named_claude`) |
+| 5 | **[folded c8b9b53]** token-aware `re.sub(...)` → plain `str.replace(value, label)` | `tests/test_backends.py::test_redact_short_host_not_matched_inside_a_word` |
 | 6 | remove `sorted(..., reverse=True)` → iterate `secrets.items()` raw | `tests/test_backends.py::test_redact_overlap_scrubs_both_longest_first` |
 | 7 | swap order at nonzero-exit → `self._scrub(proc.stderr[:200])` | `tests/test_backends.py::test_claudemax_redacts_before_truncating` |
+| 8 | **[folded c8b9b53]** `from None` → `from e` at invocation-failed | `tests/test_backends.py::test_claudemax_timeout_chain_carries_no_secret` |
+| 9 | **[folded c8b9b53]** swap order at empty-response → `self._scrub(proc.stderr[:200])...` | `tests/test_backends.py::test_claudemax_empty_response_redacts_before_truncating` |
 
 Run per mutant, e.g.: `python -m pytest "tests/test_backends.py::test_claudemax_redacts_before_truncating" -q`
 Expected: `1 failed` while mutated; restore, re-run, `1 passed`.
