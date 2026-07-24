@@ -34,3 +34,9 @@ def test_unsupported_claims_is_the_unsupported_subset():
 def test_unsupported_claims_empty_when_no_unsupported():
     assert A.unsupported_claims([]) == []
     assert A.unsupported_claims(["paraphrase\tgrew it\tSF3"]) == []
+
+def test_unsupported_claims_matches_the_verdict_token_exactly():
+    # The verdict is the FIRST tab-delimited field; a malformed 'unsupportedness'
+    # prefix must NOT be read as 'unsupported' and block (a startswith would).
+    assert A.unsupported_claims(["unsupportedness\tsome claim\tNONE"]) == []
+    assert A.unsupported_claims(["unsupported\treal claim\tNONE"]) == ["unsupported\treal claim\tNONE"]
