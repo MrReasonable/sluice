@@ -136,7 +136,7 @@ def _redact(text: str, secrets: dict[str, str]) -> str:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `python -m pytest tests/test_backends.py -k redact -v`
-Expected: 6 passed.
+Expected: every selected `_redact` test passes (record the count; do not hard-assert a total, which drifts as tests are added).
 
 - [ ] **Step 5: Commit**
 
