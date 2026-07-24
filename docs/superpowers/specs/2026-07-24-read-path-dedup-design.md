@@ -1,12 +1,14 @@
 # Read-path dedup — one role across boards and re-posts should be one note
 
 - **Date**: 2026-07-24
-- **Status**: **Round 1 `/review-plan` folded** (5 agents: 0 Critical / 5 High / 7 Medium / 2 Low — all
-  applied). The dominant finding, raised by three reviewers independently: the design specified *pairwise*
-  predicates (location compatibility, status precedence) but never how they compose over a cluster of
-  3+ members. §1 now pins **complete-linkage** clustering (an UNKNOWN location edge may not bridge two
-  DIFFERENT members — the non-transitivity that would otherwise re-open #5's silent merge) and §2 an
-  **order-independent, set-based** N-way status verdict. Awaiting round-2 re-review + user sign-off.
+- **Status**: **Rounds 1 + 2 `/review-plan` folded.** Round 1 (5 agents): 0 Critical / 5 High / 7 Medium
+  / 2 Low — all applied. Round 2 re-review (5 agents): every round-1 finding verified resolved against the
+  code; new: 0 Critical / 1 High / 5 Medium / 4 Low, all applied. The round-2 High (two reviewers
+  converged): the round-1 "terminal beats live" status rule would recommend archiving a *live
+  re-application* when a rejected + reapplied pair clusters — now a **`conflict`** (§2). Also refined: the
+  clustering cover algorithm made deterministic (§1, arc-r2-001), `merge_cluster` raised to the Store
+  Protocol + conformance (§3/§6, arc-r2-002). **One item needs a human-gated `.rulesync/` edit** (§6 /
+  DoD 5). Awaiting user sign-off.
 - **Origin**: issue #23, split out of #5 on 2026-07-16. #5 owns the write path (a note must never
   absorb a *different* job); #23 owns the read path (the *same* job must not become several notes).
   A prior #23 slice already shipped (PR #46: `Lead.dedup_key` folds `_norm_location` + netstring
@@ -86,18 +88,32 @@ three** hold:
   suffix) and must not cluster. UNKNOWN (a blank side) is *not* DIFFERENT, so it clusters — erring
   toward *proposing* (the human vets it), which is safe because merge is human-gated.
 
-**Cluster shape is COMPLETE-LINKAGE, not transitive closure (round-1 arc-001, the sharpest finding).**
+**Cluster shape is COMPLETE-LINKAGE with a DETERMINISTIC cover (round-1 arc-001, round-2 arc-r2-001).**
 Company/title equality is an equivalence relation (transitive), so grouping by the
 `(company_tokens, title_tokens)` key is safe. The *location* relation is **not** transitive: with UNKNOWN
-compatible-with-everything, `London ~ blank ~ Paris` are pairwise-compatible while `London`/`Paris` are
-DIFFERENT. Under transitive closure a blank-location note would **bridge** two provably-different cities
-into one trio — the human sees a plausible 3-note cluster, `--merge`s it, and `merge_cluster` archives
-both losers (`resolve_merge_status` is status-only and never re-checks location): the exact #5 asymmetric
-silent merge this design's governing risk exists to prevent. So a valid cluster is a set in which **every
-member pair is mutually `!= DIFFERENT`** (a clique on the compatibility relation). A note that would only
-join by bridging two DIFFERENT members is **left unclustered** (reported as a singleton), never used to
-unite them. Pinned by a `{London, blank, Paris}` test that must never yield a trio spanning DIFFERENT
-cities.
+compatible-with-everything, `A ~ blank ~ B` (two DIFFERENT cities `A`, `B`) is pairwise-compatible through
+the blank while `A`/`B` are DIFFERENT. Under transitive closure a blank-location note would **bridge** two
+provably-different cities into one trio — the human `--merge`s a plausible cluster and `merge_cluster`
+archives both losers (`resolve_merge_status` is status-only and never re-checks location): the exact #5
+asymmetric silent merge this design's governing risk exists to prevent.
+
+So the cover is defined precisely, per `(company_tokens, title_tokens)` group, so it is deterministic
+(the report's stable id must equal the id `--merge` recomputes — §4):
+
+1. Build the compatibility graph on the group's members: an edge iff `_compare_locations != DIFFERENT`.
+2. Take each **connected component**.
+3. A component is proposed as a cluster **iff it is a clique** — every member pair mutually
+   `!= DIFFERENT`. A component that a chain of UNKNOWN edges makes *span* a DIFFERENT pair (e.g.
+   `A — blank — B`) is **not** a clique → it yields **no cluster** (its members stay singletons), so an
+   ambiguous blank never bridges and never lands in two covers. This under-merges rather than
+   over-merges — the safe direction.
+
+Two disjoint cliques in one group (`{A, A2}` SAME and `{B, B2}` SAME, no blank connecting them) are two
+separate components, each a clique → **two** clusters, correctly, even though `A`/`B` are DIFFERENT.
+Pinned by (a) a positive `{A, A2}` → one 2-clique, and (b) a `{A, A2(SAME), blank, B(DIFFERENT)}` 4-note
+test → the blank-bridged component is not a clique → **no** cluster (never a trio spanning DIFFERENT
+cities, and deterministic). Locations in these tests are synthetic placeholders (conftest's
+`Alfa`/`Bravo`, never a real city — round-2 neu-r2-001).
 
 `_norm_tokens` is the generic token normalizer `_norm_location` already implements (NFKD-fold, casefold,
 drop combining marks, `\W+`→space, split) — factored to a shared name so title and company reuse the
@@ -125,9 +141,13 @@ computed on the *set* `S` of distinct statuses:
 3. **`X` non-empty and `|S| > 1`** → **`conflict`** (never-regress passes unknown statuses through
    untouched; a merge must not rank one).
 4. **`A` non-empty** → application-owned dominates, so `T` is dropped from contention *before* any
-   triage-vs-triage disagreement is judged (you cannot un-apply). Within `A`: two *different* terminals →
-   **`conflict`**; exactly one terminal → that terminal wins (`ok`) (a rejected posting is not pulled back
-   to `interview`); all live → highest `_RANK` wins (`ok`).
+   triage-vs-triage disagreement is judged (you cannot un-apply). Within `A` (let `Term = A ∩ terminals`,
+   `Live = A ∩ ladder-live`): `|Term| ≥ 2` (two different terminals) → **`conflict`**; **`|Term| == 1` and
+   `Live` non-empty → `conflict`** (round-2 inv-r2-001/rev-r2-001 — a terminal *and* a live application
+   for the same company/role/location is a **reject-then-reapply**, two genuinely distinct attempts the
+   plan's own governing risk calls common; keeping the terminal would silently archive the live
+   re-application, so refuse and let the human decide); `|Term| == 1` and `Live` empty → that terminal
+   wins (`ok`); all live (`Term` empty) → highest `_RANK` wins (`ok`, the same application progressed).
 5. **`A` empty (all triage)** → drop `new` (the universal floor) to get `S'`. `|S'| == 0` → `new` wins;
    `|S'| == 1` → that wins (`ok`); `|S'| ≥ 2` (two different non-`new` triage states, `shortlist` vs
    `dismiss`) → **`conflict`**.
@@ -144,7 +164,14 @@ refuses to collapse disagreeing duplicate status lines. The human resolves the s
 re-runs. This is the invariant that makes the whole feature safe: the merge **never regresses** a
 status, because the survivor is *by construction* the note already holding the winning status.
 
-### 3. `Vault.merge_cluster` — store mutation, `core/vault.py`
+### 3. `merge_cluster` — Store Protocol operation, `core/vault.py` impl
+
+**On the Store Protocol + conformance (round-2 arc-r2-002).** The CLI reaches it via `Sluice.store()`, and
+it upholds store-contract properties (never-clobber, monotonic `last_seen`, reversible loser removal), so
+— symmetrically with §6 *removing* the dead `existing_keys` — it is *added* to the `Store` protocol
+(`core/protocols.py`) and the conformance suite, not left a `Vault`-private method the CLI reaches around
+the seam. `_merged/` archiving is the vault's *implementation* of the contract's "reversibly remove the
+loser"; a second store would satisfy it another way (a tombstone row).
 
 `merge_cluster(survivor_ref, loser_refs, *, alt_urls, first_seen, last_seen) -> list[str]` (the archived
 loser paths, so the CLI can report them and the idempotence test can assert them). The CLI decides the
@@ -153,9 +180,11 @@ survivor (via §2) and computes the unioned audit trail; the store does the mech
 - **Survivor** keeps its body, enrichment, scores, and status **untouched** (never-clobber). Only the
   audit trail is unioned onto it, via the CAS path (`update_fields`/an `_cas_write` transform), so a
   concurrent edit to the survivor survives: each loser URL not already present is recorded as an
-  alternate source in an `alt_urls` frontmatter key, `first_seen = min`, and `last_seen` bumped through
-  the store's existing **monotonic** guard (`_bump_last_seen` never lowers it — round-1 inv-003 keeps
-  monotonicity enforced at the store, not delegated to the CLI's `max`).
+  alternate source in an `alt_urls` frontmatter key. Both timestamps are **re-derived inside the CAS
+  transform against the fresh note**, not written verbatim from a caller param — `last_seen` through the
+  store's existing **monotonic** guard (`_bump_last_seen` never lowers it; round-1 inv-003), and
+  `first_seen = min(param, fresh)` for the same reason (round-2 rev-r2-002: monotonicity stays enforced
+  at the store, never delegated to the CLI's `min`/`max`).
   - **`alt_urls` serialization is URL-safe (round-1 rev-003)**: NOT comma-joined — a URL query can
     contain a comma, and a delimiter inside a field is the exact collision `dedup_key`'s length-prefixed
     netstrings already engineer out. Serialize as a JSON array string (`json.dumps`, escapes any
@@ -165,7 +194,11 @@ survivor (via §2) and computes the unioned audit trail; the store does the mech
   **first**; the losers are `os.replace`'d **only on its success**. A `VaultConflict` on the survivor
   therefore aborts before *any* loser is archived — nothing is lost and the command is re-runnable. A
   crash *between* survivor-update and a later archive self-heals: a re-run re-clusters, the survivor
-  already carries the union (idempotent), and the un-archived losers re-merge.
+  already carries the union (idempotent), and the un-archived losers re-merge. **A per-loser archive
+  failure is surfaced, never counted as merged (round-2 inv-r2-002)**: if an `os.replace` mid-loop raises
+  `OSError`, the return value distinguishes archived from un-archived losers and the CLI reports the
+  failure — a loser reported "merged" that is still in the active leads dir is the failed-reported-as-
+  success shape rule 9 forbids.
 - **Each loser** is **archived, not deleted** — `os.replace`'d into `Job Applications/Job Leads/_merged/`
   (a name collision there gets a numeric suffix). Reversible, matching #5's "a merge is recoverable"
   ethos. `_merged/` is a *subdir*, so `read_leads`, ingest's `_resolve_path`, and every leads-dir scan
@@ -174,8 +207,10 @@ survivor (via §2) and computes the unioned audit trail; the store does the mech
 - **A loser's own downstream state is intentionally dropped from the active view (round-1 inv-002)**: a
   loser's scores, `relevance_notes`, `tailored_cv` pointer, or a pending `needs_signoff`/`pending_cv`
   hold do not migrate to the survivor — recoverable only by un-archiving. So the report (§4) **flags**
-  any loser carrying a `tailored_cv` or an open sign-off hold, so the human sees the active state a merge
-  would archive away before naming that id. Documented as deliberate in `docs/ARCHITECTURE.md`.
+  any loser carrying a `tailored_cv`, an open sign-off hold, **or any application-owned status**
+  (`applied`…`offer`, or a terminal — round-2 inv-r2-001/rev-r2-001: a live application marked by track
+  from an email carries no CV, so a CV-only flag would miss it), so the human sees the active state a
+  merge would archive away before naming that id. Documented as deliberate in `docs/ARCHITECTURE.md`.
 
 ### 4. `sluice leads dedupe` — CLI, `cli.py`
 
@@ -184,8 +219,9 @@ New top-level `leads` group with a `dedupe` subcommand (argparse, lazy-imported)
 - **`sluice leads dedupe`** (report; changes nothing) — scans via `store.read_leads()`, clusters (§1),
   and prints each cluster with a stable id, its members (status / path / url), the computed survivor, a
   **CONFLICT** flag where §2 cannot decide, and a **loser-state flag** where any non-survivor carries a
-  `tailored_cv` or an open `needs_signoff`/`pending_cv` hold (§3 inv-002 — the active state a merge would
-  archive away). `--json` for a machine-readable report.
+  `tailored_cv`, an open `needs_signoff`/`pending_cv` hold, or an application-owned status (§3
+  inv-002/inv-r2-001 — the active state a merge would archive away). `--json` for a machine-readable
+  report.
 - **`sluice leads dedupe --merge <id> [<id>…]`** — merges only the named, vetted clusters (each id typed
   is the human's sign-off, mirroring `track confirm <id>` / `cv signoff`). No blanket merge-all, so a
   false cluster cannot be swept in. A `conflict` cluster passed to `--merge` is **refused** (reported),
@@ -214,15 +250,25 @@ the `location_noise_words` lesson that the enumeration ships green on keys nobod
 Company matching stays exact-normalized (no knob); a `dedupe_company_noise_words` for corporate-form
 suffixes (`Inc`/`Ltd`) is a possible future knob, deferred (YAGNI until real data shows it needed).
 
-### 6. `existing_keys()` — delete (resolve the drift the issue names)
+### 6. Store Protocol: `existing_keys()` out, `merge_cluster()` in
 
-`Store.existing_keys()` is declared in the protocol (`core/protocols.py`), implemented in `Vault`, and
+The two protocol changes are the coherent pair that keeps the `Store` contract matched to what the code
+actually uses.
+
+**Delete `existing_keys()`.** Declared in the protocol (`core/protocols.py`), implemented in `Vault`, and
 tested — but **nothing calls it**; ingest dedup reads `seen.load()` exclusively. It is url-only, so it
 never served the drifted case anyway, and `dedupe` scans via `read_leads`. Leaving a tested-but-uncalled
-method in a seam contract is drift either way; #23 owns the decision. **Delete it** — from the `Store`
-protocol, `Vault`, its two unit tests, and the conformance assertion. `seen.db` remains the ingest gate
-(a rebuildable cache); `dedupe` is the vault-as-source-of-truth reconciliation that makes losing
-`seen.db` harmless.
+method in a seam contract is drift; #23 owns the decision. Remove it from the `Store` protocol, `Vault`,
+its two unit tests, and the conformance assertion. `seen.db` remains the ingest gate (a rebuildable
+cache); `dedupe` is the vault-as-source-of-truth reconciliation that makes losing `seen.db` harmless.
+
+**Add `merge_cluster()`** to the protocol + conformance (§3, round-2 arc-r2-002) — a live contract
+operation the CLI reaches through `Sluice.store()`.
+
+**Human-gated canonical edit (round-2 arc-r2-003).** `.rulesync/subagents/sluice-invariant-reviewer.md:90`
+names `Vault.existing_keys` as the dedup mechanism (and is already slightly stale — ingest uses
+`seen.load()`). `.rulesync/` is canonical and human-gated, so this correction is **surfaced to the user**,
+not auto-applied, then regenerated (`npx rulesync generate`). Tracked in DoD 5.
 
 ## Tests
 
@@ -230,39 +276,56 @@ Behaviour-asserting, synthetic fixtures, offline. Pure pieces mutation-witnessed
 delete a branch → the *named new* test reddens, and confirm no *pre-existing* test is what catches the
 mutant; never add-beside).
 
-**Fixture discipline (round-1 neu-001).** The clustering cases need *constructed* token relationships
-`faker` cannot produce (a noise-token pair; `{senior, software, engineer}` vs `{software, engineer}`;
-`Foo` vs `Foo Industries`). Do **not** hardcode role strings — derive a base title from the faker
-`titles` pool and mutate it programmatically with a synthetic noise/seniority token, and build the
-company-prefix pair from a faker base plus a synthetic suffix token (`f"{base} Industries"`). This keeps
-the seeded-faker mechanism that keeps titles honest.
+**Fixture discipline (round-1 neu-001, round-2 neu-r2-001).** The clustering cases need *constructed*
+token relationships `faker` cannot produce (a noise-token pair; `{senior, software, engineer}` vs
+`{software, engineer}`; `Foo` vs `Foo Industries`). Do **not** hardcode role strings — derive a base title
+from the faker `titles` pool and mutate it programmatically with a synthetic noise/seniority token, and
+build the company-prefix pair from a faker base plus a synthetic suffix token (`f"{base} Industries"`).
+**Locations, too, are synthetic placeholders** — use conftest's `LOCATIONS` (`Alfa`/`Bravo`/`Charlie`,
+"never a real place"), never `London`/`Paris`, per the no-personal-data rule (DoD-11 permits place words
+in a `sluice/` docstring only, not `tests/`). This keeps the seeded-faker mechanism that keeps fixtures
+honest.
 
 - **`cluster_duplicates`**: drifted title with a configured `title_noise` token → one cluster; distinct
   seniority titles (no noise) → **not** clustered; same title, different city → **not** clustered
   (location DIFFERENT); distinct firms sharing a prefix (`Foo` vs `Foo Industries`) → **not** clustered;
   a blank-location member → **still** clusters with a compatible member (the UNKNOWN-clusters direction,
-  asserted in **both** member orders — round-1 tst-002); **complete-linkage** `{London, blank, Paris}` →
-  **never** a trio spanning DIFFERENT cities (round-1 arc-001); url-drift with identical strings is *not*
-  a cluster the command needs (upsert already merged it) — asserted as a non-regression.
+  asserted in **both** member orders — round-1 tst-002); url-drift with identical strings is *not* a
+  cluster the command needs (upsert already merged it) — asserted as a non-regression.
+- **`cluster_duplicates` cover determinism** (round-1 arc-001, round-2 arc-r2-001/tst-r2-003, synthetic
+  `Alfa`/`Bravo` locations): a **positive** `{Alfa, Alfa2(SAME)}` → **one** 2-clique (not vacuously green);
+  a `{Alfa, Alfa2(SAME), blank, Bravo(DIFFERENT)}` 4-note group → the blank-bridged component is not a
+  clique → **no** cluster (never a trio spanning DIFFERENT cities); two disjoint cliques in one group
+  (`{Alfa, Alfa2}` + `{Bravo, Bravo2}`, no blank) → **two** clusters. Same input → same clusters and same
+  ids (determinism, backing §4's stable-id contract).
 - **`resolve_merge_status`** (N-ary, order-independent): pairwise cases —
   `[shortlist, new]`→`shortlist`; `[rejected, shortlist]`→`rejected` (app beats triage);
-  `[rejected, interview]`→`rejected` (terminal beats live); `[applied, interview]`→`interview` (ladder);
+  `[rejected, interview]`→**`conflict`** (terminal + live: reject-then-reapply, round-2
+  inv-r2-001/rev-r2-001); `[applied, interview]`→`interview` (both live, ladder);
   `[rejected, accepted]`→`conflict`; `[shortlist, dismiss]`→`conflict`; `[offer, offer]`→`offer`;
   non-canonical + different → `conflict` — **each asserted in both argument orders** `(a,b)==(b,a)` for
   `(winner, outcome)`, and a symmetry mutant must redden the named test (round-1 tst-002). **Cluster-of-3
   cases** (round-1 inv-001/rev-001/arc-002): `[new, new, rejected]`→`rejected`;
   `[shortlist, dismiss, applied]`→`applied` (app dominates, no spurious conflict);
-  `[applied, interview, rejected]`→`rejected`; `[rejected, accepted, new]`→`conflict`. Each branch
-  mutation-witnessed. **Survivor selection** (CLI, separate from the status verdict): two members holding
-  the winning status (`new`/`new`, `rejected`/`rejected`) pick the highest-`last_seen`-then-slug member
-  deterministically.
+  `[applied, interview, rejected]`→**`conflict`** (terminal + live present); `[rejected, accepted, new]`→
+  `conflict`. The 3-member cases are asserted **over all permutations** (round-2 tst-r2-001 — a single
+  ordering catches only a left-fold; the intermediate-`conflict` state a right-fold hits is not subsumed
+  by the pairwise both-orders coverage). Each branch mutation-witnessed. **Survivor selection** (CLI,
+  separate from the status verdict): two members holding the winning status (`new`/`new`,
+  `rejected`/`rejected`) pick the highest-`last_seen`-then-slug member deterministically.
 - **`Vault.merge_cluster` never-clobber (round-1 tst-001 — the survivor must be SEEDED, not empty)**:
   seed the survivor with a real advanced state (`status=applied`, `score`, `relevance_notes`,
   `tailored_cv`, `applied_date`, `applied_url`, `ats`) **and** a body via `append_body_section`, then
   assert the **whole** frontmatter dict and body survive **except** `alt_urls` (union) / `first_seen`
   (min) / `last_seen` (monotonic bump) — mirroring `test_rescrape_touches_last_seen_AND_NOTHING_ELSE`.
   Also: loser archived under `_merged/` and invisible to `read_leads`; `alt_urls` round-trips a
-  comma-bearing URL (round-1 rev-003); `last_seen` is never **lowered** (round-1 inv-003).
+  comma-bearing URL (round-1 rev-003); **neither** `last_seen` **nor** `first_seen` is ever moved the
+  wrong way — a stale caller param cannot lower `last_seen` or raise `first_seen` (round-1 inv-003,
+  round-2 rev-r2-002). The never-clobber + reversible-loser-removal core is **also a conformance test**
+  (round-2 arc-r2-002), since `merge_cluster` is now on the `Store` protocol.
+- **Loser-state flag (round-2 tst-r2-002)**: a cluster whose loser carries a `tailored_cv`, an open
+  `needs_signoff`/`pending_cv` hold, **or** an application-owned status → the report raises the loser-state
+  flag; a plain triage loser does not.
 - **`merge_cluster` CAS safety (round-1 tst-003)**: use `tests/conftest.py`'s `racing_read` to race a
   survivor edit during the audit-trail union — assert it either retries cleanly onto fresh content or
   raises `VaultConflict` (handled non-fatally by the CLI), with **no loser lost or clobbered**. Plus the
@@ -291,20 +354,26 @@ the seeded-faker mechanism that keeps titles honest.
 
 ## Definition of Done
 
-1. `cluster_duplicates` (**complete-linkage**, §1), `resolve_merge_status` (**N-ary, order-independent**,
-   §2), `Vault.merge_cluster` (**survivor-CAS-first / archive-on-success**, URL-safe `alt_urls`, monotonic
-   `last_seen`, §3), and `cmd_leads_dedupe` (report flags CONFLICT + loser-state) implemented;
-   `_norm_tokens` factored and its ordering pins retained.
+1. `cluster_duplicates` (**complete-linkage, deterministic connected-component-clique cover**, §1),
+   `resolve_merge_status` (**N-ary, order-independent; terminal + live → `conflict`**, §2),
+   `merge_cluster` (**survivor-CAS-first / archive-on-success**, URL-safe `alt_urls`, timestamps
+   re-derived in the CAS transform, per-loser archive failure surfaced, §3), and `cmd_leads_dedupe`
+   (report flags CONFLICT + loser-state incl. app-owned losers) implemented; `_norm_tokens` factored and
+   its ordering pins retained.
 2. `dedupe_title_noise_words` on root `Config` + `_str_list` load + commented `sluice.yaml.example` line +
    neutral-defaults coverage (sweep + traveling assertion).
-3. `existing_keys()` removed from protocol, `Vault`, tests, and conformance assertion.
+3. **Store protocol matched to use**: `existing_keys()` removed (protocol, `Vault`, tests, conformance
+   assertion); `merge_cluster()` added (protocol + conformance test).
 4. Every test above green; the pure pieces mutation-witnessed by node id (confirmed not caught by a
    pre-existing test) under the checked-hash `compileall` regime. Exact commands (round-1 rev-002):
    - `python -m compileall -q -f --invalidation-mode checked-hash sluice tests scripts` (once, before witnessing)
    - `python -m pytest`
    - `ruff check sluice tests` (ruff is **not** in `[test]`; `pip install ruff==0.15.21`, the CI pin)
 5. `docs/ARCHITECTURE.md` updated: the new `leads dedupe` command; the role-level, human-gated,
-   archive-not-delete merge semantics; and the deliberate drop of a loser's downstream state
-   (scores/notes/CV/sign-off) from the active view. No ingest/never-clobber/never-regress contract
-   *widened* (the merge upholds them, it does not change them).
+   archive-not-delete merge semantics; the deliberate drop of a loser's downstream state
+   (scores/notes/CV/sign-off) from the active view; and the Store-contract surface (`merge_cluster` in,
+   `existing_keys` out). No ingest/never-clobber/never-regress contract *widened* (the merge upholds them,
+   it does not change them). **Human-gated (round-2 arc-r2-003)**: the stale `Vault.existing_keys`
+   reference at `.rulesync/subagents/sluice-invariant-reviewer.md:90` is surfaced to the user for a
+   `.rulesync/` edit (canonical tree), then regenerated — not auto-applied.
 6. Full suite green, ruff clean, offline/hermetic.
