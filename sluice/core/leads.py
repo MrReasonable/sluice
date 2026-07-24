@@ -141,3 +141,62 @@ def same_opportunity(note_fm: dict, lead: "Lead", noise=frozenset()) -> str:
     if lead.url and note_url and _norm_url(lead.url) == _norm_url(note_url):
         return SAME
     return _compare_locations(note_fm.get("location", ""), lead.location, noise)
+
+
+def _norm_tokens(s: str) -> set:
+    """Token SET of a string under the exact fold `_norm_location` implements
+    (NFKD, casefold, drop combining marks, unicode-aware \\W split). Shared by
+    title and company clustering so both reuse the one pinned normalization."""
+    return set(_norm_location(s).split())
+
+
+def _location_cliques(members, location_noise):
+    """Partition members (already same company+role) into complete-linkage location
+    cliques. A cluster is a CONNECTED COMPONENT of the compatibility graph
+    (_compare_locations != DIFFERENT) that is itself a CLIQUE. A component a chain
+    of UNKNOWN (blank) edges makes span a DIFFERENT pair is not a clique -> no
+    cluster (its members stay singletons), so a blank location never bridges two
+    different cities (#5, #23 arc-r2-001). Deterministic in member order."""
+    n = len(members)
+    compat = [[True] * n for _ in range(n)]
+    for i in range(n):
+        for j in range(i + 1, n):
+            ok = _compare_locations(members[i].fm.get("location", ""),
+                                    members[j].fm.get("location", ""),
+                                    location_noise) != DIFFERENT
+            compat[i][j] = compat[j][i] = ok
+    seen, out = set(), []
+    for start in range(n):
+        if start in seen:
+            continue
+        comp, stack = [], [start]
+        while stack:                       # DFS the compatibility component
+            k = stack.pop()
+            if k in seen:
+                continue
+            seen.add(k)
+            comp.append(k)
+            stack.extend(m for m in range(n) if m not in seen and compat[k][m])
+        if len(comp) >= 2 and all(compat[a][b] for a in comp for b in comp if a != b):
+            out.append([members[k] for k in sorted(comp)])
+    return out
+
+
+def cluster_duplicates(notes, *, title_noise=(), location_noise=()):
+    """Group lead notes into suspected-duplicate clusters (size >= 2), for the
+    human-gated `sluice leads dedupe`. Two notes cluster iff same firm
+    (`_norm_tokens(company)` equal), same role (`_norm_tokens(role)` minus the
+    configured title-noise tokens equal), and a complete-linkage location clique
+    (`_location_cliques`). PROPOSES only; merging is human-gated, so recall-leaning
+    is acceptable. See docs/.../read-path-dedup-design.md #1."""
+    tnoise = {t for w in title_noise for t in _norm_tokens(w)}
+    groups: dict = {}
+    for note in notes:
+        company = frozenset(_norm_tokens(note.fm.get("company", "")))
+        role = frozenset(_norm_tokens(note.fm.get("role", "")) - tnoise)
+        groups.setdefault((company, role), []).append(note)
+    clusters = []
+    for members in groups.values():
+        if len(members) >= 2:
+            clusters.extend(_location_cliques(members, location_noise))
+    return clusters
