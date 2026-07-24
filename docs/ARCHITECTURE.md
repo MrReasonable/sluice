@@ -57,8 +57,9 @@ Shared by every sub-app:
    rendered ungated), render (shells out to an external script), and serve
    under an opaque, cache-busted filename. Above the hard gate sits a softer,
    human-facing layer (#60): an advisory LLM audit (`audit.py`) flags claims
-   the bundle does not support, and an `unsupported` flag WITHHOLDS the
-   send-ready `tailored_cv` pointer rather than auto-serving. The hold is
+   the bundle does not support, and an `unsupported` flag still renders and
+   serves the PDF (it passed the hard gate) but WITHHOLDS the send-ready
+   `tailored_cv` pointer, so `apply` cannot select it. The hold is
    recorded in two NEW frontmatter keys (`pending_cv`, `needs_signoff`) — the
    note's `status` stays `shortlist` (never-regress is untouched); the CV is
    simply invisible to apply without the pointer. A held lead is skipped on

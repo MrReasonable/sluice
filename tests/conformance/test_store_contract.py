@@ -367,6 +367,29 @@ def test_upsert_return_is_always_within_the_vocabulary(store_name, tmp_path, mon
 
 
 # ── #60: profile-audit sign-off (outcome verdict + never-clobber) ─────────────
+def test_hold_for_signoff_stamps_only_when_no_tailored_cv(store_name, tmp_path, monkeypatch):
+    """hold_for_signoff is a CONTRACT property: it stamps pending_cv/needs_signoff ONLY when
+    no tailored_cv exists in FRESH content (returns True), and does NOTHING when a real
+    pointer already exists (returns False) -- so a flagged re-tailor never latches a lead that
+    already has a send-ready CV, and never clobbers that pointer. Whole-fm-dict assertions."""
+    import json
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    claims = json.dumps(["unsupported\tMotivated by placeholder\tNONE"])
+
+    # No tailored_cv -> stamps, True.
+    store.upsert(_lead())
+    ref = store.read_leads()[0].ref
+    assert store.hold_for_signoff(ref, pending="CV_ab12.pdf (2026-07-24)", claims=claims) is True
+    fm = dict(store.read_leads()[0].fm)
+    assert fm.get("pending_cv") == "CV_ab12.pdf (2026-07-24)" and "needs_signoff" in fm
+
+    # A real tailored_cv present -> does nothing, False, pointer untouched.
+    store.sign_off(ref)  # promote -> tailored_cv set, markers cleared
+    base = dict(store.read_leads()[0].fm)
+    assert store.hold_for_signoff(ref, pending="CV_STALE.pdf (2026-07-24)", claims=claims) is False
+    assert dict(store.read_leads()[0].fm) == base   # nothing stamped, tailored_cv intact
+
+
 def test_sign_off_reports_each_outcome_and_never_clobbers(store_name, tmp_path, monkeypatch):
     """sign_off's four outcomes are a CONTRACT property, like upsert's vocabulary: the
     store reports what it did on FRESH content (promoted|discarded|collision|nothing), so a

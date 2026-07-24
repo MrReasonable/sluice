@@ -38,6 +38,15 @@ class FakeVault:
         fresh = self._fresh(ref)
         if fresh is not None:
             fresh.fm.update(fields)
+    def hold_for_signoff(self, ref, *, pending, claims):
+        # Mirrors Vault.hold_for_signoff: stamp only if no tailored_cv on the FRESH note.
+        fresh = self._fresh(ref)
+        if fresh is not None and fresh.fm.get("tailored_cv"):
+            return False
+        self.fields.setdefault(ref, {}).update({"pending_cv": pending, "needs_signoff": claims})
+        if fresh is not None:
+            fresh.fm.update({"pending_cv": pending, "needs_signoff": claims})
+        return True
     def sign_off(self, ref, *, accept=True):
         # Mirrors Vault.sign_off's outcome verdict on the fresh note (#60).
         fresh = self._fresh(ref)
@@ -391,6 +400,22 @@ def test_batch_limit_counts_needs_signoff(monkeypatch):
     be = FakeBackend(CLEAN_CV, audit_out="unsupported\tMotivated by placeholder\tNONE")
     results = run_batch(v, _cfg(), be, FakeCache(), renderer=FakeRenderer(), limit=1)
     assert [r.status for r in results] == ["needs-signoff"]   # stopped after one held lead
+
+
+def test_flagged_recompose_does_not_latch_a_lead_that_already_has_a_cv(monkeypatch):
+    # A lead with a real tailored_cv, re-tailored (single-lead), whose NEW compose is flagged:
+    # the hold must NOT be stamped over the existing pointer -- that would latch the lead behind
+    # a redundant sign-off even though a send-ready CV already exists. Report skipped-has-cv and
+    # leave the existing pointer untouched (mirrors set_tailored_cv's only_if_absent).
+    _served(monkeypatch)
+    note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst",
+                 "tailored_cv": "CV_real.pdf (2026-07-24)"})
+    v = FakeVault(ENTRIES, notes=[note])
+    be = FakeBackend(CLEAN_CV, audit_out="unsupported\tMotivated by placeholder\tNONE")
+    r = run_one(note, v, _cfg(), be, FakeCache(), renderer=FakeRenderer())
+    assert r.status == "skipped-has-cv"
+    assert "pending_cv" not in note.fm and "needs_signoff" not in note.fm   # no redundant hold
+    assert note.fm["tailored_cv"] == "CV_real.pdf (2026-07-24)"             # existing pointer intact
 
 def test_batch_survives_a_single_lead_exception(monkeypatch):
     # The triage engine records per-lead failures and continues; the CV engine
