@@ -172,9 +172,13 @@ if not text:
 argued the chained `__cause__` (the raw `TimeoutExpired`, argv-bearing) was safe "because no sink logs
 with `exc_info`". The cross-cutting reviewer falsified that premise: `sluice/track/classify.py:96`
 logs a failed `complete()` with `_log.exception`, which renders the **whole chain** — reproduced,
-leaking both host and path on exactly the hung-host route. `from None` suppresses the chain
-(`__cause__` **and** the implicit `__context__`), so no traceback-logging sink can surface the argv;
-the scrubbed message already carries the diagnostic. The residual is now **closed at the source**, not
+leaking both host and path on exactly the hung-host route. `from None` clears `__cause__` and sets
+`__suppress_context__`, so every traceback-**rendering** sink (`_log.exception`,
+`traceback.format_exception`) omits the raw cause — which is the entire realistic leak surface — while
+the scrubbed message still carries the diagnostic. (`e` remains *referenced* via `__context__`;
+`from None` suppresses its *display*, not the reference, so only a sink that walked that attribute by
+hand — which nothing in this codebase does — could still reach it. Scope the guarantee to rendered
+output, not to the object graph.) The rendered-chain residual is now **closed at the source**, not
 accepted. The `:96`/`:113` raises are in normal flow (no active exception), so they have no chain to
 suppress. Pinned by `test_claudemax_timeout_chain_carries_no_secret`, which asserts on the full
 `traceback.format_exception` output (what `_log.exception` emits), not merely `str(err)`.
@@ -270,8 +274,10 @@ a real config.
 **Load-bearing neutrality guarantee:** for a backend built the way production builds it — via
 `host=`/`claude_path=`, so `self.host`/`self.claude_path` track the argv in `cmd_template` (the
 `claude_max.py` factory never passes an explicit `cmd_template`; verified) — `str(BackendError)` never
-contains the host substring, asserted at **all three** raise sites (`:94` invocation-failed, `:96`
-exit≠0, `:113` empty). This is the property the whole change exists to provide. The guarantee is scoped
+contains the configured host **as a standalone token**, asserted at **all three** raise sites (`:94`
+invocation-failed, `:96` exit≠0, `:113` empty). (Token-aware matching redacts the host wherever it
+stands as a token; it deliberately leaves a coincidental *substring* of a longer word alone — a `db`
+inside `database` is not the host disclosed, and mangling it would corrupt the diagnostic.) This is the property the whole change exists to provide. The guarantee is scoped
 to that coupling deliberately (inv-001): a caller that passes a divergent explicit `cmd_template` while
 leaving the constructor's host/path defaults is not a production path and is not made worse by this
 change; the `_scrub` docstring notes the assumption rather than adding a code guard for an unreachable
@@ -317,17 +323,18 @@ additive to behaviour.
   broad scrubber is a different, larger change; YAGNI here.
 - **Structured `--output-format json` parsing.** The existing comment already defers the
   stop_reason-based truncation guard for the same reason; unrelated to this fix.
-- **Making redaction evasion-proof.** `str.replace` on known values is a disclosure-reduction, not a
-  guarantee against a stderr that paraphrases the host some other way. It removes the two values known
-  to be sensitive and in hand; it is not claimed to catch an arbitrary echo.
+- **Making redaction evasion-proof.** Token-aware `re.sub` on known values is a disclosure-reduction,
+  not a guarantee against a stderr that paraphrases the host some other way. It removes the two values
+  known to be sensitive and in hand; it is not claimed to catch an arbitrary echo.
 
 ## Definition of done
 
 - `ruff check sluice tests` → clean.
 - `python -m pytest` → green; record the added test count (existing 868 unaffected).
-- All seven mutation witnesses above each redden their named test by node id, run after the
-  checked-hash `compileall` (note: the two size-preserving edits — the guard-clause deletions — need
-  the content-addressed cache CLAUDE.md's `compileall` line provides).
+- **Every** mutation witness in the list above reddens its named test by node id (the list grew as
+  findings folded — count it from the list, do not hard-assert a total), run after the checked-hash
+  `compileall` (note: the size-preserving edits — e.g. the `re.sub`↔`str.replace` swap and the
+  redact/truncate order swap — need the content-addressed cache CLAUDE.md's `compileall` line provides).
 - Behaviour spot-check (offline, no live CLI), **both leak routes**:
   - exit≠0: fake `runner` returning `returncode=1, stderr="ssh: Could not resolve hostname <h>: ..."`
     on a backend with a configured synthetic `host` → raised `str` contains the host label, not the

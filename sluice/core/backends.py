@@ -141,10 +141,13 @@ class ClaudeMaxBackend:
             # `from None`, not `from e`: the scrubbed message already carries the diagnostic,
             # but the RAW cause `e` would remain chained -- and track/classify.py logs a failed
             # complete() with `_log.exception`, which renders the whole chain, re-leaking the
-            # unscrubbed argv the message just scrubbed. `from None` suppresses the chain
-            # (`__cause__` and the implicit `__context__`) so no traceback-logging sink can
-            # surface it. This is the residual an earlier round wrongly called "safe on the
-            # premise no sink uses exc_info" -- one does; closed here at the source.
+            # unscrubbed argv the message just scrubbed. `from None` clears `__cause__` and sets
+            # `__suppress_context__`, so every traceback-RENDERING sink (`_log.exception`,
+            # `traceback.format_exception`) omits `e` -- which is the entire realistic leak
+            # surface. (`e` stays referenced via `__context__`; only a sink that walked that
+            # attribute by hand, which nothing here does, could still reach it.) This is the
+            # residual an earlier round wrongly called "safe on the premise no sink uses
+            # exc_info" -- one does; the rendered chain is closed here at the source.
             raise BackendError(f"claude-max invocation failed: {self._scrub(str(e))}") from None
         if proc.returncode != 0:
             raise BackendError(

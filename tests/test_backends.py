@@ -483,6 +483,9 @@ def test_claudemax_timeout_chain_carries_no_secret():
     err = ei.value
     chain = "".join(traceback.format_exception(type(err), err, err.__traceback__))
     assert _SYNTH_HOST not in chain and _SYNTH_PATH not in chain
+    # ...and pin the mechanism directly: `from None` clears __cause__ and suppresses the
+    # implicit context, which is what keeps a traceback-rendering sink from re-leaking it.
+    assert err.__cause__ is None and err.__suppress_context__ is True
 
 
 def test_claudemax_nonzero_exit_scrubs_host_keeps_diagnostic():
