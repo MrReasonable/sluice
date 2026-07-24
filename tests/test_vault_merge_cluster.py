@@ -7,7 +7,7 @@ import os
 import pytest
 
 from sluice.core.vault import Vault
-from sluice.core.protocols import VaultConflict
+from sluice.core.protocols import MalformedNoteField, VaultConflict
 from tests.conftest import LOCATIONS, racing_read
 
 
@@ -110,12 +110,33 @@ def test_survivor_conflict_archives_zero_losers(tmp_path, monkeypatch):
     assert len(v.read_leads()) == 2      # loser NOT archived — conflict aborted before any archive
 
 
+def test_malformed_alt_urls_rejects_merge(tmp_path):
+    # A malformed alt_urls (e.g. a human hand-edit that broke the JSON) must not be
+    # silently reset -- that would clobber a value that might carry real information.
+    # merge_cluster raises instead, and the raise fires from INSIDE the CAS transform,
+    # before _atomic_write and before the archive loop -- so the survivor's malformed
+    # value is left exactly as it was and the loser is never archived.
+    v = _mk(tmp_path)
+    survivor = _by_url(v, "https://ex.invalid/1")
+    loser = _by_url(v, "https://ex.invalid/2")
+    v.update_fields(survivor.ref, {"alt_urls": "not json ["})
+    before = _by_url(v, "https://ex.invalid/1").fm["alt_urls"]
+
+    with pytest.raises(MalformedNoteField):
+        v.merge_cluster(survivor.ref, [loser.ref], alt_urls=["https://ex.invalid/2"],
+                        first_seen="2026-07-05", last_seen="2026-07-20")
+
+    after = _by_url(v, "https://ex.invalid/1")
+    assert after.fm["alt_urls"] == before                # malformed value UNCHANGED
+    assert len(v.read_leads()) == 2                       # loser NOT archived
+
+
 def test_per_loser_archive_failure_isolated_not_fatal(tmp_path, monkeypatch):
     # inv-r2-002: a failed archive of ONE loser (e.g. a permissions/ENOSPC blip on
-    # os.replace) must not abort the whole cluster and must not be counted as merged --
+    # os.link) must not abort the whole cluster and must not be counted as merged --
     # that loser stays in the active view, while a succeeding loser is still archived
     # and unioned. Three separate notes: one survivor, one loser that archives cleanly,
-    # one loser whose os.replace is made to fail.
+    # one loser whose os.link is made to fail.
     v = _mk3(tmp_path)
     survivor = _by_url(v, "https://ex.invalid/1")
     loser_ok = _by_url(v, "https://ex.invalid/2")
@@ -123,17 +144,16 @@ def test_per_loser_archive_failure_isolated_not_fatal(tmp_path, monkeypatch):
     fail_basename = os.path.basename(loser_fail.ref)
 
     import sluice.core.vault as vault_mod
-    real_replace = vault_mod.os.replace
+    real_link = vault_mod.os.link
 
-    def flaky_replace(src, dst):
-        # Fail ONLY for loser_fail's destination basename; the real os.replace runs for
-        # every other call (loser_ok's archive, and anything else _cas_write/_write use
-        # os.replace for internally).
+    def flaky_link(src, dst):
+        # Fail ONLY for loser_fail's destination basename; the real os.link runs for
+        # every other call (loser_ok's archive).
         if os.path.basename(dst) == fail_basename:
             raise OSError("simulated: could not archive this loser")
-        return real_replace(src, dst)
+        return real_link(src, dst)
 
-    monkeypatch.setattr(vault_mod.os, "replace", flaky_replace)
+    monkeypatch.setattr(vault_mod.os, "link", flaky_link)
 
     archived = v.merge_cluster(
         survivor.ref, [loser_ok.ref, loser_fail.ref],

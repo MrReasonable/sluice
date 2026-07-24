@@ -99,8 +99,6 @@ def resolve_merge_status(statuses):
             return next(iter(term)), "ok"    # the sole terminal (no live) wins
         return max(live, key=_RANK.__getitem__), "ok"   # all live -> highest ladder rank
     nonnew = (s & set(TRIAGE_OWNED)) - {"new"}
-    if not nonnew:
-        return "new", "ok"                   # only new + itself: new is the floor
     if len(nonnew) == 1:
         return next(iter(nonnew)), "ok"
     return None, "conflict"                  # two different non-new triage states

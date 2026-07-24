@@ -40,3 +40,12 @@ def test_three_member_all_permutations(statuses, winner, outcome):
 
 def test_all_equal_noncanonical_is_agreement_not_conflict():
     assert resolve_merge_status(["weird", "weird"]) == ("weird", "ok")
+
+
+def test_all_new_resolves_via_the_all_agree_path():
+    # Regression for the dead `if not nonnew: return "new", "ok"` branch removed from
+    # resolve_merge_status: an all-"new" cluster is already caught by the top
+    # `len(s) == 1` all-agree guard, long before `nonnew` is ever computed, so removing
+    # that branch must not change either of these outcomes.
+    assert resolve_merge_status(["new", "new"]) == ("new", "ok")
+    assert resolve_merge_status(["new"]) == ("new", "ok")

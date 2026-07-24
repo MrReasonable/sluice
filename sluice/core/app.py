@@ -339,10 +339,12 @@ class Sluice:
         """Merge the human-vetted clusters named by `ids`. Recomputes the report
         fresh and matches by id: a stale id (membership changed) -> 'stale'; a
         conflict cluster -> 'conflict' (refused); a sustained write race ->
-        'conflict-race'; every loser archived -> 'merged'; a per-loser archive
-        failure (isolated, self-heals next run) -> 'partial'. Returns [(id, outcome)].
+        'conflict-race'; a survivor whose existing alt_urls is malformed (not a
+        JSON list of strings) -> 'malformed' (refused, nothing written, no loser
+        touched); every loser archived -> 'merged'; a per-loser archive failure
+        (isolated, self-heals next run) -> 'partial'. Returns [(id, outcome)].
         Nothing merges without an id."""
-        from sluice.core.protocols import VaultConflict
+        from sluice.core.protocols import MalformedNoteField, VaultConflict
         store = self.store()
         by_id = {c.id: c for c in self._dedupe_report(store)}
         results = []
@@ -360,14 +362,20 @@ class Sluice:
                 # OSError is isolated (that loser stays active, self-heals next run) but
                 # must not be reported as a full "merged" (design #3): fewer archived than
                 # losers means the archive is genuinely partial.
+                # first_seen aggregates only members that actually CARRY the field: a
+                # member missing it entirely (a legacy/hand-edited note) must not poison
+                # the min() to "" and hide a genuinely earlier date held by another member.
+                seens = [n.fm.get("first_seen") for n in c.members if n.fm.get("first_seen")]
                 archived = store.merge_cluster(
                     c.survivor.ref, [n.ref for n in losers],
                     alt_urls=[n.fm["url"] for n in losers if n.fm.get("url")],
-                    first_seen=min(n.fm.get("first_seen", "") for n in c.members),
+                    first_seen=min(seens) if seens else "",
                     last_seen=max(n.fm.get("last_seen", "") for n in c.members))
                 results.append((cid, "merged" if len(archived) == len(losers) else "partial"))
             except VaultConflict:
                 results.append((cid, "conflict-race"))
+            except MalformedNoteField:
+                results.append((cid, "malformed"))
         return results
 
     def triage(self, *, statuses=("new", "research"), limit=None, dry_run=False,

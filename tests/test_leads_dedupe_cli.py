@@ -71,6 +71,45 @@ def test_never_regress_survivor_stays_rejected(tmp_path, monkeypatch):
     assert len(survivors) == 1 and survivors[0].status == "rejected"   # not resurrected
 
 
+def test_first_seen_minimised_across_cluster(tmp_path, monkeypatch):
+    # first_seen must aggregate across the WHOLE cluster to the true earliest date, not
+    # just the survivor's own -- and a member entirely MISSING first_seen (a legacy/
+    # hand-edited note) must not poison that aggregate to "" and hide a genuinely
+    # earlier date held by a THIRD member. Three notes so the differentiation is real:
+    # under the buggy `min(n.fm.get("first_seen", "") for n in members)`, the missing
+    # member's "" is lexicographically smaller than every real date, so the whole min()
+    # collapses to "" (falsy) and the survivor's write is skipped -- it would stay at
+    # its own later 2026-07-15 instead of the cluster's true 2026-07-01. A 2-member
+    # cluster where every member's first_seen is present cannot witness this: min()
+    # over present-only values is identical whether or not the empty-default filter
+    # exists, so it would pass unchanged on both the buggy and the fixed code.
+    app = _app(tmp_path, monkeypatch, dedupe_title_noise_words=["remote"])
+    v = Vault(str(tmp_path))
+    survivor = _seed(v, "https://ex.invalid/1", title="Analyst",
+                      first_seen="2026-07-15", last_seen="2026-07-20")
+    missing = _seed(v, "https://ex.invalid/2", title="Analyst remote",
+                     first_seen="2026-07-12", last_seen="2026-07-10")
+    _seed(v, "https://ex.invalid/3", title="remote Analyst",
+          first_seen="2026-07-01", last_seen="2026-07-05")
+    assert survivor.fm["url"] == "https://ex.invalid/1"
+
+    # Strip first_seen entirely from one member's frontmatter -- simulating a legacy
+    # note that predates the field -- the exact shape a bare .get(..., "") default
+    # silently loses.
+    text = open(missing.ref, encoding="utf-8").read()
+    text = "\n".join(line for line in text.split("\n")
+                     if not line.strip().startswith("first_seen:"))
+    with open(missing.ref, "w", encoding="utf-8") as f:
+        f.write(text)
+
+    cid = app.dedupe_report()[0].id
+    assert app.dedupe_merge([cid]) == [(cid, "merged")]
+    survivors = v.read_leads()
+    assert len(survivors) == 1
+    assert survivors[0].fm["url"] == "https://ex.invalid/1"      # highest last_seen -> survivor
+    assert survivors[0].fm["first_seen"] == "2026-07-01"         # the cluster's TRUE earliest
+
+
 def test_conflict_cluster_is_refused(tmp_path, monkeypatch):
     app = _app(tmp_path, monkeypatch, dedupe_title_noise_words=["remote"])
     v = Vault(str(tmp_path))
@@ -90,8 +129,8 @@ def test_stale_id_is_refused(tmp_path, monkeypatch):
 
 def test_partial_archive_reported(tmp_path, monkeypatch):
     # A per-loser archive OSError (e.g. a permissions/ENOSPC blip) must not be reported
-    # as a full "merged" -- the survivor's CAS write (also routed through os.replace, but
-    # for the SURVIVOR's own path, not under _merged/) still lands, so the audit trail is
+    # as a full "merged" -- the survivor's CAS write (routed through os.replace, on the
+    # SURVIVOR's own path, not under _merged/) still lands, so the audit trail is
     # unioned, but the loser stays in the active view because it was never archived.
     app = _app(tmp_path, monkeypatch, dedupe_title_noise_words=["remote"])
     v = Vault(str(tmp_path))
@@ -99,16 +138,16 @@ def test_partial_archive_reported(tmp_path, monkeypatch):
     cid = app.dedupe_report()[0].id
 
     import sluice.core.vault as vault_mod
-    real_replace = vault_mod.os.replace
+    real_link = vault_mod.os.link
 
-    def flaky_replace(src, dst):
+    def flaky_link(src, dst):
         # Fail only the archive-into-_merged/ step; the survivor's own note path is
         # untouched, so its CAS write still succeeds through the real os.replace.
         if os.path.basename(os.path.dirname(dst)) == "_merged":
             raise OSError("simulated: could not archive this loser")
-        return real_replace(src, dst)
+        return real_link(src, dst)
 
-    monkeypatch.setattr(vault_mod.os, "replace", flaky_replace)
+    monkeypatch.setattr(vault_mod.os, "link", flaky_link)
     assert app.dedupe_merge([cid]) == [(cid, "partial")]
     monkeypatch.undo()
 
