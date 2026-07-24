@@ -134,7 +134,10 @@ def _redact(text: str, secrets: dict[str, str]) -> str:
 def _scrub(self, text: str) -> str:
     """Strip this backend's own secrets (host, configured claude_path) from any text
     that becomes a BackendError message -- proc.stderr OR str(a runner exception),
-    whose TimeoutExpired/FileNotFoundError forms carry the argv."""
+    whose TimeoutExpired/FileNotFoundError forms carry the argv. Scrubs by self.host /
+    self.claude_path, which cover the argv only when they built it (the production
+    path: make_backend passes host=/claude_path=, never an explicit cmd_template); a
+    caller supplying a divergent cmd_template with default host/path is out of scope."""
     return _redact(text, {self.host: "<host>", self.claude_path: "<path>"})
 ```
 
@@ -172,9 +175,10 @@ chained cause becomes a fresh route; that is out of scope here and noted, not cl
 Two ordering invariants are load-bearing:
 
 - **Redact, *then* truncate.** Scrub the full stderr and slice `[:200]` afterward. Slicing first could
-  split a secret across the 200-char boundary and leave a fragment that `str.replace` never sees. A
-  test pins this with a secret that **straddles** the boundary (see Testing, tst-001) — the tail
-  wording certifies nothing.
+  split a secret across the 200-char boundary and leave a fragment that `str.replace` never sees. This
+  ordering lives *here*, at the call site, not in `_scrub` — so the pinning test must drive
+  `complete()` with a secret that **straddles** the boundary (see Testing, tst-001); a pure test that
+  composes `[:200]` itself is inert.
 - **Append the diagnostic only when present.** On exit-0-empty with no stderr, the message stays the
   clean `"...whitespace)"` and preserves the `"no text"` substring the existing test matches; when
   stderr *is* present (the interesting case — a warning printed before the empty return), it is
@@ -215,13 +219,6 @@ so a new longer value is *invented*, never borrowed from a real config.
   `claude_path` left at default, survives untouched)
 - does **not** strip an empty host (local run)
 - does **not** strip a `< 3`-char value
-- **redact-before-truncate — the secret STRADDLES the boundary (tst-001).** A distinctive host begins
-  at index ~197 of a `> 200`-char text, so it spans the `[:200]` cut. Redact-then-slice removes the
-  raw bytes before the cut → no fragment survives; slice-then-redact cuts the host mid-token, leaving
-  a fragment (e.g. `...HOST-SENTINEL-EXAM`) that `str.replace(full_host)` never matches → it would
-  leak. The test asserts a *distinctive prefix* of the host (not the full substring) is absent from
-  `self._scrub(text)[:200]`. Worded at the tail (secret entirely past 200) this would pass under both
-  orderings and certify nothing — straddling is what makes it discriminating.
 - **overlap — dict pinned SHORTER-key-first (tst-002).** The host is a substring of the `claude_path`
   and the test's secrets dict inserts the *host* (shorter) key first, matching `_scrub`'s own
   `{self.host: ..., self.claude_path: ...}` order. Longest-first `sorted` catches the path whole →
@@ -244,10 +241,29 @@ so a new longer value is *invented*, never borrowed from a real config.
   regained) **and not** the host, and still matches `"no text"`
 - `claude_path` leak: exit 127, stderr `bash: <abs-path>/claude: No such file or directory`,
   `claude_path` = that abs path → message shows the path label, not the path
+- **redact-before-truncate — driven through `complete()`, secret STRADDLES the boundary (tst-001).**
+  The `[:200]` truncation lives *only* at the `:96`/`:113` call sites, **not** in `_scrub`, so the
+  ordering can only be witnessed by exercising `complete()` — a pure-`_redact` test that composes
+  `[:200]` in its own body applies the correct order regardless of production and is an inert witness.
+  A `runner` returns `returncode≠0` with `proc.stderr = "."*180 + host` where `host` is a distinctive
+  synthetic value (`HOST-SENTINEL-EXAMPLE.invalid`, ~29 chars) that **straddles** index 200 (starts at
+  180, so a `≥ 13`-char distinctive prefix still falls before the cut). Assert that prefix
+  (`HOST-SENTINEL`) is **absent** from `str(BackendError)`. Correct order (redact full → `[:200]`):
+  the whole host → `<host>` before truncation, no fragment survives → prefix absent → green. Swapped
+  order (`self._scrub(proc.stderr[:200])`): the cut leaves `...HOST-SENTINEL-EXAMP`, which
+  `str.replace(full_host)` cannot match → the prefix leaks → the test reddens. Starting the host at
+  ~197 (round-1 wording) would leave only ~3 surviving chars, too few for a distinctive prefix to
+  redden — the offset is load-bearing.
 
-**Load-bearing neutrality guarantee:** for a configured host, `str(BackendError)` never contains the
-host substring — asserted at **all three** raise sites (`:94` invocation-failed, `:96` exit≠0, `:113`
-empty). This is the property the whole change exists to provide.
+**Load-bearing neutrality guarantee:** for a backend built the way production builds it — via
+`host=`/`claude_path=`, so `self.host`/`self.claude_path` track the argv in `cmd_template` (the
+`claude_max.py` factory never passes an explicit `cmd_template`; verified) — `str(BackendError)` never
+contains the host substring, asserted at **all three** raise sites (`:94` invocation-failed, `:96`
+exit≠0, `:113` empty). This is the property the whole change exists to provide. The guarantee is scoped
+to that coupling deliberately (inv-001): a caller that passes a divergent explicit `cmd_template` while
+leaving the constructor's host/path defaults is not a production path and is not made worse by this
+change; the `_scrub` docstring notes the assumption rather than adding a code guard for an unreachable
+surface.
 
 **Mutation witnesses** (each must redden a *newly-added* test by node id; no pre-existing test in
 `tests/test_backends.py` configures a host, so none of them accidentally catches these):
@@ -259,8 +275,9 @@ empty). This is the property the whole change exists to provide.
 - delete the `len(value) >= 3` clause → the short-value test reddens
 - remove the longest-first `sorted(...)` ordering (iterate `secrets.items()` raw) → the overlap test
   reddens (relies on the pinned shorter-key-first dict above)
-- **swap redact/truncate order** `self._scrub(x)[:200]` → `self._scrub(x[:200])` → the straddle test
-  reddens (this is the witness the tail-worded version lacked)
+- **swap redact/truncate order** at `:96` `self._scrub(proc.stderr)[:200]` →
+  `self._scrub(proc.stderr[:200])` → the `complete()`-driven straddle test reddens (this is why the
+  test must exercise `complete()`, not compose `[:200]` in its own body)
 
 **Existing tests unaffected (verified against current source):**
 `test_claudemax_runner_nonzero_raises` (stderr `"boom"`, `cmd_template=["claude"]` so `host=""` and
