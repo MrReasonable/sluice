@@ -57,8 +57,10 @@ def test_survivor_state_survives_only_audit_trail_changes(tmp_path):
     survivor = _by_url(v, "https://ex.invalid/1")
     v.update_fields(survivor.ref, {"status": "applied", "score": "9",
                                    "tailored_cv": "CV_ab12.pdf", "applied_date": "2026-07-11"})
+    v.append_body_section(survivor.ref, "dedup-body-tag", "## Seeded body\nkeep me\n")
     survivor = _by_url(v, "https://ex.invalid/1")
     before = dict(survivor.fm)
+    before_body = _by_url(v, "https://ex.invalid/1").body
     loser = _by_url(v, "https://ex.invalid/2")
     archived = v.merge_cluster(survivor.ref, [loser.ref],
                                alt_urls=["https://ex.invalid/2"],
@@ -66,6 +68,7 @@ def test_survivor_state_survives_only_audit_trail_changes(tmp_path):
     after = _by_url(v, "https://ex.invalid/1")
     changed = {k for k in before if before.get(k) != after.fm.get(k)} | (set(after.fm) - set(before))
     assert changed <= {"alt_urls", "first_seen", "last_seen"}, changed
+    assert after.body == before_body                   # never-clobber covers the BODY too
     assert json.loads(after.fm["alt_urls"]) == ["https://ex.invalid/2"]
     assert after.fm["first_seen"] == "2026-07-05"      # min
     assert after.fm["last_seen"] == "2026-07-20"       # max

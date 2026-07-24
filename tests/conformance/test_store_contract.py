@@ -169,8 +169,10 @@ def test_merge_cluster_preserves_survivor_and_removes_losers(store_name, tmp_pat
                               first_seen="2026-07-05", last_seen="2026-07-20")) == "created"
     survivor = next(n for n in store.read_leads() if n.fm.get("url") == "https://example.invalid/1")
     _enrich(store, survivor.ref)
+    store.append_body_section(survivor.ref, "d-merge", "## body\nkeep\n")
     survivor = next(n for n in store.read_leads() if n.fm.get("url") == "https://example.invalid/1")
     before = dict(survivor.fm)
+    before_body = survivor.body
     loser = next(n for n in store.read_leads() if n.fm.get("url") == "https://example.invalid/2")
     store.merge_cluster(survivor.ref, [loser.ref], alt_urls=["https://example.invalid/2"],
                         first_seen="2026-07-05", last_seen="2026-07-20")
@@ -178,6 +180,7 @@ def test_merge_cluster_preserves_survivor_and_removes_losers(store_name, tmp_pat
     assert len(store.read_leads()) == 1                                  # loser removed
     changed = {k for k in before if before.get(k) != after.fm.get(k)} | (set(after.fm) - set(before))
     assert changed <= {"alt_urls", "first_seen", "last_seen"}, changed   # never-clobber
+    assert after.body == before_body                                     # never-clobber covers the BODY too
 
 
 # ── status vocabulary ────────────────────────────────────────────────────────

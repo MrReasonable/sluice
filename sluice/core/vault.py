@@ -633,6 +633,9 @@ class Vault:
                 try:
                     current = json.loads(existing)
                 except ValueError:
+                    # Logged, not silent: a human hand-edit could have left alt_urls
+                    # unparseable, and this discards it rather than failing the merge.
+                    _log.warning("dedupe: unparseable alt_urls on %s, resetting", survivor_ref)
                     current = []
             merged = list(dict.fromkeys([*current, *alt_urls]))   # order-stable union
             inner = _set_fm(inner, "alt_urls", json.dumps(merged))
