@@ -360,6 +360,31 @@ class Vault:
             return f"---\n{inner}\n---\n{body}"
         return _cas_write(ref, transform)
 
+    def hold_for_signoff(self, ref, *, pending: str, claims: str) -> bool:
+        """Stamp a #60 sign-off hold -- pending_cv + needs_signoff -- ONLY IF the note has no
+        tailored_cv in FRESH content, mirroring set_tailored_cv(only_if_absent=...). Returns
+        whether it stamped: False means a real send-ready CV already exists (a concurrent set,
+        or an intentional single-lead re-tailor of an already-CV'd lead), so the flagged CV is
+        left inert and the caller reports skipped-has-cv rather than latching the lead behind a
+        redundant hold it would then need a manual sign-off to clear. The tailored_cv check is
+        inside the CAS transform, so it sees a pointer that appeared during the compose window
+        (#16), not the caller's stale snapshot. `claims` is written verbatim (the caller
+        json.dumps it). Body byte-intact. May raise VaultConflict (#16)."""
+        stamped = [False]  # reset per transform run so a CAS retry reports the final branch
+        def transform(text: str) -> str:
+            stamped[0] = False
+            inner, body = _split_frontmatter(text)
+            if inner is None:
+                inner, body = "", text
+            if _fm_value(inner, "tailored_cv"):
+                return text  # a real CV already won; do not latch a redundant hold
+            inner = _set_fm(inner, "pending_cv", pending)
+            inner = _set_fm(inner, "needs_signoff", claims)
+            stamped[0] = True
+            return f"---\n{inner}\n---\n{body}"
+        _cas_write(ref, transform)
+        return stamped[0]
+
     def sign_off(self, ref, *, accept: bool = True) -> str:
         """Resolve a #60 needs-signoff hold and report the OUTCOME derived from FRESH
         content: 'promoted' | 'discarded' | 'collision' | 'nothing' (the way upsert

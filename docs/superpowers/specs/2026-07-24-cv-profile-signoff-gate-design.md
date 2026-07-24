@@ -82,7 +82,9 @@ def unsupported_claims(flagged):
     blocking on it would fire on nearly every CV and train rubber-stamping. This is the
     ONLY thing given a consequence; run_audit and CvResult.audit_flags (both verdicts)
     stay advisory and unchanged."""
-    return [ln for ln in flagged if ln.strip().lower().startswith("unsupported")]
+    # Match the VERDICT token exactly (the first tab field), not a prefix, so a malformed
+    # 'unsupportedness' is not read as 'unsupported' and does not block.
+    return [ln for ln in flagged if ln.partition("\t")[0].strip().lower() == "unsupported"]
 ```
 
 The model call (`run_audit`) stays the sole impure part; the gate is a pure function over its output.

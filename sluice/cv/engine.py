@@ -138,10 +138,16 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
         # Record what to promote (pending_cv) and what to review (needs_signoff, a
         # single-line JSON scalar so a claim's quote/colon can't corrupt the frontmatter);
         # withhold tailored_cv. The served PDF stays in served_dir (it passed the HARD gate)
-        # but is inert -- apply/select returns no_artifact without the pointer.
-        vault.update_fields(note.ref, {
-            "pending_cv": f"{served} ({date.today().isoformat()})",
-            "needs_signoff": json.dumps(blockers)})
+        # but is inert -- apply/select returns no_artifact without the pointer. hold_for_signoff
+        # stamps ONLY IF no tailored_cv already exists (checked atomically on fresh content): a
+        # real CV that appeared during compose, or an intentional re-tailor of a CV'd lead,
+        # must not latch the lead behind a redundant hold -- it reports skipped-has-cv instead.
+        held = vault.hold_for_signoff(
+            note.ref, pending=f"{served} ({date.today().isoformat()})",
+            claims=json.dumps(blockers))
+        if not held:
+            return CvResult(note.ref, "skipped-has-cv", audit_flags=audit_flags,
+                            backend=backend_used)
         return CvResult(note.ref, "needs-signoff", audit_flags=audit_flags,
                         served=served, backend=backend_used)
     if served:
