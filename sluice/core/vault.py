@@ -14,6 +14,7 @@ The engine's Lead model is source-agnostic (title, job_type); the vault schema's
 `role`/`role_type` naming is a translation that lives here at the sink boundary.
 """
 import hashlib
+import json
 import os
 import re
 import stat
@@ -610,6 +611,58 @@ class Vault:
             f"**URL:** {lead.url}\n"
         )
         return f"---\n{inner}\n---\n\n{body}"
+
+    def merge_cluster(self, survivor_ref, loser_refs, *, alt_urls, first_seen, last_seen):
+        """Merge a human-vetted duplicate cluster (#23). Union the audit trail onto
+        the survivor -- never touching its status/scores/enrichment/body
+        (never-clobber) -- and archive each loser to `_merged/` (reversible,
+        invisible to read_leads). Timestamps are RE-DERIVED against the fresh
+        survivor inside the CAS transform, so a caller's stale min/max can never
+        regress them. The survivor write happens FIRST; losers are archived only on
+        its success, so a VaultConflict archives nothing. A per-loser archive OSError
+        is logged and skipped (isolated), so that loser stays in the active view and
+        the next run re-merges it -- never counted as merged. Returns the archived
+        loser paths. See docs/.../read-path-dedup-design.md #3."""
+        def transform(text: str) -> str:
+            inner, body = _split_frontmatter(text)
+            if inner is None:
+                inner, body = "", text
+            existing = _fm_value(inner, "alt_urls")
+            current = []
+            if existing:
+                try:
+                    current = json.loads(existing)
+                except ValueError:
+                    current = []
+            merged = list(dict.fromkeys([*current, *alt_urls]))   # order-stable union
+            inner = _set_fm(inner, "alt_urls", json.dumps(merged))
+            fresh_first = _fm_value(inner, "first_seen")
+            if first_seen and (not fresh_first or first_seen < fresh_first):
+                inner = _set_fm(inner, "first_seen", first_seen)
+            fresh_last = _fm_value(inner, "last_seen")
+            if last_seen and (not fresh_last or last_seen > fresh_last):
+                inner = _set_fm(inner, "last_seen", last_seen)   # monotonic: only advance
+            return f"---\n{inner}\n---\n{body}"
+        _cas_write(survivor_ref, transform)   # raises VaultConflict BEFORE any archive
+        merged_dir = os.path.join(self.leads_dir, "_merged")
+        os.makedirs(merged_dir, exist_ok=True)
+        archived = []
+        for ref in loser_refs:
+            base = os.path.basename(ref)
+            stem = base[:-3] if base.endswith(".md") else base
+            dest = os.path.join(merged_dir, base)
+            n = 1
+            while os.path.exists(dest):     # collision-safe numeric suffix
+                dest = os.path.join(merged_dir, f"{stem}.{n}.md")
+                n += 1
+            try:
+                os.replace(ref, dest)
+                archived.append(dest)
+            except OSError as e:
+                # Per-loser isolation: a failed archive leaves that loser active,
+                # so it is not counted as merged and the next run re-merges it.
+                _log.warning("dedupe: could not archive loser %s: %s", ref, e)
+        return archived
 
 
 # ── frontmatter helpers (format-preserving) ──────────────────────────────────

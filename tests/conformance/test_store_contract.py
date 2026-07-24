@@ -156,6 +156,30 @@ def test_append_body_section_is_idempotent(store_name, tmp_path, monkeypatch):
     assert store.read_leads()[0].body.count("## Dossier") == 1
 
 
+def test_merge_cluster_preserves_survivor_and_removes_losers(store_name, tmp_path, monkeypatch):
+    """merge_cluster unions the audit trail onto a SEEDED survivor without touching its
+    state, and reversibly removes the losers from the active set. Store-agnostic (#23)."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    # location must be a SECOND, token-disjoint LOCATIONS entry, not "" -- an empty location
+    # is UNKNOWN evidence (same_opportunity), so upsert would MERGE this lead into the first
+    # note instead of creating a second one, leaving nothing at url .../2 to test against.
+    assert store.upsert(_lead(url="https://example.invalid/1", location=LOCATIONS[0],
+                              first_seen="2026-07-10", last_seen="2026-07-10")) == "created"
+    assert store.upsert(_lead(url="https://example.invalid/2", location=LOCATIONS[1],
+                              first_seen="2026-07-05", last_seen="2026-07-20")) == "created"
+    survivor = next(n for n in store.read_leads() if n.fm.get("url") == "https://example.invalid/1")
+    _enrich(store, survivor.ref)
+    survivor = next(n for n in store.read_leads() if n.fm.get("url") == "https://example.invalid/1")
+    before = dict(survivor.fm)
+    loser = next(n for n in store.read_leads() if n.fm.get("url") == "https://example.invalid/2")
+    store.merge_cluster(survivor.ref, [loser.ref], alt_urls=["https://example.invalid/2"],
+                        first_seen="2026-07-05", last_seen="2026-07-20")
+    after = next(iter(store.read_leads()))
+    assert len(store.read_leads()) == 1                                  # loser removed
+    changed = {k for k in before if before.get(k) != after.fm.get(k)} | (set(after.fm) - set(before))
+    assert changed <= {"alt_urls", "first_seen", "last_seen"}, changed   # never-clobber
+
+
 # ── status vocabulary ────────────────────────────────────────────────────────
 def test_read_leads_filters_on_the_normalised_status(store_name, tmp_path, monkeypatch):
     store = _make_store(store_name, tmp_path, monkeypatch)
