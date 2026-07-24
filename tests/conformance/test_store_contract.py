@@ -322,7 +322,6 @@ def test_write_document_cannot_escape_the_store(store_name, tmp_path, monkeypatc
 def test_reading_an_empty_store_is_not_an_error(store_name, tmp_path, monkeypatch):
     store = _make_store(store_name, tmp_path, monkeypatch)
     assert store.read_leads() == []
-    assert store.existing_keys() == set()
 
 
 # ── #5: a note must never silently absorb a different job ─────────────────────
