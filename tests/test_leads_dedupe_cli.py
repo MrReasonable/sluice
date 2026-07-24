@@ -1,5 +1,7 @@
 """sluice leads dedupe orchestration: report, targeted merge, conflict/stale refusal,
 never-regress, idempotence. Synthetic; locations are Alfa/Bravo placeholders."""
+import os
+
 from sluice.core.app import Sluice
 from sluice.core.config import Config
 from sluice.core.leads import Lead
@@ -86,6 +88,33 @@ def test_stale_id_is_refused(tmp_path, monkeypatch):
     assert app.dedupe_merge(["deadbeef"]) == [("deadbeef", "stale")]
 
 
+def test_partial_archive_reported(tmp_path, monkeypatch):
+    # A per-loser archive OSError (e.g. a permissions/ENOSPC blip) must not be reported
+    # as a full "merged" -- the survivor's CAS write (also routed through os.replace, but
+    # for the SURVIVOR's own path, not under _merged/) still lands, so the audit trail is
+    # unioned, but the loser stays in the active view because it was never archived.
+    app = _app(tmp_path, monkeypatch, dedupe_title_noise_words=["remote"])
+    v = Vault(str(tmp_path))
+    _seed_pair(v)
+    cid = app.dedupe_report()[0].id
+
+    import sluice.core.vault as vault_mod
+    real_replace = vault_mod.os.replace
+
+    def flaky_replace(src, dst):
+        # Fail only the archive-into-_merged/ step; the survivor's own note path is
+        # untouched, so its CAS write still succeeds through the real os.replace.
+        if os.path.basename(os.path.dirname(dst)) == "_merged":
+            raise OSError("simulated: could not archive this loser")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(vault_mod.os, "replace", flaky_replace)
+    assert app.dedupe_merge([cid]) == [(cid, "partial")]
+    monkeypatch.undo()
+
+    assert len(v.read_leads()) == 2   # survivor unioned, loser still active (not archived)
+
+
 def test_loser_flag_fires_on_app_owned_loser(tmp_path, monkeypatch):
     app = _app(tmp_path, monkeypatch, dedupe_title_noise_words=["remote"])
     v = Vault(str(tmp_path))
@@ -104,3 +133,15 @@ def test_cli_report_runs_offline(tmp_path, monkeypatch, capsys):
     args = _build_parser().parse_args(["leads", "dedupe"])
     assert cmd_leads_dedupe(args, Config(dedupe_title_noise_words=["remote"])) == 0
     assert "survivor=" in capsys.readouterr().out
+
+
+def test_cli_merge_path(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    from sluice.cli import _build_parser, cmd_leads_dedupe
+    from sluice.core.config import Config
+    v = Vault(str(tmp_path))
+    _seed_pair(v)
+    cid = Sluice(Config(dedupe_title_noise_words=["remote"])).dedupe_report()[0].id
+    args = _build_parser().parse_args(["leads", "dedupe", "--merge", cid])
+    assert cmd_leads_dedupe(args, Config(dedupe_title_noise_words=["remote"])) == 0
+    assert "merged" in capsys.readouterr().err
