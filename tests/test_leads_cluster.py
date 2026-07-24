@@ -61,8 +61,10 @@ def test_positive_two_clique():
 
 
 def test_blank_bridge_yields_no_cluster():
-    # Alfa ~ blank ~ Bravo: connected via blank, but Alfa/Bravo DIFFERENT -> not a
-    # clique -> no cluster (never bridges two different cities). arc-r2-001.
+    # Alfa ~ blank ~ Bravo: connected via blank, but Alfa/Bravo DIFFERENT. Each of
+    # {Alfa} and {Bravo} is its own size-1 seed (two seeds -> ambiguous), so the
+    # blank stays unclustered and neither singleton seed reaches size >= 2 -> no
+    # cluster at all (never bridges two different cities). arc-r2-001.
     a = _note("a", location=LOCATIONS[0])
     b = _note("b", location="")
     c = _note("c", location=LOCATIONS[1])
@@ -75,6 +77,61 @@ def test_two_disjoint_cliques_in_one_group():
     b = _note("b", location=LOCATIONS[1])
     b2 = _note("b2", location=LOCATIONS[1])
     assert _slugs(cluster_duplicates([a, a2, b, b2])) == [["a", "a2"], ["b", "b2"]]
+
+
+def test_subclique_retained_in_four_note_group():
+    # Alfa ~ Alfa2 (SAME, a valid size-2 seed) ~ blank ~ Bravo (DIFFERENT from the
+    # Alfa pair, its own size-1 seed). OLD behaviour treated {a, a2, blank, b} as
+    # ONE connected component and discarded it wholesale because the whole thing
+    # wasn't a clique (a~b is DIFFERENT) -- == []. NEW behaviour seeds per KNOWN
+    # clique first: {a, a2} and {b} are two SEPARATE seeds, so >= 2 seeds exist and
+    # the blank -- compatible with both -- is left unclustered rather than guessed
+    # into either. Only the Alfa pair (the one seed that reaches size >= 2) is
+    # emitted; the recall this fix restores.
+    a = _note("a", location=LOCATIONS[0])
+    a2 = _note("a2", location=LOCATIONS[0])
+    blank = _note("blank", location="")
+    b = _note("b", location=LOCATIONS[1])
+    assert _slugs(cluster_duplicates([a, a2, blank, b])) == [["a", "a2"]]
+    assert _slugs(cluster_duplicates([b, blank, a2, a])) == [["a", "a2"]]        # order-independent
+    # determinism: same input, same output
+    assert cluster_duplicates([a, a2, blank, b]) == cluster_duplicates([a, a2, blank, b])
+
+
+def test_subclique_retained_despite_ambiguous_blank():
+    # CodeRabbit's example: {A1,A2 at Alfa} + blank + {B1,B2 at Bravo}. Both cities
+    # are size-2 seeds, so the blank is ambiguous between them and stays out -- but
+    # BOTH real duplicate pairs survive. The recall gap this fix closes: the old
+    # whole-component-must-be-a-clique rule discarded this entire group of five.
+    a1 = _note("a1", location=LOCATIONS[0])
+    a2 = _note("a2", location=LOCATIONS[0])
+    blank = _note("blank", location="")
+    b1 = _note("b1", location=LOCATIONS[1])
+    b2 = _note("b2", location=LOCATIONS[1])
+    assert _slugs(cluster_duplicates([a1, a2, blank, b1, b2])) == [["a1", "a2"], ["b1", "b2"]]
+    assert _slugs(cluster_duplicates([b2, b1, blank, a2, a1])) == [["a1", "a2"], ["b1", "b2"]]
+    # determinism: same input, same output
+    result = cluster_duplicates([a1, a2, blank, b1, b2])
+    assert result == cluster_duplicates([a1, a2, blank, b1, b2]) == result
+
+
+def test_blank_attaches_to_sole_seed():
+    # Exactly one KNOWN seed {a, a2}: unambiguous, the blank has nowhere else it
+    # could belong, so it joins the seed.
+    a = _note("a", location=LOCATIONS[0])
+    a2 = _note("a2", location=LOCATIONS[0])
+    blank = _note("blank", location="")
+    assert _slugs(cluster_duplicates([a, a2, blank])) == [["a", "a2", "blank"]]
+    assert _slugs(cluster_duplicates([blank, a2, a])) == [["a", "a2", "blank"]]
+
+
+def test_all_blank_group_clusters():
+    # No KNOWN member at all: two blanks carry no DIFFERENT evidence against each
+    # other either, so they form their own clique.
+    a = _note("a", location="")
+    b = _note("b", location="")
+    assert _slugs(cluster_duplicates([a, b])) == [["a", "b"]]
+    assert _slugs(cluster_duplicates([b, a])) == [["a", "b"]]
 
 
 def test_empty_identity_never_clusters():
