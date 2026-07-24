@@ -253,7 +253,14 @@ def cmd_cv_signoff(args, config) -> int:
         if input(f"sign off {slug}? [y/N] ").strip().lower() not in ("y", "yes"):
             print("cv signoff: aborted", file=sys.stderr)
             return 0
-    _slug, outcome = app.sign_off_cv(lead=args.lead, accept=not args.discard)
+    result = app.sign_off_cv(lead=args.lead, accept=not args.discard)
+    if result is None:
+        # The lead left `shortlist` between peek_signoff and here -- a concurrent triage/apply
+        # advance during the review prompt (minutes at a keyboard). Report it, never crash on
+        # the unpack: the same #16 concurrent-edit class the VaultConflict handling covers.
+        print(f"cv signoff: {slug} is no longer shortlisted", file=sys.stderr)
+        return 0
+    _slug, outcome = result
     print(f"cv signoff: {slug} {outcome}", file=sys.stderr)
     return 0
 

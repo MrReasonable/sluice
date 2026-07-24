@@ -58,12 +58,16 @@ Shared by every sub-app:
    under an opaque, cache-busted filename. Above the hard gate sits a softer,
    human-facing layer (#60): an advisory LLM audit (`audit.py`) flags claims
    the bundle does not support, and an `unsupported` flag WITHHOLDS the
-   send-ready `tailored_cv` pointer (`status: needs-signoff`) rather than
-   auto-serving — a held lead is skipped on re-run (`skipped-needs-signoff`)
-   so a non-deterministic re-audit cannot promote it by luck. `sluice cv
-   signoff --lead X` promotes the held CV after the candidate reviews the
-   flagged claims; `--discard` rejects it and frees a fresh compose. The
-   default is on (`cv.require_signoff`); it never touches the pure hard gate.
+   send-ready `tailored_cv` pointer rather than auto-serving. The hold is
+   recorded in two NEW frontmatter keys (`pending_cv`, `needs_signoff`) — the
+   note's `status` stays `shortlist` (never-regress is untouched); the CV is
+   simply invisible to apply without the pointer. A held lead is skipped on
+   re-run so a non-deterministic re-audit cannot promote it by luck.
+   (`needs-signoff` and `skipped-needs-signoff` are `CvResult` run-report
+   labels, not `status`-key values.) `sluice cv signoff --lead X` promotes
+   the held CV after the candidate reviews the flagged claims; `--discard`
+   rejects it and frees a fresh compose. The default is on
+   (`cv.require_signoff`); it never touches the pure hard gate.
 4. **apply** (`sluice/apply/`): select eligible leads, stage the rendered
    CV file and a prep packet, and record the applied transition
    (never-clobber). Actual ATS form submission is human-driven; this

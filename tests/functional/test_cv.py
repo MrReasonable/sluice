@@ -115,6 +115,33 @@ def test_cv_signoff_no_match_returns_1(cli):
     assert rc == 1 and "no shortlist lead matching" in err
 
 
+def test_cv_signoff_handles_lead_leaving_shortlist_mid_review(cli, monkeypatch):
+    # The lead can leave `shortlist` between peek_signoff and the execute (a concurrent
+    # triage/apply advance during the review). sign_off_cv then returns None; the handler
+    # must report, not crash on the unpack -- the #16 concurrent-edit class.
+    import sluice.core.app as app_mod
+    h, run = cli(backend=ScriptedBackend())
+    _seed_pending_lead(h.paths["vault"], "Example Foundry", "Staff Engineer")
+    monkeypatch.setattr(app_mod.Sluice, "sign_off_cv", lambda self, **k: None)
+    rc, _out, err = run(["cv", "signoff", "--lead", "example-foundry", "--yes"])
+    assert rc == 0 and "no longer shortlisted" in err   # graceful, no traceback
+
+
+def test_cv_signoff_shows_raw_claim_when_needs_signoff_is_not_json(cli, monkeypatch):
+    # A malformed needs_signoff (not JSON) must not crash the review: peek_signoff falls
+    # back to the raw string so the candidate still sees something to sign off on.
+    monkeypatch.setattr("builtins.input", lambda *a, **k: "n")
+    h, run = cli(backend=ScriptedBackend())
+    leads = os.path.join(h.paths["vault"], "Job Applications", "Job Leads")
+    os.makedirs(leads, exist_ok=True)
+    with open(os.path.join(leads, "Example Foundry - Staff Engineer.md"), "w", encoding="utf-8") as f:
+        f.write('---\ncompany: "Example Foundry"\nrole: "Staff Engineer"\nstatus: shortlist\n'
+                'url: "https://example.invalid/1"\npending_cv: CV_x.pdf (2026-07-24)\n'
+                'needs_signoff: not valid json\n---\n# body\n')
+    rc, _out, err = run(["cv", "signoff", "--lead", "example-foundry"])
+    assert rc == 0 and "not valid json" in err   # raw fallback shown, aborted, no crash
+
+
 def test_cv_signoff_prompt_aborts_on_no(cli, monkeypatch):
     # Without --yes an accept must review + confirm; a "no" leaves the hold intact.
     monkeypatch.setattr("builtins.input", lambda *a, **k: "n")
