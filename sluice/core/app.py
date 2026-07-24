@@ -377,35 +377,24 @@ class Sluice:
             _log.warning("cv re-tailor for %s lost the write race: %s", notes[0].ref, e)
             return [CvResult(notes[0].ref, "error")]
 
-    def peek_signoff(self, *, lead):
-        """Read-only: resolve a shortlisted lead by slug and report its #60 sign-off hold
-        as (slug, pending_cv, claims), or None if no lead matched. `pending_cv` is "" when
-        the lead is not held. Lets the CLI show the flagged claims for review before an
-        accept, without touching the store."""
+    def sign_off_cv(self, *, lead, accept=True, confirm=None):
+        """Resolve a shortlisted lead by slug ONCE and resolve its #60 sign-off hold via the
+        store: accept -> promote pending_cv to the send-ready `tailored_cv` pointer;
+        `accept=False` (discard) -> clear the markers, freeing a fresh compose.
+
+        `confirm`, when given, is called with (slug, pending_cv, claims) AFTER the lead is
+        resolved and BEFORE the store write -- so the CLI can show the flagged claims and
+        prompt while this method itself does no I/O; a falsey return aborts. Resolving once
+        and handing `note.ref` straight to the store means a separate peek and execute can
+        never diverge onto different substring matches (a real risk when a slug matches two
+        leads and the vault changes between reads).
+
+        Returns (slug, outcome) where outcome is the store's OWN verdict
+        (promoted|discarded|collision|nothing), 'aborted' (confirm declined), or 'conflict'
+        (a sustained write race, #16, never an unhandled traceback) -- or None if no lead
+        matched."""
         import json
 
-        from sluice.core.leads import slug_matches
-        notes = [n for n in self.store().read_leads({"shortlist"}) if slug_matches(n, lead)]
-        if not notes:
-            return None
-        note = notes[0]
-        raw = note.fm.get("needs_signoff")
-        claims = []
-        if raw:
-            try:
-                claims = json.loads(raw)
-            except (ValueError, TypeError):
-                claims = [str(raw)]
-        return note.slug, note.fm.get("pending_cv") or "", claims
-
-    def sign_off_cv(self, *, lead, accept=True):
-        """Resolve a shortlisted lead by slug and resolve its #60 sign-off hold via the
-        store: accept -> promote pending_cv to the send-ready `tailored_cv` pointer;
-        `accept=False` (discard) -> clear the markers, freeing a fresh compose. Returns
-        (slug, outcome) where outcome is the store's OWN verdict
-        (promoted|discarded|collision|nothing) -- never reconstructed from a stale snapshot
-        -- or None if no lead matched, or (slug, 'conflict') on a sustained write race (#16),
-        never an unhandled traceback."""
         from sluice.core.leads import slug_matches
         from sluice.core.protocols import VaultConflict
         store = self.store()
@@ -413,6 +402,20 @@ class Sluice:
         if not notes:
             return None
         note = notes[0]
+        pending = note.fm.get("pending_cv") or ""
+        if not pending:
+            return note.slug, "nothing"
+        if confirm is not None:
+            raw = note.fm.get("needs_signoff")
+            claims = []
+            if raw:
+                try:
+                    parsed = json.loads(raw)
+                    claims = parsed if isinstance(parsed, list) else [str(parsed)]
+                except (ValueError, TypeError):
+                    claims = [str(raw)]
+            if not confirm(note.slug, pending, claims):
+                return note.slug, "aborted"
         try:
             return note.slug, store.sign_off(note.ref, accept=accept)
         except VaultConflict as e:

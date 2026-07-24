@@ -26,5 +26,10 @@ def unsupported_claims(flagged):
     #60 sign-off gate gives a consequence. `paraphrase` (same fact, reworded) is
     legitimate tailoring: blocking on it would fire on nearly every CV and train
     rubber-stamping, so it stays advisory. Pure over run_audit's output; run_audit
-    and CvResult.audit_flags (both verdicts) are unchanged."""
-    return [line for line in flagged if line.strip().lower().startswith("unsupported")]
+    and CvResult.audit_flags (both verdicts) are unchanged.
+
+    Matches the VERDICT token exactly (the first tab-delimited field of a
+    <verdict>\\t<claim>\\t<cited-id> line), not a prefix -- so a malformed
+    'unsupportedness' verdict is not mistaken for 'unsupported' and does not block."""
+    return [line for line in flagged
+            if line.partition("\t")[0].strip().lower() == "unsupported"]

@@ -375,6 +375,23 @@ def test_pending_lead_is_sticky_and_not_recomposed(monkeypatch):
     assert [b.status for b in batch] == ["skipped-needs-signoff"]
     assert beb.calls == 0
 
+
+def test_batch_limit_counts_needs_signoff(monkeypatch):
+    # A held (needs-signoff) lead did the full compose+render+serve, so it counts toward
+    # --limit just like a rendered one -- the batch must stop after one, not run on to
+    # compose a second expensive CV.
+    _served(monkeypatch)
+    notes = [
+        Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"},
+             path="Job Applications/Job Leads/Example Foundry - Analyst.md"),
+        Note({"status": "shortlist", "company": "Example Analytics", "role": "Engineer"},
+             path="Job Applications/Job Leads/Example Analytics - Engineer.md"),
+    ]
+    v = FakeVault(ENTRIES, notes=notes)
+    be = FakeBackend(CLEAN_CV, audit_out="unsupported\tMotivated by placeholder\tNONE")
+    results = run_batch(v, _cfg(), be, FakeCache(), renderer=FakeRenderer(), limit=1)
+    assert [r.status for r in results] == ["needs-signoff"]   # stopped after one held lead
+
 def test_batch_survives_a_single_lead_exception(monkeypatch):
     # The triage engine records per-lead failures and continues; the CV engine
     # must do the same. One lead's render failure (e.g. WeasyPrint blowing up)
