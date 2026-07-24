@@ -1,3 +1,4 @@
+import subprocess
 import pytest
 from sluice.core.backends import (
     BackendError, ClaudeMaxBackend, FallbackBackend, OpenAiCompatibleBackend,
@@ -426,3 +427,79 @@ def test_redact_overlap_scrubs_both_longest_first():
     out = _redact(text, {host: "<host>", path: "<path>"})
     assert host not in out and path not in out
     assert out == "connect <host> failed; exec <path> missing"
+
+
+# RFC-reserved synthetic fixtures -- non-real host/path, chosen so no real value lands here.
+_SYNTH_HOST = "host.example.invalid"            # RFC 6761/2606 reserved: can never resolve
+_SYNTH_PATH = "/home/example/.local/bin/claude"  # 'example' is the placeholder user
+
+
+def _claude(runner, *, host=_SYNTH_HOST, claude_path=_SYNTH_PATH):
+    # host=/claude_path= (NOT an explicit cmd_template) so the auto-built argv carries
+    # them AND self.host/self.claude_path match -- the way make_backend couples them in
+    # production. That coupling is what the neutrality guarantee is scoped to.
+    return ClaudeMaxBackend("m", host=host, claude_path=claude_path, runner=runner)
+
+
+def test_claudemax_timeout_scrubs_host_and_path_from_message():
+    # A hung remote host times out (TimeoutExpired.cmd = the argv), routing to the
+    # invocation-failed branch -- the leak route a :96/:113-only fix would miss.
+    def boom(cmd, **k):
+        raise subprocess.TimeoutExpired(cmd, 1)  # cmd is self.cmd_template
+    with pytest.raises(BackendError) as ei:
+        _claude(boom).complete("x")
+    msg = str(ei.value)
+    assert _SYNTH_HOST not in msg and _SYNTH_PATH not in msg
+    assert "<host>" in msg and "<path>" in msg
+
+
+def test_claudemax_nonzero_exit_scrubs_host_keeps_diagnostic():
+    class R:
+        returncode, stdout = 1, ""
+        stderr = f"ssh: Could not resolve hostname {_SYNTH_HOST}: nodename nor servname provided"
+    with pytest.raises(BackendError) as ei:
+        _claude(lambda *a, **k: R()).complete("x")
+    msg = str(ei.value)
+    assert _SYNTH_HOST not in msg
+    assert "<host>" in msg
+    assert "Could not resolve hostname" in msg  # the diagnostic survives the scrub
+
+
+def test_claudemax_empty_response_regains_scrubbed_diagnostic():
+    class R:
+        returncode, stdout = 0, "   \n"  # whitespace-only stdout -> empty after strip
+        stderr = f"warning: quota low on {_SYNTH_HOST}"
+    with pytest.raises(BackendError) as ei:
+        _claude(lambda *a, **k: R()).complete("x")
+    msg = str(ei.value)
+    assert "no text" in msg                       # existing contract preserved
+    assert _SYNTH_HOST not in msg
+    assert "warning: quota low on <host>" in msg  # diagnostic regained, scrubbed
+
+
+def test_claudemax_missing_binary_scrubs_path():
+    class R:
+        returncode, stdout = 127, ""
+        stderr = f"bash: {_SYNTH_PATH}: No such file or directory"
+    with pytest.raises(BackendError) as ei:
+        _claude(lambda *a, **k: R()).complete("x")
+    msg = str(ei.value)
+    assert _SYNTH_PATH not in msg
+    assert "<path>" in msg
+
+
+def test_claudemax_redacts_before_truncating():
+    # The [:200] lives at the call site, NOT in _scrub, so this MUST drive complete().
+    # The host STRADDLES index 200 of proc.stderr (starts at 180): redact-then-slice
+    # removes it whole; slice-then-redact cuts it mid-token, leaving a fragment
+    # str.replace(full_host) can never match. Assert a distinctive >=13-char PREFIX
+    # (not the full substring) so the surviving fragment reddens the swapped order.
+    straddle_host = "HOST-SENTINEL-EXAMPLE.invalid"  # ~29 chars, distinctive, synthetic
+
+    class R:
+        returncode, stdout = 1, ""
+        stderr = "." * 180 + straddle_host  # host occupies indices 180-208, straddles 200
+
+    with pytest.raises(BackendError) as ei:
+        _claude(lambda *a, **k: R(), host=straddle_host).complete("x")
+    assert "HOST-SENTINEL" not in str(ei.value)
