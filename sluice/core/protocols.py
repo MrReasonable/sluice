@@ -92,6 +92,14 @@ class Store(Protocol):
         VaultConflict on sustained concurrent edit (#16)."""
         ...
 
+    def hold_for_signoff(self, ref, *, pending: str, claims: str) -> bool:
+        """Stamp a #60 sign-off hold (pending_cv + needs_signoff) ONLY IF the note has no
+        tailored_cv in FRESH content, mirroring set_tailored_cv(only_if_absent=...). Returns
+        whether it stamped -- False means a real send-ready CV already exists, so the caller
+        leaves the flagged CV inert rather than latching the lead behind a redundant hold.
+        MAY raise VaultConflict (#16)."""
+        ...
+
     def sign_off(self, ref, *, accept: bool = True) -> str:
         """Resolve a #60 profile-audit hold, reporting the OUTCOME on FRESH content:
         'promoted' (accept, no existing pointer -> pending_cv becomes tailored_cv,

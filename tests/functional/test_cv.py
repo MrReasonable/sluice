@@ -127,7 +127,10 @@ def test_cv_signoff_shows_raw_claim_when_needs_signoff_is_not_json(cli, monkeypa
                 'url: "https://example.invalid/1"\npending_cv: CV_x.pdf (2026-07-24)\n'
                 'needs_signoff: not valid json\n---\n# body\n')
     rc, _out, err = run(["cv", "signoff", "--lead", "example-foundry"])
-    assert rc == 0 and "not valid json" in err   # raw fallback shown, aborted, no crash
+    assert rc == 0 and "not valid json" in err   # raw fallback shown, no crash
+    # ...and the "n" abort wrote nothing: the hold is intact, no tailored_cv promoted.
+    text = _lead_text(h.paths["vault"], "Example Foundry", "Staff Engineer")
+    assert "pending_cv: CV_x.pdf (2026-07-24)" in text and "tailored_cv:" not in text
 
 
 def test_cv_signoff_prompt_aborts_on_no(cli, monkeypatch):

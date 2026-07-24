@@ -83,8 +83,8 @@ triage:
 #   #   weasyprint - bundled, in-process, no external file. pip install 'sluice[render]'.
 #   renderer: script
 #   render_script: ./scripts/cv_render_v2.py
-#   # An `unsupported` profile audit flag WITHHOLDS the send-ready pointer until you
-#   # `sluice cv signoff` the lead, rather than auto-serving a possibly-fabricated CV.
+#   # An `unsupported` audit claim (anywhere in the CV, not just the profile) WITHHOLDS the
+#   # send-ready pointer until you `sluice cv signoff` the lead, rather than auto-serving.
 #   # Ships on (a safety valve, not a preference); set false to restore auto-serve.
 #   require_signoff: true
 #   name: Your Name

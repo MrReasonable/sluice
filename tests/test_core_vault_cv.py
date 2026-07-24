@@ -6,7 +6,7 @@ from sluice.core.vault import Vault, _fm_dict, _split_frontmatter
 def _lead_note(fm_lines, body="BODY TEXT\n"):
     root = tempfile.mkdtemp()
     leads = pathlib.Path(root, "Job Applications", "Job Leads"); leads.mkdir(parents=True)
-    note = leads / "Acme - Analyst.md"
+    note = leads / "Example Foundry - Analyst.md"
     note.write_text("---\n" + fm_lines + "\n---\n\n" + body)
     return Vault(root), str(note), note
 
@@ -48,8 +48,8 @@ def test_read_baseline():
 def test_set_tailored_cv_is_additive_and_preserves_body():
     root = tempfile.mkdtemp()
     leads = pathlib.Path(root, "Job Applications", "Job Leads"); leads.mkdir(parents=True)
-    note = leads / "Acme - Analyst.md"
-    note.write_text('---\ncompany: "Acme"\nstatus: shortlist\n---\n\nBODY TEXT\n')
+    note = leads / "Example Foundry - Analyst.md"
+    note.write_text('---\ncompany: "Example Foundry"\nstatus: shortlist\n---\n\nBODY TEXT\n')
     v = Vault(root)
     v.set_tailored_cv(str(note), "Jane_Roe_CV_ab12cd34.pdf (2026-07-08)")
     text = note.read_text()
