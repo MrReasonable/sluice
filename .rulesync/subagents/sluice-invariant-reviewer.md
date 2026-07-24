@@ -87,12 +87,15 @@ uncommented or unscoped swallow anywhere else is High.
 Not yet invariants, but the places this codebase can still lose data silently. Scrutinise any diff
 that touches them, and do not "tidy" them without a test:
 
-- **Lead identity is dual-keyed.** Dedup uses the normalised URL (`Vault.existing_keys`), but
-  `upsert` decides create-vs-update by *file path* (`"{company} - {title}"`, truncated). Two
-  genuinely different jobs that collide on company+title (the same title at the same firm in two
-  cities) resolve to one note: the second is reported `"updated"`, gets its `last_seen` bumped, and
-  is never vaulted. The user never learns it existed. Any change near `_path_for` or `upsert` must
-  reckon with this.
+- **Lead identity is layered.** Ingest dedups on the normalised URL (`Lead.dedup_key`, or a
+  title+company+location hash when url-less) via the rebuildable `seen.db` cache (`seen.load()`),
+  NOT the vault. `upsert` then decides create-vs-update by *file path* (`"{company} - {title}"`,
+  truncated), advancing through #5's location-suffix and title-digest candidates so two notes split
+  only on a PROVEN difference (`same_opportunity`) -- the same title at one firm in two cities now
+  yields two notes, not one. Drifted company/title strings that still escape both are reconciled
+  after the fact by the human-gated `sluice leads dedupe` (#23), which merges only what a human
+  names and archives losers reversibly. Any change near `_path_for`, `upsert`, `same_opportunity`,
+  or `merge_cluster` must reckon with never-clobber and never-regress.
 
 ## How you work
 
