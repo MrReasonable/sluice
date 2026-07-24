@@ -334,7 +334,8 @@ Run: `ruff check sluice tests`
 Expected: clean (0 findings).
 
 Run: `python -m pytest -q`
-Expected: `879 passed` (868 baseline + 11 new: 6 `_redact` + 5 behaviour).
+Expected: suite passes with no failures; record the observed passed count (it should rise by the
+number of tests this plan adds — do not hard-assert an exact total, which drifts as the suite grows).
 
 - [ ] **Step 2: Content-address the bytecode caches (once, before witnessing)**
 
@@ -361,7 +362,7 @@ Expected: `1 failed` while mutated; restore, re-run, `1 passed`.
 - [ ] **Step 4: Final green confirmation**
 
 Run: `python -m pytest -q && ruff check sluice tests`
-Expected: `879 passed`, ruff clean. Working tree contains only the two committed files' state (no leftover mutant).
+Expected: suite passes (no failures), ruff clean. Working tree contains only the two committed files' state (no leftover mutant).
 
 - [ ] **Step 5: (No commit)** — Task 3 mutates and restores only; nothing new to commit. The witness results are recorded in the PR body / review notes, not in the tree.
 

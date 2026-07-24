@@ -1,7 +1,10 @@
 # Backend stderr redaction — design
 
 - **Date**: 2026-07-24
-- **Status**: reviewed (5 specialists, 0 Critical / 2 High / 2 Medium / 1 Low; findings folded in);
+- **Status**: implemented + `/review-pr` (5 specialists + CodeRabbit CLI) folded — rev-001 (High,
+  `from None` closes the classify.py `_log.exception` chain leak) + CodeRabbit Major (token-aware
+  `_redact`, user-chosen) + tst-001 (empty-response straddle) all folded. Earlier: reviewed at plan
+  time (5 specialists, 0 Critical / 2 High / 2 Medium / 1 Low; findings folded in);
   ready for implementation. Placeholder style: labeled `<host>` / `<path>` (review consensus, no
   objection).
 - **Origin**: issue #41 (two findings from PR #37 review: `tst-004` empty-response error drops its
@@ -98,30 +101,29 @@ strengthened.
 
 ```python
 def _redact(text: str, secrets: dict[str, str]) -> str:
-    """Replace each sensitive value with a label, so a backend error keeps its
-    diagnostic shape without disclosing the host or an absolute path -- both reach
-    proc.stderr on an ssh/exec failure and fan out to WARNING logs (FallbackBackend,
-    judge) and the doctor health report. A secret is SKIPPED when it is empty (a local
-    run leaves host empty; the default claude_path is generic), shorter than 3 chars
-    (would mangle common substrings), or the exact generic default 'claude' (a
-    substring of both legitimate CLI diagnostics and of 'claude-max' itself).
-
-    Secrets are replaced LONGEST-first so that when one is a substring of another
-    (e.g. the host appears inside the absolute claude_path) the longer is caught whole
-    before the shorter can fragment it -- otherwise the shorter replace would alter the
-    longer's text and its remaining, possibly username-bearing, fragment would survive."""
+    """... (see the shipped docstring in sluice/core/backends.py for the full text).
+    Matching is TOKEN-AWARE -- re.sub(rf"(?<!\w){re.escape(value)}(?!\w)", label, text) --
+    so a value is replaced only where it stands as a whole token, never inside a longer
+    word. LONGEST-first ordering handles the host-inside-path overlap."""
     for value, label in sorted(secrets.items(), key=lambda kv: len(kv[0]), reverse=True):
-        if value and len(value) >= 3 and value != "claude":
-            text = text.replace(value, label)
+        if value and value != "claude":
+            text = re.sub(rf"(?<!\w){re.escape(value)}(?!\w)", label, text)
     return text
 ```
 
 - **Pure, no I/O** — matches the module's injected-purity discipline (the runner and HTTP poster are
   already injected so everything is tested offline). Independently unit-testable.
-- **Guard rationale.** Empty → nothing to strip (local run / default). `len < 3` → too generic;
-  replacing a 1–2 char token would mangle common substrings of legitimate stderr. `== "claude"` → the
-  `claude_path` default is exactly `"claude"`; it is a substring of both `claude-max` and ordinary CLI
-  diagnostics, so stripping it would corrupt the very diagnostic we are trying to preserve.
+- **Token-aware matching (folded post-`/review-pr`, CodeRabbit Major + user decision).** The earlier
+  form guarded `len(value) >= 3` and used a plain `str.replace`. CodeRabbit correctly flagged that
+  this leaves a genuinely **short** configured host (`db`, `qa`) unscrubbed — a hole in the change's
+  own "scrub the configured host" guarantee. The fix is a word-boundary lookaround
+  (`(?<!\w)…(?!\w)`), which redacts a short host *as a whole token* without a length floor mangling
+  every `db` inside `database`, and — unlike `\b` — still anchors an absolute path that begins with
+  `/`, so the same uniform match covers host and path. The length guard is therefore **removed**.
+- **`!= "claude"` retained, with a documented residual.** `claude_path`'s default is exactly
+  `"claude"` (the CLI's own binary name, non-sensitive, a token in ordinary diagnostics), so it is
+  skipped. The same guard means a host *improbably named* `claude` is left unscrubbed — an accepted,
+  documented residual: at that point the host is indistinguishable from the tool's own name.
 - **Placeholder style — labeled (`<host>` / `<path>`), settled at `/review-plan`.** No reviewer
   objected; the cross-cutting reviewer noted the dict-keyed-by-value signature "supports either". The
   label tells the operator *which* class of failure occurred (host unresolved vs binary missing),
@@ -151,7 +153,7 @@ the backend that owns those attributes; keeps `_redact` general and secret-agnos
 ```python
 # invocation-failed branch (timeout / ssh / missing binary): TimeoutExpired.str embeds the argv
 except Exception as e:
-    raise BackendError(f"claude-max invocation failed: {self._scrub(str(e))}") from e
+    raise BackendError(f"claude-max invocation failed: {self._scrub(str(e))}") from None
 ...
 # finding (2): the sibling stops leaking
 if proc.returncode != 0:
@@ -166,11 +168,16 @@ if not text:
         + (f"; stderr: {detail}" if detail else "") + ")")
 ```
 
-The `from e` chaining is kept (matching the module's other raises). Note it precisely: the guarantee
-is that **`str(BackendError)`** carries no secret — the chained `__cause__` (the raw
-`TimeoutExpired`) would only surface in a full traceback, and none of the four sinks logs with
-`exc_info`/`_log.exception` (all use `%s`/`str(e)`). If a future sink starts logging tracebacks, the
-chained cause becomes a fresh route; that is out of scope here and noted, not closed.
+**`from None`, not `from e` (folded post-`/review-pr`, rev-001).** An earlier draft kept `from e` and
+argued the chained `__cause__` (the raw `TimeoutExpired`, argv-bearing) was safe "because no sink logs
+with `exc_info`". The cross-cutting reviewer falsified that premise: `sluice/track/classify.py:96`
+logs a failed `complete()` with `_log.exception`, which renders the **whole chain** — reproduced,
+leaking both host and path on exactly the hung-host route. `from None` suppresses the chain
+(`__cause__` **and** the implicit `__context__`), so no traceback-logging sink can surface the argv;
+the scrubbed message already carries the diagnostic. The residual is now **closed at the source**, not
+accepted. The `:96`/`:113` raises are in normal flow (no active exception), so they have no chain to
+suppress. Pinned by `test_claudemax_timeout_chain_carries_no_secret`, which asserts on the full
+`traceback.format_exception` output (what `_log.exception` emits), not merely `str(err)`.
 
 Two ordering invariants are load-bearing:
 
@@ -205,20 +212,22 @@ Behaviour-asserting, offline, mutation-witnessed (per CLAUDE.md: run
 
 **Synthetic-fixture constraint (neu-001, inv-001).** Every host/`claude_path` value used to *exercise*
 redaction MUST be obviously synthetic and MUST NOT be a real hostname or a real absolute path — a
-local review pass cannot tell a real host from a fake one, and the `≥ 3`-char / `≠ "claude"` guards
-force the fixtures to be substantive, which is exactly where a real value could slip into `tests/`.
-Use the `example.invalid` / `Example` family: host `host.example.invalid`, path
-`/home/example/.local/bin/claude`. Each such fixture carries a one-line comment stating it is chosen
-to be non-real. The existing `host="h"` fixture is `< 3` chars and cannot exercise the redaction path,
-so a new longer value is *invented*, never borrowed from a real config.
+local review pass cannot tell a real host from a fake one. Use the `example.invalid` / `Example`
+family: host `host.example.invalid`, path `/home/example/.local/bin/claude`. Each such fixture carries
+a one-line comment stating it is chosen to be non-real; a new value is *invented*, never borrowed from
+a real config.
 
 **Pure `_redact` (unit):**
 
 - strips a host → its label; strips a configured absolute `claude_path` → its label
+- **strips a genuinely short host (`db`) as a whole token** — token-awareness means no length floor
+  leaves it exposed (folded post-review)
+- **does *not* mangle a longer word that merely contains the host** (`db` inside `db2`/`database`
+  survives) — the token-awareness witness that replaced the old `<3`-char-skip test
 - does **not** strip the default `"claude"` (a stderr containing `claude` as legitimate text, with
   `claude_path` left at default, survives untouched)
+- **does *not* strip a host improbably named `"claude"`** — the documented `!= "claude"` residual
 - does **not** strip an empty host (local run)
-- does **not** strip a `< 3`-char value
 - **overlap — dict pinned SHORTER-key-first (tst-002).** The host is a substring of the `claude_path`
   and the test's secrets dict inserts the *host* (shorter) key first, matching `_scrub`'s own
   `{self.host: ..., self.claude_path: ...}` order. Longest-first `sorted` catches the path whole →
@@ -235,6 +244,9 @@ so a new longer value is *invented*, never borrowed from a real config.
   `self.host`/`self.claude_path` match) → the raised `str` contains the `<host>`/`<path>` labels and
   **neither** the host nor the path. Uses the `host=`/`claude_path=` constructor path, not an explicit
   `cmd_template`, so the two stay coupled the way production couples them.
+- **timeout — the full exception chain carries no secret (rev-001)**: the same timeout, but the test
+  asserts on `traceback.format_exception(err)` (what `_log.exception` emits), not just `str(err)` —
+  proving `from None` severed the argv-bearing `TimeoutExpired` cause.
 - exit≠0 with stderr = host + a real diagnostic → message contains the label **and** the diagnostic,
   **not** the raw host
 - exit-0-empty with a host-bearing stderr warning → message carries the *scrubbed* warning (diagnostic
@@ -268,16 +280,23 @@ surface.
 **Mutation witnesses** (each must redden a *newly-added* test by node id; no pre-existing test in
 `tests/test_backends.py` configures a host, so none of them accidentally catches these):
 
-- delete the `_scrub` wrap at `:94` → the timeout/invocation-failure neutrality test reddens
-- delete the `_scrub` wrap at `:96` → the exit≠0 neutrality test reddens
-- delete the stderr inclusion in finding (1) → the diagnostic-regained test reddens
-- delete the `value != "claude"` guard clause → the default-`claude`-survives test reddens
-- delete the `len(value) >= 3` clause → the short-value test reddens
+- delete the `_scrub` wrap at the invocation-failed raise → the timeout neutrality test reddens
+- **`from None` → `from e`** at the invocation-failed raise → `test_claudemax_timeout_chain_carries_no_secret`
+  reddens (the chained `TimeoutExpired` re-appears in the formatted traceback) — the rev-001 witness
+- delete the `_scrub` wrap at the exit≠0 raise → the exit≠0 neutrality test reddens
+- delete the stderr append in finding (1) → the diagnostic-regained test reddens
+- delete the `value != "claude"` guard clause → the default-`claude`-survives **and**
+  host-named-`claude` tests redden
+- **token-aware `re.sub(...)` → plain `str.replace(value, label)`** → `test_redact_short_host_not_matched_inside_a_word`
+  reddens (a substring replace mangles `db` inside `db2`/`database`) — the token-awareness witness
+  that replaced the old `len(value) >= 3` clause
 - remove the longest-first `sorted(...)` ordering (iterate `secrets.items()` raw) → the overlap test
   reddens (relies on the pinned shorter-key-first dict above)
-- **swap redact/truncate order** at `:96` `self._scrub(proc.stderr)[:200]` →
-  `self._scrub(proc.stderr[:200])` → the `complete()`-driven straddle test reddens (this is why the
-  test must exercise `complete()`, not compose `[:200]` in its own body)
+- **swap redact/truncate order** at the exit≠0 raise `self._scrub(proc.stderr)[:200]` →
+  `self._scrub(proc.stderr[:200])` → `test_claudemax_redacts_before_truncating` reddens; the same swap
+  on the empty-response raise → `test_claudemax_empty_response_redacts_before_truncating` reddens (this
+  is why each test must exercise `complete()`, not compose `[:200]` in its own body — and why BOTH
+  truncating branches now have a straddle witness, tst-001)
 
 **Existing tests unaffected (verified against current source):**
 `test_claudemax_runner_nonzero_raises` (stderr `"boom"`, `cmd_template=["claude"]` so `host=""` and
