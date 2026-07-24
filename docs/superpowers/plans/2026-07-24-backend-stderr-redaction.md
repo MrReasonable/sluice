@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-07-24-backend-stderr-redaction-design.md` (reviewed twice, all findings folded).
 
+**Plan review:** `/review-plan` on this implementation plan — 5 specialists, **0 findings**; all seven mutation witnesses independently traced as valid (2026-07-24).
+
 ## Global Constraints
 
 - **Stdlib-only in `sluice/`.** No new runtime dependency. (`str.replace`/`sorted`/`subprocess` are stdlib.)
