@@ -1,7 +1,9 @@
 # Backend stderr redaction — design
 
 - **Date**: 2026-07-24
-- **Status**: brainstormed; awaiting `/review-plan`
+- **Status**: reviewed (5 specialists, 0 Critical / 2 High / 2 Medium / 1 Low; findings folded in);
+  ready for implementation. Placeholder style: labeled `<host>` / `<path>` (review consensus, no
+  objection).
 - **Origin**: issue #41 (two findings from PR #37 review: `tst-004` empty-response error drops its
   only diagnostic; the neutrality reviewer's out-of-scope note that the sibling error leaks a
   hostname). User decision 2026-07-24: fix approach = **redact at the boundary**; scrub scope =
@@ -9,11 +11,12 @@
 
 ## Goal
 
-`ClaudeMaxBackend.complete` builds two `BackendError` messages from a subprocess result. One
-interpolates raw `proc.stderr`; the other deliberately omits it. Make **both** carry stderr that has
-been scrubbed of the two values known to be sensitive and in hand — the ssh `host` and a configured
-absolute `claude_path` — so the empty-response failure regains a diagnostic *and* neither message
-discloses a host or a username-bearing path into logs or the health report.
+`ClaudeMaxBackend.complete` builds `BackendError` messages from a subprocess result. One interpolates
+raw `proc.stderr`; one deliberately omits it; and a third (found in review) interpolates a runner
+exception whose `str()` embeds the argv. Scrub **every** raise site of the two values known to be
+sensitive and in hand — the ssh `host` and a configured absolute `claude_path` — so the empty-response
+failure regains a diagnostic *and* no message discloses a host or a username-bearing path into logs or
+the health report, whichever failure mode fired.
 
 ## Background
 
@@ -58,10 +61,25 @@ facts sharpen the issue as filed:
   `bash: /home/<user>/.local/bin/claude: No such file or directory` (exit 127) on stderr — and that
   absolute path, frequently carrying a username, is interpolated exactly like the hostname.
 
-Boundary redaction dissolves the filed tension entirely: once stderr is scrubbed at construction,
-finding (1)'s message can safely *regain* stderr as a diagnostic while finding (2) stops leaking.
-This is the issue's option 1 ("redact at the boundary — most work, best outcome"); the wider surface
-makes it dominant over the other three options, none of which close routes 1/2/4.
+- **There are THREE `BackendError` construction sites in `complete()`, not two** (found in
+  `/review-plan`, reviewer + architect, independently). The re-diagnosis enumerated the *sinks*
+  thoroughly but hand-listed the *sources* — the standing "enumerate, don't hand-list" lesson biting
+  exactly as warned. The third is `backends.py:94`:
+  `except Exception as e: raise BackendError(f"claude-max invocation failed: {e}") from e`. On a
+  **timeout** — the module docstring's *own named* primary-failure mode — `self.runner` raises
+  `subprocess.TimeoutExpired`, whose `str()` is `Command '{cmd}' timed out after {t} seconds` with
+  `cmd = self.cmd_template = ["ssh", host, claude_path, ...]`, leaking **both** secrets; a missing
+  absolute binary raises `FileNotFoundError` naming the executable. Both verified by running them. A
+  *hung* remote host (this fix's own motivating scenario) times out rather than exiting nonzero, so it
+  takes route 94 — **bypassing a fix that only covered `:96`/`:113`** — and the leaked `e` then flows
+  to the `:217` WARNING and onward. So the scrub must cover all three sources, and the guarantee must
+  be worded to match.
+
+Boundary redaction dissolves the filed tension entirely: once every raise site scrubs at
+construction, finding (1)'s message can safely *regain* stderr as a diagnostic while finding (2) — and
+the timeout branch — stop leaking. This is the issue's option 1 ("redact at the boundary — most work,
+best outcome"); the wider surface makes it dominant over the other three options, none of which close
+routes 1/2/4.
 
 **Neutrality note (per the standing lesson).** This is a *runtime* disclosure route, not a Rule 5
 repo-neutrality one: the message *templates* are neutral, nothing personal is compiled into the repo,
@@ -104,45 +122,59 @@ def _redact(text: str, secrets: dict[str, str]) -> str:
   replacing a 1–2 char token would mangle common substrings of legitimate stderr. `== "claude"` → the
   `claude_path` default is exactly `"claude"`; it is a substring of both `claude-max` and ordinary CLI
   diagnostics, so stripping it would corrupt the very diagnostic we are trying to preserve.
-- **Placeholder style — deferred to the review agents.** The recommendation carried into review is
-  **labeled** placeholders (`<host>` / `<path>`): one extra token of code, but it tells the operator
-  *which* class of failure occurred (host unresolved vs binary missing), which directly serves
-  finding (1)'s diagnosability goal. The alternative is a single `<redacted>`. The `/review-plan` and
-  `/review-pr` agents rule; implementation follows their consensus. The dict-keyed-by-value signature
-  supports either (labels are just the dict values).
+- **Placeholder style — labeled (`<host>` / `<path>`), settled at `/review-plan`.** No reviewer
+  objected; the cross-cutting reviewer noted the dict-keyed-by-value signature "supports either". The
+  label tells the operator *which* class of failure occurred (host unresolved vs binary missing),
+  which directly serves finding (1)'s diagnosability goal, so labeled wins on the same rationale that
+  motivates the whole change. (`/review-pr` can still revisit at diff time.)
 
-### 2. `ClaudeMaxBackend._stderr_safe` — a thin method naming *which* attributes are sensitive
+### 2. `ClaudeMaxBackend._scrub` — a thin method naming *which* attributes are sensitive
 
 ```python
-def _stderr_safe(self, stderr: str) -> str:
-    return _redact(stderr, {self.host: "<host>", self.claude_path: "<path>"})
+def _scrub(self, text: str) -> str:
+    """Strip this backend's own secrets (host, configured claude_path) from any text
+    that becomes a BackendError message -- proc.stderr OR str(a runner exception),
+    whose TimeoutExpired/FileNotFoundError forms carry the argv."""
+    return _redact(text, {self.host: "<host>", self.claude_path: "<path>"})
 ```
 
-Encapsulates the two sensitive attributes so both call sites read cleanly and neither restates the
-secret set. Keeps the sensitivity knowledge on the backend that owns those attributes; keeps `_redact`
-general and secret-agnostic.
+Named `_scrub` (not `_stderr_safe`), because it is applied to the invocation-failure branch's
+`str(e)` too, which is a runner exception, not stderr. Encapsulates the two sensitive attributes so
+all three call sites read cleanly and none restates the secret set. Keeps the sensitivity knowledge on
+the backend that owns those attributes; keeps `_redact` general and secret-agnostic.
 
-### 3. The two call sites, inside `complete`
+### 3. The THREE call sites, inside `complete`
 
 ```python
+# invocation-failed branch (timeout / ssh / missing binary): TimeoutExpired.str embeds the argv
+except Exception as e:
+    raise BackendError(f"claude-max invocation failed: {self._scrub(str(e))}") from e
+...
 # finding (2): the sibling stops leaking
 if proc.returncode != 0:
     raise BackendError(
-        f"claude-max exit {proc.returncode}: {self._stderr_safe(proc.stderr)[:200]}")
+        f"claude-max exit {proc.returncode}: {self._scrub(proc.stderr)[:200]}")
 ...
 # finding (1): the empty-response error REGAINS a diagnostic
 if not text:
-    detail = self._stderr_safe(proc.stderr).strip()[:200]
+    detail = self._scrub(proc.stderr).strip()[:200]
     raise BackendError(
         f"claude-max returned no text (exit 0, {len(proc.stdout)} chars of whitespace"
         + (f"; stderr: {detail}" if detail else "") + ")")
 ```
 
+The `from e` chaining is kept (matching the module's other raises). Note it precisely: the guarantee
+is that **`str(BackendError)`** carries no secret — the chained `__cause__` (the raw
+`TimeoutExpired`) would only surface in a full traceback, and none of the four sinks logs with
+`exc_info`/`_log.exception` (all use `%s`/`str(e)`). If a future sink starts logging tracebacks, the
+chained cause becomes a fresh route; that is out of scope here and noted, not closed.
+
 Two ordering invariants are load-bearing:
 
 - **Redact, *then* truncate.** Scrub the full stderr and slice `[:200]` afterward. Slicing first could
   split a secret across the 200-char boundary and leave a fragment that `str.replace` never sees. A
-  test pins this (secret at the tail of a >200-char stderr).
+  test pins this with a secret that **straddles** the boundary (see Testing, tst-001) — the tail
+  wording certifies nothing.
 - **Append the diagnostic only when present.** On exit-0-empty with no stderr, the message stays the
   clean `"...whitespace)"` and preserves the `"no text"` substring the existing test matches; when
   stderr *is* present (the interesting case — a warning printed before the empty return), it is
@@ -156,14 +188,25 @@ makes that safe (the four-sink fan-out, closed at source).
 
 ### Data flow after the fix
 
-The sensitive value never enters the `BackendError`. All four sinks — the FallbackBackend WARNING
-(`:217`), the both-failed re-raise (`:224`), `judge.py:61`, `app.py:697` — are clean *by
-construction*. No per-sink edit is made or needed; that is the whole point of fixing at the boundary.
+With **all three** raise sites scrubbed, no secret enters the `str()` of any `BackendError`
+`complete()` produces. All four sinks — the FallbackBackend WARNING (`:217`), the both-failed re-raise
+(`:224`), `judge.py:61`, `app.py:697` — are clean *by construction*, whether the failure was a
+nonzero exit, an empty response, **or a timeout/ssh/missing-binary invocation error**. No per-sink
+edit is made or needed; that is the whole point of fixing at the source.
 
 ## Testing
 
 Behaviour-asserting, offline, mutation-witnessed (per CLAUDE.md: run
 `compileall --invalidation-mode checked-hash` once, mutate by MOVING/DELETING, witness by node id).
+
+**Synthetic-fixture constraint (neu-001, inv-001).** Every host/`claude_path` value used to *exercise*
+redaction MUST be obviously synthetic and MUST NOT be a real hostname or a real absolute path — a
+local review pass cannot tell a real host from a fake one, and the `≥ 3`-char / `≠ "claude"` guards
+force the fixtures to be substantive, which is exactly where a real value could slip into `tests/`.
+Use the `example.invalid` / `Example` family: host `host.example.invalid`, path
+`/home/example/.local/bin/claude`. Each such fixture carries a one-line comment stating it is chosen
+to be non-real. The existing `host="h"` fixture is `< 3` chars and cannot exercise the redaction path,
+so a new longer value is *invented*, never borrowed from a real config.
 
 **Pure `_redact` (unit):**
 
@@ -172,14 +215,29 @@ Behaviour-asserting, offline, mutation-witnessed (per CLAUDE.md: run
   `claude_path` left at default, survives untouched)
 - does **not** strip an empty host (local run)
 - does **not** strip a `< 3`-char value
-- **redact-before-truncate**: a secret at the tail of a `> 200`-char stderr is fully gone from the
-  `[:200]` result — no fragment
-- **overlap**: when the host is a substring of the `claude_path`, both are fully scrubbed (the
-  longest-first ordering catches the path whole before the host can fragment it), and no
-  username-bearing fragment survives
+- **redact-before-truncate — the secret STRADDLES the boundary (tst-001).** A distinctive host begins
+  at index ~197 of a `> 200`-char text, so it spans the `[:200]` cut. Redact-then-slice removes the
+  raw bytes before the cut → no fragment survives; slice-then-redact cuts the host mid-token, leaving
+  a fragment (e.g. `...HOST-SENTINEL-EXAM`) that `str.replace(full_host)` never matches → it would
+  leak. The test asserts a *distinctive prefix* of the host (not the full substring) is absent from
+  `self._scrub(text)[:200]`. Worded at the tail (secret entirely past 200) this would pass under both
+  orderings and certify nothing — straddling is what makes it discriminating.
+- **overlap — dict pinned SHORTER-key-first (tst-002).** The host is a substring of the `claude_path`
+  and the test's secrets dict inserts the *host* (shorter) key first, matching `_scrub`'s own
+  `{self.host: ..., self.claude_path: ...}` order. Longest-first `sorted` catches the path whole →
+  both scrubbed. Raw insertion-order iteration would replace the host first, fragment the path, and
+  leave a username-bearing tail → the test reddens. If the dict were written path-first, insertion
+  order would already equal longest-first and the `sorted`-removal mutant would stay green (an
+  equivalent mutant) — so the ordering is pinned deliberately.
 
 **`ClaudeMaxBackend.complete` via the injected runner (behaviour):**
 
+- **invocation-failure / timeout (rev-001, arc-001)**: a `runner` that raises
+  `subprocess.TimeoutExpired(cmd=self.cmd_template, timeout=…)` on a backend constructed with a
+  configured synthetic `host` *and* `claude_path` (so the auto-built `cmd_template` carries them and
+  `self.host`/`self.claude_path` match) → the raised `str` contains the `<host>`/`<path>` labels and
+  **neither** the host nor the path. Uses the `host=`/`claude_path=` constructor path, not an explicit
+  `cmd_template`, so the two stay coupled the way production couples them.
 - exit≠0 with stderr = host + a real diagnostic → message contains the label **and** the diagnostic,
   **not** the raw host
 - exit-0-empty with a host-bearing stderr warning → message carries the *scrubbed* warning (diagnostic
@@ -188,22 +246,29 @@ Behaviour-asserting, offline, mutation-witnessed (per CLAUDE.md: run
   `claude_path` = that abs path → message shows the path label, not the path
 
 **Load-bearing neutrality guarantee:** for a configured host, `str(BackendError)` never contains the
-host substring — asserted at **both** raise sites (this is the property the whole change exists to
-provide).
+host substring — asserted at **all three** raise sites (`:94` invocation-failed, `:96` exit≠0, `:113`
+empty). This is the property the whole change exists to provide.
 
-**Mutation witnesses** (each must redden a named test by node id):
+**Mutation witnesses** (each must redden a *newly-added* test by node id; no pre-existing test in
+`tests/test_backends.py` configures a host, so none of them accidentally catches these):
 
-- delete the `_stderr_safe` wrap at `:96` → the exit≠0 neutrality test reddens
+- delete the `_scrub` wrap at `:94` → the timeout/invocation-failure neutrality test reddens
+- delete the `_scrub` wrap at `:96` → the exit≠0 neutrality test reddens
 - delete the stderr inclusion in finding (1) → the diagnostic-regained test reddens
 - delete the `value != "claude"` guard clause → the default-`claude`-survives test reddens
 - delete the `len(value) >= 3` clause → the short-value test reddens
 - remove the longest-first `sorted(...)` ordering (iterate `secrets.items()` raw) → the overlap test
-  reddens
+  reddens (relies on the pinned shorter-key-first dict above)
+- **swap redact/truncate order** `self._scrub(x)[:200]` → `self._scrub(x[:200])` → the straddle test
+  reddens (this is the witness the tail-worded version lacked)
 
 **Existing tests unaffected (verified against current source):**
-`test_claudemax_runner_nonzero_raises` (stderr `"boom"`, no host → unchanged) and
-`test_claudemax_empty_stdout_on_exit_zero_raises` (stderr `""`, `"no text"` preserved) both stay
-green because the changes are additive to behaviour.
+`test_claudemax_runner_nonzero_raises` (stderr `"boom"`, `cmd_template=["claude"]` so `host=""` and
+`claude_path="claude"` are both skipped → unchanged), `test_claudemax_empty_stdout_on_exit_zero_raises`
+(stderr `""` → `detail=""`, no `; stderr:` appended, `"no text"` preserved), and
+`test_claudemax_transport_failure_raises_backend_error` (its `OSError` message is synthetic and its
+`cmd_template=["claude"]` skips both secrets → unchanged) all stay green because the changes are
+additive to behaviour.
 
 ## Non-goals
 
@@ -224,11 +289,16 @@ green because the changes are additive to behaviour.
 
 - `ruff check sluice tests` → clean.
 - `python -m pytest` → green; record the added test count (existing 868 unaffected).
-- Mutation witnesses above each reddens its named test by node id, run after the checked-hash
-  `compileall`.
-- Behaviour spot-check (offline, no live CLI): construct `ClaudeMaxBackend` with a fake `runner`
-  returning `returncode=1, stderr="ssh: Could not resolve hostname <h>: ..."` and a configured
-  `host`, call `complete`, assert the raised `str` contains the host label and not the host.
+- All seven mutation witnesses above each redden their named test by node id, run after the
+  checked-hash `compileall` (note: the two size-preserving edits — the guard-clause deletions — need
+  the content-addressed cache CLAUDE.md's `compileall` line provides).
+- Behaviour spot-check (offline, no live CLI), **both leak routes**:
+  - exit≠0: fake `runner` returning `returncode=1, stderr="ssh: Could not resolve hostname <h>: ..."`
+    on a backend with a configured synthetic `host` → raised `str` contains the host label, not the
+    host.
+  - timeout: fake `runner` raising `subprocess.TimeoutExpired(cmd=backend.cmd_template, timeout=1)` on
+    a backend built with a configured synthetic `host`/`claude_path` → raised `str` contains the
+    labels, not the host or the path.
 
 ## Process
 
