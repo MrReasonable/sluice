@@ -81,7 +81,18 @@ class Store(Protocol):
         as non-fatal."""
         ...
 
-    def merge_cluster(self, survivor_ref, loser_refs, *, alt_urls, first_seen, last_seen) -> list: ...
+    def merge_cluster(self, survivor_ref, loser_refs, *, alt_urls, first_seen, last_seen) -> list:
+        """Merge a human-vetted duplicate cluster (#23): union `alt_urls` onto the
+        survivor WITHOUT touching its status/scores/enrichment/body (never-clobber),
+        with `last_seen` advanced and `first_seen` minimised -- both RE-DERIVED against
+        the FRESH survivor, so a caller's stale min/max can never regress them. The
+        survivor write happens BEFORE any loser is removed, so a VaultConflict on the
+        survivor removes nothing. Each loser is then removed/archived independently; a
+        per-loser removal failure is isolated to that loser (it stays in the active
+        view and is never counted as merged) rather than aborting the whole cluster.
+        Returns the removed/archived loser handles -- only the ones that actually
+        succeeded."""
+        ...
 
     def append_body_section(self, ref, tag: str, section_md: str) -> bool:
         """Append a tagged section to the body, idempotently (returns False if `tag` is
