@@ -78,6 +78,7 @@ def test_ingest_defaults_carry_no_preference(monkeypatch):
     assert loaded.relevance_keep == []
     assert loaded.relevance_drop == []
     assert loaded.location_noise_words == []
+    assert loaded.dedupe_title_noise_words == []   # #23: the loader default, not just Config()
 
 
 def test_config_overlay_restores_neutralized_defaults(tmp_path, monkeypatch):
@@ -108,6 +109,18 @@ def test_config_overlay_restores_neutralized_defaults(tmp_path, monkeypatch):
     assert ccfg.name == "Someone"
     assert ccfg.negatives == ["X"]
     assert ccfg.prefix_map == {"Foo": "FO"}
+
+
+def test_dedupe_title_noise_words_round_trips_through_load_config(tmp_path):
+    # #23 nitpick: the abstain-by-default assertions above cover Config() and the
+    # no-file loader path; this closes the other direction -- a user who DOES set
+    # dedupe_title_noise_words in sluice.yaml must get it back verbatim, so the
+    # neutral default costs nothing in override capability (same shape as the
+    # triage/cv overlay test above).
+    p = tmp_path / "sluice.local.yaml"
+    p.write_text("dedupe_title_noise_words: [\"remote\", \"hybrid\"]\n")
+    loaded = load_config(str(p))
+    assert loaded.dedupe_title_noise_words == ["remote", "hybrid"]
 
 
 # --- #26: the unguarded-preference SWEEP -------------------------------------

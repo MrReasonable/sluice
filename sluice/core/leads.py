@@ -187,13 +187,19 @@ def cluster_duplicates(notes, *, title_noise=(), location_noise=()):
     human-gated `sluice leads dedupe`. Two notes cluster iff same firm
     (`_norm_tokens(company)` equal), same role (`_norm_tokens(role)` minus the
     configured title-noise tokens equal), and a complete-linkage location clique
-    (`_location_cliques`). PROPOSES only; merging is human-gated, so recall-leaning
-    is acceptable. See docs/.../read-path-dedup-design.md #1."""
+    (`_location_cliques`). A note whose company or role token set is EMPTY (blank
+    `company`, or a role wholly consumed by configured title-noise) carries no
+    identity evidence and is skipped -- otherwise two such notes share the same
+    empty frozenset key and cluster as duplicates despite having nothing in
+    common (CodeRabbit round-2). PROPOSES only; merging is human-gated, so
+    recall-leaning is acceptable. See docs/.../read-path-dedup-design.md #1."""
     tnoise = {t for w in title_noise for t in _norm_tokens(w)}
     groups: dict = {}
     for note in notes:
         company = frozenset(_norm_tokens(note.fm.get("company", "")))
         role = frozenset(_norm_tokens(note.fm.get("role", "")) - tnoise)
+        if not company or not role:
+            continue   # no identity evidence: empty company/role token sets must never match
         groups.setdefault((company, role), []).append(note)
     clusters = []
     for members in groups.values():
