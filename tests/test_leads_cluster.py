@@ -75,3 +75,16 @@ def test_two_disjoint_cliques_in_one_group():
     b = _note("b", location=LOCATIONS[1])
     b2 = _note("b2", location=LOCATIONS[1])
     assert _slugs(cluster_duplicates([a, a2, b, b2])) == [["a", "a2"], ["b", "b2"]]
+
+
+def test_empty_identity_never_clusters():
+    # Two notes both missing `company` (or both with a role wholly consumed by
+    # configured title-noise) produce EQUAL empty token sets, which would otherwise
+    # cluster unrelated notes on zero shared evidence (CodeRabbit round-2, #23).
+    a = _note("a", company="")
+    b = _note("b", company="")
+    assert cluster_duplicates([a, b]) == []
+
+    c = _note("c", role="remote")
+    d = _note("d", role="remote")
+    assert cluster_duplicates([c, d], title_noise=["remote"]) == []
