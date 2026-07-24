@@ -1,0 +1,42 @@
+"""resolve_merge_status: the order-independent N-ary status verdict for #23 dedup.
+
+No total order spans the two lifecycles, and clusters are size >= 2, so the verdict
+reads the SET of member statuses. Every case is asserted; the 3-member cases are
+asserted over ALL permutations, because a single ordering catches only a left-fold
+(a right-fold hits a different intermediate state).
+"""
+import itertools
+
+import pytest
+
+from sluice.core.status import resolve_merge_status
+
+
+@pytest.mark.parametrize("statuses,winner,outcome", [
+    (["shortlist", "new"], "shortlist", "ok"),          # new is the floor
+    (["rejected", "shortlist"], "rejected", "ok"),       # app-owned beats triage
+    (["applied", "interview"], "interview", "ok"),        # both live -> ladder rank
+    (["offer", "offer"], "offer", "ok"),                 # equal
+    (["rejected", "interview"], None, "conflict"),        # terminal + live -> conflict
+    (["rejected", "accepted"], None, "conflict"),         # two terminals
+    (["shortlist", "dismiss"], None, "conflict"),         # two non-new triage
+    (["weird", "shortlist"], None, "conflict"),           # non-canonical + different
+])
+def test_pairwise_both_orders(statuses, winner, outcome):
+    assert resolve_merge_status(statuses) == (winner, outcome)
+    assert resolve_merge_status(list(reversed(statuses))) == (winner, outcome)
+
+
+@pytest.mark.parametrize("statuses,winner,outcome", [
+    (["new", "new", "rejected"], "rejected", "ok"),
+    (["shortlist", "dismiss", "applied"], "applied", "ok"),   # app dominates both triage
+    (["applied", "interview", "rejected"], None, "conflict"), # terminal + live present
+    (["rejected", "accepted", "new"], None, "conflict"),
+])
+def test_three_member_all_permutations(statuses, winner, outcome):
+    for perm in itertools.permutations(statuses):
+        assert resolve_merge_status(list(perm)) == (winner, outcome)
+
+
+def test_all_equal_noncanonical_is_agreement_not_conflict():
+    assert resolve_merge_status(["weird", "weird"]) == ("weird", "ok")
