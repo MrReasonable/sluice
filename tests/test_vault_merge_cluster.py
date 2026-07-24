@@ -133,10 +133,10 @@ def test_malformed_alt_urls_rejects_merge(tmp_path):
 
 def test_per_loser_archive_failure_isolated_not_fatal(tmp_path, monkeypatch):
     # inv-r2-002: a failed archive of ONE loser (e.g. a permissions/ENOSPC blip on
-    # os.link) must not abort the whole cluster and must not be counted as merged --
-    # that loser stays in the active view, while a succeeding loser is still archived
-    # and unioned. Three separate notes: one survivor, one loser that archives cleanly,
-    # one loser whose os.link is made to fail.
+    # the archive's os.replace) must not abort the whole cluster and must not be
+    # counted as merged -- that loser stays in the active view, while a succeeding
+    # loser is still archived and unioned. Three separate notes: one survivor, one
+    # loser that archives cleanly, one loser whose archive os.replace is made to fail.
     v = _mk3(tmp_path)
     survivor = _by_url(v, "https://ex.invalid/1")
     loser_ok = _by_url(v, "https://ex.invalid/2")
@@ -144,16 +144,18 @@ def test_per_loser_archive_failure_isolated_not_fatal(tmp_path, monkeypatch):
     fail_basename = os.path.basename(loser_fail.ref)
 
     import sluice.core.vault as vault_mod
-    real_link = vault_mod.os.link
+    real_replace = vault_mod.os.replace
 
-    def flaky_link(src, dst):
-        # Fail ONLY for loser_fail's destination basename; the real os.link runs for
-        # every other call (loser_ok's archive).
-        if os.path.basename(dst) == fail_basename:
+    def flaky_replace(src, dst):
+        # os.replace is ALSO used by _atomic_write for the SURVIVOR's CAS write, so
+        # this must fail ONLY the archive move into _merged/ for loser_fail's
+        # basename -- every other os.replace call (the survivor's own write, and
+        # loser_ok's archive) must run for real.
+        if "_merged" in dst and os.path.basename(dst) == fail_basename:
             raise OSError("simulated: could not archive this loser")
-        return real_link(src, dst)
+        return real_replace(src, dst)
 
-    monkeypatch.setattr(vault_mod.os, "link", flaky_link)
+    monkeypatch.setattr(vault_mod.os, "replace", flaky_replace)
 
     archived = v.merge_cluster(
         survivor.ref, [loser_ok.ref, loser_fail.ref],
@@ -175,3 +177,8 @@ def test_per_loser_archive_failure_isolated_not_fatal(tmp_path, monkeypatch):
     assert json.loads(survivor_after.fm["alt_urls"]) == [
         "https://ex.invalid/2", "https://ex.invalid/3",
     ]  # audit trail unions BOTH urls regardless of per-loser archive outcome
+
+    # The O_EXCL reservation for the failed loser must be cleaned up on failure --
+    # not left as an orphaned 0-byte file blocking a future archive attempt.
+    merged_dir = os.path.join(v.leads_dir, "_merged")
+    assert fail_basename not in os.listdir(merged_dir)

@@ -664,25 +664,36 @@ class Vault:
             stem = base[:-3] if base.endswith(".md") else base
             dest = os.path.join(merged_dir, base)
             n = 1
+            reserved = None
             try:
-                # Atomic reserve: os.link raises FileExistsError rather than silently
-                # overwriting a concurrent/human-created path under _merged/ -- the old
-                # `while os.path.exists(dest)` check-then-`os.replace` was a TOCTOU
-                # between the two calls. Same filesystem (_merged/ is under leads_dir),
-                # so a hardlink is valid; the link IS the archive once the original is
-                # unlinked, so no data is duplicated on disk.
+                # Reserve the destination atomically (O_EXCL fails if taken, so a concurrent
+                # archive never collides), then os.replace the loser into our reservation.
+                # os.replace is a single atomic move of whatever `ref` names at that instant,
+                # so a concurrent atomic save of the loser is ARCHIVED (moved), never deleted,
+                # and the reservation means we never overwrite another archived note. This
+                # replaces the old os.link + os.unlink pair, which had a window: a concurrent
+                # atomic save of the loser landing between the link and the unlink would be
+                # deleted by the unlink instead of archived.
                 while True:
                     try:
-                        os.link(ref, dest)
+                        fd = os.open(dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                        os.close(fd)
+                        reserved = dest
                         break
                     except FileExistsError:
                         dest = os.path.join(merged_dir, f"{stem}.{n}.md")
                         n += 1
-                os.unlink(ref)                  # the link IS the archive now
+                os.replace(ref, dest)   # atomic; overwrites only our own 0-byte reservation
+                reserved = None
                 archived.append(dest)
             except OSError as e:
-                # Per-loser isolation: a failed archive leaves that loser active,
-                # so it is not counted as merged and the next run re-merges it.
+                # per-loser isolation: leave the loser active (it self-heals next run), and
+                # clean up an orphaned reservation if the move never happened.
+                if reserved:
+                    try:
+                        os.unlink(reserved)
+                    except OSError:
+                        pass
                 _log.warning("dedupe: could not archive loser %s: %s", ref, e)
         return archived
 

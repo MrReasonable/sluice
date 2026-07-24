@@ -138,16 +138,17 @@ def test_partial_archive_reported(tmp_path, monkeypatch):
     cid = app.dedupe_report()[0].id
 
     import sluice.core.vault as vault_mod
-    real_link = vault_mod.os.link
+    real_replace = vault_mod.os.replace
 
-    def flaky_link(src, dst):
-        # Fail only the archive-into-_merged/ step; the survivor's own note path is
-        # untouched, so its CAS write still succeeds through the real os.replace.
+    def flaky_replace(src, dst):
+        # Fail only the archive-into-_merged/ step; os.replace is ALSO used by the
+        # survivor's own CAS write (on the survivor's own path, not under _merged/),
+        # which must still land for real.
         if os.path.basename(os.path.dirname(dst)) == "_merged":
             raise OSError("simulated: could not archive this loser")
-        return real_link(src, dst)
+        return real_replace(src, dst)
 
-    monkeypatch.setattr(vault_mod.os, "link", flaky_link)
+    monkeypatch.setattr(vault_mod.os, "replace", flaky_replace)
     assert app.dedupe_merge([cid]) == [(cid, "partial")]
     monkeypatch.undo()
 
