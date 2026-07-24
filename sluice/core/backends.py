@@ -106,20 +106,41 @@ class ClaudeMaxBackend:
         self.runner = runner
         self.timeout = timeout
 
+    def _scrub(self, text: str) -> str:
+        """Strip this backend's own secrets (host, configured claude_path) from any
+        text that becomes a BackendError message -- proc.stderr OR str(a runner
+        exception), whose TimeoutExpired.cmd / FileNotFoundError forms carry the argv.
+        Scrubs by self.host / self.claude_path, which cover the argv only when they
+        built it: the production path (make_backend passes host=/claude_path=, never an
+        explicit cmd_template). A caller supplying a divergent cmd_template with default
+        host/path is out of scope -- not reachable via make_backend, and not made worse
+        by this change."""
+        return _redact(text, {self.host: "<host>", self.claude_path: "<path>"})
+
     def complete(self, prompt: str) -> str:
         try:
             proc = self.runner(self.cmd_template, input=prompt,
                                capture_output=True, text=True, timeout=self.timeout)
         except Exception as e:  # timeout, ssh failure, missing binary
-            raise BackendError(f"claude-max invocation failed: {e}") from e
+            # str(e) carries the argv -- TimeoutExpired.cmd is self.cmd_template
+            # (["ssh", host, claude_path, ...]) and FileNotFoundError names the binary.
+            # A hung host times out here, NOT at the exit-code branch, so this leak route
+            # is real; scrub before the message reaches a WARNING log or the health report.
+            raise BackendError(f"claude-max invocation failed: {self._scrub(str(e))}") from e
         if proc.returncode != 0:
-            raise BackendError(f"claude-max exit {proc.returncode}: {proc.stderr[:200]}")
+            raise BackendError(
+                f"claude-max exit {proc.returncode}: {self._scrub(proc.stderr)[:200]}")
         text = proc.stdout.strip()
         # Exit 0 with no text is a FAILED call wearing a successful one's clothes. Both
         # siblings already refuse it (OpenAiCompatibleBackend, AnthropicBackend); claude-max
         # was the outlier, returning "" for the caller to notice by itself. Raising here means
         # the same underlying condition triggers the documented fallback whichever provider
         # hits it, instead of one raising and one handing back a useless string.
+        #
+        # The message also appends the SCRUBBED stderr (self._scrub) when present: an exit-0
+        # empty response often has a warning on stderr (quota, deprecation) that is the only
+        # clue why. Scrubbing at construction is what makes surfacing it safe (see _scrub);
+        # the append is conditional so a truly empty stderr keeps the clean "...whitespace)".
         #
         # Only the EMPTY half of the siblings' pair is implemented here. Their other guard keys on
         # finish_reason/stop_reason to catch a TRUNCATION, and this backend has no equivalent
@@ -130,8 +151,10 @@ class ClaudeMaxBackend:
         # envelope is never empty, so under --output-format json a null `result` would sail through
         # this guard untouched.
         if not text:
+            detail = self._scrub(proc.stderr).strip()[:200]
             raise BackendError(
-                f"claude-max returned no text (exit 0, {len(proc.stdout)} chars of whitespace)"
+                f"claude-max returned no text (exit 0, {len(proc.stdout)} chars of whitespace"
+                + (f"; stderr: {detail}" if detail else "") + ")"
             )
         return text
 
