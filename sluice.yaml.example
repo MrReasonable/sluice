@@ -35,6 +35,14 @@ relevance_drop: ['sport and exercise psychologist']   # ...then drop any contain
 # default -> nothing subtracted. Uncomment to, e.g., merge a "Remote" and a city listing.
 # location_noise_words:
 #   - remote
+
+# Tokens stripped from a job TITLE before `sluice leads dedupe` decides two roles are the
+# same posting. Empty by default (strictest: only near-identical titles cluster). Add board
+# decorations you observe. Generic examples only — never your real filter list.
+# dedupe_title_noise_words:
+#   - remote
+#   - hybrid
+#   - contract
 # sources:
 #   workinstartups: { enabled: false }
 #   linkedin:
