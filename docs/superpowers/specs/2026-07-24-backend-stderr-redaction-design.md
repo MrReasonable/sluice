@@ -346,7 +346,8 @@ additive to behaviour.
 ## Definition of done
 
 - `ruff check sluice tests` → clean.
-- `python -m pytest` → green; record the added test count (existing 868 unaffected).
+- `python -m pytest` → green; record the observed suite total and the count of tests this change adds
+  (do not hard-assert a fixed total, which drifts as the suite grows).
 - **Every** mutation witness in the list above reddens its named test by node id (the list grew as
   findings folded — count it from the list, do not hard-assert a total), run after the checked-hash
   `compileall` (note: the size-preserving edits — e.g. the `re.sub`↔`str.replace` swap and the
