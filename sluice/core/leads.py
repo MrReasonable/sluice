@@ -152,11 +152,35 @@ def _norm_tokens(s: str) -> set:
 
 def _location_cliques(members, location_noise):
     """Partition members (already same company+role) into complete-linkage location
-    cliques. A cluster is a CONNECTED COMPONENT of the compatibility graph
-    (_compare_locations != DIFFERENT) that is itself a CLIQUE. A component a chain
-    of UNKNOWN (blank) edges makes span a DIFFERENT pair is not a clique -> no
-    cluster (its members stay singletons), so a blank location never bridges two
-    different cities (#5, #23 arc-r2-001). Deterministic in member order."""
+    cliques, WITHOUT letting a blank-location member bridge two different cities
+    (#5, #23 arc-r2-001) and WITHOUT letting one ambiguous blank discard an
+    otherwise-valid subclique elsewhere in the group (#23 round-2, CodeRabbit).
+
+    A member is BLANK iff its location's tokens (after noise subtraction) are
+    empty -- the same test _compare_locations already applies, reused via
+    _compare_locations(loc, loc, noise) == UNKNOWN so "blank" can never drift
+    from what the comparison actually treats as evidence-free. Everything else
+    is KNOWN.
+
+    SEEDS are the connected components of the compatibility graph
+    (_compare_locations != DIFFERENT) restricted to KNOWN members, kept only
+    when the component is itself a CLIQUE -- a chain of SAME edges that spans a
+    DIFFERENT pair is not a clique and is dropped (safe under-merge: those
+    members simply seed nothing). Seeds of size 1 are kept too, because a
+    lone KNOWN member can still be the sole anchor a blank attaches to.
+
+    Blanks attach by how many seeds exist to receive them:
+      - exactly one seed -> every blank joins it (unambiguous).
+      - zero seeds -> >=2 blanks form their own all-blank clique; 0-1 blanks
+        cluster nothing.
+      - >=2 seeds -> every blank is compatible with every seed (UNKNOWN, not
+        DIFFERENT), so which one it belongs to is genuinely undecidable; every
+        blank is left unclustered rather than guessed into one, which is
+        exactly the bridge this function must refuse to build.
+
+    Only seeds (with blanks attached) that end up size >= 2 are returned, in
+    member-order-then-discovery order, so the cluster id (a hash of sorted
+    member slugs) is stable. Deterministic in member order throughout."""
     n = len(members)
     compat = [[True] * n for _ in range(n)]
     for i in range(n):
@@ -165,21 +189,43 @@ def _location_cliques(members, location_noise):
                                     members[j].fm.get("location", ""),
                                     location_noise) != DIFFERENT
             compat[i][j] = compat[j][i] = ok
-    seen, out = set(), []
-    for start in range(n):
+
+    def is_blank(i):
+        loc = members[i].fm.get("location", "")
+        return _compare_locations(loc, loc, location_noise) == UNKNOWN
+
+    known = [i for i in range(n) if not is_blank(i)]
+    blanks = [i for i in range(n) if is_blank(i)]
+
+    seen, seeds = set(), []
+    for start in known:
         if start in seen:
             continue
         comp, stack = [], [start]
-        while stack:                       # DFS the compatibility component
+        while stack:                       # DFS the compatibility component, KNOWN members only
             k = stack.pop()
             if k in seen:
                 continue
             seen.add(k)
             comp.append(k)
-            stack.extend(m for m in range(n) if m not in seen and compat[k][m])
-        if len(comp) >= 2 and all(compat[a][b] for a in comp for b in comp if a != b):
-            out.append([members[k] for k in sorted(comp)])
-    return out
+            stack.extend(m for m in known if m not in seen and compat[k][m])
+        if all(compat[a][b] for a in comp for b in comp if a != b):
+            seeds.append(sorted(comp))
+        # else: a chain of SAME edges spans a DIFFERENT pair -- not a clique, so this
+        # component seeds nothing (its members stay out unless another seed claims them,
+        # which compatibility makes impossible since they were only ever mutually reachable
+        # through this now-discarded component).
+
+    if len(seeds) == 1:
+        seeds[0] = sorted(seeds[0] + blanks)          # unambiguous: only one place to go
+    elif not seeds and len(blanks) >= 2:
+        seeds = [sorted(blanks)]                       # no known anchor: an all-blank clique
+    # else: zero seeds with < 2 blanks (nothing to cluster), or >= 2 seeds -- in the
+    # latter case every blank is compatible with every seed, so attaching to any one of
+    # them would be an arbitrary, non-deterministic guess. Leave every blank unclustered
+    # instead: it never bridges two different cities (arc-r2-001).
+
+    return [[members[k] for k in s] for s in seeds if len(s) >= 2]
 
 
 def cluster_duplicates(notes, *, title_noise=(), location_noise=()):
