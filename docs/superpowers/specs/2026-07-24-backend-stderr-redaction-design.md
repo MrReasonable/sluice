@@ -106,7 +106,7 @@ def _redact(text: str, secrets: dict[str, str]) -> str:
     so a value is replaced only where it stands as a whole token, never inside a longer
     word. LONGEST-first ordering handles the host-inside-path overlap."""
     for value, label in sorted(secrets.items(), key=lambda kv: len(kv[0]), reverse=True):
-        if value and value != "claude":
+        if value:
             text = re.sub(rf"(?<!\w){re.escape(value)}(?!\w)", label, text)
     return text
 ```
@@ -120,10 +120,14 @@ def _redact(text: str, secrets: dict[str, str]) -> str:
   (`(?<!\w)…(?!\w)`), which redacts a short host *as a whole token* without a length floor mangling
   every `db` inside `database`, and — unlike `\b` — still anchors an absolute path that begins with
   `/`, so the same uniform match covers host and path. The length guard is therefore **removed**.
-- **`!= "claude"` retained, with a documented residual.** `claude_path`'s default is exactly
-  `"claude"` (the CLI's own binary name, non-sensitive, a token in ordinary diagnostics), so it is
-  skipped. The same guard means a host *improbably named* `claude` is left unscrubbed — an accepted,
-  documented residual: at that point the host is indistinguishable from the tool's own name.
+- **The `"claude"` exemption is ROLE-BASED, in `_scrub` (folded post-`/review-pr`, CodeRabbit
+  Major + user decision).** `_redact` itself has **no** `"claude"` exemption — it redacts every
+  non-empty token. An earlier draft guarded `value != "claude"` *here*, which was value-based and
+  conflated two roles: it correctly spared the default `claude_path` (the CLI's own binary name,
+  non-sensitive, a token in ordinary diagnostics) but also spared a host *named* `claude`, which then
+  leaked. The exemption now lives in `_scrub`, which omits `claude_path` from the secret map only when
+  it is the default `"claude"` — so the default binary name survives a diagnostic, while a host named
+  `claude` is a configured, sensitive value and **is** redacted. The former residual is closed.
 - **Placeholder style — labeled (`<host>` / `<path>`), settled at `/review-plan`.** No reviewer
   objected; the cross-cutting reviewer noted the dict-keyed-by-value signature "supports either". The
   label tells the operator *which* class of failure occurred (host unresolved vs binary missing),
@@ -134,13 +138,16 @@ def _redact(text: str, secrets: dict[str, str]) -> str:
 
 ```python
 def _scrub(self, text: str) -> str:
-    """Strip this backend's own secrets (host, configured claude_path) from any text
-    that becomes a BackendError message -- proc.stderr OR str(a runner exception),
-    whose TimeoutExpired/FileNotFoundError forms carry the argv. Scrubs by self.host /
-    self.claude_path, which cover the argv only when they built it (the production
-    path: make_backend passes host=/claude_path=, never an explicit cmd_template); a
-    caller supplying a divergent cmd_template with default host/path is out of scope."""
-    return _redact(text, {self.host: "<host>", self.claude_path: "<path>"})
+    """... (see the shipped docstring). Builds the secret map with a ROLE-BASED exemption:
+    host is always added when set; claude_path is added only when configured away from the
+    default 'claude', so the default binary name is spared but a host NAMED 'claude' is
+    still redacted."""
+    secrets: dict[str, str] = {}
+    if self.host:
+        secrets[self.host] = "<host>"
+    if self.claude_path and self.claude_path != "claude":
+        secrets[self.claude_path] = "<path>"
+    return _redact(text, secrets)
 ```
 
 Named `_scrub` (not `_stderr_safe`), because it is applied to the invocation-failure branch's
@@ -228,10 +235,17 @@ a real config.
   leaves it exposed (folded post-review)
 - **does *not* mangle a longer word that merely contains the host** (`db` inside `db2`/`database`
   survives) — the token-awareness witness that replaced the old `<3`-char-skip test
-- does **not** strip the default `"claude"` (a stderr containing `claude` as legitimate text, with
-  `claude_path` left at default, survives untouched)
-- **does *not* strip a host improbably named `"claude"`** — the documented `!= "claude"` residual
+- **`_redact` has *no* `"claude"` exemption** — it redacts a bare `"claude"` token like any other
+  (`test_redact_has_no_claude_exemption`); the default-binary exemption is role-based, in `_scrub`
 - does **not** strip an empty host (local run)
+
+**`ClaudeMaxBackend._scrub` (role-based exemption — folded post-review):**
+
+- **omits the default `claude_path` (`"claude"`)** from the secret map, so a legit `claude` token in a
+  diagnostic survives while the configured host is still scrubbed (`test_scrub_omits_default_claude_path`)
+- **redacts a host *named* `"claude"`** — the exemption is for the default *path* role only, so a
+  configured host that happens to be `claude` is scrubbed, closing the former value-based residual
+  (`test_scrub_redacts_host_named_claude`)
 - **overlap — dict pinned SHORTER-key-first (tst-002).** The host is a substring of the `claude_path`
   and the test's secrets dict inserts the *host* (shorter) key first, matching `_scrub`'s own
   `{self.host: ..., self.claude_path: ...}` order. Longest-first `sorted` catches the path whole →
@@ -291,8 +305,10 @@ surface.
   reddens (the chained `TimeoutExpired` re-appears in the formatted traceback) — the rev-001 witness
 - delete the `_scrub` wrap at the exit≠0 raise → the exit≠0 neutrality test reddens
 - delete the stderr append in finding (1) → the diagnostic-regained test reddens
-- delete the `value != "claude"` guard clause → the default-`claude`-survives **and**
-  host-named-`claude` tests redden
+- delete the role-based exemption in `_scrub` (`and self.claude_path != "claude"`, so the default
+  path is always added) → `test_scrub_omits_default_claude_path` reddens (the default `claude` gets
+  redacted); `test_scrub_redacts_host_named_claude` pins the complementary direction (a host named
+  `claude` must stay redacted — it reddens if a `value != "claude"` guard is re-introduced into `_redact`)
 - **token-aware `re.sub(...)` → plain `str.replace(value, label)`** → `test_redact_short_host_not_matched_inside_a_word`
   reddens (a substring replace mangles `db` inside `db2`/`database`) — the token-awareness witness
   that replaced the old `len(value) >= 3` clause

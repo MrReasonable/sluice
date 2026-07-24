@@ -401,10 +401,11 @@ def test_redact_strips_configured_path_to_label():
     assert out == "bash: <path>: No such file"
 
 
-def test_redact_keeps_default_claude():
-    # The default claude_path is exactly 'claude'; stripping it would corrupt the
-    # very CLI diagnostics we are trying to preserve. Guarded by value != "claude".
-    assert _redact("claude: error: usage", {"claude": "<path>"}) == "claude: error: usage"
+def test_redact_has_no_claude_exemption():
+    # _redact redacts EVERY non-empty token it is handed, including 'claude' -- the
+    # default-binary exemption is role-based and lives in _scrub, not here (see the
+    # _scrub tests). This pins that the exemption did not sneak back into _redact.
+    assert _redact("claude: error", {"claude": "<host>"}) == "<host>: error"
 
 
 def test_redact_keeps_empty_host():
@@ -426,11 +427,21 @@ def test_redact_short_host_not_matched_inside_a_word():
     assert _redact("db2 and database down", {"db": "<host>"}) == "db2 and database down"
 
 
-def test_redact_keeps_host_named_claude():
-    # The `!= "claude"` guard protects claude_path's generic default; the same guard means
-    # a host improbably NAMED 'claude' is left unscrubbed -- an accepted, documented residual,
-    # since at that point the host is indistinguishable from the CLI's own binary name.
-    assert _redact("cannot reach claude now", {"claude": "<host>"}) == "cannot reach claude now"
+def test_scrub_omits_default_claude_path():
+    # Role-based exemption: _scrub does NOT redact the default claude_path 'claude' (the CLI's
+    # own binary name, non-sensitive) -- it omits it from the secret map, so a legit 'claude'
+    # token in a diagnostic survives, while the configured host is still scrubbed.
+    be = ClaudeMaxBackend("m", host="host.example.invalid", claude_path="claude")
+    assert be._scrub("claude: error reaching host.example.invalid") \
+        == "claude: error reaching <host>"
+
+
+def test_scrub_redacts_host_named_claude():
+    # ...but the exemption is for the default PATH role only. A host literally NAMED 'claude'
+    # is a configured, sensitive value, so _scrub DOES redact it (over-redacting a coincidental
+    # 'claude' token is the safe choice). This closes the former value-based residual.
+    be = ClaudeMaxBackend("m", host="claude", claude_path="claude")
+    assert be._scrub("cannot reach claude now") == "cannot reach <host> now"
 
 
 def test_redact_overlap_scrubs_both_longest_first():

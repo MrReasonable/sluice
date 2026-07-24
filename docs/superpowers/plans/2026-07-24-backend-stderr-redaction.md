@@ -12,8 +12,8 @@
 
 **Plan review:** `/review-plan` on this implementation plan — 5 specialists, **0 findings**; all mutation witnesses independently traced as valid (2026-07-24).
 
-> **AMENDED post-`/review-pr` (commit `c8b9b53`).** The pre-push `/review-pr` folded two changes the task bodies below **predate**, so read the shipped code (and the spec) as authoritative where they differ:
-> 1. **`_redact` is token-aware**, not the `len(value) >= 3` / `str.replace` form Task 1 shows: it uses `re.sub(rf"(?<!\w){re.escape(value)}(?!\w)", label, text)` (drops the length floor so a short host like `db` is scrubbed as a whole token; keeps `!= "claude"`). The Task-1 snippet and the Task-3 witness-table row for the `len >= 3` clause are **superseded** — the live witness is `re.sub`→`str.replace` reddening `test_redact_short_host_not_matched_inside_a_word`.
+> **AMENDED post-`/review-pr` (commits `c8b9b53`, then the role-based fold).** `/review-pr` folded changes the task bodies below **predate**, so read the shipped code (and the spec) as authoritative where they differ:
+> 1. **`_redact` is token-aware and has NO `"claude"` exemption**, not the `len(value) >= 3` / `str.replace` form Task 1 shows. It is `if value: text = re.sub(rf"(?<!\w){re.escape(value)}(?!\w)", label, text)` (drops the length floor so a short host like `db` is scrubbed as a whole token). The generic-default exemption is now **role-based, in `_scrub`**: it omits `claude_path` from the map only when it is the default `"claude"`, so the default binary name is spared but a host *named* `claude` is still redacted (closing the former value-based residual). The Task-1 snippet and the Task-3 witness-table rows are **superseded** — live witnesses: `re.sub`→`str.replace` reddens `test_redact_short_host_not_matched_inside_a_word`; dropping the `_scrub` role exemption reddens `test_scrub_omits_default_claude_path`.
 > 2. **The invocation-failed raise uses `from None`**, not `from e` (Task 2): it severs the argv-bearing `TimeoutExpired` chain that `track/classify.py:96`'s `_log.exception` would otherwise render. Pinned by `test_claudemax_timeout_chain_carries_no_secret`.
 >
 > The snippets flagged below are annotated inline; the task bodies otherwise stand as the record of the original three-task implementation.
@@ -123,9 +123,10 @@ def _redact(text: str, secrets: dict[str, str]) -> str:
     longer's text and its remaining, possibly username-bearing, fragment would survive.
     """
     for value, label in sorted(secrets.items(), key=lambda kv: len(kv[0]), reverse=True):
-        # SUPERSEDED post-review (c8b9b53): shipped TOKEN-AWARE, dropping the `len >= 3` floor so a
-        # short host (`db`) is scrubbed as a whole token instead of leaking. See the shipped code:
-        #     if value and value != "claude":
+        # SUPERSEDED post-review: shipped TOKEN-AWARE with NO "claude" exemption here (the default-
+        # path exemption is role-based, in _scrub). A short host (`db`) is scrubbed as a whole token
+        # instead of leaking. See the shipped code:
+        #     if value:
         #         text = re.sub(rf"(?<!\w){re.escape(value)}(?!\w)", label, text)
         if value and len(value) >= 3 and value != "claude":
             text = text.replace(value, label)
@@ -260,6 +261,12 @@ In `sluice/core/backends.py`, inside `class ClaudeMaxBackend`, add `_scrub` imme
         explicit cmd_template). A caller supplying a divergent cmd_template with default
         host/path is out of scope -- not reachable via make_backend, and not made worse
         by this change."""
+        # SUPERSEDED post-review: shipped with a ROLE-BASED exemption built here, not a flat map --
+        #     secrets = {}
+        #     if self.host: secrets[self.host] = "<host>"
+        #     if self.claude_path and self.claude_path != "claude": secrets[self.claude_path] = "<path>"
+        #     return _redact(text, secrets)
+        # so the default claude_path is spared but a host named 'claude' is still redacted.
         return _redact(text, {self.host: "<host>", self.claude_path: "<path>"})
 ```
 
@@ -363,7 +370,7 @@ For each mutant: apply the `Edit` (MOVE/DELETE only), run the named test by node
 | 1 | `_scrub` wrap at invocation-failed → `f"...: {str(e)}"` | `tests/test_backends.py::test_claudemax_timeout_scrubs_host_and_path_from_message` |
 | 2 | `_scrub` wrap at nonzero-exit → `{proc.stderr[:200]}` | `tests/test_backends.py::test_claudemax_nonzero_exit_scrubs_host_keeps_diagnostic` |
 | 3 | drop the `+ (f"; stderr: {detail}" if detail else "")` append (revert to `"...whitespace)"`) | `tests/test_backends.py::test_claudemax_empty_response_regains_scrubbed_diagnostic` |
-| 4 | delete the ` and value != "claude"` clause in `_redact` | `tests/test_backends.py::test_redact_keeps_default_claude` (+ `::test_redact_keeps_host_named_claude`) |
+| 4 | **[folded]** drop the `_scrub` role exemption (`and self.claude_path != "claude"`) | `tests/test_backends.py::test_scrub_omits_default_claude_path` (`::test_scrub_redacts_host_named_claude` pins the complement) |
 | 5 | **[folded c8b9b53]** token-aware `re.sub(...)` → plain `str.replace(value, label)` | `tests/test_backends.py::test_redact_short_host_not_matched_inside_a_word` |
 | 6 | remove `sorted(..., reverse=True)` → iterate `secrets.items()` raw | `tests/test_backends.py::test_redact_overlap_scrubs_both_longest_first` |
 | 7 | swap order at nonzero-exit → `self._scrub(proc.stderr[:200])` | `tests/test_backends.py::test_claudemax_redacts_before_truncating` |

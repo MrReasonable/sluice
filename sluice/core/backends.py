@@ -75,11 +75,11 @@ def _redact(text: str, secrets: dict[str, str]) -> str:
     (not `\\b`) is deliberate: `\\b` cannot anchor a value that begins with a non-word
     char, so an absolute claude_path (`/home/.../claude`) would never match under `\\b`.
 
-    A secret is SKIPPED only when it is empty (a local run leaves host empty) or is the
-    exact literal 'claude': that is claude_path's generic default (the CLI's own binary
-    name, non-sensitive, and a token in ordinary diagnostics), and the same guard means a
-    host improbably NAMED 'claude' is left unscrubbed -- an accepted, documented residual,
-    because at that point the host is indistinguishable from the tool's own name.
+    A secret is SKIPPED only when it is empty. The generic-default exemption is NOT here:
+    it is ROLE-BASED and lives in the caller (ClaudeMaxBackend._scrub), which omits
+    claude_path from the map when it is the default 'claude' -- so this function redacts
+    every non-empty token it is given, and a host that happens to be NAMED 'claude' is
+    scrubbed like any other configured host.
 
     Secrets are replaced LONGEST-first so that when one is a substring of another (the
     host can appear inside the absolute claude_path) the longer is caught whole before the
@@ -87,7 +87,7 @@ def _redact(text: str, secrets: dict[str, str]) -> str:
     and its remaining, possibly username-bearing, fragment would survive.
     """
     for value, label in sorted(secrets.items(), key=lambda kv: len(kv[0]), reverse=True):
-        if value and value != "claude":
+        if value:
             text = re.sub(rf"(?<!\w){re.escape(value)}(?!\w)", label, text)
     return text
 
@@ -121,12 +121,22 @@ class ClaudeMaxBackend:
         """Strip this backend's own secrets (host, configured claude_path) from any
         text that becomes a BackendError message -- proc.stderr OR str(a runner
         exception), whose TimeoutExpired.cmd / FileNotFoundError forms carry the argv.
-        Scrubs by self.host / self.claude_path, which cover the argv only when they
-        built it: the production path (make_backend passes host=/claude_path=, never an
-        explicit cmd_template). A caller supplying a divergent cmd_template with default
-        host/path is out of scope -- not reachable via make_backend, and not made worse
-        by this change."""
-        return _redact(text, {self.host: "<host>", self.claude_path: "<path>"})
+
+        The 'claude' exemption is ROLE-BASED, not value-based: claude_path is added to the
+        secret map only when it has been configured away from its default 'claude' (the
+        CLI's own binary name, non-sensitive and a token in ordinary diagnostics). host is
+        always added when set -- so a host that happens to be NAMED 'claude' is a
+        configured, sensitive value and IS redacted, rather than colliding with the default
+        path's exemption. Scrubs by self.host / self.claude_path, which cover the argv only
+        when they built it: the production path (make_backend passes host=/claude_path=,
+        never an explicit cmd_template). A caller supplying a divergent cmd_template with
+        default host/path is out of scope -- not reachable via make_backend."""
+        secrets: dict[str, str] = {}
+        if self.host:
+            secrets[self.host] = "<host>"
+        if self.claude_path and self.claude_path != "claude":
+            secrets[self.claude_path] = "<path>"
+        return _redact(text, secrets)
 
     def complete(self, prompt: str) -> str:
         try:
