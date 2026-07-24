@@ -24,9 +24,10 @@ python -m pytest tests/test_triage_engine.py            # one file
 python -m pytest tests/test_triage_engine.py -k judge   # one test
 ruff check sluice tests         # NB: ruff is NOT in [test]; pip install ruff==0.15.21 (the CI pin)
 
-# Run ONCE before mutation testing: content-addresses sluice/'s .pyc cache so a mutant can't run
+# Run ONCE before mutation testing: content-addresses the .pyc caches so a mutant can't run
 # stale bytecode and lie green. Proving a test fails is the mutate-then-pytest step; see below.
-python -m compileall -q -f --invalidation-mode checked-hash sluice tests
+# `scripts` is included so mutation-testing a scripts/ helper (e.g. guard_no_bypass.py) is covered too.
+python -m compileall -q -f --invalidation-mode checked-hash sluice tests scripts
 ```
 
 **Mutation testing.** The claim "this test would catch that" is worth nothing unverified, so the way
@@ -40,15 +41,17 @@ deleted:
   edit restored within the same second runs the OLD bytecode against the NEW source — silently.
   `text =` → `return` is exactly that shape (each carries a trailing space, so both are 7 bytes),
   and it has already cost a debugging session. The `compileall --invalidation-mode checked-hash`
-  line above makes `sluice/`'s cache content-addressed, which is what mutation testing needs, since
-  mutants go in production code. Measured: 90/90 stay hash-based across mutate → pytest → restore,
+  line above makes `sluice/`'s and `scripts/`'s caches content-addressed, which is what mutation
+  testing needs, since mutants go in production code. Measured: 90/90 stay hash-based across mutate → pytest → restore,
   so it is durable and costs nothing measurable. Clearing `__pycache__` also works but is a
   discipline you must remember every time, and forgetting it fails in the dangerous direction.
 
-  It does **not** cover `tests/`: pytest's assertion rewriter keeps its own
-  `*-pytest-N.N.N.pyc` alongside, those are timestamp-based, and pytest imports *those*. So a
-  size-preserving edit to a TEST file within the same second is still exposed. That is not the
-  mutation-testing case, but do not read the line above as protecting more than it does.
+  It content-addresses `sluice/` and `scripts/` (both are plain imports, so the checked-hash cache is
+  what runs). It does **not** protect `tests/`, even though `tests` is on the line: pytest's assertion
+  rewriter keeps its own `*-pytest-N.N.N.pyc` alongside, those are timestamp-based, and pytest imports
+  *those*. So a size-preserving edit to a TEST file within the same second is still exposed. That is not
+  the mutation-testing case (mutants go in production code under `sluice/` or `scripts/`), but do not
+  read the line as protecting more than it does.
 
 `inspect.getsource` cannot diagnose the second one — it re-reads the source file, so it happily
 shows corrected code while stale bytecode executes. Run the function and look at what it returns.
@@ -109,8 +112,14 @@ rules the review agents enforce — see `.rulesync/skills/review-pr/SKILL.md`.
 
 **Never-clobber (writes).** A re-scrape of an existing lead touches only its `last_seen` marker —
 never status, never enrichment, never the note body. Creating a note for a genuinely new lead is the
-only wholesale write. Rewriting notes wholesale is the exact fragility sluice exists to remove
-(`core/vault.py`).
+only wholesale write. Rewriting notes wholesale is the exact fragility sluice exists to remove. Every
+*modify*-write (status, scores, enrichment, the CV pointer) goes through the surgical compare-and-set
+path in `core/vault.py`: the edit is re-derived from the *fresh* note on each attempt and committed via
+a temp-file + `os.replace` (torn-file safety), so a concurrent writer's other keys and body survive; a
+sustained race raises `VaultConflict` (`core/protocols.py`, a Store-contract outcome) rather than
+clobbering, and callers treat that as a non-fatal outcome. It is best-effort under a residual
+compare→replace micro-window, not a lock — the primary threat is a human editing the note in Obsidian,
+who takes no lock (#16).
 
 **Never-regress (status).** One `status` frontmatter key, two lifecycles with separate owners
 (`core/status.py`). Triage owns `new/shortlist/research/needs_review/dismiss` and may rewrite them;
@@ -126,9 +135,17 @@ someone's entire job hunt — it has happened once already (`672ad2a`), and
 `tests/test_sluice_neutral_defaults.py` now fails the build if it recurs.
 
 **The CV fabrication gate is hard.** `cv/validate.py` is pure and deterministic: every WORK bullet
-must cite a real bundle `[id]`, and every number in a bullet must appear in a cited entry. A non-empty
-violation list blocks rendering. The engine retries composition exactly once with the violations fed
-back, then skips the lead — a CV is never rendered ungated.
+must cite a real bundle `[id]` and every number in a bullet must appear in a cited entry; the PROFILE
+prose (which has no per-bullet citations) has a bundle-wide numeric floor — a figure present nowhere in
+the bundle is a violation, citations stripped with render's exact `_CITE_RE` — and a composed CV
+missing the exact `WORK EXPERIENCE`/`PROFILE` headers fails closed, since the section-keyed checks
+would otherwise silently not run. A non-empty violation list blocks rendering; the engine retries
+composition exactly once with the violations fed back, then skips the lead — a CV is never rendered
+ungated. Above this hard gate sits a softer, human-facing layer (#60, on by default via
+`cv.require_signoff`): an advisory LLM audit (`cv/audit.py`) catches the qualitative fabrication the
+deterministic gate cannot, and an `unsupported` flag WITHHOLDS the send-ready `tailored_cv` pointer (status `needs-signoff`, via
+`Store.sign_off`/`hold_for_signoff`, cleared by `sluice cv signoff`) rather than blocking rendering —
+it never touches the pure hard gate.
 
 **Neutrality: no personal data in this repo.** No employer names, role preferences, locations,
 contact details, hostnames, or absolute paths in `sluice/` or `tests/`. The judge's criteria are read
@@ -152,10 +169,19 @@ consistently engineers out; see `_select_backend`'s guard in `cli.py`.
   than stripping it.
 - Conventional commits (`fix(triage): ...`, `ci: ...`, `docs: ...`).
 - Tests assert on behaviour, not merely that code runs. Fixtures stay synthetic.
-- The four adapter seams (backend, store, renderer, fetch) are each a name-keyed registry resolved via
-  `plugins.get`. The backend seam has four provider implementations (claude-max/anthropic/deepseek/openai)
-  selected by name; store, renderer, and fetch have one each today and no runtime selection is exercised
-  yet. The backend seam differs in shape, though: a role layer (auto/primary/fallback, in
+- The four adapter seams (backend, store, renderer, fetcher — the config keys, and the
+  `_STORE_SEAM`/`_FETCHER_SEAM`/`_RENDERER_SEAM` constants in `core/app.py`) are each a name-keyed
+  registry resolved via `plugins.get`. The backend seam has four self-registering provider
+  implementations (`anthropic`/`openai`/`claude-max`/`deepseek` in `sluice/backends/` — the names a
+  config `primary_backend`/`fallback_backend` selects; `claude-max`/`deepseek` ALSO survive as
+  deprecated `--backend` role aliases, which is the separate role concern below, not a second registry);
+  the RENDERER seam has two self-registering
+  production impls — `script` (the default external shell-out) and `weasyprint` (the bundled in-process
+  one, `pip install 'sluice[render]'`) — selected by `cv.renderer`, so by-name selection between real
+  implementations is already LIVE there; store and fetcher have one production impl each (`vault`,
+  `camofox`). The selection is also exercised in tests — `tests/harness/` registers a fake fetcher
+  (`browser.py`) and renderer (`renderer.py`) and resolves them through the same seam. The backend seam
+  differs in shape, though: a role layer (auto/primary/fallback, in
   `Sluice.backend()`) sits above the provider lookup, and its factory takes resolved construction params
   (model/key/base_url), not the config object -- so it does not go through `Sluice._resolve` the way the
   other three do. Route new implementations through those seams (a self-registering module) rather than
