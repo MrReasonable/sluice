@@ -29,12 +29,23 @@ an LLM backend just by existing. `sluice triage run --no-llm` still touches no b
 `sluice ingest list-sources` still touches no vault.
 """
 import os
+from dataclasses import dataclass
 
 from sluice.core import plugins
 from sluice.core.config import Config
 from sluice.core.log import get_logger
 
 _log = get_logger("app")
+
+
+@dataclass
+class DedupeCluster:
+    id: str
+    members: list          # list[LeadNote]
+    survivor: object       # LeadNote, or None on conflict
+    conflict: bool
+    flagged_losers: list   # losers carrying a CV/sign-off hold or an application-owned status
+
 
 _STORE_SEAM = "store"
 _FETCHER_SEAM = "fetcher"
@@ -298,6 +309,60 @@ class Sluice:
         passthrough to `Store.normalize_all_statuses`; the CLI just formats the
         returned summary dict for `sluice triage normalize-status`."""
         return self.store().normalize_all_statuses(dry_run=dry_run)
+
+    def _dedupe_report(self, store):
+        from sluice.core.leads import cluster_duplicates, cluster_id, pick_survivor
+        from sluice.core.status import resolve_merge_status, is_application_owned
+        clusters = cluster_duplicates(
+            store.read_leads(),
+            title_noise=getattr(self.config, "dedupe_title_noise_words", []),
+            location_noise=getattr(self.config, "location_noise_words", []))
+        out = []
+        for members in clusters:
+            winner, outcome = resolve_merge_status([n.status for n in members])
+            survivor = pick_survivor(members, winner) if outcome == "ok" else None
+            flagged = [n for n in members if n is not survivor and (
+                n.fm.get("tailored_cv") or n.fm.get("needs_signoff")
+                or n.fm.get("pending_cv") or is_application_owned(n.status))]
+            out.append(DedupeCluster(id=cluster_id(members), members=members,
+                                     survivor=survivor, conflict=(outcome != "ok"),
+                                     flagged_losers=flagged))
+        return out
+
+    def dedupe_report(self):
+        """The #23 read-path dedup REPORT: suspected-duplicate clusters, each with a
+        stable id, computed survivor, conflict flag, and flagged losers. Changes
+        nothing."""
+        return self._dedupe_report(self.store())
+
+    def dedupe_merge(self, ids):
+        """Merge the human-vetted clusters named by `ids`. Recomputes the report
+        fresh and matches by id: a stale id (membership changed) -> 'stale'; a
+        conflict cluster -> 'conflict' (refused); a sustained write race ->
+        'conflict-race'. Returns [(id, outcome)]. Nothing merges without an id."""
+        from sluice.core.protocols import VaultConflict
+        store = self.store()
+        by_id = {c.id: c for c in self._dedupe_report(store)}
+        results = []
+        for cid in ids:
+            c = by_id.get(cid)
+            if c is None:
+                results.append((cid, "stale"))
+                continue
+            if c.conflict:
+                results.append((cid, "conflict"))
+                continue
+            losers = [n for n in c.members if n is not c.survivor]
+            try:
+                store.merge_cluster(
+                    c.survivor.ref, [n.ref for n in losers],
+                    alt_urls=[n.fm["url"] for n in losers if n.fm.get("url")],
+                    first_seen=min(n.fm.get("first_seen", "") for n in c.members),
+                    last_seen=max(n.fm.get("last_seen", "") for n in c.members))
+                results.append((cid, "merged"))
+            except VaultConflict:
+                results.append((cid, "conflict-race"))
+        return results
 
     def triage(self, *, statuses=("new", "research"), limit=None, dry_run=False,
                no_llm=False, backend_role="auto"):
