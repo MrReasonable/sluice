@@ -161,6 +161,46 @@ sweep. A race a bounded re-derive can resolve still commits (counted `changed`);
 race that makes the collapse a genuine no-op is an abstain (counted `unchanged`,
 not `changed` -- nothing was written, so there is nothing to report as a change).
 
+A fourth property sits beside the write contract, but a deliberately weaker one:
+**read-path dedup** (#23) is human-gated, not automatic. `sluice leads dedupe`
+clusters already-stored lead notes it suspects are duplicates and REPORTS the
+clusters; it changes nothing. `--merge <id> [<id>...]` merges only the clusters
+the human names, by a report id that hashes the cluster's membership, so an id
+from a stale report (membership has since changed) is refused rather than acted
+on blind. This is a read-path pass over notes already in the vault -- ingest's
+own write-time dedup (`Lead.dedup_key`, `core/leads.py`) is unchanged. Identity
+here is ROLE-level, never company-level: a cluster requires the same firm AND
+the same role (`_norm_tokens`, minus the configured `dedupe_title_noise_words`)
+AND a complete-linkage-compatible location (`_location_cliques`) -- a component
+is only a cluster if every pair in it is compatible, so a chain of blank-location
+edges can never bridge two notes with two different, named cities.
+
+A merge keeps the survivor inside never-clobber's usual rule: only `alt_urls`,
+`first_seen` (minimised) and `last_seen` (advanced) change, re-derived against
+the fresh note through the same CAS path every modify-write uses, so a caller's
+stale bounds can never regress them. The survivor is chosen from among the
+members already holding the cluster's winning status, decided by an
+order-independent, N-ary status-precedence verdict (`core/status.py:
+resolve_merge_status`) that ranks application-owned status above triage-owned
+and a live application above a terminal one; a genuine ambiguity -- two
+different terminals, or a terminal beside a live re-application -- is a
+CONFLICT, and that cluster's merge is refused rather than guessed. Losers are
+moved, never deleted, to `Job Applications/Job Leads/_merged/` -- reversible,
+and invisible to `read_leads` for the same structural reason the Experience
+Library's `_inbox/` is invisible to its read: both are subdirectories the
+`.md`-file listing skips over. A loser's own downstream state (scores, notes,
+a rendered CV, a sign-off hold) is therefore INTENTIONALLY dropped from the
+active view on merge, recovered only by moving the note back out of `_merged/`
+by hand; the report flags any loser carrying that kind of state so the human
+sees what a merge would discard before naming it.
+
+The Store-contract surface changed to carry this: `merge_cluster` was ADDED to
+the `Store` protocol and its conformance suite, and the dead `existing_keys` --
+never called outside its own tests, superseded by the ingest-side `seen.db`
+cache before it shipped a real caller -- was REMOVED. Neither change widens
+the ingest, never-clobber or never-regress contracts described above; the
+merge is built to uphold all three, not to carve out an exception to them.
+
 ## Adapter-selector seams
 
 Four points in the config are the seams for pluggable adapters.
