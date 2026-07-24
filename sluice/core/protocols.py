@@ -131,8 +131,6 @@ class Store(Protocol):
         opaque handle."""
         ...
 
-    def existing_keys(self) -> set: ...
-
     def normalize_all_statuses(self, dry_run: bool = False) -> dict:
         """Canonicalize every note's status vocabulary; return a `changed`/`unchanged`/
         `unknown`/`conflicts` summary. A note whose duplicate status lines disagree is

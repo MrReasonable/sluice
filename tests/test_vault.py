@@ -101,17 +101,6 @@ def test_upsert_merge_does_not_regress_last_seen_on_older_rescrape(tmp_path):
     assert "last_seen: 2026-07-09" not in txt
 
 
-def test_existing_keys_returns_dedup_keys(tmp_path):
-    v = Vault(str(tmp_path))
-    v.upsert(_lead(url="https://a/1?ref=x"))
-    # full link kept (only #fragment dropped), matching Lead.dedup_key
-    assert "https://a/1?ref=x" in v.existing_keys()
-
-
-def test_existing_keys_empty_when_no_vault(tmp_path):
-    assert Vault(str(tmp_path)).existing_keys() == set()
-
-
 def test_filename_sanitizes_slashes_and_colons(tmp_path):
     v = Vault(str(tmp_path))
     v.upsert(_lead(company="A/B", title="Lead: Analyst"))

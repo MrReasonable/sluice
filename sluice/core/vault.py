@@ -202,25 +202,6 @@ class Vault:
         marker (state=idle, never drains). Recreate it defensively."""
         os.makedirs(os.path.join(self.dir, ".stfolder"), exist_ok=True)
 
-    # ── dedup ────────────────────────────────────────────────────────────────
-    def existing_keys(self) -> set[str]:
-        """Every lead note's url, normalized into the same key space as
-        Lead.dedup_key, so the engine can drop already-vaulted leads."""
-        keys: set[str] = set()
-        if not os.path.isdir(self.leads_dir):
-            return keys
-        for name in os.listdir(self.leads_dir):
-            if not name.endswith(".md"):
-                continue
-            try:
-                inner, _ = _split_frontmatter(_read(os.path.join(self.leads_dir, name)))
-            except OSError:
-                continue
-            url = _fm_value(inner, "url")
-            if url:
-                keys.add(_norm_url(url))
-        return keys
-
     # ── read ─────────────────────────────────────────────────────────────────
     def read_leads(self, statuses: set | None = None) -> list:
         """Every lead note as a VaultNote (frontmatter parsed, status normalized),
