@@ -98,22 +98,32 @@ archives both losers (`resolve_merge_status` is status-only and never re-checks 
 asymmetric silent merge this design's governing risk exists to prevent.
 
 So the cover is defined precisely, per `(company_tokens, title_tokens)` group, so it is deterministic
-(the report's stable id must equal the id `--merge` recomputes — §4):
+(the report's stable id must equal the id `--merge` recomputes — §4). A member is **BLANK** iff its
+location tokens (after noise) are empty — reused as `_compare_locations(loc, loc, noise) == UNKNOWN`, so
+"blank" never drifts from what the comparator treats as evidence-free; the rest are **KNOWN**:
 
-1. Build the compatibility graph on the group's members: an edge iff `_compare_locations != DIFFERENT`.
-2. Take each **connected component**.
-3. A component is proposed as a cluster **iff it is a clique** — every member pair mutually
-   `!= DIFFERENT`. A component that a chain of UNKNOWN edges makes *span* a DIFFERENT pair (e.g.
-   `A — blank — B`) is **not** a clique → it yields **no cluster** (its members stay singletons), so an
-   ambiguous blank never bridges and never lands in two covers. This under-merges rather than
-   over-merges — the safe direction.
+1. **Seeds** = the connected components of the compatibility graph (`_compare_locations != DIFFERENT`)
+   restricted to KNOWN members, kept only when the component is itself a **clique**. A KNOWN component
+   that a chain of SAME edges makes *span* a DIFFERENT pair (`A~B~C`, `A`/`C` DIFFERENT) is not a clique
+   and is discarded (safe under-merge). Size-1 seeds are kept (a lone KNOWN member can anchor a blank).
+2. **Blanks attach by seed count**: exactly **one** seed → every blank joins it (unambiguous); **zero**
+   seeds → ≥ 2 blanks form their own all-blank clique; **≥ 2** seeds → every blank is compatible with
+   *every* seed (UNKNOWN, not DIFFERENT), so which one it belongs to is genuinely undecidable — every
+   blank is left **unclustered** rather than guessed into one (the bridge this refuses to build,
+   arc-r2-001).
+3. Return seeds (with blanks attached) of size ≥ 2, in member order (stable cluster id).
 
-Two disjoint cliques in one group (`{A, A2}` SAME and `{B, B2}` SAME, no blank connecting them) are two
-separate components, each a clique → **two** clusters, correctly, even though `A`/`B` are DIFFERENT.
-Pinned by (a) a positive `{A, A2}` → one 2-clique, and (b) a `{A, A2(SAME), blank, B(DIFFERENT)}` 4-note
-test → the blank-bridged component is not a clique → **no** cluster (never a trio spanning DIFFERENT
-cities, and deterministic). Locations in these tests are synthetic placeholders (conftest's
-`Alfa`/`Bravo`, never a real city — round-2 neu-r2-001).
+The invariant: **no cluster ever contains a DIFFERENT pair** — a seed is a clique (all KNOWN pairs
+compatible), a blank is UNKNOWN vs all (adds no DIFFERENT edge), an all-blank clique has none. So a false
+merge is impossible; the only failure mode is under-merge, the safe direction. Crucially, an ambiguous
+blank no longer costs the *otherwise-valid* subcliques elsewhere in the group (round-2, CodeRabbit):
+`{A1, A2 (SAME), blank, B1, B2 (SAME), A/B DIFFERENT}` yields **two** clusters `{A1,A2}` and `{B1,B2}`
+with the blank unclustered — where the earlier discard-the-whole-component rule proposed nothing.
+Pinned by tests (synthetic `Alfa`/`Bravo`, never a real city — round-2 neu-r2-001): positive `{Alfa, Alfa2}`
+→ one 2-clique; `{Alfa, blank}` → one clique (blank joins the sole seed); `{Alfa, blank, Bravo}` →
+**no** cluster (two size-1 seeds, blank ambiguous); the 4-note `{Alfa, Alfa2 (SAME), blank, Bravo}` →
+`{Alfa, Alfa2}` only (blank + Bravo unclustered); the 5-note subclique case → two clusters; an all-blank
+pair → one cluster.
 
 `_norm_tokens` is the generic token normalizer `_norm_location` already implements (NFKD-fold, casefold,
 drop combining marks, `\W+`→space, split) — factored to a shared name so title and company reuse the
@@ -292,12 +302,16 @@ honest.
   a blank-location member → **still** clusters with a compatible member (the UNKNOWN-clusters direction,
   asserted in **both** member orders — round-1 tst-002); url-drift with identical strings is *not* a
   cluster the command needs (upsert already merged it) — asserted as a non-regression.
-- **`cluster_duplicates` cover determinism** (round-1 arc-001, round-2 arc-r2-001/tst-r2-003, synthetic
-  `Alfa`/`Bravo` locations): a **positive** `{Alfa, Alfa2(SAME)}` → **one** 2-clique (not vacuously green);
-  a `{Alfa, Alfa2(SAME), blank, Bravo(DIFFERENT)}` 4-note group → the blank-bridged component is not a
-  clique → **no** cluster (never a trio spanning DIFFERENT cities); two disjoint cliques in one group
-  (`{Alfa, Alfa2}` + `{Bravo, Bravo2}`, no blank) → **two** clusters. Same input → same clusters and same
-  ids (determinism, backing §4's stable-id contract).
+- **`cluster_duplicates` cover determinism** (round-1 arc-001, round-2 arc-r2-001/tst-r2-003 + the
+  round-2 CodeRabbit subclique fold, synthetic `Alfa`/`Bravo` locations): a **positive** `{Alfa, Alfa2}`
+  → **one** 2-clique (not vacuously green); `{Alfa, blank}` → **one** clique (blank joins the sole seed);
+  `{Alfa, blank, Bravo}` → **no** cluster (two size-1 seeds, blank ambiguous); the 4-note
+  `{Alfa, Alfa2(SAME), blank, Bravo(DIFFERENT)}` → **`{Alfa, Alfa2}` only** (the valid subclique is
+  retained; blank + Bravo unclustered); the 5-note `{A1,A2, blank, B1,B2}` → **two** clusters `{A1,A2}`
+  and `{B1,B2}` (blank in neither, never bridging DIFFERENT cities); an **all-blank** pair → **one**
+  cluster; two disjoint cliques `{Alfa, Alfa2}` + `{Bravo, Bravo2}` (no blank) → **two** clusters. Same
+  input → same clusters and same ids (determinism, backing §4's stable-id contract). A mutant that lets
+  a blank attach when ≥ 2 seeds exist reddens the subclique/bridge tests.
 - **`resolve_merge_status`** (N-ary, order-independent): pairwise cases —
   `[shortlist, new]`→`shortlist`; `[rejected, shortlist]`→`rejected` (app beats triage);
   `[rejected, interview]`→**`conflict`** (terminal + live: reject-then-reapply, round-2
