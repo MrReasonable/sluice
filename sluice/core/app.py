@@ -315,8 +315,8 @@ class Sluice:
         from sluice.core.status import resolve_merge_status, is_application_owned
         clusters = cluster_duplicates(
             store.read_leads(),
-            title_noise=getattr(self.config, "dedupe_title_noise_words", []),
-            location_noise=getattr(self.config, "location_noise_words", []))
+            title_noise=self.config.dedupe_title_noise_words,
+            location_noise=self.config.location_noise_words)
         out = []
         for members in clusters:
             winner, outcome = resolve_merge_status([n.status for n in members])
@@ -339,7 +339,9 @@ class Sluice:
         """Merge the human-vetted clusters named by `ids`. Recomputes the report
         fresh and matches by id: a stale id (membership changed) -> 'stale'; a
         conflict cluster -> 'conflict' (refused); a sustained write race ->
-        'conflict-race'. Returns [(id, outcome)]. Nothing merges without an id."""
+        'conflict-race'; every loser archived -> 'merged'; a per-loser archive
+        failure (isolated, self-heals next run) -> 'partial'. Returns [(id, outcome)].
+        Nothing merges without an id."""
         from sluice.core.protocols import VaultConflict
         store = self.store()
         by_id = {c.id: c for c in self._dedupe_report(store)}
@@ -354,12 +356,16 @@ class Sluice:
                 continue
             losers = [n for n in c.members if n is not c.survivor]
             try:
-                store.merge_cluster(
+                # merge_cluster returns the ARCHIVED loser paths -- a per-loser archive
+                # OSError is isolated (that loser stays active, self-heals next run) but
+                # must not be reported as a full "merged" (design #3): fewer archived than
+                # losers means the archive is genuinely partial.
+                archived = store.merge_cluster(
                     c.survivor.ref, [n.ref for n in losers],
                     alt_urls=[n.fm["url"] for n in losers if n.fm.get("url")],
                     first_seen=min(n.fm.get("first_seen", "") for n in c.members),
                     last_seen=max(n.fm.get("last_seen", "") for n in c.members))
-                results.append((cid, "merged"))
+                results.append((cid, "merged" if len(archived) == len(losers) else "partial"))
             except VaultConflict:
                 results.append((cid, "conflict-race"))
         return results

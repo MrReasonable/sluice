@@ -212,6 +212,11 @@ def cluster_id(members) -> str:
 
 def pick_survivor(members, winner_status):
     """Among the members holding `winner_status`, the survivor note: highest
-    `last_seen`, then slug (deterministic tie-break). See #23 §2."""
+    `last_seen`, then slug (deterministic tie-break). See #23 §2.
+
+    Precondition: members' `.status` must already be NORMALIZED -- callers on the
+    live path get this from `read_leads`, which normalizes, so `holders` is
+    non-empty. A caller passing raw/un-normalized status would need to normalize
+    first, or `max([])` raises on an empty `holders`."""
     holders = [n for n in members if n.status == winner_status]
     return max(holders, key=lambda n: (n.fm.get("last_seen", ""), n.slug))

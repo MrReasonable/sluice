@@ -1,8 +1,11 @@
 """cluster_duplicates: complete-linkage clustering of duplicate lead notes (#23 §1).
 
-Fixtures are synthetic. Titles are constructed from a faker base plus synthetic
-tokens (never hardcoded role strings); companies use a faker base + a synthetic
-suffix; LOCATIONS are conftest's Alfa/Bravo/Charlie placeholders.
+Fixtures are synthetic. `_note`'s `role`/`company` defaults are deliberately
+generic, non-preference placeholders ("engineer", "foo") chosen to exercise
+specific clustering token-set relationships (noise-word drift, prefix
+containment, seniority distinction) that a faker-generated string cannot
+reliably produce -- they are not faker-derived. LOCATIONS are conftest's
+Alfa/Bravo/Charlie placeholders.
 """
 from types import SimpleNamespace
 
