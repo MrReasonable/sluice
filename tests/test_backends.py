@@ -1,7 +1,7 @@
 import pytest
 from sluice.core.backends import (
     BackendError, ClaudeMaxBackend, FallbackBackend, OpenAiCompatibleBackend,
-    AnthropicBackend, make_backend, DEFAULT_MODELS,
+    AnthropicBackend, make_backend, DEFAULT_MODELS, _redact,
 )
 
 
@@ -383,3 +383,46 @@ def test_urlopen_surfaces_http_error_body():
     # which is exactly the message that hides a retired model id.
     assert "Model Not Exist" in str(ei.value)
     assert "400" in str(ei.value)
+
+
+def test_redact_strips_host_to_label():
+    # host.example.invalid is RFC-reserved (can never resolve) -- a non-real fixture.
+    out = _redact("ssh: Could not resolve hostname host.example.invalid: nope",
+                  {"host.example.invalid": "<host>"})
+    assert out == "ssh: Could not resolve hostname <host>: nope"
+
+
+def test_redact_strips_configured_path_to_label():
+    # 'example' is the conventional placeholder user -- a non-real absolute path.
+    out = _redact("bash: /home/example/.local/bin/claude: No such file",
+                  {"/home/example/.local/bin/claude": "<path>"})
+    assert out == "bash: <path>: No such file"
+
+
+def test_redact_keeps_default_claude():
+    # The default claude_path is exactly 'claude'; stripping it would corrupt the
+    # very CLI diagnostics we are trying to preserve. Guarded by value != "claude".
+    assert _redact("claude: error: usage", {"claude": "<path>"}) == "claude: error: usage"
+
+
+def test_redact_keeps_empty_host():
+    # A local run leaves host empty -> nothing to strip.
+    assert _redact("some diagnostic", {"": "<host>"}) == "some diagnostic"
+
+
+def test_redact_keeps_short_value():
+    # A <3-char value is too generic; replacing it would mangle common substrings.
+    assert _redact("a banana", {"an": "<host>"}) == "a banana"
+
+
+def test_redact_overlap_scrubs_both_longest_first():
+    # host is a substring of the path; the dict lists the SHORTER (host) key FIRST,
+    # matching _scrub's own {self.host: ..., self.claude_path: ...} construction order.
+    # Longest-first replacement catches the path whole before the host can fragment it.
+    # Synthetic values (RFC-reserved).
+    host = "h7.example.invalid"
+    path = "/opt/h7.example.invalid/bin/claude"
+    text = f"connect {host} failed; exec {path} missing"
+    out = _redact(text, {host: "<host>", path: "<path>"})
+    assert host not in out and path not in out
+    assert out == "connect <host> failed; exec <path> missing"
