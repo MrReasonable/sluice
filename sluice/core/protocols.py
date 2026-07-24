@@ -81,6 +81,8 @@ class Store(Protocol):
         as non-fatal."""
         ...
 
+    def merge_cluster(self, survivor_ref, loser_refs, *, alt_urls, first_seen, last_seen) -> list: ...
+
     def append_body_section(self, ref, tag: str, section_md: str) -> bool:
         """Append a tagged section to the body, idempotently (returns False if `tag` is
         already present). MAY raise VaultConflict on sustained concurrent edit (#16)."""
