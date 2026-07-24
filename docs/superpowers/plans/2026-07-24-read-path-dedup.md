@@ -895,16 +895,24 @@ class DedupeCluster:
                 continue
             losers = [n for n in c.members if n is not c.survivor]
             try:
-                store.merge_cluster(
+                # first_seen aggregates only PRESENT values -- a missing one is not "" (which
+                # sorts before every real date and would defeat the minimisation). merge_cluster
+                # returns the archived loser paths: fewer than requested -> a partial archive,
+                # reported distinctly rather than as a full "merged".
+                seens = [n.fm.get("first_seen") for n in c.members if n.fm.get("first_seen")]
+                archived = store.merge_cluster(
                     c.survivor.ref, [n.ref for n in losers],
                     alt_urls=[n.fm["url"] for n in losers if n.fm.get("url")],
-                    first_seen=min(n.fm.get("first_seen", "") for n in c.members),
+                    first_seen=min(seens) if seens else "",
                     last_seen=max(n.fm.get("last_seen", "") for n in c.members))
-                results.append((cid, "merged"))
+                results.append((cid, "merged" if len(archived) == len(losers) else "partial"))
+            except MalformedNoteField:
+                results.append((cid, "malformed"))   # a human-mangled alt_urls; nothing written
             except VaultConflict:
                 results.append((cid, "conflict-race"))
         return results
 ```
+(`MalformedNoteField` is imported from `sluice.core.protocols`, beside `VaultConflict`.)
 
 - [ ] **Step 5: Run the orchestration tests**
 
