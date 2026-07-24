@@ -200,3 +200,18 @@ def cluster_duplicates(notes, *, title_noise=(), location_noise=()):
         if len(members) >= 2:
             clusters.extend(_location_cliques(members, location_noise))
     return clusters
+
+
+def cluster_id(members) -> str:
+    """Stable short id for a cluster: a hash of its sorted member slugs. Same
+    membership -> same id (a report id matches what `--merge` recomputes); any
+    membership change -> a new id, so a stale `--merge` id is refused (#23 §4)."""
+    key = "\n".join(sorted(n.slug for n in members))
+    return hashlib.sha1(key.encode()).hexdigest()[:8]
+
+
+def pick_survivor(members, winner_status):
+    """Among the members holding `winner_status`, the survivor note: highest
+    `last_seen`, then slug (deterministic tie-break). See #23 §2."""
+    holders = [n for n in members if n.status == winner_status]
+    return max(holders, key=lambda n: (n.fm.get("last_seen", ""), n.slug))
