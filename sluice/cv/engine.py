@@ -174,6 +174,10 @@ def run_batch(vault, cvcfg, backend, dossier_cache, *, renderer, limit=None, dry
         except Exception as e:
             _log.warning("cv run failed for %s: %s", note.ref, e)
             results.append(CvResult(note.ref, "error"))
-        if limit and sum(1 for r in results if r.status in ("rendered", "dry-run")) >= limit:
+        # needs-signoff counts toward --limit alongside rendered/dry-run: a held lead did
+        # the full (expensive) compose + render + serve; only the pointer was withheld, so
+        # it consumed a unit of the requested work just as a rendered one did.
+        if limit and sum(1 for r in results
+                         if r.status in ("rendered", "dry-run", "needs-signoff")) >= limit:
             break
     return results

@@ -234,34 +234,26 @@ def cmd_cv_run(args, config) -> int:
 def cmd_cv_signoff(args, config) -> int:
     from sluice.core.app import Sluice
 
-    app = Sluice(config)
-    peek = app.peek_signoff(lead=args.lead)
-    if peek is None:
-        print(f"cv signoff: no shortlist lead matching '{args.lead}'", file=sys.stderr)
-        return 1
-    slug, pending, claims = peek
-    if not pending:
-        print(f"cv signoff: {slug} has nothing pending", file=sys.stderr)
-        return 0
+    confirm = None
     if not args.discard and not args.yes:
         # Review the flagged claims before promoting a possibly-fabricated CV to send-ready;
-        # only the candidate knows whether an aspirational claim is true (#60).
-        print(f"cv signoff: {slug} has {len(claims)} unsupported claim(s):", file=sys.stderr)
-        for c in claims:
-            print(f"  - {c}", file=sys.stderr)
-        print(f"served CV: {pending}", file=sys.stderr)
-        if input(f"sign off {slug}? [y/N] ").strip().lower() not in ("y", "yes"):
-            print("cv signoff: aborted", file=sys.stderr)
-            return 0
-    result = app.sign_off_cv(lead=args.lead, accept=not args.discard)
+        # only the candidate knows whether an aspirational claim is true (#60). The prompt
+        # lives HERE (the CLI), passed into sign_off_cv as a callback, so the app layer does
+        # no I/O and still resolves the lead exactly once (no peek/execute divergence).
+        def confirm(slug, pending, claims):
+            print(f"cv signoff: {slug} has {len(claims)} unsupported claim(s):", file=sys.stderr)
+            for c in claims:
+                print(f"  - {c}", file=sys.stderr)
+            print(f"served CV: {pending}", file=sys.stderr)
+            return input(f"sign off {slug}? [y/N] ").strip().lower() in ("y", "yes")
+
+    result = Sluice(config).sign_off_cv(lead=args.lead, accept=not args.discard, confirm=confirm)
     if result is None:
-        # The lead left `shortlist` between peek_signoff and here -- a concurrent triage/apply
-        # advance during the review prompt (minutes at a keyboard). Report it, never crash on
-        # the unpack: the same #16 concurrent-edit class the VaultConflict handling covers.
-        print(f"cv signoff: {slug} is no longer shortlisted", file=sys.stderr)
-        return 0
-    _slug, outcome = result
-    print(f"cv signoff: {slug} {outcome}", file=sys.stderr)
+        print(f"cv signoff: no shortlist lead matching '{args.lead}'", file=sys.stderr)
+        return 1
+    slug, outcome = result
+    msg = {"nothing": "has nothing pending", "aborted": "aborted"}.get(outcome, outcome)
+    print(f"cv signoff: {slug} {msg}", file=sys.stderr)
     return 0
 
 
