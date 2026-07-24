@@ -429,13 +429,18 @@ from tests.conftest import LOCATIONS, racing_read
 
 
 def _mk(tmp_path):
+    # Two DISTINCT notes for merge_cluster to act on. They must NOT share
+    # company+title+compatible-location: upsert would MERGE those into one note
+    # (same_opportunity UNKNOWN/SAME). A token-disjoint LOCATIONS[1] makes
+    # _compare_locations return DIFFERENT, so upsert creates a genuine second note.
+    # (merge_cluster itself ignores location, so this doesn't weaken any assertion.)
     v = Vault(str(tmp_path))
     from sluice.core.leads import Lead
     v.upsert(Lead(source="b", search="s", title="Analyst", company="Foo",
                   location=LOCATIONS[0], url="https://ex.invalid/1",
                   first_seen="2026-07-10", last_seen="2026-07-10"))
     v.upsert(Lead(source="b", search="s", title="Analyst", company="Foo",
-                  location="", url="https://ex.invalid/2",
+                  location=LOCATIONS[1], url="https://ex.invalid/2",
                   first_seen="2026-07-05", last_seen="2026-07-20"))
     return v
 
