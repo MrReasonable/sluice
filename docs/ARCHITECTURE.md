@@ -181,9 +181,10 @@ the fresh note through the same CAS path every modify-write uses, so a caller's
 stale bounds can never regress them. The survivor is chosen from among the
 members already holding the cluster's winning status, decided by an
 order-independent, N-ary status-precedence verdict (`core/status.py:
-resolve_merge_status`) that ranks application-owned status above triage-owned
-and a live application above a terminal one; a genuine ambiguity -- two
-different terminals, or a terminal beside a live re-application -- is a
+resolve_merge_status`) that ranks application-owned status above triage-owned:
+within application-owned, live statuses rank by ladder position, but a
+terminal is never ranked against a live one -- a terminal beside a live
+re-application, like two different terminals, is a genuine ambiguity and a
 CONFLICT, and that cluster's merge is refused rather than guessed. Losers are
 moved, never deleted, to `Job Applications/Job Leads/_merged/` -- reversible,
 and invisible to `read_leads` for the same structural reason the Experience
@@ -191,8 +192,10 @@ Library's `_inbox/` is invisible to its read: both are subdirectories the
 `.md`-file listing skips over. A loser's own downstream state (scores, notes,
 a rendered CV, a sign-off hold) is therefore INTENTIONALLY dropped from the
 active view on merge, recovered only by moving the note back out of `_merged/`
-by hand; the report flags any loser carrying that kind of state so the human
-sees what a merge would discard before naming it.
+by hand; the report flags a loser carrying a rendered CV (`tailored_cv`), an
+open sign-off hold (`pending_cv`/`needs_signoff`), or an application-owned
+status -- not merely a score or a notes field -- so the human sees what a
+merge would discard before naming it.
 
 The Store-contract surface changed to carry this: `merge_cluster` was ADDED to
 the `Store` protocol and its conformance suite, and the dead `existing_keys` --
