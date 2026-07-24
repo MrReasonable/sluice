@@ -180,6 +180,34 @@ def cmd_triage_normalize(args, config) -> int:
     return 0
 
 
+def cmd_leads_dedupe(args, config) -> int:
+    from sluice.core.app import Sluice
+    app = Sluice(config)
+    if args.merge:
+        for cid, outcome in app.dedupe_merge(args.merge):
+            print(f"dedupe: {cid} {outcome}", file=sys.stderr)
+        return 0
+    report = app.dedupe_report()
+    if args.json:
+        print(json.dumps([{
+            "id": c.id, "conflict": c.conflict,
+            "survivor": (c.survivor.slug if c.survivor else None),
+            "members": [{"slug": n.slug, "status": n.status, "url": n.fm.get("url", "")}
+                        for n in c.members],
+            "flagged_losers": [n.slug for n in c.flagged_losers],
+        } for c in report]))
+    else:
+        for c in report:
+            tag = " CONFLICT" if c.conflict else ""
+            flag = " ⚑losers" if c.flagged_losers else ""
+            print(f"[{c.id}]{tag}{flag} survivor={c.survivor.slug if c.survivor else '-'}")
+            for n in c.members:
+                print(f"    {n.status:12} {n.slug}  {n.fm.get('url','')}")
+        if not report:
+            print("dedupe: no duplicate clusters", file=sys.stderr)
+    return 0
+
+
 def cmd_triage_run(args, config) -> int:
     from sluice.core.app import Sluice
 
@@ -491,6 +519,14 @@ def _build_parser() -> argparse.ArgumentParser:
     tdg.add_argument("--lead", help="clear a lead's dead-letter entries without advancing status")
     tdis.add_argument("--dry-run", action="store_true")
     tdis.set_defaults(func=cmd_track_dismiss)
+
+    leads = top.add_parser("leads", help="lead maintenance").add_subparsers(
+        dest="cmd", required=True)
+    dd = leads.add_parser("dedupe", help="find/merge duplicate lead notes")
+    dd.add_argument("--merge", nargs="+", metavar="ID",
+                    help="merge the named vetted clusters (from a prior report)")
+    dd.add_argument("--json", action="store_true", help="machine-readable report")
+    dd.set_defaults(func=cmd_leads_dedupe)
 
     health = top.add_parser("health")
     health.set_defaults(func=cmd_health)
