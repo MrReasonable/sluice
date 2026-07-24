@@ -61,6 +61,26 @@ def _urlopen(url, data, headers, timeout):
             f"HTTP {e.code} from {url}: {detail[:500] or e.reason}") from e
 
 
+def _redact(text: str, secrets: dict[str, str]) -> str:
+    """Replace each sensitive value with a label, so a backend error keeps its
+    diagnostic shape without disclosing the host or an absolute path -- both reach
+    proc.stderr on an ssh/exec failure (and str(a runner exception)) and fan out to
+    WARNING logs (FallbackBackend, judge) and the doctor health report. A secret is
+    SKIPPED when it is empty (a local run leaves host empty), shorter than 3 chars
+    (would mangle common substrings of legitimate stderr), or the exact generic default
+    'claude' (a substring of both ordinary CLI diagnostics and of 'claude-max' itself).
+
+    Secrets are replaced LONGEST-first so that when one is a substring of another
+    (the host can appear inside the absolute claude_path) the longer is caught whole
+    before the shorter can fragment it -- otherwise the shorter replace would alter the
+    longer's text and its remaining, possibly username-bearing, fragment would survive.
+    """
+    for value, label in sorted(secrets.items(), key=lambda kv: len(kv[0]), reverse=True):
+        if value and len(value) >= 3 and value != "claude":
+            text = text.replace(value, label)
+    return text
+
+
 class ClaudeMaxBackend:
     def __init__(self, model, *, host: str = "", claude_path: str = "claude",
                  cmd_template=None, runner=subprocess.run,
