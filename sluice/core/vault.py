@@ -24,7 +24,7 @@ from datetime import date
 from sluice.core import status as _status
 from sluice.core.leads import SAME, UNKNOWN, Lead, _norm_url, same_opportunity
 from sluice.core.log import get_logger
-from sluice.core.protocols import LeadNote, VaultConflict
+from sluice.core.protocols import LeadNote, MalformedNoteField, VaultConflict
 
 _LEADS_SUBDIR = os.path.join("Job Applications", "Job Leads")
 _EXP_SUBDIR = os.path.join("Job Applications", "Experience Library")
@@ -619,10 +619,12 @@ class Vault:
         invisible to read_leads). Timestamps are RE-DERIVED against the fresh
         survivor inside the CAS transform, so a caller's stale min/max can never
         regress them. The survivor write happens FIRST; losers are archived only on
-        its success, so a VaultConflict archives nothing. A per-loser archive OSError
-        is logged and skipped (isolated), so that loser stays in the active view and
-        the next run re-merges it -- never counted as merged. Returns the archived
-        loser paths. See docs/.../read-path-dedup-design.md #3."""
+        its success, so a VaultConflict -- or a MalformedNoteField, when the
+        survivor's existing alt_urls is present but not a JSON list of strings --
+        archives nothing. A per-loser archive OSError is logged and skipped
+        (isolated), so that loser stays in the active view and the next run
+        re-merges it -- never counted as merged. Returns the archived loser paths.
+        See docs/.../read-path-dedup-design.md #3."""
         def transform(text: str) -> str:
             inner, body = _split_frontmatter(text)
             if inner is None:
@@ -631,12 +633,19 @@ class Vault:
             current = []
             if existing:
                 try:
-                    current = json.loads(existing)
+                    parsed = json.loads(existing)
                 except ValueError:
-                    # Logged, not silent: a human hand-edit could have left alt_urls
-                    # unparseable, and this discards it rather than failing the merge.
-                    _log.warning("dedupe: unparseable alt_urls on %s, resetting", survivor_ref)
-                    current = []
+                    parsed = None
+                if not isinstance(parsed, list) or not all(isinstance(u, str) for u in parsed):
+                    # A malformed alt_urls could be a human hand-edit. The old behaviour
+                    # (log + reset to []) silently DISCARDED that value -- exactly the
+                    # clobber never-clobber exists to prevent. Raise instead: this fires
+                    # BEFORE _atomic_write and BEFORE the archive loop below, so the abort
+                    # leaves the survivor's malformed value untouched and archives no
+                    # loser (verified by test_malformed_alt_urls_rejects_merge).
+                    raise MalformedNoteField(
+                        f"{survivor_ref}: alt_urls is not a JSON list of strings: {existing!r}")
+                current = parsed
             merged = list(dict.fromkeys([*current, *alt_urls]))   # order-stable union
             inner = _set_fm(inner, "alt_urls", json.dumps(merged))
             fresh_first = _fm_value(inner, "first_seen")
@@ -646,7 +655,7 @@ class Vault:
             if last_seen and (not fresh_last or last_seen > fresh_last):
                 inner = _set_fm(inner, "last_seen", last_seen)   # monotonic: only advance
             return f"---\n{inner}\n---\n{body}"
-        _cas_write(survivor_ref, transform)   # raises VaultConflict BEFORE any archive
+        _cas_write(survivor_ref, transform)   # raises VaultConflict/MalformedNoteField BEFORE any archive
         merged_dir = os.path.join(self.leads_dir, "_merged")
         os.makedirs(merged_dir, exist_ok=True)
         archived = []
@@ -655,11 +664,21 @@ class Vault:
             stem = base[:-3] if base.endswith(".md") else base
             dest = os.path.join(merged_dir, base)
             n = 1
-            while os.path.exists(dest):     # collision-safe numeric suffix
-                dest = os.path.join(merged_dir, f"{stem}.{n}.md")
-                n += 1
             try:
-                os.replace(ref, dest)
+                # Atomic reserve: os.link raises FileExistsError rather than silently
+                # overwriting a concurrent/human-created path under _merged/ -- the old
+                # `while os.path.exists(dest)` check-then-`os.replace` was a TOCTOU
+                # between the two calls. Same filesystem (_merged/ is under leads_dir),
+                # so a hardlink is valid; the link IS the archive once the original is
+                # unlinked, so no data is duplicated on disk.
+                while True:
+                    try:
+                        os.link(ref, dest)
+                        break
+                    except FileExistsError:
+                        dest = os.path.join(merged_dir, f"{stem}.{n}.md")
+                        n += 1
+                os.unlink(ref)                  # the link IS the archive now
                 archived.append(dest)
             except OSError as e:
                 # Per-loser isolation: a failed archive leaves that loser active,

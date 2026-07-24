@@ -27,6 +27,19 @@ class VaultConflict(RuntimeError):
     """
 
 
+class MalformedNoteField(Exception):
+    """A store-managed field's on-disk content does not parse into the shape the store's
+    own writers expect (e.g. `alt_urls` should be a JSON list[str]).
+
+    A modify-write that finds the FRESH value malformed must raise this rather than
+    reset/discard it: silently replacing a possibly-human-edited value is exactly the
+    clobber never-clobber exists to prevent (#23). Distinct from VaultConflict -- this is
+    not a concurrency race to retry, it is a genuinely malformed value a human must look
+    at, so the whole write it was part of (e.g. a cluster merge) is aborted with nothing
+    written rather than papered over.
+    """
+
+
 @dataclass
 class LeadNote:
     """One lead read back from the store.
@@ -87,11 +100,14 @@ class Store(Protocol):
         with `last_seen` advanced and `first_seen` minimised -- both RE-DERIVED against
         the FRESH survivor, so a caller's stale min/max can never regress them. The
         survivor write happens BEFORE any loser is removed, so a VaultConflict on the
-        survivor removes nothing. Each loser is then removed/archived independently; a
-        per-loser removal failure is isolated to that loser (it stays in the active
-        view and is never counted as merged) rather than aborting the whole cluster.
-        Returns the removed/archived loser handles -- only the ones that actually
-        succeeded."""
+        survivor removes nothing. If the survivor's EXISTING `alt_urls` is present but
+        not a JSON list of strings, MAY raise MalformedNoteField instead of silently
+        resetting it -- never-clobber forbids discarding a possibly-human-edited value,
+        so the whole merge is aborted with nothing written and no loser touched. Each
+        loser is then removed/archived independently; a per-loser removal failure is
+        isolated to that loser (it stays in the active view and is never counted as
+        merged) rather than aborting the whole cluster. Returns the removed/archived
+        loser handles -- only the ones that actually succeeded."""
         ...
 
     def append_body_section(self, ref, tag: str, section_md: str) -> bool:
