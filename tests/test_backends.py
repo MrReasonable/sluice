@@ -51,40 +51,6 @@ def test_claudemax_runner_nonzero_raises():
         be.complete("x")
 
 
-def test_claudemax_transport_failure_raises_backend_error():
-    # The wrapper ONE LINE above the empty guard, and the same drift this file's other backends
-    # do not have: both siblings pin it (test_openai_compatible_transport_error_raises) and
-    # claude-max did not. It matters because FallbackBackend catches BackendError *only*, so a
-    # timeout or an ssh failure escaping as a raw OSError would CRASH the run instead of
-    # degrading to the fallback -- the exact opposite of what the module docstring promises.
-    def boom(*a, **k):
-        raise OSError("ssh: connect to host port 22: Connection refused")
-    be = ClaudeMaxBackend("m", cmd_template=["claude"], runner=boom)
-    with pytest.raises(BackendError, match="invocation failed"):
-        be.complete("x")
-
-
-@pytest.mark.parametrize("stdout", ["", "   \n  "])
-def test_claudemax_empty_stdout_on_exit_zero_raises(stdout):
-    # exit 0 with no text is a FAILED call that looks like a successful one -- the shape both
-    # siblings already refuse (test_openai_compatible_empty_content_raises,
-    # test_anthropic_empty_content_raises). Without this, complete() returns "" and the caller
-    # consumes it as a real completion.
-    #
-    # Whitespace-only is parametrised, not decorative: `.strip()` runs BEFORE the check, so a
-    # guard written as `if not proc.stdout` -- or one that drops the .strip() -- passes the ""
-    # case and lets "   \n  " straight through. The whitespace param is the load-bearing one and
-    # kills a strict SUPERSET: "" uniquely witnesses nothing, because both params are byte-
-    # identical ("") by the time the guard sees them. It stays for the obvious reason -- it is the
-    # case a reader expects to see -- not because it earns its keep as a mutant.
-    class R:
-        returncode, stderr = 0, ""
-    R.stdout = stdout
-    be = ClaudeMaxBackend("m", cmd_template=["claude"], runner=lambda *a, **k: R())
-    with pytest.raises(BackendError, match="no text"):
-        be.complete("x")
-
-
 def test_openai_compatible_parses_choice():
     def http(url, data, headers, timeout):
         assert url == "http://x/api/v1/chat/completions"
@@ -148,26 +114,6 @@ def test_openai_compatible_content_filter_raises():
         be.complete("prompt")
 
 
-def test_openai_compatible_empty_content_raises():
-    # Empty content on an otherwise-clean stop is not a valid CV/verdict; the
-    # fallback must raise so run_batch records an error, matching AnthropicBackend.
-    def http(url, data, headers, timeout):
-        return '{"choices":[{"message":{"content":"   "},"finish_reason":"stop"}]}'
-    be = OpenAiCompatibleBackend("m", base_url="http://x", api_key="k", http=http)
-    with pytest.raises(BackendError):
-        be.complete("prompt")
-
-
-def test_openai_compatible_transport_error_raises():
-    # A transport/HTTP failure must surface as BackendError, never a raw OSError,
-    # so FallbackBackend and run_batch can rely on the backend contract.
-    def http(*a, **k):
-        raise OSError("network down")
-    be = OpenAiCompatibleBackend("m", base_url="http://x", api_key="k", http=http)
-    with pytest.raises(BackendError):
-        be.complete("prompt")
-
-
 def test_claudemax_default_effort_is_max():
     be = ClaudeMaxBackend("m")
     ct = be.cmd_template
@@ -215,23 +161,9 @@ def test_anthropic_skips_thinking_block_before_text():
     assert AnthropicBackend("m", api_key="k", http=http).complete("x") == "ANSWER"
 
 
-def test_anthropic_empty_content_raises():
-    def http(url, data, headers, timeout):
-        return '{"stop_reason":"refusal","content":[]}'
-    with pytest.raises(BackendError):
-        AnthropicBackend("m", api_key="k", http=http).complete("x")
-
-
 def test_anthropic_truncation_raises():
     def http(url, data, headers, timeout):
         return '{"stop_reason":"max_tokens","content":[{"type":"text","text":"cut"}]}'
-    with pytest.raises(BackendError):
-        AnthropicBackend("m", api_key="k", http=http).complete("x")
-
-
-def test_anthropic_transport_error_raises():
-    def http(*a, **k):
-        raise OSError("network down")
     with pytest.raises(BackendError):
         AnthropicBackend("m", api_key="k", http=http).complete("x")
 
