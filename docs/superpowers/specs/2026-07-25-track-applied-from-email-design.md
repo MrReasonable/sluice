@@ -1,6 +1,6 @@
 # Advance a lead to `applied` from its confirmation email (#10)
 
-**Status:** design approved 2026-07-25
+**Status:** design approved 2026-07-25; revised 2026-07-25 after `/review-plan` (5 reviewers).
 **Issue:** #10 — `feat(track): advance a lead to applied from its confirmation email`
 **Sub-app:** `track`
 
@@ -13,25 +13,28 @@ un-applied backlog, the `cv` step re-tailors a CV for it, and the `apply` step c
 application** to a company that already has one.
 
 The failure this feature must not introduce is the inverse: a **false** `applied`. A receipt from an
-unrelated service that merely names the company must not advance the lead, because a wrong `applied`
-silently suppresses a real application (the never-clobber / never-regress family of harms this
-codebase engineers out).
+unrelated service that merely names the company, **or a receipt matched to the wrong lead**, must not
+advance a lead — because a wrong `applied` silently suppresses a real application (the never-clobber /
+never-regress family of harms this codebase engineers out). "Wrong lead" is a first-class failure
+here, not only "wrong company": two roles at one company, or two companies on one shared ATS host,
+are the realistic ambiguity cases.
 
 ## Chosen approach
 
 Two decisions were settled during brainstorming (both user-approved):
 
 1. **Match strategy: domain-anchored, deterministic.** The LLM decides only *"is this an application
-   receipt"*. The lead **match** is deterministic: the receipt's sender domain (or an apply-link
-   domain in the body) must equal the lead's posting-`url` domain, or an ATS relay domain
+   receipt"*. The lead **match** is deterministic: the receipt's sender host (or an apply-link host in
+   the body) must match the lead's posting-`url` host, or come from an ATS relay host
    (`ats_relay_domains`) corroborated by the company appearing in the body. A name-only mention never
-   matches.
+   matches, and an **ambiguous** match never auto-advances.
 
-2. **Write policy: tiered.** A **proof-grade** match (domain equality on the company's own domain)
-   auto-advances `shortlist → applied` and records evidence. A weaker **corroborated** match
-   (ATS-relay domain + company-in-body) only **proposes** (dead-letter → human `sluice track
-   confirm --to applied`). This mirrors `same_opportunity`'s SAME/UNKNOWN split and the existing
-   auto-advance confidence bars in `reconcile`.
+2. **Write policy: tiered.** A **proof-grade, unambiguous** match auto-advances `shortlist → applied`
+   and records evidence. A weaker **corroborated** match (ATS-relay host + company-in-body), and any
+   **ambiguous** match (a host that matches more than one shortlist lead), only **propose**
+   (dead-letter → human `sluice track confirm --to applied`). This mirrors `same_opportunity`'s
+   SAME/UNKNOWN split, `classify._resolve_lead`'s refuse-on-ambiguity, and the existing auto-advance
+   confidence bars in `reconcile`.
 
 The receipt path grafts onto the existing `track run` pipeline (`fetch → classify → reconcile`,
 per-message resilient, `--dry-run` throughout). **No new CLI command**; receipts surface in the
@@ -41,142 +44,228 @@ extended to accept `applied` as a target.
 ### Flow
 
 ```
-message ──▶ classify (LLM) ──type=receipt──▶ match_receipt() [pure, deterministic]
-                                                    │
-                        proof-grade domain match ───┼──▶ can_apply → auto-advance shortlist→applied + evidence
-                        ATS-relay corroboration  ───┼──▶ propose (dead-letter → `track confirm --to applied`)
-                        no domain match          ───┴──▶ skip (a name-only mention never matches)
+message ──▶ classify (LLM) ──type=receipt──▶ engine.run(): match_receipt(msg, shortlist_leads, ats_relay_domains)
+                                                    │   (raw msg in scope here; sets ev.lead_slug / ev.candidates / ev.receipt_tier)
+                                                    ▼
+                                              reconcile receipt branch
+                        proof + unambiguous  ───┼──▶ can_apply → auto-advance shortlist→applied + evidence
+                        corroborated / ambiguous ┼──▶ propose (dead-letter → `track confirm --to applied`)
+                        no match             ───┴──▶ skip
 ```
+
+## The match rule (the load-bearing detail)
+
+This section supersedes the earlier "registrable last-two-labels" heuristic, which false-matched
+multi-part TLDs (`bigco.co.uk` and `random.co.uk` both reduce to `co.uk`). Matching is done on
+**full hosts**, never on a reconstructed registrable domain, so there is no eTLD+1 to get wrong.
+
+Host extraction (deterministic, from the raw `msg` dict — never from the LLM's `ev.links`):
+- **sender host** — parse `msg["headers"]["from"]` for the email address, take its domain,
+  `.lower()`, strip a leading `www.`.
+- **apply-link hosts** — `urllib.parse.urlparse(u).hostname` for each URL found in
+  `msg["body_text"]`, lowercased, `www.`-stripped.
+- **lead host** — `urlparse(note.fm["url"]).hostname`, lowercased, `www.`-stripped. A lead with an
+  empty `url` has no host and can never match (abstain — a url-less lead is not evidence).
+
+Predicates:
+- `is_ats(host)` — True iff `host == K` or `host.endswith("." + K)` for some key `K` in
+  `ats_relay_domains` (so `boards.greenhouse.io` matches key `greenhouse.io`).
+- `hosts_match(a, b)` — True iff `a == b` or `a.endswith("." + b)` or `b.endswith("." + a)`
+  (equality or a subdomain relationship in either direction, on **full hosts**). `random.co.uk` and
+  `bigco.co.uk` do **not** match — neither is a subdomain of the other.
+
+Resolution over the shortlist set (each lead `L` with host `H_L`, each receipt host `R`):
+- **proof-eligible** `L`: some `R` with `hosts_match(R, H_L)` and **not** `is_ats(R)` and **not**
+  `is_ats(H_L)`. (An ATS host on either side is never proof — `boards.greenhouse.io` is shared by
+  every greenhouse-hosted lead, so it proves nothing about *which* company.)
+- **corroborated-eligible** `L`: some `R` with `is_ats(R)` **and** `L`'s company tokens all appear in
+  the subject+body (token match, reusing the tokenization already in `core/leads.py`).
+
+`match_receipt` returns `ReceiptMatch(lead_slug: str | None, tier: str, candidates: list[str])`,
+`tier ∈ {"proof", "corroborated", "none"}`:
+- exactly one proof-eligible lead → `(slug, "proof", [])`.
+- more than one proof-eligible lead → `(None, "corroborated", [slugs])` — **ambiguous, propose**.
+- else exactly one corroborated-eligible lead → `(slug, "corroborated", [])`.
+- more than one corroborated-eligible lead → `(None, "corroborated", [slugs])` — propose.
+- none → `(None, "none", [])`.
+
+**Refuse-on-ambiguity is structural, not denylist-dependent.** Proof safety does not rest on
+`ats_relay_domains` being exhaustive: an ATS *not* in the default (BambooHR, Personio, …) that uses a
+per-company subdomain (`acme.bamboohr.example`) still matches exactly one lead and is genuinely
+specific; an ATS that uses a *shared* host and happens to be unlisted would match multiple leads and
+be caught by the ambiguity refusal (→ propose), or match one lead and advance it — a residual the
+ambiguity rule cannot see, accepted and documented, and shrunk by keeping the ATS default current.
+Emptying `ats_relay_domains` disables the ATS *safety downgrade* (a shared-host ATS could then read as
+proof for a lone lead); it is a safety denylist, **not** a preference gate, and its default is
+non-empty by design (the list-only neutral-defaults sweep does not touch this dict — see #26/#63).
+Document this in `sluice.yaml.example`.
 
 ## Components
 
 ### `sluice/track/receipt.py` (new — pure, the testable core)
 
-```
-match_receipt(msg, shortlist_leads, ats_relay_domains) -> ReceiptMatch(lead_slug, tier)
-    tier in {"proof", "corroborated", "none"}
-```
-
-- Deterministically extracts the **sender host** (from the `From:` header address) and any
-  **apply-link hosts** (from URLs in the body), lowercased, `www.`-stripped.
-- Compares those against each shortlist lead's `fm["url"]` host:
-  - **proof** — registrable-domain equality **where that domain is NOT an ATS relay domain**. The
-    ATS exclusion closes the shared-parent hole: `boards.greenhouse.io` is shared by every
-    greenhouse-hosted lead, so an ATS host can never be proof by domain alone.
-  - **corroborated** — the sender/link domain **is** an ATS relay domain (present in
-    `ats_relay_domains`) **and** the lead's company tokens appear in the subject/body.
-  - **none** — otherwise. A name-only mention with a mismatched domain never matches; an ATS-relay
-    domain with no company corroboration never matches.
-- Registrable-domain heuristic: strip a leading `www.`; treat the host's last two labels as the
-  registrable domain for the equality test, and additionally accept a subdomain of the lead's own
-  registrable domain (e.g. `careers.example.com` vs `example.com`). Documented as a pragmatic
-  heuristic; the ATS-relay suffix match handles the relay case, and the ATS-exclusion prevents the
-  shared-parent false merge. Pinned by the unit table.
-- No I/O — offline-testable, in the grain of `core/leads.py:same_opportunity`.
-- `urllib.parse` is used for host extraction (already imported elsewhere in `sluice/`, so it is an
-  accepted stdlib import; core stays standard-library only).
+- Implements `match_receipt` and the predicates above. No I/O; takes the raw `msg` dict (a plain
+  dict, like `Source.parse`'s input — purity holds) plus the shortlist leads and the ATS map.
+- `urllib.parse` for host extraction (already imported elsewhere in `sluice/`, so it is an accepted
+  stdlib import; core stays standard-library only).
+- Company-token comparison reuses the normalization in `core/leads.py` rather than reinventing it.
 
 ### `sluice/track/classify.py`
 
 - Add `receipt` to `_TYPES` so the LLM can classify an application acknowledgement.
-- For a `receipt`, do **not** run the LLM name-resolution (`_resolve_lead`) — the deterministic
-  domain matcher owns lead resolution for receipts. Any `lead` the LLM returns for a receipt is
-  ignored.
+- For a `receipt`, do **not** run the LLM name-resolution (`_resolve_lead`) and **ignore** any `lead`
+  the LLM returns — the deterministic domain matcher (run in `engine.run`) owns lead resolution.
+  `ev.lead_slug` is left `None` at classify time and is filled in by the engine.
+
+### `sluice/track/engine.py`
+
+- `run()` loads `shortlist_by_slug = {n.slug: n for n in vault.read_leads({"shortlist"})}` — kept
+  **out of the LLM prompt** (the classify prompt stays in-flight-only; the deterministic matcher
+  receives the shortlist set).
+- **Where the match happens.** After `classify`, if `ev.type == "receipt"`, the engine (where the raw
+  `msg` is in scope, `engine.py:85`) calls `match_receipt(msg, shortlist_by_slug.values(),
+  cfg.ats_relay_domains)` and writes the result back onto the Event: `ev.lead_slug = match.lead_slug`,
+  `ev.candidates = match.candidates`, and a new `ev.receipt_tier = match.tier`. This is what makes the
+  proposal hint, dead-letter attribution, `deadletter.clear_lead`, and the intra-run reflection — all
+  keyed on `ev.lead_slug` — work for receipts exactly as for other signals (fixes the
+  `lead_slug=None` misfires).
+- `_PROPOSE_TARGET["receipt"] = "applied"` so a proposed (corroborated/ambiguous) receipt emits a
+  `sluice track confirm --lead "<slug>" --to applied` hint (or, when ambiguous, the multi-candidate
+  hint the existing code already builds from `ev.candidates`).
+- Intra-run never-regress reflection: a receipt advances a **shortlist** lead, which lives in
+  `shortlist_by_slug`, *not* `note_by_slug` (that holds only in-flight leads). Reflect the new
+  `applied` status back into `shortlist_by_slug[slug]` so a second receipt for the same lead in one
+  run reconciles against current state; `deadletter.clear_lead` keys on the same slug.
+- `confirm()` uses `can_transition` (so `--to applied` is legal from `shortlist`).
 
 ### `sluice/track/reconcile.py`
 
-- New `receipt` branch:
-  - Compute the `ReceiptMatch` against the shortlist set.
-  - **proof** tier + `can_apply(note.status)` true + LLM confidence ≥ `auto_apply_min` →
-    `_advance(note, "applied", ...)` (surgical `update_fields`) and append the evidence section;
-    `action = "applied"`, `status_to = "applied"`.
-  - **corroborated** tier → propose (dead-letter), `action = "proposed"`, proposal names the
-    matched lead and `--to applied`.
-  - **none** → skip.
+- `reconcile()` gains a `shortlist_by_slug` parameter (new signature:
+  `reconcile(event, note_by_slug, vault, cfg, client, shortlist_by_slug, dry_run=False)`).
+- A **receipt branch placed before the generic no-match None-guard** (`reconcile.py:61`), so a receipt
+  with a resolved `ev.lead_slug` is handled by its own logic rather than being proposed as
+  "unmatched/ambiguous". It looks the note up in `shortlist_by_slug`:
+  - `ev.receipt_tier == "proof"` + a resolved `ev.lead_slug` + `_status.can_apply(note.status)` + LLM
+    confidence ≥ `auto_apply_min` → write `{status: applied, last_signal: today}` via surgical
+    `update_fields` and append the evidence section; `action = "applied"`, `status_to = "applied"`.
+  - `ev.receipt_tier == "corroborated"`, or `ev.candidates` non-empty (ambiguous) → propose
+    (`action = "proposed"`), proposal names the matched lead / candidates and `--to applied`.
+  - otherwise (`"none"`) → skip.
+- **Receipt-specific field set (not `_advance`).** The receipt branch writes only
+  `{status: applied, last_signal: today}` (optionally `applied_date`). It must **not** reuse
+  `_advance`, which opportunistically stamps `interview_date`/`interview_link` from `ev.when`/
+  `ev.links` — a receipt routinely carries a portal URL, and stamping `interview_link` onto an
+  `applied` lead is semantically wrong (surgical, so not a clobber, but mislabeled).
 - Evidence: `append_body_section(note.ref, tag, "## Application receipt ...")` recording sender,
-  subject, date, matched domain, and tier. Tag keyed by `message_id` so a re-receipt is idempotent
-  (never-clobber append; never overwrites body).
+  subject, date, matched host, and tier. Tag keyed by `message_id` so a re-receipt is idempotent
+  (never-clobber append; never overwrites the body).
 
 ### `sluice/core/status.py`
 
 - Add `can_transition(current, target)`: if `normalize(target) == "applied"` dispatch to
-  `can_apply(current)`; else dispatch to `can_advance(current, target)`. This keeps the ladder logic
-  in `status.py` (its owner) and gives `reconcile` and `confirm` one shared entry point.
-- **Rationale:** `shortlist → applied` is the `can_apply` transition (shortlist is triage-owned,
-  applied is application-owned). Every existing reconcile branch and `confirm()` use `can_advance`,
-  which requires *both* ends application-owned and would therefore wrongly **reject**
-  `shortlist → applied`. `can_transition` routes the `applied` target correctly without weakening
-  either predicate.
-
-### `sluice/track/engine.py`
-
-- `run()` additionally loads `shortlist_leads = vault.read_leads({"shortlist"})`, kept **out of the
-  LLM prompt** (the classify prompt stays in-flight-only; the deterministic matcher receives the
-  shortlist set). Pass the shortlist set into `reconcile` for the receipt branch.
-- `_PROPOSE_TARGET["receipt"] = "applied"` so a proposed (corroborated) receipt emits a
-  `sluice track confirm --lead "<slug>" --to applied` hint.
-- Intra-run never-regress reflection: when a receipt advances a shortlist lead, reflect the new
-  `applied` status back into the shortlist snapshot so a second receipt for the same lead in one run
-  reconciles against current state.
-- `confirm()` uses `can_transition` (so `--to applied` is legal from `shortlist`).
+  `can_apply(current)`; else dispatch to `can_advance(current, target)`.
+- **Rationale (corrected per arch-003):** `confirm()` is the caller — it accepts an arbitrary `--to`
+  target and needs the routing. `reconcile`'s receipt branch calls `can_apply` **directly** because it
+  already knows the target is `applied`. `can_transition` centralizes target→predicate routing in
+  `status.py`, the owner of the ladder, rather than inlining a second dispatch at the `confirm` call
+  site. It adds no new ladder logic and does not blur the deliberately-separate `can_apply` /
+  `can_advance` predicates: `shortlist → applied` is the `can_apply` transition (shortlist is
+  triage-owned, applied application-owned), and `can_advance` — which requires *both* ends
+  application-owned — would wrongly reject it.
 
 ### `sluice/track/config.py` + `sluice.yaml.example`
 
 - **Consume** `ats_relay_domains` (defined today, used nowhere — this feature is its first consumer).
 - Add `auto_apply_min: float = 0.75` — the LLM's receipt-classification confidence floor for a
-  proof-grade auto-advance. Corroborated tier always proposes regardless of confidence. Document
-  both in `sluice.yaml.example`.
+  proof-grade auto-advance. Corroborated/ambiguous tiers always propose regardless of confidence.
+  Document both, and the `ats_relay_domains` safety-denylist semantics, in `sluice.yaml.example`.
+
+## Documentation (arch-001 — fold into this PR, user-approved)
+
+Track now performs `shortlist → applied`, which the docs describe as apply-only. Update, and
+regenerate the AI-tool outputs (`npx rulesync@9.6.3 generate -t '*' -f '*'`):
+- `.rulesync/rules/CLAUDE.md` (canonical, human-gated) — the never-regress paragraph: note that a
+  confirmation **receipt** (track, via `can_apply`) also advances `shortlist → applied`, distinct from
+  apply's send path; `shortlist → applied` remains the only *apply* transition.
+- `docs/ARCHITECTURE.md` — the track and status-lifecycle sections gain the receipt actor.
+- `sluice/core/status.py` module docstring — record that track advances `shortlist → applied` on a
+  receipt, alongside apply.
 
 ## Invariants upheld
 
 - **Never-regress (status).** `can_apply` returns True *only* for `shortlist`. A receipt against an
   `interview`, `offer`, `applied`, or terminal lead is refused — it can never pull a lead backward,
-  and is idempotent on an already-`applied` lead. `confirm --to applied` is gated by the same gate.
-- **Never-clobber (writes).** Status via surgical `update_fields` (named keys only); evidence via
-  `append_body_section` (append, never overwrite a human decision or the note body).
-- **Empty config abstains.** An empty `ats_relay_domains` disables only the corroborated tier; the
-  proof tier still works. No new preference gate; `auto_apply_min` is a confidence floor, not a
-  preference filter.
+  and is idempotent on an already-`applied` lead. Ambiguity never auto-advances. `confirm --to
+  applied` is gated by the same predicate.
+- **Never-clobber (writes).** Status via surgical `update_fields` (named keys only, receipt-specific
+  field set); evidence via `append_body_section` (append, never overwrite a human decision or body).
+- **Empty config abstains.** A url-less lead never matches. `ats_relay_domains` is a safety denylist
+  with a non-empty default, not a preference gate; `auto_apply_min` is a confidence floor. No new
+  preference gate.
 - **Standard-library only.** `urllib.parse` for host extraction; no new dependency.
-- **Pure/impure split.** `match_receipt` is pure (no I/O), like the parser layer, so it is tested
-  offline against synthetic messages.
+- **Pure/impure split.** `match_receipt` is pure (plain dict in, no I/O), called from the engine where
+  the raw `msg` is in scope; host/URL extraction is deterministic (from `msg`), never from the LLM's
+  `ev.links`.
 
-## Testing (synthetic fixtures, offline; mirrors `test_track_reconcile.py` / `test_core_status_apply.py`)
+## Testing (synthetic fixtures, offline; mirrors `test_track_reconcile.py` / `test_track_engine.py` / `test_core_status_apply.py`)
+
+Reconcile/engine tests fake the backend the same way the existing track tests do (a `FakeBackend`
+returning a canned classification — see `test_track_classify.py` / `test_track_reconcile.py`), so the
+suite stays offline. `match_receipt` is pure and tested directly.
 
 The three from #10:
 
-1. A confirmation receipt (proof-grade domain match) advances a matching `shortlist` lead to
-   `applied`, with evidence recorded.
-2. A receipt from an unrelated service that merely mentions the company name (domain mismatch) does
-   **not** match.
-3. A receipt cannot regress a lead already at a later stage (`interview` stays `interview`).
+1. A proof-grade, unambiguous receipt advances a matching `shortlist` lead to `applied`, with the
+   evidence section recorded.
+2. A receipt from an unrelated service that merely mentions the company name (host mismatch) → **no
+   write**: assert `res.status_to is None`, `status: shortlist` still present, and **no** `##
+   Application receipt` section appended (not merely `tier == "none"`).
+3. A receipt cannot regress a lead already at a later stage (`interview` stays `interview`; no write).
 
 Plus edges:
 
-4. ATS-relay domain + company-in-body → **proposed** (corroborated tier), not auto-applied.
-5. ATS-relay domain alone, no company corroboration → **no match**.
-6. Idempotent re-receipt: a second identical receipt does not double-write (already `applied`,
-   `can_apply` false; evidence tag dedups).
-7. `confirm --to applied` succeeds off a proposed receipt; `confirm --to applied` on a non-shortlist
+4. ATS-relay host + company-in-body → **proposed** (corroborated), not auto-applied; the dead-letter
+   `Entry` carries the matched slug and a runnable `confirm --lead <slug> --to applied` hint
+   (guards inv-002).
+5. ATS-relay host with the company token **absent** from the body → **no write** (same absence
+   assertions as test 2).
+6. Idempotent re-receipt: after two identical receipts, the evidence section appears **exactly once**
+   (count occurrences) and status is written once.
+7. **Ambiguity → propose, never advance** (guards inv-001): (a) two shortlist leads sharing one
+   non-ATS host, one receipt → `candidates` has both, `action == "proposed"`, **neither** lead
+   advanced; (b) a shared-host ATS not in `ats_relay_domains` matching two leads → proposed.
+8. `confirm --to applied` succeeds off a proposed receipt; `confirm --to applied` on a non-shortlist
    lead is refused with the current status as the reason.
-8. A pure `match_receipt` unit table over {proof, corroborated, none} inputs, including a
-   `careers.<host>` vs `<host>` case (subdomain-of-registrable proof) and a shared ATS-parent
-   host (never proof).
+9. A receipt advance writes **no** `interview_date` / `interview_link` (guards inv-003).
+10. A classify-level test (using the existing `FakeBackend`): a receipt email is typed `receipt`, and
+    a `lead` the LLM returns for it is **ignored** (not resolved) — the deterministic matcher owns it.
+11. A pure `match_receipt` unit table, cases enumerated **adversarially** (not hand-picked — THE
+    LESSON): proof (exact host; `careers.<host>` subdomain), corroborated (ATS + company),
+    and a full set of `none` traps: `evilexample.com`, `example.com.attacker.invalid`,
+    `notexample.com` (substring, not subdomain), a sibling subdomain of a *different* registrable
+    domain, `bigco.co.uk` vs `random.co.uk` (multi-part-TLD, must **not** match), and a shared-ATS
+    parent (never proof).
 
-**Fixture neutrality.** Company domains in fixtures use the RFC-reserved `example.com` /
-`example.invalid` family (guaranteed unregistrable, so no invented domain can collide with a real
-firm — a local roster cannot tell whether an invented name is real). The ATS relay hosts
-(`greenhouse.io`, `lever.co`, …) may be named directly: they are real ATSs already present in the
-shipped `ats_relay_domains` config, not personal data.
+**Fixture neutrality.** Company hosts use the RFC-reserved `example.com` / `example.invalid` family
+(guaranteed unregistrable; a local roster cannot tell whether an invented name is real). The
+**company-name string** used in the corroboration fixtures is likewise a bare placeholder derived
+from the reserved host (e.g. company `Example`), **not** a plausible invented firm (neut-001). The ATS
+relay hosts (`greenhouse.io`, `lever.co`, …) may be named directly: they are real ATSs already present
+in the shipped `ats_relay_domains` config (asserted in `test_track_config.py`), not personal data.
 
-Mutation witness: in the receipt reconcile branch, swapping `can_apply`/`can_transition` for
-`can_advance` must redden a named test (it would reject `shortlist → applied`); run the test by node
-id and confirm it fails, and confirm no pre-existing test is what catches it.
+**Mutation witness (named).** In the receipt reconcile branch, swapping `can_apply` for `can_advance`
+must redden **test 1** (`test_receipt_proof_advances_shortlist_to_applied` — `can_advance` refuses
+`shortlist → applied`, so the assertion that status became `applied` fails). Run that node id and
+confirm it reddens. Test 3 is **inert** for this mutant (both predicates refuse `interview → applied`,
+so it stays green) — do not rely on it. Because the mutant lives in the *new* branch, the
+"no pre-existing test catches it" check passes trivially; state that so the witness is not mistaken
+for load-bearing coverage of pre-existing code.
 
 ## Scope
 
-~1 new pure module (`receipt.py`) + focused edits to `classify.py`, `reconcile.py`, `engine.py`,
-`status.py`, `config.py`, `sluice.yaml.example`. No new dependency, no seam change, no new CLI
-command. Neutrality: synthetic fixtures only — no real employer names or domains; company hosts use
-the RFC-reserved `example.com` / `example.invalid` family (real ATS relay hosts may be named, as
-they already ship in `ats_relay_domains`).
+~1 new pure module (`receipt.py`) + focused edits to `classify.py`, `reconcile.py` (new signature),
+`engine.py`, `status.py`, `config.py`, `sluice.yaml.example`, plus the doc updates
+(`.rulesync/rules/CLAUDE.md`, `docs/ARCHITECTURE.md`, `status.py` docstring) and a rulesync
+regenerate. No new dependency, no adapter-seam change, no new CLI command. Neutrality: synthetic
+fixtures only — company hosts *and names* in the RFC-reserved family; real ATS relay hosts may be
+named (they already ship in `ats_relay_domains`).
