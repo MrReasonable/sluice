@@ -1,6 +1,10 @@
 # Advance a lead to `applied` from its confirmation email (#10)
 
-**Status:** design approved 2026-07-25; revised 2026-07-25 after `/review-plan` (5 reviewers).
+**Status:** design approved 2026-07-25; revised twice after `/review-plan` (5 reviewers each round).
+Round 1 addressed 3 High + mediums (match-rule ambiguity, `.co.uk` false-proof, msg/slug wiring).
+Round 2 confirmed those fixed (0 Critical/High) and folded 2 Medium + 3 Low mechanical items
+(`Event.receipt_tier` declaration, non-breaking reconcile signature, residual-note breadth,
+`can_apply` docstring, an intra-run reflection test).
 **Issue:** #10 — `feat(track): advance a lead to applied from its confirmation email`
 **Sub-app:** `track`
 
@@ -92,9 +96,12 @@ Resolution over the shortlist set (each lead `L` with host `H_L`, each receipt h
 **Refuse-on-ambiguity is structural, not denylist-dependent.** Proof safety does not rest on
 `ats_relay_domains` being exhaustive: an ATS *not* in the default (BambooHR, Personio, …) that uses a
 per-company subdomain (`acme.bamboohr.example`) still matches exactly one lead and is genuinely
-specific; an ATS that uses a *shared* host and happens to be unlisted would match multiple leads and
-be caught by the ambiguity refusal (→ propose), or match one lead and advance it — a residual the
-ambiguity rule cannot see, accepted and documented, and shrunk by keeping the ATS default current.
+specific; any *shared multi-tenant* host that is unlisted — an unlisted shared-host ATS, or a
+PaaS/pages parent that hosts many tenants under one domain (a shared `*.pages.example`-style host) —
+would match multiple leads and be caught by the ambiguity refusal (→ propose), or match one lead and
+advance it: a residual the ambiguity rule cannot see, accepted and documented, and shrunk by keeping
+the ATS/shared-host default current. (The residual is not ATS-specific — `hosts_match` is bidirectional,
+so any shared parent domain shared by a lead and a receipt is in scope.)
 Emptying `ats_relay_domains` disables the ATS *safety downgrade* (a shared-host ATS could then read as
 proof for a lone lead); it is a safety denylist, **not** a preference gate, and its default is
 non-empty by design (the list-only neutral-defaults sweep does not touch this dict — see #26/#63).
@@ -116,6 +123,9 @@ Document this in `sluice.yaml.example`.
 - For a `receipt`, do **not** run the LLM name-resolution (`_resolve_lead`) and **ignore** any `lead`
   the LLM returns — the deterministic domain matcher (run in `engine.run`) owns lead resolution.
   `ev.lead_slug` is left `None` at classify time and is filled in by the engine.
+- Declare a new field on the `Event` dataclass: `receipt_tier: str | None = None`. The engine writes it
+  from the `match_receipt` result and the reconcile receipt branch reads it, so it must be a real
+  field (not an ad-hoc attribute) — reconcile tests construct `Event(receipt_tier=...)` directly.
 
 ### `sluice/track/engine.py`
 
@@ -140,8 +150,11 @@ Document this in `sluice.yaml.example`.
 
 ### `sluice/track/reconcile.py`
 
-- `reconcile()` gains a `shortlist_by_slug` parameter (new signature:
-  `reconcile(event, note_by_slug, vault, cfg, client, shortlist_by_slug, dry_run=False)`).
+- `reconcile()` gains `shortlist_by_slug` as a **keyword-only, defaulted** parameter — appended so it
+  does not shift `dry_run`: `reconcile(event, note_by_slug, vault, cfg, client, dry_run=False, *,
+  shortlist_by_slug=None)` (None treated as `{}`). This keeps all 8 existing `reconcile(...)` callers in
+  `tests/test_track_reconcile.py` working unchanged; only `engine.run` and the new receipt tests pass
+  the map. A receipt event with an empty `shortlist_by_slug` simply finds no match (skips).
 - A **receipt branch placed before the generic no-match None-guard** (`reconcile.py:61`), so a receipt
   with a resolved `ev.lead_slug` is handled by its own logic rather than being proposed as
   "unmatched/ambiguous". It looks the note up in `shortlist_by_slug`:
@@ -188,8 +201,9 @@ regenerate the AI-tool outputs (`npx rulesync@9.6.3 generate -t '*' -f '*'`):
   confirmation **receipt** (track, via `can_apply`) also advances `shortlist → applied`, distinct from
   apply's send path; `shortlist → applied` remains the only *apply* transition.
 - `docs/ARCHITECTURE.md` — the track and status-lifecycle sections gain the receipt actor.
-- `sluice/core/status.py` module docstring — record that track advances `shortlist → applied` on a
-  receipt, alongside apply.
+- `sluice/core/status.py` — both the **module** docstring and the **`can_apply` function** docstring
+  (`status.py:44-48`, which frames the transition as apply-exclusive) record that track also routes
+  through `can_apply` to advance `shortlist → applied` on a receipt, alongside apply.
 
 ## Invariants upheld
 
@@ -245,6 +259,11 @@ Plus edges:
     `notexample.com` (substring, not subdomain), a sibling subdomain of a *different* registrable
     domain, `bigco.co.uk` vs `random.co.uk` (multi-part-TLD, must **not** match), and a shared-ATS
     parent (never proof).
+12. Intra-run reflection (engine-level): two receipts for the **same** shortlist lead in one
+    `engine.run` advance it exactly once — the first writes `applied`, the second reconciles against
+    the reflected `applied` snapshot in `shortlist_by_slug` (so `can_apply` is now False) and writes
+    nothing further. Guards the separate-snapshot reflection path (`shortlist_by_slug`, not
+    `note_by_slug`), which the reconcile-level idempotency test (6) does not exercise.
 
 **Fixture neutrality.** Company hosts use the RFC-reserved `example.com` / `example.invalid` family
 (guaranteed unregistrable; a local roster cannot tell whether an invented name is real). The
