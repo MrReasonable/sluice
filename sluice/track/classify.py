@@ -11,7 +11,7 @@ from sluice.core.log import get_logger
 
 _log = get_logger("track.classify")
 
-_TYPES = {"phone_screen", "interview", "rejection", "offer", "update", "not_job"}
+_TYPES = {"phone_screen", "interview", "rejection", "offer", "update", "receipt", "not_job"}
 
 
 @dataclass
@@ -27,6 +27,9 @@ class Event:
     ics: object = None
     materials: list = field(default_factory=list)
     summary: str = ""
+    receipt_tier: "str | None" = None   # set by engine.run for a receipt: proof|corroborated|none
+    sender: str = ""                    # raw From header, for receipt evidence
+    subject: str = ""                   # raw Subject header, for receipt evidence
 
 
 def _lead_key(note):
@@ -46,7 +49,7 @@ def build_prompt(msg, leads, cfg):
         "You track a job seeker's live applications. Classify this email against the "
         "in-flight applications below. Return ONLY a JSON object with keys: lead (the "
         "company name of the matching application, or null), type (one of "
-        "phone_screen, interview, rejection, offer, update, not_job), confidence "
+        "phone_screen, interview, rejection, offer, update, receipt, not_job), confidence "
         "(0..1), when (ISO datetime of any interview, or null), links (array of URLs), "
         "materials (array of short descriptions of any attachments or prep links), "
         "summary (one short line). Only match an application actually listed. Do not "
@@ -84,7 +87,12 @@ def classify(msg, leads, backend, cfg, ics=None) -> Event:
             if fn and not fn.lower().endswith(".ics") and fn not in ev.materials:
                 ev.materials.append(fn)
         ev.summary = str(data.get("summary") or "")
-        ev.lead_slug, ev.candidates = _resolve_lead(data.get("lead"), leads)
+        h = msg.get("headers", {})
+        ev.sender = h.get("from", "")
+        ev.subject = h.get("subject", "")
+        if ev.type != "receipt":
+            ev.lead_slug, ev.candidates = _resolve_lead(data.get("lead"), leads)
+        # else: leave lead_slug=None/candidates=[]; engine.run resolves receipts by domain.
     except Exception:
         # A classification we could NOT make is not evidence of "not a job" (#40). The default
         # Event.type is `not_job`, and reconcile silently SKIPS an unmatched not_job/update --
