@@ -214,6 +214,11 @@ Four points in the config are the seams for pluggable adapters.
   Messages API), `deepseek` and `openai` (OpenAI-compatible). Role selection
   (`auto`/`primary`/`fallback`) sits ABOVE the provider seam, in `Sluice.backend()`:
   the config picks which provider fills each role, the role picks which backend runs.
+  `tests/conformance/test_backend_contract.py` asserts the portable contract over every
+  registered provider — an empty/whitespace response and a transport failure both raise
+  `BackendError` (the property `FallbackBackend` relies on), and a valid response returns as
+  its text — so a new provider passes it or does not ship, exactly as the store bullet's
+  conformance suite does.
 - **store**: `sluice/stores/`, selected by `store:` (default `vault`).
   Implementations: `vault` (the Obsidian-style markdown vault in
   `core/vault.py`). A SQLite store is the obvious next one, and the
