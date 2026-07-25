@@ -112,3 +112,21 @@ triage:
 # backend/store/renderer/fetch today, see docs/ARCHITECTURE.md.
 # apply:
 #   served_prefix: CV  # must match cv.served_prefix
+
+# Track (sub-app #5): reconciles Gmail/Calendar signals against shortlisted and
+# applied leads (scheduling, offers, rejections, and application receipts).
+track:
+  # Minimum confidence (0..1) for the LLM's "this is an application receipt"
+  # classification to AUTO-advance a shortlist lead to `applied` on a domain-PROOF
+  # match. A corroborated (ATS-relay + company-in-body) or ambiguous match always
+  # proposes for `sluice track confirm`, regardless of this value.
+  auto_apply_min: 0.75
+  # ats_relay_domains maps an applicant-tracking-system relay domain to a short
+  # label. It is a SAFETY DENYLIST, not a preference gate: a receipt sent from one
+  # of these shared multi-tenant hosts is never treated as domain-PROOF of a
+  # specific company (it hosts many), only as corroboration when the company is also
+  # named in the body. The default is non-empty by design; emptying it makes the
+  # proof tier MORE permissive, not less. Add your own ATSs here.
+  # ats_relay_domains:
+  #   greenhouse.io: greenhouse
+  #   lever.co: lever
