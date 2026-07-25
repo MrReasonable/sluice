@@ -171,3 +171,29 @@ def test_receipt_advance_writes_no_interview_fields():
     R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), shortlist_by_slug=sl)
     text = pathlib.Path(path).read_text()
     assert "interview_date" not in text and "interview_link" not in text
+
+
+def test_receipt_dry_run_reports_advance_but_writes_nothing():
+    # dry_run must report the WOULD-BE outcome (so callers can preview it) while the
+    # vault stays untouched -- `--dry-run` writing to a real note is a serious defect,
+    # not a cosmetic one, so this pins the `if not dry_run:` guard on the write itself
+    # rather than trusting the returned result alone.
+    v, sl, path = _shortlist_with("Example - Analyst", "https://example.com/careers/1")
+    before = pathlib.Path(path).read_text()
+    ev = _receipt_ev("proof", "Example - Analyst")
+    res = R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), True, shortlist_by_slug=sl)
+    assert res.action == "applied" and res.status_to == "applied"
+    after = pathlib.Path(path).read_text()
+    assert after == before  # byte-unchanged: no frontmatter edit, no evidence section
+    assert "status: shortlist" in after and "## Application receipt" not in after
+
+
+def test_receipt_confidence_floor_is_inclusive():
+    # The design specifies >=, i.e. a receipt AT the floor still advances; a boundary
+    # value is required because 0.5/0.9 (the other tests' confidences) sit strictly
+    # off the floor and can't distinguish >= from >.
+    v, sl, path = _shortlist_with("Example - Analyst", "https://example.com/careers/1")
+    ev = _receipt_ev("proof", "Example - Analyst", conf=TrackConfig().auto_apply_min)
+    res = R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), shortlist_by_slug=sl)
+    assert res.action == "applied" and res.status_to == "applied"
+    assert "status: applied" in pathlib.Path(path).read_text()
