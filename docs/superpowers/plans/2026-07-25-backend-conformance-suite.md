@@ -533,14 +533,14 @@ Expected: PASS. The file drops 7 cases; the retained per-class, forwarding and #
 Run: `ruff check tests`
 Expected: exit 0 (no import became unused — the deleted functions share `ClaudeMaxBackend`/`OpenAiCompatibleBackend`/`AnthropicBackend`/`BackendError`/`pytest` with many retained tests).
 
-- [ ] **Step 5: Post-prune witness — confirm the conformance suite is now the sole cover (no coverage hole)**
+- [ ] **Step 5: Post-prune witness — confirm no coverage hole**
 
 Run: `python -m compileall -q -f --invalidation-mode checked-hash sluice tests scripts`
 
 Edit `sluice/core/backends.py` — DELETE the claude-max empty guard exactly as in Task 1 Step 4 (`if not text: … raise …` → `return text`).
 
 Run: `python -m pytest tests/test_backends.py tests/conformance/test_backend_contract.py -q`
-Expected: exactly the conformance empty case reds — `test_empty_or_whitespace_response_returns_nothing_so_raises[claude-max]` FAILS, and NO test in `tests/test_backends.py` catches it (proving the prune left the property covered ONLY by conformance, as intended). Then REVERT the Edit exactly and re-run: Expected **PASS**.
+Expected: **THREE** cases red — the conformance `test_empty_or_whitespace_response_returns_nothing_so_raises[claude-max]` AND the two KEPT #41 diagnostic tests (`test_claudemax_empty_response_regains_scrubbed_diagnostic`, `…_redacts_before_truncating`), which assert the scrubbed message *content* and so also need the raise to fire. The property is therefore covered by conformance **and** (incidentally) by those two — no coverage hole; conformance is not the *sole* witness. (An earlier draft of this step wrongly predicted a single red — corrected here; the point the witness proves is "no lost edge," not "sole cover.") Then REVERT the Edit exactly and re-run: Expected **PASS**.
 
 - [ ] **Step 6: Whole-suite green + commit**
 
