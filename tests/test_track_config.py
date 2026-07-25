@@ -34,3 +34,11 @@ def test_config_exposes_backend_selectors():
     c = TrackConfig()
     assert c.primary_backend == "claude-max"
     assert c.fallback_backend == "deepseek"
+
+
+def test_auto_apply_min_default_and_override(tmp_path):
+    from sluice.track.config import TrackConfig, load_track_config
+    assert TrackConfig().auto_apply_min == 0.75
+    cfg_file = tmp_path / "s.yaml"
+    cfg_file.write_text("track:\n  auto_apply_min: 0.9\n")
+    assert load_track_config(str(cfg_file)).auto_apply_min == 0.9
