@@ -634,14 +634,12 @@ Insert the receipt branch in `reconcile`, immediately AFTER the `unknown` guard 
 Run: `python -m pytest tests/test_track_reconcile.py -v && ruff check sluice tests`
 Expected: PASS (all existing + 7 new).
 
-- [ ] **Step 5: Mutation witness (THE LESSON)** — confirm test 1 is load-bearing:
+- [ ] **Step 5: Commit — BEFORE the mutation witness**
 
-Run once: `python -m compileall -q -f --invalidation-mode checked-hash sluice tests scripts`
-Then in `reconcile.py`'s receipt branch, MOVE `_status.can_apply(note.status)` → `_status.can_advance(note.status, "applied")` (edit, don't add), and run:
-`python -m pytest tests/test_track_reconcile.py::test_receipt_proof_advances_shortlist_to_applied -v`
-Expected: **FAIL** (can_advance refuses shortlist→applied, so no advance). Confirm test 3 (`test_receipt_cannot_regress_non_shortlist`) stays green (inert for this mutant — both predicates refuse interview→applied). Then restore the line via Edit and re-run the file: PASS.
-
-- [ ] **Step 6: Commit**
+Commit first, deliberately: the witness mutates production code, and a restore that
+reaches for `git checkout -- <file>` would wipe every uncommitted change in that file.
+That has bitten this repo twice (#59), and the empty post-run diff hides the loss.
+Committing first makes the witness non-destructive whichever restore is used.
 
 ```bash
 git add sluice/track/reconcile.py tests/test_track_reconcile.py
@@ -655,6 +653,13 @@ set injected via a keyword-only param, so existing callers are unaffected.
 MrReasonable <4990954+MrReasonable@users.noreply.github.com>
 Claude-Session: https://claude.ai/code/session_01Q7xXM4KpehkJpfkw4zpFnG"
 ```
+
+- [ ] **Step 6: Mutation witness (THE LESSON)** — confirm test 1 is load-bearing:
+
+Run once: `python -m compileall -q -f --invalidation-mode checked-hash sluice tests scripts`
+Then in `reconcile.py`'s receipt branch, MOVE `_status.can_apply(note.status)` → `_status.can_advance(note.status, "applied")` (edit, don't add), and run:
+`python -m pytest tests/test_track_reconcile.py::test_receipt_proof_advances_shortlist_to_applied -v`
+Expected: **FAIL** (can_advance refuses shortlist→applied, so no advance). Confirm test 3 (`test_receipt_cannot_regress_non_shortlist`) stays green (inert for this mutant — both predicates refuse interview→applied). Then restore the line (`git checkout -- sluice/track/reconcile.py` is now safe, since Step 5 committed) and re-run the file: PASS. Report the witness result in your report file; leave the tree clean (`git status` empty).
 
 ---
 
