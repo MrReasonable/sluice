@@ -18,6 +18,21 @@ def _vault_with(slug, status):
     return v, {slug: note}, str(leads / f"{slug}.md")
 
 
+def _shortlist_with(slug, url, company="Example", status="shortlist"):
+    root = tempfile.mkdtemp()
+    leads = pathlib.Path(root, "Job Applications", "Job Leads"); leads.mkdir(parents=True)
+    (leads / f"{slug}.md").write_text(
+        f'---\ncompany: "{company}"\nrole: "Analyst"\nurl: "{url}"\nstatus: {status}\n---\n\nBODY\n')
+    v = Vault(root)
+    note = [n for n in v.read_leads() if n.slug == slug][0]
+    return v, {slug: note}, str(leads / f"{slug}.md")
+
+
+def _receipt_ev(tier, slug, sender="jobs@example.com", subject="Thanks for applying", conf=0.9):
+    return Event(type="receipt", receipt_tier=tier, lead_slug=slug, confidence=conf,
+                 sender=sender, subject=subject, summary="application received")
+
+
 def _ics():
     return IcsEvent(uid="u1", summary="Screen", start=datetime(2026, 7, 20, 10, 0, tzinfo=timezone.utc),
                     end=datetime(2026, 7, 20, 10, 30, tzinfo=timezone.utc))
@@ -95,3 +110,64 @@ def test_applied_lead_with_unclassifiable_mail_is_not_silently_unchanged():
     res = R.reconcile(ev, notes, v, TrackConfig(), FakeGoogleClient())
     assert res.action == "proposed"
     assert "status: applied" in pathlib.Path(path).read_text()
+
+
+def test_receipt_proof_advances_shortlist_to_applied():
+    v, sl, path = _shortlist_with("Example - Analyst", "https://example.com/careers/1")
+    ev = _receipt_ev("proof", "Example - Analyst")
+    res = R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), shortlist_by_slug=sl)
+    assert res.action == "applied" and res.status_to == "applied"
+    text = pathlib.Path(path).read_text()
+    assert "status: applied" in text and "## Application receipt" in text
+
+
+def test_receipt_below_confidence_floor_proposes():
+    v, sl, path = _shortlist_with("Example - Analyst", "https://example.com/careers/1")
+    ev = _receipt_ev("proof", "Example - Analyst", conf=0.5)  # below auto_apply_min
+    res = R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), shortlist_by_slug=sl)
+    assert res.action == "proposed" and "status: shortlist" in pathlib.Path(path).read_text()
+
+
+def test_receipt_corroborated_proposes_not_advances():
+    v, sl, path = _shortlist_with("Example - Analyst", "https://example.com/careers/1")
+    ev = _receipt_ev("corroborated", "Example - Analyst")
+    res = R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), shortlist_by_slug=sl)
+    assert res.action == "proposed"
+    text = pathlib.Path(path).read_text()
+    assert "status: shortlist" in text and "## Application receipt" not in text  # absence-of-write
+
+
+def test_receipt_ambiguous_proposes_neither():
+    v, sl, path = _shortlist_with("Example - Analyst", "https://example.com/careers/1")
+    ev = Event(type="receipt", receipt_tier="corroborated", lead_slug=None,
+               candidates=["Example - Analyst", "Example - Manager"], confidence=0.9)
+    res = R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), shortlist_by_slug=sl)
+    assert res.action == "proposed" and "status: shortlist" in pathlib.Path(path).read_text()
+
+
+def test_receipt_cannot_regress_non_shortlist():
+    # A receipt whose matched note is already at interview must NOT advance/regress it.
+    v, sl, path = _shortlist_with("Example - Analyst", "https://example.com/careers/1", status="interview")
+    ev = _receipt_ev("proof", "Example - Analyst")
+    res = R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), shortlist_by_slug=sl)
+    assert res.status_to is None and "status: interview" in pathlib.Path(path).read_text()
+
+
+def test_receipt_idempotent_no_double_evidence():
+    v, sl, path = _shortlist_with("Example - Analyst", "https://example.com/careers/1")
+    ev = _receipt_ev("proof", "Example - Analyst"); ev.message_id = "m1"
+    R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), shortlist_by_slug=sl)
+    # Re-read the now-applied note; a second identical receipt must not double-write.
+    note2 = [n for n in v.read_leads() if n.slug == "Example - Analyst"][0]
+    ev2 = _receipt_ev("proof", "Example - Analyst"); ev2.message_id = "m1"
+    R.reconcile(ev2, {}, v, TrackConfig(), FakeGoogleClient(),
+                shortlist_by_slug={"Example - Analyst": note2})
+    assert pathlib.Path(path).read_text().count("## Application receipt") == 1
+
+
+def test_receipt_advance_writes_no_interview_fields():
+    v, sl, path = _shortlist_with("Example - Analyst", "https://example.com/careers/1")
+    ev = _receipt_ev("proof", "Example - Analyst"); ev.links = ["https://example.com/portal"]
+    R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), shortlist_by_slug=sl)
+    text = pathlib.Path(path).read_text()
+    assert "interview_date" not in text and "interview_link" not in text
