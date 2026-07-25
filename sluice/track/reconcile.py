@@ -34,6 +34,20 @@ def _stamp_materials(vault, note, ev, dry_run=False):
     return vault.append_body_section(note.ref, tag, section)
 
 
+def _stamp_receipt(vault, note, ev, dry_run=False):
+    # Evidence for a receipt-driven advance. append_body_section is idempotent by tag,
+    # so a re-processed receipt (same message_id) never double-writes; body untouched.
+    tag = f"track-receipt-{ev.message_id or ev.type}"
+    section = (f"## Application receipt <!--{tag}-->\n"
+               f"- Received: {date.today().isoformat()}\n"
+               f"- From: {ev.sender}\n"
+               f"- Subject: {ev.subject}\n"
+               f"- Match: {ev.receipt_tier}")
+    if dry_run:
+        return True
+    return vault.append_body_section(note.ref, tag, section)
+
+
 def _advance(vault, note, target, ev, dry_run=False):
     fields = {"status": target, "last_signal": date.today().isoformat()}
     if ev.when:
@@ -46,7 +60,8 @@ def _advance(vault, note, target, ev, dry_run=False):
         vault.update_fields(note.ref, fields)
 
 
-def reconcile(event, note_by_slug, vault, cfg, client, dry_run=False) -> ReconcileResult:
+def reconcile(event, note_by_slug, vault, cfg, client, dry_run=False, *, shortlist_by_slug=None) -> ReconcileResult:
+    shortlist_by_slug = shortlist_by_slug or {}
     r = ReconcileResult(lead=event.lead_slug or ",".join(event.candidates) or "?")
     # Classification failed (#40): we have no trustworthy signal, so take no action beyond
     # surfacing it. Handled first, before any lead lookup or additive write, so a failed
@@ -55,6 +70,36 @@ def reconcile(event, note_by_slug, vault, cfg, client, dry_run=False) -> Reconci
     if event.type == "unknown":
         r.action = "proposed"
         r.proposal = "classification failed -- review manually"
+        r.note = event.summary
+        return r
+    # Application receipt (#10): advance shortlist->applied on a domain-PROOF match.
+    # Placed BEFORE the generic no-match guard: a receipt's lead is resolved by the
+    # deterministic matcher (engine) against the SHORTLIST set, not note_by_slug, and
+    # carries its own tier. never-regress: can_apply is True only for shortlist, so a
+    # receipt can never pull a lead out of the application ladder.
+    if event.type == "receipt":
+        note = shortlist_by_slug.get(event.lead_slug) if event.lead_slug else None
+        if event.receipt_tier == "proof" and note is not None \
+                and _status.can_apply(note.status) and event.confidence >= cfg.auto_apply_min:
+            r.status_from = note.status
+            if not dry_run:
+                # Receipt-specific field set: status + last_signal ONLY. Do NOT reuse
+                # _advance, which stamps interview_date/interview_link from ev.when/links
+                # -- wrong for an `applied` lead (a receipt is not an interview signal).
+                vault.update_fields(note.ref, {"status": "applied",
+                                               "last_signal": date.today().isoformat()})
+                _stamp_receipt(vault, note, event, dry_run=dry_run)
+            r.action = "applied"
+            r.status_to = "applied"
+            return r
+        # corroborated, ambiguous, or proof below the confidence floor -> propose.
+        if note is not None or event.candidates:
+            r.status_from = note.status if note is not None else None
+            r.action = "proposed"
+            r.proposal = "receipt (confirm applied)"
+            r.note = event.summary
+            return r
+        r.action = "skipped"
         r.note = event.summary
         return r
     # No confident lead match -> propose (or skip pure noise).
