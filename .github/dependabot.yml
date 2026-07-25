@@ -1,0 +1,49 @@
+# Dependabot keeps the SHA-pinned actions and pip deps current.
+#
+# The pinning that makes the supply chain safe is exactly what makes it stale: a
+# SHA pin never updates itself (a tag can be moved under you, a SHA cannot), so
+# without automation the pins freeze permanently and the repo silently accrues
+# actions with known CVEs while *looking* well-secured (#3). Dependabot rewrites
+# both the SHA *and* its trailing `# vX.Y.Z` comment, preserving the pin
+# discipline rather than undoing it.
+#
+# Grouped, because each PR spends a scarce human/CodeRabbit review cycle: one
+# weekly PR per ecosystem beats a fan-out of one-per-dependency. Conventional
+# `<type>(deps):` prefixes, because this repo enforces conventional commits and
+# merges with `--rebase` (each commit lands on main verbatim, so Dependabot's
+# default `Bump X ...` subject would break the convention on the default branch).
+version: 2
+updates:
+  # The load-bearing ecosystem: the workflow actions in .github/workflows/.
+  # `directory: /` is where Dependabot looks for .github/workflows/*.yml.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+      include: scope
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # pip covers the root pyproject.toml (runtime pyyaml + optional extras) and the
+  # hash-pinned zizmor audit tool. `.github/zizmor-requirements.txt` is
+  # `--require-hashes` across every platform wheel; Dependabot resolves hashes on
+  # its own (Linux) runner on a bump, so it is NOT guaranteed to reproduce the
+  # full cross-platform set. A narrowed set would still pass CI (ubuntu-only) while
+  # quietly weakening the pin — so check the regenerated hash block on the bump PR
+  # (re-run the regen command in zizmor-requirements.txt if it dropped platforms)
+  # before merge.
+  - package-ecosystem: pip
+    directories:
+      - /
+      - /.github
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      pip:
+        patterns: ["*"]
