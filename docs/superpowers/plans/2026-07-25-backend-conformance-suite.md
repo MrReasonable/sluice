@@ -29,7 +29,7 @@
 
 **Interfaces:**
 - Consumes: `Sluice.available("backend")` (`sluice/core/app.py`); `make_backend(name, model, *, api_key, http, runner, ...)`, `BackendError` (`sluice/core/backends.py`).
-- Produces: the conformance suite (13 cases). Task 2 relies on its docstrings carrying the migrated FallbackBackend rationale and on it being the sole cover for the empty/transport properties after the prune.
+- Produces: the conformance suite (13 cases). Task 2 relies on its docstrings carrying the migrated FallbackBackend rationale and on it covering the empty/transport properties portably after the prune.
 
 - [ ] **Step 1: Write the conformance suite file**
 
@@ -387,7 +387,7 @@ Run: `ruff check sluice tests`
 Expected: exit 0, `All checks passed!`
 
 Run: `python -m pytest -q 2>&1 | tail -2`
-Expected: **897 passed** (884 baseline + 13). Fully offline.
+Expected: full suite green, zero failures, **+13 cases** collected (1 completeness + 3 properties × 4 providers). Fully offline. (Assert the delta + a zero-failure exit rather than an absolute total, which drifts as the suite grows — the count-independent convention from #41.)
 
 - [ ] **Step 13: Commit**
 
@@ -416,7 +416,7 @@ parse, and the completeness guard each redden their named case)."
 - (Witness-only, restored: `sluice/core/backends.py`)
 
 **Interfaces:**
-- Consumes: the conformance suite from Task 1 (now the sole cover for the empty/transport properties).
+- Consumes: the conformance suite from Task 1 (now the portable cover for the empty/transport properties — shared, for the claude-max empty path, with two kept #41 diagnostic tests).
 - Produces: a `tests/test_backends.py` with only provider-SPECIFIC tests remaining.
 
 - [ ] **Step 1: Re-enumerate the empty/transport tests from the file (do not hand-list)**
@@ -548,7 +548,7 @@ Run: `git diff --stat sluice/core/backends.py`
 Expected: **no output** (`sluice/` untouched).
 
 Run: `python -m pytest -q 2>&1 | tail -2`
-Expected: **890 passed** (897 after Task 1 − 7 pruned).
+Expected: full suite green, zero failures, **7 fewer cases** than after Task 1 (the six pruned functions = 7 parametrized cases).
 
 ```bash
 git add tests/test_backends.py
@@ -561,7 +561,8 @@ transport pair each. Kept every provider-SPECIFIC test -- nonzero-exit (claude-m
 only), truncation/finish_reason/content_filter, the parse/forwarding/URL tests, and
 all #41 redaction tests. The pruned claude-max transport rationale (FallbackBackend
 catches BackendError only) lives in the conformance transport docstring. Post-prune
-witness confirms the conformance suite is now the sole cover with no lost edge."
+witness confirms no lost edge -- the property is covered by conformance and,
+incidentally, by two kept #41 diagnostic tests."
 ```
 
 ---
@@ -583,4 +584,4 @@ witness confirms the conformance suite is now the sole cover with no lost edge."
 
 **Type/name consistency:** `_backend(name, table)`, `_BACKENDS`, `_EMPTY`/`_VALID`/`_TRANSPORT`, `_Proc`, `_http_returning`/`_http_raising`/`_runner_returning`/`_runner_raising`, `make_backend`, `BackendError` used consistently across steps. Node ids match the function names and the `_BACKENDS` param values. ✔
 
-**Note on the completeness guard (design divergence, +1 case):** the design sketched the completeness check as a module-level `for`/assert (0 cases). This plan promotes it to a standalone test `test_payload_tables_cover_the_registry` (1 case) so a dropped table entry reddens by NODE ID rather than as a blunt collection error — the same property, cleanly witnessable (memory: "mutation-witnessed by node id"). Net count is therefore +13/−7 (final **890**), one above the design's +12/−7 sketch.
+**Note on the completeness guard (design divergence, +1 case):** the design sketched the completeness check as a module-level `for`/assert (0 cases). This plan promotes it to a standalone test `test_payload_tables_cover_the_registry` (1 case) so a dropped table entry reddens by NODE ID rather than as a blunt collection error — the same property, cleanly witnessable (memory: "mutation-witnessed by node id"). Net count is therefore +13/−7, one case above the design's +12/−7 sketch.
