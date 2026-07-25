@@ -124,3 +124,17 @@ def test_classify_seeds_materials_from_attachments():
                           {"filename": "invite.ics", "mime": "text/calendar", "data": b"y"}]
     ev = C.classify(msg, leads, be, TrackConfig(), ics=None)
     assert "Culture Deck.pdf" in ev.materials and "invite.ics" not in ev.materials
+
+
+def test_receipt_typed_and_llm_lead_ignored():
+    # A receipt: the LLM may still name a lead, but classify must NOT resolve it --
+    # the deterministic matcher (engine) owns lead resolution for receipts.
+    leads = [_lead("Example", "Analyst")]
+    be = FakeBackend(json.dumps({"lead": "Example", "type": "receipt", "confidence": 0.9,
+                                 "when": None, "links": [], "materials": [], "summary": "received"}))
+    ev = C.classify(_msg(frm="jobs@example.com", subject="Thanks for applying"),
+                    leads, be, TrackConfig(), ics=None)
+    assert ev.type == "receipt"
+    assert ev.lead_slug is None and ev.candidates == []      # NOT resolved by name
+    assert ev.sender == "jobs@example.com" and ev.subject == "Thanks for applying"
+    assert ev.receipt_tier is None                            # engine sets this later
