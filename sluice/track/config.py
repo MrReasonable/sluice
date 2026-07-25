@@ -37,6 +37,7 @@ class TrackConfig:
     cheap_model: str = "deepseek-v4-flash"
     auto_status_min: float = 0.75             # min confidence to auto-advance a scheduling/offer signal
     auto_reject_min: float = 0.9              # stricter bar to auto-reject (F4)
+    auto_apply_min: float = 0.75              # min receipt-classification confidence to auto-advance shortlist->applied on a domain-PROOF match
     ats_relay_domains: dict = field(default_factory=lambda: dict(_ATS_RELAY_DOMAINS))
 
 
