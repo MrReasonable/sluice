@@ -3,10 +3,12 @@
 Two lifecycles share one `status` frontmatter key. Triage OWNS the early states
 (new -> shortlist/research/needs_review/dismiss) and may rewrite them. The
 application tracker OWNS the later states (applied, phone_screen, ...); triage
-must never touch a lead once it has entered that lifecycle. `normalize` folds the
-historical drift (dismissed/dismiss, quoted/unquoted, Researching/research) to one
-canonical token; an unrecognized value is passed through untouched so a genuinely
-new state is never silently rewritten.
+must never touch a lead once it has entered that lifecycle. The single
+exception into the application lifecycle is `shortlist -> applied`, made by apply (on
+send) and by track (on a confirmation receipt); both go through `can_apply`.
+`normalize` folds the historical drift (dismissed/dismiss, quoted/unquoted,
+Researching/research) to one canonical token; an unrecognized value is passed
+through untouched so a genuinely new state is never silently rewritten.
 """
 
 TRIAGE_OWNED = ("new", "shortlist", "research", "needs_review", "dismiss")
@@ -42,9 +44,10 @@ def is_canonical(status: str) -> bool:
 
 
 def can_apply(status: str) -> bool:
-    """True iff the lead is in the only state apply may transition from.
-    shortlist -> applied is the sole allowed apply transition; every other
-    state (including every APPLICATION_OWNED state) is refused."""
+    """True iff the lead is in the only state `shortlist -> applied` may start from.
+    Both apply (on send) and track (on a confirmation receipt, via `can_transition`)
+    advance shortlist -> applied through this predicate; every other state (including
+    every APPLICATION_OWNED state) is refused."""
     return normalize(status) == "shortlist"
 
 
@@ -68,6 +71,18 @@ def can_advance(current: str, target: str) -> bool:
     if t in _TERMINAL:
         return True
     return _RANK.get(t, -1) > _RANK.get(c, -1)
+
+
+def can_transition(current: str, target: str) -> bool:
+    """Route a requested status change to the correct never-regress predicate.
+    `applied` is reachable only via `can_apply` (shortlist -> applied); every other
+    target is an on-ladder move governed by `can_advance`. This is the shared entry
+    point `track confirm` uses, since it accepts an arbitrary `--to` target; the
+    reconcile receipt branch calls `can_apply` directly because it already knows the
+    target is `applied`. Routing lives here because status.py owns the ladder."""
+    if normalize(target) == "applied":
+        return can_apply(current)
+    return can_advance(current, target)
 
 
 def resolve_merge_status(statuses):
