@@ -1,7 +1,8 @@
 # Backend conformance suite — design
 
 - **Date**: 2026-07-25
-- **Status**: brainstormed; awaiting `/review-plan`
+- **Status**: `/review-plan` complete (0 Critical / 0 High / 2 Low); both Low findings folded
+  (arc-001 ARCHITECTURE.md note; inv-001/tst-001 `match=` message-pins). Ready for writing-plans.
 - **Origin**: issue #39 (raised independently by the architect `arc-001` and test-engineer `tst-002`
   reviewing PR #37). The backend seam has four registered providers / three classes, each
   re-deriving the same contract with no shared suite — the exact condition
@@ -33,8 +34,11 @@ string). Hence a small per-provider payload table rather than a bare parametrize
 
 ## Design
 
-One new file: `tests/conformance/test_backend_contract.py`. One edit: prune the now-subsumed per-class
-tests from `tests/test_backends.py`. No production change — `sluice/` is untouched.
+One new file: `tests/conformance/test_backend_contract.py`. Two edits: prune the now-subsumed per-class
+tests from `tests/test_backends.py`, and add a terse `docs/ARCHITECTURE.md` note on the suite in the
+backend-seam bullet (~:211-216), mirroring how the store bullet foregrounds `test_store_contract.py`
+(~:124) — so the docs surface the backend contract the same way (arc-001). No production change —
+`sluice/` is untouched (`docs/` is not `sluice/`).
 
 ### Registry enumeration + fail-loudly guard (store-suite lesson)
 
@@ -92,7 +96,10 @@ def test_empty_or_whitespace_response_returns_nothing_so_raises(name):
     call wearing a successful one's clothes; it must raise BackendError so FallbackBackend degrades
     to the fallback (it catches BackendError only). claude-max shipped WITHOUT this guard and stayed
     green its whole life because only bespoke per-class tests covered it (#39)."""
-    with pytest.raises(BackendError):
+    # match= pins the message, not just the type: all four providers say "no text" on
+    # the empty path, so it restores the specificity the pruned per-class claude-max test
+    # carried at zero per-provider cost (inv-001/tst-001).
+    with pytest.raises(BackendError, match="no text"):
         _backend(name, _EMPTY).complete("prompt")
 
 def test_transport_failure_surfaces_as_BackendError_not_a_raw_exception(name):
@@ -100,7 +107,9 @@ def test_transport_failure_surfaces_as_BackendError_not_a_raw_exception(name):
     BackendError, never the raw exception. This is the ONE property FallbackBackend depends on: it
     catches BackendError only, so a timeout escaping raw would CRASH the run instead of degrading —
     the exact second drift PR #37 fixed one line above the first."""
-    with pytest.raises(BackendError):
+    # All four providers say "...failed" on the transport path (invocation/call failed),
+    # so match= restores the pruned claude-max transport test's message-pin (inv-001/tst-001).
+    with pytest.raises(BackendError, match="failed"):
         _backend(name, _TRANSPORT).complete("prompt")
 
 def test_a_valid_response_is_returned_as_its_text(name):
