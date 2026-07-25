@@ -33,6 +33,16 @@
 
 - [ ] **Step 1: Write the conformance suite file**
 
+> **Post-review expansion (CodeRabbit cloud, Cloud-A/B).** After implementation, the cloud review
+> flagged that the empty and transport properties named more shapes than the fixtures exercised. The
+> committed suite therefore broadens each negative property to TWO shapes, keyed `(provider, shape)`:
+> empty over `whitespace` (pins `.strip()`) + `blank` (`""`, or anthropic's structurally-distinct
+> `content:[]` refusal); transport over `timeout` (`subprocess.TimeoutExpired` for claude-max, socket
+> `TimeoutError` for the HTTP backends) + `error` (`OSError`). The committed
+> `tests/conformance/test_backend_contract.py` is authoritative; the code below — and the per-provider
+> witness node ids in Steps 4-10 (now `[claude-max-whitespace]`/`[claude-max-blank]`,
+> `[openai-timeout]`/`[openai-error]`, …) — show the initial single-shape form that this note supersedes.
+
 Create `tests/conformance/test_backend_contract.py`:
 
 ```python
@@ -192,7 +202,7 @@ def test_a_valid_response_is_returned_as_its_text(name):
 - [ ] **Step 2: Run the suite — expect PASS and a non-vacuous collection**
 
 Run: `python -m pytest tests/conformance/test_backend_contract.py -v`
-Expected: **13 passed** — `test_payload_tables_cover_the_registry` (1) + `test_empty…`, `test_transport…`, `test_a_valid…` each × `[anthropic] [claude-max] [deepseek] [openai]` (12). Production already conforms, so it is green on write; the teeth come from the witnesses below. If fewer than 13 cases collect, the parametrize went vacuous — stop and fix.
+Expected: green, zero failures, and a NON-VACUOUS collection — `test_payload_tables_cover_the_registry` (1) + `test_empty…`/`test_transport…` each over every `(provider, shape)` pair + `test_a_valid…` per provider. Production already conforms, so it is green on write; the teeth come from the witnesses below. Assert the collection is non-empty and the delta, not a fixed total (which drifts as providers/shapes change); a vacuous `[]` parametrize skipping everything is the failure to catch.
 
 - [ ] **Step 3: Content-address the bytecode caches (once, before any witness)**
 
@@ -444,7 +454,7 @@ Each pruned case is subsumed by a conformance case that exercises the same-or-st
 - **claudemax empty** (`["", "   \n  "]`): the whitespace param is the load-bearing one (its own comment: `""` is byte-identical to whitespace by the time the guard sees it and "uniquely witnesses nothing"). Conformance uses whitespace `"   \n"` → same-or-stronger; the `.strip()` mutation reddens conformance `[claude-max]` (witnessed Task 1 Step 4).
 - **claudemax transport**: its FallbackBackend-catches-BackendError-only rationale is migrated verbatim into the conformance transport docstring; conformance `[claude-max]` reddens on the wrap mutation (Task 1 Step 7).
 - **openai empty / transport**: identical shape (whitespace content + `finish_reason=stop`; `http` raises `OSError`); conformance `[openai]`/`[deepseek]` reddens (Steps 5, 8).
-- **anthropic empty**: per-class uses `content:[]`; conformance uses a whitespace text block, which additionally exercises the join+`.strip()` (strictly stronger — the `.strip()` mutation reddens conformance `[anthropic]`, Step 6). `content:[]` is a subset of "no text".
+- **anthropic empty**: the pruned per-class test's `content:[]` refusal shape is now covered EXPLICITLY as the conformance anthropic `blank` payload (the post-review expansion above), alongside a whitespace text block; both redden on the anthropic empty-guard mutation. No lost edge — the distinct empty-list shape is exercised directly, not merely subsumed.
 - **anthropic transport**: identical (`http` raises `OSError`); conformance `[anthropic]` reddens (Step 8).
 
 - [ ] **Step 3: Delete the six functions**

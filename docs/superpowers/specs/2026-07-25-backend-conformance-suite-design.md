@@ -53,64 +53,67 @@ pytestmark = pytest.mark.parametrize("name", _BACKENDS)
 
 ### Per-provider payload tables + completeness guard (the anti-drift teeth)
 
-Each table maps a provider name to a **thunk returning the injected-kwargs dict** for `make_backend`
-— `{"runner": …}` for claude-max, `{"http": …}` for the HTTP providers. Three tables, one per
-property:
+Each table maps a key to a **thunk returning the injected-kwargs dict** for `make_backend`
+— `{"runner": …}` for claude-max, `{"http": …}` for the HTTP providers. `_VALID` is keyed by
+provider (one positive shape suffices); each negative table is keyed by `(provider, shape)` so
+every provider is exercised over **both shapes the property names**, not one representative:
 
-- `_EMPTY[name]()` — a fake that yields an **empty-or-whitespace** response.
-- `_TRANSPORT[name]()` — a fake that **raises** a transport error (`OSError`/`TimeoutExpired`).
-- `_VALID[name]()` — a fake that yields a valid `"HELLO"` response.
+- `_EMPTY[(name, kind)]()` — an empty response, over `whitespace` (`"   \n"` — also pins the
+  `.strip()`-before-check) and `blank` (the truly-empty response: `""` for claude-max/openai;
+  `content:[]`, a structurally distinct refusal, for anthropic).
+- `_TRANSPORT[(name, kind)]()` — a **raising** transport failure, over `timeout`
+  (`subprocess.TimeoutExpired` for claude-max's runner; a socket `TimeoutError` for the HTTP
+  poster) and `error` (`OSError`: refused ssh / dropped network).
+- `_VALID[name]()` — a valid `"HELLO"` response.
+
+Both use `finish_reason="stop"` / `stop_reason="end_turn"` on the empty JSON so the empty-response
+guard fires, **not** the truncation guard (out of scope; see Non-goals).
 
 ```python
-# A NEW provider that registers but is not added to these tables must fail the build LOUDLY — that
-# is the whole point (the drift #39 exists to stop). Mirrors #63's registry-completeness guard.
-for _t, _n in ((_EMPTY, "_EMPTY"), (_TRANSPORT, "_TRANSPORT"), (_VALID, "_VALID")):
-    assert set(_t) == set(_BACKENDS), \
-        f"{_n} is out of sync with the backend registry: {set(_BACKENDS) ^ set(_t)}"
+# A NEW provider that registers but is not added to these tables must fail the build LOUDLY — the
+# whole point (the drift #39 exists to stop). Mirrors #63's registry-completeness guard. The
+# negative tables are keyed by (provider, shape), so the guard checks the full product.
+assert set(_VALID) == set(_BACKENDS)
+assert set(_EMPTY) == {(n, k) for n in _BACKENDS for k in _EMPTY_KINDS}
+assert set(_TRANSPORT) == {(n, k) for n in _BACKENDS for k in _TRANSPORT_KINDS}
 ```
 
-**Payload shapes** (whitespace, not `""`, for the empty case — it also pins the `.strip()`-before-check
-edge that `test_claudemax_empty_stdout_on_exit_zero_raises` carried, now extended to all four providers):
-
-| provider | inject | empty (`_EMPTY`) | valid (`_VALID`) | transport (`_TRANSPORT`) |
-| --- | --- | --- | --- | --- |
-| claude-max | `runner=` | `_Proc(returncode=0, stdout="   \n", stderr="")` | `_Proc(0, "HELLO\n", "")` | `runner` raises `OSError` |
-| openai / deepseek | `http=` | `{"choices":[{"message":{"content":"   \n"},"finish_reason":"stop"}]}` | `…content":"HELLO"…` | `http` raises `OSError` |
-| anthropic | `http=` | `{"stop_reason":"end_turn","content":[{"type":"text","text":"   \n"}]}` | `…"text":"HELLO"…` | `http` raises `OSError` |
-
-`_Proc` is a tiny fake completed-process (`returncode`/`stdout`/`stderr`). The empty JSON uses
-`finish_reason="stop"` / `stop_reason="end_turn"` so the empty-response guard fires — **not** the
-truncation guard (which is out of scope; see Non-goals). Construction is uniform through the seam:
+`_Proc` is a tiny fake completed-process (`returncode`/`stdout`/`stderr`); the HTTP fakes return a
+JSON string. Construction is uniform through the seam:
 
 ```python
-def _backend(name, table):
+def _build(name, thunk):
     # api_key is required by the per-token factories and ignored by claude-max, so pass one uniformly.
-    return make_backend(name, "test-model", api_key="test-key", **table[name]())
+    return make_backend(name, "test-model", api_key="test-key", **thunk())
 ```
 
 ### The three portable properties
 
 ```python
-def test_empty_or_whitespace_response_returns_nothing_so_raises(name):
+@pytest.mark.parametrize("kind", _EMPTY_KINDS)      # whitespace, blank
+def test_empty_or_whitespace_response_returns_nothing_so_raises(name, kind):
     """complete() never hands back a falsy string. An empty OR whitespace-only response is a FAILED
     call wearing a successful one's clothes; it must raise BackendError so FallbackBackend degrades
     to the fallback (it catches BackendError only). claude-max shipped WITHOUT this guard and stayed
-    green its whole life because only bespoke per-class tests covered it (#39)."""
+    green its whole life because only bespoke per-class tests covered it (#39). Exercised over BOTH
+    shapes the name claims, so the fixtures don't outrun the property."""
     # match= pins the message, not just the type: all four providers say "no text" on
     # the empty path, so it restores the specificity the pruned per-class claude-max test
     # carried at zero per-provider cost (inv-001/tst-001).
     with pytest.raises(BackendError, match="no text"):
-        _backend(name, _EMPTY).complete("prompt")
+        _build(name, _EMPTY[(name, kind)]).complete("prompt")
 
-def test_transport_failure_surfaces_as_BackendError_not_a_raw_exception(name):
+@pytest.mark.parametrize("kind", _TRANSPORT_KINDS)  # timeout, error
+def test_transport_failure_surfaces_as_BackendError_not_a_raw_exception(name, kind):
     """A transport failure (OSError/TimeoutExpired from the runner/poster) must surface as
     BackendError, never the raw exception. This is the ONE property FallbackBackend depends on: it
     catches BackendError only, so a timeout escaping raw would CRASH the run instead of degrading —
-    the exact second drift PR #37 fixed one line above the first."""
+    the exact second drift PR #37 fixed one line above the first. Exercised over both a TIMEOUT
+    (TimeoutExpired/socket TimeoutError) and a generic OSError, so both named types are covered."""
     # All four providers say "...failed" on the transport path (invocation/call failed),
     # so match= restores the pruned claude-max transport test's message-pin (inv-001/tst-001).
     with pytest.raises(BackendError, match="failed"):
-        _backend(name, _TRANSPORT).complete("prompt")
+        _build(name, _TRANSPORT[(name, kind)]).complete("prompt")
 
 def test_a_valid_response_is_returned_as_its_text(name):
     """The positive half: a well-formed non-empty response comes back as its text, unchanged. Without
@@ -148,19 +151,21 @@ Any prune candidate found to assert something beyond the shared property at impl
 
 This IS the test change. Verification is that the new suite is non-vacuous and load-bearing:
 
-- Every parametrized case runs against all four providers (assert the collected count reflects
-  4 × 3 properties, not a vacuous skip).
+- Every parametrized case runs against every provider (assert the collection is non-vacuous —
+  completeness + `empty×kinds + transport×kinds + valid` per provider — not a vacuous skip). Assert
+  the delta and a zero-failure exit, not an absolute suite total (which drifts as the suite grows).
 - **Mutation witnesses** (run after the checked-hash `compileall`; each reddens a named parametrized
-  case by node id, per provider):
+  case by node id, per provider **and shape**):
   - remove the `not text: raise` guard in a backend's `complete()` → the empty test reddens for that
-    provider (this is literally the guard claude-max once lacked).
-  - remove the `except … raise BackendError(...) from …` transport wrap → the transport test reddens.
+    provider, in both the `whitespace` and `blank` shapes (this is literally the guard claude-max once lacked).
+  - remove the `except … raise BackendError(...) from …` transport wrap → the transport test reddens,
+    in both the `timeout` (TimeoutExpired/socket TimeoutError) and `error` (OSError) shapes.
   - break a valid parse → the positive test reddens.
-  - **delete a provider from a payload table** → the **completeness guard** reddens (the anti-drift
-    property itself is witnessed).
+  - **delete a `(provider, shape)` entry from a payload table** → the **completeness guard** reddens
+    (the anti-drift property itself is witnessed).
   - the fail-loudly guard: witnessed by reasoning (a `[]` registry is not reachable in-suite), noted.
-- `ruff check sluice tests`; `python -m pytest` green; record the net test-count delta (adds
-  4×3 conformance cases, removes the six pruned per-class tests).
+- `ruff check sluice tests`; `python -m pytest` green; record the net test-count delta (adds the
+  conformance cases, removes the six pruned per-class tests) rather than an absolute total.
 
 ## Non-goals
 
