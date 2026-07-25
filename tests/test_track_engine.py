@@ -377,3 +377,44 @@ def test_non_deadletter_error_does_not_set_flag():
                 now_iso="2026-07-10T12:00:00+00:00")
     assert rep.failures == 1
     assert rep.deadletter_error is False
+
+
+def _vault_shortlist(url, status="shortlist"):
+    root = tempfile.mkdtemp()
+    leads = pathlib.Path(root, "Job Applications", "Job Leads"); leads.mkdir(parents=True)
+    (leads / "Example - Analyst.md").write_text(
+        f'---\ncompany: "Example"\nrole: "Analyst"\nurl: "{url}"\nstatus: {status}\n---\n\nBODY\n')
+    return Vault(root), str(leads / "Example - Analyst.md")
+
+
+class TwoReceiptClient(FakeGoogleClient):
+    def __init__(self):
+        super().__init__(messages={
+            "r1": {"headers": {"from": "jobs@example.com", "subject": "Thanks for applying"},
+                   "body_text": "received", "thread_id": "t", "attachments": []},
+            "r2": {"headers": {"from": "jobs@example.com", "subject": "Application received"},
+                   "body_text": "received", "thread_id": "t", "attachments": []},
+        }, events=[])
+
+
+def test_confirm_to_applied_from_shortlist_and_refused_otherwise():
+    v, path = _vault_shortlist("https://example.com/careers/1")
+    res = E.confirm(v, TrackConfig(), "Example - Analyst", "applied", deadletter=_dl())
+    assert res["ok"] and res["to"] == "applied"
+    assert "status: applied" in pathlib.Path(path).read_text()
+    # a non-shortlist lead is refused with its status as the reason
+    v2, _ = _vault_shortlist("https://example.com/m", status="interview")
+    res2 = E.confirm(v2, TrackConfig(), "Example - Analyst", "applied", deadletter=_dl())
+    assert res2["ok"] is False and res2["reason"] == "interview"
+
+
+def test_two_receipts_same_lead_one_run_advance_once():
+    # The second receipt in one run sees the REFLECTED `applied` snapshot -> no-op.
+    v, path = _vault_shortlist("https://example.com/careers/1")
+    be = FakeBackend(json.dumps({"lead": None, "type": "receipt", "confidence": 0.9,
+                                 "when": None, "links": [], "materials": [], "summary": "received"}))
+    E.run(v, TrackConfig(), TwoReceiptClient(), be, seen=set(), deadletter=_dl(),
+          now_iso="2026-07-25T09:00:00+00:00")
+    text = pathlib.Path(path).read_text()
+    assert "status: applied" in text
+    assert text.count("## Application receipt") == 1

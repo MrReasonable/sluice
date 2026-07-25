@@ -12,12 +12,13 @@ from sluice.track.reconcile import reconcile
 from sluice.track.ics import parse_ics
 from sluice.track.google_client import GoogleAuthError
 from sluice.track.deadletter import Entry
+from sluice.track.receipt import match_receipt
 
 _INFLIGHT = ("applied", "phone_screen", "interview", "offer")  # non-terminal application states
 
 # Map a classified event type -> the target status a proposal would advance to (F7).
 _PROPOSE_TARGET = {"phone_screen": "phone_screen", "interview": "interview",
-                   "rejection": "rejected", "offer": "offer"}
+                   "rejection": "rejected", "offer": "offer", "receipt": "applied"}
 
 
 @dataclass
@@ -65,6 +66,9 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
     leads = [n for n in vault.read_leads(set(_status.APPLICATION_OWNED))
              if n.status in _INFLIGHT]
     note_by_slug = {n.slug: n for n in leads}
+    # A receipt's lead lives in shortlist (pre-application), not note_by_slug (in-flight
+    # application states) -- match_receipt matches against this snapshot by domain.
+    shortlist_by_slug = {n.slug: n for n in vault.read_leads({"shortlist"})}
     try:
         ids = client.search_messages(_gmail_query(cfg, now_iso, since_iso))
     except GoogleAuthError:
@@ -91,14 +95,28 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                     break
             ev = classify(msg, leads, backend, cfg, ics=ics)
             rep.classified += 1
-            res = reconcile(ev, note_by_slug, vault, cfg, client, dry_run=dry_run)
+            if ev.type == "receipt":
+                # classify() deliberately leaves lead_slug/candidates unset for a receipt
+                # (it only knows the message IS a receipt, not whose) -- match_receipt
+                # resolves WHICH shortlist lead by domain, here where the raw msg (body/
+                # headers) is still in scope; reconcile only sees the resolved Event.
+                m = match_receipt(msg, shortlist_by_slug.values(), cfg.ats_relay_domains)
+                ev.lead_slug, ev.candidates, ev.receipt_tier = m.lead_slug, m.candidates, m.tier
+            res = reconcile(ev, note_by_slug, vault, cfg, client, dry_run=dry_run,
+                             shortlist_by_slug=shortlist_by_slug)
             rep.results.append(res)
             # Never-regress across messages in one run: reflect the just-written
             # status back into the snapshot so the next message for this lead
             # reconciles against current, not stale, state. Only meaningful when
-            # something was actually written (never in a dry-run preview).
-            if not dry_run and res.status_to and ev.lead_slug in note_by_slug:
-                note_by_slug[ev.lead_slug].status = res.status_to
+            # something was actually written (never in a dry-run preview). A
+            # receipt-advanced lead lives in shortlist_by_slug, not note_by_slug -- check
+            # both, so a second same-run receipt for the same lead sees the reflected
+            # `applied` snapshot (via shortlist_by_slug) and no-ops instead of double-writing.
+            if not dry_run and res.status_to and ev.lead_slug:
+                if ev.lead_slug in note_by_slug:
+                    note_by_slug[ev.lead_slug].status = res.status_to
+                elif ev.lead_slug in shortlist_by_slug:
+                    shortlist_by_slug[ev.lead_slug].status = res.status_to
             if res.action == "applied":
                 rep.auto += 1
                 # Symmetric with confirm's clear-on-advance: an auto-resolved lead's
@@ -155,7 +173,11 @@ def confirm(vault, cfg, slug, to, *, deadletter, when=None, dry_run=False) -> di
     if len(matches) > 1:
         return {"ok": False, "reason": "ambiguous"}
     note = matches[0]
-    if not _status.can_advance(note.status, to):
+    # can_transition routes `--to applied` through can_apply (shortlist-only) and
+    # everything else through can_advance (the ladder) -- a receipt confirmation and
+    # an on-ladder confirmation share this one entry point since confirm() accepts an
+    # arbitrary `--to` target (#10).
+    if not _status.can_transition(note.status, to):
         return {"ok": False, "reason": note.status}
     if not dry_run:
         fields = {"status": _status.normalize(to), "last_signal": date.today().isoformat()}
