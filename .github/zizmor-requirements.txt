@@ -1,6 +1,9 @@
 # Hash-locked install for the zizmor workflow-security audit (CI lint job).
 # zizmor has no transitive Python dependencies, so this pins only its own
-# release artifacts (all platforms) for zizmor 1.26.1.
+# release artifacts (all platforms) for the version pinned below. The version is
+# deliberately named on the `zizmor==` line alone and NOT repeated here, so a
+# Dependabot bump (which rewrites the pin + hashes but not prose) cannot leave
+# this comment stale -- it did exactly that on the 1.26.1 -> 1.28.0 bump (#71).
 # Regenerate on a version bump:
 #   python -c "import json,urllib.request as u; d=json.load(u.urlopen('https://pypi.org/pypi/zizmor/<ver>/json')); print('\n'.join('    --hash=sha256:'+f['digests']['sha256'] for f in d['urls']))"
 zizmor==1.28.0 \

@@ -44,6 +44,18 @@ updates:
     commit-message:
       prefix: chore
       include: scope
+    ignore:
+      # setuptools here is a build-system floor (`requires = ["setuptools>=N"]`) --
+      # a MINIMUM, not a pin. A PEP 517 isolated build (what `pip install` does here)
+      # installs the current setuptools regardless of the floor, so raising it carries
+      # no supply-chain value and just spends a review cycle each release (#71 bumped
+      # it 61 -> 83 for nothing under this repo's isolated build). pyproject declares
+      # no other version-constrained dependency -- every runtime and extra dep is an
+      # unpinned name Dependabot has nothing to update -- so `/` now yields no bumps,
+      # yet it stays in `directories` so a future *pinned* pyproject dep is still
+      # covered. Revisit if setuptools ever becomes a pinned+hashed dep here: this
+      # blanket, version-unscoped ignore would then silently exempt it.
+      - dependency-name: setuptools
     groups:
       pip:
         patterns: ["*"]
