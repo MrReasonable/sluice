@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from sluice.track.config import TrackConfig
 from sluice.track.receipt import match_receipt, ReceiptMatch
 
 ATS = {"greenhouse.io": "greenhouse", "lever.co": "lever"}
@@ -173,6 +174,20 @@ def test_empty_company_never_corroborates():
     leads = [_lead("Example - Analyst", "https://boards.greenhouse.io/example/jobs/1", company="")]
     m = match_receipt(_msg(frm="no-reply@greenhouse.io", body="Nothing relevant here."), leads, ATS)
     assert m.tier == "none"
+
+
+def test_shipped_default_ats_domains_withhold_proof():
+    # Finding 3 (whole-branch review): every test above uses the module-local ATS
+    # constant, never the ACTUAL shipped default (TrackConfig().ats_relay_domains).
+    # Emptying that default makes the matcher MORE permissive -- the same message +
+    # lead flips corroborated -> proof, because the ATS exclusion is what withholds
+    # proof status -- which is correct and documented in sluice.yaml.example, but
+    # nothing pinned it: if someone "fixed" the default to empty for consistency with
+    # the empty-config-abstains rule, nothing would redden. Use the real default.
+    leads = [_lead("Example - Analyst", "https://boards.greenhouse.io/example/jobs/1", company="Example")]
+    m = match_receipt(_msg(frm="no-reply@greenhouse.io", body="Example has received your application."),
+                       leads, TrackConfig().ats_relay_domains)
+    assert m.tier == "corroborated" and m.lead_slug == "Example - Analyst"
 
 
 def test_ambiguous_corroboration_two_leads_same_ats_sender_proposes_neither():
