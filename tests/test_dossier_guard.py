@@ -75,6 +75,9 @@ def test_a_blocked_url_never_opens_a_tab(tmp_path, role):
         cache.get_or_build({"url": "http://jobs.invalid/x", "company": "Aye", "role": role})
     assert str(ei.value) == urlguard.BLOCKED_ADDRESS
     assert tab.calls == [], "no tab may be opened for a url we already refused"
+    # A POLICY refusal, not a transport failure -- must stay a plain DossierBlocked,
+    # paired below with the three slugs that ARE DossierUnavailable.
+    assert not isinstance(ei.value, urlguard.DossierUnavailable)
 
 
 def test_a_redirect_to_a_blocked_host_discards_the_body(tmp_path, role):
@@ -89,6 +92,7 @@ def test_a_redirect_to_a_blocked_host_discards_the_body(tmp_path, role):
     assert probes == [("evaluate", "location.href")], \
         "the body must never be read from a blocked destination"
     assert ("close_tab", "tab-1") in tab.calls
+    assert not isinstance(ei.value, urlguard.DossierUnavailable), "a policy refusal"
 
 
 @pytest.mark.parametrize("landed", ["", "about:blank"])
@@ -102,6 +106,13 @@ def test_an_unnavigated_tab_is_refused(tmp_path, role, landed):
     with pytest.raises(urlguard.DossierBlocked) as ei:
         cache.get_or_build({"url": "https://jobs.invalid/x", "company": "Aye", "role": role})
     assert str(ei.value) == urlguard.NOT_SETTLED
+    # Deleting close_tab from this branch (or from LANDED_UNREADABLE below) leaves the
+    # suite green otherwise -- _Tab already records every call and tab is already
+    # local here, so there is no excuse for this to go unwitnessed.
+    assert ("close_tab", "tab-1") in tab.calls
+    # NOT_SETTLED means the blocking-navigate assumption was violated, not that
+    # Camofox itself failed -- it is not one of the three DossierUnavailable slugs.
+    assert not isinstance(ei.value, urlguard.DossierUnavailable)
 
 
 @pytest.mark.parametrize("bad", [None, "not-a-dict", {}, {"result": 42}])
@@ -111,6 +122,10 @@ def test_an_unreadable_landed_url_is_refused(tmp_path, role, bad):
     with pytest.raises(urlguard.DossierBlocked) as ei:
         cache.get_or_build({"url": "https://jobs.invalid/x", "company": "Aye", "role": role})
     assert str(ei.value) == urlguard.LANDED_UNREADABLE
+    assert ("close_tab", "tab-1") in tab.calls
+    # A transport failure (Camofox returned an unreadable {"error": ...} envelope),
+    # not a policy decision -- see urlguard.DossierUnavailable.
+    assert isinstance(ei.value, urlguard.DossierUnavailable)
 
 
 def test_a_tab_that_never_opens_is_refused(tmp_path, role):
@@ -124,6 +139,7 @@ def test_a_tab_that_never_opens_is_refused(tmp_path, role):
         _cache(tmp_path, tab).get_or_build(
             {"url": "https://jobs.invalid/x", "company": "Aye", "role": role})
     assert str(ei.value) == urlguard.NO_TAB
+    assert isinstance(ei.value, urlguard.DossierUnavailable)
 
 
 def test_an_unreadable_body_is_refused(tmp_path, role):
@@ -140,6 +156,38 @@ def test_an_unreadable_body_is_refused(tmp_path, role):
         _cache(tmp_path, tab).get_or_build(
             {"url": "https://jobs.invalid/x", "company": "Aye", "role": role})
     assert str(ei.value) == urlguard.BODY_UNREADABLE
+    assert isinstance(ei.value, urlguard.DossierUnavailable)
+
+
+def test_a_transport_failure_logs_as_failed_not_refused(tmp_path, role, caplog):
+    """The wording distinction from the operator's point of view: NO_TAB here means
+    Camofox itself did not answer, not that the guard made a policy decision. Logging
+    it as "refused" would point an operator at an allowlist that cannot fix a dead
+    browser server."""
+    class _NoTab(_Tab):
+        def create_tab(self, url):
+            self.calls.append(("create_tab", url))
+            return None
+    tab = _NoTab()
+    with caplog.at_level("WARNING"):
+        with pytest.raises(urlguard.DossierUnavailable):
+            _cache(tmp_path, tab).get_or_build(
+                {"url": "https://jobs.invalid/x", "company": "Aye", "role": role})
+    assert "failed" in caplog.text
+    assert "refused" not in caplog.text
+
+
+def test_a_policy_refusal_logs_as_refused_not_failed(tmp_path, role, caplog):
+    """The paired control: an ordinary blocked-address refusal is the guard actually
+    deciding something, and must keep its original wording."""
+    tab = _Tab()
+    cache = _cache(tmp_path, tab, resolve=lambda h: ["127.0.0.1"])
+    with caplog.at_level("WARNING"):
+        with pytest.raises(urlguard.DossierBlocked) as ei:
+            cache.get_or_build({"url": "http://jobs.invalid/x", "company": "Aye", "role": role})
+    assert not isinstance(ei.value, urlguard.DossierUnavailable)
+    assert "refused" in caplog.text
+    assert "failed" not in caplog.text
 
 
 def test_a_lead_with_no_url_is_unchanged(tmp_path, role):
@@ -282,3 +330,26 @@ def test_the_cv_consumer_proceeds_with_an_empty_jd(role, monkeypatch):
     assert result.status == "rendered", "a blocked dossier must not stop composition"
     assert seen["jd"] == "", \
         "a blocked dossier must still let composition proceed on an empty JD"
+    # #18: composing blind must be VISIBLE even though it does not change the
+    # status -- otherwise "rendered" here is indistinguishable from a CV genuinely
+    # tailored to a real job description.
+    assert result.dossier_failed is True, \
+        "the cv run summary must be able to count CVs composed against no real JD"
+
+
+def test_the_cv_consumer_records_a_clean_fetch_as_not_blind(role):
+    """The paired positive control for the test above: dossier_failed must be False
+    when the fetch actually succeeded, or the flag would be True unconditionally and
+    the cv run summary's blind-CV count would be meaningless."""
+    from sluice.cv import engine as cvengine
+    from tests.test_cv_engine import CLEAN_CV, ENTRIES, FakeBackend, FakeCache, FakeRenderer, FakeVault, Note, _cfg
+
+    cfg = _cfg()
+    cfg.served_dir = ""
+    v = FakeVault(ENTRIES)
+    note = Note({"status": "shortlist", "company": "Example Foundry", "role": role})
+    result = cvengine.run_one(note, v, cfg, FakeBackend(CLEAN_CV), FakeCache(),
+                              renderer=FakeRenderer())
+
+    assert result.status == "rendered"
+    assert result.dossier_failed is False

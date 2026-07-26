@@ -156,12 +156,12 @@ def test_ingest_threads_the_injected_clock(tmp_path, monkeypatch):
 # ── 0.5 resolve_host collaborator ─────────────────────────────────────────────
 
 def test_a_typod_collaborator_names_collaborators_and_seams_separately():
-    """ARCHITECTURE.md:298-302 pre-registered this tightening for "a third
-    collaborator". resolve_host is it.
+    """ARCHITECTURE.md's "Injected collaborators -- the other kind of seam" section
+    pre-registered this tightening for "a third collaborator". resolve_host is it.
 
     The obvious implementation -- widening UnknownAdapter's `known` -- would print
-    the collaborators AS SEAMS, erasing the distinction ARCHITECTURE.md:271-296
-    exists to draw and implying config keys that do not exist.
+    the collaborators AS SEAMS, erasing the distinction that same section exists to
+    draw and implying config keys that do not exist.
     """
     with pytest.raises(plugins.UnknownAdapter) as ei:
         Sluice(Config(), resolve_hosts=lambda h: [])

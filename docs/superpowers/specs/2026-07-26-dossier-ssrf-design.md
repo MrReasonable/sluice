@@ -520,7 +520,22 @@ hermetic seal.**
 1. **DNS rebinding.** Our `getaddrinfo` and the browser's own resolution are two separate lookups. A
    host whose answer changes between them can pass the pre-check and still be navigated to an
    internal address. The post-check does not catch it: the *URL* is unchanged; only the address
-   behind it moved.
+   behind it moved. This is not only a time-varying risk: `core/camofox.py:27` reads `CAMOFOX_URL`
+   from the environment, so Camofox may run in a different container, VM, or host from the sluice
+   process entirely, with its own resolver and its own network view. The two lookups can then
+   diverge *systematically* -- every time, not just in a narrow rebinding window -- whenever the
+   two processes see different DNS or different routing, which is a normal deployment shape for a
+   browser server and not an attack precondition at all.
+
+   **Pinning the resolved address was considered and rejected.** CodeRabbit's review suggested
+   passing the *address* to `create_tab` instead of the URL, so the browser navigates to exactly
+   what we resolved and checked. This would break ordinary virtual hosting: the browser would send
+   the IP address as the TLS SNI name and the HTTP `Host` header, so any CDN- or vhost-fronted job
+   board -- the common case, not the exception -- would 404 or serve the wrong site. That is a
+   regression far worse than the residual it would close, for a hole this spec already documents
+   plainly. Browser-level enforcement (residual 3) is the fix that does not have this problem,
+   because it decides per-connection after the browser's own resolution rather than substituting a
+   different destination before it.
 2. **The request precedes the post-check.** A redirect to an internal destination means the browser
    has **already sent** the request there. We withhold the **data**, not the request. A blind-SSRF
    side effect — a `GET` that mutates internal state — is not prevented.

@@ -291,11 +291,22 @@ class Sluice:
             refusal to a logged warning followed by a fall-through that reads and
             returns the body. That one-token deletion is precisely Task 9's own
             mutant, so the shape must make it impossible rather than merely tested.
+
+            Three of the eight slugs (NO_TAB, LANDED_UNREADABLE, BODY_UNREADABLE) mean
+            Camofox itself failed -- `_api` swallows a timeout or connection error into
+            the same `{"error": ...}` shape a policy refusal reaches this closure through
+            (core/camofox.py). Logging those as "refused" points an operator at an
+            allowlist that cannot fix a dead browser server, so they get their own word
+            and their own (still-a-DossierBlocked) exception type -- see
+            urlguard.DossierUnavailable.
             """
-            _log.warning("dossier fetch refused (%s) host=%s", reason, host or "?")
+            transport = reason in urlguard._TRANSPORT_REASONS
+            _log.warning("dossier fetch %s (%s) host=%s",
+                         "failed" if transport else "refused", reason, host or "?")
             # The exception carries the SLUG ONLY: cv/engine.py logs str(e) verbatim
             # and triage/engine.py stores it in report.failures.
-            raise urlguard.DossierBlocked(reason)
+            cls = urlguard.DossierUnavailable if transport else urlguard.DossierBlocked
+            raise cls(reason)
 
         def fetch(lead: dict) -> dict:
             md, url = "", lead.get("url")
@@ -313,30 +324,36 @@ class Sluice:
                     # to prevent: get_or_build CACHES it for ttl_days, triage judges the
                     # lead on a JD nobody read, apply_verdict writes a status from it,
                     # and report.failures stays empty. Raising costs one retry next run.
+                    # OUTSIDE the try below on purpose: a falsy tid means no tab was
+                    # ever opened, so there is nothing for close_tab to close.
                     _refuse(urlguard.NO_TAB, pre.host)
-                # Camofox's navigate awaits page.goto(waitUntil='domcontentloaded'),
-                # so the tab HAS navigated by now and HTTP redirects are already
-                # followed. The checks below assert that rather than trusting it.
-                res = c.evaluate(tid, "location.href")
-                landed = res.get("result") if isinstance(res, dict) else None
-                if not isinstance(landed, str):
+                # Every exit past this point -- a refusal or a clean read -- must close
+                # the tab it opened. A bare Camofox never raises (`_api` swallows into
+                # `{"error": ...}`), but `c` is the injected Fetcher seam, and a future
+                # non-Camofox implementation that DOES raise must not leak a tab; hence
+                # `finally`, not a `close_tab` call repeated on every refusal branch.
+                try:
+                    # Camofox's navigate awaits page.goto(waitUntil='domcontentloaded'),
+                    # so the tab HAS navigated by now and HTTP redirects are already
+                    # followed. The checks below assert that rather than trusting it.
+                    res = c.evaluate(tid, "location.href")
+                    landed = res.get("result") if isinstance(res, dict) else None
+                    if not isinstance(landed, str):
+                        _refuse(urlguard.LANDED_UNREADABLE, pre.host)
+                    if not landed or landed == "about:blank":
+                        _refuse(urlguard.NOT_SETTLED, pre.host)
+                    post = urlguard.check_url(landed, allow_hosts=allow, resolve=resolve)
+                    if not post.allowed:
+                        _refuse(urlguard.LANDED_BLOCKED, post.host)
+                    # Only now is the body safe to pull into memory.
+                    body = c.evaluate(tid, "document.body.innerText")
+                    md = body.get("result") if isinstance(body, dict) else None
+                    if not isinstance(md, str):
+                        # Same reasoning as no-tab: a non-string body used to become a
+                        # cached empty JD indistinguishable from a real empty one.
+                        _refuse(urlguard.BODY_UNREADABLE, pre.host)
+                finally:
                     c.close_tab(tid)
-                    _refuse(urlguard.LANDED_UNREADABLE, pre.host)
-                if not landed or landed == "about:blank":
-                    c.close_tab(tid)
-                    _refuse(urlguard.NOT_SETTLED, pre.host)
-                post = urlguard.check_url(landed, allow_hosts=allow, resolve=resolve)
-                if not post.allowed:
-                    c.close_tab(tid)
-                    _refuse(urlguard.LANDED_BLOCKED, post.host)
-                # Only now is the body safe to pull into memory.
-                body = c.evaluate(tid, "document.body.innerText")
-                md = body.get("result") if isinstance(body, dict) else None
-                c.close_tab(tid)
-                if not isinstance(md, str):
-                    # Same reasoning as no-tab: a non-string body used to become a
-                    # cached empty JD indistinguishable from a real empty one.
-                    _refuse(urlguard.BODY_UNREADABLE, pre.host)
             return {"jd": {"markdown": md or ""}, "glassdoor": {}}
 
         return DossierCache(dossier_dir, ttl_days, fetcher=fetch)

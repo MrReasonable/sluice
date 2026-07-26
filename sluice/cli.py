@@ -249,8 +249,17 @@ def cmd_cv_run(args, config) -> int:
 
     for r in results:
         print(f"cv: {r.status} {r.lead} served={r.served} "
-              f"violations={len(r.violations)} audit_flags={len(r.audit_flags)}",
+              f"violations={len(r.violations)} audit_flags={len(r.audit_flags)} "
+              f"dossier_failed={r.dossier_failed}",
               file=sys.stderr)
+    # #18: a blocked/failed dossier fetch does not stop composition (cv/engine.py's
+    # `except` proceeds with jd="" so the fabrication gate still runs), so "rendered"
+    # alone would silently hide that some of these CVs were composed against no real
+    # job description at all. A dedicated summary line makes that countable without
+    # changing cv's control flow, which is a bigger change than this guard should carry.
+    blind = sum(1 for r in results if r.dossier_failed)
+    if blind:
+        print(f"cv: {blind} CV(s) composed blind (dossier fetch failed)", file=sys.stderr)
     rendered = [r for r in results if r.status == "rendered"]
     if rendered:
         notify("sluice cv: " + "; ".join(
