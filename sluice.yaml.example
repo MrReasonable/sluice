@@ -24,6 +24,17 @@ fetcher: camofox    # the browser the ingest sources drive
 # than under `cv:` because only the store can honour it.
 baseline_rel: My CV/CV.md
 
+# Hosts the dossier fetcher may reach even though they are not globally routable.
+# The fetcher follows lead urls scraped off job boards, so by default it refuses
+# non-http(s) schemes and any address that is not globally routable (loopback,
+# private, link-local, cloud-metadata, ...). Empty grants no exceptions; it does
+# NOT block public urls, which are admitted by the address rule rather than by
+# this list. Set it only if you deliberately run a board on your own network.
+# Entries are a hostname (exact, no subdomains) or a CIDR / bare IP.
+# dossier_allow_hosts:
+#   - jobs.invalid
+#   - 10.0.0.0/8
+
 # Coarse ingest title filter, applied before dedup and long before any LLM call.
 # Personal, so empty by default (an unconfigured gate passes everything through).
 # Configure it to make ingest cheap. Placeholders below are generated nonsense.

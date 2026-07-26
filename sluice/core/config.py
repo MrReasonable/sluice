@@ -48,6 +48,13 @@ class Config:
     # at a curated baseline would get a stale one, with the fabrication gate still green --
     # so load_cv_config RAISES on the old key rather than dropping it.
     baseline_rel: str = "My CV/CV.md"
+    # Hosts/CIDRs exempt from the dossier fetcher's SSRF guard (#18). A SAFETY
+    # allowlist, not a preference gate: empty means "no exceptions granted", NOT
+    # "match nothing" -- an unconfigured install still fetches every public url,
+    # because the address rule admits them, not this list. Lives on the root
+    # Config, not TriageConfig/CvConfig, because dossier_cache is called from BOTH
+    # sub-apps and a security policy that differs between them is a bug.
+    dossier_allow_hosts: list = field(default_factory=list)
     locations: list = field(default_factory=lambda: list(_DEFAULT_LOCATIONS))
     notify: dict = field(default_factory=dict)
     # Coarse ingest title filter. Personal, so empty by default: an unconfigured
@@ -110,6 +117,19 @@ def load_config(path: str | None = None) -> Config:
             tele["chat_id"] = chat
         notify["telegram"] = tele
 
+    # Validate here so a malformed entry fails at CONSTRUCTION, naming the key and
+    # the entry's index -- never its value. Deliberately NOT _str_list: that raises
+    # with `got {value!r}`, i.e. the whole list, and a config file is one of the few
+    # places a user's real private hostnames legitimately live.
+    from sluice.core.urlguard import parse_allow_hosts
+    raw_allow = data.get("dossier_allow_hosts")
+    # Pass the RAW value: `list(...)` first would explode a YAML scalar into one
+    # entry per character BEFORE parse_allow_hosts' isinstance guard could fire, so
+    # `dossier_allow_hosts: myboard` would load silently as seven inert one-character
+    # grants on a SAFETY allowlist. That is the bug class `_str_list` exists for.
+    parse_allow_hosts([] if raw_allow is None else raw_allow)
+    allow = list(raw_allow or [])   # coerce only AFTER validation has passed
+
     return Config(sources=sources, locations=locations, notify=notify,
                   store=str(data.get("store") or "vault"),
                   baseline_rel=str(data.get("baseline_rel") or "My CV/CV.md"),
@@ -119,4 +139,5 @@ def load_config(path: str | None = None) -> Config:
                   location_noise_words=_str_list(data.get("location_noise_words"),
                                                  "location_noise_words"),
                   dedupe_title_noise_words=_str_list(data.get("dedupe_title_noise_words"),
-                                                     "dedupe_title_noise_words"))
+                                                     "dedupe_title_noise_words"),
+                  dossier_allow_hosts=allow)
