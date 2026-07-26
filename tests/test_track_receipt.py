@@ -279,6 +279,19 @@ def test_lead_side_multi_tenant_check_is_not_redundant():
     assert match_receipt(_msg(frm="noreply@board.invalid"), leads, ATS, boards).tier == "none"
 
 
+def test_sender_side_multi_tenant_check_is_not_redundant():
+    # The mirror, and the reason BOTH clauses have to be there: deleting the sender-side
+    # one left the whole suite green, because every other board case is also caught by
+    # the lead side. With a non-registrable board key the two come apart the other way --
+    # "x.jobs.board.invalid" is a subdomain of the lead's "board.invalid", so
+    # `_hosts_match` fires while only the SENDER is multi-tenant. Neither clause
+    # subsumes the other.
+    boards = {"jobs.board.invalid": "example-board"}
+    leads = [_lead("Alpha - Analyst", "https://board.invalid/1", company="Alpha")]
+    m = match_receipt(_msg(frm="noreply@x.jobs.board.invalid"), leads, ATS, boards)
+    assert m.tier == "none"
+
+
 def test_job_board_defaults_cover_every_shipped_source_host():
     # The hand-list trap: the shipped denylist was written by reading the source plugins
     # once, and a new board plugin added without a matching entry silently reopens the
