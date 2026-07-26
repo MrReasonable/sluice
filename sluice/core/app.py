@@ -264,6 +264,29 @@ class Sluice:
         fallback = _make_fallback(fallback_name, fallback_model)
         return FallbackBackend(primary, fallback) if fallback else primary
 
+    def staleness(self, *, include_stale: bool = False):
+        """The #9 lead-age rule for one invocation. Built HERE, once, so `leads expire`,
+        cv and apply cannot disagree about what "stale" means.
+
+        Composition-root state like `dossier_cache`, not an adapter seam, so it does not
+        go through `_resolve`: there is nothing to select by name.
+
+        `self._today` is a zero-arg CALLABLE, not a string -- VaultSink does
+        `today or _today` and then calls it, and every test injects `lambda: "..."`. It
+        must be CALLED here. Binding the function into the frozen policy would reach
+        date.fromisoformat(<function>) -> TypeError, which the policy's ValueError guard
+        does NOT catch, turning the designed fail-safe abstain into an unhandled
+        traceback on `cv run`, `apply prep` and `leads expire`. StalenessPolicy refuses a
+        non-str at construction so that mistake cannot reach a gate silently.
+        """
+        from datetime import date
+
+        from sluice.core.leads import StalenessPolicy
+        clock = self._today or (lambda: date.today().isoformat())
+        return StalenessPolicy(ttl_days=self.config.lead_ttl_days,
+                               today=clock(),
+                               include_stale=include_stale)
+
     def dossier_cache(self, dossier_dir, ttl_days):
         """A DossierCache whose fetcher is resolved lazily on the first cache miss, so a
         --no-llm or fully-cached run never opens a browser. JD text read via

@@ -238,3 +238,34 @@ def test_resolve_host_defaults_to_the_production_resolver(tmp_path, monkeypatch)
     assert calls, ("urlguard._resolve was never reached -- the production fallback "
                   "(`self._resolve_host or urlguard._resolve`) is dead")
     assert all(h == "jobs.invalid" for h in calls)
+
+
+# ── #9: the staleness policy is built in the composition root ────────────────
+
+def test_staleness_reads_config_and_CALLS_the_today_collaborator():
+    """The wiring nothing else in the suite can see.
+
+    Every other staleness test pins the OFF state, which a permanently-zero knob would
+    also satisfy -- so dropping `ttl_days=self.config.lead_ttl_days` here would leave the
+    whole feature inert with a green suite. This is the only test that catches it.
+
+    It also pins that the clock is CALLED, not bound: `today` is a zero-arg callable, and
+    binding it would reach date.fromisoformat(<function>) inside a gate.
+    """
+    s = Sluice(Config(lead_ttl_days=30), today=lambda: "2026-07-27")
+    p = s.staleness()
+    assert p.ttl_days == 30
+    assert p.today == "2026-07-27"
+    assert p.include_stale is False
+    assert p.is_stale("2026-01-01") is True
+
+
+def test_staleness_include_stale_is_per_invocation_not_config():
+    s = Sluice(Config(lead_ttl_days=30), today=lambda: "2026-07-27")
+    assert s.staleness(include_stale=True).blocks("2026-01-01") is False
+    assert s.staleness().blocks("2026-01-01") is True
+
+
+def test_staleness_defaults_off_with_an_unconfigured_config():
+    s = Sluice(Config(), today=lambda: "2026-07-27")
+    assert s.staleness().is_stale("2020-01-01") is False
