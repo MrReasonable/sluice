@@ -57,7 +57,17 @@ class RealGoogleClient:
         g = self._gmail_svc()
         msg = g.users().messages().get(userId="me", id=message_id, format="full").execute()
         payload = msg.get("payload", {})
-        headers = {h["name"].lower(): h["value"] for h in payload.get("headers", [])}
+        # FIRST occurrence wins, not last. A header name may legally repeat, and for the
+        # TRACE headers that is the norm: every hop PREPENDS its own, so the FIRST
+        # `Authentication-Results` is the one our own delivering server stamped and any
+        # later duplicate came from the sender. A last-wins dict comprehension handed a
+        # forged `Authentication-Results: ...; dkim=pass ...` -- which anyone can put in a
+        # message they send -- priority over Gmail's real verdict, defeating
+        # receipt._sender_authenticated outright (#10). Same reasoning protects From and
+        # Subject, where the first is also what a mail client displays.
+        headers = {}
+        for h in payload.get("headers", []):
+            headers.setdefault(h["name"].lower(), h["value"])
         body_text, attachments = "", []
         for part in _walk_parts(payload):
             mime = part.get("mimeType", "")

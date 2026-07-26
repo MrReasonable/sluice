@@ -387,12 +387,21 @@ def _vault_shortlist(url, status="shortlist"):
     return Vault(root), str(leads / "Example - Analyst.md")
 
 
+# What a delivering server writes for a genuine, aligned DKIM signature on example.com.
+# Required for the proof tier: an unauthenticated From domain is a claim, not evidence,
+# so without this header these receipts only PROPOSE (see
+# test_receipt_without_sender_authentication_does_not_advance).
+_AUTH_OK = "mx.example.invalid; dkim=pass header.i=@example.com header.b=Zm9v"
+
+
 class TwoReceiptClient(FakeGoogleClient):
     def __init__(self):
         super().__init__(messages={
-            "r1": {"headers": {"from": "jobs@example.com", "subject": "Thanks for applying"},
+            "r1": {"headers": {"from": "jobs@example.com", "subject": "Thanks for applying",
+                               "authentication-results": _AUTH_OK},
                    "body_text": "received", "thread_id": "t", "attachments": []},
-            "r2": {"headers": {"from": "jobs@example.com", "subject": "Application received"},
+            "r2": {"headers": {"from": "jobs@example.com", "subject": "Application received",
+                               "authentication-results": _AUTH_OK},
                    "body_text": "received", "thread_id": "t", "attachments": []},
         }, events=[])
 
@@ -459,9 +468,12 @@ def test_dry_run_receipt_advance_does_not_mutate_the_status_snapshot():
 
 
 class OneReceiptClient(FakeGoogleClient):
-    def __init__(self):
+    def __init__(self, auth=_AUTH_OK):
+        headers = {"from": "jobs@example.com", "subject": "Thanks for applying"}
+        if auth is not None:
+            headers["authentication-results"] = auth
         super().__init__(messages={
-            "r1": {"headers": {"from": "jobs@example.com", "subject": "Thanks for applying"},
+            "r1": {"headers": headers,
                    "body_text": "received", "thread_id": "t", "attachments": []},
         }, events=[])
 
@@ -488,6 +500,43 @@ def _cfg_with_example_ats():
     cfg = TrackConfig()
     cfg.ats_relay_domains = {**cfg.ats_relay_domains, "ats.example.invalid": "example-ats"}
     return cfg
+
+
+def test_receipt_without_sender_authentication_does_not_advance():
+    # The whole point of the authentication conjunct, asserted where the WRITE happens
+    # rather than only on the matcher's return value: an RFC 5322 `From` domain is free
+    # text, so a forged "thanks for applying" from the lead's own domain used to walk
+    # straight through the proof tier and mark the lead `applied` -- silently suppressing
+    # a real application, irreversibly. Same message as the advance case above with the
+    # Authentication-Results header REMOVED: the note must be BYTE-UNCHANGED (no status
+    # write, no evidence section) and the signal must survive as a proposal a human
+    # confirms, not disappear.
+    v, path = _vault_shortlist("https://example.com/careers/1")
+    before = pathlib.Path(path).read_text()
+    be = FakeBackend(json.dumps({"lead": None, "type": "receipt", "confidence": 0.9,
+                                 "when": None, "links": [], "materials": [], "summary": "received"}))
+    dl = _dl()
+    rep = E.run(v, TrackConfig(), OneReceiptClient(auth=None), be, seen=set(), deadletter=dl,
+                now_iso="2026-07-10T12:00:00+00:00")
+    assert rep.auto == 0 and rep.proposed == 1
+    assert pathlib.Path(path).read_text() == before
+    assert len(dl.open_entries()) == 1
+    assert '--to applied' in dl.open_entries()[0].hint   # runnable: the lead is still shortlist
+
+
+def test_receipt_with_unaligned_authentication_does_not_advance():
+    # A PASS for a domain the attacker controls is still a pass. Only ALIGNMENT with the
+    # sender host makes it evidence about this sender, and the note must stay untouched
+    # without it.
+    v, path = _vault_shortlist("https://example.com/careers/1")
+    before = pathlib.Path(path).read_text()
+    be = FakeBackend(json.dumps({"lead": None, "type": "receipt", "confidence": 0.9,
+                                 "when": None, "links": [], "materials": [], "summary": "received"}))
+    unaligned = "mx.example.invalid; dkim=pass header.i=@attacker.invalid header.b=Zm9v"
+    rep = E.run(v, TrackConfig(), OneReceiptClient(auth=unaligned), be, seen=set(), deadletter=_dl(),
+                now_iso="2026-07-10T12:00:00+00:00")
+    assert rep.auto == 0 and rep.proposed == 1
+    assert pathlib.Path(path).read_text() == before
 
 
 class CorrobReceiptClient(FakeGoogleClient):
