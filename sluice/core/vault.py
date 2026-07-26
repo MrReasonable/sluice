@@ -230,16 +230,31 @@ class Vault:
 
     def update_fields(self, ref, fields: dict, *,
                       append_note: str | None = None,
-                      note_tag: str | None = None) -> None:
+                      note_tag: str | None = None,
+                      require_status: frozenset | None = None) -> bool:
         """Surgically set frontmatter keys (literal YAML scalars), body byte-for-byte
         intact. Optionally append a guarded note to relevance_notes (skipped if note_tag
         is present, so re-runs are idempotent). Routed through _cas_write: the edit is
         re-derived from the CURRENT note on each attempt, so a concurrent writer's other
-        keys and body survive. May raise VaultConflict on sustained conflict (#16)."""
+        keys and body survive. May raise VaultConflict on sustained conflict (#16).
+
+        `require_status` (#9): when given, re-read the status from the FRESH note and
+        write nothing unless it is in that set. Returns whether a write happened."""
         def transform(text: str) -> str:
             inner, body = _split_frontmatter(text)
             if inner is None:
                 inner, body = "", text
+            # Decided HERE, against the fresh bytes -- never by the caller. A caller
+            # checking the LeadNote it enumerated is checking a snapshot that is stale by
+            # construction, and probed against a real vault that guard is BYTE-IDENTICAL
+            # to having no guard at all: both write over an `applied` note. `leads
+            # expire`'s read loop is a window in which a lead can enter the application
+            # lifecycle (via `apply record` or a #10 receipt), and only a re-read inside
+            # the transform can see it. Returning `text` unchanged is a genuine no-op,
+            # which _cas_write already reports as False -- no new machinery needed.
+            if require_status is not None and \
+                    _status.normalize(_fm_value(inner, "status")) not in require_status:
+                return text
             for key, literal in fields.items():
                 inner = _set_fm(inner, key, literal)
             if append_note and note_tag:
@@ -248,7 +263,7 @@ class Vault:
                     merged = (current + " " + append_note).strip()
                     inner = _set_fm(inner, "relevance_notes", f'"{merged}"')
             return f"---\n{inner}\n---\n{body}"
-        _cas_write(ref, transform)
+        return _cas_write(ref, transform)
 
     def append_body_section(self, ref, tag: str, section_md: str) -> bool:
         """Append a markdown section to the body, idempotently: if `tag` is anywhere in
