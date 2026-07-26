@@ -85,14 +85,37 @@ def reconcile(event, note_by_slug, vault, cfg, client, dry_run=False, *, shortli
                 and _status.can_apply(note.status) and event.confidence >= cfg.auto_apply_min:
             r.status_from = note.status
             if not dry_run:
+                # EVIDENCE FIRST, status second. Either write can raise VaultConflict
+                # (#16). Written the other way round, a conflict on the evidence append
+                # left the lead already `applied` -- out of the shortlist set that
+                # match_receipt searches -- so no future run could ever re-attach the
+                # evidence, losing it unrecoverably. In this order a conflict on either
+                # write leaves the lead in `shortlist`, engine.run's per-message except
+                # skips seen.add, and the whole thing retries next run;
+                # append_body_section is idempotent by tag, so the retry cannot
+                # double-write. (A vault-level CAS across both writes was considered and
+                # declined: it buys nothing this ordering does not, and `_advance` below
+                # has the same shape.)
+                _stamp_receipt(vault, note, event)
                 # Receipt-specific field set: status + last_signal ONLY. Do NOT reuse
                 # _advance, which stamps interview_date/interview_link from ev.when/links
                 # -- wrong for an `applied` lead (a receipt is not an interview signal).
                 vault.update_fields(note.ref, {"status": "applied",
                                                "last_signal": date.today().isoformat()})
-                _stamp_receipt(vault, note, event)
             r.action = "applied"
             r.status_to = "applied"
+            return r
+        # A matched note that can_apply already rules out cannot be proposed either: the
+        # proposal's only runnable form is `track confirm --to applied`, which routes
+        # through the same can_apply predicate and would be refused forever, while the
+        # dead-letter row re-surfaced every run (#49's un-runnable-hint shape). The
+        # commonest producer is a SECOND receipt for a lead this same run already
+        # advanced. engine.run's in-flight LLM-fallback path already reasons exactly this
+        # way -- it withholds `--to applied` for in-flight candidates -- so the two agree.
+        if note is not None and not _status.can_apply(note.status):
+            r.status_from = note.status
+            r.action = "skipped"
+            r.note = event.summary
             return r
         # corroborated, ambiguous, or proof below the confidence floor -> propose.
         if note is not None or event.candidates:

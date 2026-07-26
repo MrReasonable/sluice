@@ -1,5 +1,7 @@
 import tempfile, pathlib
 from datetime import datetime, timezone
+import pytest
+from sluice.core.protocols import VaultConflict
 from sluice.core.vault import Vault
 from sluice.track.config import TrackConfig
 from sluice.track.classify import Event, classify
@@ -146,11 +148,29 @@ def test_receipt_ambiguous_proposes_neither():
 
 
 def test_receipt_cannot_regress_non_shortlist():
-    # A receipt whose matched note is already at interview must NOT advance/regress it.
+    # A receipt whose matched note is already at interview must NOT advance/regress it,
+    # and must not PROPOSE it either -- see the next test for why proposing is its own
+    # defect rather than a harmless fallback.
     v, sl, path = _shortlist_with("Example - Analyst", "https://example.com/careers/1", status="interview")
     ev = _receipt_ev("proof", "Example - Analyst")
     res = R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), shortlist_by_slug=sl)
     assert res.status_to is None and "status: interview" in pathlib.Path(path).read_text()
+    assert res.action == "skipped"
+
+
+def test_receipt_for_already_applied_lead_is_skipped_not_proposed():
+    # A matched note that can_apply already rules out must not be proposed: the only
+    # runnable form of a receipt proposal is `track confirm --to applied`, which routes
+    # through that SAME predicate and is refused forever, while the dead-letter row it
+    # creates re-surfaces on every future run -- #49's un-runnable-hint shape. The
+    # commonest producer is a second receipt for a lead this same run already advanced.
+    v, sl, path = _shortlist_with("Example - Analyst", "https://example.com/careers/1",
+                                  status="applied")
+    ev = _receipt_ev("proof", "Example - Analyst")
+    res = R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), shortlist_by_slug=sl)
+    assert res.action == "skipped" and res.proposal is None
+    assert res.status_from == "applied" and res.status_to is None
+    assert "## Application receipt" not in pathlib.Path(path).read_text()   # absence-of-write
 
 
 def test_receipt_idempotent_no_double_evidence():
@@ -186,6 +206,38 @@ def test_receipt_dry_run_reports_advance_but_writes_nothing():
     after = pathlib.Path(path).read_text()
     assert after == before  # byte-unchanged: no frontmatter edit, no evidence section
     assert "status: shortlist" in after and "## Application receipt" not in after
+
+
+def test_receipt_evidence_survives_a_status_write_conflict():
+    # Write ORDER is load-bearing. Status-then-evidence meant a VaultConflict (#16) on
+    # the evidence append left the lead already `applied` -- out of the shortlist set
+    # match_receipt searches -- so no later run could re-attach the evidence and it was
+    # lost unrecoverably. Evidence-then-status makes a conflict on EITHER write leave the
+    # lead in `shortlist`: engine.run's per-message except skips seen.add and the whole
+    # message retries next run.
+    v, sl, path = _shortlist_with("Example - Analyst", "https://example.com/careers/1")
+
+    class ConflictOnStatus(Vault):
+        def update_fields(self, ref, fields):
+            raise VaultConflict("concurrent edit")
+
+    boom = ConflictOnStatus(v.dir)
+    ev = _receipt_ev("proof", "Example - Analyst"); ev.message_id = "m1"
+    with pytest.raises(VaultConflict):
+        R.reconcile(ev, {}, boom, TrackConfig(), FakeGoogleClient(), shortlist_by_slug=sl)
+    text = pathlib.Path(path).read_text()
+    assert "status: shortlist" in text                  # never left the retryable state
+    assert "## Application receipt" in text             # evidence already durable
+
+    # ...and the retry completes it, without double-writing the evidence (idempotent by tag).
+    v2 = Vault(v.dir)
+    note2 = [n for n in v2.read_leads() if n.slug == "Example - Analyst"][0]
+    ev2 = _receipt_ev("proof", "Example - Analyst"); ev2.message_id = "m1"
+    res = R.reconcile(ev2, {}, v2, TrackConfig(), FakeGoogleClient(),
+                      shortlist_by_slug={"Example - Analyst": note2})
+    text2 = pathlib.Path(path).read_text()
+    assert res.action == "applied" and "status: applied" in text2
+    assert text2.count("## Application receipt") == 1
 
 
 def test_receipt_confidence_floor_is_inclusive():
