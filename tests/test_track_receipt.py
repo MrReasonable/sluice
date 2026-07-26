@@ -4,7 +4,10 @@ from types import SimpleNamespace
 from sluice.track.config import TrackConfig
 from sluice.track.receipt import match_receipt, ReceiptMatch, _suffix_match
 
-ATS = {"greenhouse.io": "greenhouse", "lever.co": "lever"}
+# Reserved placeholder hosts, passed in as the denylists under test: every test below
+# exercises the matching ALGORITHM and has no reason to name a real vendor. The tests
+# that genuinely verify the SHIPPED denylists derive their hosts from TrackConfig().
+ATS = {"ats.example.invalid": "example-ats", "relay.example.invalid": "example-relay"}
 
 
 def _lead(slug, url, company="Example"):
@@ -45,11 +48,11 @@ def test_body_link_to_ats_does_not_unlock_corroboration():
     # Computing it over body hosts too meant any sender could unlock the corroborated
     # tier -- and with it a runnable `--to applied` proposal -- for any lead it named,
     # just by linking an ATS in its footer.
-    leads = [_lead("Example - Analyst", "https://boards.greenhouse.io/example/jobs/1",
+    leads = [_lead("Example - Analyst", "https://boards.ats.example.invalid/example/jobs/1",
                    company="Example")]
     m = match_receipt(_msg(frm="mailer@mailer.invalid",
                            body="Example has received your application. "
-                                "Track it at https://boards.greenhouse.io/example"), leads, ATS)
+                                "Track it at https://boards.ats.example.invalid/example"), leads, ATS)
     assert m.tier == "none"
 
 
@@ -62,15 +65,15 @@ def test_ambiguous_two_leads_same_host_proposes_neither():
 
 
 def test_corroborated_ats_plus_company_in_body():
-    leads = [_lead("Example - Analyst", "https://boards.greenhouse.io/example/jobs/1", company="Example")]
-    m = match_receipt(_msg(frm="no-reply@greenhouse.io",
+    leads = [_lead("Example - Analyst", "https://boards.ats.example.invalid/example/jobs/1", company="Example")]
+    m = match_receipt(_msg(frm="no-reply@ats.example.invalid",
                            body="Example has received your application."), leads, ATS)
     assert m.tier == "corroborated" and m.lead_slug == "Example - Analyst"
 
 
 def test_ats_without_company_in_body_no_match():
-    leads = [_lead("Example - Analyst", "https://boards.greenhouse.io/example/jobs/1", company="Example")]
-    m = match_receipt(_msg(frm="no-reply@greenhouse.io", body="Your application was received."), leads, ATS)
+    leads = [_lead("Example - Analyst", "https://boards.ats.example.invalid/example/jobs/1", company="Example")]
+    m = match_receipt(_msg(frm="no-reply@ats.example.invalid", body="Your application was received."), leads, ATS)
     assert m == ReceiptMatch(None, "none", [])
 
 
@@ -81,7 +84,7 @@ def test_none_traps():
     # domain that would trivially return "none" regardless of any bug.
     lead = [_lead("Example - Analyst", "https://example.invalid/careers/1")]
     # name-only mention from an unrelated service
-    assert match_receipt(_msg(frm="digest@indeed.invalid", body="jobs at Example"), lead, ATS).tier == "none"
+    assert match_receipt(_msg(frm="digest@aggregator.invalid", body="jobs at Example"), lead, ATS).tier == "none"
     for host in ("evilexample.invalid", "example.com.attacker.invalid", "notexample.invalid"):
         # each ENDS WITH the literal string "example.invalid" but WITHOUT a preceding
         # dot -- a naive `host.endswith(target)` (missing the dot separator) would
@@ -110,7 +113,7 @@ def test_url_less_lead_never_matches():
 def test_ats_receipt_linking_another_leads_site_refuses():
     # An ATS receipt commonly links a company's own site in its body (a "view your
     # application" footer) -- ordinary traffic, not an attack. Here the receipt is FROM
-    # greenhouse (where lead B is hosted) and its body both names "Example" (shared by
+    # the ATS relay (where lead B is hosted) and its body both names "Example" (shared by
     # both leads) AND links example.com (lead A's own site). It must refuse.
     # This was originally the CROSS-TIER ambiguity case (proof on A via the body link,
     # corroboration on B); now that body links grant nothing and both tiers key off the
@@ -118,8 +121,8 @@ def test_ats_receipt_linking_another_leads_site_refuses():
     # ordinary ambiguous corroboration. The refusal is what matters, so the scenario is
     # kept -- under its new name -- rather than deleted along with the code path.
     leads = [_lead("Example - Analyst", "https://example.com/a", company="Example"),
-             _lead("Example - Manager", "https://boards.greenhouse.io/example/jobs/1", company="Example")]
-    m = match_receipt(_msg(frm="no-reply@greenhouse.io",
+             _lead("Example - Manager", "https://boards.ats.example.invalid/example/jobs/1", company="Example")]
+    m = match_receipt(_msg(frm="no-reply@ats.example.invalid",
                            body="Example has received your application. Visit us at https://example.com"),
                        leads, ATS)
     assert m.lead_slug is None and m.tier == "corroborated"
@@ -190,13 +193,13 @@ def test_unicode_confusable_host_not_folded_to_match():
 
 def test_is_ats_requires_dot_separated_suffix_not_substring():
     # A real ATS domain name can appear as a bare SUBSTRING of a spoofed sender
-    # host without that host actually being an ATS relay -- "greenhouse.io" sits
-    # inside "fake-greenhouse.io.evil.invalid", but the actual suffix is
+    # host without that host actually being an ATS relay -- "ats.example.invalid" sits
+    # inside "fake-ats.example.invalid.evil.invalid", but the actual suffix is
     # ".evil.invalid". `_is_ats` must require a dot-separated suffix (or exact
     # equality), never a plain substring test, or a lookalike sender would win
     # ATS-relay status and unlock the corroborated-tier company-name check.
-    leads = [_lead("Example - Analyst", "https://boards.greenhouse.io/example/jobs/1", company="Example")]
-    m = match_receipt(_msg(frm="noreply@fake-greenhouse.io.evil.invalid",
+    leads = [_lead("Example - Analyst", "https://boards.ats.example.invalid/example/jobs/1", company="Example")]
+    m = match_receipt(_msg(frm="noreply@fake-ats.example.invalid.evil.invalid",
                            body="Example has received your application."), leads, ATS)
     assert m.tier == "none"
 
@@ -207,9 +210,20 @@ def test_empty_company_never_corroborates():
     # of any token set, so the guard requiring a non-empty company is load
     # bearing -- without it, an empty company would vacuously satisfy the
     # `company <= tokens` check regardless of what the receipt actually says.
-    leads = [_lead("Example - Analyst", "https://boards.greenhouse.io/example/jobs/1", company="")]
-    m = match_receipt(_msg(frm="no-reply@greenhouse.io", body="Nothing relevant here."), leads, ATS)
+    leads = [_lead("Example - Analyst", "https://boards.ats.example.invalid/example/jobs/1", company="")]
+    m = match_receipt(_msg(frm="no-reply@ats.example.invalid", body="Nothing relevant here."), leads, ATS)
     assert m.tier == "none"
+
+
+def _shipped(denylist):
+    """One host DERIVED from a shipped denylist. The four tests below are about the
+    SHIPPED defaults -- that they are non-empty and that a host in them cannot prove a
+    specific employer -- and not about any particular vendor, so typing a brand in would
+    add a real name to a fixture without adding coverage. sorted()[0] is deterministic,
+    and the empty assert makes an emptied default fail HERE rather than silently turning
+    every case below into a vacuous pass."""
+    assert denylist, "a shipped safety denylist must be non-empty"
+    return sorted(denylist)[0]
 
 
 def test_shipped_default_ats_domains_withhold_proof():
@@ -220,9 +234,11 @@ def test_shipped_default_ats_domains_withhold_proof():
     # proof status -- which is correct and documented in sluice.yaml.example, but
     # nothing pinned it: if someone "fixed" the default to empty for consistency with
     # the empty-config-abstains rule, nothing would redden. Use the real default.
-    leads = [_lead("Example - Analyst", "https://boards.greenhouse.io/example/jobs/1", company="Example")]
-    m = match_receipt(_msg(frm="no-reply@greenhouse.io", body="Example has received your application."),
-                       leads, TrackConfig().ats_relay_domains)
+    ats = TrackConfig().ats_relay_domains
+    host = _shipped(ats)
+    leads = [_lead("Example - Analyst", f"https://boards.{host}/example/jobs/1", company="Example")]
+    m = match_receipt(_msg(frm=f"no-reply@{host}", body="Example has received your application."),
+                       leads, ats)
     assert m.tier == "corroborated" and m.lead_slug == "Example - Analyst"
 
 
@@ -233,13 +249,11 @@ def test_board_sourced_lead_is_never_proof_matched():
     # sender whose body merely linked that board used to proof-match the lead and
     # AUTO-ADVANCE a job the user had never applied to, which silently suppresses the
     # real application and is effectively irreversible.
-    # (linkedin.com is a shipped ingest source id -- sluice/ingest/sources/linkedin.py --
-    # so naming it here reveals nothing about any user's job hunt.)
     cfg = TrackConfig()
-    leads = [_lead("Alpha - Analyst", "https://www.linkedin.com/jobs/view/1111", company="Alpha")]
+    board = _shipped(cfg.job_board_domains)
+    leads = [_lead("Alpha - Analyst", f"https://www.{board}/jobs/view/1111", company="Alpha")]
     m = match_receipt(_msg(frm="careers@unrelated-employer.invalid",
-                           body="We got your application. Follow us: "
-                                "https://www.linkedin.com/company/gamma"),
+                           body=f"We got your application. Follow us: https://www.{board}/company/gamma"),
                       leads, cfg.ats_relay_domains, cfg.job_board_domains)
     assert m.lead_slug is None and m.tier == "none"
 
@@ -250,8 +264,9 @@ def test_board_sender_is_never_proof_of_a_specific_employer():
     # `_hosts_match` cannot tell them apart and only the multi-tenant exclusion
     # withholds proof -- this is the case that reddens when it is removed.
     cfg = TrackConfig()
-    leads = [_lead("Alpha - Analyst", "https://www.linkedin.com/jobs/view/1111", company="Alpha")]
-    m = match_receipt(_msg(frm="jobs-noreply@linkedin.com", subject="Your application"),
+    board = _shipped(cfg.job_board_domains)
+    leads = [_lead("Alpha - Analyst", f"https://www.{board}/jobs/view/1111", company="Alpha")]
+    m = match_receipt(_msg(frm=f"jobs-noreply@{board}", subject="Your application"),
                       leads, cfg.ats_relay_domains, cfg.job_board_domains)
     assert m.lead_slug is None and m.tier == "none"
 
@@ -259,12 +274,15 @@ def test_board_sender_is_never_proof_of_a_specific_employer():
 def test_board_sourced_lead_still_corroborates_from_an_ats():
     # The accepted cost of the fix, pinned so it is a decision and not a surprise: a
     # board-sourced lead can no longer reach `proof`, so it DEGRADES to corroboration
-    # (or to a proposal) rather than disappearing. Same lead, but a real ATS relay
-    # sender naming the company -> corroborated, which reconcile proposes.
+    # (or to a proposal) rather than disappearing. Same lead, but an ATS relay sender
+    # naming the company -> corroborated, which reconcile proposes. The board side is the
+    # shipped default (that is the half under test); the ATS side is the placeholder
+    # MERGED IN exactly as a user's own in-house relay would be.
     cfg = TrackConfig()
-    leads = [_lead("Alpha - Analyst", "https://www.linkedin.com/jobs/view/1111", company="Alpha")]
-    m = match_receipt(_msg(frm="no-reply@greenhouse.io", body="Alpha received your application."),
-                      leads, cfg.ats_relay_domains, cfg.job_board_domains)
+    board = _shipped(cfg.job_board_domains)
+    leads = [_lead("Alpha - Analyst", f"https://www.{board}/jobs/view/1111", company="Alpha")]
+    m = match_receipt(_msg(frm="no-reply@ats.example.invalid", body="Alpha received your application."),
+                      leads, {**cfg.ats_relay_domains, **ATS}, cfg.job_board_domains)
     assert m.tier == "corroborated" and m.lead_slug == "Alpha - Analyst"
 
 
@@ -314,9 +332,9 @@ def test_ambiguous_corroboration_two_leads_same_ats_sender_proposes_neither():
     # Refuse-on-ambiguity must hold at the corroborated tier too, not only at
     # proof: two DIFFERENT leads, both hosted on the same ATS relay, both named
     # in the same receipt body, must resolve to no single lead.
-    leads = [_lead("Example - Analyst", "https://boards.greenhouse.io/example/jobs/1", company="Example"),
-             _lead("Widget - Engineer", "https://boards.greenhouse.io/widget/jobs/2", company="Widget")]
-    m = match_receipt(_msg(frm="no-reply@greenhouse.io",
+    leads = [_lead("Example - Analyst", "https://boards.ats.example.invalid/example/jobs/1", company="Example"),
+             _lead("Widget - Engineer", "https://boards.ats.example.invalid/widget/jobs/2", company="Widget")]
+    m = match_receipt(_msg(frm="no-reply@ats.example.invalid",
                            body="Example and Widget both received applications today."), leads, ATS)
     assert m.lead_slug is None and m.tier == "corroborated"
     assert sorted(m.candidates) == ["Example - Analyst", "Widget - Engineer"]
