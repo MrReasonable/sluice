@@ -183,3 +183,102 @@ def test_a_production_shaped_sluice_fetches(tmp_path, role):
     from tests.conftest import DnsUsedInTests
     with pytest.raises(DnsUsedInTests):
         cache.get_or_build({"url": "https://jobs.invalid/x", "company": "Aye", "role": role})
+
+
+# --- consumer behaviour ------------------------------------------------------
+# Why raising beats returning an empty dossier: triage's `except` does `continue`,
+# so the lead is kept OUT of the judge batch and counted. A returned empty dossier
+# would be judged on an empty JD and a status written from it, with failures=0.
+
+def _triage_run(tmp_path, monkeypatch, role, *, resolve, landed="https://jobs.invalid/x"):
+    """Drive a real triage run over one shortlist-able lead, with a stub judge."""
+    import os
+    from sluice.triage import engine as tengine
+    vault_dir = tmp_path / "vault"
+    # "Job Leads", not "Leads" -- core/vault.py:29 is
+    # _LEADS_SUBDIR = os.path.join("Job Applications", "Job Leads").
+    # The wrong path loads ZERO leads, which makes both assertions below pass
+    # vacuously and the Step 4 mutant redden with AND without the mutation.
+    leads = vault_dir / "Job Applications" / "Job Leads"
+    os.makedirs(leads, exist_ok=True)
+    (leads / f"Aye - {role}.md").write_text(
+        f'---\ncompany: "Aye"\nrole: "{role}"\nstatus: new\n'
+        'url: "https://jobs.invalid/x"\nscore: 0\n---\n# body\n')
+    monkeypatch.setenv("VAULT_DIR", str(vault_dir))
+    monkeypatch.setenv("TRIAGE_AUDIT", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setenv("DOSSIER_DIR", str(tmp_path / "dossiers"))
+    # Pin the judge's verdict to a status DIFFERENT from the starting one, so the
+    # raise->return mutant necessarily writes a different byte rather than
+    # coincidentally the same.
+    # The keys apply_verdict actually reads (triage/apply.py:36-37): "verdict" and
+    # "relevance_score". A stub emitting decision/score lands the lead on
+    # needs_review, which silently breaks the positive control that anchors both
+    # vacuity guards below.
+    monkeypatch.setattr(tengine, "judge", lambda dossiers, backend, **kw: [
+        {"lead_id": d["lead_id"], "verdict": "shortlist", "relevance_score": 90,
+         "fit_reasoning": "synthetic"} for d in dossiers])
+    app = Sluice(Config(), fetcher=_Tab(landed=landed),
+                 backend=object(), resolve_host=resolve)
+    report = app.triage(statuses=("new",))
+    return report, (leads / f"Aye - {role}.md").read_text(), tmp_path / "dossiers"
+
+
+def test_a_blocked_dossier_leaves_the_lead_untouched(tmp_path, monkeypatch, role):
+    report, note, dossier_dir = _triage_run(
+        tmp_path, monkeypatch, role, resolve=lambda h: ["127.0.0.1"])
+    assert "status: new" in note, "a blocked fetch must not move the lead"
+    assert report.failures, "and must be visible in the run summary"
+    cached = list(dossier_dir.glob("*.json")) if dossier_dir.exists() else []
+    assert cached == [], \
+        "no dossier may be cached, or the allowlist remedy is masked for ttl_days"
+
+
+def test_the_positive_control_does_move_the_lead(tmp_path, monkeypatch, role):
+    """Without this, both assertions above pass vacuously -- the dossier dir need
+    not exist, and the status is unchanged whenever the lead never reached the
+    dossier step at all (a wrong vault path did exactly that in an earlier draft)."""
+    report, note, dossier_dir = _triage_run(
+        tmp_path, monkeypatch, role, resolve=lambda h: [GLOBAL_ADDR])
+    assert "status: shortlist" in note
+    assert not report.failures
+    assert len(list(dossier_dir.glob("*.json"))) == 1
+
+
+def test_the_cv_consumer_proceeds_with_an_empty_jd(role, monkeypatch):
+    """Raising is NOT behaviourally different for cv -- record that honestly.
+
+    cv/engine.py:66-70 catches Exception, logs, and PROCEEDS with jd = "". So for
+    this consumer a raise and a returned empty dossier are indistinguishable: a CV
+    is still composed and the fabrication gate still runs. The raise-vs-return
+    argument rests entirely on the TRIAGE side (above). Stating it here stops a
+    reader inferring that cv skips the lead, which it does not.
+
+    Wired against tests/test_cv_engine.py's existing fake collaborators (FakeVault/
+    FakeBackend/FakeRenderer/_cfg) rather than a bespoke stub -- reusing them is
+    what keeps this under the ~15-minute budget the task brief set for this test.
+    served_dir="" short-circuits the real render.serve() shell-out (irrelevant to
+    what is being proven here), same as test_no_serve_renders_but_does_not_mark_lead.
+    """
+    from sluice.cv import engine as cvengine
+    from tests.test_cv_engine import CLEAN_CV, ENTRIES, FakeBackend, FakeRenderer, FakeVault, Note, _cfg
+
+    seen = {}
+    monkeypatch.setattr(cvengine, "_jd_keywords", lambda r, jd: seen.setdefault("jd", jd) or [])
+
+    class _BlockedCache:
+        """Stands in for Sluice.dossier_cache() after the SSRF guard has refused
+        the lead's url -- exactly what get_or_build raises in production."""
+
+        def get_or_build(self, fm):
+            raise urlguard.DossierBlocked(urlguard.BLOCKED_ADDRESS)
+
+    cfg = _cfg()
+    cfg.served_dir = ""
+    v = FakeVault(ENTRIES)
+    note = Note({"status": "shortlist", "company": "Example Foundry", "role": role})
+    result = cvengine.run_one(note, v, cfg, FakeBackend(CLEAN_CV), _BlockedCache(),
+                              renderer=FakeRenderer())
+
+    assert result.status == "rendered", "a blocked dossier must not stop composition"
+    assert seen["jd"] == "", \
+        "a blocked dossier must still let composition proceed on an empty JD"
