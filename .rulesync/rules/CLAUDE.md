@@ -126,10 +126,16 @@ who takes no lock (#16).
 track owns `applied/phone_screen/.../rejected` and triage must never touch a lead that has entered
 that lifecycle. Status only moves forward on the ladder; terminals are never advanced out of.
 `shortlist -> applied` is the only transition apply may make on send; track makes the same
-transition when a domain-matched confirmation receipt arrives (`track/receipt.py`, #10) — both route
+transition when a confirmation receipt arrives (`track/receipt.py`, #10) — both route
 through the one `can_apply` predicate (`can_transition` dispatches a `--to applied` request to it,
 since `track confirm` accepts an arbitrary target), so apply-on-send and track-on-receipt are the
 sole crossings into the application lifecycle; every later move is an on-ladder `can_advance` step.
+A receipt auto-advances only under the FULL guard set — a `proof`-tier match (the sender host is the
+lead's own host, on a message whose `Authentication-Results` records a PASS aligned with that
+sender, and neither host multi-tenant: no ATS relay, no job board sluice scrapes), the lead present
+in `shortlist_by_slug`, `can_apply`, and `confidence >= auto_apply_min`. Every weaker outcome
+proposes to the dead-letter for a human, because a wrong `applied` silently suppresses a real
+application and is irreversible.
 An unrecognized status is passed through untouched rather than silently rewritten.
 
 **Empty config means abstain, not match-nothing.** Every preference gate (`accept_titles`,

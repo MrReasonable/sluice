@@ -84,10 +84,14 @@ Shared by every sub-app:
    `applied`: a proof-grade match auto-advances with evidence recorded, but
    only when `event.confidence >= cfg.auto_apply_min` -- below that floor it
    proposes like any weaker match. Proof means the SENDER host is the lead's
-   own host (never a body link, which the sender controls) and neither side
-   is multi-tenant -- an ATS relay (`ats_relay_domains`) or one of the job
-   boards sluice scrapes (`job_board_domains`), since a board-sourced lead's
-   `url` identifies the board, not the employer. A weaker corroborated or
+   own host (never a body link, which the sender controls); the delivering
+   server AUTHENTICATED that domain (an `Authentication-Results` dkim/dmarc/
+   spf PASS whose domain aligns with the sender, since a `From` header is
+   free text anyone can forge); and neither side is multi-tenant -- an ATS
+   relay (`ats_relay_domains`) or one of the job boards sluice scrapes
+   (`job_board_domains`), since a board-sourced lead's `url` identifies the
+   board, not the employer. Failing or missing authentication degrades to a
+   proposal rather than dropping the signal. A weaker corroborated or
    cross-lead-ambiguous match only proposes. Receipt proposals have two
    producers: reconcile's own corroborated/below-floor path, and -- when
    deterministic matching finds nothing at all (tier `none`) while the LLM
