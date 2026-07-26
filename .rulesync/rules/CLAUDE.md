@@ -125,8 +125,12 @@ who takes no lock (#16).
 (`core/status.py`). Triage owns `new/shortlist/research/needs_review/dismiss` and may rewrite them;
 track owns `applied/phone_screen/.../rejected` and triage must never touch a lead that has entered
 that lifecycle. Status only moves forward on the ladder; terminals are never advanced out of.
-`shortlist -> applied` is the *only* transition apply may make. An unrecognized status is passed
-through untouched rather than silently rewritten.
+`shortlist -> applied` is the only transition apply may make on send; track makes the same
+transition when a domain-matched confirmation receipt arrives (`track/receipt.py`, #10) — both route
+through the one `can_apply` predicate (`can_transition` dispatches a `--to applied` request to it,
+since `track confirm` accepts an arbitrary target), so apply-on-send and track-on-receipt are the
+sole crossings into the application lifecycle; every later move is an on-ladder `can_advance` step.
+An unrecognized status is passed through untouched rather than silently rewritten.
 
 **Empty config means abstain, not match-nothing.** Every preference gate (`accept_titles`,
 `target_locations`, `reject_companies`, `relevance_keep`/`relevance_drop`, pay floors) defaults to

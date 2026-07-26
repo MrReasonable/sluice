@@ -31,7 +31,10 @@ Shared by every sub-app:
 - `status.py`: the canonical status vocabulary shared across sub-apps.
   Triage owns the early states (new, shortlist, research, needs_review,
   dismiss); track owns the later ones (applied, phone_screen, ... offer,
-  rejected); neither overwrites the other's.
+  rejected); neither overwrites the other's. The one crossing between the
+  two lifecycles, `shortlist -> applied`, has two actors -- apply (on send)
+  and track (on a domain-matched confirmation receipt) -- both gated by the
+  same `can_apply` predicate.
 - `seendb.py`: a sqlite dedup store for already-seen leads.
 - `resilience.py`: retry-with-backoff, hard timeout, and rate-limit
   precheck helpers that wrap each source's I/O.
@@ -76,7 +79,11 @@ Shared by every sub-app:
 5. **track** (`sluice/track/`): fetch Gmail and Google Calendar since the
    last run, classify each message into an `Event` (refuse rather than
    guess on ambiguity), and reconcile it against lead status
-   (never-regress: a status can only move forward). Un-acted-on proposals
+   (never-regress: a status can only move forward). A domain-matched
+   application receipt (`track/receipt.py`) advances a `shortlist` lead to
+   `applied`: a proof-grade match (the receipt's own host, never a shared
+   ATS relay) auto-advances with evidence recorded; a weaker corroborated
+   or cross-lead-ambiguous match only proposes. Un-acted-on proposals
    are durably surfaced via `track/deadletter.py` -- a sqlite dead-letter
    re-emitted every run until `track confirm`/`track dismiss` clears it, or a
    lead's own proposals are cleared automatically when it auto-advances --
