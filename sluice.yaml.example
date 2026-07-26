@@ -121,12 +121,20 @@ track:
   # match. A corroborated (ATS-relay + company-in-body) or ambiguous match always
   # proposes for `sluice track confirm`, regardless of this value.
   auto_apply_min: 0.75
-  # ats_relay_domains maps an applicant-tracking-system relay domain to a short
-  # label. It is a SAFETY DENYLIST, not a preference gate: a receipt sent from one
-  # of these shared multi-tenant hosts is never treated as domain-PROOF of a
-  # specific company (it hosts many), only as corroboration when the company is also
-  # named in the body. The default is non-empty by design; emptying it makes the
-  # proof tier MORE permissive, not less. Add your own ATSs here.
+  # ats_relay_domains and job_board_domains together list the hosts SHARED BY MANY
+  # EMPLOYERS: ATS relays, and the job boards sluice scrapes. Both are SAFETY
+  # DENYLISTS, not preference gates. A receipt sent from one of these hosts is never
+  # treated as domain-PROOF of a specific company (the host serves many), only as
+  # corroboration when the company is also named in the body -- and a lead whose own
+  # `url` is such a host can never be proof-matched either, since a board-sourced
+  # lead's url identifies the BOARD, not the employer. Both defaults are non-empty by
+  # design; emptying one makes the proof tier MORE permissive, not less.
+  #
+  # Anything you set here is MERGED OVER the shipped defaults, never replacing them:
+  # add your own in-house ATS or board and the shipped entries all survive. (The
+  # corollary is that a shipped entry cannot be removed from config -- deliberate for
+  # a safety denylist. You can relabel one by reusing its key.)
   # ats_relay_domains:
-  #   greenhouse.io: greenhouse
-  #   lever.co: lever
+  #   ats.example.invalid: in-house
+  # job_board_domains:
+  #   board.example.invalid: example-board
