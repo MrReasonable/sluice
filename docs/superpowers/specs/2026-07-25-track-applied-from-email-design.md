@@ -48,7 +48,7 @@ extended to accept `applied` as a target.
 ### Flow
 
 ```
-message ──▶ classify (LLM) ──type=receipt──▶ engine.run(): match_receipt(msg, shortlist_leads, ats_relay_domains)
+message ──▶ classify (LLM) ──type=receipt──▶ engine.run(): match_receipt(msg, shortlist_leads, ats_relay_domains, job_board_domains)
                                                     │   (raw msg in scope here; sets ev.lead_slug / ev.candidates / ev.receipt_tier)
                                                     ▼
                                               reconcile receipt branch
@@ -80,6 +80,11 @@ never from the body):
   `.lower()`, strip a leading `www.`. This is the *only* receipt host.
 - **lead host** — `urlparse(note.fm["url"]).hostname`, lowercased, `www.`-stripped. A lead with an
   empty `url` has no host and can never match (abstain — a url-less lead is not evidence).
+- **authentication verdict** — `msg["headers"]["authentication-results"]`, the RFC 8601 header the
+  delivering server wrote (Gmail always does; `google_client.get_message` already lowercases every
+  header name into that dict, keeping the FIRST occurrence so a sender-supplied duplicate cannot
+  displace it). Parsed in-process, no I/O: strip CFWS comments, split on `;`, read each
+  `method=result` and its `ptype.property=domain` pairs.
 
 Predicates:
 - `is_ats(host)` — True iff `host == K` or `host.endswith("." + K)` for some key `K` in
@@ -90,10 +95,22 @@ Predicates:
 - `hosts_match(a, b)` — True iff `a == b` or `a.endswith("." + b)` or `b.endswith("." + a)`
   (equality or a subdomain relationship in either direction, on **full hosts**). `random.co.uk` and
   `bigco.co.uk` do **not** match — neither is a subdomain of the other.
+- `authenticated(S)` *(added post-review, CodeRabbit security round)* — True iff the verdict records
+  a `dkim`/`dmarc`/`spf` **pass** whose authenticated domain (`header.d`/`header.i`, `header.from`,
+  `smtp.mailfrom`/`smtp.helo`) satisfies `hosts_match(S, ·)`. Alignment is `hosts_match`, **not**
+  DMARC's relaxed organizational-domain rule: that needs the public suffix list, which is neither in
+  the stdlib nor derivable by counting labels — the same eTLD+1 guess this whole section refuses. It
+  is therefore stricter than DMARC (a sibling subdomain signing for its sibling reads as unaligned),
+  which fails **closed**, to a proposal.
 
 Resolution over the shortlist set (each lead `L` with host `H_L`, sender host `S`):
-- **proof-eligible** `L`: `hosts_match(S, H_L)` and **not** `is_multi_tenant(S)` and **not**
-  `is_multi_tenant(H_L)`. (A multi-tenant host on either side is never proof — `boards.greenhouse.io`
+- **proof-eligible** `L`: `hosts_match(S, H_L)` and `authenticated(S)` and **not**
+  `is_multi_tenant(S)` and **not** `is_multi_tenant(H_L)`. (`authenticated(S)` is an ADDITIONAL
+  conjunct, not a replacement: an RFC 5322 `From` domain is free text the sender writes, so a host
+  match alone is a claim, not evidence — anyone who knows the user is job hunting could forge a
+  "thanks for applying" from an employer's domain and cause an irreversible wrong `applied`. A
+  host-matching lead whose sender is NOT authenticated degrades to the corroborated list, so the
+  signal is proposed for human confirmation rather than dropped.) (A multi-tenant host on either side is never proof — `boards.greenhouse.io`
   is shared by every greenhouse-hosted lead and `linkedin.com` by every board-sourced one, so
   neither proves anything about *which* company. The lead-side test is not redundant: a
   non-registrable configured host would leave its parent readable as a non-shared sender.)
@@ -109,7 +126,10 @@ one silently suppresses a real application and is effectively irreversible.
 - exactly one proof-eligible lead → `(slug, "proof", [])`. (An implementation-time *cross-tier
   ambiguity* branch — one proof lead plus a DIFFERENT corroborated lead — has been removed along
   with body links: corroboration now requires an ATS sender and proof requires a non-multi-tenant
-  one, so the two tiers are disjoint by construction and the branch was unreachable.)
+  one, so the two tiers are disjoint by construction and the branch was unreachable. The
+  unauthenticated-degrade route cannot reopen it: `authenticated(S)` is per-MESSAGE, so when it is
+  false nothing reaches proof at all, and when it is true nothing reaches corroboration by that
+  route.)
 - more than one proof-eligible lead → `(None, "corroborated", [slugs])` — **ambiguous, propose**.
 - else exactly one corroborated-eligible lead → `(slug, "corroborated", [])`.
 - more than one corroborated-eligible lead → `(None, "corroborated", [slugs])` — propose.
@@ -129,7 +149,11 @@ could then read as proof for a lone lead); both are safety denylists, **not** pr
 both defaults are non-empty by design (the list-only neutral-defaults sweep does not touch these
 dicts — see #26/#63). For the same reason a user block **merges over** the shipped default rather
 than replacing it: adding one in-house ATS must not drop the shipped entries, since that widens the
-proof tier. Document this in `sluice.yaml.example`.
+proof tier. An override that is not a mapping of string hosts (`[]`, a bare string, non-string
+keys) **raises at construction**, naming the key and a valid value: it used to miss the
+`isinstance` guard on the merge branch and fall through to plain `setattr`, silently REPLACING the
+denylist with an empty list — the same widening by a different route. Document this in
+`sluice.yaml.example`.
 
 ## Components
 
@@ -189,7 +213,8 @@ proof tier. Document this in `sluice.yaml.example`.
   and such a lead structurally cannot appear there. Only when the LLM's own guess *also* resolves to
   nothing does the run stay quiet, unchanged from the original design. The write gate itself is
   untouched: an advance still requires `receipt_tier == "proof"` AND the note in `shortlist_by_slug`
-  AND `can_apply` AND `confidence >= auto_apply_min`.
+  AND `can_apply` AND `confidence >= auto_apply_min` — and `"proof"` itself now additionally requires
+  an aligned authentication pass, enforced inside `match_receipt` so no caller can forget it.
 
 ### `sluice/track/reconcile.py`
 
@@ -291,10 +316,12 @@ Plus edges:
 7. **Ambiguity → propose, never advance** (guards inv-001): (a) two shortlist leads sharing one
    non-ATS host, one receipt → `candidates` has both, `action == "proposed"`, **neither** lead
    advanced; (b) a shared-host ATS not in `ats_relay_domains` matching two leads → proposed;
-   (c) **cross-tier** (added during implementation): one lead proof-eligible via a link in the
-   body, a DIFFERENT lead corroborated-eligible via an ATS sender + company name → the proof
-   winner is refused too, proposing both (`test_cross_tier_ambiguity_proof_plus_different_corrob_lead_refuses`;
-   guarded against over-firing by `test_proof_survives_when_corrob_is_the_same_lead`).
+   (c) an ATS receipt whose body links a *different* lead's own site → still refused, now as
+   ordinary ambiguous corroboration (`test_ats_receipt_linking_another_leads_site_refuses`). This
+   replaces the original **cross-tier** entry, whose scenario — one lead proof-eligible *via a body
+   link* — no longer exists: body links grant nothing and both tiers key off the sender, so the
+   cross-tier branch was unreachable and was deleted with its test. Over-firing is still guarded by
+   `test_proof_survives_when_corrob_is_the_same_lead`.
 8. `confirm --to applied` succeeds off a proposed receipt; `confirm --to applied` on a non-shortlist
    lead is refused with the current status as the reason.
 9. A receipt advance writes **no** `interview_date` / `interview_link` (guards inv-003).
@@ -308,7 +335,19 @@ Plus edges:
     and a full set of `none` traps: `evilexample.com`, `example.com.attacker.invalid`,
     `notexample.com` (substring, not subdomain), a sibling subdomain of a *different* registrable
     domain, `bigco.co.uk` vs `random.co.uk` (multi-part-TLD, must **not** match), and a shared-ATS
-    parent (never proof).
+    parent (never proof). Every case supplies an *aligned* `Authentication-Results` header, so the
+    conjunct under test is the only thing withholding a match — without that the multi-tenant and
+    host-shape cases would pass for the wrong reason (inert witnesses).
+11a. **(added post-review) Sender authentication.** An aligned `dkim=pass` reaches proof and
+    advances end-to-end; `dkim=fail`, an unaligned pass (signing domain ≠ sender), a sibling-
+    subdomain signature, an absent header, an unparseable header and a non-string value each
+    degrade to the propose path with the note **byte-unchanged**; a pass smuggled inside an RFC 8601
+    comment grants nothing; and an aligned pass for a host matching no lead still resolves to
+    `none` (authentication says the domain is real, never that it is the lead's). Witnessed by
+    mutation: deleting the `and authenticated` conjunct reddens
+    `test_absent_authentication_degrades_to_propose` and
+    `test_receipt_without_sender_authentication_does_not_advance`; deleting the alignment check or
+    the comment stripping each reddens its own named test.
 12. Intra-run reflection (engine-level): two receipts for the **same** shortlist lead in one
     `engine.run` advance it exactly once — the first writes `applied`, the second reconciles against
     the reflected `applied` snapshot in `shortlist_by_slug` (so `can_apply` is now False) and writes
