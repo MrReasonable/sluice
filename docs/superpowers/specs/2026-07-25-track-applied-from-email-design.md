@@ -54,7 +54,9 @@ message ──▶ classify (LLM) ──type=receipt──▶ engine.run(): match
                                               reconcile receipt branch
                         proof + unambiguous  ───┼──▶ can_apply → auto-advance shortlist→applied + evidence
                         corroborated / ambiguous ┼──▶ propose (dead-letter → `track confirm --to applied`)
-                        no match             ───┴──▶ skip
+                        no domain match       ───┴──▶ fall back to the LLM's own name guess (surfacing
+                                                        only, never a write) → known lead: propose for
+                                                        review; nothing known: skip
 ```
 
 ## The match rule (the load-bearing detail)
@@ -87,7 +89,14 @@ Resolution over the shortlist set (each lead `L` with host `H_L`, each receipt h
 
 `match_receipt` returns `ReceiptMatch(lead_slug: str | None, tier: str, candidates: list[str])`,
 `tier ∈ {"proof", "corroborated", "none"}`:
-- exactly one proof-eligible lead → `(slug, "proof", [])`.
+- exactly one proof-eligible lead, and no OTHER lead is corroborated-eligible →
+  `(slug, "proof", [])`.
+- exactly one proof-eligible lead, but a DIFFERENT lead is also corroborated-eligible →
+  `(None, "corroborated", sorted(set(proof) | set(corrob)))` — **cross-tier ambiguity, propose**
+  (added after this design, during implementation: an ATS receipt routinely also links the
+  company's own site in a "view your application" footer, so a proof match on one lead plus a
+  corroborated match on a *different* lead is genuine ambiguity, not a tie-break — silently
+  advancing the proof winner would advance the WRONG lead).
 - more than one proof-eligible lead → `(None, "corroborated", [slugs])` — **ambiguous, propose**.
 - else exactly one corroborated-eligible lead → `(slug, "corroborated", [])`.
 - more than one corroborated-eligible lead → `(None, "corroborated", [slugs])` — propose.
@@ -120,12 +129,17 @@ Document this in `sluice.yaml.example`.
 ### `sluice/track/classify.py`
 
 - Add `receipt` to `_TYPES` so the LLM can classify an application acknowledgement.
-- For a `receipt`, do **not** run the LLM name-resolution (`_resolve_lead`) and **ignore** any `lead`
-  the LLM returns — the deterministic domain matcher (run in `engine.run`) owns lead resolution.
-  `ev.lead_slug` is left `None` at classify time and is filled in by the engine.
+- For a `receipt`, the LLM's name-resolution is **not authoritative for `lead_slug`** — the
+  deterministic domain matcher (run in `engine.run`) owns lead resolution. `ev.lead_slug` is left
+  `None` at classify time and is filled in by the engine.
 - Declare a new field on the `Event` dataclass: `receipt_tier: str | None = None`. The engine writes it
   from the `match_receipt` result and the reconcile receipt branch reads it, so it must be a real
   field (not an ad-hoc attribute) — reconcile tests construct `Event(receipt_tier=...)` directly.
+- **(added during implementation)** The LLM's guess is not discarded, only kept out of the write
+  path: `_resolve_lead` still runs against the same in-flight `leads` list, and its result lands in
+  two new fields, `llm_lead_slug`/`llm_candidates`, that the write path never reads. `engine.run`
+  reads them only to decide whether an unmatched receipt is worth surfacing (see below) — a
+  lower-trust, name-based signal good enough to flag for a human, not to act on.
 
 ### `sluice/track/engine.py`
 
@@ -147,6 +161,19 @@ Document this in `sluice.yaml.example`.
   `applied` status back into `shortlist_by_slug[slug]` so a second receipt for the same lead in one
   run reconciles against current state; `deadletter.clear_lead` keys on the same slug.
 - `confirm()` uses `can_transition` (so `--to applied` is legal from `shortlist`).
+- **(added during implementation) Unmatched-receipt surfacing**, superseding the flow's original
+  blanket "no match → skip": when `match_receipt` finds no domain evidence at all
+  (`ev.receipt_tier == "none"`, so `reconcile` skipped) AND the LLM's own fallback resolved to a
+  known in-flight lead (`ev.llm_lead_slug`) or an ambiguous set of them (`ev.llm_candidates`), the
+  run records a dead-letter proposal naming that lead / those candidates instead of staying silent —
+  SURFACING only, never a write (the note is untouched, no `--to applied` hint since an in-flight
+  lead can't legally take one). This closes a #40-class silent loss: a message the LLM types
+  `receipt` but which actually concerns an already-in-flight lead (say a rejection it mislabelled)
+  previously vanished with no trace, since `match_receipt` only ever searches `shortlist_by_slug`
+  and such a lead structurally cannot appear there. Only when the LLM's own guess *also* resolves to
+  nothing does the run stay quiet, unchanged from the original design. The write gate itself is
+  untouched: an advance still requires `receipt_tier == "proof"` AND the note in `shortlist_by_slug`
+  AND `can_apply` AND `confidence >= auto_apply_min`.
 
 ### `sluice/track/reconcile.py`
 
@@ -247,12 +274,19 @@ Plus edges:
    (count occurrences) and status is written once.
 7. **Ambiguity → propose, never advance** (guards inv-001): (a) two shortlist leads sharing one
    non-ATS host, one receipt → `candidates` has both, `action == "proposed"`, **neither** lead
-   advanced; (b) a shared-host ATS not in `ats_relay_domains` matching two leads → proposed.
+   advanced; (b) a shared-host ATS not in `ats_relay_domains` matching two leads → proposed;
+   (c) **cross-tier** (added during implementation): one lead proof-eligible via a link in the
+   body, a DIFFERENT lead corroborated-eligible via an ATS sender + company name → the proof
+   winner is refused too, proposing both (`test_cross_tier_ambiguity_proof_plus_different_corrob_lead_refuses`;
+   guarded against over-firing by `test_proof_survives_when_corrob_is_the_same_lead`).
 8. `confirm --to applied` succeeds off a proposed receipt; `confirm --to applied` on a non-shortlist
    lead is refused with the current status as the reason.
 9. A receipt advance writes **no** `interview_date` / `interview_link` (guards inv-003).
 10. A classify-level test (using the existing `FakeBackend`): a receipt email is typed `receipt`, and
-    a `lead` the LLM returns for it is **ignored** (not resolved) — the deterministic matcher owns it.
+    a `lead` the LLM returns for it is **ignored for `ev.lead_slug`/`ev.candidates`** (not resolved
+    into the authoritative fields) — the deterministic matcher owns those. (Added during
+    implementation: the same guess is *also* resolved, separately, into `ev.llm_lead_slug`/
+    `ev.llm_candidates` for surfacing-only use — see test 13.)
 11. A pure `match_receipt` unit table, cases enumerated **adversarially** (not hand-picked — THE
     LESSON): proof (exact host; `careers.<host>` subdomain), corroborated (ATS + company),
     and a full set of `none` traps: `evilexample.com`, `example.com.attacker.invalid`,
@@ -264,6 +298,14 @@ Plus edges:
     the reflected `applied` snapshot in `shortlist_by_slug` (so `can_apply` is now False) and writes
     nothing further. Guards the separate-snapshot reflection path (`shortlist_by_slug`, not
     `note_by_slug`), which the reconcile-level idempotency test (6) does not exercise.
+13. **(added during implementation) Unmatched-receipt surfacing** (engine-level), superseding this
+    doc's original blanket "no match → skip": `test_receipt_about_inflight_lead_surfaces_without_writing`
+    (the LLM fallback uniquely resolves an in-flight lead → one dead-letter row naming it, note
+    byte-unchanged), `test_receipt_ambiguous_inflight_fallback_surfaces_both_candidates` (the
+    fallback resolves ambiguously between two same-company in-flight leads → one row naming both,
+    neither note touched), and `test_receipt_matching_nothing_stays_quiet` (domain match AND LLM
+    fallback both resolve to nothing → no dead-letter row, no write, unchanged from the original
+    design).
 
 **Fixture neutrality.** Company hosts use the RFC-reserved `example.com` / `example.invalid` family
 (guaranteed unregistrable; a local roster cannot tell whether an invented name is real). The
