@@ -49,7 +49,7 @@ def test_a_yaml_scalar_raises_rather_than_exploding():
         urlguard.parse_allow_hosts("myboard")
 
 
-@pytest.mark.parametrize("entry", ["db", "cafe", "abc", "abba", "jobs.invalid"])
+@pytest.mark.parametrize("entry", ["db", "cafe", "abc", "abba", "jobs.invalid", "nas1", "host2.invalid"])
 def test_short_hex_like_hostnames_are_accepted_as_hostnames(entry):
     # A single-label LAN hostname is precisely the user this opt-out exists for.
     # An earlier "hex digits only" heuristic raised on every one of these.
