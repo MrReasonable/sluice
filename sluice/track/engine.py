@@ -118,7 +118,7 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                 elif ev.lead_slug in shortlist_by_slug:
                     shortlist_by_slug[ev.lead_slug].status = res.status_to
             if ev.type == "receipt" and ev.receipt_tier == "none" and res.action == "skipped" \
-                    and ev.llm_lead_slug:
+                    and (ev.llm_lead_slug or ev.llm_candidates):
                 # match_receipt found NO domain evidence at all (never even a corroborated
                 # match) -- the common cause is a receipt about a lead that has already
                 # advanced PAST shortlist (applied/phone_screen/...), since match_receipt
@@ -130,14 +130,32 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                 # good enough to SURFACE a review item even though it is not good enough to
                 # ACT on -- so this branch only ever records a dead-letter row, never a
                 # write; deterministic domain matching still owns every write, unchanged
-                # above. The hint is deliberately the generic review-manually wording, never
-                # a "--to applied" hint: the lead is already in-flight, so can_apply is
-                # false and that hint would be refused outright -- an unrunnable command is
-                # worse than an honest "look at this yourself" (#10 fix-round-1).
+                # above (#10 fix-round-1).
+                #
+                # An AMBIGUOUS fallback (the LLM's named company matches several in-flight
+                # leads) is still a KNOWN-lead signal -- the email demonstrably concerns two
+                # or more real leads, just not provably which -- so it must surface too
+                # (#10 fix-round-2), on the same "never silently drop a known-lead signal"
+                # ruling as the unique case; only a fallback resolving to NOTHING stays a
+                # quiet skip. The wording echoes the generic multi-candidate hint below
+                # ("ambiguous lead; pick one") rather than inventing a new shape, but
+                # deliberately omits a --to applied command: unlike that generic path (whose
+                # candidates are real shortlist matches with can_apply true), these
+                # candidates are already in-flight, so --to applied would be refused
+                # outright -- an unrunnable command is worse than an honest "look at this
+                # yourself".
                 rep.proposed += 1
-                hint = (f'(receipt email for in-flight lead "{ev.llm_lead_slug}" -- the match '
-                        f"could not be verified by sender/link domain; review manually)")
-                entry = Entry(message_id=mid, lead=ev.llm_lead_slug, candidates="",
+                if ev.llm_lead_slug:
+                    hint = (f'(receipt email for in-flight lead "{ev.llm_lead_slug}" -- the '
+                            f"match could not be verified by sender/link domain; review "
+                            f"manually)")
+                    lead, candidates = ev.llm_lead_slug, []
+                else:
+                    names = "; ".join(f'"{c}"' for c in ev.llm_candidates)
+                    hint = (f"(ambiguous lead; pick one -- candidates: {names}; "
+                            f"in-flight leads, review manually)")
+                    lead, candidates = "", ev.llm_candidates
+                entry = Entry(message_id=mid, lead=lead, candidates=",".join(candidates),
                               ev_type=ev.type, proposal="receipt (unverified lead match)",
                               hint=hint, first_seen=today, times_surfaced=1)
                 new_entries.append(entry)
