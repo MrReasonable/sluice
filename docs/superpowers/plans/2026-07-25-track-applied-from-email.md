@@ -1,5 +1,7 @@
 # Advance a lead to `applied` from its confirmation email (#10) — Implementation Plan
 
+> **Historical artifact — not the current spec.** This plan is kept as executed. Two of its rules were superseded during implementation and pre-push review: the **match rule** (proof now derives from the sender host alone, and no host shared by many employers — ATS relay or job board — can be proof on either side) and the handling of an **unmatched receipt** for a lead that can no longer be applied to (skipped, not proposed). The design doc is authoritative: `docs/superpowers/specs/2026-07-25-track-applied-from-email-design.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** When an application-confirmation receipt arrives, advance the matching `shortlist` lead to `applied` — matched deterministically by domain, auto-advancing only on an unambiguous proof-grade match, proposing otherwise.
