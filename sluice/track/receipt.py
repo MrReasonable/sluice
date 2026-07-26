@@ -1,6 +1,7 @@
 """Deterministic receipt -> lead matching. Pure: no I/O, so it is tested offline.
 The LLM decides a message IS an application receipt; this module decides WHICH
-shortlist lead it belongs to, by domain -- never by a fuzzy name match. A wrong or
+shortlist lead it belongs to, by SENDER domain -- never by a fuzzy name match, and
+never by a link in the body (which the sender writes and so controls). A wrong or
 arbitrary advance silently suppresses a real application, so the two failure modes
 this guards are (a) matching a name-only mention and (b) advancing an AMBIGUOUS
 match; both resolve to `none`/propose, never a proof advance (#10)."""
@@ -11,8 +12,6 @@ from urllib.parse import urlparse
 
 from sluice.core.leads import _norm_tokens
 
-# A permissive URL scrape of the body; the host is what matters, not the full URL.
-_URL_RE = re.compile(r"https?://[^\s<>\"')]+", re.IGNORECASE)
 _EMAIL_DOMAIN_RE = re.compile(r"[\w.+-]+@([\w.-]+)")
 
 
@@ -49,6 +48,17 @@ def _host(value: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
+def _headers(msg) -> dict:
+    """`msg["headers"]` read defensively: it can be absent, None, or carry None VALUES.
+    A `.get(key, "")` default only covers a MISSING key -- a present-but-None Subject
+    still returns None and used to raise TypeError out of this PURE module, while a None
+    headers dict raised AttributeError. engine.run's per-message `except` swallows both
+    WITHOUT adding the id to `seen`, so the same message re-fails on every future run: a
+    silent poison message, not a one-off failure. Every read of this dict therefore uses
+    `or ""`, matching what `body_text`'s call sites already do."""
+    return msg.get("headers") or {}
+
+
 def _sender_host(msg) -> str:
     """Domain of the REAL envelope address, never the display name. RFC 5322 permits
     arbitrary text before the angle-bracket address, so a header like
@@ -56,13 +66,9 @@ def _sender_host(msg) -> str:
     a raw @-scan of the whole header string would grab the sender-controlled display
     name's address instead and be trivially spoofable. parseaddr (stdlib) is the
     correct RFC 5322 parse; only its second element is untrusted-but-real."""
-    _, addr = parseaddr(msg.get("headers", {}).get("from", "") or "")
+    _, addr = parseaddr(_headers(msg).get("from") or "")
     m = _EMAIL_DOMAIN_RE.search(addr)
     return _host(m.group(1)) if m else ""
-
-
-def _link_hosts(msg) -> set:
-    return {h for h in (_host(u) for u in _URL_RE.findall(msg.get("body_text", "") or "")) if h}
 
 
 def _hosts_match(a: str, b: str) -> bool:
@@ -76,44 +82,76 @@ def _hosts_match(a: str, b: str) -> bool:
     return a == b or a.endswith("." + b) or b.endswith("." + a)
 
 
-def _is_ats(host: str, ats) -> bool:
-    return any(host == k or host.endswith("." + k) for k in (ats or {}))
+def _suffix_match(host: str, domains) -> bool:
+    """True iff `host` equals, or is a dot-separated SUBDOMAIN of, one of `domains`'
+    keys. A dot-separated suffix, never a bare substring: "greenhouse.io" sits inside
+    "fake-greenhouse.io.evil.invalid", whose real suffix is ".evil.invalid", and a
+    substring test would hand that lookalike the privileges of the genuine relay."""
+    return any(host == k or host.endswith("." + k) for k in (domains or {}))
 
 
-def match_receipt(msg, shortlist_leads, ats_relay_domains) -> ReceiptMatch:
-    ats = ats_relay_domains or {}
-    receipt_hosts = {h for h in ({_sender_host(msg)} | _link_hosts(msg)) if h}
-    if not receipt_hosts:
-        return ReceiptMatch(None, "none", [])
-    tokens = _norm_tokens(
-        msg.get("headers", {}).get("subject", "") + " " + (msg.get("body_text", "") or ""))
-    from_ats = any(_is_ats(r, ats) for r in receipt_hosts)
+def _is_multi_tenant(host: str, ats, boards) -> bool:
+    """True when `host` is shared by MANY employers, so it can never prove WHICH
+    employer a receipt concerns. Two sets, and BOTH are consulted: ATS relay hosts
+    (`ats_relay_domains`) and the job boards sluice itself scrapes
+    (`job_board_domains`).
+
+    The boards half closes the Critical this module shipped with. A lead's `fm["url"]`
+    is the URL sluice INGESTED the lead from, and sluice scrapes job BOARDS -- so for
+    most leads that host is a multi-tenant aggregator (linkedin.com, reed.co.uk, ...),
+    not the employer. Treating it as employer-identifying meant a receipt whose sender
+    merely shared that board host proof-matched a lead the user had never applied to,
+    and auto-advanced it: a wrong `applied` silently suppresses a real application and
+    is effectively irreversible.
+
+    Checked on BOTH sides of the comparison. The sender-side check is what stops a
+    board-sent receipt; the lead-side check is not redundant, because a user may list a
+    non-registrable host (`jobs.board.example`) whose PARENT would still read as a
+    non-shared sender under `_hosts_match`'s bidirectional subdomain rule.
+
+    An empty set means "nothing known to be shared", not "match nothing": this is a
+    safety DENYLIST, not a preference gate, so emptying it makes the proof tier MORE
+    permissive. The shipped defaults are non-empty by design (see sluice.yaml.example)
+    and `load_track_config` MERGES user entries over them rather than replacing them."""
+    return _suffix_match(host, ats) or _suffix_match(host, boards)
+
+
+def match_receipt(msg, shortlist_leads, ats_relay_domains, job_board_domains=None) -> ReceiptMatch:
+    ats, boards = ats_relay_domains or {}, job_board_domains or {}
+    # Only the SENDER host is evidence of who sent the mail. Body links are sender-
+    # controlled footer content -- any sender can link anything, so "we got your
+    # application, follow us at <board>" from an unrelated address used to hand that
+    # sender both a proof host AND the ATS-relay flag. Both tiers now key off the
+    # sender alone (#10 pre-push review, Critical; the corroborated half was flagged
+    # independently by CodeRabbit).
+    sender = _sender_host(msg)
+    tokens = _norm_tokens((_headers(msg).get("subject") or "") + " "
+                          + (msg.get("body_text") or ""))
+    from_ats = _suffix_match(sender, ats)
     proof, corrob = [], []
     for lead in shortlist_leads:
-        lead_host = _host(lead.fm.get("url", ""))
-        # proof: a full-host match to the lead's OWN (non-ATS) domain.
-        if lead_host and not _is_ats(lead_host, ats) \
-                and any(_hosts_match(r, lead_host) and not _is_ats(r, ats) for r in receipt_hosts):
+        lead_host = _host(lead.fm.get("url") or "")
+        # proof: the sender IS the lead's own host, and neither side is a host shared by
+        # many employers. `_hosts_match` is False when either host is empty, so a
+        # url-less lead or an unparseable From abstains rather than matching everything.
+        if _hosts_match(sender, lead_host) \
+                and not _is_multi_tenant(sender, ats, boards) \
+                and not _is_multi_tenant(lead_host, ats, boards):
             proof.append(lead.slug)
             continue
         # corroborated: from an ATS relay host, with the company named in the body.
         if from_ats:
-            company = _norm_tokens(lead.fm.get("company", ""))
+            company = _norm_tokens(lead.fm.get("company") or "")
             if company and company <= tokens:
                 corrob.append(lead.slug)
+    # No cross-tier ambiguity check: with both tiers keyed off the sender, the two are
+    # now DISJOINT by construction -- corroboration requires an ATS sender, proof
+    # requires a sender that is NOT multi-tenant, and every ATS relay is multi-tenant.
+    # A guard for a state the code cannot reach is an inert guard, so it is gone rather
+    # than kept with a comment claiming it fires. (The receipt that motivated it -- an
+    # ATS sender whose body links a second lead's own site -- now resolves through the
+    # ordinary ambiguous-corroboration branch below, still refusing to advance.)
     if len(proof) == 1:
-        # A single proof match can still be AMBIGUOUS ACROSS TIERS: an ATS receipt
-        # routinely links the company's own site in its body (a "view your
-        # application" footer is ordinary traffic, not an attack), so the same
-        # receipt can proof-match one lead via that link while corroborating a
-        # DIFFERENT lead via its ATS sender + company name. Cross-tier ambiguity is
-        # still ambiguity -- refuse rather than silently pick the proof winner, the
-        # same refuse-on-ambiguity principle already applied WITHIN a tier, extended
-        # across tiers (#10 fix-round-1: a receipt from greenhouse hosting lead B,
-        # whose body links lead A's own site, must not silently advance A).
-        other_corrob = set(corrob) - {proof[0]}
-        if other_corrob:
-            return ReceiptMatch(None, "corroborated", sorted(set(proof) | set(corrob)))
         return ReceiptMatch(proof[0], "proof", [])
     if len(proof) > 1:                                 # ambiguous proof -> propose, never advance
         return ReceiptMatch(None, "corroborated", sorted(proof))

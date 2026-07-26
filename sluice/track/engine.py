@@ -100,7 +100,8 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                 # (it only knows the message IS a receipt, not whose) -- match_receipt
                 # resolves WHICH shortlist lead by domain, here where the raw msg (body/
                 # headers) is still in scope; reconcile only sees the resolved Event.
-                m = match_receipt(msg, shortlist_by_slug.values(), cfg.ats_relay_domains)
+                m = match_receipt(msg, shortlist_by_slug.values(), cfg.ats_relay_domains,
+                                  cfg.job_board_domains)
                 ev.lead_slug, ev.candidates, ev.receipt_tier = m.lead_slug, m.candidates, m.tier
             res = reconcile(ev, note_by_slug, vault, cfg, client, dry_run=dry_run,
                              shortlist_by_slug=shortlist_by_slug)
@@ -111,7 +112,10 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
             # something was actually written (never in a dry-run preview). A
             # receipt-advanced lead lives in shortlist_by_slug, not note_by_slug -- check
             # both, so a second same-run receipt for the same lead sees the reflected
-            # `applied` snapshot (via shortlist_by_slug) and no-ops instead of double-writing.
+            # `applied` snapshot (via shortlist_by_slug). reconcile then fails that note's
+            # can_apply check and SKIPS it: no second write, and -- since the pre-fix code
+            # instead proposed it -- no dead-letter row carrying a `--to applied` command
+            # that confirm() would refuse forever while the row re-surfaced every run.
             if not dry_run and res.status_to and ev.lead_slug:
                 if ev.lead_slug in note_by_slug:
                     note_by_slug[ev.lead_slug].status = res.status_to
