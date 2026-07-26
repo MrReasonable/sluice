@@ -86,12 +86,22 @@ class Store(Protocol):
         collision, so it need only ever create or update. See #5."""
         ...
 
-    def update_fields(self, ref, fields: dict, *, append_note=None, note_tag=None) -> None:
+    def update_fields(self, ref, fields: dict, *, append_note=None, note_tag=None,
+                      require_status: frozenset | None = None) -> bool:
         """Set exactly the named frontmatter keys, leaving the body byte-for-byte intact.
         This is the sanctioned write path for triage, cv, apply and track. MAY raise
         VaultConflict if the note changed under a sustained concurrent edit and the store
         could not re-apply without clobbering (see VaultConflict; #16). Callers treat that
-        as non-fatal."""
+        as non-fatal. Returns whether a write happened.
+
+        `require_status`, when given, is re-read from the FRESH stored note and the write
+        is abstained -- nothing written, returns False -- if the status is not in that
+        set. This CANNOT be delegated to the caller, which is why it is on the contract
+        rather than in `leads expire`: a caller-side check reads a snapshot taken before
+        the write and cannot see a concurrent entry into the application lifecycle (via
+        `apply record` or a #10 receipt). A store that ignored it would silently write a
+        triage status over `applied` -- never-regress, and irreversible in practice
+        because the audit note would claim a prior status that was no longer true (#9)."""
         ...
 
     def merge_cluster(self, survivor_ref, loser_refs, *, alt_urls, first_seen, last_seen) -> list:

@@ -511,3 +511,44 @@ def test_a_sustained_write_conflict_refuses_rather_than_clobbers(store_name, tmp
     assert after.get("url") == before.get("url"), "a refused write lost the identifying url key"
     assert "shortlist" not in after.values(), \
         "the attempted write left a trace even though it raised VaultConflict"
+
+
+def test_update_fields_require_status_abstains_on_a_fresh_mismatch(store_name, tmp_path,
+                                                                   monkeypatch):
+    """#9 never-regress. The status check must happen against the FRESH stored note,
+    inside the write -- not against whatever the caller enumerated.
+
+    A caller-side check on the in-memory LeadNote is byte-identical to NO check. Probed
+    against a real vault: deleting the guard and running it with
+    `is_application_owned(note.status)` produce the same bytes, because the snapshot is
+    stale by construction. `leads expire`'s read loop is a window in which a lead can
+    enter the application lifecycle via `apply record` or a #10 receipt, and the caller
+    cannot see that happen. So the store owns it, and it is on the contract because a
+    second store that skipped it would silently overwrite `applied`.
+    """
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    store.upsert(_lead())
+    ref = store.read_leads()[0].ref
+    store.update_fields(ref, {"status": "applied"})
+
+    wrote = store.update_fields(ref, {"status": "dismiss"},
+                                require_status=frozenset({"new", "shortlist"}))
+
+    assert wrote is False, "a fresh-status mismatch must write nothing"
+    assert store.read_leads()[0].status == "applied", \
+        "require_status must not let a triage write land on an application-owned lead"
+
+
+def test_update_fields_require_status_writes_on_a_fresh_match(store_name, tmp_path,
+                                                              monkeypatch):
+    """The other half: a matching fresh status writes normally and reports True."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    store.upsert(_lead())
+    ref = store.read_leads()[0].ref
+    before = store.read_leads()[0].status
+
+    wrote = store.update_fields(ref, {"status": "dismiss"},
+                                require_status=frozenset({before}))
+
+    assert wrote is True
+    assert store.read_leads()[0].status == "dismiss"
