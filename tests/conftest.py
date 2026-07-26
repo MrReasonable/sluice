@@ -80,3 +80,39 @@ def racing_read(monkeypatch, target_path, on_race, *, once=True):
         return text
     monkeypatch.setattr(vaultmod, "_read", racer)
     return state
+
+
+class DnsUsedInTests(BaseException):
+    """Raised when a test tries to resolve a hostname.
+
+    Subclasses BaseException, NOT Exception, and that is load-bearing. A plain
+    Exception would be swallowed TWICE on the dossier path -- first by
+    urlguard.check_url's fail-closed resolver catch, which turns a raising
+    resolver into a "blocked" verdict, then by cv/engine.py's per-item
+    `except Exception`. An implementer who forgot to inject `resolve_host=` at
+    one of the three test wiring sites would therefore see a GREEN suite that
+    was doing real DNS on every run. That happened in review, which is why this
+    exists at all.
+    """
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _forbid_dns():
+    """Make socket.getaddrinfo raise for the whole session.
+
+    Verified before writing: the suite performs zero DNS today, so this changes
+    nothing that currently passes. monkeypatch is function-scoped, so the
+    set/restore is done by hand.
+    """
+    import socket
+    real = socket.getaddrinfo
+
+    def _raise(*args, **kwargs):
+        raise DnsUsedInTests(
+            "tests must not resolve DNS -- inject resolve_host= instead")
+
+    socket.getaddrinfo = _raise
+    try:
+        yield
+    finally:
+        socket.getaddrinfo = real
