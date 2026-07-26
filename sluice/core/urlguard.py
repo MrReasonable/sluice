@@ -20,6 +20,7 @@ Design notes that are NOT obvious and were each found by review:
 """
 import ipaddress
 import re
+import socket
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -262,3 +263,47 @@ def _host(url: str) -> str:
         return parts.hostname or ""
     except ValueError:      # e.g. "https://[abc" -- an invalid IPv6 literal
         return ""
+
+
+_ALLOWED_SCHEMES = ("http", "https")
+
+
+def _resolve(host: str) -> list[str]:
+    """Production resolver: every address `host` answers with.
+
+    The one impure function in this module, and injectable at every call site so
+    no test resolves.
+    """
+    return [info[4][0] for info in socket.getaddrinfo(host, None)]
+
+
+def check_url(url: str, *, allow_hosts: AllowList, resolve=_resolve) -> UrlVerdict:
+    """May the dossier fetcher navigate to `url`?
+
+    Impure ONLY in that it calls `resolve`. The scheme and empty-host refusals live
+    here because they precede host extraction; everything after is `verdict`.
+    """
+    try:
+        # One guarded parse for the scheme. urlsplit raises ValueError on a
+        # mismatched bracket ("https://[abc"), and an unguarded call here would
+        # raise straight out of the guard even though _host handles it.
+        scheme = (urlsplit(url or "").scheme or "").lower()
+    except ValueError:
+        return UrlVerdict(False, NO_HOST, "")
+    host = _host(url)
+    if scheme not in _ALLOWED_SCHEMES:
+        # Checked BEFORE the host refusal so a scheme fixture that carries a host
+        # (ftp://host.invalid/x) reports `scheme`, and so the allowlist -- consulted
+        # only inside verdict() -- can never grant a scheme.
+        return UrlVerdict(False, SCHEME, host)
+    if not host:
+        return UrlVerdict(False, NO_HOST, "")
+    try:
+        addrs = resolve(host)
+    except OSError:
+        # Narrow on purpose: a bare `except Exception` would turn a BUG IN THIS
+        # MODULE into a tidy "blocked" verdict, and would swallow the suite's
+        # BaseException DNS guard too. socket.gaierror subclasses OSError, so the
+        # real failure mode is covered.
+        return UrlVerdict(False, RESOLVE_FAILED, host)
+    return verdict(host, addrs, allow_hosts=allow_hosts)
