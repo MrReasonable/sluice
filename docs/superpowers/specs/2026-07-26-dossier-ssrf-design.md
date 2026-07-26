@@ -544,6 +544,13 @@ hermetic seal.**
 7. **`64:ff9b:1::/48` is not extractable.** RFC 8215's local-use NAT64 prefix embeds the IPv4 address
    at a deployment-specific offset, so `_embedded_v4` cannot decode it. It is blocked today by the
    base predicate; if CPython ever reclassified it as global, the embedding rule would not catch it.
+8. **The cv consumer treats a refusal the same as an empty JD.** `cv/engine.py:66-70` catches
+   `Exception`, logs a warning, and proceeds with `jd = ""` -- unlike triage's per-item handler,
+   which skips the lead and records it in `report.failures`. Raising `DossierBlocked` rather than
+   returning an empty dossier shape is therefore inert on the cv path: either one lets composition
+   continue and render a CV from an empty job description. The raise-vs-return argument (decision 4)
+   rests entirely on triage's behaviour, not cv's. This asymmetry is pre-existing and unchanged by
+   this branch -- #18 does not touch `cv/engine.py` -- so it is noted here rather than fixed.
 
 ## Invariants upheld
 
