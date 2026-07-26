@@ -481,12 +481,21 @@ def test_receipt_proof_advance_regression_guard():
     assert text.count("## Application receipt") == 1
 
 
+def _cfg_with_example_ats():
+    """TrackConfig whose ATS denylist also carries a reserved placeholder host, merged in
+    exactly as a user's own in-house relay would be. Lets the ATS-relay fixtures below
+    exercise the relay path without naming a real vendor."""
+    cfg = TrackConfig()
+    cfg.ats_relay_domains = {**cfg.ats_relay_domains, "ats.example.invalid": "example-ats"}
+    return cfg
+
+
 class CorrobReceiptClient(FakeGoogleClient):
     def __init__(self):
         super().__init__(messages={
             # An ATS-relay sender (not the lead's own domain) whose body/subject names the
             # company -- corroborated, not proof, so reconcile proposes rather than advances.
-            "r1": {"headers": {"from": "jobs@greenhouse.io", "subject": "Your Example application"},
+            "r1": {"headers": {"from": "jobs@ats.example.invalid", "subject": "Your Example application"},
                    "body_text": "received", "thread_id": "t", "attachments": []},
         }, events=[])
 
@@ -500,7 +509,7 @@ def test_receipt_proposal_carries_real_confirm_command():
     v, _ = _vault_shortlist("https://example.com/careers/1")
     be = FakeBackend(json.dumps({"lead": None, "type": "receipt", "confidence": 0.9,
                                  "when": None, "links": [], "materials": [], "summary": "received"}))
-    rep = E.run(v, TrackConfig(), CorrobReceiptClient(), be, seen=set(), deadletter=_dl(),
+    rep = E.run(v, _cfg_with_example_ats(), CorrobReceiptClient(), be, seen=set(), deadletter=_dl(),
                 now_iso="2026-07-10T12:00:00+00:00")
     assert rep.open_proposals
     assert "--to applied" in rep.open_proposals[0].hint
