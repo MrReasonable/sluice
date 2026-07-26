@@ -527,3 +527,38 @@ def test_receipt_matching_nothing_stays_quiet():
     assert dl.open_entries() == []
     assert rep.auto == 0 and rep.proposed == 0
     assert pathlib.Path(path).read_text() == before
+
+
+def _vault_two_inflight_same_company():
+    # Two DIFFERENT leads sharing a company name, both already in-flight (past shortlist) --
+    # the LLM's own "Tidemark" guess cannot resolve uniquely between them (_resolve_lead's
+    # existing ambiguous branch), mirroring test_ambiguous_match_sets_candidates_and_no_slug's
+    # vault shape but for the fallback fields (#10 fix-round-2).
+    root = tempfile.mkdtemp()
+    leads = pathlib.Path(root, "Job Applications", "Job Leads"); leads.mkdir(parents=True)
+    p1 = leads / "Tidemark - Analyst.md"
+    p2 = leads / "Tidemark - Associate.md"
+    p1.write_text('---\ncompany: "Tidemark"\nrole: "Analyst"\nstatus: applied\n---\n\nBODY\n')
+    p2.write_text('---\ncompany: "Tidemark"\nrole: "Associate"\nstatus: applied\n---\n\nBODY\n')
+    return Vault(root), str(p1), str(p2)
+
+
+def test_receipt_ambiguous_inflight_fallback_surfaces_both_candidates():
+    # Fix round 2: an AMBIGUOUS llm fallback is still a known-lead signal (the email
+    # demonstrably concerns two real, tracked leads) and must surface too -- only a fallback
+    # resolving to NOTHING stays quiet. One dead-letter row naming BOTH candidates, neither
+    # note touched at all.
+    v, path1, path2 = _vault_two_inflight_same_company()
+    before1, before2 = pathlib.Path(path1).read_text(), pathlib.Path(path2).read_text()
+    be = FakeBackend(json.dumps({"lead": "Tidemark", "type": "receipt", "confidence": 0.9,
+                                 "when": None, "links": [], "materials": [], "summary": "received"}))
+    dl = _dl()
+    rep = E.run(v, TrackConfig(), InFlightReceiptClient(), be, seen=set(), deadletter=dl,
+                now_iso="2026-07-10T12:00:00+00:00")
+    entries = dl.open_entries()
+    assert len(entries) == 1
+    assert set(entries[0].candidates.split(",")) == {"Tidemark - Analyst", "Tidemark - Associate"}
+    assert "--to applied" not in entries[0].hint   # both candidates are in-flight -- can_apply False
+    assert rep.auto == 0 and rep.proposed == 1
+    assert pathlib.Path(path1).read_text() == before1   # neither note written
+    assert pathlib.Path(path2).read_text() == before2
