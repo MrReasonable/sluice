@@ -3,6 +3,7 @@ import hashlib
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from datetime import date
 
 # The verdict vocabulary, shared with #5's `same_opportunity`. Strings, not an enum -- core/status.py
 # sets that convention. DIFFERENT is the ONLY verdict a caller may split on.
@@ -70,6 +71,71 @@ def _compare_locations(a: str, b: str, noise=frozenset()) -> str:
     if not ta or not tb:
         return UNKNOWN
     return SAME if ta & tb else DIFFERENT
+
+
+@dataclass(frozen=True)
+class StalenessPolicy:
+    """The staleness rule in force for ONE invocation (#9), built once in `Sluice` and
+    passed whole to cv, apply and expire so none of them can disagree about it.
+
+    The default abstains. A call site that forgets to pass a policy gets ttl_days=0 and
+    therefore never marks anything stale -- fail-safe is the only acceptable direction
+    here, because the failure this guards is binning a lead the user still wants.
+
+    Pure: no clock, no store, no config. `today` is handed in, which is what makes every
+    consumer's staleness test deterministic.
+    """
+    ttl_days: int = 0
+    today: str = ""
+    include_stale: bool = False
+
+    def __post_init__(self):
+        # `Sluice`'s `today` collaborator is a zero-arg CALLABLE -- VaultSink does
+        # `today or _today` and then CALLS it (ingest/sink.py:26,31), and every test
+        # injects `lambda: "2026-07-07"`. So the tempting `today=self._today` binds a
+        # FUNCTION here, which reaches date.fromisoformat(<function>) -> TypeError. The
+        # ValueError guard in days() does NOT catch that, so the designed fail-safe
+        # abstain would become a traceback on `cv run`/`apply prep`/`leads expire`.
+        # Fail loudly at construction naming the fix instead (the house rule) -- and
+        # not by silently abstaining, which would hide a programming error as a feature
+        # that quietly does nothing.
+        if not isinstance(self.today, str):
+            raise TypeError(
+                "StalenessPolicy.today must be an ISO date string, got "
+                f"{type(self.today).__name__}: Sluice's `today` is a zero-arg callable, "
+                "so call it (`clock()`) rather than binding it")
+
+    def days(self, last_seen: str) -> int | None:
+        """Whole days from `last_seen` to `today`; None when EITHER is absent or
+        unparseable. `today` is parsed under the same guard as `last_seen`: a bad
+        injected clock must abstain for the same reason bad stored data must.
+
+        No quote-stripping is claimed here. `_fm_dict` (core/vault.py) already strips
+        surrounding quotes before any caller sees `note.fm["last_seen"]`, so a strip in
+        this layer would be a no-op carrying one store's frontmatter convention into a
+        pure value object. `.strip()` is whitespace only.
+        """
+        try:
+            then = date.fromisoformat((last_seen or "").strip())
+            now = date.fromisoformat((self.today or "").strip())
+        except ValueError:
+            return None
+        return (now - then).days
+
+    def is_stale(self, last_seen: str) -> bool:
+        """Strictly older than the TTL -- a lead last seen exactly `ttl_days` ago is not
+        yet stale. `<= 0` rather than `== 0` so a hand-built negative abstains instead of
+        expiring the entire vault; that clause is what makes an unconfigured install
+        expire nothing at all."""
+        if self.ttl_days <= 0:
+            return False
+        d = self.days(last_seen)
+        return d is not None and d > self.ttl_days
+
+    def blocks(self, last_seen: str) -> bool:
+        """The single question the cv and apply gates ask, so neither can implement the
+        `--include-stale` override differently."""
+        return self.is_stale(last_seen) and not self.include_stale
 
 
 @dataclass
