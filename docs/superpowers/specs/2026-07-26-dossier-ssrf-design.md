@@ -8,12 +8,16 @@ have broken every fetch on a real browser, that the hermeticity guard could not 
 address table could not catch its own most dangerous mutant. Round 3 (3 reviewers, 3 High, 0
 Critical) found that the settle loop would `TypeError` on every production run, that `_host` as
 specified would have stripped `www.` and checked a different host than the browser fetches, and that
-the address table was *still* one level too coarse. **One open question remains and needs a ruling —
-see the end.** The three original decisions are unchanged throughout.
+the address table was *still* one level too coarse. Round 3's escalated question — whether Camofox's
+navigate blocks — has since been **answered (it does)**, which removed the settle loop, a config key
+and the `self._sleep` bug with it. The three original decisions are unchanged throughout.
 
 A pattern worth carrying into the implementation plan: two of round 3's three High findings came
 from this spec citing a good in-repo precedent (`self._sleep`, `receipt._host`) without naming the
-part **not** to copy. Both would have shipped a guard that looked right and did nothing.
+part **not** to copy. The `self._sleep` one is now moot — the loop it applied to is gone — but it is
+*why* that loop was deleted rather than patched. The `receipt._host` one is live and called out
+inline.
+
 **Issue:** #18 — `Harden the dossier fetcher against SSRF (scheme + private-IP + post-redirect)`
 **Sub-app:** `core` (the fetcher seam's only untrusted-input call site)
 
@@ -86,7 +90,8 @@ input.
 > browser will see it**. The pure `_host` table carries a row for this
 > (`http://www.jobs.invalid/x` → `www.jobs.invalid`, not `jobs.invalid`) and a delete-mutant
 > witness. This is the second place in this spec where citing a good precedent without naming the
-> part not to copy would have shipped a broken guard — see the settle loop's `self._sleep` note.
+> part not to copy would have shipped a broken guard; the other (`self._sleep`) is recorded in the
+> closure section.
 
 **The non-ASCII check runs on the raw URL, before `urlparse`.** This is not a stylistic preference:
 `urlparse("http://Kexample.invalid/x").hostname` is `'kexample.invalid'`, which `.isascii()`
@@ -341,14 +346,11 @@ witness. The redundant lookup for an allowlisted host is free — we are about t
 
 ### `sluice/core/config.py`
 
-Two root-`Config` fields, beside `fetcher: str = "camofox"`:
+One root-`Config` field, beside `fetcher: str = "camofox"`:
 
 - `dossier_allow_hosts: list = field(default_factory=list)`
-- `dossier_settle_seconds: float = 3.0` — the bounded deadline for the post-check (below), matching
-  `BrowserListSource.wait`'s existing default. Environmental rather than a preference, so it is a
-  config knob per rule 13 rather than a constant.
 
-Neither belongs in `TriageConfig`/`CvConfig`: `dossier_cache` is called from **both** sub-apps
+It does not belong in `TriageConfig`/`CvConfig`: `dossier_cache` is called from **both** sub-apps
 (`app.py:402` triage, `app.py:436` cv), and a security policy that could differ between them is a
 bug.
 
@@ -365,71 +367,50 @@ licence to loosen the guard.
 ### `sluice/core/app.py` — the `dossier_cache` fetch closure
 
 ```
-sleep = self._sleep or time.sleep        # self._sleep is None in production -- see below
 url present?
   pre-check   check_url(url, allow_hosts=cfg.dossier_allow_hosts, resolve=self._resolve_host)
               blocked -> log WARNING(reason, host); raise DossierBlocked(reason)   (no tab opened)
-  create_tab(url) -> tid
-  SETTLE      up to _SETTLE_POLLS times:
-                res = evaluate(tid, "location.href")
-                not a dict / no "result" / not a str  -> close_tab; raise DossierBlocked("landed-unreadable")
-                "" or "about:blank"                   -> sleep(cfg.dossier_settle_seconds / _SETTLE_POLLS); retry
-                anything else                         -> SETTLED, break
-              exhausted -> close_tab; raise DossierBlocked("not-settled")
-  post-check  check_url(settled_url, ...)
-              blocked -> close_tab; raise DossierBlocked("landed-blocked")
+  create_tab(url) -> tid            # BLOCKS until DOMContentLoaded (see below)
+  post-check  res = evaluate(tid, "location.href")
+              not a dict / no "result" / not a str -> close_tab; raise DossierBlocked("landed-unreadable")
+              "" or "about:blank"                  -> close_tab; raise DossierBlocked("not-settled")
+              else check_url(landed, ...) blocked  -> close_tab; raise DossierBlocked("landed-blocked")
   read        evaluate(tid, "document.body.innerText"); close_tab
 ```
 
-**The settled predicate is exactly three outcomes, stated so two implementers write the same thing:**
-a malformed envelope is `landed-unreadable` **immediately** (a fetcher that cannot answer is broken,
-not slow — leaving it inside the retry branch would make that slug unreachable); `""` or
-`about:blank` is "not yet navigated" and retries; anything else is settled and goes to the
-post-check, which decides on its own merits. A settled URL that is not http(s) therefore comes back
-as `scheme` from `check_url`, not as `not-settled`.
+**Camofox's navigate BLOCKS — verified, and it is why there is no settle loop.**
+`Camofox.create_tab` (`core/camofox.py:45-54`) fires `navigate` as a separate
+`POST /tabs/{tid}/navigate`. That endpoint's handler **awaits** `page.goto(url, {waitUntil:
+'domcontentloaded', timeout: 30000})` before sending its HTTP response, so `create_tab` does not
+return until the DOM is parsed. Corroborated five ways: the indexed source (`server.js:420`); a
+primary-source line in the same file showing that exact awaited idiom; sluice's own `_TIMEOUT = 45`
+sitting just above the server's 30s navigation timeout; the shipped sources sleeping 3s *after*
+`create_tab` for JS render, which only makes sense if navigation itself already completed; and
+ecosystem troubleshooting that treats a navigate timeout as "Playwright `waitUntil` condition not
+met".
 
-**The loop is bounded by POLL COUNT, not wall-clock.** `_SETTLE_POLLS` is a module constant (6);
-`dossier_settle_seconds` sets the total budget and the per-poll interval is the quotient. A
-wall-clock deadline is untestable here: both harness wirings inject `sleep=lambda *a, **k: None`
-(`tests/harness/config.py:96`), so a monotonic 3.0s deadline under a no-op sleep was measured at
-**3.00s over 23.2M polls** against a 2.163s baseline suite — it would dominate the run time and
-falsify this spec's own claim that the test does not wall-clock. Six polls terminate instantly under
-a no-op sleep and take the full budget under a real one.
+Three consequences, all of which simplify this design:
 
-**`self._sleep` is `None` in production — the closure must normalise it.** `Sluice.__init__` stores
-the parameter raw (`app.py:181`) and every `cli.py` construction is a bare `Sluice(config)`. Ingest
-survives this only because `Ctx.__post_init__` converts `None` → `time.sleep`
-(`ingest/base.py:41-43`); the dossier closure has no such conversion. A settle loop calling
-`self._sleep(interval)` directly would raise `TypeError` on the **first cache miss of every real
-run**, both consumers would swallow it, and the symptom would be identical to having no settle loop
-at all. **No specified test would catch it**: both harness wirings inject a sleep, so the fake
-settles on poll 1 and the sleep is never reached. All three round-3 reviewers found this
-independently. The repo already pins the same trap one layer down —
-`tests/test_app_injection.py:113` — and this spec's test list carries the mirror.
+- **This change does not alter existing dossiers.** The tab is never at `about:blank` when the
+  closure probes it, so today's closure is not reading unsettled bodies and the JD text of existing
+  dossiers is unaffected. That question is now closed.
+- **No settle loop, no `dossier_settle_seconds`, no sleep.** An earlier draft specified a bounded
+  poll loop on the `sleep` collaborator. It was unearned, and it carried a production-breaking bug
+  all three round-3 reviewers found independently: `self._sleep` is `None` in every real `Sluice`
+  (`app.py:181` stores it raw; every `cli.py` construction is bare `Sluice(config)`; ingest survives
+  only via `Ctx.__post_init__`), so the loop would have raised `TypeError` on the first cache miss
+  of every run while the suite stayed green. Deleting the loop removes the bug, the config key, the
+  poll-count-vs-wall-clock question and the `self._sleep` normalisation together.
+- **`not-settled` survives as a one-line assertion, not a loop.** If `location.href` ever comes back
+  `""` or `about:blank`, the blocking-navigate assumption has been violated — a different fetcher, a
+  changed server — and the closure fails loudly and closed rather than checking a URL the browser
+  never went to. It is cheap, it names the assumption, and it cannot regress into the
+  every-lead-blocked failure because it does not gate the ordinary path.
 
-**Why the loop exists at all, and the one premise this spec cannot verify offline.**
-`Camofox.create_tab` (`core/camofox.py:45-54`) opens the tab and then fires `navigate` as a
-*separate* `POST /tabs/{tid}/navigate`. Whether that POST **returns before the page has loaded** is a
-property of the Camofox *server*, not of this client, and it cannot be settled without a live server
-— `core/camofox.py:15` (`_TIMEOUT = 45  # seconds; Camofox navigations can be slow to settle`) reads
-as though the call may well block. An earlier draft asserted flatly that it does not wait. That was
-unverified, and it is flagged as an open question below.
-
-**The design is correct either way, which is why it does not block on that answer.** The post-check
-needs one `evaluate("location.href")` regardless; the loop only *retries* that probe when it comes
-back `about:blank`. If navigate blocks, poll 1 returns the real URL, the loop exits with zero sleeps
-and costs nothing. If navigate does not block, the loop is what stops the closure reading
-`about:blank`, failing the scheme check and raising for **every lead** — `judged=0`, every keep into
-`report.failures`, every CV composed on an empty JD. Both existing read-back sites sleep before
-probing (`ingest/base.py:140-153`, `ingest/sources/linkedin.py:45-53`), which is at least
-circumstantial evidence for the second case.
-
-None of this is falsifiable offline — `tests/harness/browser.py:38-42` answers `location.href`
-synchronously — which is why the first draft's version survived a full round of review.
-
-`not-settled` is a **distinct reason slug** from `landed-blocked`: "the page never loaded" and "the
-page loaded somewhere forbidden" are different operator problems, and collapsing them would make a
-misconfigured browser look like an attack.
+**HTTP redirects are followed before the probe; client-side ones are not.** `page.goto` resolves
+after following 3xx redirects, so the post-check sees the *final* URL for the server-side redirect
+vector — the main one. A `meta refresh` or JS `location=` fires after DOMContentLoaded and is
+residual 5.
 
 Two further details:
 
@@ -449,7 +430,6 @@ conformance suite to carry it.
 
 `Sluice.__init__(self, config=None, *, sleep=None, today=None, **overrides)` gains a keyword-only
 `resolve_host=None`, stored as `self._resolve_host`. `None` means production's `urlguard._resolve`.
-The settle loop reuses the **existing** `self._sleep` collaborator — no second injection point.
 
 **Why a collaborator and not a seam** — the governing rule is already written at
 `docs/ARCHITECTURE.md:284-296`: *"does a user legitimately choose among implementations?"* Its safety
@@ -524,7 +504,7 @@ specified above, that omission fails loudly.
 
 ### `sluice.yaml.example`
 
-A commented `dossier_allow_hosts` block plus `dossier_settle_seconds`, in the adapter-seams region,
+A commented `dossier_allow_hosts` block, in the adapter-seams region,
 documenting both entry forms and that an empty list grants nothing rather than blocking everything.
 Values are pinned here rather than left to the implementer: `jobs.invalid` and `10.0.0.0/8`. A whole
 RFC 1918 block encodes nothing about anyone's network, where a specific /24 would — and for the same
@@ -549,12 +529,13 @@ hermetic seal.**
 4. **Port is not policy.** `http://<global-host>:22/` is permitted: the destination is a global
    address, so it is not an internal-network reach, and filtering ports would refuse legitimate
    boards on non-standard ports.
-5. **A late redirect can still outrun the settle loop.** The loop waits for navigation to *start*
-   producing a real URL; a redirect firing after that point can leave the post-check validating the
-   pre-redirect URL while the body probe returns post-redirect content. Bounding the deadline
-   shrinks the window and eliminates the `about:blank` failure that would have broken every fetch,
-   but does not close it. Not witnessable offline — `tests/harness/browser.py:42` answers
-   synchronously — so it is recorded here rather than tested.
+5. **A client-side redirect lands after the probe.** `page.goto` resolves at **DOMContentLoaded**,
+   having followed any HTTP 3xx redirects — so the post-check does see the final URL for the
+   server-side vector. It does **not** see a `meta refresh` or a JS `location=`, which fire after
+   that point: the post-check validates the pre-redirect URL while the body probe can return
+   post-redirect content. This is the sharpest remaining hole, and it is narrower and better
+   understood than when it was written as "an unsettled tab". Not witnessable offline —
+   `tests/harness/browser.py:42` answers synchronously.
 6. **A refusal is split across two streams.** `report.failures` reaches the operator on **stdout**
    (`cli.py:219`) while the host reaches them on **stderr** (the WARNING). A run piped with
    `2>/dev/null` keeps the count and loses the host, which is the half needed to write an allowlist
@@ -625,19 +606,15 @@ asserts the raised message contains **neither** the entry value nor any other li
 `location.href` reports a blocked destination raises `landed-blocked` with
 `document.body.innerText` **never evaluated** and the tab closed; a fetcher returning a malformed
 `location.href` envelope raises `landed-unreadable` **on the first poll** (not after the deadline);
-a fetcher that never leaves `about:blank` raises `not-settled` after exactly `_SETTLE_POLLS` probes,
-with the injected `sleep` asserted to have been called that many times (so the loop is real, and the
-poll-count bound keeps the test instant under the harness's no-op sleep); a fetcher that returns
-`about:blank` once and then a good URL **settles and fetches** (the positive control for the loop —
-without it, a mutant that deleted the retry and kept the raise would still pass the `not-settled`
-test). Absence assertions record the fake's **exact probe sequence** and pair with the allowed-URL
+a fetcher reporting `about:blank` (or `""`) raises `not-settled` — the assertion that navigate
+blocked — paired with the allowed-URL control where a real landed URL fetches normally. Absence assertions record the fake's **exact probe sequence** and pair with the allowed-URL
 positive control, where the body probe *does* appear.
 A test asserts `str(DossierBlocked(...))` contains neither the host nor the URL.
 
-**Production sleep normalisation:** a test constructs a `Sluice` with **no** `sleep` and drives a
-dossier fetch whose fake needs at least two polls, asserting it settles rather than raising
-`TypeError`. This mirrors `tests/test_app_injection.py:113`'s ingest equivalent, and it is the only
-test that would catch the `self._sleep is None` bug — every other fake settles on poll 1.
+**Production construction:** a test drives a dossier fetch through a `Sluice` built the way `cli.py`
+builds one — bare `Sluice(config)`, no injected collaborators except the fetcher — asserting it
+fetches rather than raising. The closure touches no collaborator that is `None` in production; this
+pins that, and would have caught the `self._sleep` bug the deleted settle loop carried.
 
 **Consumer-level, each with a positive control over the same fixture and asserted path, differing
 only in the URL's address class:** after a blocked fetch a triage run leaves the lead's status
@@ -708,10 +685,9 @@ Mutate by **moving or deleting**, never adding. Run each by node id, confirm the
 | delete the empty-host refusal | `http:///etc/passwd` (confirm no scheme case catches it) |
 | **move** the non-ASCII check after `urlparse` | the raw-URL KELVIN case |
 | delete the pre-check | "blocked URL never calls `create_tab`" |
-| delete the settle loop's retry (keep the raise) | the settles-on-poll-2 positive control |
-| delete `or time.sleep` from the closure's sleep normalisation | the no-injected-sleep test |
 | drop the multicast term from the **payload** check (`emb.is_global` only) | **`64:ff9b::224.0.0.1`** |
-| add `www.`-stripping to `_host` (delete-mutant: remove the row's expectation) | `http://www.jobs.invalid/x` |
+| delete the `about:blank` / empty-landed refusal | the `not-settled` test |
+| *(the one non-delete mutant)* restore `receipt._host`'s `www.`-stripping last line | `http://www.jobs.invalid/x` |
 | delete the post-check | the redirected-fetcher test |
 | replace exact-equality allowlist matching with a suffix test | `evil.example.jobs.invalid` |
 | delete the trailing-dot normalisation | the `http://jobs.invalid./x` grant test |
@@ -724,14 +700,19 @@ The last two are stated that way deliberately: "the blast-radius tests start doi
 observable red signal without the `BaseException` guard, and the `return` mutant is caught by the
 `report.failures` assertion plus the pinned judge verdict, not by an unpinned status byte.
 
+The `www.` entry is deliberately the one **addition** in this list, and the exception proves the
+rule: it guards an *omission* — a line this spec tells the implementer not to copy — so there is
+nothing to delete. Every other mutant removes or moves existing code, because a check added beside
+the original is an equivalent mutant that stays green.
+
 **Commit before witnessing.** A witness script restoring via `git checkout -- <file>` wipes
 uncommitted changes in that file, and the empty post-run diff hides the loss.
 
 ## Scope
 
-`core/urlguard.py` (new); two root-`Config` fields plus a dedicated validator; one keyword-only
+`core/urlguard.py` (new); one root-`Config` field plus a dedicated validator; one keyword-only
 `Sluice.__init__` parameter plus the `_COLLABORATORS` messaging tightening; the closure's pre-check,
-settle loop and post-check; a `Fetcher` docstring paragraph in `core/protocols.py`; a
+post-check; a `Fetcher` docstring paragraph in `core/protocols.py`; a
 `sluice.yaml.example` block. Test side: `tests/conftest.py` (the `getaddrinfo` guard),
 `tests/harness/config.py`, `tests/functional/conftest.py`, `tests/test_app_operations.py`.
 
@@ -745,22 +726,32 @@ auto-applied.
 No new dependency, no adapter-seam change, no new CLI command, no protocol *signature* change.
 Ingest is untouched.
 
-## Open question — needs a ruling before implementation
+## Resolved: does Camofox's navigate block?
 
-**Does Camofox's `POST /tabs/{id}/navigate` return before the page has loaded?** This spec cannot
-answer it: it is a property of the Camofox server, not of `core/camofox.py`, and settling it needs a
-live server. It does not block the *design* — the settle loop is correct and free either way (see
-the closure section) — but it does determine one thing worth knowing before merging:
+**Yes — it awaits `page.goto(url, {waitUntil: 'domcontentloaded', timeout: 30000})` before
+responding.** Raised as an open question by the round-3 architecture review, which correctly refused
+the earlier draft's unverified assertion that it does not. Evidence, none of it requiring a live
+server:
 
-- If navigate does **not** block, today's closure already reads bodies from unsettled tabs, and this
-  change will alter the JD text of dossiers for existing users on the next rebuild. That is a
-  behaviour change worth stating in the PR, not a bug this PR introduces.
-- If navigate **does** block, `dossier_settle_seconds` is insurance that never pays out, and could
-  reasonably be dropped to a module constant.
+1. The indexed upstream source (`jo-inc/camofox-browser`, `server.js:420`) describes the navigate
+   handler awaiting `page.goto` with that option set and timeout before sending its response.
+2. A primary-source line from the same file shows exactly that idiom, awaited:
+   `await withPageLoadDuration('navigate', () => page.goto(..., { waitUntil: 'domcontentloaded', timeout: 30000 }))`.
+3. sluice's own `_TIMEOUT = 45` (`core/camofox.py:15`) sits just above the server's 30s navigation
+   timeout — a relationship that only makes sense if the client waits on the navigation.
+4. Every shipped source sleeps 3s **after** `create_tab` (`ingest/base.py:144`, `:197`), which reads
+   as time for JS render past DOMContentLoaded, not as a substitute for navigation itself.
+5. Ecosystem troubleshooting treats a navigate timeout as a Playwright `waitUntil` condition not
+   being met — advice that only applies to a blocking call.
 
-Cheapest resolution: one `sluice ingest test-source <id> --raw` style probe against a live Camofox,
-timing `create_tab` against a slow-loading URL. Not run here — driving a live browser is a
-side-effecting action outside what this spec's review needs.
+Not seen: the literal route-handler line, which is past the point where the raw file truncates.
+Confidence is high but not first-hand, so the design does not *depend* on it — the `not-settled`
+assertion fails closed and loudly if the assumption is ever violated.
+
+**What it settles:** this change does **not** alter the JD text of existing dossiers (the tab is
+never at `about:blank` when probed), the settle loop and `dossier_settle_seconds` are unearned and
+have been removed, and residual 5 narrows from "an unsettled tab" to the precise and much smaller
+"a client-side redirect firing after DOMContentLoaded".
 
 ## Decisions taken across three review rounds
 
@@ -770,13 +761,12 @@ side-effecting action outside what this spec's review needs.
    asserting the premises on whatever interpreter runs.
 3. **Fixture addresses** — `192.88.99.1` and `2001:20::1`, no ownership annotation.
 4. **Failure contract** — raise `DossierBlocked` (reason slug only), do not return an empty dossier.
-5. **Post-check** — bounded settle loop on the existing `sleep` collaborator, `not-settled` as its
-   own slug.
+5. **Post-check** — a single probe, no settle loop: Camofox's navigate blocks until DOMContentLoaded
+   (verified), so `not-settled` is a one-line assertion that the assumption still holds, not a
+   retry.
 6. **Hermeticity** — a `BaseException`-raising session fixture, plus a narrow `OSError` resolver
    catch, replacing the enumeration as the load-bearing guarantee.
-7. **Settle loop bound** — poll count, not wall-clock, so a no-op injected sleep cannot make the
-   test spin (measured: 23.2M polls over 3.00s against a 2.163s baseline suite).
-8. **`_host` does not strip `www.`** — the one part of `receipt._host` that must not be copied.
+7. **`_host` does not strip `www.`** — the one part of `receipt._host` that must not be copied.
 
 Nothing in this spec is a TBD. The one judgment deliberately left unresolved in code is residual 6
 (`64:ff9b:1::/48` is undecodable); it is documented rather than guessed at.
