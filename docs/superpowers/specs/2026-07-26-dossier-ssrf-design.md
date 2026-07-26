@@ -496,10 +496,11 @@ or silently exercises the blocked path.
 **The durable fix is the guard, not the list.** A session-scoped autouse fixture in
 `tests/conftest.py` replaces `socket.getaddrinfo` with a raiser — verified achievable: installing it
 leaves the current suite fully green, so the suite performs zero DNS today. **The raiser must
-subclass `BaseException`, not `Exception`.** A plain `Exception` is swallowed twice — first by
-`check_url`'s own fail-closed rule, which turns a raising resolver into a *verdict*, then by
-`cv/engine.py:66-71` — so an implementer who forgot `resolve_host` in the functional conftest (the
-exact round-1 miss) would still see green. With `BaseException` plus the narrow `OSError` catch
+subclass `BaseException`, not `Exception`.** A plain `Exception` would be swallowed by the
+CONSUMERS — `cv/engine.py:66-71`, which proceeds with an empty JD, or triage's per-item handler —
+so an implementer who forgot `resolve_host` in the functional conftest (the exact round-1 miss)
+would still see green. (`check_url`'s own catch is `OSError`-only and would NOT swallow it; an
+earlier draft claimed it would, and that claim was false.) With `BaseException` plus the narrow `OSError` catch
 specified above, that omission fails loudly.
 
 ### `sluice.yaml.example`
