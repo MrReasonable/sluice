@@ -544,7 +544,15 @@ class Sluice:
                             dry_run=dry_run)]
         except VaultConflict as e:
             _log.warning("cv re-tailor for %s lost the write race: %s", notes[0].ref, e)
-            return [CvResult(notes[0].ref, "error")]
+            # run_one stamps dossier_failed onto the exception before re-raising it (see
+            # its own comment) precisely so THIS catch does not under-report "N CV(s)
+            # composed blind" for a lead whose dossier was blocked by the SSRF guard and
+            # which then also lost the write race -- the same defect run_batch's
+            # catch-all was fixed against one commit ago; this is its second call site.
+            # `getattr(..., False)` also covers a VaultConflict raised by code that
+            # predates #18 and so never carries the attribute.
+            return [CvResult(notes[0].ref, "error",
+                             dossier_failed=getattr(e, "dossier_failed", False))]
 
     def sign_off_cv(self, *, lead, accept=True, confirm=None):
         """Resolve a shortlisted lead by slug ONCE and resolve its #60 sign-off hold via the

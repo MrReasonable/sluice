@@ -186,10 +186,55 @@ def test_an_unknown_seam_message_is_unchanged_for_existing_callers():
     assert str(e) == "unknown backend 'nope' (registered: a, b)"
 
 
-def test_resolve_host_defaults_to_the_production_resolver():
-    """Without this, a wiring that ALWAYS used a fake would ship green."""
+def test_resolve_host_defaults_to_the_production_resolver(tmp_path, monkeypatch):
+    """Without this, a wiring that ALWAYS used a fake would ship green.
+
+    The previous version of this test asserted only `_resolve_host is None` and
+    `callable(urlguard._resolve)` -- both trivially true, and both still true of a
+    closure that never calls the module resolver at all. A regression that dropped
+    the `self._resolve_host or urlguard._resolve` fallback in `dossier_cache`
+    (core/app.py) entirely would still pass it. Drive a real cache miss through the
+    PRODUCTION wiring -- `resolve_host=None`, the shape every `cli.py` construction
+    uses, e.g. bare `Sluice(config)` -- and assert `urlguard._resolve` is the thing
+    that actually gets called, with the lead's host. A fake Fetcher keeps this
+    offline; the session-wide DNS guard in conftest.py is never reached because the
+    sentinel replaces `_resolve` before any socket call would happen.
+    """
     from sluice.core import urlguard
+    from tests.harness.config import FIXTURE_ADDR
+
     assert Sluice(Config())._resolve_host is None
     assert Sluice(Config(), resolve_host=None)._resolve_host is None
-    # and the closure resolves that None to the real one -- asserted in Task 8.
-    assert callable(urlguard._resolve)
+
+    calls = []
+
+    def _sentinel(host):
+        calls.append(host)
+        return [FIXTURE_ADDR]
+
+    monkeypatch.setattr(urlguard, "_resolve", _sentinel)
+
+    class _Tab:
+        """A fake Fetcher -- no browser is touched by this test."""
+        def create_tab(self, url):
+            return "tab-1"
+
+        def evaluate(self, tid, js):
+            if js == "location.href":
+                return {"result": "https://jobs.invalid/x"}
+            return {"result": "JD BODY"}
+
+        def close_tab(self, tid):
+            pass
+
+    # Bare `Sluice(config, fetcher=...)` -- resolve_host left at its default (None),
+    # exactly like every real `cli.py` construction.
+    app = Sluice(Config(), fetcher=_Tab())
+    cache = app.dossier_cache(str(tmp_path), ttl_days=7)
+    dossier = cache.get_or_build({"url": "https://jobs.invalid/x",
+                                 "company": "Acme", "role": "Engineer"})
+
+    assert dossier["jd"]["markdown"] == "JD BODY"
+    assert calls, ("urlguard._resolve was never reached -- the production fallback "
+                  "(`self._resolve_host or urlguard._resolve`) is dead")
+    assert all(h == "jobs.invalid" for h in calls)
