@@ -267,21 +267,80 @@ class Sluice:
     def dossier_cache(self, dossier_dir, ttl_days):
         """A DossierCache whose fetcher is resolved lazily on the first cache miss, so a
         --no-llm or fully-cached run never opens a browser. JD text read via
-        evaluate(document.body.innerText) -- the same {"result": ...} shape ingest uses."""
+        evaluate(document.body.innerText) -- the same {"result": ...} shape ingest uses.
+
+        The lead url comes off a scraped listing, so it is guarded (#18): checked before
+        a tab is opened, and the LANDED url re-checked before the body is read. A refusal
+        RAISES rather than returning an empty dossier -- see the comment on the raise.
+        """
+        import typing  # noqa: F401  (NoReturn annotation on _refuse below)
+
         from sluice.core.dossier import DossierCache
+        from sluice.core import urlguard
+        # Parsed once per cache, not per fetch. Raises here if a Config was built by
+        # hand with a malformed list (load_config validates the same way).
+        allow = urlguard.parse_allow_hosts(
+            getattr(self.config, "dossier_allow_hosts", []))
+        # `or` the module default: self._resolve_host is None unless a test injects one.
+        resolve = self._resolve_host or urlguard._resolve
         cam = {}
+
+        def _refuse(reason, host="") -> "typing.NoReturn":
+            """Log and RAISE. Never returns.
+
+            It raises rather than returning the exception for the caller to raise:
+            with a returning helper, dropping one `raise` keyword downgrades a
+            refusal to a logged warning followed by a fall-through that reads and
+            returns the body. That one-token deletion is precisely Task 9's own
+            mutant, so the shape must make it impossible rather than merely tested.
+            """
+            _log.warning("dossier fetch refused (%s) host=%s", reason, host or "?")
+            # The exception carries the SLUG ONLY: cv/engine.py logs str(e) verbatim
+            # and triage/engine.py stores it in report.failures.
+            raise urlguard.DossierBlocked(reason)
+
         def fetch(lead: dict) -> dict:
             md, url = "", lead.get("url")
             if url:
+                pre = urlguard.check_url(url, allow_hosts=allow, resolve=resolve)
+                if not pre.allowed:
+                    _refuse(pre.reason, pre.host)
                 if "client" not in cam:
                     cam["client"] = self.fetcher()
                 c = cam["client"]
                 tid = c.create_tab(url)
-                if tid:
-                    res = c.evaluate(tid, "document.body.innerText")
-                    md = res.get("result") if isinstance(res, dict) else ""
+                if not tid:
+                    # PRE-EXISTING behaviour was to fall through and return the empty
+                    # dossier shape here. That is the outcome this whole feature exists
+                    # to prevent: get_or_build CACHES it for ttl_days, triage judges the
+                    # lead on a JD nobody read, apply_verdict writes a status from it,
+                    # and report.failures stays empty. Raising costs one retry next run.
+                    _refuse(urlguard.NO_TAB, pre.host)
+                # Camofox's navigate awaits page.goto(waitUntil='domcontentloaded'),
+                # so the tab HAS navigated by now and HTTP redirects are already
+                # followed. The checks below assert that rather than trusting it.
+                res = c.evaluate(tid, "location.href")
+                landed = res.get("result") if isinstance(res, dict) else None
+                if not isinstance(landed, str):
                     c.close_tab(tid)
+                    _refuse(urlguard.LANDED_UNREADABLE)
+                if not landed or landed == "about:blank":
+                    c.close_tab(tid)
+                    _refuse(urlguard.NOT_SETTLED)
+                post = urlguard.check_url(landed, allow_hosts=allow, resolve=resolve)
+                if not post.allowed:
+                    c.close_tab(tid)
+                    _refuse(urlguard.LANDED_BLOCKED, post.host)
+                # Only now is the body safe to pull into memory.
+                body = c.evaluate(tid, "document.body.innerText")
+                md = body.get("result") if isinstance(body, dict) else None
+                c.close_tab(tid)
+                if not isinstance(md, str):
+                    # Same reasoning as no-tab: a non-string body used to become a
+                    # cached empty JD indistinguishable from a real empty one.
+                    _refuse(urlguard.BODY_UNREADABLE, pre.host)
             return {"jd": {"markdown": md or ""}, "glassdoor": {}}
+
         return DossierCache(dossier_dir, ttl_days, fetcher=fetch)
 
     def ingest(self, sources, *, dry_run=False, json_sink=False, out=None):

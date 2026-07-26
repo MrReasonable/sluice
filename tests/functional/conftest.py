@@ -23,6 +23,7 @@ import pytest
 import sluice.core.app as app_mod
 from sluice.cli import main
 from tests.harness import build_harness
+from tests.harness.config import harness_resolve
 from tests.harness.registry import isolate_plugin_registry  # noqa: F401  (autouse fixture)
 
 
@@ -50,6 +51,7 @@ def cli(tmp_path, monkeypatch, capsys):
                 kw.setdefault("backend", backend)     # None is filtered by __init__
                 kw.setdefault("sleep", lambda *a, **k: None)
                 kw.setdefault("today", today)
+                kw.setdefault("resolve_host", harness_resolve)
                 super().__init__(config, **kw)
 
         monkeypatch.setattr(app_mod, "Sluice", _HarnessSluice)
