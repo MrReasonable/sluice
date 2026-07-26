@@ -65,38 +65,51 @@ This section supersedes the earlier "registrable last-two-labels" heuristic, whi
 multi-part TLDs (`bigco.co.uk` and `random.co.uk` both reduce to `co.uk`). Matching is done on
 **full hosts**, never on a reconstructed registrable domain, so there is no eTLD+1 to get wrong.
 
-Host extraction (deterministic, from the raw `msg` dict — never from the LLM's `ev.links`):
+> **Superseded during implementation (pre-push review, Critical).** The rule below originally
+> admitted **apply-link hosts** — every host found in `msg["body_text"]` — as receipt hosts
+> alongside the sender. Two things were wrong with that, and both are corrected in the text that
+> follows. (1) Body links are **sender-controlled** footer content: any sender can link anything, so
+> a link proves nothing about who sent the mail, and admitting them let an unrelated sender supply
+> both a proof host and the ATS-relay flag. (2) The proof tier assumed a lead's `fm["url"]` host
+> identifies the **employer**; sluice scrapes job **boards**, so for most leads that host is a
+> multi-tenant aggregator, and `ats_relay_domains`' eight ATS vendors do not cover them.
+
+Host extraction (deterministic, from the raw `msg` dict — never from the LLM's `ev.links`, and
+never from the body):
 - **sender host** — parse `msg["headers"]["from"]` for the email address, take its domain,
-  `.lower()`, strip a leading `www.`.
-- **apply-link hosts** — `urllib.parse.urlparse(u).hostname` for each URL found in
-  `msg["body_text"]`, lowercased, `www.`-stripped.
+  `.lower()`, strip a leading `www.`. This is the *only* receipt host.
 - **lead host** — `urlparse(note.fm["url"]).hostname`, lowercased, `www.`-stripped. A lead with an
   empty `url` has no host and can never match (abstain — a url-less lead is not evidence).
 
 Predicates:
 - `is_ats(host)` — True iff `host == K` or `host.endswith("." + K)` for some key `K` in
   `ats_relay_domains` (so `boards.greenhouse.io` matches key `greenhouse.io`).
+- `is_multi_tenant(host)` — the same suffix test against `ats_relay_domains` **and**
+  `job_board_domains` (the boards sluice ships ingest sources for, keyed by registrable domain, so
+  one key covers a board's subdomains). These are the hosts shared by many employers.
 - `hosts_match(a, b)` — True iff `a == b` or `a.endswith("." + b)` or `b.endswith("." + a)`
   (equality or a subdomain relationship in either direction, on **full hosts**). `random.co.uk` and
   `bigco.co.uk` do **not** match — neither is a subdomain of the other.
 
-Resolution over the shortlist set (each lead `L` with host `H_L`, each receipt host `R`):
-- **proof-eligible** `L`: some `R` with `hosts_match(R, H_L)` and **not** `is_ats(R)` and **not**
-  `is_ats(H_L)`. (An ATS host on either side is never proof — `boards.greenhouse.io` is shared by
-  every greenhouse-hosted lead, so it proves nothing about *which* company.)
-- **corroborated-eligible** `L`: some `R` with `is_ats(R)` **and** `L`'s company tokens all appear in
+Resolution over the shortlist set (each lead `L` with host `H_L`, sender host `S`):
+- **proof-eligible** `L`: `hosts_match(S, H_L)` and **not** `is_multi_tenant(S)` and **not**
+  `is_multi_tenant(H_L)`. (A multi-tenant host on either side is never proof — `boards.greenhouse.io`
+  is shared by every greenhouse-hosted lead and `linkedin.com` by every board-sourced one, so
+  neither proves anything about *which* company. The lead-side test is not redundant: a
+  non-registrable configured host would leave its parent readable as a non-shared sender.)
+- **corroborated-eligible** `L`: `is_ats(S)` **and** `L`'s company tokens all appear in
   the subject+body (token match, reusing the tokenization already in `core/leads.py`).
+
+The consequence is accepted deliberately: a board-sourced lead can no longer be proof-matched, so it
+degrades to corroboration or to a proposal. A missed auto-advance costs one confirmation; a wrong
+one silently suppresses a real application and is effectively irreversible.
 
 `match_receipt` returns `ReceiptMatch(lead_slug: str | None, tier: str, candidates: list[str])`,
 `tier ∈ {"proof", "corroborated", "none"}`:
-- exactly one proof-eligible lead, and no OTHER lead is corroborated-eligible →
-  `(slug, "proof", [])`.
-- exactly one proof-eligible lead, but a DIFFERENT lead is also corroborated-eligible →
-  `(None, "corroborated", sorted(set(proof) | set(corrob)))` — **cross-tier ambiguity, propose**
-  (added after this design, during implementation: an ATS receipt routinely also links the
-  company's own site in a "view your application" footer, so a proof match on one lead plus a
-  corroborated match on a *different* lead is genuine ambiguity, not a tie-break — silently
-  advancing the proof winner would advance the WRONG lead).
+- exactly one proof-eligible lead → `(slug, "proof", [])`. (An implementation-time *cross-tier
+  ambiguity* branch — one proof lead plus a DIFFERENT corroborated lead — has been removed along
+  with body links: corroboration now requires an ATS sender and proof requires a non-multi-tenant
+  one, so the two tiers are disjoint by construction and the branch was unreachable.)
 - more than one proof-eligible lead → `(None, "corroborated", [slugs])` — **ambiguous, propose**.
 - else exactly one corroborated-eligible lead → `(slug, "corroborated", [])`.
 - more than one corroborated-eligible lead → `(None, "corroborated", [slugs])` — propose.
@@ -111,17 +124,20 @@ would match multiple leads and be caught by the ambiguity refusal (→ propose),
 advance it: a residual the ambiguity rule cannot see, accepted and documented, and shrunk by keeping
 the ATS/shared-host default current. (The residual is not ATS-specific — `hosts_match` is bidirectional,
 so any shared parent domain shared by a lead and a receipt is in scope.)
-Emptying `ats_relay_domains` disables the ATS *safety downgrade* (a shared-host ATS could then read as
-proof for a lone lead); it is a safety denylist, **not** a preference gate, and its default is
-non-empty by design (the list-only neutral-defaults sweep does not touch this dict — see #26/#63).
-Document this in `sluice.yaml.example`.
+Emptying `ats_relay_domains` or `job_board_domains` disables the *safety downgrade* (a shared host
+could then read as proof for a lone lead); both are safety denylists, **not** preference gates, and
+both defaults are non-empty by design (the list-only neutral-defaults sweep does not touch these
+dicts — see #26/#63). For the same reason a user block **merges over** the shipped default rather
+than replacing it: adding one in-house ATS must not drop the shipped entries, since that widens the
+proof tier. Document this in `sluice.yaml.example`.
 
 ## Components
 
 ### `sluice/track/receipt.py` (new — pure, the testable core)
 
 - Implements `match_receipt` and the predicates above. No I/O; takes the raw `msg` dict (a plain
-  dict, like `Source.parse`'s input — purity holds) plus the shortlist leads and the ATS map.
+  dict, like `Source.parse`'s input — purity holds) plus the shortlist leads, the ATS map and the
+  job-board map.
 - `urllib.parse` for host extraction (already imported elsewhere in `sluice/`, so it is an accepted
   stdlib import; core stays standard-library only).
 - Company-token comparison reuses the normalization in `core/leads.py` rather than reinventing it.
