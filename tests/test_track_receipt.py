@@ -14,19 +14,36 @@ def _lead(slug, url, company="Example"):
     return SimpleNamespace(slug=slug, fm={"url": url, "company": company})
 
 
-def _msg(frm="", subject="", body=""):
-    return {"headers": {"from": frm, "subject": subject}, "body_text": body}
+def _dkim_pass(domain):
+    """What a delivering server writes for a genuine, aligned DKIM signature -- including
+    the parenthesised comment and the extra properties Gmail really emits, so the parser
+    is exercised against the shape it will actually meet."""
+    return (f"mx.example.invalid (mx.example.invalid); "
+            f"dkim=pass header.i=@{domain} header.s=sel header.b=Zm9vYmFy")
+
+
+def _msg(frm="", subject="", body="", auth=None):
+    # `auth` is the RFC 8601 Authentication-Results header. Defaults to ABSENT, so every
+    # test that expects a proof-tier match has to say out loud that the sender domain was
+    # authenticated -- and the ones that expect a refusal keep an aligned pass, so the
+    # conjunct under test is the only thing standing between them and a match.
+    headers = {"from": frm, "subject": subject}
+    if auth is not None:
+        headers["authentication-results"] = auth
+    return {"headers": headers, "body_text": body}
 
 
 def test_proof_exact_host_single_lead():
     leads = [_lead("Example - Analyst", "https://example.com/careers/1")]
-    m = match_receipt(_msg(frm="jobs@example.com", subject="Thanks for applying"), leads, ATS)
+    m = match_receipt(_msg(frm="jobs@example.com", subject="Thanks for applying",
+                           auth=_dkim_pass("example.com")), leads, ATS)
     assert m == ReceiptMatch("Example - Analyst", "proof", [])
 
 
 def test_proof_subdomain_of_lead_host():
     leads = [_lead("Example - Analyst", "https://example.com/careers/1")]
-    m = match_receipt(_msg(frm="no-reply@careers.example.com"), leads, ATS)
+    m = match_receipt(_msg(frm="no-reply@careers.example.com",
+                           auth=_dkim_pass("example.com")), leads, ATS)
     assert m.tier == "proof" and m.lead_slug == "Example - Analyst"
 
 
@@ -38,7 +55,7 @@ def test_apply_link_in_body_never_grants_proof():
     # lead's own host nor an ATS relay, so there is nothing to corroborate either.
     # (Renamed from test_proof_via_apply_link_in_body, which asserted the old behaviour.)
     leads = [_lead("Example - Analyst", "https://example.com/careers/1")]
-    m = match_receipt(_msg(frm="mailer@mailer.invalid",
+    m = match_receipt(_msg(frm="mailer@mailer.invalid", auth=_dkim_pass("mailer.invalid"),
                            body="View your application at https://example.com/status"), leads, ATS)
     assert m.tier == "none"
 
@@ -50,7 +67,7 @@ def test_body_link_to_ats_does_not_unlock_corroboration():
     # just by linking an ATS in its footer.
     leads = [_lead("Example - Analyst", "https://boards.ats.example.invalid/example/jobs/1",
                    company="Example")]
-    m = match_receipt(_msg(frm="mailer@mailer.invalid",
+    m = match_receipt(_msg(frm="mailer@mailer.invalid", auth=_dkim_pass("mailer.invalid"),
                            body="Example has received your application. "
                                 "Track it at https://boards.ats.example.invalid/example"), leads, ATS)
     assert m.tier == "none"
@@ -59,21 +76,22 @@ def test_body_link_to_ats_does_not_unlock_corroboration():
 def test_ambiguous_two_leads_same_host_proposes_neither():
     leads = [_lead("Example - Analyst", "https://example.com/a"),
              _lead("Example - Manager", "https://example.com/b")]
-    m = match_receipt(_msg(frm="jobs@example.com"), leads, ATS)
+    m = match_receipt(_msg(frm="jobs@example.com", auth=_dkim_pass("example.com")), leads, ATS)
     assert m.lead_slug is None and m.tier == "corroborated"
     assert sorted(m.candidates) == ["Example - Analyst", "Example - Manager"]
 
 
 def test_corroborated_ats_plus_company_in_body():
     leads = [_lead("Example - Analyst", "https://boards.ats.example.invalid/example/jobs/1", company="Example")]
-    m = match_receipt(_msg(frm="no-reply@ats.example.invalid",
+    m = match_receipt(_msg(frm="no-reply@ats.example.invalid", auth=_dkim_pass("ats.example.invalid"),
                            body="Example has received your application."), leads, ATS)
     assert m.tier == "corroborated" and m.lead_slug == "Example - Analyst"
 
 
 def test_ats_without_company_in_body_no_match():
     leads = [_lead("Example - Analyst", "https://boards.ats.example.invalid/example/jobs/1", company="Example")]
-    m = match_receipt(_msg(frm="no-reply@ats.example.invalid", body="Your application was received."), leads, ATS)
+    m = match_receipt(_msg(frm="no-reply@ats.example.invalid", auth=_dkim_pass("ats.example.invalid"),
+                              body="Your application was received."), leads, ATS)
     assert m == ReceiptMatch(None, "none", [])
 
 
@@ -84,14 +102,16 @@ def test_none_traps():
     # domain that would trivially return "none" regardless of any bug.
     lead = [_lead("Example - Analyst", "https://example.invalid/careers/1")]
     # name-only mention from an unrelated service
-    assert match_receipt(_msg(frm="digest@aggregator.invalid", body="jobs at Example"), lead, ATS).tier == "none"
+    assert match_receipt(_msg(frm="digest@aggregator.invalid", auth=_dkim_pass("aggregator.invalid"),
+                                 body="jobs at Example"), lead, ATS).tier == "none"
     for host in ("evilexample.invalid", "example.com.attacker.invalid", "notexample.invalid"):
         # each ENDS WITH the literal string "example.invalid" but WITHOUT a preceding
         # dot -- a naive `host.endswith(target)` (missing the dot separator) would
         # wrongly treat these as subdomains; `_hosts_match` requires the dot.
-        assert match_receipt(_msg(frm=f"x@{host}"), lead, ATS).tier == "none", host
+        assert match_receipt(_msg(frm=f"x@{host}", auth=_dkim_pass(host)), lead, ATS).tier == "none", host
     # sibling subdomain of a DIFFERENT registrable domain
-    assert match_receipt(_msg(frm="x@careers.other.invalid"), lead, ATS).tier == "none"
+    assert match_receipt(_msg(frm="x@careers.other.invalid", auth=_dkim_pass("other.invalid")),
+                         lead, ATS).tier == "none"
 
 
 def test_multipart_tld_does_not_collapse():
@@ -102,12 +122,14 @@ def test_multipart_tld_does_not_collapse():
     # that happens to be genuinely registered; staying inside the RFC-reserved
     # example.com family keeps the trap with no such risk.
     leads = [_lead("Alpha - Analyst", "https://alpha.example.com/careers/1")]
-    assert match_receipt(_msg(frm="noreply@beta.example.com"), leads, ATS).tier == "none"
+    assert match_receipt(_msg(frm="noreply@beta.example.com",
+                                 auth=_dkim_pass("beta.example.com")), leads, ATS).tier == "none"
 
 
 def test_url_less_lead_never_matches():
     leads = [_lead("Example - Analyst", "")]
-    assert match_receipt(_msg(frm="jobs@example.com"), leads, ATS).tier == "none"
+    assert match_receipt(_msg(frm="jobs@example.com", auth=_dkim_pass("example.com")),
+                         leads, ATS).tier == "none"
 
 
 def test_ats_receipt_linking_another_leads_site_refuses():
@@ -122,7 +144,7 @@ def test_ats_receipt_linking_another_leads_site_refuses():
     # kept -- under its new name -- rather than deleted along with the code path.
     leads = [_lead("Example - Analyst", "https://example.com/a", company="Example"),
              _lead("Example - Manager", "https://boards.ats.example.invalid/example/jobs/1", company="Example")]
-    m = match_receipt(_msg(frm="no-reply@ats.example.invalid",
+    m = match_receipt(_msg(frm="no-reply@ats.example.invalid", auth=_dkim_pass("ats.example.invalid"),
                            body="Example has received your application. Visit us at https://example.com"),
                        leads, ATS)
     assert m.lead_slug is None and m.tier == "corroborated"
@@ -134,7 +156,8 @@ def test_proof_survives_when_corrob_is_the_same_lead():
     # IS the proof winner -- that is corroborating evidence for the same lead,
     # not a competing one, and the clean proof advance must still happen.
     leads = [_lead("Example - Analyst", "https://example.com/a", company="Example")]
-    m = match_receipt(_msg(frm="jobs@example.com", body="Example has received your application."),
+    m = match_receipt(_msg(frm="jobs@example.com", auth=_dkim_pass("example.com"),
+                           body="Example has received your application."),
                        leads, ATS)
     assert m == ReceiptMatch("Example - Analyst", "proof", [])
 
@@ -146,7 +169,7 @@ def test_malformed_lead_url_does_not_crash():
     # companion test that fed the same fragment through body text went with the body-
     # link scrape itself, and a test whose subject no longer exists cannot fail.
     leads = [_lead("Example - Analyst", "https://[abc")]
-    m = match_receipt(_msg(frm="jobs@example.com"), leads, ATS)
+    m = match_receipt(_msg(frm="jobs@example.com", auth=_dkim_pass("example.com")), leads, ATS)
     assert m.tier == "none"
 
 
@@ -171,7 +194,8 @@ def test_sender_display_name_spoof_does_not_match():
     # read the SENDER-CONTROLLED display name as the real address; the genuine
     # envelope address (inside <...>) is a different, unrelated domain.
     leads = [_lead("Example - Analyst", "https://example.com/careers/1")]
-    m = match_receipt(_msg(frm='"jobs@example.com" <x@evilexample.invalid>'), leads, ATS)
+    m = match_receipt(_msg(frm='"jobs@example.com" <x@evilexample.invalid>',
+                           auth=_dkim_pass("evilexample.invalid")), leads, ATS)
     assert m.tier == "none"
 
 
@@ -200,6 +224,7 @@ def test_is_ats_requires_dot_separated_suffix_not_substring():
     # ATS-relay status and unlock the corroborated-tier company-name check.
     leads = [_lead("Example - Analyst", "https://boards.ats.example.invalid/example/jobs/1", company="Example")]
     m = match_receipt(_msg(frm="noreply@fake-ats.example.invalid.evil.invalid",
+                           auth=_dkim_pass("fake-ats.example.invalid.evil.invalid"),
                            body="Example has received your application."), leads, ATS)
     assert m.tier == "none"
 
@@ -211,7 +236,8 @@ def test_empty_company_never_corroborates():
     # bearing -- without it, an empty company would vacuously satisfy the
     # `company <= tokens` check regardless of what the receipt actually says.
     leads = [_lead("Example - Analyst", "https://boards.ats.example.invalid/example/jobs/1", company="")]
-    m = match_receipt(_msg(frm="no-reply@ats.example.invalid", body="Nothing relevant here."), leads, ATS)
+    m = match_receipt(_msg(frm="no-reply@ats.example.invalid", auth=_dkim_pass("ats.example.invalid"),
+                           body="Nothing relevant here."), leads, ATS)
     assert m.tier == "none"
 
 
@@ -237,7 +263,8 @@ def test_shipped_default_ats_domains_withhold_proof():
     ats = TrackConfig().ats_relay_domains
     host = _shipped(ats)
     leads = [_lead("Example - Analyst", f"https://boards.{host}/example/jobs/1", company="Example")]
-    m = match_receipt(_msg(frm=f"no-reply@{host}", body="Example has received your application."),
+    m = match_receipt(_msg(frm=f"no-reply@{host}", auth=_dkim_pass(host),
+                            body="Example has received your application."),
                        leads, ats)
     assert m.tier == "corroborated" and m.lead_slug == "Example - Analyst"
 
@@ -253,6 +280,7 @@ def test_board_sourced_lead_is_never_proof_matched():
     board = _shipped(cfg.job_board_domains)
     leads = [_lead("Alpha - Analyst", f"https://www.{board}/jobs/view/1111", company="Alpha")]
     m = match_receipt(_msg(frm="careers@unrelated-employer.invalid",
+                           auth=_dkim_pass("unrelated-employer.invalid"),
                            body=f"We got your application. Follow us: https://www.{board}/company/gamma"),
                       leads, cfg.ats_relay_domains, cfg.job_board_domains)
     assert m.lead_slug is None and m.tier == "none"
@@ -266,7 +294,8 @@ def test_board_sender_is_never_proof_of_a_specific_employer():
     cfg = TrackConfig()
     board = _shipped(cfg.job_board_domains)
     leads = [_lead("Alpha - Analyst", f"https://www.{board}/jobs/view/1111", company="Alpha")]
-    m = match_receipt(_msg(frm=f"jobs-noreply@{board}", subject="Your application"),
+    m = match_receipt(_msg(frm=f"jobs-noreply@{board}", subject="Your application",
+                           auth=_dkim_pass(board)),
                       leads, cfg.ats_relay_domains, cfg.job_board_domains)
     assert m.lead_slug is None and m.tier == "none"
 
@@ -281,7 +310,8 @@ def test_board_sourced_lead_still_corroborates_from_an_ats():
     cfg = TrackConfig()
     board = _shipped(cfg.job_board_domains)
     leads = [_lead("Alpha - Analyst", f"https://www.{board}/jobs/view/1111", company="Alpha")]
-    m = match_receipt(_msg(frm="no-reply@ats.example.invalid", body="Alpha received your application."),
+    m = match_receipt(_msg(frm="no-reply@ats.example.invalid", auth=_dkim_pass("ats.example.invalid"),
+                           body="Alpha received your application."),
                       leads, {**cfg.ats_relay_domains, **ATS}, cfg.job_board_domains)
     assert m.tier == "corroborated" and m.lead_slug == "Alpha - Analyst"
 
@@ -294,7 +324,8 @@ def test_lead_side_multi_tenant_check_is_not_redundant():
     # bidirectional subdomain rule still pairs the two.
     boards = {"jobs.board.invalid": "example-board"}
     leads = [_lead("Alpha - Analyst", "https://jobs.board.invalid/1", company="Alpha")]
-    assert match_receipt(_msg(frm="noreply@board.invalid"), leads, ATS, boards).tier == "none"
+    assert match_receipt(_msg(frm="noreply@board.invalid", auth=_dkim_pass("board.invalid")),
+                         leads, ATS, boards).tier == "none"
 
 
 def test_sender_side_multi_tenant_check_is_not_redundant():
@@ -306,7 +337,8 @@ def test_sender_side_multi_tenant_check_is_not_redundant():
     # subsumes the other.
     boards = {"jobs.board.invalid": "example-board"}
     leads = [_lead("Alpha - Analyst", "https://board.invalid/1", company="Alpha")]
-    m = match_receipt(_msg(frm="noreply@x.jobs.board.invalid"), leads, ATS, boards)
+    m = match_receipt(_msg(frm="noreply@x.jobs.board.invalid",
+                           auth=_dkim_pass("x.jobs.board.invalid")), leads, ATS, boards)
     assert m.tier == "none"
 
 
@@ -334,7 +366,113 @@ def test_ambiguous_corroboration_two_leads_same_ats_sender_proposes_neither():
     # in the same receipt body, must resolve to no single lead.
     leads = [_lead("Example - Analyst", "https://boards.ats.example.invalid/example/jobs/1", company="Example"),
              _lead("Widget - Engineer", "https://boards.ats.example.invalid/widget/jobs/2", company="Widget")]
-    m = match_receipt(_msg(frm="no-reply@ats.example.invalid",
+    m = match_receipt(_msg(frm="no-reply@ats.example.invalid", auth=_dkim_pass("ats.example.invalid"),
                            body="Example and Widget both received applications today."), leads, ATS)
     assert m.lead_slug is None and m.tier == "corroborated"
     assert sorted(m.candidates) == ["Example - Analyst", "Widget - Engineer"]
+
+
+# ── Sender authentication (CodeRabbit security round) ───────────────────────
+#
+# The RFC 5322 `From` domain is free text the sender writes. "Sender host == lead host"
+# is therefore a claim, not evidence: anyone who knows the user is job hunting can forge
+# a "thanks for applying" from an employer's domain and have sluice mark that lead
+# `applied`, silently suppressing a real application. Proof needs the delivering server's
+# own authentication verdict on top of the host match; everything short of an ALIGNED
+# PASS degrades to the propose path so a human confirms, because the write is
+# irreversible.
+
+
+def _unauth_lead():
+    return [_lead("Example - Analyst", "https://example.com/careers/1")]
+
+
+def test_absent_authentication_degrades_to_propose():
+    # No Authentication-Results at all -- the pre-fix behaviour for EVERY message, and the
+    # case that reddens when the `and authenticated` conjunct is deleted. The signal is
+    # kept (a resolved lead at the corroborated tier, which reconcile proposes), never
+    # dropped and never auto-advanced.
+    m = match_receipt(_msg(frm="jobs@example.com"), _unauth_lead(), ATS)
+    assert m.tier == "corroborated" and m.lead_slug == "Example - Analyst"
+
+
+def test_failing_dkim_degrades_to_propose():
+    auth = "mx.example.invalid; dkim=fail header.i=@example.com; spf=fail smtp.mailfrom=x@example.com"
+    m = match_receipt(_msg(frm="jobs@example.com", auth=auth), _unauth_lead(), ATS)
+    assert m.tier == "corroborated" and m.lead_slug == "Example - Analyst"
+
+
+def test_unaligned_dkim_pass_degrades_to_propose():
+    # A PASS proves only that the SIGNING domain authorised the mail. An attacker signs
+    # with a domain they control and forges the From header; without an alignment check
+    # that reads as "authenticated" and hands them a proof-grade advance.
+    m = match_receipt(_msg(frm="jobs@example.com", auth=_dkim_pass("attacker.invalid")),
+                      _unauth_lead(), ATS)
+    assert m.tier == "corroborated" and m.lead_slug == "Example - Analyst"
+
+
+def test_sibling_subdomain_signature_is_not_aligned():
+    # The documented cost of using `_hosts_match` for alignment instead of DMARC's
+    # relaxed "same organizational domain": siblings under one parent do not align, since
+    # deciding they do would need the public suffix list (not stdlib, not derivable by
+    # counting labels -- the exact collapse `_hosts_match` refuses). It fails CLOSED, to a
+    # proposal, which is the safe direction for an irreversible write.
+    leads = [_lead("Example - Analyst", "https://careers.example.com/1")]
+    m = match_receipt(_msg(frm="jobs@careers.example.com", auth=_dkim_pass("mail.example.com")),
+                      leads, ATS)
+    assert m.tier == "corroborated" and m.lead_slug == "Example - Analyst"
+
+
+def test_dmarc_pass_aligned_reaches_proof():
+    auth = "mx.example.invalid; dkim=none; dmarc=pass (p=REJECT sp=REJECT) header.from=example.com"
+    m = match_receipt(_msg(frm="jobs@example.com", auth=auth), _unauth_lead(), ATS)
+    assert m == ReceiptMatch("Example - Analyst", "proof", [])
+
+
+def test_spf_pass_aligned_reaches_proof():
+    # SPF authenticates the ENVELOPE sender, so it is evidence about the From domain only
+    # when the two align -- which is what the alignment check requires of it.
+    auth = ("mx.example.invalid; spf=pass (mx.example.invalid: domain of jobs@example.com "
+            "designates 192.0.2.1 as permitted sender) smtp.mailfrom=jobs@example.com")
+    m = match_receipt(_msg(frm="jobs@example.com", auth=auth), _unauth_lead(), ATS)
+    assert m == ReceiptMatch("Example - Analyst", "proof", [])
+
+
+def test_a_pass_hidden_inside_a_comment_grants_nothing():
+    # RFC 8601 comments are free text, and a `;` inside one would split that method's
+    # resinfo into fragments -- so a sender-supplied comment could smuggle a `dkim=pass`
+    # no server ever asserted. Comments come out before any parsing. Here the real verdict
+    # is spf=FAIL and the "pass" exists only inside the parentheses.
+    # The smuggled pair must be followed by SPACE-separated text, not by the closing
+    # paren: with `)` immediately after the domain, `_host("example.com)")` fails to
+    # match for a reason having nothing to do with comment handling, and the mutant that
+    # deletes `_strip_comments` survives -- an inert witness, confirmed by running it.
+    auth = ("mx.example.invalid; spf=fail (note; dkim=pass header.i=@example.com as the "
+            "sender wrote it) smtp.mailfrom=x@attacker.invalid")
+    m = match_receipt(_msg(frm="jobs@example.com", auth=auth), _unauth_lead(), ATS)
+    assert m.tier == "corroborated" and m.lead_slug == "Example - Analyst"
+
+
+def test_unparseable_authentication_header_degrades_to_propose():
+    # Garbage in the header must fail CLOSED, not raise out of this pure module (which
+    # engine.run's per-message except would swallow, re-failing the same message forever).
+    for auth in ("", "???", "mx.example.invalid", "dkim=pass", ";;;", "dkim=pass header.d="):
+        m = match_receipt(_msg(frm="jobs@example.com", auth=auth), _unauth_lead(), ATS)
+        assert m.tier == "corroborated" and m.lead_slug == "Example - Analyst", auth
+
+
+def test_non_string_authentication_header_does_not_crash():
+    # Same defensive shape as `_headers`: a present-but-None (or otherwise non-string)
+    # header value must abstain rather than raise.
+    msg = {"headers": {"from": "jobs@example.com", "authentication-results": None},
+           "body_text": ""}
+    assert match_receipt(msg, _unauth_lead(), ATS).tier == "corroborated"
+
+
+def test_authentication_alone_never_creates_a_match():
+    # The conjunct is ADDITIVE: an aligned pass for a sender that matches no lead host
+    # still resolves to `none`. Authentication says the domain is real, never that it is
+    # the lead's.
+    m = match_receipt(_msg(frm="jobs@other.invalid", auth=_dkim_pass("other.invalid")),
+                      _unauth_lead(), ATS)
+    assert m == ReceiptMatch(None, "none", [])
