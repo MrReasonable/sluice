@@ -2,9 +2,10 @@
 The LLM decides a message IS an application receipt; this module decides WHICH
 shortlist lead it belongs to, by SENDER domain -- never by a fuzzy name match, and
 never by a link in the body (which the sender writes and so controls). A wrong or
-arbitrary advance silently suppresses a real application, so the two failure modes
-this guards are (a) matching a name-only mention and (b) advancing an AMBIGUOUS
-match; both resolve to `none`/propose, never a proof advance (#10)."""
+arbitrary advance silently suppresses a real application, so the three failure modes
+this guards are (a) matching a name-only mention, (b) advancing an AMBIGUOUS match and
+(c) trusting an UNAUTHENTICATED sender domain; all three resolve to `none`/propose,
+never a proof advance (#10)."""
 import re
 from dataclasses import dataclass, field
 from email.utils import parseaddr
@@ -13,6 +14,18 @@ from urllib.parse import urlparse
 from sluice.core.leads import _norm_tokens
 
 _EMAIL_DOMAIN_RE = re.compile(r"[\w.+-]+@([\w.-]+)")
+_COMMENT_RE = re.compile(r"\([^()]*\)")
+_METHOD_RE = re.compile(r"([A-Za-z][A-Za-z0-9-]*)\s*=\s*([A-Za-z]+)")
+_PROP_RE = re.compile(r"([A-Za-z]+\.[A-Za-z-]+)\s*=\s*([^\s;]+)")
+
+# Which RFC 8601 authentication methods can establish that a `From` domain is genuine,
+# and which of each method's `ptype.property` pairs names the domain that must ALIGN with
+# it. dkim: the signing domain (header.d; header.i is the same domain as an @-address).
+# dmarc: the domain the receiving server itself checked alignment for. spf: the envelope
+# sender / HELO domain, which is only evidence about the From domain when the two align.
+_AUTH_DOMAIN_PROPS = {"dkim": ("header.d", "header.i"),
+                      "dmarc": ("header.from",),
+                      "spf": ("smtp.mailfrom", "smtp.helo")}
 
 
 @dataclass
@@ -71,6 +84,19 @@ def _sender_host(msg) -> str:
     return _host(m.group(1)) if m else ""
 
 
+def _strip_comments(value: str) -> str:
+    """Remove RFC 8601 CFWS comments before parsing. Gmail writes them routinely --
+    `spf=pass (mx.example: domain of x designates ...) smtp.mailfrom=...` -- and a comment
+    may contain `;` and `=`, which would both split one method's resinfo into fragments
+    and let a SENDER-supplied comment smuggle a `dkim=pass` no server ever asserted. Run
+    to a fixed point because comments nest; each pass strictly shortens the string, so it
+    terminates."""
+    prev = None
+    while prev != value:
+        prev, value = value, _COMMENT_RE.sub(" ", value)
+    return value
+
+
 def _hosts_match(a: str, b: str) -> bool:
     """Full-host equality or a subdomain relationship EITHER direction. Bidirectional so
     a bare corporate domain matches a jobs subdomain and vice versa; on FULL hosts, so
@@ -80,6 +106,55 @@ def _hosts_match(a: str, b: str) -> bool:
     if not a or not b:
         return False
     return a == b or a.endswith("." + b) or b.endswith("." + a)
+
+
+def _sender_authenticated(msg, sender: str) -> bool:
+    """True iff the server that DELIVERED this message recorded an authentication PASS
+    whose authenticated domain aligns with `sender` (RFC 8601 `Authentication-Results`,
+    already lowercased into `msg["headers"]` by `track/google_client.py` -- no fetch-layer
+    change, and this function stays pure).
+
+    Why proof requires it: an RFC 5322 `From` domain is free text the sender writes, so
+    "the sender host equals the lead's host" is a CLAIM, not evidence. Anyone who knows
+    the user is job hunting can forge a "thanks for applying" from an employer's domain
+    and have sluice mark that lead `applied` -- suppressing a real application, silently
+    and irreversibly, which is precisely this feature's harm model. DKIM/SPF/DMARC are the
+    only in-message signals that the domain owner actually authorised the mail, and only
+    the receiving server's verdict counts: we cannot verify a signature from here (pure,
+    stdlib-only, no key fetch), so we read the verdict it already wrote down.
+
+    ALIGNMENT is `_hosts_match` -- equality or a subdomain relationship either way -- and
+    deliberately NOT DMARC's relaxed "same organizational domain", which needs the public
+    suffix list: that is neither in the stdlib nor derivable by counting labels, and
+    guessing it is the exact collapse `_hosts_match` exists to refuse (alpha.example.com
+    and beta.example.com are not the same site). The cost is that a sibling subdomain
+    signing for its sibling reads as UNALIGNED. That fails CLOSED -- the receipt degrades
+    to a human-confirmed proposal rather than auto-advancing -- which is the only safe
+    direction for an irreversible write.
+
+    Absent, unparseable, non-passing or unaligned: False. Fail closed on every route."""
+    raw = _headers(msg).get("authentication-results")
+    if not sender or not isinstance(raw, str):
+        return False
+    # `;` separates one method's resinfo from the next; the first field is the
+    # authserv-id, which carries no `method=result` and so falls out of _METHOD_RE.
+    for chunk in _strip_comments(raw).split(";"):
+        m = _METHOD_RE.match(chunk.strip())
+        if not m:
+            continue
+        props = _AUTH_DOMAIN_PROPS.get(m.group(1).lower())
+        if props is None or m.group(2).lower() != "pass":
+            continue
+        for prop, value in _PROP_RE.findall(chunk):
+            if prop.lower() not in props:
+                continue
+            # smtp.mailfrom / header.i carry a full address; the domain is after the '@'.
+            # `_host` then applies the same parse (and the same non-ASCII refusal) the
+            # sender host went through, so a confusable cannot align with its lookalike.
+            domain = _host(value.strip('\'",<>').rsplit("@", 1)[-1])
+            if _hosts_match(sender, domain):
+                return True
+    return False
 
 
 def _suffix_match(host: str, domains) -> bool:
@@ -125,19 +200,39 @@ def match_receipt(msg, shortlist_leads, ats_relay_domains, job_board_domains=Non
     # sender alone (#10 pre-push review, Critical; the corroborated half was flagged
     # independently by CodeRabbit).
     sender = _sender_host(msg)
+    # Computed ONCE, outside the loop: authentication is a property of the message, not of
+    # any lead. Placed here, in the function that decides the TIER, so the guarantee is
+    # structural -- no caller can forget it, and reconcile's auto-apply gate (which keys
+    # off `proof`) is unable to advance on an unauthenticated receipt.
+    authenticated = _sender_authenticated(msg, sender)
     tokens = _norm_tokens((_headers(msg).get("subject") or "") + " "
                           + (msg.get("body_text") or ""))
     from_ats = _suffix_match(sender, ats)
     proof, corrob = [], []
     for lead in shortlist_leads:
         lead_host = _host(lead.fm.get("url") or "")
-        # proof: the sender IS the lead's own host, and neither side is a host shared by
-        # many employers. `_hosts_match` is False when either host is empty, so a
-        # url-less lead or an unparseable From abstains rather than matching everything.
-        if _hosts_match(sender, lead_host) \
-                and not _is_multi_tenant(sender, ats, boards) \
-                and not _is_multi_tenant(lead_host, ats, boards):
+        # The host half of proof: the sender IS the lead's own host, and neither side is a
+        # host shared by many employers. `_hosts_match` is False when either host is
+        # empty, so a url-less lead or an unparseable From abstains rather than matching
+        # everything.
+        host_proof = (_hosts_match(sender, lead_host)
+                      and not _is_multi_tenant(sender, ats, boards)
+                      and not _is_multi_tenant(lead_host, ats, boards))
+        # proof needs BOTH halves: the host lines up AND the delivering server
+        # authenticated that domain. An ADDITIONAL conjunct, never a replacement -- the
+        # multi-tenant exclusions still do all the work they did before.
+        if host_proof and authenticated:
             proof.append(lead.slug)
+            continue
+        if host_proof:
+            # Host matches, authentication does not. DEGRADE, never drop: an unauthenticated
+            # receipt from the right-looking domain is still the strongest signal available
+            # about this lead, so it becomes a proposal a human confirms rather than
+            # vanishing (that would be the #40 silent-loss class) or auto-advancing (that
+            # would be the forgery this check exists to stop). `continue` costs nothing --
+            # the ATS branch below cannot fire for a proof-eligible sender, since every
+            # ATS relay is multi-tenant.
+            corrob.append(lead.slug)
             continue
         # corroborated: from an ATS relay host, with the company named in the body.
         if from_ats:
@@ -147,6 +242,9 @@ def match_receipt(msg, shortlist_leads, ats_relay_domains, job_board_domains=Non
     # No cross-tier ambiguity check: with both tiers keyed off the sender, the two are
     # now DISJOINT by construction -- corroboration requires an ATS sender, proof
     # requires a sender that is NOT multi-tenant, and every ATS relay is multi-tenant.
+    # The unauthenticated-degrade route above cannot reopen it either: `authenticated`
+    # is per-MESSAGE, so when it is False nothing reaches `proof` at all, and when it is
+    # True nothing reaches `corrob` by that route.
     # A guard for a state the code cannot reach is an inert guard, so it is gone rather
     # than kept with a comment claiming it fires. (The receipt that motivated it -- an
     # ATS sender whose body links a second lead's own site -- now resolves through the

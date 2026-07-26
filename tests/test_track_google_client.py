@@ -45,17 +45,39 @@ def test_fake_satisfies_interface():
     f.insert_event({"summary": "x"}); assert f.inserted
 
 
+class _Exec:
+    def __init__(self, v): self.v = v
+    def execute(self): return self.v
+
+
+class _FakeGmail:
+    def __init__(self, msg): self._msg = msg
+    def users(self): return self
+    def messages(self): return self
+    def get(self, userId, id, format): return _Exec(self._msg)
+    def attachments(self): return self
+
+
+def test_duplicate_headers_keep_the_first_occurrence():
+    # A header name may legally repeat, and for the TRACE headers it normally does: every
+    # hop PREPENDS its own, so the FIRST Authentication-Results is the one our delivering
+    # server stamped and any later duplicate came from the sender -- who can put whatever
+    # they like in a message they send. A last-wins dict comprehension gave that forged
+    # copy priority over the real verdict, which would defeat receipt._sender_authenticated
+    # (the proof tier reads exactly this header) while looking entirely correct. Ordered
+    # as Gmail returns them: real first, forged second.
+    payload = {"headers": [
+        {"name": "Authentication-Results", "value": "mx.example.invalid; dkim=fail"},
+        {"name": "authentication-results", "value": "mx.example.invalid; dkim=pass header.d=example.com"},
+        {"name": "From", "value": "jobs@example.com"},
+    ]}
+    c = gc.RealGoogleClient("/nonexistent")
+    c._gmail = _FakeGmail({"payload": payload, "threadId": "t"})
+    assert c.get_message("m1")["headers"]["authentication-results"].endswith("dkim=fail")
+
+
 def test_get_message_decodes_inline_ics():
     import base64
-    class _Exec:
-        def __init__(self, v): self.v = v
-        def execute(self): return self.v
-    class _FakeGmail:
-        def __init__(self, msg): self._msg = msg
-        def users(self): return self
-        def messages(self): return self
-        def get(self, userId, id, format): return _Exec(self._msg)
-        def attachments(self): return self
     ics = b"BEGIN:VEVENT\r\nUID:x\r\nEND:VEVENT"
     inline = base64.urlsafe_b64encode(ics).decode().rstrip("=")
     payload = {"headers": [{"name": "From", "value": "a@b"}],
