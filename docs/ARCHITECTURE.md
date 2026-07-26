@@ -81,9 +81,18 @@ Shared by every sub-app:
    guess on ambiguity), and reconcile it against lead status
    (never-regress: a status can only move forward). A domain-matched
    application receipt (`track/receipt.py`) advances a `shortlist` lead to
-   `applied`: a proof-grade match (the receipt's own host, never a shared
-   ATS relay) auto-advances with evidence recorded; a weaker corroborated
-   or cross-lead-ambiguous match only proposes. Un-acted-on proposals
+   `applied`: a proof-grade match auto-advances with evidence recorded, but
+   only when `event.confidence >= cfg.auto_apply_min` -- below that floor it
+   proposes like any weaker match. Proof means the SENDER host is the lead's
+   own host (never a body link, which the sender controls) and neither side
+   is multi-tenant -- an ATS relay (`ats_relay_domains`) or one of the job
+   boards sluice scrapes (`job_board_domains`), since a board-sourced lead's
+   `url` identifies the board, not the employer. A weaker corroborated or
+   cross-lead-ambiguous match only proposes. Receipt proposals have two
+   producers: reconcile's own corroborated/below-floor path, and -- when
+   deterministic matching finds nothing at all (tier `none`) while the LLM
+   named a lead that is already in-flight -- an engine-level fallback that
+   records a dead-letter row and never writes. Un-acted-on proposals
    are durably surfaced via `track/deadletter.py` -- a sqlite dead-letter
    re-emitted every run until `track confirm`/`track dismiss` clears it, or a
    lead's own proposals are cleared automatically when it auto-advances --
