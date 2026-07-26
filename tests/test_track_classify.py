@@ -165,7 +165,7 @@ def test_prompt_teaches_receipt_definition_and_unlisted_company_permission():
     # not_job (which reconcile silently skips), making the feature inert against a
     # real backend while every offline test's fake backend hardcodes type="receipt".
     # Pin both required clauses so a later edit cannot silently drop either one.
-    leads = [_lead("Tidemark", "Analyst")]
+    leads = [_lead("Example", "Analyst")]
     prompt = C.build_prompt(_msg(), leads, TrackConfig())
     # (a) defines receipt as an application confirmation/acknowledgement
     assert "receipt is an automated acknowledgement" in prompt
@@ -182,9 +182,26 @@ def test_prompt_teaches_receipt_definition_and_unlisted_company_permission():
 def test_receipt_llm_fallback_ambiguous_sets_candidates_and_no_slug():
     # Mirrors test_ambiguous_match_sets_candidates_and_no_slug, but for the fallback fields:
     # two same-company leads means the LLM's guess cannot resolve uniquely either.
-    leads = [_lead("Ravenbank", "EM Cards"), _lead("Ravenbank", "EM Payments")]
-    be = FakeBackend(json.dumps({"lead": "Ravenbank", "type": "receipt", "confidence": 0.8,
+    leads = [_lead("Example", "EM Cards"), _lead("Example", "EM Payments")]
+    be = FakeBackend(json.dumps({"lead": "Example", "type": "receipt", "confidence": 0.8,
                                  "when": None, "links": [], "materials": [], "summary": "received"}))
     ev = C.classify(_msg(), leads, be, TrackConfig(), ics=None)
     assert ev.llm_lead_slug is None and len(ev.llm_candidates) == 2
     assert ev.lead_slug is None and ev.candidates == []       # authoritative fields untouched
+
+
+def test_none_valued_headers_never_reach_the_receipt_evidence():
+    # A present-but-None From/Subject reached reconcile as a literal None and was written
+    # into the receipt evidence section as the string "None"; a None headers dict raised
+    # AttributeError out of build_prompt. `.get(key, "")` only covers a MISSING key --
+    # `or ""` covers both. Asserting type == "receipt" (not the `unknown` an exception
+    # would produce) is what pins the no-raise half.
+    leads = [_lead("Example", "Analyst")]
+    be = FakeBackend(json.dumps({"lead": None, "type": "receipt", "confidence": 0.9,
+                                 "when": None, "links": [], "materials": [], "summary": "received"}))
+    ev = C.classify({"headers": {"from": None, "subject": None}, "body_text": None,
+                     "thread_id": "t", "attachments": []}, leads, be, TrackConfig(), ics=None)
+    assert ev.type == "receipt" and ev.sender == "" and ev.subject == ""
+    ev2 = C.classify({"headers": None, "body_text": None, "thread_id": "t", "attachments": []},
+                     leads, be, TrackConfig(), ics=None)
+    assert ev2.type == "receipt" and ev2.sender == "" and ev2.subject == ""
