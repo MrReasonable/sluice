@@ -1,12 +1,19 @@
 # Harden the dossier fetcher against SSRF (#18)
 
-**Status:** design approved 2026-07-26; revised twice after `/review-plan` (5 reviewers per round).
-Round 1 (9 High) rewrote the failure-handling contract, closed two holes in the address rule, fixed
-the allowlist validation and its error message, corrected the blast-radius enumeration and replaced
-the fixture addresses. Round 2 (4 High, 0 Critical, all round-1 findings verified fixed) found the
-post-check would have broken every fetch on a real browser, that the hermeticity guard could not
-redden, and that the address table still could not catch its own most dangerous mutant.
-The three original decisions are unchanged throughout.
+**Status:** design approved 2026-07-26; revised three times after `/review-plan`. Round 1 (5
+reviewers, 9 High) rewrote the failure-handling contract, closed two holes in the address rule,
+fixed the allowlist validation and its error message, corrected the blast-radius enumeration and
+replaced the fixture addresses. Round 2 (5 reviewers, 4 High, 0 Critical) found the post-check would
+have broken every fetch on a real browser, that the hermeticity guard could not redden, and that the
+address table could not catch its own most dangerous mutant. Round 3 (3 reviewers, 3 High, 0
+Critical) found that the settle loop would `TypeError` on every production run, that `_host` as
+specified would have stripped `www.` and checked a different host than the browser fetches, and that
+the address table was *still* one level too coarse. **One open question remains and needs a ruling —
+see the end.** The three original decisions are unchanged throughout.
+
+A pattern worth carrying into the implementation plan: two of round 3's three High findings came
+from this spec citing a good in-repo precedent (`self._sleep`, `receipt._host`) without naming the
+part **not** to copy. Both would have shipped a guard that looked right and did nothing.
 **Issue:** #18 — `Harden the dossier fetcher against SSRF (scheme + private-IP + post-redirect)`
 **Sub-app:** `core` (the fetcher seam's only untrusted-input call site)
 
@@ -66,10 +73,20 @@ check passes whether or not that check exists — this cost five of six original
 their meaning. A scheme fixture must carry a host: `ftp://host.invalid/x` and
 `file://allowed.invalid/etc/passwd` do.
 
-Host extraction is a **pure module-level `_host(url) -> str`**, mirroring `receipt._host`
+Host extraction is a **pure module-level `_host(url) -> str`**, modelled on `receipt._host`
 (`track/receipt.py:38-60`) in shape *and* in purity — the precedent is a pure function, which is why
 its hard-won rules have direct tests. It returns `""` for unparseable, non-ASCII, or host-less
 input.
+
+> **Do NOT copy `receipt._host`'s last line.** It ends
+> `return host[4:] if host.startswith("www.") else host` — a receipt-matching nicety that is a
+> **total guard bypass** here. If `_host` strips `www.`, the guard resolves `attacker.invalid` and
+> checks *those* addresses while the browser fetches `www.attacker.invalid`; point the two names at
+> different addresses and the check means nothing. `_host` must return the host **exactly as the
+> browser will see it**. The pure `_host` table carries a row for this
+> (`http://www.jobs.invalid/x` → `www.jobs.invalid`, not `jobs.invalid`) and a delete-mutant
+> witness. This is the second place in this spec where citing a good precedent without naming the
+> part not to copy would have shipped a broken guard — see the settle loop's `self._sleep` note.
 
 **The non-ASCII check runs on the raw URL, before `urlparse`.** This is not a stylistic preference:
 `urlparse("http://Kexample.invalid/x").hostname` is `'kexample.invalid'`, which `.isascii()`
@@ -139,10 +156,21 @@ left the *method* unfixed. A row exists to witness a branch.
 
 | branch | must be BLOCKED | must be ALLOWED |
 |---|---|---|
-| wrapper fails base predicate | `127.0.0.1`, `::1`, `10.0.0.1`, `172.31.255.254`, `192.168.1.1`, `fc00::1`, `fd00::1`, `169.254.169.254`, `fe80::1`, `fe80::1%en0`, `240.0.0.1`, `0.0.0.0`, `::`, `203.0.113.1`, `192.0.2.1`, `198.51.100.1`, `2001:db8::1`, `100.64.0.1`, `198.18.0.1` | `192.88.99.1`, `2001:20::1` |
+| wrapper fails `is_global` | `127.0.0.1`, `::1`, `10.0.0.1`, `172.31.255.254`, `192.168.1.1`, `fc00::1`, `fd00::1`, `169.254.169.254`, `fe80::1`, `fe80::1%en0`, `240.0.0.1`, `0.0.0.0`, `::`, `203.0.113.1`, `192.0.2.1`, `198.51.100.1`, `2001:db8::1`, `100.64.0.1`, `198.18.0.1` | `192.88.99.1`, `2001:20::1` |
 | wrapper global **but multicast** | `224.0.0.1`, `ff02::1` | — |
-| embeds v4, **payload** fails predicate | `64:ff9b::7f00:1`, `::127.0.0.1`, `::ffff:127.0.0.1`, `::ffff:10.0.0.1`, `2002:7f00:1::1` | — |
-| embeds v4, **payload** passes predicate | — | **`64:ff9b::192.88.99.1`, `::ffff:192.88.99.1`** |
+| embeds v4, payload fails **`is_global`** | `64:ff9b::7f00:1`, `::127.0.0.1`, `::ffff:127.0.0.1`, `::ffff:10.0.0.1`, `2002:7f00:1::1` | — |
+| embeds v4, payload global **but multicast** | **`64:ff9b::224.0.0.1`** | — |
+| embeds v4, payload passes both terms | — | **`64:ff9b::192.88.99.1`, `::ffff:192.88.99.1`** |
+
+**Rows are keyed to failure CAUSES, not to shapes.** This is the third time the table has been found
+hand-picked, and the previous fix — reorganising by branch — was still one level too coarse: every
+row in the payload-fails branch failed via `is_global=False`, so a payload check written
+`emb.is_global` (dropping the multicast term) survived the entire table. Verified:
+`64:ff9b::224.0.0.1` is the **only** input that kills that mutant — wrapper global and
+non-multicast, payload `224.0.0.1` global **and** multicast. `::ffff:224.0.0.1` and `2002:e000:1::1`
+do not substitute; both are caught by *wrapper* terms before the payload is consulted. Each of the
+predicate's four terms (wrapper `is_global`, wrapper `is_multicast`, payload `is_global`, payload
+`is_multicast`) now has at least one row that fails on that term **alone**.
 
 The last row is the one the previous draft lacked, and its absence was the table's most dangerous
 gap. Without an *allowed*-embedding case, a mutant that drops the embedded address's predicate call
@@ -265,9 +293,13 @@ rev-001 shape, so an exception carrying the URL would log through cv exactly wha
 written to withhold. The host reaches the operator via that WARNING line, which is the single place
 it is needed for the allowlist remedy.
 
-Reason slugs are a small fixed set the tests assert on: `scheme`, `no-host`, `non-ascii`,
-`resolve-failed`, `resolve-empty`, `blocked-address`, `not-settled`, `landed-blocked`,
-`landed-unreadable`.
+Reason slugs are a small fixed set the tests assert on: `scheme`, `no-host`, `resolve-failed`,
+`resolve-empty`, `blocked-address`, `not-settled`, `landed-blocked`, `landed-unreadable`. There is
+deliberately **no `non-ascii` slug**: `_host` collapses unparseable, non-ASCII and host-less input to
+`""`, so the caller cannot distinguish them and a `non-ascii` slug would be dead code no test could
+reach. The distinction does not change the outcome — all three block with `no-host` — and the
+KELVIN test stays falsifiable through the *result*, not the slug (the move-mutant flips blocked to
+allowed).
 
 The WARNING log line (at **WARNING**, not DEBUG — a security refusal at DEBUG is effectively silent)
 names the reason and the host. `UrlVerdict.host` is `""` **only when the URL yielded no host** —
@@ -333,29 +365,67 @@ licence to loosen the guard.
 ### `sluice/core/app.py` — the `dossier_cache` fetch closure
 
 ```
+sleep = self._sleep or time.sleep        # self._sleep is None in production -- see below
 url present?
   pre-check   check_url(url, allow_hosts=cfg.dossier_allow_hosts, resolve=self._resolve_host)
               blocked -> log WARNING(reason, host); raise DossierBlocked(reason)   (no tab opened)
   create_tab(url) -> tid
-  SETTLE      poll evaluate(tid, "location.href") until it reports a real navigation,
-              sleeping via self._sleep between polls, bounded by dossier_settle_seconds
-              deadline exceeded -> close_tab; raise DossierBlocked("not-settled")
-  post-check  re-run check_url on the settled URL
+  SETTLE      up to _SETTLE_POLLS times:
+                res = evaluate(tid, "location.href")
+                not a dict / no "result" / not a str  -> close_tab; raise DossierBlocked("landed-unreadable")
+                "" or "about:blank"                   -> sleep(cfg.dossier_settle_seconds / _SETTLE_POLLS); retry
+                anything else                         -> SETTLED, break
+              exhausted -> close_tab; raise DossierBlocked("not-settled")
+  post-check  check_url(settled_url, ...)
               blocked -> close_tab; raise DossierBlocked("landed-blocked")
-              unreadable (non-dict, empty) -> close_tab; raise DossierBlocked("landed-unreadable")
   read        evaluate(tid, "document.body.innerText"); close_tab
 ```
 
-**The settle loop is not optional, and its absence would have broken the feature outright.**
+**The settled predicate is exactly three outcomes, stated so two implementers write the same thing:**
+a malformed envelope is `landed-unreadable` **immediately** (a fetcher that cannot answer is broken,
+not slow — leaving it inside the retry branch would make that slug unreachable); `""` or
+`about:blank` is "not yet navigated" and retries; anything else is settled and goes to the
+post-check, which decides on its own merits. A settled URL that is not http(s) therefore comes back
+as `scheme` from `check_url`, not as `not-settled`.
+
+**The loop is bounded by POLL COUNT, not wall-clock.** `_SETTLE_POLLS` is a module constant (6);
+`dossier_settle_seconds` sets the total budget and the per-poll interval is the quotient. A
+wall-clock deadline is untestable here: both harness wirings inject `sleep=lambda *a, **k: None`
+(`tests/harness/config.py:96`), so a monotonic 3.0s deadline under a no-op sleep was measured at
+**3.00s over 23.2M polls** against a 2.163s baseline suite — it would dominate the run time and
+falsify this spec's own claim that the test does not wall-clock. Six polls terminate instantly under
+a no-op sleep and take the full budget under a real one.
+
+**`self._sleep` is `None` in production — the closure must normalise it.** `Sluice.__init__` stores
+the parameter raw (`app.py:181`) and every `cli.py` construction is a bare `Sluice(config)`. Ingest
+survives this only because `Ctx.__post_init__` converts `None` → `time.sleep`
+(`ingest/base.py:41-43`); the dossier closure has no such conversion. A settle loop calling
+`self._sleep(interval)` directly would raise `TypeError` on the **first cache miss of every real
+run**, both consumers would swallow it, and the symptom would be identical to having no settle loop
+at all. **No specified test would catch it**: both harness wirings inject a sleep, so the fake
+settles on poll 1 and the sleep is never reached. All three round-3 reviewers found this
+independently. The repo already pins the same trap one layer down —
+`tests/test_app_injection.py:113` — and this spec's test list carries the mirror.
+
+**Why the loop exists at all, and the one premise this spec cannot verify offline.**
 `Camofox.create_tab` (`core/camofox.py:45-54`) opens the tab and then fires `navigate` as a
-*separate* `POST /tabs/{tid}/navigate`, with no wait for load completion. Both existing read-back
-sites sleep first — `ingest/base.py:140-153` and `ingest/sources/linkedin.py:45-53` each
-`sleep(self.wait)` before probing `location.href`. A closure that probed immediately would read
-`about:blank`, fail the scheme check, and raise for **every lead**: `judged=0`, every keep into
-`report.failures`, every CV composed on an empty JD. The first draft documented the *permissive*
-consequence of an unsettled tab (residual 5) and missed that the same unsettledness breaks the
-feature in the other direction. It is unfalsifiable offline — `tests/harness/browser.py:38-42`
-answers `location.href` synchronously — which is why it survived a full round of review.
+*separate* `POST /tabs/{tid}/navigate`. Whether that POST **returns before the page has loaded** is a
+property of the Camofox *server*, not of this client, and it cannot be settled without a live server
+— `core/camofox.py:15` (`_TIMEOUT = 45  # seconds; Camofox navigations can be slow to settle`) reads
+as though the call may well block. An earlier draft asserted flatly that it does not wait. That was
+unverified, and it is flagged as an open question below.
+
+**The design is correct either way, which is why it does not block on that answer.** The post-check
+needs one `evaluate("location.href")` regardless; the loop only *retries* that probe when it comes
+back `about:blank`. If navigate blocks, poll 1 returns the real URL, the loop exits with zero sleeps
+and costs nothing. If navigate does not block, the loop is what stops the closure reading
+`about:blank`, failing the scheme check and raising for **every lead** — `judged=0`, every keep into
+`report.failures`, every CV composed on an empty JD. Both existing read-back sites sleep before
+probing (`ingest/base.py:140-153`, `ingest/sources/linkedin.py:45-53`), which is at least
+circumstantial evidence for the second case.
+
+None of this is falsifiable offline — `tests/harness/browser.py:38-42` answers `location.href`
+synchronously — which is why the first draft's version survived a full round of review.
 
 `not-settled` is a **distinct reason slug** from `landed-blocked`: "the page never loaded" and "the
 page loaded somewhere forbidden" are different operator problems, and collapsing them would make a
@@ -408,9 +478,15 @@ implying three config keys that do not exist. So:
 - Keep the `set(overrides) - set(_SEAMS)` guard exactly as it is.
 - Add a module-level `_COLLABORATORS = ("sleep", "today", "resolve_host")`, used **only** for
   messaging.
-- Before raising, test the unknown key against `_COLLABORATORS` so the message names the two
-  categories **separately** — e.g. *"unknown keyword 'resolve_hosts': injected collaborators are
-  sleep, today, resolve_host; adapter seam overrides are backend, store, fetcher, renderer"*.
+- **The message is unconditional, and `UnknownAdapter` must carry it.** An earlier draft said to
+  "test the unknown key against `_COLLABORATORS`" — but those names are explicit keyword-only
+  parameters, so they can never appear in `**overrides`, which makes that membership test
+  unreachable. And `UnknownAdapter.__init__` **hardcodes** its format
+  (`f"unknown {seam} '{name}' (registered: {known_names})"`, `plugins.py:34-39`), so there is no
+  mechanism by which the raise site alone can change the wording. The fix is one optional
+  `hint: str = ""` parameter on `UnknownAdapter`, appended to `self.message`; `app.py` passes
+  `hint=f"injected collaborators ({', '.join(_COLLABORATORS)}) are keyword-only, not seam
+  overrides"`. Every existing raise site is unaffected because the default is empty.
 - A guard test asserts `_COLLABORATORS` equals `Sluice.__init__`'s keyword-only parameter names via
   `inspect.signature`. (Verified: today that is `('sleep', 'today')`.) A stale tuple when a fourth
   collaborator lands would reinstate the exact misdirection this removes.
@@ -479,7 +555,12 @@ hermetic seal.**
    shrinks the window and eliminates the `about:blank` failure that would have broken every fetch,
    but does not close it. Not witnessable offline — `tests/harness/browser.py:42` answers
    synchronously — so it is recorded here rather than tested.
-6. **`64:ff9b:1::/48` is not extractable.** RFC 8215's local-use NAT64 prefix embeds the IPv4 address
+6. **A refusal is split across two streams.** `report.failures` reaches the operator on **stdout**
+   (`cli.py:219`) while the host reaches them on **stderr** (the WARNING). A run piped with
+   `2>/dev/null` keeps the count and loses the host, which is the half needed to write an allowlist
+   entry. Noted rather than restructured: moving either stream is a change to established CLI
+   output shape, outside #18.
+7. **`64:ff9b:1::/48` is not extractable.** RFC 8215's local-use NAT64 prefix embeds the IPv4 address
    at a deployment-specific offset, so `_embedded_v4` cannot decode it. It is blocked today by the
    base predicate; if CPython ever reclassified it as global, the embedding rule would not catch it.
 
@@ -511,7 +592,9 @@ the two **allowed**-embedding rows without which the drop-the-payload-check muta
 **Pure `_host` table** (direct, not through `check_url`): the U+212A KELVIN case asserted against
 the **raw URL** — `http://Kexample.invalid/x` must yield `""`, and the test must fail if the
 check is moved after `urlparse` (a move-mutant, since `.hostname` is already folded to
-`kexample.invalid` and `.isascii()`); `http://user@evil.example@127.0.0.1/` → `127.0.0.1`;
+`kexample.invalid` and `.isascii()`); **`http://www.jobs.invalid/x` → `www.jobs.invalid`, with the
+`www.` intact** (the guard must check the host the browser fetches — see the warning above);
+`http://user@evil.example@127.0.0.1/` → `127.0.0.1`;
 `http://[::1]:8080/x` → `::1`; `https://[abc` → `""` rather than raising; `http:///etc/passwd` → `""`;
 `http://jobs.invalid./x` → `jobs.invalid.`.
 
@@ -540,12 +623,21 @@ asserts the raised message contains **neither** the entry value nor any other li
 **Call-site behaviour** (fake fetcher, no browser): a blocked lead URL raises `DossierBlocked` and
 **never calls `create_tab`**; an allowed URL fetches as today; a fetcher whose settled
 `location.href` reports a blocked destination raises `landed-blocked` with
-`document.body.innerText` **never evaluated** and the tab closed; an unreadable `location.href`
-raises `landed-unreadable`; a fetcher that never leaves `about:blank` raises `not-settled` after the
-bounded deadline, with the injected `sleep` asserted to have been called (so the loop is real and
-the test does not wall-clock). Absence assertions record the fake's **exact probe sequence** and pair
-with the allowed-URL positive control, where the body probe *does* appear.
+`document.body.innerText` **never evaluated** and the tab closed; a fetcher returning a malformed
+`location.href` envelope raises `landed-unreadable` **on the first poll** (not after the deadline);
+a fetcher that never leaves `about:blank` raises `not-settled` after exactly `_SETTLE_POLLS` probes,
+with the injected `sleep` asserted to have been called that many times (so the loop is real, and the
+poll-count bound keeps the test instant under the harness's no-op sleep); a fetcher that returns
+`about:blank` once and then a good URL **settles and fetches** (the positive control for the loop —
+without it, a mutant that deleted the retry and kept the raise would still pass the `not-settled`
+test). Absence assertions record the fake's **exact probe sequence** and pair with the allowed-URL
+positive control, where the body probe *does* appear.
 A test asserts `str(DossierBlocked(...))` contains neither the host nor the URL.
+
+**Production sleep normalisation:** a test constructs a `Sluice` with **no** `sleep` and drives a
+dossier fetch whose fake needs at least two polls, asserting it settles rather than raising
+`TypeError`. This mirrors `tests/test_app_injection.py:113`'s ingest equivalent, and it is the only
+test that would catch the `self._sleep is None` bug — every other fake settles on poll 1.
 
 **Consumer-level, each with a positive control over the same fixture and asserted path, differing
 only in the URL's address class:** after a blocked fetch a triage run leaves the lead's status
@@ -616,7 +708,10 @@ Mutate by **moving or deleting**, never adding. Run each by node id, confirm the
 | delete the empty-host refusal | `http:///etc/passwd` (confirm no scheme case catches it) |
 | **move** the non-ASCII check after `urlparse` | the raw-URL KELVIN case |
 | delete the pre-check | "blocked URL never calls `create_tab`" |
-| delete the settle loop | the `about:blank` / `not-settled` test |
+| delete the settle loop's retry (keep the raise) | the settles-on-poll-2 positive control |
+| delete `or time.sleep` from the closure's sleep normalisation | the no-injected-sleep test |
+| drop the multicast term from the **payload** check (`emb.is_global` only) | **`64:ff9b::224.0.0.1`** |
+| add `www.`-stripping to `_host` (delete-mutant: remove the row's expectation) | `http://www.jobs.invalid/x` |
 | delete the post-check | the redirected-fetcher test |
 | replace exact-equality allowlist matching with a suffix test | `evil.example.jobs.invalid` |
 | delete the trailing-dot normalisation | the `http://jobs.invalid./x` grant test |
@@ -650,10 +745,27 @@ auto-applied.
 No new dependency, no adapter-seam change, no new CLI command, no protocol *signature* change.
 Ingest is untouched.
 
-## Decisions taken across two review rounds
+## Open question — needs a ruling before implementation
 
-1. **Address rule** — `is_global and not is_multicast`, plus the `_embedded_v4` payload recheck. The
-   tightening beyond the six named categories is kept.
+**Does Camofox's `POST /tabs/{id}/navigate` return before the page has loaded?** This spec cannot
+answer it: it is a property of the Camofox server, not of `core/camofox.py`, and settling it needs a
+live server. It does not block the *design* — the settle loop is correct and free either way (see
+the closure section) — but it does determine one thing worth knowing before merging:
+
+- If navigate does **not** block, today's closure already reads bodies from unsettled tabs, and this
+  change will alter the JD text of dossiers for existing users on the next rebuild. That is a
+  behaviour change worth stating in the PR, not a bug this PR introduces.
+- If navigate **does** block, `dossier_settle_seconds` is insurance that never pays out, and could
+  reasonably be dropped to a module constant.
+
+Cheapest resolution: one `sluice ingest test-source <id> --raw` style probe against a live Camofox,
+timing `create_tab` against a slow-loading URL. Not run here — driving a live browser is a
+side-effecting action outside what this spec's review needs.
+
+## Decisions taken across three review rounds
+
+1. **Address rule** — `is_global and not is_multicast`, plus the `_embedded_v4` payload recheck,
+   with table rows keyed to each of the predicate's four terms individually.
 2. **`requires-python`** — no floor change; the classification-pinning test discharges it by
    asserting the premises on whatever interpreter runs.
 3. **Fixture addresses** — `192.88.99.1` and `2001:20::1`, no ownership annotation.
@@ -662,6 +774,9 @@ Ingest is untouched.
    own slug.
 6. **Hermeticity** — a `BaseException`-raising session fixture, plus a narrow `OSError` resolver
    catch, replacing the enumeration as the load-bearing guarantee.
+7. **Settle loop bound** — poll count, not wall-clock, so a no-op injected sleep cannot make the
+   test spin (measured: 23.2M polls over 3.00s against a 2.163s baseline suite).
+8. **`_host` does not strip `www.`** — the one part of `receipt._host` that must not be copied.
 
 Nothing in this spec is a TBD. The one judgment deliberately left unresolved in code is residual 6
 (`64:ff9b:1::/48` is undecodable); it is documented rather than guessed at.
