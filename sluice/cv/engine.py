@@ -34,6 +34,12 @@ class CvResult:
     audit_flags: list = field(default_factory=list)
     served: str | None = None
     backend: str | None = None
+    # #18: set when dossier_cache.get_or_build() raised (a blocked/failed fetch) and
+    # composition proceeded with jd="" anyway -- see the `except` below. This does NOT
+    # change control flow (skipping the lead here would be a bigger behaviour change
+    # than the SSRF guard should carry), only visibility: without it, "status: rendered"
+    # is indistinguishable from a CV genuinely tailored to a real job description.
+    dossier_failed: bool = False
 
 
 def _slug(company: str, role: str) -> str:
@@ -62,12 +68,13 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
         return CvResult(note.ref, "skipped-needs-signoff")
 
     company, role = fm.get("company", ""), fm.get("role", "")
-    jd = ""
+    jd, dossier_failed = "", False
     try:
         d = dossier_cache.get_or_build(fm)
         jd = (d.get("jd") or {}).get("markdown", "")
     except Exception as e:
         _log.warning("dossier for %s failed: %s", note.ref, e)
+        dossier_failed = True
 
     entries = vault.read_experience_entries(verified_only=True)
     baseline = vault.read_baseline()
@@ -106,7 +113,8 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
     backend_used = getattr(backend, "last_backend", None)
     if gate_msgs:
         return CvResult(note.ref, "skipped-gate", violations=violations,
-                        slop=[s[2] for s in slop_err], backend=backend_used)
+                        slop=[s[2] for s in slop_err], backend=backend_used,
+                        dossier_failed=dossier_failed)
 
     # The audit is advisory only (see audit.py: "NEVER blocks"). A backend error or
     # timeout here must not prevent a CV that already passed the HARD gate from
@@ -117,7 +125,8 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
         _log.warning("advisory audit failed for %s: %s", note.ref, e)
         audit_flags = []
     if dry_run:
-        return CvResult(note.ref, "dry-run", audit_flags=audit_flags, backend=backend_used)
+        return CvResult(note.ref, "dry-run", audit_flags=audit_flags, backend=backend_used,
+                        dossier_failed=dossier_failed)
 
     from sluice.cv import render as _render
     out_dir = f"{cvcfg.output_dir}/{_slug(company, role)}"
@@ -147,9 +156,9 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
             claims=json.dumps(blockers))
         if not held:
             return CvResult(note.ref, "skipped-has-cv", audit_flags=audit_flags,
-                            backend=backend_used)
+                            backend=backend_used, dossier_failed=dossier_failed)
         return CvResult(note.ref, "needs-signoff", audit_flags=audit_flags,
-                        served=served, backend=backend_used)
+                        served=served, backend=backend_used, dossier_failed=dossier_failed)
     if served:
         wrote = vault.set_tailored_cv(
             note.ref, f"{served} ({date.today().isoformat()})",
@@ -159,9 +168,9 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
             # it. The served PDF we rendered is left in served_dir (it passed the gate);
             # only the note pointer is withheld. See #16 cv long-window.
             return CvResult(note.ref, "skipped-has-cv", audit_flags=audit_flags,
-                            backend=backend_used)
+                            backend=backend_used, dossier_failed=dossier_failed)
     return CvResult(note.ref, "rendered", audit_flags=audit_flags,
-                    served=served, backend=backend_used)
+                    served=served, backend=backend_used, dossier_failed=dossier_failed)
 
 
 def run_batch(vault, cvcfg, backend, dossier_cache, *, renderer, limit=None, dry_run=False) -> list:

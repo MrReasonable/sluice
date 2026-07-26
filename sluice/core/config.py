@@ -7,6 +7,8 @@ can override without editing files.
 import os
 from dataclasses import dataclass, field
 
+from sluice.core.urlguard import parse_allow_hosts
+
 try:
     import yaml
 except ImportError:  # pragma: no cover - yaml is a declared dependency
@@ -121,7 +123,6 @@ def load_config(path: str | None = None) -> Config:
     # the entry's index -- never its value. Deliberately NOT _str_list: that raises
     # with `got {value!r}`, i.e. the whole list, and a config file is one of the few
     # places a user's real private hostnames legitimately live.
-    from sluice.core.urlguard import parse_allow_hosts
     raw_allow = data.get("dossier_allow_hosts")
     # Pass the RAW value: `list(...)` first would explode a YAML scalar into one
     # entry per character BEFORE parse_allow_hosts' isinstance guard could fire, so
