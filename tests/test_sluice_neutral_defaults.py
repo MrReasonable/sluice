@@ -2,6 +2,8 @@ import dataclasses
 import importlib
 from pathlib import Path
 
+import pytest
+
 from sluice.apply.config import ApplyConfig
 from sluice.core.config import Config, SourceConfig, load_config
 from sluice.cv.config import CvConfig, load_cv_config
@@ -235,3 +237,77 @@ def test_sweep_keys_on_the_default_value_not_the_annotation():
         scalar: str = "not-a-list"
 
     assert dict(_list_defaulting_fields(_Sample)) == {"bare": ["x"], "parametrized": ["y"]}
+
+
+# ── #9: lead staleness ───────────────────────────────────────────────────────
+# lead_ttl_days needs its OWN guard. The #26/#63 sweep below is value-keyed on
+# LIST-defaulting fields, because "empty list == abstain" is universal. `0 == abstain`
+# is NOT universal for ints -- the dossier-cache `ttl_days: int = 7` in cv/config.py and
+# triage/config.py is a legitimate non-zero default where 0 would mean "never cache" --
+# so widening that sweep to every int field would false-positive on it. Verified twice
+# during review: adding `lead_ttl_days: int = 90` to Config left the full suite green.
+
+def test_lead_ttl_days_dataclass_default_is_off():
+    assert Config().lead_ttl_days == 0
+
+
+def test_lead_ttl_days_loader_default_is_off(monkeypatch):
+    # load_config names every field explicitly (no splat, no loop), so the loader default
+    # is an INDEPENDENT literal that the dataclass assertion above does not constrain.
+    monkeypatch.delenv("SLUICE_CONFIG", raising=False)
+    assert load_config(None).lead_ttl_days == 0
+
+
+def test_lead_ttl_days_absent_key_abstains_rather_than_raising(tmp_path, monkeypatch):
+    # ABSENT is the abstain case, not an error: an unconfigured install must load.
+    p = tmp_path / "c.yaml"
+    p.write_text("store: vault\n", encoding="utf-8")
+    monkeypatch.setenv("SLUICE_CONFIG", str(p))
+    assert load_config(None).lead_ttl_days == 0
+
+
+def test_lead_ttl_days_configured_value_round_trips(tmp_path, monkeypatch):
+    # Every other test here pins the OFF state, which a permanently-zero knob would also
+    # satisfy. This one pins that a CONFIGURED value survives the loader.
+    p = tmp_path / "c.yaml"
+    p.write_text("lead_ttl_days: 90\n", encoding="utf-8")
+    monkeypatch.setenv("SLUICE_CONFIG", str(p))
+    assert load_config(None).lead_ttl_days == 90
+
+
+@pytest.mark.parametrize("value", ["yes", "on", "true", "True"])
+def test_lead_ttl_days_rejects_yaml_booleans(tmp_path, monkeypatch, value):
+    # bool subclasses int, and PyYAML resolves yes/on/true to True. A plain isinstance
+    # check therefore admits `lead_ttl_days: yes` -- the natural thing to type to turn
+    # this feature ON -- as a valid int, setting a ONE-DAY ttl: every lead stale, cv and
+    # apply refusing everything, expire proposing the whole vault, with no error at all.
+    # An abstain inversion reached by typing the obvious thing: the 672ad2a class.
+    p = tmp_path / "c.yaml"
+    p.write_text(f"lead_ttl_days: {value}\n", encoding="utf-8")
+    monkeypatch.setenv("SLUICE_CONFIG", str(p))
+    with pytest.raises(ValueError, match="lead_ttl_days"):
+        load_config(None)
+
+
+@pytest.mark.parametrize("value", ["-1", "'90'", "1.5", "[90]"])
+def test_lead_ttl_days_rejects_negative_and_non_int(tmp_path, monkeypatch, value):
+    p = tmp_path / "c.yaml"
+    p.write_text(f"lead_ttl_days: {value}\n", encoding="utf-8")
+    monkeypatch.setenv("SLUICE_CONFIG", str(p))
+    with pytest.raises(ValueError, match="lead_ttl_days"):
+        load_config(None)
+
+
+def test_example_config_ships_lead_ttl_days_off():
+    # sluice.yaml.example is COPIED VERBATIM by the documented quickstart, and this same
+    # file ships ACTIVE illustrative non-zero pay floors two blocks away -- so the
+    # nearest local convention is the unsafe one. A copied non-zero silently switches on
+    # the cv and apply refusals, neither of which is human-gated the way --expire is.
+    # test_config_example.py guards only the sub-app blocks, so a root key is otherwise
+    # unguarded entirely.
+    text = Path("sluice.yaml.example").read_text(encoding="utf-8")
+    active = [ln for ln in text.splitlines()
+              if ln.strip().startswith("lead_ttl_days:")]
+    assert all(ln.split(":", 1)[1].strip() == "0" for ln in active), \
+        "lead_ttl_days must ship commented out (or 0) in sluice.yaml.example"
+    assert "lead_ttl_days" in text, "the knob must be documented in the example config"

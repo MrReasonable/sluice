@@ -13,6 +13,15 @@
 # preference the code default just stopped expressing. Unset = no geographic preference.
 # locations: [Remote]   # <- uncomment and set YOUR OWN
 
+# Days since a lead was last seen in a scrape before `sluice leads expire` proposes
+# dismissing it, and before `cv run` and `apply prep` refuse to spend on it. 0 = OFF,
+# which is the shipped default. Commented out rather than set, for the same reason as
+# `locations` above: this file is COPIED, and an active value would hand every copier a
+# judgement about what counts as stale that they never made. Staleness is only ever a
+# cheap proxy -- whether the role is still open can only be answered on the employer's
+# own site, so this does not replace checking before you apply.
+# lead_ttl_days: 90   # <- uncomment and set YOUR OWN
+
 # ── adapter seams ────────────────────────────────────────────────────────────
 # Which implementation fills each seam. Selection is by NAME; an unknown name raises at
 # construction and lists the valid ones rather than falling through to a default.

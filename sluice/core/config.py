@@ -69,6 +69,14 @@ class Config:
     # Title-noise tokens stripped before #23's dedup clustering compares two roles. Empty by
     # default -> strictest clustering (nothing stripped), erring toward NOT merging (safe).
     dedupe_title_noise_words: list = field(default_factory=list)
+    # Days since a lead was last seen in a scrape before it counts as stale (#9). 0 = OFF,
+    # and off is the shipped default: "stale" is a judgement, and a shipped non-zero would
+    # bin leads on a stranger's idea of it -- the 672ad2a class, where a preference baked
+    # into source silently discarded someone's whole job hunt. Lives on the ROOT Config
+    # because `leads expire`, cv and apply all read it, and a staleness policy that
+    # differed between them would be a bug. NB `ttl_days` (cv/config.py, triage/config.py)
+    # is the unrelated DOSSIER CACHE ttl; this name is deliberately distinct from it.
+    lead_ttl_days: int = 0
 
     def source(self, id: str) -> SourceConfig:
         """Config for a source id; unlisted sources default to enabled + no tuning."""
@@ -131,6 +139,17 @@ def load_config(path: str | None = None) -> Config:
     parse_allow_hosts([] if raw_allow is None else raw_allow)
     allow = list(raw_allow or [])   # coerce only AFTER validation has passed
 
+    # #9. ABSENT is the abstain case, not an error -- an unconfigured install must load
+    # and expire nothing. `bool` is checked FIRST and separately because it SUBCLASSES
+    # int: PyYAML resolves yes/on/true to True, so `lead_ttl_days: yes` -- what a user
+    # naturally types to turn this feature ON -- would otherwise pass an isinstance(int)
+    # check and set a ONE-DAY ttl, marking every lead stale with no error anywhere.
+    raw_ttl = data.get("lead_ttl_days")
+    raw_ttl = 0 if raw_ttl is None else raw_ttl
+    if isinstance(raw_ttl, bool) or not isinstance(raw_ttl, int) or raw_ttl < 0:
+        raise ValueError(
+            f"lead_ttl_days must be a non-negative integer (0 = off), got {raw_ttl!r}")
+
     return Config(sources=sources, locations=locations, notify=notify,
                   store=str(data.get("store") or "vault"),
                   baseline_rel=str(data.get("baseline_rel") or "My CV/CV.md"),
@@ -141,4 +160,5 @@ def load_config(path: str | None = None) -> Config:
                                                  "location_noise_words"),
                   dedupe_title_noise_words=_str_list(data.get("dedupe_title_noise_words"),
                                                      "dedupe_title_noise_words"),
+                  lead_ttl_days=raw_ttl,
                   dossier_allow_hosts=allow)
