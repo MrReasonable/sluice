@@ -139,3 +139,89 @@ def parse_allow_hosts(entries, *, key: str = "dossier_allow_hosts") -> AllowList
                 f"{key}[{i}] is neither a valid hostname nor an address/network "
                 f"(wildcards are not supported). Valid form:\n  {valid}") from None
     return AllowList(hosts=frozenset(hosts), networks=tuple(networks))
+
+
+# IPv6 prefixes that carry an IPv4 address in their low 32 bits. `.ipv4_mapped`
+# and `.sixtofour` cover two more shapes and are used directly below.
+_V4_COMPAT = ipaddress.ip_network("::/96")        # RFC 4291, deprecated
+_NAT64_WELL_KNOWN = ipaddress.ip_network("64:ff9b::/96")   # RFC 6052
+
+
+@dataclass(frozen=True)
+class UrlVerdict:
+    allowed: bool
+    reason: str = ""     # "" when allowed; one of the module's slugs otherwise
+    host: str = ""       # "" only when the url yielded no host at all
+
+
+def _embedded_v4(addr):
+    """The IPv4 address an IPv6 address carries, or None.
+
+    `is_global` reads the WRAPPER, not the payload, so an IPv6 address can be
+    globally classified while addressing 127.0.0.1. On a DNS64 network
+    getaddrinfo synthesises exactly that for an A-record-only name.
+
+    RFC 8215's local-use NAT64 prefix (64:ff9b:1::/48) is deliberately absent:
+    its embedding offset is deployment-specific and therefore not decodable. It
+    is blocked today by the base predicate; that residual is documented in the
+    spec rather than guessed at.
+    """
+    if not isinstance(addr, ipaddress.IPv6Address):
+        return None
+    if addr.ipv4_mapped is not None:          # ::ffff:0:0/96
+        return addr.ipv4_mapped
+    if addr.sixtofour is not None:            # 2002::/16
+        return addr.sixtofour
+    if addr in _V4_COMPAT or addr in _NAT64_WELL_KNOWN:
+        return ipaddress.IPv4Address(int(addr) & 0xFFFFFFFF)
+    return None
+
+
+def _routable(addr) -> bool:
+    """One default-deny predicate, applied to the address AND to any IPv4 it embeds.
+
+    NOT written as `not (is_loopback or is_private or is_link_local or is_reserved
+    or is_multicast or is_unspecified)`. That form has six redundant conjuncts:
+    delete any one and the suite stays green, so the table would certify nothing.
+    `is_global` already subsumes all six -- and CGNAT (100.64.0.0/10), which
+    carries none of them -- and tracks CPython's IANA special-purpose table.
+    `is_multicast` is NOT subsumed: 224.0.0.1 and ff02::1 are both is_global=True.
+    """
+    if not (addr.is_global and not addr.is_multicast):
+        return False
+    embedded = _embedded_v4(addr)
+    if embedded is not None:
+        return embedded.is_global and not embedded.is_multicast
+    return True
+
+
+def _granted(addr, host: str, allow: AllowList) -> bool:
+    """Does the user's allowlist cover this otherwise-blocked address?
+
+    A hostname grant is EXACT (see the subdomain test) and covers every address
+    that host resolves to -- the user explicitly trusted the name. A network grant
+    covers the address regardless of name.
+    """
+    if _norm_host(host) in allow.hosts:
+        return True
+    return any(addr in net for net in allow.networks
+               if net.version == addr.version)
+
+
+def verdict(host: str, addrs, *, allow_hosts: AllowList) -> UrlVerdict:
+    """PURE policy: given a host and its ALREADY-RESOLVED addresses, may we fetch?
+
+    Every answer must pass, so a multi-A-record host cannot smuggle one private
+    address through by ordering. An unparseable answer blocks -- fail closed.
+    """
+    answers = list(addrs)
+    if not answers:
+        return UrlVerdict(False, RESOLVE_EMPTY, host)
+    for raw in answers:
+        try:
+            addr = ipaddress.ip_address(raw)
+        except ValueError:
+            return UrlVerdict(False, BLOCKED_ADDRESS, host)
+        if not _routable(addr) and not _granted(addr, host, allow_hosts):
+            return UrlVerdict(False, BLOCKED_ADDRESS, host)
+    return UrlVerdict(True, "", host)
