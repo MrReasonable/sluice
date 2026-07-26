@@ -273,8 +273,6 @@ class Sluice:
         a tab is opened, and the LANDED url re-checked before the body is read. A refusal
         RAISES rather than returning an empty dossier -- see the comment on the raise.
         """
-        import typing  # noqa: F401  (NoReturn annotation on _refuse below)
-
         from sluice.core.dossier import DossierCache
         from sluice.core import urlguard
         # Parsed once per cache, not per fetch. Raises here if a Config was built by
@@ -285,7 +283,7 @@ class Sluice:
         resolve = self._resolve_host or urlguard._resolve
         cam = {}
 
-        def _refuse(reason, host="") -> "typing.NoReturn":
+        def _refuse(reason, host=""):
             """Log and RAISE. Never returns.
 
             It raises rather than returning the exception for the caller to raise:
@@ -323,10 +321,10 @@ class Sluice:
                 landed = res.get("result") if isinstance(res, dict) else None
                 if not isinstance(landed, str):
                     c.close_tab(tid)
-                    _refuse(urlguard.LANDED_UNREADABLE)
+                    _refuse(urlguard.LANDED_UNREADABLE, pre.host)
                 if not landed or landed == "about:blank":
                     c.close_tab(tid)
-                    _refuse(urlguard.NOT_SETTLED)
+                    _refuse(urlguard.NOT_SETTLED, pre.host)
                 post = urlguard.check_url(landed, allow_hosts=allow, resolve=resolve)
                 if not post.allowed:
                     c.close_tab(tid)
