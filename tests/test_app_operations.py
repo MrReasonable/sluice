@@ -109,6 +109,50 @@ def test_compose_cv_threads_the_cv_config_into_the_backend(tmp_path, monkeypatch
     assert seen["fallback_model"] == "deepseek-v4-flash"  # ...and cheap_model for fallback
 
 
+def test_compose_cv_single_lead_write_race_reports_dossier_failed(monkeypatch):
+    """The SAME defect run_batch's catch-all was fixed against one commit ago (a lost
+    write race under-reporting cli.py's "N CV(s) composed blind" summary) had a second,
+    unenumerated call site: the single-lead `cv --lead` path in compose_cv. run_one
+    stamps `dossier_failed` onto the exception it raises before re-raising it (see its
+    own comment in cv/engine.py) precisely so a catch further up can read it back;
+    compose_cv's `except VaultConflict` must do that too, not default to False."""
+    import sluice.cv.engine as cv_engine
+    from sluice.core.protocols import VaultConflict
+
+    class _Note:
+        """Minimal stand-in for a store-issued note: just enough for slug_matches
+        and the ref used in compose_cv's log line."""
+        def __init__(self):
+            self.fm = {"status": "shortlist", "company": "Acme", "role": "Engineer"}
+            self.ref = "Job Applications/Job Leads/Acme - Engineer.md"
+            self.slug = "Acme - Engineer"
+
+    class _FakeStore:
+        def read_leads(self, statuses=None):
+            return [_Note()]
+
+    def _boom(*a, **k):
+        # Mirrors what a real run_one does on a downstream failure (a render error,
+        # a backend timeout) AFTER a dossier fetch the SSRF guard blocked: stamp
+        # dossier_failed onto the exception, then let it propagate.
+        e = VaultConflict("lost the write race")
+        e.dossier_failed = True
+        raise e
+
+    monkeypatch.setattr(cv_engine, "run_one", _boom)
+    app = Sluice(Config(), store=_FakeStore())
+    monkeypatch.setattr(app, "backend", lambda *a, **k: object())  # avoid real creds
+
+    results = app.compose_cv(lead="Acme", dry_run=True)
+
+    assert len(results) == 1
+    assert results[0].status == "error"
+    assert results[0].dossier_failed is True, (
+        "a dossier blocked by the SSRF guard, followed by a lost write race, must "
+        "still surface in the 'N CV(s) composed blind' summary -- not be silently "
+        "counted as a plain error")
+
+
 def test_prep_all_shortlist_on_empty_vault_returns_a_prep_result_list(tmp_path, monkeypatch):
     # No "Job Applications/Job Leads" dir at all -- Vault.read_leads tolerates a
     # missing dir and returns []. all_shortlist must still come back as a (possibly

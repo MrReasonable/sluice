@@ -143,10 +143,10 @@ def _forbid_dns():
 - [ ] **Step 4: Run the new test, then the whole suite**
 
 Run: `python -m pytest tests/test_hermeticity.py -v`
-Expected: PASS, 1 test collected. **If it collects 0, the file is misnamed** — that is the failure this split exists to prevent.
+Expected: PASS, at least one test collected. **If it collects 0, the file is misnamed** — that is the failure this split exists to prevent (a test in a non-collected file is inert; the count above that doesn't matter).
 
 Run: `python -m pytest`
-Expected: green, with exactly one new test. **If anything else fails, stop** — it means some existing test does resolve, which contradicts the spec's premise and must be reported, not worked around.
+Expected: green, no new failures, with the hermeticity test above now included in the run. **If anything else fails, stop** — it means some existing test does resolve, which contradicts the spec's premise and must be reported, not worked around.
 
 - [ ] **Step 5: Commit**
 
@@ -420,7 +420,16 @@ def parse_allow_hosts(entries, *, key: str = "dossier_allow_hosts") -> AllowList
                 raise ValueError(
                     f"{key}[{i}] looks like an address or network but is not a "
                     f"valid one. Valid form:\n  {valid}") from None
-        elif _LDH.fullmatch(entry.rstrip(".")):
+        # Validate the NORMALISED form, not `entry.rstrip(".")`: rstrip strips EVERY
+        # trailing dot, so "jobs.invalid.." looked like a valid hostname here while
+        # _norm_host below (which strips only ONE) stored "jobs.invalid." -- a grant
+        # that can never equal a url host, since `_host` never yields more than one
+        # trailing dot either. Refuse loudly beats granting inertly (the module
+        # docstring's own stated policy); "jobs.invalid.." contains an empty label
+        # between the two dots, so it was never a legal hostname regardless.
+        # (Corrected from an earlier `entry.rstrip(".")` draft during review -- that
+        # form is what shipped for a moment and is why this comment exists at all.)
+        elif _LDH.fullmatch(_norm_host(entry)):
             hosts.add(_norm_host(entry))
         else:
             # Not IP-shaped and not a legal hostname. Accepting it would add a grant
@@ -1379,7 +1388,19 @@ def test_resolve_host_defaults_to_the_production_resolver():
 
 - [ ] **Step 2: Run and watch fail**
 
-Run: `python -m pytest tests/test_app_injection.py -k "collaborator or resolve_host or unknown_seam" -v`
+Run the four tests just appended, by node ID (never `-k`: a selector that matches
+nothing exits 0 and prints "N deselected", which is success-shaped output that
+verifies nothing):
+
+```bash
+python -m pytest \
+  tests/test_app_injection.py::test_a_typod_collaborator_names_collaborators_and_seams_separately \
+  tests/test_app_injection.py::test_collaborators_tuple_matches_the_real_signature \
+  tests/test_app_injection.py::test_an_unknown_seam_message_is_unchanged_for_existing_callers \
+  tests/test_app_injection.py::test_resolve_host_defaults_to_the_production_resolver \
+  -v
+```
+
 Expected: FAIL — `_COLLABORATORS` does not exist; `resolve_hosts=` raises without the hint.
 
 - [ ] **Step 3: Implement**
@@ -1717,30 +1738,36 @@ Replace `Sluice.dossier_cache` in `sluice/core/app.py`:
                     # to prevent: get_or_build CACHES it for ttl_days, triage judges the
                     # lead on a JD nobody read, apply_verdict writes a status from it,
                     # and report.failures stays empty. Raising costs one retry next run.
+                    # OUTSIDE the try below on purpose: a falsy tid means no tab was
+                    # ever opened, so there is nothing for close_tab to close.
                     _refuse(urlguard.NO_TAB, pre.host)
-                # Camofox's navigate awaits page.goto(waitUntil='domcontentloaded'),
-                # so the tab HAS navigated by now and HTTP redirects are already
-                # followed. The checks below assert that rather than trusting it.
-                res = c.evaluate(tid, "location.href")
-                landed = res.get("result") if isinstance(res, dict) else None
-                if not isinstance(landed, str):
+                # Every exit past this point -- a refusal or a clean read -- must close
+                # the tab it opened. A bare Camofox never raises (`_api` swallows into
+                # `{"error": ...}`), but `c` is the injected Fetcher seam, and a future
+                # non-Camofox implementation that DOES raise must not leak a tab; hence
+                # `finally`, not a `close_tab` call repeated on every refusal branch.
+                try:
+                    # Camofox's navigate awaits page.goto(waitUntil='domcontentloaded'),
+                    # so the tab HAS navigated by now and HTTP redirects are already
+                    # followed. The checks below assert that rather than trusting it.
+                    res = c.evaluate(tid, "location.href")
+                    landed = res.get("result") if isinstance(res, dict) else None
+                    if not isinstance(landed, str):
+                        _refuse(urlguard.LANDED_UNREADABLE, pre.host)
+                    if not landed or landed == "about:blank":
+                        _refuse(urlguard.NOT_SETTLED, pre.host)
+                    post = urlguard.check_url(landed, allow_hosts=allow, resolve=resolve)
+                    if not post.allowed:
+                        _refuse(urlguard.LANDED_BLOCKED, post.host)
+                    # Only now is the body safe to pull into memory.
+                    body = c.evaluate(tid, "document.body.innerText")
+                    md = body.get("result") if isinstance(body, dict) else None
+                    if not isinstance(md, str):
+                        # Same reasoning as no-tab: a non-string body used to become a
+                        # cached empty JD indistinguishable from a real empty one.
+                        _refuse(urlguard.BODY_UNREADABLE, pre.host)
+                finally:
                     c.close_tab(tid)
-                    _refuse(urlguard.LANDED_UNREADABLE)
-                if not landed or landed == "about:blank":
-                    c.close_tab(tid)
-                    _refuse(urlguard.NOT_SETTLED)
-                post = urlguard.check_url(landed, allow_hosts=allow, resolve=resolve)
-                if not post.allowed:
-                    c.close_tab(tid)
-                    _refuse(urlguard.LANDED_BLOCKED, post.host)
-                # Only now is the body safe to pull into memory.
-                body = c.evaluate(tid, "document.body.innerText")
-                md = body.get("result") if isinstance(body, dict) else None
-                c.close_tab(tid)
-                if not isinstance(md, str):
-                    # Same reasoning as no-tab: a non-string body used to become a
-                    # cached empty JD indistinguishable from a real empty one.
-                    _refuse(urlguard.BODY_UNREADABLE, pre.host)
             return {"jd": {"markdown": md or ""}, "glassdoor": {}}
 
         return DossierCache(dossier_dir, ttl_days, fetcher=fetch)
@@ -1835,7 +1862,7 @@ Run: `python -m pytest && ruff check sluice tests` — green.
 
 **These six existing tests reach the closure and must all still pass:**
 
-```
+```text
 tests/e2e/test_a_clean_lead_reaches_rejected.py::test_a_clean_lead_reaches_rejected
 tests/e2e/test_a_cv_citing_an_unbacked_figure_never_ships.py::test_a_cv_citing_an_unbacked_figure_never_ships
 tests/e2e/test_an_empty_config_bins_nothing.py::test_an_empty_config_bins_nothing
