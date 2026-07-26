@@ -450,6 +450,43 @@ def test_batch_survives_a_single_lead_exception(monkeypatch):
     assert notes[0].ref not in v.written   # the errored lead is never marked tailored
     assert notes[1].ref in v.written       # the surviving lead still gets recorded
 
+def test_batch_reports_dossier_failed_when_the_blocked_lead_then_errors():
+    # CodeRabbit finding on #18: dossier_failed is set inside run_one's local scope
+    # (when the SSRF guard blocks the fetch), but run_batch's per-lead catch-all --
+    # which MUST stay a catch-all, so one bad lead never aborts the batch, see the
+    # test above -- used to build CvResult(ref, "error") with no dossier_failed
+    # argument at all, silently defaulting it to False. That undercounts cli.py's
+    # "N CV(s) composed blind" summary for exactly the lead an operator most needs
+    # to see it for: one where the dossier was ALSO refused. run_one now stamps
+    # dossier_failed onto the exception before re-raising (its own comment explains
+    # why that is the only channel left once the stack unwinds past it); this drives
+    # both failures through the real run_batch to prove the flag survives the
+    # boundary, not just that run_one sets it locally (test_dossier_guard.py already
+    # covers that half in isolation).
+    from sluice.core import urlguard
+
+    class _BlockedCache:
+        """Stands in for Sluice.dossier_cache() after the SSRF guard has refused
+        the lead's url -- exactly what get_or_build raises in production."""
+        def get_or_build(self, fm):
+            raise urlguard.DossierBlocked(urlguard.BLOCKED_ADDRESS)
+
+    class _BoomRenderer:
+        """A downstream failure UNRELATED to the dossier (e.g. WeasyPrint), so this
+        test proves the flag survives a SECOND, independent exception -- not just
+        the dossier's own."""
+        def render(self, cv_text, out_dir, *, neutral_name="CV.pdf"):
+            raise RuntimeError("weasyprint boom")
+
+    notes = [Note({"status": "shortlist", "company": "Acme", "role": "Analyst"})]
+    v = FakeVault(ENTRIES, notes=notes)
+    results = run_batch(v, _cfg(), FakeBackend(CLEAN_CV), _BlockedCache(),
+                        renderer=_BoomRenderer())
+    assert len(results) == 1
+    assert results[0].status == "error"
+    assert results[0].dossier_failed is True, \
+        "the dossier WAS blocked -- run_batch's catch-all must not silently lose that"
+
 def test_batch_records_error_when_fallback_response_is_truncated():
     # A truncated fallback response (finish_reason==length) is a hard error, not
     # a silent partial (see OpenAiCompatibleBackend.complete). Drive this through
