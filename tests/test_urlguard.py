@@ -305,8 +305,16 @@ def test_a_non_ascii_path_does_not_refuse_the_url():
     would be blocked permanently with no remedy: the guard's default silently
     changing which jobs a user sees, which is the 672ad2a direction.
     """
-    assert urlguard._host("https://jobs.example/careers/développeur") == "jobs.example"
-    assert urlguard._host("https://jobs.example/x?q=café") == "jobs.example"
+    url_a = "https://jobs.example/careers/développeur"
+    url_b = "https://jobs.example/x?q=café"
+    # Premise: if 'é' is ever corrupted to plain ascii 'e', both urls below become pure
+    # ASCII and the assertions below pass VACUOUSLY -- silently stopping the witness that
+    # the ascii check is scoped to the authority, not the whole url. The KELVIN sibling
+    # test above guards its own fixture the same way.
+    assert not url_a.isascii()
+    assert not url_b.isascii()
+    assert urlguard._host(url_a) == "jobs.example"
+    assert urlguard._host(url_b) == "jobs.example"
 
 
 @pytest.mark.parametrize("url,expected", [
@@ -384,8 +392,7 @@ def test_a_resolver_raising_a_non_oserror_propagates():
     """The catch is narrow ON PURPOSE.
 
     A bare `except Exception` would convert a BUG IN THE GUARD into a "blocked"
-    verdict, and would also swallow the session-wide DNS guard, which is how a
-    forgotten wiring stayed green through a review round.
+    verdict.
     """
     class _Boom(Exception):
         pass

@@ -302,8 +302,7 @@ def check_url(url: str, *, allow_hosts: AllowList, resolve=_resolve) -> UrlVerdi
         addrs = resolve(host)
     except OSError:
         # Narrow on purpose: a bare `except Exception` would turn a BUG IN THIS
-        # MODULE into a tidy "blocked" verdict, and would swallow the suite's
-        # BaseException DNS guard too. socket.gaierror subclasses OSError, so the
-        # real failure mode is covered.
+        # MODULE into a tidy "blocked" verdict. socket.gaierror subclasses OSError,
+        # so the real failure mode is covered.
         return UrlVerdict(False, RESOLVE_FAILED, host)
     return verdict(host, addrs, allow_hosts=allow_hosts)

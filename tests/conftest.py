@@ -86,13 +86,13 @@ class DnsUsedInTests(BaseException):
     """Raised when a test tries to resolve a hostname.
 
     Subclasses BaseException, NOT Exception, and that is load-bearing. A plain
-    Exception would be swallowed TWICE on the dossier path -- first by
-    urlguard.check_url's fail-closed resolver catch, which turns a raising
-    resolver into a "blocked" verdict, then by cv/engine.py's per-item
-    `except Exception`. An implementer who forgot to inject `resolve_host=` at
-    one of the three test wiring sites would therefore see a GREEN suite that
-    was doing real DNS on every run. That happened in review, which is why this
-    exists at all.
+    Exception would be swallowed on the dossier path by whichever consumer calls
+    it -- cv/engine.py's per-item `except Exception` (which proceeds with an
+    empty JD) or triage/engine.py's per-item `except Exception` (which records
+    report.failures and skips the lead). An implementer who forgot to inject
+    `resolve_host=` at one of the three test wiring sites would therefore see a
+    GREEN suite that was doing real DNS on every run. That happened in review,
+    which is why this exists at all.
     """
 
 
