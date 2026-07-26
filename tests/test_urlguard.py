@@ -255,3 +255,68 @@ def test_fixture_addresses_are_globally_classified():
     # premise for every allowed row
     for a in ("192.88.99.1", "2001:20::1", "::ffff:192.88.99.1", "64:ff9b::192.88.99.1"):
         assert g(a) and not m(a), a
+
+
+# --- host extraction ---------------------------------------------------------
+
+def test_www_is_preserved():
+    """The guard must check the host the BROWSER fetches.
+
+    track/receipt._host ends with `return host[4:] if host.startswith("www.")
+    else host` -- correct there, a total bypass here: strip it and the guard
+    resolves attacker.invalid while the browser fetches www.attacker.invalid.
+    Point the two names at different addresses and the check means nothing.
+    """
+    assert urlguard._host("http://www.jobs.invalid/x") == "www.jobs.invalid"
+
+
+# Written as an explicit escape, NOT as a literal character. U+212A is visually
+# identical to ASCII "K", so a literal is silently corrupted by transcription --
+# a reviewer reproduced exactly that failure. The premise assertion below makes a
+# lost codepoint redden as a fixture problem rather than as a guard problem.
+KELVIN = "K"
+
+
+def test_the_kelvin_fixture_is_the_confusable_not_ascii_k():
+    assert not KELVIN.isascii() and KELVIN.lower() == "k"
+
+
+def test_a_non_ascii_host_is_refused_before_any_lowering():
+    """U+212A KELVIN folds to ASCII 'k' under str.lower().
+
+    urlparse().hostname is ITSELF lowercased, so
+    urlparse(f"http://{KELVIN}example.invalid/x").hostname is 'kexample.invalid',
+    which .isascii() returns True for. A non-ASCII check applied to .hostname can
+    therefore NEVER fire -- the inert-test shape that shipped once in #10. The
+    check must run on the raw AUTHORITY, before urlparse lowercases it.
+    """
+    url = f"http://{KELVIN}example.invalid/x"
+    assert urlguard._host(url) == ""
+    # and the confusable must not be silently accepted as the real host
+    assert urlguard._host(url) != "kexample.invalid"
+
+
+def test_a_non_ascii_path_does_not_refuse_the_url():
+    """The check is scoped to the AUTHORITY, not the whole url.
+
+    Checking the raw url would refuse every posting whose path or query carries a
+    non-ASCII byte -- entirely normal on a French or German board. Because
+    check_url returns on `not host` BEFORE consulting the allowlist, such a lead
+    would be blocked permanently with no remedy: the guard's default silently
+    changing which jobs a user sees, which is the 672ad2a direction.
+    """
+    assert urlguard._host("https://jobs.example/careers/développeur") == "jobs.example"
+    assert urlguard._host("https://jobs.example/x?q=café") == "jobs.example"
+
+
+@pytest.mark.parametrize("url,expected", [
+    ("http://user@evil.example@127.0.0.1/", "127.0.0.1"),  # userinfo: last @ wins
+    ("http://[::1]:8080/x", "::1"),                        # brackets stripped
+    ("http://jobs.invalid./x", "jobs.invalid."),            # trailing dot preserved
+    ("HTTPS://Example.INVALID/a", "example.invalid"),       # case folded
+    ("http:///etc/passwd", ""),                             # no host
+    ("https://[abc", ""),                                   # malformed literal, no raise
+    ("", ""),
+])
+def test_host_extraction(url, expected):
+    assert urlguard._host(url) == expected
