@@ -320,3 +320,125 @@ def test_a_non_ascii_path_does_not_refuse_the_url():
 ])
 def test_host_extraction(url, expected):
     assert urlguard._host(url) == expected
+
+
+# --- check_url ---------------------------------------------------------------
+
+def _fake_resolve(mapping, *, default=None):
+    """A resolver over a fixed map. Unmapped hosts raise OSError unless `default`."""
+    def _r(host):
+        if host in mapping:
+            return list(mapping[host])
+        if default is not None:
+            return list(default)
+        raise OSError(f"unmapped {host!r}")
+    return _r
+
+
+_GLOBAL = _fake_resolve({}, default=["192.88.99.1"])
+
+
+@pytest.mark.parametrize("url", [
+    "ftp://host.invalid/x",
+    "file://allowed.invalid/etc/passwd",
+])
+def test_non_http_schemes_block_even_when_the_host_resolves_globally(url):
+    """These two fixtures CARRY A HOST, which is the point.
+
+    Most non-http(s) urls (file:///x, javascript:alert(1)) also yield hostname
+    None, so using one of those to test the SCHEME check passes whether or not
+    that check exists -- five of six originally-proposed cases were inert this
+    way. The resolver maps every host to a global address so the address rule
+    cannot be what refuses these.
+    """
+    v = urlguard.check_url(url, allow_hosts=_EMPTY, resolve=_GLOBAL)
+    assert not v.allowed and v.reason == urlguard.SCHEME
+
+
+def test_a_url_with_no_host_blocks_with_its_own_slug():
+    v = urlguard.check_url("http:///etc/passwd", allow_hosts=_EMPTY, resolve=_GLOBAL)
+    assert not v.allowed and v.reason == urlguard.NO_HOST
+
+
+def test_the_allowlist_never_grants_a_scheme():
+    allow = urlguard.parse_allow_hosts(["allowed.invalid"])
+    v = urlguard.check_url("file://allowed.invalid/etc/passwd",
+                           allow_hosts=allow, resolve=_GLOBAL)
+    assert not v.allowed and v.reason == urlguard.SCHEME
+
+
+def test_uppercase_scheme_and_host_pass():
+    v = urlguard.check_url("HTTPS://Example.INVALID/a",
+                           allow_hosts=_EMPTY, resolve=_GLOBAL)
+    assert v.allowed
+
+
+def test_a_resolver_raising_oserror_blocks():
+    def _boom(host):
+        raise OSError("nope")
+    v = urlguard.check_url("https://h.invalid/x", allow_hosts=_EMPTY, resolve=_boom)
+    assert not v.allowed and v.reason == urlguard.RESOLVE_FAILED
+
+
+def test_a_resolver_raising_a_non_oserror_propagates():
+    """The catch is narrow ON PURPOSE.
+
+    A bare `except Exception` would convert a BUG IN THE GUARD into a "blocked"
+    verdict, and would also swallow the session-wide DNS guard, which is how a
+    forgotten wiring stayed green through a review round.
+    """
+    class _Boom(Exception):
+        pass
+
+    def _boom(host):
+        raise _Boom("a bug, not a resolution failure")
+    with pytest.raises(_Boom):
+        urlguard.check_url("https://h.invalid/x", allow_hosts=_EMPTY, resolve=_boom)
+
+
+def test_zero_addresses_blocks():
+    v = urlguard.check_url("https://h.invalid/x", allow_hosts=_EMPTY,
+                           resolve=lambda h: [])
+    assert not v.allowed and v.reason == urlguard.RESOLVE_EMPTY
+
+
+def test_obfuscated_hosts_reach_the_resolver_verbatim():
+    """The guard must NEVER classify a host by parsing it as an IP literal.
+
+    getaddrinfo normalises exactly the forms that exist to defeat that:
+    2130706433 / 0x7f000001 / 127.1 all resolve to 127.0.0.1, while
+    ipaddress.ip_address("2130706433") raises. So we resolve, always.
+    """
+    seen = []
+
+    def _spy(host):
+        seen.append(host)
+        return ["127.0.0.1"]
+    for h in ("2130706433", "0x7f000001", "127.1"):
+        v = urlguard.check_url(f"http://{h}/", allow_hosts=_EMPTY, resolve=_spy)
+        assert not v.allowed and v.reason == urlguard.BLOCKED_ADDRESS
+    assert seen == ["2130706433", "0x7f000001", "127.1"]
+
+
+def test_a_blocked_verdict_carries_the_host_for_the_log_line():
+    v = urlguard.check_url("http://h.invalid/x", allow_hosts=_EMPTY,
+                           resolve=_fake_resolve({"h.invalid": ["127.0.0.1"]}))
+    assert v.host == "h.invalid"
+
+
+def test_a_malformed_ipv6_literal_returns_a_verdict_rather_than_raising():
+    """`_host` swallows urlsplit's ValueError, but check_url parses the scheme too.
+
+    An unguarded second parse would RAISE out of the guard on "https://[abc" --
+    the tested-function-is-not-the-called-function shape.
+    """
+    v = urlguard.check_url("https://[abc", allow_hosts=_EMPTY, resolve=_GLOBAL)
+    assert not v.allowed and v.reason == urlguard.NO_HOST
+
+
+def test_a_scheme_failure_still_reports_its_host():
+    """An earlier draft asserted "on a scheme failure there is no host", which
+    contradicted its own fixture rationale: ftp://host.invalid/x HAS one, and
+    discarding it would strip the security log of the half the operator needs."""
+    v = urlguard.check_url("ftp://host.invalid/x", allow_hosts=_EMPTY, resolve=_GLOBAL)
+    assert v.host == "host.invalid"
