@@ -442,3 +442,49 @@ def test_a_scheme_failure_still_reports_its_host():
     discarding it would strip the security log of the half the operator needs."""
     v = urlguard.check_url("ftp://host.invalid/x", allow_hosts=_EMPTY, resolve=_GLOBAL)
     assert v.host == "host.invalid"
+
+
+# --- config ------------------------------------------------------------------
+
+def test_dossier_allow_hosts_defaults_empty():
+    from sluice.core.config import Config
+    assert Config().dossier_allow_hosts == []
+
+
+def test_dossier_allow_hosts_defaults_empty_through_the_loader(monkeypatch):
+    # Clear the env or this silently reads the developer's own config and passes
+    # for the wrong reason -- the trap already documented in the neutral-defaults tests.
+    from sluice.core.config import load_config
+    monkeypatch.delenv("SLUICE_CONFIG", raising=False)
+    assert load_config(None).dossier_allow_hosts == []
+
+
+def test_dossier_allow_hosts_round_trips(tmp_path):
+    from sluice.core.config import load_config
+    p = tmp_path / "sluice.local.yaml"
+    p.write_text('dossier_allow_hosts: ["jobs.invalid", "10.0.0.0/8"]\n')
+    assert load_config(str(p)).dossier_allow_hosts == ["jobs.invalid", "10.0.0.0/8"]
+
+
+def test_a_malformed_allowlist_raises_at_load(tmp_path):
+    from sluice.core.config import load_config
+    p = tmp_path / "sluice.local.yaml"
+    p.write_text('dossier_allow_hosts: ["10.0.0.300"]\n')
+    with pytest.raises(ValueError) as ei:
+        load_config(str(p))
+    assert "dossier_allow_hosts[0]" in str(ei.value)
+    assert "10.0.0.300" not in str(ei.value)
+
+
+def test_a_scalar_allowlist_raises_at_load(tmp_path):
+    """A YAML scalar must raise, not list()-explode into per-character grants.
+
+    The scalar is DOTLESS on purpose. An earlier version used `jobs.invalid`,
+    whose explosion contains ".", which is IP-shaped and raises -- so the test
+    passed while the guard it was written for did not exist at all.
+    """
+    from sluice.core.config import load_config
+    p = tmp_path / "sluice.local.yaml"
+    p.write_text('dossier_allow_hosts: myboard\n')
+    with pytest.raises(ValueError):
+        load_config(str(p))
