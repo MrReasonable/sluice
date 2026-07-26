@@ -14,13 +14,15 @@
 
 - **Standard library only in `sluice/`.** No new runtime dependency. `socket`, `ipaddress`, `urllib.parse` only.
 - **Every test is offline and synthetic.** No test may resolve DNS, open a browser, or touch a real vault.
-- **Neutrality:** no real hostnames, absolute paths, employer names or real-network addresses in `sluice/` or `tests/`. Fixture hosts use the RFC-reserved `.example` / `.invalid` family. The only permitted global IP literals are `192.88.99.1` (RFC 3068, withdrawn by RFC 7526) and `2001:20::1` (RFC 7343 ORCHIDv2).
-- **Reason slugs are a closed set**, defined once in `urlguard` and imported everywhere else: `scheme`, `no-host`, `resolve-failed`, `resolve-empty`, `blocked-address`, `not-settled`, `landed-blocked`, `landed-unreadable`. There is deliberately **no** `non-ascii` slug.
+- **Neutrality:** no real hostnames, absolute paths, employer names or addresses assigned to a real operator or network in `sluice/` or `tests/`. Fixture hosts use the RFC-reserved `.example` / `.invalid` family. Stated by property rather than by list, because the address table legitimately needs globally-*classified* literals: the two sanctioned public fixtures are `192.88.99.1` (RFC 3068, withdrawn by RFC 7526) and `2001:20::1` (RFC 7343 ORCHIDv2); beyond those, only structural wrappers (NAT64 well-known, v4-compatible, 6to4) whose embedded payload is itself reserved.
+- **Reason slugs are a closed set**, defined once in `urlguard` and imported everywhere else: `scheme`, `no-host`, `resolve-failed`, `resolve-empty`, `blocked-address`, `not-settled`, `landed-blocked`, `landed-unreadable`, `no-tab`, `body-unreadable`. There is deliberately **no** `non-ascii` slug. (The last two were added at plan review: the two paths that previously fell through to a silently-cached empty dossier — see Task 8.)
 - **`DossierBlocked` carries the reason slug only** — never a URL, host, or config entry. `cv/engine.py:70` logs `str(e)` verbatim.
 - **Config validation never echoes user values.** Report key + entry **index** + expected shape. Always `raise ... from None`.
 - **Comments explain *why*.** Match the surrounding density; several comments in this codebase encode real incidents.
 - **Conventional commits**, scope `core` unless the task says otherwise.
 - **Run `python -m pytest` before every commit.** The suite is ~2s; there is no reason not to.
+- **Never assert an absolute suite count.** Expected outcomes are stated as "green, no new failures" plus the new tests named. A hardcoded total drifts with every parametrize edit and reads as a failure when it is merely stale.
+- **Narrow runs name node IDs, never `-k`.** A `-k` selector that matches nothing exits 0 and prints "N deselected", which is success-shaped output that verifies nothing.
 
 ## Two traps this spec was written to prevent
 
@@ -39,7 +41,8 @@ Both were found by review after being introduced by "follow the existing precede
 | `sluice/core/plugins.py` | `UnknownAdapter` gains an optional `hint`. |
 | `sluice/core/protocols.py` | `Fetcher` docstring records the changed `evaluate` contract. |
 | `sluice.yaml.example` | Documents `dossier_allow_hosts`. |
-| `tests/conftest.py` | Session-wide `getaddrinfo` guard. |
+| `tests/conftest.py` | Session-wide `getaddrinfo` guard (fixture + exception only). |
+| `tests/test_hermeticity.py` (new) | Asserts that guard is installed. Separate file because pytest's `python_files = test_*.py` never collects `conftest.py`. |
 | `tests/test_urlguard.py` (new) | The pure policy tables. |
 | `tests/test_dossier_guard.py` (new) | Closure + consumer behaviour. |
 | `tests/harness/config.py`, `tests/functional/conftest.py`, `tests/test_app_operations.py` | Resolver wiring for the six existing tests that reach the closure. |
@@ -52,8 +55,13 @@ Both were found by review after being introduced by "follow the existing precede
 Lands first so every later task is protected. It must raise `BaseException` — a plain `Exception` is swallowed twice (by `check_url`'s fail-closed resolver catch, then by `cv/engine.py:66-71`), which is exactly how a forgotten wiring shipped green in review round 1.
 
 **Files:**
-- Modify: `tests/conftest.py` (append)
-- Test: `tests/conftest.py` (the assertion test lives beside it)
+- Modify: `tests/conftest.py` (append the exception + fixture)
+- Create: `tests/test_hermeticity.py` (the assertion)
+
+> **Why two files.** `pyproject.toml` sets `testpaths = ["tests"]` with no `python_files`
+> override, so pytest's default `test_*.py` **never collects `conftest.py`** (verified: 0 tests
+> collected from it). An assertion written there runs only when someone types its node ID by hand —
+> which is the precise inertness this task exists to prevent, one level up.
 
 **Interfaces:**
 - Consumes: nothing.
@@ -61,30 +69,39 @@ Lands first so every later task is protected. It must raise `BaseException` — 
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `tests/conftest.py`:
+Create `tests/test_hermeticity.py`:
 
 ```python
+"""The suite must never resolve DNS. See tests/conftest.py for the guard itself."""
+import socket
+
+import pytest
+
+from tests.conftest import DnsUsedInTests
+
+
 def test_the_suite_cannot_resolve_dns():
     """The guard fixture below is load-bearing, so assert it is actually installed.
 
     Without this, the fixture could be silently broken (a typo'd name, a scope
     change) and the whole suite would go back to being able to resolve, which is
     how a forgotten `resolve_host=` wiring stayed green through a review round.
+
+    It lives in this file rather than in conftest.py because pytest does not
+    collect conftest.py -- an assertion there would itself be inert.
     """
-    import socket
-    import pytest as _pytest
-    with _pytest.raises(DnsUsedInTests):
+    with pytest.raises(DnsUsedInTests):
         socket.getaddrinfo("anything.invalid", None)
 ```
 
 - [ ] **Step 2: Run it and watch it fail**
 
-Run: `python -m pytest tests/conftest.py::test_the_suite_cannot_resolve_dns -v`
-Expected: FAIL — `NameError: name 'DnsUsedInTests' is not defined`.
+Run: `python -m pytest tests/test_hermeticity.py -v`
+Expected: FAIL at **collection** — `ImportError: cannot import name 'DnsUsedInTests' from 'tests.conftest'`.
 
 - [ ] **Step 3: Add the guard**
 
-Append to `tests/conftest.py`, above the test:
+Append to `tests/conftest.py` (the exception and fixture only — the assertion stays in its own file):
 
 ```python
 class DnsUsedInTests(BaseException):
@@ -125,16 +142,16 @@ def _forbid_dns():
 
 - [ ] **Step 4: Run the new test, then the whole suite**
 
-Run: `python -m pytest tests/conftest.py::test_the_suite_cannot_resolve_dns -v`
-Expected: PASS.
+Run: `python -m pytest tests/test_hermeticity.py -v`
+Expected: PASS, 1 test collected. **If it collects 0, the file is misnamed** — that is the failure this split exists to prevent.
 
 Run: `python -m pytest`
-Expected: 975 passed. **If anything else fails, stop** — it means some existing test does resolve, which contradicts the spec's premise and must be reported, not worked around.
+Expected: green, with exactly one new test. **If anything else fails, stop** — it means some existing test does resolve, which contradicts the spec's premise and must be reported, not worked around.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add tests/conftest.py
+git add tests/conftest.py tests/test_hermeticity.py
 git commit -m "test: forbid DNS resolution suite-wide (#18)"
 ```
 
@@ -183,6 +200,13 @@ from sluice.core import urlguard
     "192.0.2.5/24",        # host bits set -> strict=True refuses to silently widen
     "",
     "   ",
+    # Not IP-shaped, but not a hostname either. Each is a plausible thing a user
+    # writes on an allowlist, and each could NEVER equal urlparse().hostname --
+    # the same permanently-inert-grant failure the `:` clause above closes.
+    "*.jobs.invalid",      # wildcards are not supported; say so rather than ignoring
+    ".jobs.invalid",       # empty leading label
+    "jobs invalid",        # inner space (only leading/trailing are stripped)
+    "jobs_invalid@x",
 ])
 def test_malformed_allowlist_entries_raise(entry):
     with pytest.raises(ValueError):
@@ -192,6 +216,17 @@ def test_malformed_allowlist_entries_raise(entry):
 def test_non_string_entry_raises():
     with pytest.raises(ValueError):
         urlguard.parse_allow_hosts([object()])
+
+
+def test_a_yaml_scalar_raises_rather_than_exploding():
+    """A bare string must not become one grant per character.
+
+    Uses a DOTLESS scalar deliberately: 'jobs.invalid' would explode to a list
+    containing '.', which is IP-shaped and raises for the wrong reason -- the
+    version of this test that did that passed while the guard was absent.
+    """
+    with pytest.raises(ValueError):
+        urlguard.parse_allow_hosts("myboard")
 
 
 @pytest.mark.parametrize("entry", ["db", "cafe", "abc", "abba", "jobs.invalid"])
@@ -278,7 +313,7 @@ import ipaddress
 import re
 import socket
 from dataclasses import dataclass
-from urllib.parse import urlparse
+from urllib.parse import urlsplit
 
 # The closed set of reason slugs. Defined here so the closure in core/app.py and
 # every test import the same strings rather than re-typing them.
@@ -290,6 +325,9 @@ BLOCKED_ADDRESS = "blocked-address"
 NOT_SETTLED = "not-settled"
 LANDED_BLOCKED = "landed-blocked"
 LANDED_UNREADABLE = "landed-unreadable"
+# The two paths that used to fall through to a silently-cached empty dossier.
+NO_TAB = "no-tab"
+BODY_UNREADABLE = "body-unreadable"
 
 # Digits and dots only. This is the IP-shaped test's third draft; the two before
 # it each had a silent failure mode recorded in the spec. Keying on `/` alone let
@@ -297,6 +335,12 @@ LANDED_UNREADABLE = "landed-unreadable"
 # fixed that but RAISED on `db`, `cafe`, `abc` -- legitimate single-label LAN
 # hostnames, i.e. exactly the user this opt-out exists for.
 _DIGITS_AND_DOTS = re.compile(r"[0-9.]+")
+
+# Conservative letter-digit-hyphen hostname shape: dot-separated non-empty labels.
+# Deliberately narrow -- anything it rejects is something that could never match a
+# real url host, so refusing loudly beats granting inertly.
+_LDH = re.compile(r"[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?"
+                  r"(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*")
 
 
 class DossierBlocked(Exception):
@@ -376,8 +420,17 @@ def parse_allow_hosts(entries, *, key: str = "dossier_allow_hosts") -> AllowList
                 raise ValueError(
                     f"{key}[{i}] looks like an address or network but is not a "
                     f"valid one. Valid form:\n  {valid}") from None
-        else:
+        elif _LDH.fullmatch(entry.rstrip(".")):
             hosts.add(_norm_host(entry))
+        else:
+            # Not IP-shaped and not a legal hostname. Accepting it would add a grant
+            # that can never equal urlparse().hostname -- the user's exception would
+            # silently never fire and they would keep seeing the same refusal. A
+            # wildcard (`*.jobs.invalid`) is the most likely case; we do not support
+            # one, so say so at construction rather than ignoring it.
+            raise ValueError(
+                f"{key}[{i}] is neither a valid hostname nor an address/network "
+                f"(wildcards are not supported). Valid form:\n  {valid}") from None
     return AllowList(hosts=frozenset(hosts), networks=tuple(networks))
 ```
 
@@ -387,7 +440,7 @@ Run: `python -m pytest tests/test_urlguard.py -v`
 Expected: all PASS.
 
 Run: `python -m pytest && ruff check sluice tests`
-Expected: 991 passed, ruff clean.
+Expected: green, ruff clean. (Do not check an absolute total — see Global Constraints.)
 
 - [ ] **Step 5: Commit**
 
@@ -430,7 +483,7 @@ _WRAPPER_NOT_GLOBAL = [
     "127.0.0.1", "::1",                                   # loopback
     "10.0.0.1", "172.31.255.254", "192.168.1.1",          # private v4
     "fc00::1", "fd00::1",                                 # private v6
-    "169.254.169.254", "fe80::1", "fe80::1%en0",          # link-local incl. cloud metadata
+    "169.254.169.254", "fe80::1", "fe80::1%1",            # link-local incl. cloud metadata, scoped
     "240.0.0.1",                                          # reserved
     "0.0.0.0", "::",                                      # unspecified
     "203.0.113.1", "192.0.2.1", "198.51.100.1", "2001:db8::1",   # RFC documentation
@@ -439,10 +492,19 @@ _WRAPPER_NOT_GLOBAL = [
 ]
 # term 2: wrapper IS global, and only `not is_multicast` refuses it.
 _WRAPPER_MULTICAST = ["224.0.0.1", "ff02::1"]
-# term 3: wrapper passes; the EMBEDDED v4 is not globally routable.
+# term 3: wrapper passes is_global; only the EMBEDDED v4 refuses it. These two are
+# the load-bearing witnesses for _embedded_v4 -- verified, they are the ONLY rows
+# that redden when the embedding recheck is deleted.
 _PAYLOAD_NOT_GLOBAL = [
-    "64:ff9b::7f00:1",     # NAT64 well-known -- is_global on the wrapper, a real hole
-    "::127.0.0.1",         # v4-compatible -- ditto
+    "64:ff9b::7f00:1",     # NAT64 well-known -- is_global=True on the wrapper, a real hole
+    "::127.0.0.1",         # v4-compatible  -- is_global=True on the wrapper, ditto
+]
+# Blocked TWICE OVER: CPython's IPv6Address.is_global already consults the mapped /
+# 6to4 payload, so the base predicate alone refuses these and they witness nothing
+# about _embedded_v4 (measured: they stay green under Mutant B). Kept as regression
+# pins against a future CPython change, NOT as witnesses -- filed separately so the
+# table's labels state what each row actually proves.
+_PAYLOAD_ALREADY_BLOCKED_BY_WRAPPER = [
     "::ffff:127.0.0.1", "::ffff:10.0.0.1",                # v4-mapped
     "2002:7f00:1::1",                                     # 6to4
 ]
@@ -458,7 +520,8 @@ _ALLOWED_EMBEDDED = ["64:ff9b::192.88.99.1", "::ffff:192.88.99.1"]
 
 
 @pytest.mark.parametrize("addr", _WRAPPER_NOT_GLOBAL + _WRAPPER_MULTICAST
-                         + _PAYLOAD_NOT_GLOBAL + _PAYLOAD_MULTICAST)
+                         + _PAYLOAD_NOT_GLOBAL + _PAYLOAD_ALREADY_BLOCKED_BY_WRAPPER
+                         + _PAYLOAD_MULTICAST)
 def test_blocked_addresses(addr):
     v = urlguard.verdict("host.invalid", [addr], allow_hosts=_EMPTY)
     assert not v.allowed
@@ -550,9 +613,15 @@ def test_fixture_addresses_are_globally_classified():
     # premise for the `not is_multicast` witness on the WRAPPER
     assert g("224.0.0.1") and m("224.0.0.1")
     assert g("ff02::1") and m("ff02::1")
-    # premise for the _embedded_v4 witness
+    # premise for the _embedded_v4 witness: these two wrappers must be is_global,
+    # or the hole they represent does not exist and the witness stops witnessing.
     assert g("64:ff9b::7f00:1"), "NAT64 wrapper must be global or the hole is not real"
     assert g("::127.0.0.1"), "v4-compatible wrapper must be global"
+    # ...and the converse premise for the belt-and-braces rows: they are blocked by
+    # the WRAPPER today, which is why they are not witnesses. If CPython ever made one
+    # global, it would become a real hole and this assertion is what would say so.
+    for a in ("::ffff:127.0.0.1", "::ffff:10.0.0.1", "2002:7f00:1::1"):
+        assert not g(a), a
     # premise for the `not is_multicast` witness on the PAYLOAD
     assert g("64:ff9b::224.0.0.1")
     # premise for every allowed row
@@ -563,7 +632,7 @@ def test_fixture_addresses_are_globally_classified():
 - [ ] **Step 2: Run them and watch them fail**
 
 Run: `python -m pytest tests/test_urlguard.py -v`
-Expected: the new tests FAIL with `AttributeError: module 'sluice.core.urlguard' has no attribute 'verdict'`. Task 2's tests still pass.
+Expected: the new tests FAIL with `AttributeError: module 'sluice.core.urlguard' has no attribute 'verdict'` — **except** `test_fixture_addresses_are_globally_classified`, which uses only `ipaddress` and passes immediately. That is correct: it pins a CPython premise, not this module's behaviour. Task 2's tests still pass.
 
 - [ ] **Step 3: Implement**
 
@@ -681,7 +750,9 @@ Expected: **FAIL**. Then run the whole file and confirm this is the *only* faili
 Mutant B — delete the embedding recheck. In `_routable`, delete the three lines from `embedded = _embedded_v4(addr)` to `return embedded.is_global and not embedded.is_multicast`.
 
 Run: `python -m pytest "tests/test_urlguard.py::test_blocked_addresses[64:ff9b::7f00:1]" "tests/test_urlguard.py::test_blocked_addresses[::127.0.0.1]" -v`
-Expected: both **FAIL**. Restore.
+Expected: both **FAIL**. Then run the whole file and confirm the three
+`_PAYLOAD_ALREADY_BLOCKED_BY_WRAPPER` rows stay **GREEN** — that is what proves they are
+regression pins rather than witnesses, and why the two groups are filed separately. Restore.
 
 Run `python -m pytest` after restoring; expected green.
 
@@ -724,18 +795,43 @@ def test_www_is_preserved():
     assert urlguard._host("http://www.jobs.invalid/x") == "www.jobs.invalid"
 
 
+# Written as an explicit escape, NOT as a literal character. U+212A is visually
+# identical to ASCII "K", so a literal is silently corrupted by transcription --
+# a reviewer reproduced exactly that failure. The premise assertion below makes a
+# lost codepoint redden as a fixture problem rather than as a guard problem.
+KELVIN = "\u212a"
+
+
+def test_the_kelvin_fixture_is_the_confusable_not_ascii_k():
+    assert not KELVIN.isascii() and KELVIN.lower() == "k"
+
+
 def test_a_non_ascii_host_is_refused_before_any_lowering():
     """U+212A KELVIN folds to ASCII 'k' under str.lower().
 
     urlparse().hostname is ITSELF lowercased, so
-    urlparse("http://<KELVIN>example.invalid/x").hostname is 'kexample.invalid',
+    urlparse(f"http://{KELVIN}example.invalid/x").hostname is 'kexample.invalid',
     which .isascii() returns True for. A non-ASCII check applied to .hostname can
     therefore NEVER fire -- the inert-test shape that shipped once in #10. The
-    check must run on the RAW url.
+    check must run on the raw AUTHORITY, before urlparse lowercases it.
     """
-    assert urlguard._host("http://Kexample.invalid/x") == ""
+    url = f"http://{KELVIN}example.invalid/x"
+    assert urlguard._host(url) == ""
     # and the confusable must not be silently accepted as the real host
-    assert urlguard._host("http://Kexample.invalid/x") != "kexample.invalid"
+    assert urlguard._host(url) != "kexample.invalid"
+
+
+def test_a_non_ascii_path_does_not_refuse_the_url():
+    """The check is scoped to the AUTHORITY, not the whole url.
+
+    Checking the raw url would refuse every posting whose path or query carries a
+    non-ASCII byte -- entirely normal on a French or German board. Because
+    check_url returns on `not host` BEFORE consulting the allowlist, such a lead
+    would be blocked permanently with no remedy: the guard's default silently
+    changing which jobs a user sees, which is the 672ad2a direction.
+    """
+    assert urlguard._host("https://jobs.example/careers/d\u00e9veloppeur") == "jobs.example"
+    assert urlguard._host("https://jobs.example/x?q=caf\u00e9") == "jobs.example"
 
 
 @pytest.mark.parametrize("url,expected", [
@@ -753,8 +849,8 @@ def test_host_extraction(url, expected):
 
 - [ ] **Step 2: Run them and watch them fail**
 
-Run: `python -m pytest tests/test_urlguard.py -k host_ -v`
-Expected: FAIL — `_host` does not exist.
+Run: `python -m pytest tests/test_urlguard.py -v`
+Expected: the new `_host` tests FAIL — `AttributeError: module 'sluice.core.urlguard' has no attribute '_host'`. (Whole-file, not `-k`: a selector matching nothing exits 0 and looks like success.)
 
 - [ ] **Step 3: Implement**
 
@@ -770,20 +866,29 @@ def _host(url: str) -> str:
     `attacker.invalid` while the browser navigates to `www.attacker.invalid`,
     which may resolve somewhere else entirely.
 
-    The ASCII check runs on the RAW url, before urlparse. urlparse lowercases
-    .hostname itself, and U+212A KELVIN folds to ASCII 'k' under that lowering, so
-    a check applied to .hostname can never fire (#10 shipped exactly that inert
-    check once). A genuine IDN arrives pre-encoded as ASCII punycode anyway, so
-    refusing non-ASCII outright costs nothing real.
+    The ASCII check runs on the raw AUTHORITY, before urlparse lowercases it.
+    U+212A KELVIN folds to ASCII 'k' under that lowering, so a check applied to
+    .hostname can never fire (#10 shipped exactly that inert check once). A genuine
+    IDN arrives pre-encoded as ASCII punycode, so refusing a non-ASCII authority
+    costs nothing real.
+
+    It is scoped to the authority and NOT to the whole url, deliberately: a path or
+    query may legitimately carry non-ASCII (a French or German posting), and
+    refusing those would block the lead permanently -- check_url returns on an empty
+    host before the allowlist is consulted, so there would be no remedy.
     """
     value = (url or "").strip()
-    if not value or not value.isascii():
+    if not value:
         return ""
     try:
-        # .hostname strips IPv6 brackets and takes the LAST `@` of a userinfo
-        # trick, both of which we want. It also lowercases, which is why the
-        # ascii check above had to come first.
-        return urlparse(value).hostname or ""
+        parts = urlsplit(value)
+        # .netloc is the RAW authority -- urlsplit does not lowercase it, which is
+        # what makes this check able to fire at all. .hostname (below) does.
+        if not parts.netloc.isascii():
+            return ""
+        # .hostname strips IPv6 brackets and takes the LAST `@` of a userinfo trick,
+        # both of which we want.
+        return parts.hostname or ""
     except ValueError:      # e.g. "https://[abc" -- an invalid IPv6 literal
         return ""
 ```
@@ -797,14 +902,14 @@ Run: `python -m pytest && ruff check sluice tests`
 
 - [ ] **Step 5: Witness the two mutants**
 
-Mutant A (a **move**) — relocate the ascii check after `urlparse`:
+Mutant A (a **move**) — relocate the ascii check from the raw `.netloc` onto the parsed `.hostname`:
 
 ```python
     value = (url or "").strip()
     if not value:
         return ""
     try:
-        host = urlparse(value).hostname or ""
+        host = urlsplit(value).hostname or ""
     except ValueError:
         return ""
     return host if host.isascii() else ""
@@ -953,6 +1058,16 @@ def test_a_blocked_verdict_carries_the_host_for_the_log_line():
     assert v.host == "h.invalid"
 
 
+def test_a_malformed_ipv6_literal_returns_a_verdict_rather_than_raising():
+    """`_host` swallows urlsplit's ValueError, but check_url parses the scheme too.
+
+    An unguarded second parse would RAISE out of the guard on "https://[abc" --
+    the tested-function-is-not-the-called-function shape.
+    """
+    v = urlguard.check_url("https://[abc", allow_hosts=_EMPTY, resolve=_GLOBAL)
+    assert not v.allowed and v.reason == urlguard.NO_HOST
+
+
 def test_a_scheme_failure_still_reports_its_host():
     """An earlier draft asserted "on a scheme failure there is no host", which
     contradicted its own fixture rationale: ftp://host.invalid/x HAS one, and
@@ -963,8 +1078,8 @@ def test_a_scheme_failure_still_reports_its_host():
 
 - [ ] **Step 2: Run and watch them fail**
 
-Run: `python -m pytest tests/test_urlguard.py -k check_url -v`
-Expected: FAIL — `check_url` does not exist.
+Run: `python -m pytest tests/test_urlguard.py -v`
+Expected: the new tests FAIL — `AttributeError: module 'sluice.core.urlguard' has no attribute 'check_url'`. (Whole-file, not `-k check_url`: no test name contains that string, so the selector would deselect everything and exit 0.)
 
 - [ ] **Step 3: Implement**
 
@@ -989,7 +1104,13 @@ def check_url(url: str, *, allow_hosts: AllowList, resolve=_resolve) -> UrlVerdi
     Impure ONLY in that it calls `resolve`. The scheme and empty-host refusals live
     here because they precede host extraction; everything after is `verdict`.
     """
-    scheme = (urlparse(url or "").scheme or "").lower()
+    try:
+        # One guarded parse for the scheme. urlsplit raises ValueError on a
+        # mismatched bracket ("https://[abc"), and an unguarded call here would
+        # raise straight out of the guard even though _host handles it.
+        scheme = (urlsplit(url or "").scheme or "").lower()
+    except ValueError:
+        return UrlVerdict(False, NO_HOST, "")
     host = _host(url)
     if scheme not in _ALLOWED_SCHEMES:
         # Checked BEFORE the host refusal so a scheme fixture that carries a host
@@ -1018,8 +1139,12 @@ Run: `python -m pytest && ruff check sluice tests` — green.
 
 Mutant A — delete the scheme check (the `if scheme not in _ALLOWED_SCHEMES` block).
 
-Run: `python -m pytest tests/test_urlguard.py -k "non_http_schemes or allowlist_never_grants" -v`
-Expected: **FAIL**. Confirm `test_a_url_with_no_host_blocks_with_its_own_slug` still PASSES — that is what proves the two refusals are independent. Restore.
+Run:
+```bash
+python -m pytest tests/test_urlguard.py::test_non_http_schemes_block_even_when_the_host_resolves_globally \
+                 tests/test_urlguard.py::test_the_allowlist_never_grants_a_scheme -v
+```
+Expected: **FAIL**. Then run `tests/test_urlguard.py::test_a_url_with_no_host_blocks_with_its_own_slug` and confirm it still **PASSES** — that is what proves the two refusals are independent. Restore.
 
 Mutant B — delete the `if not host:` block.
 
@@ -1090,18 +1215,23 @@ def test_a_malformed_allowlist_raises_at_load(tmp_path):
 
 
 def test_a_scalar_allowlist_raises_at_load(tmp_path):
-    # A YAML scalar would list()-explode into single characters.
+    """A YAML scalar must raise, not list()-explode into per-character grants.
+
+    The scalar is DOTLESS on purpose. An earlier version used `jobs.invalid`,
+    whose explosion contains ".", which is IP-shaped and raises -- so the test
+    passed while the guard it was written for did not exist at all.
+    """
     from sluice.core.config import load_config
     p = tmp_path / "sluice.local.yaml"
-    p.write_text('dossier_allow_hosts: jobs.invalid\n')
+    p.write_text('dossier_allow_hosts: myboard\n')
     with pytest.raises(ValueError):
         load_config(str(p))
 ```
 
 - [ ] **Step 2: Run and watch fail**
 
-Run: `python -m pytest tests/test_urlguard.py -k dossier_allow -v`
-Expected: FAIL — `Config` has no attribute `dossier_allow_hosts`.
+Run: `python -m pytest tests/test_urlguard.py -v`
+Expected: the new config tests FAIL — `AttributeError: 'Config' object has no attribute 'dossier_allow_hosts'`.
 
 - [ ] **Step 3: Add the field and validation**
 
@@ -1125,8 +1255,13 @@ In `load_config`, before the `return Config(...)`:
     # with `got {value!r}`, i.e. the whole list, and a config file is one of the few
     # places a user's real private hostnames legitimately live.
     from sluice.core.urlguard import parse_allow_hosts
-    allow = list(data.get("dossier_allow_hosts") or [])
-    parse_allow_hosts(allow)   # raises; the parsed form is rebuilt where it is used
+    raw_allow = data.get("dossier_allow_hosts")
+    # Pass the RAW value: `list(...)` first would explode a YAML scalar into one
+    # entry per character BEFORE parse_allow_hosts' isinstance guard could fire, so
+    # `dossier_allow_hosts: myboard` would load silently as seven inert one-character
+    # grants on a SAFETY allowlist. That is the bug class `_str_list` exists for.
+    parse_allow_hosts([] if raw_allow is None else raw_allow)
+    allow = list(raw_allow or [])   # coerce only AFTER validation has passed
 ```
 
 and add to the `Config(...)` call:
@@ -1375,6 +1510,14 @@ class _Tab:
         self.calls.append(("close_tab", tid))
 
 
+@pytest.fixture
+def role(titles):
+    """A synthetic job title from the seeded pool, matching the convention in
+    test_app_operations.py's dossier tests. The repo generates titles rather than
+    hardcoding them so no real person's preferences leak into the suite."""
+    return titles[0][0]
+
+
 def _cache(tmp_path, fetcher, *, resolve=None, allow=()):
     cfg = Config()
     cfg.dossier_allow_hosts = list(allow)
@@ -1383,11 +1526,11 @@ def _cache(tmp_path, fetcher, *, resolve=None, allow=()):
     return app.dossier_cache(str(tmp_path), ttl_days=7)
 
 
-def test_an_allowed_url_fetches_and_probes_in_order(tmp_path):
+def test_an_allowed_url_fetches_and_probes_in_order(tmp_path, role):
     """The positive control every absence assertion below is paired with."""
     tab = _Tab()
     d = _cache(tmp_path, tab).get_or_build({"url": "https://jobs.invalid/x",
-                                            "company": "Aye", "role": "Bee"})
+                                            "company": "Aye", "role": role})
     assert d["jd"]["markdown"] == "JD BODY"
     assert tab.calls == [
         ("create_tab", "https://jobs.invalid/x"),
@@ -1397,22 +1540,22 @@ def test_an_allowed_url_fetches_and_probes_in_order(tmp_path):
     ]
 
 
-def test_a_blocked_url_never_opens_a_tab(tmp_path):
+def test_a_blocked_url_never_opens_a_tab(tmp_path, role):
     tab = _Tab()
     cache = _cache(tmp_path, tab, resolve=lambda h: ["127.0.0.1"])
     with pytest.raises(urlguard.DossierBlocked) as ei:
-        cache.get_or_build({"url": "http://jobs.invalid/x", "company": "Aye", "role": "Bee"})
+        cache.get_or_build({"url": "http://jobs.invalid/x", "company": "Aye", "role": role})
     assert str(ei.value) == urlguard.BLOCKED_ADDRESS
     assert tab.calls == [], "no tab may be opened for a url we already refused"
 
 
-def test_a_redirect_to_a_blocked_host_discards_the_body(tmp_path):
+def test_a_redirect_to_a_blocked_host_discards_the_body(tmp_path, role):
     def _resolve(host):
         return ["127.0.0.1"] if host == "internal.invalid" else [GLOBAL_ADDR]
     tab = _Tab(landed="http://internal.invalid/admin")
     cache = _cache(tmp_path, tab, resolve=_resolve)
     with pytest.raises(urlguard.DossierBlocked) as ei:
-        cache.get_or_build({"url": "https://jobs.invalid/x", "company": "Aye", "role": "Bee"})
+        cache.get_or_build({"url": "https://jobs.invalid/x", "company": "Aye", "role": role})
     assert str(ei.value) == urlguard.LANDED_BLOCKED
     probes = [c for c in tab.calls if c[0] == "evaluate"]
     assert probes == [("evaluate", "location.href")], \
@@ -1421,7 +1564,7 @@ def test_a_redirect_to_a_blocked_host_discards_the_body(tmp_path):
 
 
 @pytest.mark.parametrize("landed", ["", "about:blank"])
-def test_an_unnavigated_tab_is_refused(tmp_path, landed):
+def test_an_unnavigated_tab_is_refused(tmp_path, role, landed):
     """Camofox's navigate awaits page.goto, so the tab is never at about:blank when
     we probe. This asserts that assumption rather than trusting it: if a different
     fetcher or a changed server ever violates it, we must fail closed rather than
@@ -1429,45 +1572,74 @@ def test_an_unnavigated_tab_is_refused(tmp_path, landed):
     tab = _Tab(landed=landed)
     cache = _cache(tmp_path, tab)
     with pytest.raises(urlguard.DossierBlocked) as ei:
-        cache.get_or_build({"url": "https://jobs.invalid/x", "company": "Aye", "role": "Bee"})
+        cache.get_or_build({"url": "https://jobs.invalid/x", "company": "Aye", "role": role})
     assert str(ei.value) == urlguard.NOT_SETTLED
 
 
 @pytest.mark.parametrize("bad", [None, "not-a-dict", {}, {"result": 42}])
-def test_an_unreadable_landed_url_is_refused(tmp_path, bad):
+def test_an_unreadable_landed_url_is_refused(tmp_path, role, bad):
     tab = _Tab(landed_result=bad)
     cache = _cache(tmp_path, tab)
     with pytest.raises(urlguard.DossierBlocked) as ei:
-        cache.get_or_build({"url": "https://jobs.invalid/x", "company": "Aye", "role": "Bee"})
+        cache.get_or_build({"url": "https://jobs.invalid/x", "company": "Aye", "role": role})
     assert str(ei.value) == urlguard.LANDED_UNREADABLE
 
 
-def test_a_lead_with_no_url_is_unchanged(tmp_path):
+def test_a_tab_that_never_opens_is_refused(tmp_path, role):
+    """Previously fell through to a cached empty dossier -- see the closure comment."""
+    class _NoTab(_Tab):
+        def create_tab(self, url):
+            self.calls.append(("create_tab", url))
+            return None
+    tab = _NoTab()
+    with pytest.raises(urlguard.DossierBlocked) as ei:
+        _cache(tmp_path, tab).get_or_build(
+            {"url": "https://jobs.invalid/x", "company": "Aye", "role": role})
+    assert str(ei.value) == urlguard.NO_TAB
+
+
+def test_an_unreadable_body_is_refused(tmp_path, role):
+    """Ditto: a non-string body must not become an empty JD nobody can distinguish
+    from a real one."""
+    class _BadBody(_Tab):
+        def evaluate(self, tid, js):
+            self.calls.append(("evaluate", js))
+            if js == "location.href":
+                return {"result": self.landed}
+            return {"result": None}
+    tab = _BadBody()
+    with pytest.raises(urlguard.DossierBlocked) as ei:
+        _cache(tmp_path, tab).get_or_build(
+            {"url": "https://jobs.invalid/x", "company": "Aye", "role": role})
+    assert str(ei.value) == urlguard.BODY_UNREADABLE
+
+
+def test_a_lead_with_no_url_is_unchanged(tmp_path, role):
     tab = _Tab()
-    d = _cache(tmp_path, tab).get_or_build({"company": "Aye", "role": "Bee"})
+    d = _cache(tmp_path, tab).get_or_build({"company": "Aye", "role": role})
     assert d["jd"]["markdown"] == "" and tab.calls == []
 
 
-def test_the_allowlist_admits_a_private_host(tmp_path):
+def test_the_allowlist_admits_a_private_host(tmp_path, role):
     tab = _Tab(landed="http://jobs.invalid/x")
     cache = _cache(tmp_path, tab, resolve=lambda h: ["10.0.0.1"],
                    allow=["jobs.invalid"])
-    d = cache.get_or_build({"url": "http://jobs.invalid/x", "company": "Aye", "role": "Bee"})
+    d = cache.get_or_build({"url": "http://jobs.invalid/x", "company": "Aye", "role": role})
     assert d["jd"]["markdown"] == "JD BODY"
 
 
-def test_dossier_blocked_carries_no_host_or_url(tmp_path):
+def test_dossier_blocked_carries_no_host_or_url(tmp_path, role):
     """cv/engine.py:70 logs str(e) verbatim -- the #67 leak shape."""
     tab = _Tab()
     cache = _cache(tmp_path, tab, resolve=lambda h: ["127.0.0.1"])
     with pytest.raises(urlguard.DossierBlocked) as ei:
         cache.get_or_build({"url": "http://secret-host.invalid/path?token=x",
-                            "company": "Aye", "role": "Bee"})
+                            "company": "Aye", "role": role})
     msg = str(ei.value)
     assert "secret-host" not in msg and "token" not in msg and "://" not in msg
 
 
-def test_a_production_shaped_sluice_fetches(tmp_path):
+def test_a_production_shaped_sluice_fetches(tmp_path, role):
     """cli.py builds `Sluice(config)` -- no injected collaborators at all.
 
     The closure must touch nothing that is None in production. A previous draft
@@ -1482,7 +1654,7 @@ def test_a_production_shaped_sluice_fetches(tmp_path):
     # it proves the closure got all the way to resolution without an attribute error.
     from tests.conftest import DnsUsedInTests
     with pytest.raises(DnsUsedInTests):
-        cache.get_or_build({"url": "https://jobs.invalid/x", "company": "Aye", "role": "Bee"})
+        cache.get_or_build({"url": "https://jobs.invalid/x", "company": "Aye", "role": role})
 ```
 
 - [ ] **Step 2: Run and watch fail**
@@ -1504,6 +1676,8 @@ Replace `Sluice.dossier_cache` in `sluice/core/app.py`:
         a tab is opened, and the LANDED url re-checked before the body is read. A refusal
         RAISES rather than returning an empty dossier -- see the comment on the raise.
         """
+        import typing  # noqa: F401  (NoReturn annotation on _refuse below)
+
         from sluice.core.dossier import DossierCache
         from sluice.core import urlguard
         # Parsed once per cache, not per fetch. Raises here if a Config was built by
@@ -1514,42 +1688,60 @@ Replace `Sluice.dossier_cache` in `sluice/core/app.py`:
         resolve = self._resolve_host or urlguard._resolve
         cam = {}
 
-        def _refuse(reason, host=""):
+        def _refuse(reason, host="") -> "typing.NoReturn":
+            """Log and RAISE. Never returns.
+
+            It raises rather than returning the exception for the caller to raise:
+            with a returning helper, dropping one `raise` keyword downgrades a
+            refusal to a logged warning followed by a fall-through that reads and
+            returns the body. That one-token deletion is precisely Task 9's own
+            mutant, so the shape must make it impossible rather than merely tested.
+            """
             _log.warning("dossier fetch refused (%s) host=%s", reason, host or "?")
             # The exception carries the SLUG ONLY: cv/engine.py logs str(e) verbatim
             # and triage/engine.py stores it in report.failures.
-            return urlguard.DossierBlocked(reason)
+            raise urlguard.DossierBlocked(reason)
 
         def fetch(lead: dict) -> dict:
             md, url = "", lead.get("url")
             if url:
                 pre = urlguard.check_url(url, allow_hosts=allow, resolve=resolve)
                 if not pre.allowed:
-                    raise _refuse(pre.reason, pre.host)
+                    _refuse(pre.reason, pre.host)
                 if "client" not in cam:
                     cam["client"] = self.fetcher()
                 c = cam["client"]
                 tid = c.create_tab(url)
-                if tid:
-                    # Camofox's navigate awaits page.goto(waitUntil='domcontentloaded'),
-                    # so the tab HAS navigated by now and HTTP redirects are already
-                    # followed. The checks below assert that rather than trusting it.
-                    res = c.evaluate(tid, "location.href")
-                    landed = res.get("result") if isinstance(res, dict) else None
-                    if not isinstance(landed, str):
-                        c.close_tab(tid)
-                        raise _refuse(urlguard.LANDED_UNREADABLE)
-                    if not landed or landed == "about:blank":
-                        c.close_tab(tid)
-                        raise _refuse(urlguard.NOT_SETTLED)
-                    post = urlguard.check_url(landed, allow_hosts=allow, resolve=resolve)
-                    if not post.allowed:
-                        c.close_tab(tid)
-                        raise _refuse(urlguard.LANDED_BLOCKED, post.host)
-                    # Only now is the body safe to pull into memory.
-                    body = c.evaluate(tid, "document.body.innerText")
-                    md = body.get("result") if isinstance(body, dict) else ""
+                if not tid:
+                    # PRE-EXISTING behaviour was to fall through and return the empty
+                    # dossier shape here. That is the outcome this whole feature exists
+                    # to prevent: get_or_build CACHES it for ttl_days, triage judges the
+                    # lead on a JD nobody read, apply_verdict writes a status from it,
+                    # and report.failures stays empty. Raising costs one retry next run.
+                    _refuse(urlguard.NO_TAB, pre.host)
+                # Camofox's navigate awaits page.goto(waitUntil='domcontentloaded'),
+                # so the tab HAS navigated by now and HTTP redirects are already
+                # followed. The checks below assert that rather than trusting it.
+                res = c.evaluate(tid, "location.href")
+                landed = res.get("result") if isinstance(res, dict) else None
+                if not isinstance(landed, str):
                     c.close_tab(tid)
+                    _refuse(urlguard.LANDED_UNREADABLE)
+                if not landed or landed == "about:blank":
+                    c.close_tab(tid)
+                    _refuse(urlguard.NOT_SETTLED)
+                post = urlguard.check_url(landed, allow_hosts=allow, resolve=resolve)
+                if not post.allowed:
+                    c.close_tab(tid)
+                    _refuse(urlguard.LANDED_BLOCKED, post.host)
+                # Only now is the body safe to pull into memory.
+                body = c.evaluate(tid, "document.body.innerText")
+                md = body.get("result") if isinstance(body, dict) else None
+                c.close_tab(tid)
+                if not isinstance(md, str):
+                    # Same reasoning as no-tab: a non-string body used to become a
+                    # cached empty JD indistinguishable from a real empty one.
+                    _refuse(urlguard.BODY_UNREADABLE, pre.host)
             return {"jd": {"markdown": md or ""}, "glassdoor": {}}
 
         return DossierCache(dossier_dir, ttl_days, fetcher=fetch)
@@ -1640,7 +1832,26 @@ class _FakeTab:
 - [ ] **Step 5: Run everything**
 
 Run: `python -m pytest tests/test_dossier_guard.py -v` — PASS.
-Run: `python -m pytest && ruff check sluice tests` — green. **All six previously-listed tests must still pass.** If one fails with `DnsUsedInTests`, a wiring site was missed.
+Run: `python -m pytest && ruff check sluice tests` — green.
+
+**These six existing tests reach the closure and must all still pass:**
+
+```
+tests/e2e/test_a_clean_lead_reaches_rejected.py::test_a_clean_lead_reaches_rejected
+tests/e2e/test_a_cv_citing_an_unbacked_figure_never_ships.py::test_a_cv_citing_an_unbacked_figure_never_ships
+tests/e2e/test_an_empty_config_bins_nothing.py::test_an_empty_config_bins_nothing
+tests/e2e/test_triage_leaves_my_application.py::test_triage_leaves_my_application
+tests/functional/test_cv.py::test_cv_run_composes_and_renders
+tests/test_app_operations.py::test_dossier_cache_fetches_jd_via_the_fetcher_seam
+```
+
+(Confirm the exact node IDs with `python -m pytest <file> --collect-only -q` if a name differs.)
+`tests/test_doctor.py:405`'s `Sluice().triage()` does **not** reach the fetch path — it aborts at
+`Sluice.backend`, which that test monkeypatches to raise `_Stop`. Stated so it is not rediscovered.
+
+A failure with `DnsUsedInTests` means a wiring site was missed. But note what that check does **not**
+catch: a site wired to a resolver that maps everything to a global address would pass while testing
+nothing. That is why `harness_resolve` raises on an unmapped host rather than defaulting.
 
 - [ ] **Step 6: Witness**
 
@@ -1652,6 +1863,11 @@ python -m compileall -q -f --invalidation-mode checked-hash sluice tests scripts
 - Delete the post-check block → `test_a_redirect_to_a_blocked_host_discards_the_body` reddens.
 - Delete the `about:blank` refusal → `test_an_unnavigated_tab_is_refused` reddens.
 - Change `resolve = self._resolve_host or urlguard._resolve` to `resolve = self._resolve_host` → `test_a_production_shaped_sluice_fetches` reddens (`TypeError`, not `DnsUsedInTests`).
+- Delete the `if not tid:` refusal → `test_a_tab_that_never_opens_is_refused` reddens.
+- Delete the `if not isinstance(md, str):` refusal → `test_an_unreadable_body_is_refused` reddens.
+- Change `_refuse` to `return urlguard.DossierBlocked(reason)` (and drop one call site's effect) →
+  the corresponding refusal test reddens. This is why `_refuse` raises rather than returning: with a
+  returning helper the mutation is a one-token deletion at any of six call sites.
 
 Restore each, re-run the suite.
 
@@ -1686,15 +1902,19 @@ Append to `tests/test_dossier_guard.py`:
 # so the lead is kept OUT of the judge batch and counted. A returned empty dossier
 # would be judged on an empty JD and a status written from it, with failures=0.
 
-def _triage_run(tmp_path, monkeypatch, *, resolve, landed="https://jobs.invalid/x"):
+def _triage_run(tmp_path, monkeypatch, role, *, resolve, landed="https://jobs.invalid/x"):
     """Drive a real triage run over one shortlist-able lead, with a stub judge."""
     import os
     from sluice.triage import engine as tengine
     vault_dir = tmp_path / "vault"
-    leads = vault_dir / "Job Applications" / "Leads"
+    # "Job Leads", not "Leads" -- core/vault.py:29 is
+    # _LEADS_SUBDIR = os.path.join("Job Applications", "Job Leads").
+    # The wrong path loads ZERO leads, which makes both assertions below pass
+    # vacuously and the Step 4 mutant redden with AND without the mutation.
+    leads = vault_dir / "Job Applications" / "Job Leads"
     os.makedirs(leads, exist_ok=True)
-    (leads / "Aye - Bee.md").write_text(
-        '---\ncompany: "Aye"\nrole: "Bee"\nstatus: new\n'
+    (leads / f"Aye - {role}.md").write_text(
+        f'---\ncompany: "Aye"\nrole: "{role}"\nstatus: new\n'
         'url: "https://jobs.invalid/x"\nscore: 0\n---\n# body\n')
     monkeypatch.setenv("VAULT_DIR", str(vault_dir))
     monkeypatch.setenv("TRIAGE_AUDIT", str(tmp_path / "audit.jsonl"))
@@ -1702,18 +1922,22 @@ def _triage_run(tmp_path, monkeypatch, *, resolve, landed="https://jobs.invalid/
     # Pin the judge's verdict to a status DIFFERENT from the starting one, so the
     # raise->return mutant necessarily writes a different byte rather than
     # coincidentally the same.
+    # The keys apply_verdict actually reads (triage/apply.py:36-37): "verdict" and
+    # "relevance_score". A stub emitting decision/score lands the lead on
+    # needs_review, which silently breaks the positive control that anchors both
+    # vacuity guards below.
     monkeypatch.setattr(tengine, "judge", lambda dossiers, backend, **kw: [
-        {"lead_id": d["lead_id"], "decision": "shortlist", "score": 90,
-         "reason": "synthetic"} for d in dossiers])
+        {"lead_id": d["lead_id"], "verdict": "shortlist", "relevance_score": 90,
+         "fit_reasoning": "synthetic"} for d in dossiers])
     app = Sluice(Config(), fetcher=_Tab(landed=landed),
                  backend=object(), resolve_host=resolve)
     report = app.triage(statuses=("new",))
-    return report, (leads / "Aye - Bee.md").read_text(), tmp_path / "dossiers"
+    return report, (leads / f"Aye - {role}.md").read_text(), tmp_path / "dossiers"
 
 
-def test_a_blocked_dossier_leaves_the_lead_untouched(tmp_path, monkeypatch):
+def test_a_blocked_dossier_leaves_the_lead_untouched(tmp_path, monkeypatch, role):
     report, note, dossier_dir = _triage_run(
-        tmp_path, monkeypatch, resolve=lambda h: ["127.0.0.1"])
+        tmp_path, monkeypatch, role, resolve=lambda h: ["127.0.0.1"])
     assert "status: new" in note, "a blocked fetch must not move the lead"
     assert report.failures, "and must be visible in the run summary"
     cached = list(dossier_dir.glob("*.json")) if dossier_dir.exists() else []
@@ -1721,21 +1945,47 @@ def test_a_blocked_dossier_leaves_the_lead_untouched(tmp_path, monkeypatch):
         "no dossier may be cached, or the allowlist remedy is masked for ttl_days"
 
 
-def test_the_positive_control_does_move_the_lead(tmp_path, monkeypatch):
+def test_the_positive_control_does_move_the_lead(tmp_path, monkeypatch, role):
     """Without this, both assertions above pass vacuously -- the dossier dir need
     not exist, and the status is unchanged whenever the lead never reached the
-    dossier step at all."""
+    dossier step at all (a wrong vault path did exactly that in an earlier draft)."""
     report, note, dossier_dir = _triage_run(
-        tmp_path, monkeypatch, resolve=lambda h: [GLOBAL_ADDR])
+        tmp_path, monkeypatch, role, resolve=lambda h: [GLOBAL_ADDR])
     assert "status: shortlist" in note
     assert not report.failures
     assert len(list(dossier_dir.glob("*.json"))) == 1
 ```
 
+Add one more, pinning what the **cv** consumer actually does:
+
+```python
+def test_the_cv_consumer_proceeds_with_an_empty_jd(tmp_path, monkeypatch, role):
+    """Raising is NOT behaviourally different for cv -- record that honestly.
+
+    cv/engine.py:66-70 catches Exception, logs, and PROCEEDS with jd = "". So for
+    this consumer a raise and a returned empty dossier are indistinguishable: a CV
+    is still composed and the fabrication gate still runs. The raise-vs-return
+    argument rests entirely on the TRIAGE side (above). Stating it here stops a
+    reader inferring that cv skips the lead, which it does not.
+    """
+    from sluice.cv import engine as cvengine
+    seen = {}
+    monkeypatch.setattr(cvengine, "_jd_keywords", lambda r, jd: seen.setdefault("jd", jd) or [])
+    # ... drive run_one with a blocked dossier; assert it returns a CvResult and
+    # that seen["jd"] == "" -- i.e. composition proceeded on an empty JD.
+```
+
+> The body above is deliberately a sketch, because the exact `run_one` wiring depends on fixtures this
+> plan does not otherwise build. **If assembling it costs more than ~15 minutes, do not force it:**
+> delete the test and instead add the docstring's first paragraph as a comment in the task, plus a line
+> in the spec's residual list. The point is that the asymmetry is *recorded*, not that it is asserted.
+
 - [ ] **Step 2: Run and watch fail**
 
-Run: `python -m pytest tests/test_dossier_guard.py -k triage -v`
-Expected: FAIL initially — most likely on fixture wiring. Adjust the helper until the **positive control passes first**, then confirm the blocked case.
+Run: `python -m pytest tests/test_dossier_guard.py -v`
+Expected: the new consumer tests FAIL. **Make the positive control pass FIRST** — until it does, the two
+absence assertions in the blocked case prove nothing, and an earlier draft shipped with both passing
+vacuously because the vault path was wrong.
 
 > If `app.triage(...)`'s signature or the audit/env wiring differs from the above, fix the helper to match the real code — do not weaken the assertions.
 
@@ -1745,16 +1995,29 @@ Run: `python -m pytest && ruff check sluice tests` — green.
 
 - [ ] **Step 4: Witness the raise-vs-return choice**
 
-In `dossier_cache`'s `fetch`, change the pre-check refusal from
-`raise _refuse(pre.reason, pre.host)` to:
+This is the mutant the whole raise-not-return argument exists for. In `urlguard`, change
+`DossierBlocked` so `_refuse` cannot propagate — replace its `raise` with a log-and-return, and make
+the pre-check call site fall through:
 
 ```python
+        def _refuse(reason, host=""):
+            _log.warning("dossier fetch refused (%s) host=%s", reason, host or "?")
+            # MUTANT: was `raise urlguard.DossierBlocked(reason)`
+```
+
+```python
+                if not pre.allowed:
                     _refuse(pre.reason, pre.host)
                     return {"jd": {"markdown": ""}, "glassdoor": {}}
 ```
 
 Run: `python -m pytest tests/test_dossier_guard.py::test_a_blocked_dossier_leaves_the_lead_untouched -v`
-Expected: **FAIL** — the lead moves to `shortlist` and `report.failures` is empty. Restore and re-run.
+Expected: **FAIL** — the lead moves to `shortlist` and `report.failures` is empty.
+
+Then run `tests/test_dossier_guard.py::test_the_positive_control_does_move_the_lead` and confirm it
+still **PASSES** under the mutant. That is the check that matters: if the control fails too, the
+fixture is broken rather than the mutation being caught, which is exactly how an earlier draft of
+this task certified nothing. Restore and re-run the suite.
 
 - [ ] **Step 5: Commit**
 
@@ -1839,7 +2102,10 @@ git commit -m "docs: record urlguard and the resolve_host collaborator (#18)"
 - [ ] `python -m pytest` — all green, no skips added.
 - [ ] `ruff check sluice tests` — clean.
 - [ ] `git log --oneline main..HEAD` — every message is a valid conventional commit.
-- [ ] `grep -rnE "(93\.184|8\.8\.8\.8|10\.42)" sluice tests` — no declined fixture addresses.
+- [ ] `grep -rnE "(93\.184\.216\.34|8\.8\.8\.8)" sluice tests` — neither declined fixture address.
+      (These two are the spec's actual declined list. An earlier draft also grepped for a specific
+      private /16 that appears nowhere in the spec or repo — naming one in a tracked public file as a
+      "rejected value" is the remediation-hazard shape, and it guarded nothing.)
 - [ ] `grep -rn "non-ascii" sluice tests` — the dead slug never appeared.
 - [ ] Run `/review-pr` **before pushing**. CodeRabbit is the scarce resource; the specialist team is free and parallel.
 
@@ -1849,5 +2115,6 @@ Checked against the spec:
 
 - **Spec coverage:** every Components subsection maps to a task (urlguard → 2-5, config → 6, app/resolver → 7, closure + protocols + wiring → 8, yaml.example → 6, ARCHITECTURE.md → 10). Every Testing paragraph maps to a task's Step 1. All seven residuals are documentation-only and carried in the spec, not the code.
 - **Type consistency:** `AllowList` is produced in Task 2 and consumed by `verdict` (3) and `check_url` (5); `UrlVerdict` is produced in Task 3 and consumed in 5 and 8; slug constants are defined in Task 2 and used in 3, 5, 8, 9. `parse_allow_hosts` is called in `load_config` (6) and `dossier_cache` (8) — the same signature both times.
-- **Known deviation from the spec:** the spec's sketch shows `verdict(host, addrs, *, allow_hosts)` taking the raw config list. This plan has it take a parsed `AllowList`, so parsing and its loud validation happen once (at config load and at cache construction) rather than per call. Same behaviour, one parse. Flag it at review rather than treating it as settled.
-- **Task 9 caveat:** its `_triage_run` helper is written against `triage/engine.py` as read, but the exact env/monkeypatch wiring may need adjustment. Step 2 says to make the *positive control* pass first — that ordering is what stops the blocked-case assertion passing vacuously.
+- **Known deviation from the spec, RULED ON at plan review — keep it.** The spec's sketch shows `verdict(host, addrs, *, allow_hosts)` taking the raw config list; this plan has it take a parsed `AllowList`. The architect's reason is better than the one originally given here: `Config` must hold **YAML-shaped values only**, because the #26/#63 neutral-defaults sweep resolves `isinstance(getattr(cls(), f.name), list)` — a parsed `AllowList` on the dataclass would drop straight *out* of the sweep that Task 6 Step 5 depends on. Translating a config string into a resolved object at the composition root is exactly what `_resolve`/`backend()` already do. The double call to `parse_allow_hosts` is **two boundaries, not duplication**: `load_config` covers the CLI path, `dossier_cache` covers a hand-built `Config` from a test or a future surface.
+- **Task 9 caveat:** its `_triage_run` helper is written against `triage/engine.py` as read, and plan review found it wrong twice — the leads subdirectory (`Job Leads`, not `Leads`) and the judge stub's keys (`verdict`/`relevance_score`, not `decision`/`score`). Both are fixed above, but the helper is still the least-verified code in this plan. Step 2's "make the positive control pass FIRST" is the guard: with the wrong path, both blocked-case assertions passed vacuously *and* the Step 4 mutant reddened either way, so the task certified nothing while looking green.
+- **Plan review found 11 High findings**, four reviewers independently landing on the same config bug. The two that generalise: a test placed where pytest does not collect it is inert no matter how good it is, and a fixture using an invisible character (U+212A) cannot survive transcription — write the escape.
