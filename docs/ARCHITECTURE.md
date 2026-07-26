@@ -28,6 +28,12 @@ Shared by every sub-app:
   on error; `make_backend` builds any of them by name.
 - `camofox.py`: an HTTP client for a Camofox headless-browser server, the
   impure fetch boundary that ingest sources drive a tab through.
+- `urlguard.py`: url policy for the dossier fetcher. Decides whether a
+  scraped lead url may be navigated to -- http(s) only, globally routable
+  addresses only, with a per-host/CIDR allowlist for a deliberately
+  self-hosted board. Pure except for `_resolve`, which is injected, so the
+  suite never resolves DNS. Ingest is NOT guarded: its urls come from a
+  source's own spec or the user's config, not from a scraped page.
 - `status.py`: the canonical status vocabulary shared across sub-apps.
   Triage owns the early states (new, shortlist, research, needs_review,
   dismiss); track owns the later ones (applied, phone_screen, ... offer,
@@ -277,10 +283,14 @@ entry, and are passed in by the caller:
 
 - **`client`**, **`now_iso`** — parameters of `Sluice.track()`: the Google API
   client, and the run timestamp that becomes the `lastrun` watermark.
-- **`sleep`**, **`today`** — `Sluice.__init__` keyword-only parameters, threaded
-  into `ingest.base.Ctx` and `ingest.sink.VaultSink`: the page-settle wait and the
-  date stamp. Two clock shapes rather than one is deliberate — the sink stamps per
-  lead so it needs a callable, while track persists one value per run.
+- **`sleep`**, **`today`**, **`resolve_host`** — `Sluice.__init__` keyword-only
+  parameters. `sleep` and `today` are threaded into `ingest.base.Ctx` and
+  `ingest.sink.VaultSink`: the page-settle wait and the date stamp. Two clock
+  shapes rather than one is deliberate — the sink stamps per lead so it needs a
+  callable, while track persists one value per run. `resolve_host` is the DNS
+  resolver the dossier url guard uses; it is deliberately NOT a seam, because a
+  registry entry is reachable from config and that would put an off switch for
+  an SSRF guard under a YAML key.
 
 The rule for a new dependency: **does a user legitimately choose among
 implementations?** If yes it is an adapter seam and belongs in the registry,
@@ -297,7 +307,12 @@ name-keyed lookup would advertise a choice that does not exist.
 Neither kind may be accepted and ignored. An unknown *adapter* key raises
 `UnknownAdapter` at construction, listing the valid seams. The collaborators are
 weaker: `Sluice.__init__` ends in `**overrides`, so a typo'd `sleep=` is absorbed
-there and reported as an unknown seam override — loud, but it names the four
-adapter seams and so points at the wrong fix. Worth tightening if a third
-collaborator ever lands.
+there. That was reported as an unknown seam override — loud, but naming the four
+adapter seams and so pointing at the wrong fix. `resolve_host` was the third
+`__init__` collaborator and triggered the tightening this paragraph used to
+defer: the raise now carries a hint naming the collaborators and the seams
+*separately*, and `_COLLABORATORS` is pinned to the real signature by a guard
+test. The scope is `__init__` keywords only — `client`/`now_iso` are
+`Sluice.track()` parameters, never reach `**overrides`, and a typo there is
+already a plain `TypeError`.
 
