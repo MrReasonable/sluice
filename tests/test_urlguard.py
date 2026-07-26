@@ -1,5 +1,6 @@
 """Tests for the dossier SSRF guard's pure policy (#18)."""
 import ipaddress
+import socket
 
 import pytest
 
@@ -27,6 +28,11 @@ from sluice.core import urlguard
     ".jobs.invalid",       # empty leading label
     "jobs invalid",        # inner space (only leading/trailing are stripped)
     "jobs_invalid@x",
+    # Two trailing dots: entry.rstrip(".") strips BOTH and validated as a legal
+    # hostname, but _norm_host strips only ONE, so the stored grant ("jobs.invalid.")
+    # could never equal a url host and would silently never fire. Also contains an
+    # empty label between the two dots, so it was never a legal hostname regardless.
+    "jobs.invalid..",
 ])
 def test_malformed_allowlist_entries_raise(entry):
     with pytest.raises(ValueError):
@@ -78,6 +84,14 @@ def test_hostname_entries_are_normalised_for_comparison():
     assert parsed.hosts == frozenset({"jobs.invalid"})
 
 
+def test_a_single_trailing_dot_still_parses_as_a_hostname():
+    # The positive control paired with "jobs.invalid.." above: ONE trailing dot is
+    # exactly what _norm_host is built to strip, so it must still be ACCEPTED --
+    # proving the validation-tightening fix does not also refuse the legitimate case.
+    parsed = urlguard.parse_allow_hosts(["jobs.invalid."])
+    assert parsed.hosts == frozenset({"jobs.invalid"})
+
+
 def test_empty_allowlist_parses_to_an_empty_allowlist():
     parsed = urlguard.parse_allow_hosts([])
     assert parsed.hosts == frozenset() and parsed.networks == ()
@@ -97,6 +111,15 @@ def test_validation_error_leaks_neither_the_entry_nor_its_neighbours():
     assert "dossier_allow_hosts" in msg
     assert "[1]" in msg, "the message must locate the entry by index"
     assert ei.value.__cause__ is None, "from None: ipaddress' message must not travel"
+    # __cause__ is None is equally true of a plain `raise ValueError(...)` with no
+    # chaining at all -- it does not by itself prove `from None` is present. Only
+    # __suppress_context__ controls whether a rendered traceback prints "During
+    # handling of the above exception, another exception occurred" followed by
+    # ipaddress' OWN ValueError (which DOES contain the literal entry), and
+    # sluice/cli.py calls load_config() uncaught, so that traceback is exactly what
+    # an operator with a malformed allowlist sees on their terminal.
+    assert ei.value.__suppress_context__ is True, \
+        "from None: the chained ipaddress ValueError must not print"
 
 
 # --- address classification --------------------------------------------------
@@ -217,6 +240,19 @@ def test_bare_ip_grant_is_a_single_address_network():
     allow = urlguard.parse_allow_hosts(["10.0.0.1"])
     assert urlguard.verdict("h.invalid", ["10.0.0.1"], allow_hosts=allow).allowed
     assert not urlguard.verdict("h.invalid", ["10.0.0.2"], allow_hosts=allow).allowed
+
+
+def test_a_bare_ipv6_grant_is_also_a_single_address_network():
+    # The IPv6 sibling of the test above. This is what _ip_shaped's `:` clause
+    # actually carries: deleting that clause leaves the suite green because `_LDH`
+    # already refuses both of the DOCSTRING's examples ([fd00::5], jobs.invalid:8080)
+    # regardless of _ip_shaped -- a bare, unbracketed IPv6 literal is the one shape
+    # that clause alone is load-bearing for (without it "fd00::5" falls to the
+    # hostname branch, and _LDH -- which has no ":" in it -- refuses it there too,
+    # but for the WRONG reason: as an illegal hostname rather than as a network grant).
+    allow = urlguard.parse_allow_hosts(["fd00::5"])
+    assert urlguard.verdict("h.invalid", ["fd00::5"], allow_hosts=allow).allowed
+    assert not urlguard.verdict("h.invalid", ["fd00::6"], allow_hosts=allow).allowed
 
 
 def test_a_grant_must_cover_every_blocked_answer():
@@ -449,6 +485,32 @@ def test_a_scheme_failure_still_reports_its_host():
     discarding it would strip the security log of the half the operator needs."""
     v = urlguard.check_url("ftp://host.invalid/x", allow_hosts=_EMPTY, resolve=_GLOBAL)
     assert v.host == "host.invalid"
+
+
+# --- the production resolver --------------------------------------------------
+# _resolve is the one impure function in this module -- everything else is injected
+# specifically so it never runs in a test. That makes it the sole producer of the
+# address list `verdict`'s "every answer must pass" loop reasons over, and it had NO
+# test of its own: a mutant reading `return [socket.getaddrinfo(host, None)[0][4][0]]`
+# (first answer only) passed the whole suite green, measured. That mutant defeats the
+# all-answers loop at the SOURCE -- a host answering [public, 127.0.0.1] would be let
+# through, because _resolve itself never handed verdict() the second address to reject.
+# The session-wide `_forbid_dns` fixture (tests/conftest.py) makes the real
+# socket.getaddrinfo raise, so this monkeypatches it directly rather than resolving for
+# real -- that is expected, not a hermeticity violation: `monkeypatch` restores it after
+# the test, same as _forbid_dns restores its own raiser at session end.
+
+def test_the_production_resolver_returns_every_answer(monkeypatch):
+    # getaddrinfo's real return shape: (family, type, proto, canonname, sockaddr), where
+    # sockaddr is (host, port) for AF_INET and (host, port, flowinfo, scopeid) for
+    # AF_INET6 -- both represented here so a family-specific unpacking bug would show.
+    canned = [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.88.99.1", 0)),
+        (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2001:20::1", 0, 0, 0)),
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", 0)),
+    ]
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: canned)
+    assert urlguard._resolve("h.invalid") == ["192.88.99.1", "2001:20::1", "192.0.2.1"]
 
 
 # --- config ------------------------------------------------------------------

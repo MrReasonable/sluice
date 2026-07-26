@@ -63,6 +63,26 @@ class DossierBlocked(Exception):
     """
 
 
+class DossierUnavailable(DossierBlocked):
+    """A DossierBlocked whose cause is Camofox itself, not a policy decision.
+
+    NO_TAB/LANDED_UNREADABLE/BODY_UNREADABLE fire when `Camofox._api` returns its
+    `{"error": ...}` shape for a timeout or an unreachable server (core/camofox.py's
+    `_api` swallows the network exception into that shape rather than raising). That
+    reads to an operator as "dossier fetch refused", which points them at an
+    allowlist that cannot fix a dead browser server. This subclass exists so the
+    closure in core/app.py can log "failed" instead of "refused" for exactly these
+    three slugs -- MUST stay a DossierBlocked so every existing `except
+    DossierBlocked` and every existing test keeps matching unchanged.
+    """
+
+
+# The three slugs raised when Camofox itself is unavailable rather than when the
+# guard made a policy decision -- see DossierUnavailable. Kept here, beside the
+# slugs it partitions, rather than in core/app.py's closure.
+_TRANSPORT_REASONS = frozenset({NO_TAB, LANDED_UNREADABLE, BODY_UNREADABLE})
+
+
 @dataclass(frozen=True)
 class AllowList:
     """Parsed `dossier_allow_hosts`. Empty means "no exceptions granted" -- NOT
@@ -76,10 +96,15 @@ def _ip_shaped(entry: str) -> bool:
     """Should this entry be required to parse as an address/network?
 
     True for anything containing `/` or `:`, or made only of digits and dots.
-    The `:` clause is what makes `[fd00::5]` and `jobs.invalid:8080` RAISE rather
-    than becoming inert hostname grants -- urlparse strips brackets and ports, so
-    neither could ever match a real url, and the user would get a permanently dead
-    exception plus the same warning they were trying to silence.
+    The `:` clause is what makes `[fd00::5]`, `jobs.invalid:8080` and a BARE IPv6
+    literal such as `fd00::5` (no brackets at all -- a plausible thing to paste
+    straight out of a LAN board's own address bar) raise-or-parse-as-a-network
+    rather than becoming inert hostname grants: a bracketed or port-suffixed entry
+    could never match a real url host because urlparse strips both, and a bare
+    IPv6 literal is not legal LDH hostname syntax either (`_LDH` has no `:` in it),
+    so without this clause it would reach the hostname branch, get refused there,
+    and leave the user with a permanently dead exception plus the same warning
+    they were trying to silence.
 
     Accepted edge: `1` and `0` are IP-shaped and therefore raise. That is loud and
     pathological, rather than silent and plausible, which is the right trade.
@@ -129,7 +154,14 @@ def parse_allow_hosts(entries, *, key: str = "dossier_allow_hosts") -> AllowList
                 raise ValueError(
                     f"{key}[{i}] looks like an address or network but is not a "
                     f"valid one. Valid form:\n  {valid}") from None
-        elif _LDH.fullmatch(entry.rstrip(".")):
+        # Validate the NORMALISED form, not `entry.rstrip(".")`: rstrip strips EVERY
+        # trailing dot, so "jobs.invalid.." looked like a valid hostname here while
+        # _norm_host below (which strips only ONE) stored "jobs.invalid." -- a grant
+        # that can never equal a url host, since `_host` never yields more than one
+        # trailing dot either. Refuse loudly beats granting inertly (the module
+        # docstring's own stated policy); `jobs.invalid..` contains an empty label
+        # between the two dots, so it was never a legal hostname regardless.
+        elif _LDH.fullmatch(_norm_host(entry)):
             hosts.add(_norm_host(entry))
         else:
             # Not IP-shaped and not a legal hostname. Accepting it would add a grant
