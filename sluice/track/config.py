@@ -45,6 +45,45 @@ _MERGED_DENYLISTS = {"ats_relay_domains": _ATS_RELAY_DOMAINS,
                      "job_board_domains": _JOB_BOARD_DOMAINS}
 
 
+def _merge_denylist(key: str, value):
+    """Validate a denylist override, then merge it OVER the shipped default.
+
+    The `isinstance(v, dict)` test this replaces was a silent fall-through: a non-mapping
+    override skipped the merge and took the plain-setattr branch instead, REPLACING the
+    denylist. `ats_relay_domains: []` therefore emptied a safety list outright and
+    `ats_relay_domains: 'oops'` turned it into a four-"entry" string whose keys are the
+    characters o/p/s. Both WIDEN the proof tier -- a host that no longer reads as
+    multi-tenant can prove which employer a receipt concerns -- which is the exact failure
+    direction the merge exists to close, and the same class of bug (a user override
+    replacing a shipped default) this branch already fixed once.
+
+    So: fail loudly at construction, naming the key and the valid shape, rather than
+    retaining-or-emptying either way. Retaining silently would be no better -- the user's
+    entry would vanish and their in-house ATS would go unrecognised with no signal.
+
+    Only the KEYS are load-bearing: `receipt._suffix_match` iterates them and never reads
+    a value (labels are documentation for whoever opens the config). A non-str key is
+    therefore not merely untidy -- it raises TypeError out of `host.endswith("." + k)` at
+    match time, inside engine.run's per-message `except`, which swallows it WITHOUT
+    adding the id to `seen`: a permanently re-failing poison message. Values stay
+    unconstrained on purpose; nothing reads them, so rejecting a non-string label would
+    be a gratuitous refusal."""
+    valid = f"{key}:\n    host.example.invalid: your-label"
+    if not isinstance(value, dict):
+        raise ValueError(f"track.{key} must be a mapping of host -> label, "
+                         f"got {type(value).__name__}. Valid form:\n  {valid}")
+    for k in value:
+        # Report only the offending KEY, never the whole user block: a config file is the
+        # one place a user's real job-hunt hosts legitimately live, and an exception
+        # message travels further (logs, bug reports) than the file does.
+        if not (isinstance(k, str) and k.strip()):
+            raise ValueError(f"track.{key} keys must be non-empty host strings, "
+                             f"got {k!r} ({type(k).__name__}). Valid form:\n  {valid}")
+    # User entries win on a key collision (relabelling a shipped domain is fine), but no
+    # user block can DROP a shipped safety entry.
+    return {**_MERGED_DENYLISTS[key], **value}
+
+
 @dataclass
 class TrackConfig:
     token_path: str = "./google_token.json"
@@ -82,12 +121,12 @@ def load_track_config(path: str | None = None) -> TrackConfig:
     for k, v in data.items():
         if not (hasattr(cfg, k) and v is not None):
             continue
-        if k in _MERGED_DENYLISTS and isinstance(v, dict):
-            # Merge, never replace -- see _MERGED_DENYLISTS. User entries win on a key
-            # collision (relabelling a shipped domain is fine), but no user block can
-            # DROP a shipped safety entry, which is the only failure direction that
-            # widens the proof tier.
-            setattr(cfg, k, {**_MERGED_DENYLISTS[k], **v})
+        if k in _MERGED_DENYLISTS:
+            # Merge, never replace -- see _MERGED_DENYLISTS. No `isinstance` test guarding
+            # the branch: a non-mapping value must RAISE, not fall through to the plain
+            # setattr below, which would replace the safety denylist with whatever the
+            # user wrote (see _merge_denylist).
+            setattr(cfg, k, _merge_denylist(k, v))
         else:
             setattr(cfg, k, v)
     return cfg

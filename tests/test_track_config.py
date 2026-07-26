@@ -1,3 +1,4 @@
+import pytest
 import textwrap
 from sluice.track.config import TrackConfig, load_track_config
 
@@ -7,12 +8,16 @@ def test_defaults():
     assert c.token_path == "./google_token.json"
     assert c.calendar_match_minutes == 30
     assert c.auto_reject_min == 0.9
-    # Indexed, not `in`: these are dict KEY lookups, and asserting the label is
-    # non-empty checks more than membership. `"host" in <dict>` also reads to a
-    # scanner as a URL-substring test (CodeQL py/incomplete-url-substring-sanitization),
-    # which this is not -- the real suffix matching lives in `receipt._suffix_match`.
-    assert c.ats_relay_domains["greenhouse.io"]
-    assert c.job_board_domains["linkedin.com"]
+    # Asserted as a SHAPE, not by naming a vendor: these two are safety denylists whose
+    # only load-bearing property is that they ship non-empty (emptying one widens the
+    # proof tier) and are keyed by host strings, which `receipt._suffix_match` iterates.
+    # Naming a real ATS or board here would pin a brand into a fixture for no extra
+    # coverage -- `test_job_board_defaults_cover_every_shipped_source_host` already
+    # verifies the board list covers the shipped ingest sources, derived from the
+    # registry rather than hand-listed.
+    for denylist in (c.ats_relay_domains, c.job_board_domains):
+        assert denylist, "a safety denylist must ship non-empty"
+        assert all(isinstance(k, str) and k.strip() and v for k, v in denylist.items())
 
 
 def test_load_overlays_track_block(monkeypatch, tmp_path):
@@ -47,20 +52,61 @@ def test_safety_denylist_overrides_merge_over_shipped_defaults(tmp_path):
     # the opposite of what someone adding an entry to a safety denylist intends, and the
     # opposite of what sluice.yaml.example promises. Merge, so no user block can DROP a
     # shipped entry; a user key still wins on collision (relabelling is fine).
+    shipped = TrackConfig()
+    # The colliding key is DERIVED from the shipped default rather than typed in: the
+    # property under test is "a user key wins on collision", which has nothing to do with
+    # which vendor happens to sit at that key, and hard-coding one puts a brand in a
+    # fixture that the shipped list already carries.
+    collide = sorted(shipped.ats_relay_domains)[0]
     p = tmp_path / "s.yaml"
     p.write_text("track:\n"
                  "  ats_relay_domains:\n"
                  "    ats.example.invalid: in-house\n"
-                 "    greenhouse.io: relabelled\n"
+                 f'    "{collide}": relabelled\n'
                  "  job_board_domains:\n"
                  "    board.example.invalid: example-board\n")
     c = load_track_config(str(p))
-    shipped = TrackConfig()
     assert c.ats_relay_domains["ats.example.invalid"] == "in-house"
     assert set(shipped.ats_relay_domains) <= set(c.ats_relay_domains)   # none dropped
-    assert c.ats_relay_domains["greenhouse.io"] == "relabelled"         # user wins on collision
+    assert c.ats_relay_domains[collide] == "relabelled"                 # user wins on collision
     assert c.job_board_domains["board.example.invalid"] == "example-board"
     assert set(shipped.job_board_domains) <= set(c.job_board_domains)
+
+
+@pytest.mark.parametrize("block, needle", [
+    # An empty LIST is the dangerous one: it read as "not a dict", skipped the merge and
+    # took the plain-setattr branch, so the safety denylist ended up EMPTY -- every ATS
+    # relay then reads as a single-employer host and can prove which employer a receipt
+    # concerns. `[]` for job_board_domains does the same for the boards sluice scrapes.
+    ("  ats_relay_domains: []\n", "ats_relay_domains"),
+    ("  job_board_domains: []\n", "job_board_domains"),
+    # A bare string was worse than empty: it replaced the denylist with a value whose
+    # "keys" are its characters, so a nonsense denylist of single letters silently took
+    # over from the shipped hosts.
+    ("  ats_relay_domains: 'oops'\n", "ats_relay_domains"),
+    # A mapping with a non-string key merges fine and then raises TypeError from
+    # `host.endswith("." + k)` at MATCH time -- inside engine.run's per-message except,
+    # which skips seen.add, so that message re-fails on every future run forever.
+    ("  ats_relay_domains:\n    1234: numeric\n", "1234"),
+])
+def test_invalid_denylist_override_raises_rather_than_emptying(tmp_path, block, needle):
+    p = tmp_path / "s.yaml"
+    p.write_text("track:\n" + block)
+    with pytest.raises(ValueError) as e:
+        load_track_config(str(p))
+    # The message must name the offending key and show a valid value -- this repo's rule
+    # is that an invalid config says what is valid rather than falling through.
+    assert needle in str(e.value) and "host.example.invalid" in str(e.value)
+
+
+def test_valid_one_entry_denylist_still_merges_over_the_defaults(tmp_path):
+    # The other half of the same guard: validation must not have turned into a refusal of
+    # the ordinary case the config example documents.
+    p = tmp_path / "s.yaml"
+    p.write_text("track:\n  ats_relay_domains:\n    ats.example.invalid: in-house\n")
+    c = load_track_config(str(p))
+    assert c.ats_relay_domains["ats.example.invalid"] == "in-house"
+    assert set(TrackConfig().ats_relay_domains) <= set(c.ats_relay_domains)
 
 
 def test_scalar_overrides_still_replace_rather_than_merge(tmp_path):
