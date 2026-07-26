@@ -156,6 +156,29 @@ def test_receipt_llm_fallback_resolution_stored_separately():
     assert ev.llm_candidates == []
 
 
+def test_prompt_teaches_receipt_definition_and_unlisted_company_permission():
+    # Finding 1 (whole-branch review): the prompt's original framing told the model to
+    # classify "against the in-flight applications below" and to "only match an
+    # application actually listed" -- but every receipt this feature exists to catch
+    # belongs to a SHORTLIST lead, which engine._INFLIGHT structurally excludes from
+    # that list. Under the old wording, the honest response to a real receipt was
+    # not_job (which reconcile silently skips), making the feature inert against a
+    # real backend while every offline test's fake backend hardcodes type="receipt".
+    # Pin both required clauses so a later edit cannot silently drop either one.
+    leads = [_lead("Tidemark", "Analyst")]
+    prompt = C.build_prompt(_msg(), leads, TrackConfig())
+    # (a) defines receipt as an application confirmation/acknowledgement
+    assert "receipt is an automated acknowledgement" in prompt
+    assert "application was submitted or received" in prompt
+    # (b) explicit permission to use it even when the company is unlisted, with lead: null
+    assert "even when its company is not in the list below" in prompt
+    assert "setting lead to null in that case" in prompt
+    # shortlist leads must never appear in the prompt itself -- lead-resolution for a
+    # receipt is owned by deterministic domain matching, not this prompt (unchanged
+    # design decision; only the wording changed).
+    assert "shortlist" not in prompt.lower()
+
+
 def test_receipt_llm_fallback_ambiguous_sets_candidates_and_no_slug():
     # Mirrors test_ambiguous_match_sets_candidates_and_no_slug, but for the fallback fields:
     # two same-company leads means the LLM's guess cannot resolve uniquely either.
