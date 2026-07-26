@@ -39,6 +39,29 @@ _log = get_logger("app")
 
 
 @dataclass
+class StaleLead:
+    """One lead #9 considers stale, as the report sees it. `refused` is set when the lead
+    must not be expired at all (today: a #60 sign-off hold); `flagged` carries
+    informational markers that do NOT block."""
+    slug: str
+    ref: object
+    status: str
+    last_seen: str
+    first_seen: str
+    days: int
+    flagged: list
+    refused: str | None = None
+
+
+# The triage-owned statuses `leads expire` may act on: every TRIAGE_OWNED state except
+# `dismiss`, which is already the destination. Application-owned states are absent, so
+# they are never even enumerated -- and this same set is handed to update_fields as
+# `require_status`, which is what actually holds never-regress when a lead enters the
+# application lifecycle mid-sweep.
+_EXPIRABLE = frozenset({"new", "shortlist", "research", "needs_review"})
+
+
+@dataclass
 class DedupeCluster:
     id: str
     members: list          # list[LeadNote]
@@ -441,6 +464,98 @@ class Sluice:
                                      survivor=survivor, conflict=(outcome != "ok"),
                                      flagged_losers=flagged))
         return out
+
+    def expire_report(self):
+        """The #9 staleness REPORT: leads whose `last_seen` is older than
+        `lead_ttl_days`, in a triage-owned status. Changes nothing.
+
+        Returns [] when the knob is unset -- the caller distinguishes that from "nothing
+        is stale", because printing `0 stale` for an install that never configured the
+        feature would let a user believe a knob they never set is protecting them.
+        """
+        policy = self.staleness()
+        if policy.ttl_days <= 0:
+            return []
+        out = []
+        for n in self.store().read_leads(_EXPIRABLE):
+            last_seen = n.fm.get("last_seen", "")
+            if not policy.is_stale(last_seen):
+                continue
+            # `tailored_cv` and `needs_signoff` are INFORMATIONAL. Only `pending_cv`
+            # refuses, and the distinction matters: dismissing a lead that holds a
+            # pending_cv strands it permanently, because sign_off_cv resolves through
+            # read_leads({"shortlist"}) -- `cv signoff` and `--discard` both stop finding
+            # it. A note carrying needs_signoff ALONE must NOT be refused: Vault.sign_off
+            # no-ops without pending_cv, so the refusal message's own escape hatch would
+            # do nothing and the lead would be stuck forever.
+            flagged = []
+            if n.fm.get("tailored_cv"):
+                flagged.append("cv")
+            if n.fm.get("needs_signoff"):
+                flagged.append("signoff-flag")
+            out.append(StaleLead(
+                slug=n.slug, ref=n.ref, status=n.status, last_seen=last_seen,
+                first_seen=n.fm.get("first_seen", ""), days=policy.days(last_seen),
+                flagged=flagged,
+                refused="sign-off-hold" if n.fm.get("pending_cv") else None))
+        return out
+
+    def expire(self, slugs=None):
+        """Dismiss stale leads. `slugs` empty/None expires everything the report lists;
+        a non-empty list narrows to EXACT slug matches.
+
+        Returns [(slug, outcome)] with outcome one of: 'dismissed'; 'refused-signoff'
+        (a #60 hold, see expire_report); 'no-match' (a named slug that is not in the
+        stale set -- narrowing is not a licence to dismiss an arbitrary lead by name);
+        'conflict' (a sustained write race, #16, isolated to that lead); 'skipped' (the
+        FRESH status left the triage lifecycle between the read and the write).
+
+        Slugs match by EQUALITY, not `slug_matches`, which is a substring match whose two
+        existing callers already disagree about ambiguity. A user typing the narrow form
+        is choosing the safer option under decision 3; it must not be the one that
+        dismisses leads they did not name.
+        """
+        from sluice.core.protocols import VaultConflict
+        report = self.expire_report()
+        store = self.store()
+        results = []
+        if slugs:
+            by_slug = {r.slug: r for r in report}
+            chosen = []
+            for s in slugs:
+                r = by_slug.get(s)
+                if r is None:
+                    results.append((s, "no-match"))
+                else:
+                    chosen.append(r)
+        else:
+            chosen = list(report)
+
+        today = self.staleness().today
+        ttl = self.config.lead_ttl_days
+        tag = f"[expire {today}]"
+        for r in chosen:
+            if r.refused:
+                results.append((r.slug, "refused-signoff"))
+                continue
+            note = (f"{tag} stale: last_seen {r.last_seen} is {r.days}d old "
+                    f"(lead_ttl_days={ttl}). Was: {r.status}.")
+            try:
+                # require_status is what holds never-regress here, and it CANNOT move up
+                # into this loop: a check against `r.status` reads the enumeration
+                # snapshot, which is stale by construction. Probed against a real vault,
+                # that guard is byte-identical to no guard at all.
+                wrote = store.update_fields(
+                    r.ref, {"status": "dismiss"}, append_note=note, note_tag=tag,
+                    require_status=_EXPIRABLE)
+            except VaultConflict:
+                # Isolated per lead: one conflicting note must not abort the sweep over
+                # the rest. Self-heals next run (#16).
+                _log.warning("expire: %s lost the write race, left untouched", r.slug)
+                results.append((r.slug, "conflict"))
+                continue
+            results.append((r.slug, "dismissed" if wrote else "skipped"))
+        return results
 
     def dedupe_report(self):
         """The #23 read-path dedup REPORT: suspected-duplicate clusters, each with a
