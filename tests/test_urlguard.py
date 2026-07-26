@@ -274,7 +274,7 @@ def test_www_is_preserved():
 # identical to ASCII "K", so a literal is silently corrupted by transcription --
 # a reviewer reproduced exactly that failure. The premise assertion below makes a
 # lost codepoint redden as a fixture problem rather than as a guard problem.
-KELVIN = "K"
+KELVIN = "\u212a"
 
 
 def test_the_kelvin_fixture_is_the_confusable_not_ascii_k():
