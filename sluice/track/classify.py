@@ -50,7 +50,7 @@ def _lead_key(note):
 def build_prompt(msg, leads, cfg):
     inflight = "\n".join(
         f"- {n.fm.get('company','')} | {n.fm.get('role','')} | status={n.status}" for n in leads)
-    h = msg.get("headers", {})
+    h = msg.get("headers") or {}      # `or {}`/`or ""`: a header can be present-but-None
     atts = msg.get("attachments", []) or []
     att_names = ", ".join(a.get("filename", "") for a in atts if a.get("filename")) or "none"
     ics_present = "yes" if any(
@@ -70,7 +70,7 @@ def build_prompt(msg, leads, cfg):
         "in the list below, setting lead to null in that case rather than forcing another "
         "type.\n\n"
         f"IN-FLIGHT APPLICATIONS:\n{inflight}\n\n"
-        f"EMAIL:\nFrom: {h.get('from','')}\nSubject: {h.get('subject','')}\n\n"
+        f"EMAIL:\nFrom: {h.get('from') or ''}\nSubject: {h.get('subject') or ''}\n\n"
         f"Attachments: {att_names}\nCalendar invite attached: {ics_present}\n\n"
         f"{(msg.get('body_text') or '')[:4000]}\n")
 
@@ -102,9 +102,14 @@ def classify(msg, leads, backend, cfg, ics=None) -> Event:
             if fn and not fn.lower().endswith(".ics") and fn not in ev.materials:
                 ev.materials.append(fn)
         ev.summary = str(data.get("summary") or "")
-        h = msg.get("headers", {})
-        ev.sender = h.get("from", "")
-        ev.subject = h.get("subject", "")
+        # `or ""` throughout, never a .get default: the default only covers a MISSING
+        # key, so a present-but-None Subject would stamp a literal "None" into the
+        # receipt evidence section reconcile writes (and a None headers dict would raise
+        # AttributeError). Same treatment as receipt._headers -- see its docstring for
+        # why a raise here becomes a permanently re-failing poison message.
+        h = msg.get("headers") or {}
+        ev.sender = h.get("from") or ""
+        ev.subject = h.get("subject") or ""
         if ev.type != "receipt":
             ev.lead_slug, ev.candidates = _resolve_lead(data.get("lead"), leads)
         else:
