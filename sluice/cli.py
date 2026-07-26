@@ -208,6 +208,51 @@ def cmd_leads_dedupe(args, config) -> int:
     return 0
 
 
+def cmd_leads_expire(args, config) -> int:
+    from sluice.core.app import Sluice
+
+    if config.lead_ttl_days <= 0:
+        # NOT "0 stale": that is indistinguishable from "nothing is stale", and would let
+        # a user believe a knob they never configured is protecting them.
+        print("expire: lead_ttl_days is unset (0) -- staleness is off, nothing to report",
+              file=sys.stderr)
+        return 0
+
+    app = Sluice(config)
+    if args.expire is not None:      # NOT truthiness: [] is the bulk case and is falsy
+        outcomes = app.expire(slugs=args.expire)
+        counts = {}
+        for slug, outcome in outcomes:
+            counts[outcome] = counts.get(outcome, 0) + 1
+            if outcome != "dismissed":
+                print(f"expire: {slug}: {outcome}", file=sys.stderr)
+        print("expire: " + ", ".join(f"{n} {o}" for o, n in sorted(counts.items())),
+              file=sys.stderr)
+        # A named slug that matched nothing exits non-zero: a silent no-op is the exact
+        # failure mode this report-first command is shaped to avoid.
+        return 1 if any(o == "no-match" for _, o in outcomes) else 0
+
+    report = app.expire_report()
+    if args.json:
+        print(json.dumps([{
+            "slug": r.slug, "status": r.status, "last_seen": r.last_seen,
+            "first_seen": r.first_seen, "days": r.days,
+            "flagged": r.flagged, "refused": r.refused,
+        } for r in report]))
+        return 0
+    for r in report:
+        kind = "held " if r.refused else "stale"
+        flags = ("  " + " ".join("⚑" + f for f in r.flagged)) if r.flagged else ""
+        held = "  sign-off hold" if r.refused else ""
+        print(f"[{kind}] {r.slug}  {r.days}d  {r.status}  "
+              f"first_seen {r.first_seen}{flags}{held}")
+    refused = sum(1 for r in report if r.refused)
+    extra = f" ({refused} refused: sign-off hold)" if refused else ""
+    print(f"expire: {len(report)} stale{extra}, 0 written (--expire to apply)",
+          file=sys.stderr)
+    return 0
+
+
 def cmd_triage_run(args, config) -> int:
     from sluice.core.app import Sluice
 
@@ -536,6 +581,18 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="merge the named vetted clusters (from a prior report)")
     dd.add_argument("--json", action="store_true", help="machine-readable report")
     dd.set_defaults(func=cmd_leads_dedupe)
+
+    ex = leads.add_parser("expire", help="report/dismiss leads stale past lead_ttl_days")
+    # NOT dedupe's `--merge nargs="+"`: that REQUIRES an argument, so a bare `--expire`
+    # would be an argparse error rather than the bulk case. And NOT dedupe's
+    # `if args.merge:` dispatch either -- a bare flag parses to a FALSY [], which would
+    # fall through to the report branch and leave the write flag silently inert. The
+    # pairing that works is `nargs="*", default=None` + `is not None`.
+    ex.add_argument("--expire", nargs="*", default=None, metavar="SLUG",
+                    help='dismiss the reported leads; name slugs to narrow, e.g. '
+                         '--expire "Example Ltd - Example Role"')
+    ex.add_argument("--json", action="store_true", help="machine-readable report")
+    ex.set_defaults(func=cmd_leads_expire)
 
     health = top.add_parser("health")
     health.set_defaults(func=cmd_health)
