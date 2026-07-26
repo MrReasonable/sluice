@@ -118,8 +118,11 @@ triage:
 track:
   # Minimum confidence (0..1) for the LLM's "this is an application receipt"
   # classification to AUTO-advance a shortlist lead to `applied` on a domain-PROOF
-  # match. A corroborated (ATS-relay + company-in-body) or ambiguous match always
-  # proposes for `sluice track confirm`, regardless of this value.
+  # match. Proof also requires that the delivering server AUTHENTICATED the sender
+  # domain (a DKIM/DMARC/SPF pass aligned with it) -- a From header is free text
+  # anyone can forge, and a wrong `applied` silently suppresses a real application.
+  # A corroborated (ATS-relay + company-in-body), unauthenticated or ambiguous match
+  # always proposes for `sluice track confirm`, regardless of this value.
   auto_apply_min: 0.75
   # ats_relay_domains and job_board_domains together list the hosts SHARED BY MANY
   # EMPLOYERS: ATS relays, and the job boards sluice scrapes. Both are SAFETY
@@ -133,7 +136,9 @@ track:
   # Anything you set here is MERGED OVER the shipped defaults, never replacing them:
   # add your own in-house ATS or board and the shipped entries all survive. (The
   # corollary is that a shipped entry cannot be removed from config -- deliberate for
-  # a safety denylist. You can relabel one by reusing its key.)
+  # a safety denylist. You can relabel one by reusing its key.) A value that is not
+  # a mapping of host -> label is an ERROR, not a silent replacement: sluice refuses
+  # to start rather than run with an emptied safety list.
   # ats_relay_domains:
   #   ats.example.invalid: in-house
   # job_board_domains:
