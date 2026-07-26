@@ -83,12 +83,23 @@ DEFAULT_PREFIX_MAP = {"Example Foundry": "EF"}
 # regardless of what the SSRF guard does; raising on an unmapped host keeps the guard
 # under test. `.example`/`.invalid` never resolve for real, which is why the session
 # DNS guard would otherwise fire here.
-_FIXTURE_ADDR = "192.88.99.1"    # RFC 3068, withdrawn: global, no operator
+#
+# Public (not `_`-prefixed): tests/test_dossier_guard.py and tests/test_app_operations.py
+# each used to hardcode this literal separately rather than importing it -- the
+# sanctioned globally-routable fixture address is defined ONCE, here.
+FIXTURE_ADDR = "192.88.99.1"    # RFC 3068, withdrawn: global, no operator
 
 
 def harness_resolve(host):
-    if host.endswith((".example", ".invalid")):
-        return [_FIXTURE_ADDR]
+    # urlguard._host deliberately PRESERVES a trailing dot (a fully-qualified url
+    # host like "jobs.invalid." reaches here unchanged) -- the allowlist normalises
+    # both sides instead of demanding one canonical form. Mirror that here: strip at
+    # most one trailing dot before the suffix check, or a fully-qualified fixture
+    # url would raise OSError and be treated as unmapped for the wrong reason (this
+    # resolver's fixture list, not the guard under test).
+    normalized = host[:-1] if host.endswith(".") else host
+    if normalized.endswith((".example", ".invalid")):
+        return [FIXTURE_ADDR]
     raise OSError(f"harness resolver: unmapped host {host!r}")
 
 

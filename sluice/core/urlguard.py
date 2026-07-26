@@ -235,6 +235,15 @@ def _granted(addr, host: str, allow: AllowList) -> bool:
     A hostname grant is EXACT (see the subdomain test) and covers every address
     that host resolves to -- the user explicitly trusted the name. A network grant
     covers the address regardless of name.
+
+    A hostname grant is therefore STRICTLY BROADER than a network grant of
+    comparable intent: it admits whatever address the name resolves to AT FETCH
+    TIME -- a public address the entry never anticipated, or a rebinding answer --
+    not just the private address the user had in mind when they added it. A CIDR/
+    address grant bounds the exception to specific addresses regardless of what any
+    name later resolves to. Prefer naming a network where one is knowable; reach
+    for a hostname grant only when the address genuinely varies (DHCP, a LAN board
+    with no stable IP).
     """
     if _norm_host(host) in allow.hosts:
         return True

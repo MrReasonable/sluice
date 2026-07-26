@@ -4,6 +4,7 @@ import os
 from sluice.apply.engine import PrepResult
 from sluice.core.app import Sluice
 from sluice.core.config import Config
+from tests.harness.config import FIXTURE_ADDR
 
 
 class _FakeTab:
@@ -50,7 +51,7 @@ def _track_config(tmp_path, monkeypatch):
 
 def test_dossier_cache_fetches_jd_via_the_fetcher_seam(tmp_path, titles):
     app = Sluice(Config(), fetcher=_FakeTab(),
-                 resolve_host=lambda h: ["192.88.99.1"])
+                 resolve_host=lambda h: [FIXTURE_ADDR])
     cache = app.dossier_cache(str(tmp_path), ttl_days=7)
     d = cache.get_or_build({"url": "https://example.invalid/job",
                             "company": "Acme", "title": titles[0]})
