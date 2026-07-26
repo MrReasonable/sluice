@@ -4,8 +4,10 @@ import pytest
 from sluice.core import urlguard
 from sluice.core.app import Sluice
 from sluice.core.config import Config
-
-GLOBAL_ADDR = "192.88.99.1"     # RFC 3068, withdrawn by RFC 7526: global, no operator
+from tests.harness.config import FIXTURE_ADDR as GLOBAL_ADDR   # the ONE sanctioned
+# globally-routable fixture address (RFC 3068, withdrawn by RFC 7526: global, no
+# operator) -- defined once in tests/harness/config.py so this file and
+# test_app_operations.py don't each hardcode the literal separately.
 
 
 _UNSET = object()

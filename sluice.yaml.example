@@ -30,7 +30,11 @@ baseline_rel: My CV/CV.md
 # private, link-local, cloud-metadata, ...). Empty grants no exceptions; it does
 # NOT block public urls, which are admitted by the address rule rather than by
 # this list. Set it only if you deliberately run a board on your own network.
-# Entries are a hostname (exact, no subdomains) or a CIDR / bare IP.
+# Entries are a hostname (exact, no subdomains) or a CIDR / bare IP. Prefer a CIDR
+# where you can name one: a hostname grant covers EVERY address that name resolves
+# to (today, and at each future fetch), which is strictly wider than the addresses
+# a network grant admits -- a CIDR bounds the exception to specific addresses no
+# matter what any name later resolves to.
 # dossier_allow_hosts:
 #   - jobs.invalid
 #   - 10.0.0.0/8

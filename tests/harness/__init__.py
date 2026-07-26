@@ -7,6 +7,7 @@ acceptance tiers -- which is why it lives here, not under one layer's directory.
 from tests.harness.backend import ScriptedBackend
 from tests.harness.browser import ScriptedBrowserClient, install_scripted_fetcher
 from tests.harness.config import (
+    FIXTURE_ADDR,
     GATE_FAILING_CV,
     PASSING_CV,
     Harness,
@@ -28,5 +29,6 @@ __all__ = [
     "build_harness",
     "PASSING_CV",
     "GATE_FAILING_CV",
+    "FIXTURE_ADDR",
     "seed_lead_note",
 ]
