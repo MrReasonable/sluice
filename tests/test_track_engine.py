@@ -478,7 +478,9 @@ class InFlightReceiptClient(FakeGoogleClient):
             # Sender domain matches nothing (Tidemark carries no `url` at all in `_vault`),
             # so match_receipt (shortlist-only) can never find this lead -- it is already
             # `applied`, past shortlist. The LLM's own guess is the only signal available.
-            "r1": {"headers": {"from": "jobs@tidemark.com", "subject": "Thanks for applying"},
+            # The domain itself is arbitrary for that purpose -- example.com (RFC 2606
+            # reserved) keeps this branch's new fixtures out of real-firm-name territory.
+            "r1": {"headers": {"from": "jobs@example.com", "subject": "Thanks for applying"},
                    "body_text": "received", "thread_id": "t", "attachments": []},
         }, events=[])
 

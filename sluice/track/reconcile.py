@@ -34,17 +34,19 @@ def _stamp_materials(vault, note, ev, dry_run=False):
     return vault.append_body_section(note.ref, tag, section)
 
 
-def _stamp_receipt(vault, note, ev, dry_run=False):
+def _stamp_receipt(vault, note, ev):
     # Evidence for a receipt-driven advance. append_body_section is idempotent by tag,
     # so a re-processed receipt (same message_id) never double-writes; body untouched.
+    # No dry_run parameter here: the sole call site already sits inside the reconcile()
+    # `if not dry_run:` block below, so a dry-run guard on this function would be
+    # unreachable dead code (a whole-branch review caught it: deleting the guard could
+    # not redden any test).
     tag = f"track-receipt-{ev.message_id or ev.type}"
     section = (f"## Application receipt <!--{tag}-->\n"
                f"- Received: {date.today().isoformat()}\n"
                f"- From: {ev.sender}\n"
                f"- Subject: {ev.subject}\n"
                f"- Match: {ev.receipt_tier}")
-    if dry_run:
-        return True
     return vault.append_body_section(note.ref, tag, section)
 
 
@@ -88,7 +90,7 @@ def reconcile(event, note_by_slug, vault, cfg, client, dry_run=False, *, shortli
                 # -- wrong for an `applied` lead (a receipt is not an interview signal).
                 vault.update_fields(note.ref, {"status": "applied",
                                                "last_signal": date.today().isoformat()})
-                _stamp_receipt(vault, note, event, dry_run=dry_run)
+                _stamp_receipt(vault, note, event)
             r.action = "applied"
             r.status_to = "applied"
             return r
