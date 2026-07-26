@@ -56,6 +56,13 @@ def test_ingest_defaults_carry_no_preference(monkeypatch):
     assert c.relevance_drop == []
     assert c.location_noise_words == []   # #5 gate abstains: no noise subtracted by default
     assert c.dedupe_title_noise_words == []   # #23: strictest clustering, abstain toward not-merging
+    # #18: covered by the value-keyed sweep below as a list-defaulting field, and it
+    # must default empty -- but its "empty" is INVERTED relative to every other entry
+    # here. For accept_titles, empty means "pass everything through"; for this SAFETY
+    # allowlist it means "grant no exceptions", and public urls stay fetchable because
+    # of the address rule, not this list. Do not read the sweep as licence to loosen
+    # the guard.
+    assert c.dossier_allow_hosts == []
     # baseline_rel moved here from CvConfig (only the store can honour it, and
     # Sluice.store() only ever sees the root Config). The assertion had to move WITH it:
     # the refactor deleted it from the CvConfig test and nothing replaced it, so a
