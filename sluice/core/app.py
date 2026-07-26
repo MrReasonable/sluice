@@ -55,6 +55,13 @@ _BACKEND_SEAM = "backend"
 # construction instead of dropping it silently (see Sluice.__init__).
 _SEAMS = (_STORE_SEAM, _FETCHER_SEAM, _RENDERER_SEAM, _BACKEND_SEAM)
 
+# The injected collaborators of Sluice.__init__ -- NOT seams. Used only to make a
+# typo'd keyword point at the right fix: they are keyword-only params, so a typo
+# never binds to them and always lands in **overrides, where it would otherwise be
+# reported as an unknown SEAM. Pinned to the real signature by a guard test.
+# (client/now_iso are Sluice.track() parameters and never reach **overrides.)
+_COLLABORATORS = ("sleep", "today", "resolve_host")
+
 
 # ── track seen/lastrun persistence ───────────────────────────────────────────
 # Moved verbatim from cli.py (Task 6): the message-id dedup set and the
@@ -161,7 +168,8 @@ class Sluice:
     # `sleep` and `today` are explicit keyword-only params rather than members of
     # **overrides: they are injected VALUES, not adapters resolved by name, and the
     # seam-key validation below would (correctly) reject them.
-    def __init__(self, config=None, *, sleep=None, today=None, **overrides):
+    def __init__(self, config=None, *, sleep=None, today=None, resolve_host=None,
+                 **overrides):
         # A composition root with no config uses the code defaults, exactly as the
         # adapters did when cli.py constructed them bare. Callers (and tests) that pass
         # None must get a working Sluice, not an AttributeError deep inside a factory.
@@ -176,10 +184,18 @@ class Sluice:
             # Reuses the seam-resolution error so the message shape matches what
             # `plugins.get` raises for an unknown adapter NAME: same failure class,
             # one level up (an unknown seam rather than an unknown name within one).
-            raise plugins.UnknownAdapter("seam override", unknown[0], _SEAMS)
+            raise plugins.UnknownAdapter(
+                "seam override", unknown[0], _SEAMS,
+                hint=(f"injected collaborators ({', '.join(_COLLABORATORS)}) are "
+                      f"keyword-only parameters, not seam overrides"))
         self._overrides = {k: v for k, v in overrides.items() if v is not None}
         self._sleep = sleep
         self._today = today
+        # DNS for the dossier url guard (#18). None means urlguard's real resolver;
+        # tests inject a fake so the suite never resolves. A collaborator, not a
+        # seam: a registry entry is reachable from config, so a seam-resolved
+        # resolver would put an off switch for the SSRF guard under a YAML key.
+        self._resolve_host = resolve_host
         self._cache: dict = {}
 
     # ── adapter resolution ───────────────────────────────────────────────────

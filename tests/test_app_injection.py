@@ -151,3 +151,45 @@ def test_ingest_threads_the_injected_clock(tmp_path, monkeypatch):
     assert store.upserted, "nothing reached the store"
     assert store.upserted[0].last_seen == "2026-01-02", (
         "VaultSink's today= was not threaded, so nothing above the sink can move the clock")
+
+
+# ── 0.5 resolve_host collaborator ─────────────────────────────────────────────
+
+def test_a_typod_collaborator_names_collaborators_and_seams_separately():
+    """ARCHITECTURE.md:298-302 pre-registered this tightening for "a third
+    collaborator". resolve_host is it.
+
+    The obvious implementation -- widening UnknownAdapter's `known` -- would print
+    the collaborators AS SEAMS, erasing the distinction ARCHITECTURE.md:271-296
+    exists to draw and implying config keys that do not exist.
+    """
+    with pytest.raises(plugins.UnknownAdapter) as ei:
+        Sluice(Config(), resolve_hosts=lambda h: [])
+    msg = str(ei.value)
+    assert "resolve_host" in msg and "sleep" in msg and "today" in msg
+    assert "fetcher" in msg and "store" in msg
+    assert "collaborator" in msg.lower()
+
+
+def test_collaborators_tuple_matches_the_real_signature():
+    """A stale tuple when a fourth collaborator lands would reinstate exactly the
+    misdirection this tightening removes."""
+    import inspect
+    from sluice.core.app import Sluice, _COLLABORATORS
+    kwonly = tuple(n for n, p in inspect.signature(Sluice.__init__).parameters.items()
+                   if p.kind is p.KEYWORD_ONLY)
+    assert _COLLABORATORS == kwonly
+
+
+def test_an_unknown_seam_message_is_unchanged_for_existing_callers():
+    e = plugins.UnknownAdapter("backend", "nope", ["a", "b"])
+    assert str(e) == "unknown backend 'nope' (registered: a, b)"
+
+
+def test_resolve_host_defaults_to_the_production_resolver():
+    """Without this, a wiring that ALWAYS used a fake would ship green."""
+    from sluice.core import urlguard
+    assert Sluice(Config())._resolve_host is None
+    assert Sluice(Config(), resolve_host=None)._resolve_host is None
+    # and the closure resolves that None to the real one -- asserted in Task 8.
+    assert callable(urlguard._resolve)

@@ -31,11 +31,16 @@ _REGISTRY: dict[str, dict[str, object]] = {}
 class UnknownAdapter(KeyError):
     """Raised at construction for a name no plugin registered under this seam."""
 
-    def __init__(self, seam: str, name: str, known):
+    def __init__(self, seam: str, name: str, known, hint: str = ""):
         self.seam, self.name = seam, name
         known_names = ", ".join(sorted(known)) or "(none registered)"
         # KeyError's str() re-quotes its arg, so carry the message explicitly.
         self.message = f"unknown {seam} '{name}' (registered: {known_names})"
+        # `hint` exists because this class HARDCODES its format, so a raise site
+        # cannot otherwise say anything extra. Default empty, so every existing
+        # caller's message is byte-identical.
+        if hint:
+            self.message += f". {hint}"
         super().__init__(self.message)
 
     def __str__(self) -> str:
