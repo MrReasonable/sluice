@@ -420,6 +420,41 @@ def test_two_receipts_same_lead_one_run_advance_once():
     assert text.count("## Application receipt") == 1
 
 
+def test_two_receipts_same_lead_one_run_records_no_deadletter_row():
+    # Counting evidence sections (above) cannot see this: the second receipt used to be
+    # PROPOSED, recording a dead-letter row whose hint is
+    # `track confirm --lead "..." --to applied` -- a command confirm() refuses forever
+    # (reason: applied). Worse, clear_lead had already run for message 1, so the row was
+    # recorded AFTER the clear and re-surfaced on every future run with no way to act on
+    # it. reconcile now skips a matched note that can_apply rules out.
+    v, path = _vault_shortlist("https://example.com/careers/1")
+    be = FakeBackend(json.dumps({"lead": None, "type": "receipt", "confidence": 0.9,
+                                 "when": None, "links": [], "materials": [], "summary": "received"}))
+    dl = _dl()
+    rep = E.run(v, TrackConfig(), TwoReceiptClient(), be, seen=set(), deadletter=dl,
+                now_iso="2026-07-25T09:00:00+00:00")
+    assert dl.open_entries() == []
+    assert rep.auto == 1 and rep.proposed == 0
+    assert pathlib.Path(path).read_text().count("## Application receipt") == 1
+
+
+def test_dry_run_receipt_advance_does_not_mutate_the_status_snapshot():
+    # The in-run status reflection mirrors what was WRITTEN TO DISK. A dry run writes
+    # nothing, so mutating the snapshot would make the preview lie about the vault's
+    # real state -- reporting the second receipt as a no-op against an `applied` status
+    # that exists nowhere. Both receipts therefore preview the advance, and the note is
+    # byte-unchanged. (Pins the `not dry_run` guard on the reflection, which no test
+    # drove: dropping it left the suite green.)
+    v, path = _vault_shortlist("https://example.com/careers/1")
+    before = pathlib.Path(path).read_text()
+    be = FakeBackend(json.dumps({"lead": None, "type": "receipt", "confidence": 0.9,
+                                 "when": None, "links": [], "materials": [], "summary": "received"}))
+    rep = E.run(v, TrackConfig(), TwoReceiptClient(), be, seen=set(), deadletter=_dl(),
+                now_iso="2026-07-25T09:00:00+00:00", dry_run=True)
+    assert rep.auto == 2
+    assert pathlib.Path(path).read_text() == before
+
+
 # ── Fix round 1 (adversarial review) ────────────────────────────────────────
 
 
@@ -505,6 +540,24 @@ def test_receipt_about_inflight_lead_surfaces_without_writing():
     assert "--to applied" not in entries[0].hint             # can_apply is False -- no fake command
     assert rep.auto == 0 and rep.proposed == 1
     assert pathlib.Path(path).read_text() == before          # byte-unchanged: no write at all
+
+
+def test_receipt_deadletter_fallback_records_nothing_in_dry_run():
+    # The receipt fallback's own `if not dry_run:` guard had no test driving it: replacing
+    # it with `if True:` left the suite green, so a `--dry-run` preview would have written
+    # a durable dead-letter row. The row must be PREVIEWED (rep.open_proposals) and not
+    # persisted, and the note must stay byte-unchanged.
+    v, path = _vault("applied")
+    before = pathlib.Path(path).read_text()
+    be = FakeBackend(json.dumps({"lead": "Tidemark", "type": "receipt", "confidence": 0.9,
+                                 "when": None, "links": [], "materials": [], "summary": "received"}))
+    dl = _dl()
+    rep = E.run(v, TrackConfig(), InFlightReceiptClient(), be, seen=set(), deadletter=dl,
+                now_iso="2026-07-10T12:00:00+00:00", dry_run=True)
+    assert dl.open_entries() == []                     # nothing durably recorded
+    assert len(rep.open_proposals) == 1                # but still previewed
+    assert rep.proposed == 1 and rep.auto == 0
+    assert pathlib.Path(path).read_text() == before
 
 
 class UnmatchedReceiptClient(FakeGoogleClient):
