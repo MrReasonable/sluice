@@ -117,7 +117,33 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                     note_by_slug[ev.lead_slug].status = res.status_to
                 elif ev.lead_slug in shortlist_by_slug:
                     shortlist_by_slug[ev.lead_slug].status = res.status_to
-            if res.action == "applied":
+            if ev.type == "receipt" and ev.receipt_tier == "none" and res.action == "skipped" \
+                    and ev.llm_lead_slug:
+                # match_receipt found NO domain evidence at all (never even a corroborated
+                # match) -- the common cause is a receipt about a lead that has already
+                # advanced PAST shortlist (applied/phone_screen/...), since match_receipt
+                # only ever searches shortlist_by_slug and such a lead structurally cannot
+                # appear there. Silently accepting reconcile's "skipped" here would be the
+                # #40 loss class again: if the model mislabelled a REJECTION as "receipt",
+                # that rejection vanishes and the lead sits at `applied` forever with zero
+                # signal anywhere. The LLM's own (lower-trust, name-based) resolution is
+                # good enough to SURFACE a review item even though it is not good enough to
+                # ACT on -- so this branch only ever records a dead-letter row, never a
+                # write; deterministic domain matching still owns every write, unchanged
+                # above. The hint is deliberately the generic review-manually wording, never
+                # a "--to applied" hint: the lead is already in-flight, so can_apply is
+                # false and that hint would be refused outright -- an unrunnable command is
+                # worse than an honest "look at this yourself" (#10 fix-round-1).
+                rep.proposed += 1
+                hint = (f'(receipt email for in-flight lead "{ev.llm_lead_slug}" -- the match '
+                        f"could not be verified by sender/link domain; review manually)")
+                entry = Entry(message_id=mid, lead=ev.llm_lead_slug, candidates="",
+                              ev_type=ev.type, proposal="receipt (unverified lead match)",
+                              hint=hint, first_seen=today, times_surfaced=1)
+                new_entries.append(entry)
+                if not dry_run:
+                    _dl_write(rep, lambda: deadletter.record(entry))
+            elif res.action == "applied":
                 rep.auto += 1
                 # Symmetric with confirm's clear-on-advance: an auto-resolved lead's
                 # pending proposals are resolved too, so its dead-letter entries stop

@@ -127,8 +127,9 @@ def test_classify_seeds_materials_from_attachments():
 
 
 def test_receipt_typed_and_llm_lead_ignored():
-    # A receipt: the LLM may still name a lead, but classify must NOT resolve it --
-    # the deterministic matcher (engine) owns lead resolution for receipts.
+    # A receipt: the LLM may still name a lead, but classify must NOT resolve it into the
+    # AUTHORITATIVE fields -- the deterministic matcher (engine) owns lead_slug/candidates
+    # for receipts. (Its guess is not thrown away -- see llm_lead_slug below.)
     leads = [_lead("Example", "Analyst")]
     be = FakeBackend(json.dumps({"lead": "Example", "type": "receipt", "confidence": 0.9,
                                  "when": None, "links": [], "materials": [], "summary": "received"}))
@@ -138,3 +139,29 @@ def test_receipt_typed_and_llm_lead_ignored():
     assert ev.lead_slug is None and ev.candidates == []      # NOT resolved by name
     assert ev.sender == "jobs@example.com" and ev.subject == "Thanks for applying"
     assert ev.receipt_tier is None                            # engine sets this later
+
+
+def test_receipt_llm_fallback_resolution_stored_separately():
+    # #10 fix-round-1: the LLM's own name-based guess for a receipt is kept, but ONLY in
+    # llm_lead_slug/llm_candidates -- fields the write path never reads. engine.run uses
+    # this solely to decide whether to SURFACE (dead-letter, never advance) a receipt about
+    # a lead match_receipt structurally cannot see (one already past shortlist).
+    leads = [_lead("Example", "Analyst")]
+    be = FakeBackend(json.dumps({"lead": "Example", "type": "receipt", "confidence": 0.9,
+                                 "when": None, "links": [], "materials": [], "summary": "received"}))
+    ev = C.classify(_msg(frm="jobs@example.com", subject="Thanks for applying"),
+                    leads, be, TrackConfig(), ics=None)
+    assert ev.lead_slug is None and ev.candidates == []       # authoritative fields untouched
+    assert ev.llm_lead_slug is not None and "example" in ev.llm_lead_slug.lower()
+    assert ev.llm_candidates == []
+
+
+def test_receipt_llm_fallback_ambiguous_sets_candidates_and_no_slug():
+    # Mirrors test_ambiguous_match_sets_candidates_and_no_slug, but for the fallback fields:
+    # two same-company leads means the LLM's guess cannot resolve uniquely either.
+    leads = [_lead("Ravenbank", "EM Cards"), _lead("Ravenbank", "EM Payments")]
+    be = FakeBackend(json.dumps({"lead": "Ravenbank", "type": "receipt", "confidence": 0.8,
+                                 "when": None, "links": [], "materials": [], "summary": "received"}))
+    ev = C.classify(_msg(), leads, be, TrackConfig(), ics=None)
+    assert ev.llm_lead_slug is None and len(ev.llm_candidates) == 2
+    assert ev.lead_slug is None and ev.candidates == []       # authoritative fields untouched
