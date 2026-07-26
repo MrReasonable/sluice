@@ -418,3 +418,112 @@ def test_two_receipts_same_lead_one_run_advance_once():
     text = pathlib.Path(path).read_text()
     assert "status: applied" in text
     assert text.count("## Application receipt") == 1
+
+
+# ── Fix round 1 (adversarial review) ────────────────────────────────────────
+
+
+class OneReceiptClient(FakeGoogleClient):
+    def __init__(self):
+        super().__init__(messages={
+            "r1": {"headers": {"from": "jobs@example.com", "subject": "Thanks for applying"},
+                   "body_text": "received", "thread_id": "t", "attachments": []},
+        }, events=[])
+
+
+def test_receipt_proof_advance_regression_guard():
+    # Finding 2's fix touches the same "receipt, tier X, action Y" dispatch this single-
+    # message proof-grade advance already exercised -- pin that the new "tier none, LLM
+    # fallback" branch cannot accidentally intercept a genuine proof-tier advance.
+    v, path = _vault_shortlist("https://example.com/careers/1")
+    be = FakeBackend(json.dumps({"lead": None, "type": "receipt", "confidence": 0.9,
+                                 "when": None, "links": [], "materials": [], "summary": "received"}))
+    rep = E.run(v, TrackConfig(), OneReceiptClient(), be, seen=set(), deadletter=_dl(),
+                now_iso="2026-07-10T12:00:00+00:00")
+    text = pathlib.Path(path).read_text()
+    assert rep.auto == 1
+    assert "status: applied" in text
+    assert text.count("## Application receipt") == 1
+
+
+class CorrobReceiptClient(FakeGoogleClient):
+    def __init__(self):
+        super().__init__(messages={
+            # An ATS-relay sender (not the lead's own domain) whose body/subject names the
+            # company -- corroborated, not proof, so reconcile proposes rather than advances.
+            "r1": {"headers": {"from": "jobs@greenhouse.io", "subject": "Your Example application"},
+                   "body_text": "received", "thread_id": "t", "attachments": []},
+        }, events=[])
+
+
+def test_receipt_proposal_carries_real_confirm_command():
+    # Finding 1: _PROPOSE_TARGET["receipt"] = "applied" was untested and a reviewer proved it
+    # inert (deleting it left the full suite green). A corroborated receipt resolves a real
+    # lead_slug (via match_receipt, not the LLM), so its dead-letter hint must be the runnable
+    # `--to applied` command, mirroring test_proposal_carries_real_confirm_command for the
+    # non-receipt event types.
+    v, _ = _vault_shortlist("https://example.com/careers/1")
+    be = FakeBackend(json.dumps({"lead": None, "type": "receipt", "confidence": 0.9,
+                                 "when": None, "links": [], "materials": [], "summary": "received"}))
+    rep = E.run(v, TrackConfig(), CorrobReceiptClient(), be, seen=set(), deadletter=_dl(),
+                now_iso="2026-07-10T12:00:00+00:00")
+    assert rep.open_proposals
+    assert "--to applied" in rep.open_proposals[0].hint
+    assert "<status>" not in rep.open_proposals[0].hint
+
+
+class InFlightReceiptClient(FakeGoogleClient):
+    def __init__(self):
+        super().__init__(messages={
+            # Sender domain matches nothing (Tidemark carries no `url` at all in `_vault`),
+            # so match_receipt (shortlist-only) can never find this lead -- it is already
+            # `applied`, past shortlist. The LLM's own guess is the only signal available.
+            "r1": {"headers": {"from": "jobs@tidemark.com", "subject": "Thanks for applying"},
+                   "body_text": "received", "thread_id": "t", "attachments": []},
+        }, events=[])
+
+
+def test_receipt_about_inflight_lead_surfaces_without_writing():
+    # Finding 2: a receipt about a lead that has already advanced PAST shortlist can never
+    # match_receipt-match (it only searches shortlist_by_slug) -- reproduced by the reviewer
+    # as a genuine #40-class silent loss (a mislabelled rejection would vanish with the lead
+    # stuck at `applied` forever, zero signal anywhere). The LLM's own name resolution
+    # (llm_lead_slug) must surface exactly one dead-letter row naming the lead, WITHOUT
+    # writing to the note at all -- no status change, no evidence section.
+    v, path = _vault("applied")  # Tidemark, url-less, already in-flight
+    before = pathlib.Path(path).read_text()
+    be = FakeBackend(json.dumps({"lead": "Tidemark", "type": "receipt", "confidence": 0.9,
+                                 "when": None, "links": [], "materials": [], "summary": "received"}))
+    dl = _dl()
+    rep = E.run(v, TrackConfig(), InFlightReceiptClient(), be, seen=set(), deadletter=dl,
+                now_iso="2026-07-10T12:00:00+00:00")
+    entries = dl.open_entries()
+    assert len(entries) == 1
+    assert entries[0].lead == "Tidemark - Analyst"          # named, not blank/ambiguous
+    assert "--to applied" not in entries[0].hint             # can_apply is False -- no fake command
+    assert rep.auto == 0 and rep.proposed == 1
+    assert pathlib.Path(path).read_text() == before          # byte-unchanged: no write at all
+
+
+class UnmatchedReceiptClient(FakeGoogleClient):
+    def __init__(self):
+        super().__init__(messages={
+            "r1": {"headers": {"from": "jobs@example.invalid", "subject": "Receipt"},
+                   "body_text": "no useful info here", "thread_id": "t", "attachments": []},
+        }, events=[])
+
+
+def test_receipt_matching_nothing_stays_quiet():
+    # Finding 2's other half: an untracked job's ordinary receipt (no shortlist match AND the
+    # LLM names no known lead either) must stay quiet -- surfacing every such receipt would
+    # be exactly the noise the author's ruling explicitly rejected.
+    v, path = _vault("applied")
+    before = pathlib.Path(path).read_text()
+    be = FakeBackend(json.dumps({"lead": None, "type": "receipt", "confidence": 0.9,
+                                 "when": None, "links": [], "materials": [], "summary": "received"}))
+    dl = _dl()
+    rep = E.run(v, TrackConfig(), UnmatchedReceiptClient(), be, seen=set(), deadletter=dl,
+                now_iso="2026-07-10T12:00:00+00:00")
+    assert dl.open_entries() == []
+    assert rep.auto == 0 and rep.proposed == 0
+    assert pathlib.Path(path).read_text() == before

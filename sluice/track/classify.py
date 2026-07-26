@@ -30,6 +30,17 @@ class Event:
     receipt_tier: "str | None" = None   # set by engine.run for a receipt: proof|corroborated|none
     sender: str = ""                    # raw From header, for receipt evidence
     subject: str = ""                   # raw Subject header, for receipt evidence
+    # The LLM's OWN name resolution for a receipt, kept in fields lead_slug/candidates can
+    # never be confused with -- SURFACING-ONLY, never a write input. match_receipt (the
+    # authoritative, domain-based matcher) only searches the SHORTLIST set, so a receipt
+    # about a lead that already advanced past shortlist (applied/phone_screen/...) can never
+    # match there and always resolves to tier "none" -- silently skipping that would be the
+    # #40 loss class again (a mislabelled rejection vanishes with the lead stuck at `applied`
+    # forever). engine.run reads these ONLY to decide whether to surface a dead-letter row
+    # when the deterministic matcher found nothing; it must never use them to advance status
+    # (#10 fix-round-1).
+    llm_lead_slug: "str | None" = None
+    llm_candidates: list = field(default_factory=list)
 
 
 def _lead_key(note):
@@ -92,7 +103,13 @@ def classify(msg, leads, backend, cfg, ics=None) -> Event:
         ev.subject = h.get("subject", "")
         if ev.type != "receipt":
             ev.lead_slug, ev.candidates = _resolve_lead(data.get("lead"), leads)
-        # else: leave lead_slug=None/candidates=[]; engine.run resolves receipts by domain.
+        else:
+            # lead_slug/candidates stay unset: engine.run resolves receipts by domain
+            # (match_receipt), never by name. The LLM's own guess still goes somewhere --
+            # llm_lead_slug/llm_candidates, resolved against this SAME in-flight `leads`
+            # list -- so engine.run can surface (never advance) a receipt about a lead
+            # match_receipt structurally cannot see (it only searches shortlist).
+            ev.llm_lead_slug, ev.llm_candidates = _resolve_lead(data.get("lead"), leads)
     except Exception:
         # A classification we could NOT make is not evidence of "not a job" (#40). The default
         # Event.type is `not_job`, and reconcile silently SKIPS an unmatched not_job/update --
