@@ -78,6 +78,19 @@ DEFAULT_EXPERIENCE = [
 
 DEFAULT_PREFIX_MAP = {"Example Foundry": "EF"}
 
+# The harness resolves the RFC-reserved fixture family and NOTHING else. A fake that
+# mapped every host to a global address would make every e2e and functional test pass
+# regardless of what the SSRF guard does; raising on an unmapped host keeps the guard
+# under test. `.example`/`.invalid` never resolve for real, which is why the session
+# DNS guard would otherwise fire here.
+_FIXTURE_ADDR = "192.88.99.1"    # RFC 3068, withdrawn: global, no operator
+
+
+def harness_resolve(host):
+    if host.endswith((".example", ".invalid")):
+        return [_FIXTURE_ADDR]
+    raise OSError(f"harness resolver: unmapped host {host!r}")
+
 
 @dataclass
 class Harness:
@@ -90,9 +103,11 @@ class Harness:
     def sluice(self, backend, *, today=None, sleep=None):
         """A Sluice wired to this harness: the scripted fetcher and recording
         renderer via the config seams, `backend` via the per-instance override,
-        and a no-op sleep so the browser's page-settle waits cost nothing."""
+        a no-op sleep so the browser's page-settle waits cost nothing, and a
+        fixture-only DNS resolver so the dossier guard runs without resolving."""
         from sluice.core.app import Sluice
         return Sluice(self.config, backend=backend, today=today,
+                      resolve_host=harness_resolve,
                       sleep=sleep if sleep is not None else (lambda *a, **k: None))
 
 

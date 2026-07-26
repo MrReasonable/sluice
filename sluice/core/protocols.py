@@ -178,6 +178,12 @@ class Fetcher(Protocol):
 
     `Source.fetch` receives one of these on the Ctx and `Source.parse` never sees it --
     that split is what makes parsers testable offline against golden fixtures.
+
+    One CONTRACT note that the signatures do not carry: `evaluate(tab,
+    "location.href")` is no longer only a health signal. The dossier fetcher (#18)
+    uses it to decide whether a response body may be read, so an implementation that
+    reports a url the tab did not actually land on defeats an SSRF guard. Report the
+    tab's real current url, or return a non-string so the caller fails closed.
     """
 
     def create_tab(self, url: str) -> str | None: ...
