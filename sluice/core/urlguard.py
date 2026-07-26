@@ -21,6 +21,7 @@ Design notes that are NOT obvious and were each found by review:
 import ipaddress
 import re
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 # The closed set of reason slugs. Defined here so the closure in core/app.py and
 # every test import the same strings rather than re-typing them.
@@ -225,3 +226,39 @@ def verdict(host: str, addrs, *, allow_hosts: AllowList) -> UrlVerdict:
         if not _routable(addr) and not _granted(addr, host, allow_hosts):
             return UrlVerdict(False, BLOCKED_ADDRESS, host)
     return UrlVerdict(True, "", host)
+
+
+def _host(url: str) -> str:
+    """The host of a url, exactly as the browser will see it. "" if there is none.
+
+    Modelled on track/receipt._host, with ONE deliberate difference: this does NOT
+    strip a leading `www.`. That line is a receipt-matching nicety there and a
+    TOTAL GUARD BYPASS here -- stripping it makes the guard resolve and check
+    `attacker.invalid` while the browser navigates to `www.attacker.invalid`,
+    which may resolve somewhere else entirely.
+
+    The ASCII check runs on the raw AUTHORITY, before urlparse lowercases it.
+    U+212A KELVIN folds to ASCII 'k' under that lowering, so a check applied to
+    .hostname can never fire (#10 shipped exactly that inert check once). A genuine
+    IDN arrives pre-encoded as ASCII punycode, so refusing a non-ASCII authority
+    costs nothing real.
+
+    It is scoped to the authority and NOT to the whole url, deliberately: a path or
+    query may legitimately carry non-ASCII (a French or German posting), and
+    refusing those would block the lead permanently -- check_url returns on an empty
+    host before the allowlist is consulted, so there would be no remedy.
+    """
+    value = (url or "").strip()
+    if not value:
+        return ""
+    try:
+        parts = urlsplit(value)
+        # .netloc is the RAW authority -- urlsplit does not lowercase it, which is
+        # what makes this check able to fire at all. .hostname (below) does.
+        if not parts.netloc.isascii():
+            return ""
+        # .hostname strips IPv6 brackets and takes the LAST `@` of a userinfo trick,
+        # both of which we want.
+        return parts.hostname or ""
+    except ValueError:      # e.g. "https://[abc" -- an invalid IPv6 literal
+        return ""
