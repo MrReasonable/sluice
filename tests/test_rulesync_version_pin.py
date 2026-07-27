@@ -25,6 +25,13 @@ REPO = Path(__file__).parent.parent
 VERSION_RE = re.compile(r"\b\d+\.\d+\.\d+\b")
 ALLOWED = {"package.json", "package-lock.json", ".rulesync/hooks.json"}
 
+# Any rulesync-associated semver -- e.g. `rulesync@X.Y.Z` or `rulesync X.Y.Z` -- not just the
+# CURRENTLY pinned value. A value match only catches a doc that repeats today's version; a doc
+# that still names the OLD one after a bump contains a string the value match would never look
+# for. Anchored on the literal word "rulesync" so this does not fire on an unrelated pin like
+# `ruff==0.15.21`, which carries a semver but never the word "rulesync" near it.
+RULESYNC_VERSION_RE = re.compile(r"rulesync[@ -]v?\d+\.\d+\.\d+\b", re.IGNORECASE)
+
 
 def _pinned_version() -> str:
     manifest = json.loads((REPO / "package.json").read_text(encoding="utf-8"))
@@ -60,16 +67,23 @@ def test_hooks_json_records_the_version_it_was_verified_against():
 
 
 def test_no_other_tracked_file_names_a_rulesync_version():
-    version = _pinned_version()
+    """Catches ANY rulesync-associated version, not only the one currently pinned.
+
+    A sweep keyed on `_pinned_version()`'s exact value goes blind the moment package.json is
+    bumped: a doc that still names the OLD version becomes invisible to a check that only ever
+    looks for the new one. `RULESYNC_VERSION_RE` instead matches the SHAPE (the word "rulesync"
+    immediately adjacent to a semver), so a stale reference is caught whether it agrees with
+    today's pin, yesterday's, or neither.
+    """
     files = _tracked_files()
     assert files, "git ls-files returned nothing: this sweep would pass without checking"
     offenders = [
         path
         for path in files
         if path not in ALLOWED
-        and version in (REPO / path).read_text(encoding="utf-8", errors="ignore")
+        and RULESYNC_VERSION_RE.search((REPO / path).read_text(encoding="utf-8", errors="ignore"))
     ]
     assert not offenders, (
-        f"these tracked files hardcode the rulesync version {version}: {offenders}. "
+        f"these tracked files name a rulesync version: {offenders}. "
         "package.json is the only place that chooses it; prose should name no version at all."
     )
