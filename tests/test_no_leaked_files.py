@@ -28,15 +28,62 @@ REPO = Path(__file__).parent.parent
 
 # Generated from .rulesync/ by `rulesync generate`, or runtime artefacts of local tooling.
 # Kept in step with .gitignore: a gate that guards fewer paths than the ignore file has a hole.
+#
+# The generated-output entries are NOT a hand-copied wish list. `test_the_gate_covers_every_
+# generated_output_gitignore_covers` parses .gitignore's generated-output block and requires
+# every rule in it to be gated here, and the companion test requires every entry here to be a
+# real ignore rule -- so the two files are pinned to each other in both directions.
 FORBIDDEN_EXACT = (
+    # The AI tools this repo hand-maintains.
     "CLAUDE.md",
     "AGENTS.md",
     "GEMINI.md",
     ".mcp.json",
     ".cursorrules",
     ".github/copilot-instructions.md",
+    # ...and the rest of what `-t '*'` emits: rulesync writes an output for EVERY tool the
+    # pinned version knows about, not only the ones above.
+    ".goosehints",
+    ".hermes.md",
+    ".roomodes",
+    ".rules",
+    "QWEN.md",
+    "REASONIX.md",
+    "replit.md",
 )
-FORBIDDEN_PREFIXES = (".claude/", ".cursor/", "node_modules/")
+FORBIDDEN_PREFIXES = (
+    ".claude/",
+    ".cursor/",
+    "node_modules/",
+    ".agents/",
+    ".aiassistant/",
+    ".augment/",
+    ".cline/",
+    ".codex/",
+    ".deepagents/",
+    ".devin/",
+    ".factory/",
+    # `.github/` itself is TRACKED (workflows/), so only rulesync's generated SUBdirs appear
+    # here -- gating a bare `.github/` would fail the build on the CI workflow this test runs in.
+    ".github/agents/",
+    ".github/hooks/",
+    ".github/skills/",
+    ".goose/",
+    ".grok/",
+    ".hermes/",
+    ".junie/",
+    ".kilo/",
+    ".kiro/",
+    ".opencode/",
+    ".pi/",
+    ".qwen/",
+    ".reasonix/",
+    ".roo/",
+    ".rovodev/",
+    ".takt/",
+    ".vibe/",
+    ".warp/",
+)
 # .memsearch and .npmrc may appear at ANY depth. Both .gitignore rules are deliberately
 # unanchored -- for a directory that has already leaked personal data three times, and for a
 # file that can carry a registry auth token, catching them anywhere is the safer default.
@@ -47,6 +94,20 @@ FORBIDDEN_COMPONENTS = (".memsearch", ".npmrc")
 # walking straight through.
 _NAME = r"[^/\s'\"`,)\]]+"
 _HOME_PATH_RE = re.compile(r"/(?:Users|home)/" + _NAME)
+
+# Where .gitignore's generated-output list begins and ends. The boundary is drawn
+# STRUCTURALLY -- by the two markers below, not by a line count and not by hand -- because the
+# gate's coverage claim is about `rulesync generate` outputs and nothing else.
+#
+# HOW TO EXTEND THIS CORRECTLY: a rule that lands BETWEEN these markers is a generated output
+# and MUST be gated above; the sweep fails until it is. A rule outside them is out of scope --
+# `/sluice.yaml` is a personal overlay, and `cv-out/`, `*.pdf`, `*.db`, `node_modules/`,
+# `.npmrc`, `.memsearch/` are runtime artefacts of local tooling. Those are ignored for
+# different reasons, they are not written by the generator, and pulling them in would make the
+# gate's claim ("we cover what the generator writes") mean something else. Some of them ARE
+# gated anyway, deliberately -- gating more than the block is allowed, gating less is not.
+_GENERATED_BLOCK_START = "# AI-tool configs are GENERATED from .rulesync/"
+_GENERATED_BLOCK_END = "!/.rulesync/**"
 
 
 def _git(*args: str, allow: tuple = (0,)) -> str:
@@ -59,6 +120,34 @@ def _git(*args: str, allow: tuple = (0,)) -> str:
             f"must NOT pass silently: {proc.stderr.strip()[:200]}"
         )
     return proc.stdout
+
+
+def _generated_output_rules() -> list[str]:
+    """Every .gitignore rule that covers a `rulesync generate` output, read from the file.
+
+    Derived, never transcribed: 41 rules hand-copied into a test are 41 chances to copy 40.
+    """
+    lines = (REPO / ".gitignore").read_text().splitlines()
+    starts = [i for i, line in enumerate(lines) if line.startswith(_GENERATED_BLOCK_START)]
+    ends = [i for i, line in enumerate(lines) if line.strip() == _GENERATED_BLOCK_END]
+    assert len(starts) == 1 and len(ends) == 1 and starts[0] < ends[0], (
+        f"cannot delimit .gitignore's generated-output block ({len(starts)} start marker(s), "
+        f"{len(ends)} end marker(s)). A reworded marker would silently reduce this sweep to "
+        "covering nothing, so it fails instead."
+    )
+    return [
+        line.strip()
+        for line in lines[starts[0] : ends[0]]
+        # `!` is the re-include that closes the block, `#` the prose inside it.
+        if line.strip() and not line.strip().startswith(("#", "!"))
+    ]
+
+
+def _probe_path(rule: str) -> str:
+    """A repo-relative path the rule ignores. `_is_forbidden` classifies PATHS -- what
+    `git ls-files` prints -- so a DIRECTORY rule has to be probed with something inside it."""
+    bare = rule.lstrip("/")
+    return bare + "generated.md" if bare.endswith("/") else bare
 
 
 def _is_forbidden(path: str) -> bool:
@@ -92,8 +181,13 @@ def test_no_absolute_home_path_is_tracked_in_source_or_config(prefix):
     """
     # git grep exits 1 for "no matches" -- the SUCCESS case here. Any other code means it failed
     # to run, and must not be read as "clean".
+    # `*.json` and `scripts` are here because this branch newly tracks package.json, a
+    # 3300-line npm-generated package-lock.json, and scripts/guard_rulesync_drift.py -- all
+    # three sat outside the old pathspec, and a generated lockfile is precisely what nobody
+    # reads before committing.
     out = _git("grep", "-l", "-I", "-E", re.escape(prefix) + _NAME, "--",
-               "sluice", "tests", "docs", "*.md", "*.yaml", "*.yml", "*.toml", ".gitignore",
+               "sluice", "tests", "docs", "scripts",
+               "*.md", "*.yaml", "*.yml", "*.toml", "*.json", ".gitignore",
                allow=(0, 1))
     hits = [f for f in out.splitlines()
             # this file necessarily contains the strings it is searching for
@@ -109,8 +203,15 @@ def test_the_gate_catches_real_shapes_and_spares_bare_prefixes():
         assert not _HOME_PATH_RE.search(detector), f"gate false-positives on a detector: {detector}"
 
 
-def test_the_gate_covers_every_path_gitignore_covers():
-    """A gate guarding fewer paths than .gitignore is a gate with a hole in it.
+def test_every_gated_path_is_also_gitignored():
+    """The gate and .gitignore must not disagree about what is a build artefact.
+
+    NAMED FOR THE DIRECTION IT CHECKS. Its previous name -- "covers every path gitignore
+    covers" -- and its docstring claimed the CONVERSE of the assertion below, and that converse
+    was false: 41 generated-output rules existed and 8 were gated, so `_is_forbidden('QWEN.md')`
+    returned False. A test whose name asserts more than its body is worse than a missing test,
+    because the name is what a reader audits against. The claimed direction is now a real
+    assertion, in `test_the_gate_covers_every_generated_output_gitignore_covers` below.
 
     Enumerates all THREE tuples. The previous version iterated two and hand-asserted
     `.memsearch`, so a later addition to FORBIDDEN_COMPONENTS -- `.npmrc`, which stops a
@@ -134,6 +235,52 @@ def test_the_gate_covers_every_path_gitignore_covers():
     assert gated, "no paths gated: this test would pass without checking anything"
     for path in gated:
         assert path.strip("/") in rules, f"{path} is gated but NOT gitignored -- they must agree"
+
+
+def test_the_gate_covers_every_generated_output_gitignore_covers():
+    """A gate guarding fewer generated outputs than .gitignore is a gate with a hole in it.
+
+    This is the direction that went unasserted while a test NAMED for it sat green: gitignore
+    listed 41 generated outputs and the gate knew 8. `.gitignore` only helps a file git is not
+    already tracking, which is the whole reason this module exists -- so every path the
+    generator writes needs a gate entry too, not just an ignore rule.
+
+    Scoped to the generated-output block (see the markers above), so a future runtime artefact
+    added elsewhere in .gitignore does not conscript this test into guarding it.
+    """
+    rules = _generated_output_rules()
+    assert len(rules) > 1, (
+        f"only {len(rules)} rule(s) parsed out of .gitignore's generated-output block: the "
+        "block moved or the parse broke, and this sweep would pass having checked ~nothing"
+    )
+    ungated = [rule for rule in rules if not _is_forbidden(_probe_path(rule))]
+    assert not ungated, (
+        f"{len(ungated)} generated output(s) are gitignored but NOT gated: {ungated}. "
+        "Add each to FORBIDDEN_EXACT (a file) or FORBIDDEN_PREFIXES (a directory rule). "
+        "An ignore rule does not stop an already-tracked file; only this gate does."
+    )
+
+
+def test_prefix_rules_are_root_anchored_and_component_rules_are_not():
+    """The two tuples deliberately differ in reach, and nothing pinned the difference.
+
+    FORBIDDEN_PREFIXES mirrors .gitignore's leading `/`: root-anchored, matching the generated
+    outputs where they are actually written. A nested `docs/.claude/` is somebody's own
+    directory, not a generator artefact, and gating it would be a false positive.
+
+    FORBIDDEN_COMPONENTS mirrors the two deliberately UNANCHORED rules: `.memsearch/` has
+    leaked personal data into this repo three times and `.npmrc` can carry a registry auth
+    token, so both are caught at ANY depth.
+    """
+    assert _is_forbidden(".claude/settings.json")
+    assert not _is_forbidden("docs/.claude/settings.json")
+    assert _is_forbidden("node_modules/rulesync/package.json")
+    assert not _is_forbidden("tools/node_modules/rulesync/package.json")
+
+    assert _is_forbidden(".memsearch/session.jsonl")
+    assert _is_forbidden("docs/deep/.memsearch/session.jsonl")
+    assert _is_forbidden(".npmrc")
+    assert _is_forbidden("tools/sub/.npmrc")
 
 
 def test_the_gate_fails_closed_when_git_fails():
