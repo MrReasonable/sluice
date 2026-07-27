@@ -91,6 +91,27 @@ def test_every_expirable_triage_status_is_reported(tmp_path, status):
     assert [r.status for r in _app(tmp_path).expire_report()] == [status]
 
 
+@pytest.mark.parametrize("status", ["new", "shortlist", "research", "needs_review"])
+def test_every_expirable_triage_status_is_actually_WRITTEN(tmp_path, status):
+    # The report parametrize above only proves each status is SEEN. `require_status` is
+    # the write-side guard, and it is the same set -- so a mismatch between the read
+    # filter and the guard would abstain silently on three of these four.
+    slug = _seed(tmp_path, status=status)
+    assert _app(tmp_path).expire(slugs=[]) == [(slug, "dismissed")]
+    assert Vault(str(tmp_path)).read_leads()[0].status == "dismiss"
+
+
+def test_EXPIRABLE_is_derived_from_the_status_vocabulary(tmp_path):
+    # Pins the derivation rather than the values: _EXPIRABLE is both the read filter and
+    # the require_status never-regress guard, so a hand-maintained copy drifting from
+    # core/status.py would silently narrow or widen both at once.
+    from sluice.core import status as _status
+    from sluice.core.app import _EXPIRABLE
+    assert _EXPIRABLE == frozenset(_status.TRIAGE_OWNED) - {"dismiss"}
+    assert not (_EXPIRABLE & frozenset(_status.APPLICATION_OWNED)), \
+        "an expirable status must never be application-owned"
+
+
 def test_already_dismissed_lead_is_skipped(tmp_path):
     # `dismiss` is the destination, so re-reporting it is noise.
     _seed(tmp_path, status="dismiss")
@@ -126,13 +147,21 @@ def test_expire_records_the_prior_status_in_the_audit_note(tmp_path):
 
 
 def test_audit_note_is_idempotent_within_a_day(tmp_path):
+    """The note_tag guard, exercised DIRECTLY.
+
+    Going through `expire` twice cannot test this: the second sweep finds the lead already
+    `dismiss`, so it is not reported and no second write is attempted -- the test would
+    pass with note_tag removed entirely. Drive the same tagged write twice instead.
+    """
     _seed(tmp_path, status="shortlist")
-    app = _app(tmp_path)
-    app.expire(slugs=[])
-    first = Vault(str(tmp_path)).read_leads()[0].fm.get("relevance_notes", "")
-    # A second run finds the lead already `dismiss`, so it is not even reported.
-    app.expire(slugs=[])
-    assert Vault(str(tmp_path)).read_leads()[0].fm.get("relevance_notes", "") == first
+    v = Vault(str(tmp_path))
+    ref = v.read_leads()[0].ref
+    tag = "[expire 2026-07-27]"
+    for _ in range(2):
+        v.update_fields(ref, {"status": "dismiss"},
+                        append_note=f"{tag} stale: ...", note_tag=tag)
+    notes = Vault(str(tmp_path)).read_leads()[0].fm.get("relevance_notes", "")
+    assert notes.count(tag) == 1, "a same-day re-run must not append the audit note twice"
 
 
 # ── slug matching ────────────────────────────────────────────────────────────
@@ -220,11 +249,15 @@ def test_a_lead_that_becomes_applied_MID_SWEEP_is_not_dismissed(tmp_path, monkey
         Vault(str(tmp_path)).update_fields(ref, {"status": "applied"})
 
     racing_read(monkeypatch, ref, _apply_concurrently)
-    _app(tmp_path).expire(slugs=[])
+    outcomes = _app(tmp_path).expire(slugs=[])
 
     assert Vault(str(tmp_path)).read_leads()[0].status == "applied", \
         "a lead that entered the application lifecycle mid-sweep must survive"
-    assert slug
+    # And it must be REPORTED as not-dismissed. Discarding this return value left
+    # `"dismissed" if wrote else "skipped"` -> `"dismissed"` passing the whole suite:
+    # the lead was correctly protected and then announced as `expire: 1 dismissed`,
+    # exit 0. A silent failure reporting success, behind a test named for the race.
+    assert outcomes == [(slug, "skipped")]
 
 
 def test_vault_conflict_on_one_lead_does_not_abort_the_sweep(tmp_path, monkeypatch):

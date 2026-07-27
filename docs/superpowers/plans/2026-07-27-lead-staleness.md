@@ -15,7 +15,7 @@
 - **Stdlib only in `sluice/`.** No new runtime dependency. `yaml` only under the existing guarded import.
 - **Empty config abstains.** `lead_ttl_days` defaults to `0`; an unconfigured install expires nothing and refuses nothing.
 - **Never-regress.** `expire` writes only `dismiss`, only from `{new, shortlist, research, needs_review}`, and the status check happens on **fresh** content inside the CAS transform.
-- **No personal data** in `sluice/` or `tests/`. Fixtures use the `example.invalid` family and seeded `faker` titles from `tests/conftest.py`. `Acme` is forbidden (web-flagged real on #64).
+- **No personal data** in `sluice/` or `tests/`. New fixtures use the `example.invalid` family and neutral title literals (`Example Role`). Do NOT introduce new company names outside that family; pre-existing placeholder names elsewhere in `tests/` are out of scope for this change.
 - **Comments explain why** — match the surrounding density; several existing comments encode real incidents.
 - **Conventional Commits.** `feat(core):`, `feat(cv):`, `test(apply):`, `docs:`.
 - **Verification after every task:** `python -m pytest` (all green, offline, ~2s) and `ruff check sluice tests` (ruff==0.15.21).

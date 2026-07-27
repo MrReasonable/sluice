@@ -552,3 +552,35 @@ def test_update_fields_require_status_writes_on_a_fresh_match(store_name, tmp_pa
 
     assert wrote is True
     assert store.read_leads()[0].status == "dismiss"
+
+
+def test_update_fields_require_status_compares_the_NORMALIZED_status(store_name, tmp_path,
+                                                                     monkeypatch):
+    """Drifted vocabulary must still match. `core/status.py:22` exists because real vaults
+    carry `dismissed`/`Researching`/`needs review`; a store comparing raw strings would
+    abstain on every one of them -- forever reporting the lead stale and never writing it,
+    with no error. Both other require_status cases use canonical values only, so nothing
+    else here can catch that."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    store.upsert(_lead())
+    ref = store.read_leads()[0].ref
+    store.update_fields(ref, {"status": "Shortlist"})     # drifted casing, on purpose
+
+    wrote = store.update_fields(ref, {"status": "dismiss"},
+                                require_status=frozenset({"shortlist"}))
+
+    assert wrote is True, "require_status must compare the NORMALIZED status"
+    assert store.read_leads()[0].status == "dismiss"
+
+
+def test_update_fields_reports_False_when_the_record_does_not_change(store_name, tmp_path,
+                                                                    monkeypatch):
+    """The bool reports whether the stored record CHANGED, not whether the guard passed.
+    A caller distinguishing 'written' from 'skipped' by this value needs that pinned."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    store.upsert(_lead())
+    ref = store.read_leads()[0].ref
+    current = store.read_leads()[0].status
+
+    assert store.update_fields(ref, {"status": current},
+                               require_status=frozenset({current})) is False

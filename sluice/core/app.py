@@ -30,12 +30,21 @@ an LLM backend just by existing. `sluice triage run --no-llm` still touches no b
 """
 import os
 from dataclasses import dataclass
+from datetime import date
 
 from sluice.core import plugins
+from sluice.core import status as _status
 from sluice.core.config import Config
 from sluice.core.log import get_logger
 
 _log = get_logger("app")
+
+
+def _today() -> str:
+    """The composition root's fallback clock, mirroring `vault.py` and `ingest/sink.py`.
+    Module scope so it is patchable: `Sluice.staleness()`'s only other clock source is the
+    injected `today` collaborator, which a CLI-layer test has no way to reach."""
+    return date.today().isoformat()
 
 
 @dataclass
@@ -58,7 +67,13 @@ class StaleLead:
 # they are never even enumerated -- and this same set is handed to update_fields as
 # `require_status`, which is what actually holds never-regress when a lead enters the
 # application lifecycle mid-sweep.
-_EXPIRABLE = frozenset({"new", "shortlist", "research", "needs_review"})
+#
+# DERIVED, not hand-written. A literal copy would be an allow-list somebody has to keep
+# in step with the vocabulary `core/status.py` owns; deriving it makes the set
+# structurally incapable of naming an APPLICATION_OWNED state, which is the property the
+# never-regress guard actually needs. `core.status` is pure stdlib, so importing it at
+# module scope does not touch cli.py's lazy-import discipline.
+_EXPIRABLE = frozenset(_status.TRIAGE_OWNED) - {"dismiss"}
 
 
 @dataclass
@@ -302,10 +317,8 @@ class Sluice:
         traceback on `cv run`, `apply prep` and `leads expire`. StalenessPolicy refuses a
         non-str at construction so that mistake cannot reach a gate silently.
         """
-        from datetime import date
-
         from sluice.core.leads import StalenessPolicy
-        clock = self._today or (lambda: date.today().isoformat())
+        clock = self._today or _today
         return StalenessPolicy(ttl_days=self.config.lead_ttl_days,
                                today=clock(),
                                include_stale=include_stale)
@@ -465,15 +478,21 @@ class Sluice:
                                      flagged_losers=flagged))
         return out
 
-    def expire_report(self):
+    def expire_report(self, policy=None):
         """The #9 staleness REPORT: leads whose `last_seen` is older than
         `lead_ttl_days`, in a triage-owned status. Changes nothing.
 
         Returns [] when the knob is unset -- the caller distinguishes that from "nothing
         is stale", because printing `0 stale` for an install that never configured the
         feature would let a user believe a knob they never set is protecting them.
+
+        `policy` is injectable so `expire()` can build exactly ONE per invocation, the way
+        `_dedupe_report(store)` takes its store. Calling `self.staleness()` in both places
+        reads the production clock twice, and a sweep crossing midnight would then stamp
+        `[expire <one date>]` on a note whose "Nd old" figure was computed against the
+        other -- an audit line disagreeing with itself.
         """
-        policy = self.staleness()
+        policy = policy or self.staleness()
         if policy.ttl_days <= 0:
             return []
         out = []
@@ -516,7 +535,8 @@ class Sluice:
         dismisses leads they did not name.
         """
         from sluice.core.protocols import VaultConflict
-        report = self.expire_report()
+        policy = self.staleness()
+        report = self.expire_report(policy)
         store = self.store()
         results = []
         if slugs:
@@ -531,7 +551,7 @@ class Sluice:
         else:
             chosen = list(report)
 
-        today = self.staleness().today
+        today = policy.today
         ttl = self.config.lead_ttl_days
         tag = f"[expire {today}]"
         for r in chosen:
@@ -553,6 +573,18 @@ class Sluice:
                 # the rest. Self-heals next run (#16).
                 _log.warning("expire: %s lost the write race, left untouched", r.slug)
                 results.append((r.slug, "conflict"))
+                continue
+            except OSError as e:
+                # `ref` is a path, and #16's primary threat is a human in Obsidian --
+                # a note deleted or renamed mid-sweep is exactly the window this command
+                # runs in. Unisolated, the FileNotFoundError escapes to main() and
+                # discards the whole outcome list, so the record of what WAS written
+                # dies with it. read_leads already skips an unreadable note; merge_cluster
+                # and normalize_all_statuses both isolate per item; this is the same rule
+                # on the last batch writer that lacked it (#24).
+                _log.warning("expire: %s could not be written (%s), left untouched",
+                             r.slug, e)
+                results.append((r.slug, "unreadable"))
                 continue
             results.append((r.slug, "dismissed" if wrote else "skipped"))
         return results
@@ -716,7 +748,14 @@ class Sluice:
         from sluice.core.leads import slug_matches
         from sluice.core.protocols import VaultConflict
         store = self.store()
-        notes = [n for n in store.read_leads({"shortlist"}) if slug_matches(n, lead)]
+        # Resolved over every EXPIRABLE status, not `shortlist` alone. A held lead can
+        # legitimately leave shortlist -- `sluice triage run --status shortlist` re-judges
+        # it and may write `research`/`needs_review`/`dismiss` -- and a shortlist-only
+        # lookup then reports "no match" for a hold that demonstrably exists, with
+        # `leads expire` refusing the same lead on every run because `pending_cv` is set.
+        # That is the exact stranding the pending_cv-only refusal scoping exists to
+        # prevent, recurring one layer up (#9).
+        notes = [n for n in store.read_leads(_EXPIRABLE) if slug_matches(n, lead)]
         if not notes:
             return None
         note = notes[0]
