@@ -286,6 +286,7 @@ def cmd_cv_run(args, config) -> int:
     from sluice.core.app import Sluice
 
     results = Sluice(config).compose_cv(
+        include_stale=args.include_stale,
         lead=args.lead, all_shortlist=args.all_shortlist, limit=args.limit,
         dry_run=args.dry_run, no_serve=args.no_serve, backend_role=args.backend)
     if not results and not args.all_shortlist:
@@ -527,6 +528,11 @@ def _build_parser() -> argparse.ArgumentParser:
     cvrun.add_argument("--backend", choices=_BACKEND_CHOICES, default="auto",
                        help=_BACKEND_HELP)
     cvrun.add_argument("--no-serve", action="store_true")
+    # #9: `last_seen` only bumps when a lead reappears in a scrape, so narrowing your
+    # searches ages a still-live posting. Without a way through, that false positive
+    # makes people set lead_ttl_days back to 0 and lose the feature entirely.
+    cvrun.add_argument("--include-stale", action="store_true",
+                       help="compose even for a lead older than lead_ttl_days")
     cvrun.set_defaults(func=cmd_cv_run)
     cvsign = cv.add_parser("signoff")
     cvsign.add_argument("--lead", required=True,

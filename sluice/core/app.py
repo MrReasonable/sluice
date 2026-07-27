@@ -634,7 +634,7 @@ class Sluice:
                            dry_run=dry_run, no_llm=no_llm)
 
     def compose_cv(self, *, lead=None, all_shortlist=False, limit=None, dry_run=False,
-                    no_serve=False, backend_role="auto"):
+                    no_serve=False, backend_role="auto", include_stale=False):
         """Run the cv sub-app: compose (and, unless dry_run, render) a CV for one
         shortlisted lead or for every shortlisted lead. Returns the list of CvResult.
 
@@ -663,10 +663,13 @@ class Sluice:
             fallback_name=cvcfg.fallback_backend, fallback_model=cvcfg.cheap_model)
         cache = self.dossier_cache(cvcfg.dossier_dir, cvcfg.ttl_days)
         store = self.store()
+        # Built ONCE here and passed to both branches, so the single-lead and batch paths
+        # cannot disagree about what stale means or about --include-stale (#9).
+        policy = self.staleness(include_stale=include_stale)
 
         if all_shortlist:
             return run_batch(store, cvcfg, backend, cache, renderer=renderer,
-                             limit=limit, dry_run=dry_run)
+                             limit=limit, dry_run=dry_run, policy=policy)
         notes = [n for n in store.read_leads({"shortlist"}) if slug_matches(n, lead)]
         if not notes:
             return []
@@ -679,7 +682,7 @@ class Sluice:
         # (#16); that must not escape to the CLI as an unhandled traceback.
         try:
             return [run_one(notes[0], store, cvcfg, backend, cache, renderer=renderer,
-                            dry_run=dry_run)]
+                            dry_run=dry_run, policy=policy)]
         except VaultConflict as e:
             _log.warning("cv re-tailor for %s lost the write race: %s", notes[0].ref, e)
             # run_one stamps dossier_failed onto the exception before re-raising it (see
