@@ -43,6 +43,22 @@ def test_two_summary_lines_are_a_hard_error():
         guard.parse_summary(GREEN + "\n" + GREEN)
 
 
+def test_a_term_the_parser_cannot_read_is_a_hard_error():
+    """A find-all silently DISCARDS what it does not match, so this parsed clean before:
+    every expected count was present and correct, and the guard reported success on a summary
+    line it had only partly understood. `NONSENSE` stands in for whatever a version bump starts
+    appending -- the point is that the parenthetical must be fully consumed."""
+    with pytest.raises(ValueError, match="unparsed"):
+        guard.parse_summary(GREEN.replace("17 hooks)", "17 hooks + NONSENSE)"))
+
+
+def test_a_repeated_feature_is_a_hard_error():
+    """Last-wins made this yield `hooks: 99` -- one of the two counts silently chosen, the
+    other silently dropped. Either could have been the real one."""
+    with pytest.raises(ValueError, match="twice"):
+        guard.parse_summary(GREEN.replace("17 hooks)", "17 hooks + 99 hooks)"))
+
+
 def test_main_returns_zero_on_a_matching_capture(tmp_path):
     capture = tmp_path / "out.txt"
     capture.write_text(GREEN, encoding="utf-8")

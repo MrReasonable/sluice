@@ -29,6 +29,10 @@ EXPECTED = {"rules": 20, "subagents": 114, "skills": 92, "hooks": 17}
 
 _SUMMARY = re.compile(r"All done! Written \d+ file\(s\) total \(([^)]*)\)")
 _TERM = re.compile(r"(\d+)\s+([a-z]+)")
+# What may legitimately sit between two terms, and nowhere else. rulesync joins with ` + `;
+# whitespace alone is admitted because a bare join is still unambiguous, and pinning the exact
+# separator would turn a cosmetic reformat into a parse error with no drift behind it.
+_SEPARATOR = re.compile(r"[\s+]*")
 
 
 def parse_summary(text: str) -> dict[str, int]:
@@ -38,6 +42,13 @@ def parse_summary(text: str) -> dict[str, int]:
     `0 hooks`. So the returned map simply lacks that key; `main` is what turns absence into a
     failure. A caller that regexes `(\\d+) hooks`, finds no match, and moves on would report
     success on exactly the input this guard exists to reject.
+
+    The parenthetical must be FULLY CONSUMED, and no feature may appear twice. A find-all over
+    `(\\d+) ([a-z]+)` is happy to skip whatever it does not understand, which made this guard
+    quietly more permissive than every claim it makes about itself: `(... + 17 hooks +
+    NONSENSE)` parsed clean with NONSENSE discarded, and `(... + 17 hooks + 99 hooks)` yielded
+    `hooks: 99` on last-wins. Both are exactly the "the output format changed on a version
+    bump" case the error below promises to fail loudly on.
     """
     found = _SUMMARY.findall(text)
     if not found:
@@ -48,7 +59,33 @@ def parse_summary(text: str) -> dict[str, int]:
         )
     if len(found) > 1:
         raise ValueError(f"found {len(found)} summary lines, expected exactly 1")
-    return {name: int(count) for count, name in _TERM.findall(found[0])}
+
+    inner = found[0]
+    counts: dict[str, int] = {}
+    cursor = 0
+    for term in _TERM.finditer(inner):
+        gap = inner[cursor : term.start()]
+        if not _SEPARATOR.fullmatch(gap):
+            raise ValueError(
+                f"unparsed text {gap!r} in the summary parenthetical {inner!r}. Discarding it "
+                "would report a clean parse of output this guard does not understand."
+            )
+        name, count = term.group(2), int(term.group(1))
+        if name in counts:
+            raise ValueError(
+                f"feature {name!r} appears twice in the summary parenthetical {inner!r}. "
+                "Last-wins would silently pick one count and call the other a match."
+            )
+        counts[name] = count
+        cursor = term.end()
+
+    trailing = inner[cursor:]
+    if not _SEPARATOR.fullmatch(trailing):
+        raise ValueError(
+            f"unparsed trailing text {trailing!r} in the summary parenthetical {inner!r}. "
+            "Discarding it would report a clean parse of output this guard does not understand."
+        )
+    return counts
 
 
 def main(argv: list[str]) -> int:
