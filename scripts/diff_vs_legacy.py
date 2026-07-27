@@ -43,13 +43,13 @@ def load_leads(path: str) -> list:
 
 
 def diff(sluice_leads: list, legacy_leads: list) -> dict:
-    jp = {_key(l) for l in sluice_leads if _key(l)}
-    lg = {_key(l) for l in legacy_leads if _key(l)}
+    jp = {_key(lead) for lead in sluice_leads if _key(lead)}
+    lg = {_key(lead) for lead in legacy_leads if _key(lead)}
     per_source = defaultdict(lambda: {"sluice": 0, "legacy": 0})
-    for l in sluice_leads:
-        per_source[l.get("source", "?")]["sluice"] += 1
-    for l in legacy_leads:
-        per_source[l.get("source", "?")]["legacy"] += 1
+    for lead in sluice_leads:
+        per_source[lead.get("source", "?")]["sluice"] += 1
+    for lead in legacy_leads:
+        per_source[lead.get("source", "?")]["legacy"] += 1
     return {
         "sluice_total": len(jp),
         "legacy_total": len(lg),
