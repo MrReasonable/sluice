@@ -3,6 +3,7 @@ CV staged), record_one (never-clobber transition). Batch previews are per-lead
 resilient."""
 from dataclasses import dataclass
 
+from sluice.core.leads import StalenessPolicy
 from sluice.apply import select as _select
 from sluice.apply import packet as _packet
 from sluice.apply.cvfile import stage, CvFileError
@@ -22,8 +23,8 @@ def _label(note):
     return note.slug
 
 
-def prep_one(vault, cfg, slug):
-    note, reason = _select.select_one(vault, slug, cfg)
+def prep_one(vault, cfg, slug, policy=StalenessPolicy()):
+    note, reason = _select.select_one(vault, slug, cfg, policy)
     if note is None:
         return PrepResult(lead=slug, status="skipped", reason=reason)
     try:
@@ -34,12 +35,12 @@ def prep_one(vault, cfg, slug):
     return PrepResult(lead=_label(note), status="staged", staged=dest, packet=pkt)
 
 
-def preview_all(vault, cfg, *, limit=None):
+def preview_all(vault, cfg, *, limit=None, policy=StalenessPolicy()):
     """Ready-queue preview: eligible leads become 'previewed' (no CV staged),
     ineligible become 'skipped'. Per-lead resilient: an error building one lead's
     packet becomes a 'failed' result and does not abort the rest. `limit` caps the
     eligible previews only."""
-    eligible, skipped = _select.select_all(vault, cfg)
+    eligible, skipped = _select.select_all(vault, cfg, policy)
     if limit is not None:
         eligible = eligible[:limit]
     results = []

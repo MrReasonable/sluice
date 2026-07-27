@@ -347,7 +347,8 @@ def cmd_apply_prep(args, config) -> int:
 
     app = Sluice(config)
     if args.all_shortlist:
-        results = app.prep(all_shortlist=True, limit=args.limit)
+        results = app.prep(all_shortlist=True, limit=args.limit,
+                           include_stale=args.include_stale)
         for r in results:
             if r.status == "previewed":
                 print(packet.render_json(r.packet) if args.json else packet.render_text(r.packet))
@@ -361,14 +362,15 @@ def cmd_apply_prep(args, config) -> int:
         # CLI's dry-run wording predates that method and stays "dry-run", not
         # "previewed dry-run", so it is reproduced literally here rather than
         # printed from r.status.
-        r = app.prep(lead=args.lead, dry_run=True)[0]
+        r = app.prep(lead=args.lead, dry_run=True,
+                     include_stale=args.include_stale)[0]
         if r.status == "skipped":
             print(f"apply-prep: {args.lead} skipped ({r.reason})", file=sys.stderr)
             return 1
         print(packet.render_json(r.packet) if args.json else packet.render_text(r.packet))
         print(f"apply-prep: {args.lead} dry-run", file=sys.stderr)
         return 0
-    r = app.prep(lead=args.lead)[0]
+    r = app.prep(lead=args.lead, include_stale=args.include_stale)[0]
     if r.status == "staged":
         print(packet.render_json(r.packet) if args.json else packet.render_text(r.packet))
         print(f"apply-prep: {r.lead} staged", file=sys.stderr)
@@ -551,6 +553,10 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
+    # #9, same escape hatch as `cv run`: a narrowed search list ages a still-live posting,
+    # and a refusal with no way through makes people turn the feature off entirely.
+    ap.add_argument("--include-stale", action="store_true",
+                    help="stage even a lead older than lead_ttl_days")
     ap.set_defaults(func=cmd_apply_prep)
 
     arec = apply_.add_parser("record")
