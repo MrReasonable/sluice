@@ -46,8 +46,14 @@ REQUIRED_TARGETS = ("sluice", "tests", "scripts")
 
 # Stop at anything that ends a shell word list: markdown/code punctuation, or a shell operator.
 _RUFF_CHECK = re.compile(r"ruff check(?P<rest>[^\n`|&;\"')]*)")
-# Prose connectors a real invocation can never begin with.
-_CONNECTORS = ("+", "and", "&")
+# Prose connectors a real invocation can never begin with. `&` is deliberately absent: it is a
+# SHELL operator (`&&`), never a natural-language connector the way `+` and `and` are, and
+# `_RUFF_CHECK`'s stop-class already excludes it from `rest` -- so a bare `ruff check` before
+# `&&` reaches here with an EMPTY rest, not one starting with `&`. Admitting `&` here would sit
+# inert today and, the moment someone widened the stop-class to let `&` through, would silently
+# reclassify that exact degraded, target-less invocation as tolerated prose -- the regression
+# this module exists to catch.
+_CONNECTORS = ("+", "and")
 
 # `npm ci` and its flags. Same stop-class as `_RUFF_CHECK`, and for the same reason: the
 # documented form is `npm ci <flags> && npm run rulesync`, so the flag list ends at the `&&`.
@@ -114,6 +120,18 @@ def test_trailing_comment_after_a_genuine_three_target_command_still_passes():
         "# NB: ruff is NOT in [test]; pip install ruff==0.15.21 (the CI pin)"
     )
     assert _assert_bar_is_complete(line, "synthetic") == 1
+
+
+def test_ampersand_led_command_fails_as_broken_not_tolerated_as_prose():
+    """Pins the choice above: `&` is dropped from `_CONNECTORS`, not admitted into the regex.
+
+    `ruff check && pytest` names no lint targets at all -- a genuinely broken, degraded
+    invocation, not prose naming the tool the way `ruff check + pytest` is. It must fail with
+    the same "names no lint targets" reason as any other target-less command, not be silently
+    tolerated as a connector-led exception.
+    """
+    with pytest.raises(AssertionError, match="names no lint targets"):
+        _assert_bar_is_complete("ruff check && pytest", "synthetic")
 
 
 def test_ci_lints_every_required_target():
