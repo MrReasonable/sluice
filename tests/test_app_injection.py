@@ -311,3 +311,57 @@ def test_compose_cv_include_stale_reaches_the_engine(tmp_path, monkeypatch):
     with pytest.raises(DnsUsedInTests):
         s.compose_cv(lead="Example Ltd - Example Role", dry_run=True,
                      include_stale=True)
+
+
+def _stale_apply_store():
+    """A store with one ancient shortlist lead carrying a complete apply packet, so the
+    ONLY thing that can refuse it is staleness."""
+    class S(_FakeStore):
+        def __init__(self):
+            super().__init__()
+            fm = {"status": "shortlist", "company": "Example Ltd", "role": "Example Role",
+                  "url": "https://example.invalid/1", "last_seen": "2026-01-01",
+                  "tailored_cv": "CV_deadbeef.pdf (2026-01-02)"}
+            self._note = type("N", (), {"fm": fm, "ref": "r1", "status": "shortlist",
+                                        "slug": "Example Ltd - Example Role",
+                                        "body": ""})()
+
+        def read_leads(self, statuses=None):
+            return [self._note]
+    return S()
+
+
+def test_prep_dry_run_and_real_run_BOTH_report_stale(monkeypatch):
+    """The core/app.py:630 regression.
+
+    Sluice.prep has THREE branches into selection, and the dry-run single-lead one calls
+    select_one DIRECTLY, bypassing prep_one. Assert the shared OUTCOME, not merely that
+    the two agree: "they agree" is also satisfied by the both-inert state, where dropping
+    the policy from BOTH branches leaves them agreeing on `staged`.
+    """
+    monkeypatch.setenv("SLUICE_CONFIG", "")
+    s = Sluice(Config(lead_ttl_days=30), store=_stale_apply_store(),
+               today=lambda: "2026-07-27")
+    dry = s.prep(lead="Example Ltd - Example Role", dry_run=True)[0]
+    real = s.prep(lead="Example Ltd - Example Role")[0]
+    assert dry.status == "skipped" and dry.reason == "stale"
+    assert real.status == "skipped" and real.reason == "stale"
+
+
+def test_prep_all_shortlist_reports_stale(monkeypatch):
+    monkeypatch.setenv("SLUICE_CONFIG", "")
+    s = Sluice(Config(lead_ttl_days=30), store=_stale_apply_store(),
+               today=lambda: "2026-07-27")
+    results = s.prep(all_shortlist=True)
+    assert [(r.status, r.reason) for r in results] == [("skipped", "stale")]
+
+
+def test_prep_include_stale_reaches_all_three_branches(monkeypatch):
+    monkeypatch.setenv("SLUICE_CONFIG", "")
+    s = Sluice(Config(lead_ttl_days=30), store=_stale_apply_store(),
+               today=lambda: "2026-07-27")
+    for kw in ({"lead": "Example Ltd - Example Role", "dry_run": True},
+               {"lead": "Example Ltd - Example Role"},
+               {"all_shortlist": True}):
+        r = s.prep(include_stale=True, **kw)[0]
+        assert r.reason != "stale", f"--include-stale was not threaded into {kw}"
