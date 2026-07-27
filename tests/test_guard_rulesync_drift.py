@@ -1,7 +1,7 @@
 """The drift guard's parser and its process contract.
 
-The two fixtures are REAL captured rulesync 9.6.3 output, including the emoji and the exact
-`All done!` phrasing. A version bump may change that wording; the expected failure is then a
+The two fixtures are REAL captured output from the pinned rulesync, including the emoji and the
+exact `All done!` phrasing. A version bump may change that wording; the expected failure is then a
 loud parse error, never a silent pass. If these strings stop matching, fix the parser -- do not
 relax the test.
 """

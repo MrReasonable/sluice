@@ -11,9 +11,10 @@ globs:
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 **This file is generated.** The canonical source is `.rulesync/rules/CLAUDE.md`. Run
-`npx rulesync@9.6.3 generate -t '*' -f '*'` after cloning to populate the AI-tool outputs
+`npm ci && npm run rulesync` after cloning to populate the AI-tool outputs
 (`CLAUDE.md`, `AGENTS.md`, `.claude/`, ...), all of which are gitignored. Editing a
-generated file instead of the `.rulesync/` source is drift.
+generated file instead of the `.rulesync/` source is drift. The version and the flags both
+live in `package.json`, so this command never names either -- and CI runs the same one.
 
 ## Commands
 

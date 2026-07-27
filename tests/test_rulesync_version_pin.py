@@ -1,0 +1,72 @@
+"""One place chooses the rulesync version; everywhere else agrees or says nothing.
+
+Before this, `9.6.3` sat in four live places and a bump meant four edits kept in step by
+nothing. package.json is now the only place that CHOOSES. One exception is deliberate:
+.rulesync/hooks.json's `_comment` records which version's schema that file was written
+against, and that comment calls itself the only defence against a version bump silently
+dropping the hook command. Erasing the literal would lose the record; excluding the file
+would make this sweep vacuous exactly where it matters. So it is ASSERTED EQUAL instead --
+which means a bump turns this test red until a human re-verifies the emitted settings.json,
+precisely what that comment asks for and today cannot enforce.
+
+docs/superpowers/ is excluded as a dated record: the convention is a dated superseded note,
+never rewriting history.
+"""
+
+import json
+import re
+import subprocess
+from pathlib import Path
+
+REPO = Path(__file__).parent.parent
+VERSION_RE = re.compile(r"\b\d+\.\d+\.\d+\b")
+ALLOWED = {"package.json", "package-lock.json", ".rulesync/hooks.json"}
+
+
+def _pinned_version() -> str:
+    manifest = json.loads((REPO / "package.json").read_text(encoding="utf-8"))
+    return manifest["devDependencies"]["rulesync"]
+
+
+def _tracked_files() -> list[str]:
+    out = subprocess.run(
+        ["git", "ls-files"], cwd=REPO, capture_output=True, text=True, timeout=30, check=True
+    ).stdout
+    return [p for p in out.splitlines() if not p.startswith("docs/superpowers/")]
+
+
+def test_the_pinned_version_is_readable_and_specific():
+    """Non-vacuity: every assertion below compares against this string."""
+    version = _pinned_version()
+    assert VERSION_RE.fullmatch(version), f"package.json pins a non-specific version: {version!r}"
+
+
+def test_hooks_json_records_the_version_it_was_verified_against():
+    comment = json.loads((REPO / ".rulesync" / "hooks.json").read_text(encoding="utf-8"))["_comment"]
+    found = VERSION_RE.findall(comment)
+    assert found, (
+        ".rulesync/hooks.json's _comment no longer records which rulesync version its schema was "
+        "verified against. That record is the only defence against a bump silently dropping the "
+        "hook command -- restore it rather than deleting it."
+    )
+    for version in found:
+        assert version == _pinned_version(), (
+            f".rulesync/hooks.json says {version}, package.json pins {_pinned_version()}. "
+            "Re-verify the emitted .claude/settings.json by hand, then update the comment."
+        )
+
+
+def test_no_other_tracked_file_names_a_rulesync_version():
+    version = _pinned_version()
+    files = _tracked_files()
+    assert files, "git ls-files returned nothing: this sweep would pass without checking"
+    offenders = [
+        path
+        for path in files
+        if path not in ALLOWED
+        and version in (REPO / path).read_text(encoding="utf-8", errors="ignore")
+    ]
+    assert not offenders, (
+        f"these tracked files hardcode the rulesync version {version}: {offenders}. "
+        "package.json is the only place that chooses it; prose should name no version at all."
+    )
