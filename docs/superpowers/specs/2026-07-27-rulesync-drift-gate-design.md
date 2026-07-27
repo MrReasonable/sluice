@@ -84,7 +84,7 @@ clones.
 | Skip-if-identical | delete `CLAUDE.md`, re-run → 14 → 15, reappears **byte-identical** |
 | Malformed rules file / `.rulesync/` absent | **exit 1** |
 | Malformed `hooks.json`, fresh clone | **exit 0**, **226** files, `.github/hooks/` never created, porcelain **empty** |
-| D8 command, fresh clone | `npm ci && npm run rulesync` → exit 0, 243, binary resolves to `9.6.3` |
+| D8 command, fresh clone | `npm ci --ignore-scripts && npm run rulesync` → exit 0, 243, binary resolves to `9.6.3` |
 | PATH fallback | `npm run` + bare `rulesync`, no `node_modules/` → **silently ran global 9.2.0, exit 0** |
 | PATH fallback, fixed | script using `node_modules/.bin/rulesync` → `sh: No such file or directory`, **loud** |
 | **Real version delta** | rulesync **9.2.0** against a 9.6.3-audited `.gitignore` → **238** files and porcelain **EMPTY**. D1 reproduced on a genuine bump rather than a synthetic mutation: I1 alone certifies nothing |
@@ -148,7 +148,7 @@ global install; the explicit path exits 127 when absent.
 
 ### `.gitignore` (D9)
 
-```
+```gitignore
 /node_modules/
 .npmrc
 ```
@@ -237,9 +237,9 @@ grouped, `commit-message: {prefix: chore, include: scope}`.
 
 | Site | Change |
 |---|---|
-| `.rulesync/rules/CLAUDE.md` generate command | → `npm ci && npm run rulesync` |
+| `.rulesync/rules/CLAUDE.md` generate command | → `npm ci --ignore-scripts && npm run rulesync` |
 | `.rulesync/hooks.json` `_comment` trailing pointer | "…the pinned version in `.rulesync/rules/CLAUDE.md`" → `package.json`. That comment calls itself **the ONLY defence** against a bump silently dropping the hook command; leaving it pointing at a file that no longer names a version is the drift that matters most |
-| `.gitignore` generate command | → `npm ci && npm run rulesync` |
+| `.gitignore` generate command | → `npm ci --ignore-scripts && npm run rulesync` |
 | `.gitignore` second version literal | the "…rulesync 9.6.3 knows about" clause — reword to name no version |
 | `.gitignore:56-61` | add a pointer to `scripts/guard_rulesync_drift.py` as the enforcer |
 
@@ -277,7 +277,7 @@ Offline and hermetic; the suite never shells out to npm or npx.
 
 **`tests/test_guard_rulesync_drift.py`.** Fixtures are real captured output:
 
-```
+```text
 🎉 All done! Written 243 file(s) total (20 rules + 114 subagents + 92 skills + 17 hooks)
 🎉 All done! Written 226 file(s) total (20 rules + 114 subagents + 92 skills)
 ```
