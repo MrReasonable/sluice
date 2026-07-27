@@ -36,11 +36,11 @@ FORBIDDEN_EXACT = (
     ".cursorrules",
     ".github/copilot-instructions.md",
 )
-FORBIDDEN_PREFIXES = (".claude/", ".cursor/")
-# .memsearch may appear at ANY depth. Its .gitignore rule is deliberately unanchored -- for a
-# directory that has already leaked personal data three times, catching it anywhere is the
-# safer default, and nothing legitimate in this repo is named .memsearch.
-FORBIDDEN_COMPONENTS = (".memsearch",)
+FORBIDDEN_PREFIXES = (".claude/", ".cursor/", "node_modules/")
+# .memsearch and .npmrc may appear at ANY depth. Both .gitignore rules are deliberately
+# unanchored -- for a directory that has already leaked personal data three times, and for a
+# file that can carry a registry auth token, catching them anywhere is the safer default.
+FORBIDDEN_COMPONENTS = (".memsearch", ".npmrc")
 
 # The first path component after the home prefix, whatever it is called. The first version of
 # this gate used `/Users/[a-z]`, which missed /Users/Alice and /home/2runner -- a personal path
@@ -110,11 +110,18 @@ def test_the_gate_catches_real_shapes_and_spares_bare_prefixes():
 
 
 def test_the_gate_covers_every_path_gitignore_covers():
-    """A gate guarding fewer paths than .gitignore is a gate with a hole in it."""
+    """A gate guarding fewer paths than .gitignore is a gate with a hole in it.
+
+    Enumerates all THREE tuples. The previous version iterated two and hand-asserted
+    `.memsearch`, so a later addition to FORBIDDEN_COMPONENTS -- `.npmrc`, which stops a
+    registry credential becoming committable -- would have sat outside the check entirely.
+    Enumerate, never hand-list.
+    """
     ignored = (REPO / ".gitignore").read_text()
-    for path in FORBIDDEN_EXACT + FORBIDDEN_PREFIXES:
+    gated = FORBIDDEN_EXACT + FORBIDDEN_PREFIXES + FORBIDDEN_COMPONENTS
+    assert gated, "no paths gated: this test would pass without checking anything"
+    for path in gated:
         assert path.strip("/") in ignored, f"{path} is gated but NOT gitignored -- they must agree"
-    assert ".memsearch" in ignored
 
 
 def test_the_gate_fails_closed_when_git_fails():
