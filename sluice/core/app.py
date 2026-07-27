@@ -748,14 +748,17 @@ class Sluice:
         from sluice.core.leads import slug_matches
         from sluice.core.protocols import VaultConflict
         store = self.store()
-        # Resolved over every EXPIRABLE status, not `shortlist` alone. A held lead can
-        # legitimately leave shortlist -- `sluice triage run --status shortlist` re-judges
-        # it and may write `research`/`needs_review`/`dismiss` -- and a shortlist-only
-        # lookup then reports "no match" for a hold that demonstrably exists, with
-        # `leads expire` refusing the same lead on every run because `pending_cv` is set.
-        # That is the exact stranding the pending_cv-only refusal scoping exists to
-        # prevent, recurring one layer up (#9).
-        notes = [n for n in store.read_leads(_EXPIRABLE) if slug_matches(n, lead)]
+        # Resolved over EVERY triage-owned status, not `shortlist` alone and not
+        # `_EXPIRABLE`. A held lead can legitimately leave shortlist -- `sluice triage run
+        # --status shortlist` re-judges it and may write `research`/`needs_review`/
+        # `dismiss` -- and a narrower lookup then reports "no match" for a hold that
+        # demonstrably exists, leaving the pending CV unresolvable except by hand-editing
+        # frontmatter. `dismiss` is IN this set precisely because it is the one triage
+        # verdict that `_EXPIRABLE` omits (being expire's own destination), so reusing
+        # that constant here would have left the single most likely demotion stranded --
+        # the exact case the comment above names (#9).
+        notes = [n for n in store.read_leads(frozenset(_status.TRIAGE_OWNED))
+                 if slug_matches(n, lead)]
         if not notes:
             return None
         note = notes[0]
