@@ -6,6 +6,6 @@
     "rulesync": "node_modules/.bin/rulesync generate -t '*' -f '*'"
   },
   "devDependencies": {
-    "rulesync": "9.6.3"
+    "rulesync": "15.1.0"
   }
 }
