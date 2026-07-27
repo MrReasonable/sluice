@@ -740,7 +740,8 @@ class Sluice:
             _log.warning("cv signoff for %s lost the write race: %s", note.ref, e)
             return note.slug, "conflict"
 
-    def prep(self, *, lead=None, all_shortlist=False, limit=None, dry_run=False):
+    def prep(self, *, lead=None, all_shortlist=False, limit=None, dry_run=False,
+             include_stale=False):
         """Run the apply sub-app's prep step: stage the tailored CV and build an
         application packet for one shortlisted lead, or preview the whole ready
         queue. Always returns a list of `apply.engine.PrepResult` so a single lead
@@ -765,15 +766,20 @@ class Sluice:
 
         cfg = load_apply_config()
         store = self.store()
+        # THREE branches reach selection, not two: the dry-run single-lead path calls
+        # select_one DIRECTLY, bypassing prep_one. Miss it and `prep --lead X --dry-run`
+        # previews a lead the real run refuses, so the preview lies about what will
+        # happen -- and --include-stale is dead on that path (#9).
+        policy = self.staleness(include_stale=include_stale)
         if all_shortlist:
-            return engine.preview_all(store, cfg, limit=limit)
+            return engine.preview_all(store, cfg, limit=limit, policy=policy)
         if dry_run:
-            note, reason = select.select_one(store, lead, cfg)
+            note, reason = select.select_one(store, lead, cfg, policy)
             if note is None:
                 return [engine.PrepResult(lead=lead, status="skipped", reason=reason)]
             pkt = packet.build_packet(note, cfg, cv_staged=False)
             return [engine.PrepResult(lead=lead, status="previewed", packet=pkt)]
-        return [engine.prep_one(store, cfg, lead)]
+        return [engine.prep_one(store, cfg, lead, policy)]
 
     def record(self, *, lead, ats=None, url=None, dry_run=False):
         """Run the apply sub-app's record step: the never-clobber shortlist ->

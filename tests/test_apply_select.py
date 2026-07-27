@@ -75,3 +75,57 @@ def test_select_all_partitions_eligible_and_skipped():
     eligible, skipped = select.select_all(v, cfg)
     assert [n.fm["company"] for n in eligible] == ["Northwind"]
     assert [(n.fm["company"], r) for n, r in skipped] == [("B", "no_artifact")]
+
+
+# ── #9: the staleness gate ───────────────────────────────────────────────────
+from sluice.core.leads import StalenessPolicy   # noqa: E402
+
+_POLICY = StalenessPolicy(ttl_days=90, today="2026-07-27")
+_STALE = _GOOD + "\nlast_seen: 2026-01-01"
+_FRESH = _GOOD + "\nlast_seen: 2026-07-20"
+
+
+def test_eligibility_refuses_a_stale_lead():
+    v, cfg = _vault([("Northwind - Analyst.md", _STALE)])
+    note = v.read_leads({"shortlist"})[0]
+    assert select.eligibility(note, cfg, _POLICY) == (False, "stale")
+
+
+def test_eligibility_reports_stale_rather_than_no_artifact():
+    # A stale lead must not be reported as `no_artifact`: that sends the user to run
+    # `cv run`, which would itself refuse it, for a reason the message never mentioned.
+    no_cv = _STALE.replace("tailored_cv: CV_deadbeef.pdf (2026-07-09)", "")
+    v, cfg = _vault([("Northwind - Analyst.md", no_cv)])
+    note = v.read_leads({"shortlist"})[0]
+    assert select.eligibility(note, cfg, _POLICY) == (False, "stale")
+
+
+def test_eligibility_default_policy_abstains():
+    v, cfg = _vault([("Northwind - Analyst.md", _STALE)])
+    note = v.read_leads({"shortlist"})[0]
+    assert select.eligibility(note, cfg) == (True, "")
+
+
+def test_eligibility_include_stale_passes_a_stale_lead():
+    p = StalenessPolicy(ttl_days=90, today="2026-07-27", include_stale=True)
+    v, cfg = _vault([("Northwind - Analyst.md", _STALE)])
+    note = v.read_leads({"shortlist"})[0]
+    assert select.eligibility(note, cfg, p) == (True, "")
+
+
+def test_fresh_lead_is_unaffected():
+    v, cfg = _vault([("Northwind - Analyst.md", _FRESH)])
+    note = v.read_leads({"shortlist"})[0]
+    assert select.eligibility(note, cfg, _POLICY) == (True, "")
+
+
+def test_select_one_reports_stale():
+    v, cfg = _vault([("Northwind - Analyst.md", _STALE)])
+    assert select.select_one(v, "Northwind", cfg, _POLICY) == (None, "stale")
+
+
+def test_select_all_reports_stale():
+    v, cfg = _vault([("Northwind - Analyst.md", _STALE)])
+    eligible, skipped = select.select_all(v, cfg, _POLICY)
+    assert eligible == []
+    assert [reason for _, reason in skipped] == ["stale"]
