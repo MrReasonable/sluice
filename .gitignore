@@ -34,7 +34,7 @@ dossiers/
 
 # AI-tool configs are GENERATED from .rulesync/ via `rulesync generate`. The source of
 # truth is .rulesync/ and it IS tracked; everything below is a build artifact. Run
-#   npx rulesync@9.6.3 generate -t '*' -f '*'
+#   npm ci && npm run rulesync
 # after cloning to populate them locally.
 #
 # Every pattern is ROOT-ANCHORED, and the leading slash is load-bearing: a bare
@@ -51,14 +51,13 @@ dossiers/
 
 # The list above covers the AI tools this repo hand-maintains. But the documented regenerate
 # command uses `-t '*'` (ALL targets), so `rulesync generate` also emits an output for every
-# other tool rulesync 9.6.3 knows about. Those are build artifacts too -- ignore them so the
+# other tool the pinned rulesync knows about. Those are build artifacts too -- ignore them so the
 # documented command leaves a clean tree instead of 32 untracked entries. Root-anchored for the
 # same reason as the block above. Re-audit this list on a rulesync version bump (the target set
 # is what changes) AND whenever a new rulesync FEATURE is turned on: `-f '*'` covers
 # rules/ignore/mcp/subagents/commands/skills/hooks/permissions, and enabling one emits a fresh
-# output per target. `/.github/hooks/` below is exactly that -- adding .rulesync/hooks.json made
-# the documented command emit 17 hook files across 15 dirs where it previously emitted none, and
-# two of them landed in the TRACKED .github/ tree.
+# output per target. scripts/guard_rulesync_drift.py is what now FORCES that re-audit: it pins
+# the per-feature output counts, so a bump or a new feature fails CI until a human looks here.
 #
 # NOTE: `.github/` is TRACKED (workflows/, and the copilot handling above), so only rulesync's
 # generated SUBdirs under it are ignored here -- never a bare `.github/`.

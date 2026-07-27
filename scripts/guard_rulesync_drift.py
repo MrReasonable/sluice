@@ -4,7 +4,8 @@
 WHY COUNTS AND NOT JUST A CLEAN TREE. A malformed `.rulesync/hooks.json` makes rulesync drop 17
 files, exit **0**, and leave `git status --porcelain` **empty**. Exit code and porcelain both
 pass green on the one failure this gate exists to catch. Reproduced again on a real version
-delta: rulesync 9.2.0 against a 9.6.3-audited .gitignore emitted 238 files with a clean tree.
+delta: an older rulesync against a .gitignore audited for the pinned version emitted 238 files
+with a clean tree.
 
 WHY EXACT COUNTS AND NOT "NON-ZERO". A partial drop -- 16 of 17 hooks -- passes a non-zero
 check. The output set is fully determined by tracked inputs (`.rulesync/` AND
