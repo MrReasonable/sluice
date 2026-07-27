@@ -1,9 +1,18 @@
 """The drift guard's parser and its process contract.
 
-The two fixtures are REAL captured output from the pinned rulesync, including the emoji and the
-exact `All done!` phrasing. A version bump may change that wording; the expected failure is then a
-loud parse error, never a silent pass. If these strings stop matching, fix the parser -- do not
-relax the test.
+The two fixtures are captured output from the pinned rulesync, including the emoji and the exact
+`All done!` phrasing.
+
+WHAT THAT PROVENANCE DOES AND DOES NOT BUY. It buys one thing, once: at capture time the parser
+and `EXPECTED` were validated against what the tool actually emits, rather than against someone's
+idea of it. It does NOT make these tests detect a future wording change -- they cannot. A fixture
+is a constant in this file, so a rulesync that starts phrasing its summary differently leaves it
+untouched and every assertion here keeps passing. An earlier version of this docstring claimed
+otherwise; CodeRabbit pointed out on #77 that a copied capture and a hand-authored string are
+indistinguishable once frozen, which is correct.
+
+Drift against the real generator is caught in the `rulesync` CI job, which runs the pinned binary
+and pipes its ACTUAL stdout into the guard. That is the only place the two can disagree.
 """
 
 import subprocess
