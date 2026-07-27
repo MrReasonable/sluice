@@ -217,6 +217,31 @@ def test_the_tree_check_fails_closed_when_git_fails():
     )
 
 
+def test_the_emitted_hook_command_is_asserted_after_generation():
+    """The drift guard counts FILES, so it cannot close the failure it cites as its motivation.
+
+    `.rulesync/hooks.json`'s own comment records that rulesync can write a hook with NO
+    `command` key while printing "All done!" and exiting 0, and that against a version bump
+    that comment "is the ONLY defence". A file count sees 17 hooks either way. Only the emitted
+    `.claude/settings.json` can tell them apart -- and the rulesync job is the first environment
+    in this repo where node exists and the generator has run, so the artifact can finally be
+    checked. This test is what keeps that check wired.
+    """
+    block = _job_directives("rulesync")
+    assert ".claude/settings.json" in block, (
+        "the rulesync job no longer inspects the emitted .claude/settings.json. Without it, "
+        "rulesync dropping a hook's `command` key ships the no-bypass guard INERT and green."
+    )
+    assert "guard_no_bypass.py" in block, (
+        "the settings.json check no longer names the command it is looking for, so it can pass "
+        "on a settings.json with hooks and no commands"
+    )
+    assert block.index("guard_rulesync_drift.py") < block.index(".claude/settings.json"), (
+        "the artifact check must run AFTER generation is confirmed complete: on a run that "
+        "wrote nothing, a stale settings.json from the checkout would satisfy it"
+    )
+
+
 def test_the_guard_runs_before_the_porcelain_check():
     """Index comparison, not substring presence: a substring test passes when EITHER is
     deleted. A fail-open produces a CLEAN tree, so porcelain-first would pass on it."""
