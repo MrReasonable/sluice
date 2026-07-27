@@ -100,6 +100,16 @@ dossiers/
 # a bare `!/.rulesync/` re-includes only the DIRECTORY and cannot rescue a file inside it.
 !/.rulesync/**
 
+# npm toolchain for the rulesync generator (CI only; sluice itself is stdlib-only Python).
+# Root-anchored like the generated-output block above.
+/node_modules/
+# NOT root-anchored, deliberately -- same reasoning as .memsearch/ below. Root-anchoring exists
+# only to stop a bare `CLAUDE.md` swallowing the canonical source at .rulesync/rules/CLAUDE.md,
+# a collision a credential file cannot cause. .npmrc can carry a registry auth token, and it is
+# also how an `npm_config_*` setting could switch on a dependency's install-time script, so
+# catching it at any depth is the safer default.
+.npmrc
+
 # MemSearch runtime artefacts: session transcripts carrying absolute home paths, session
 # UUIDs and PIDs. Never in a public repo.
 #
