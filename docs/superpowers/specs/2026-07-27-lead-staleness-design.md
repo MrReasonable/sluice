@@ -370,10 +370,19 @@ All three take the policy. `sluice apply prep` gains `--include-stale`, threaded
 
 ## Testing
 
-Behaviour-asserting, offline, synthetic fixtures. Fixture leads use the `example.invalid` family and
-seeded `faker` titles via `tests/conftest.py`'s `titles`/`cfg_titles`. Slugs in this document are
-neutral placeholders (`Example Ltd - Example Role`) chosen to show the *format*; do not paste them
-into fixtures as role names — `Acme` in particular is out (web-flagged as a real firm on #64).
+Behaviour-asserting, offline, synthetic fixtures. Fixture leads use the `example.invalid` family.
+
+Titles in the new fixtures are neutral literals (`Example Role`), **not** draws from
+`tests/conftest.py`'s seeded-`faker` `titles`/`cfg_titles`. That is a deliberate narrowing of an
+earlier draft of this section, which claimed the fixtures use `faker` — they do not, and the claim
+would have been a doc asserting a mechanism the code does not implement. The `faker` fixtures exist
+so that no test encodes a *taste* in job titles; a literal carrying no role or seniority signal
+satisfies the same property, and every neighbouring test file in this repo already uses literals.
+Slugs in this document (`Example Ltd - Example Role`) show the store-issued *format*.
+
+New company names must come from the `Example …`/`example.invalid` family. Pre-existing placeholder
+names elsewhere in `tests/` are out of scope here — a repo-wide rename touches seven files and
+belongs in its own `test:` change, not a staleness PR.
 
 **Policy unit tests** (`tests/test_lead_staleness.py`): the boundary both ways (`days == ttl_days`
 not stale, `+1` stale); `ttl_days=0` abstains **on an ancient lead** (a same-day fixture makes this

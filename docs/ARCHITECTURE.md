@@ -132,8 +132,9 @@ Two modules and a composition root make the seams real:
   (`dossier_cache()`), the lead-staleness rule (`staleness()`, #9 -- built once
   per invocation from `lead_ttl_days` and the `today` collaborator, so cv, apply
   and expire cannot disagree about it), and track's file-backed seen-message set,
-  last-successful-run watermark, and dead-letter store of un-acted-on proposals. Adapters are built lazily on first use, so an
-  offline command still never constructs a browser, a store or a backend.
+  last-successful-run watermark, and dead-letter store of un-acted-on proposals.
+  Adapters are built lazily on first use, so an offline command still never
+  constructs a browser, a store or a backend.
 
 Implementations live in `sluice/stores/`, `sluice/fetchers/`, `sluice/renderers/`
 and `sluice/backends/`, each self-registering on import exactly as
