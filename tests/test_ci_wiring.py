@@ -4,11 +4,18 @@ A lint CI enforces but the docs understate is worse than no change: an agent fol
 `path-to-green` runs the documented command, passes locally, and lands red. A lint the docs claim
 but CI does not enforce is worse still -- the bar reads as covered and isn't.
 
-So this asserts the two halves AGREE. It is deliberately only the cheap half of CI wiring: the
-rulesync drift gate's own assertions land with that gate. `scripts/` became a CI lint target ahead
-of the gate, so its guard lands ahead of the gate too. `tests/test_hooks_wiring.py` records what
-happens otherwise -- "a correct guard that is not wired is inert, and this exact file has already
-shipped inert once".
+So the first half of this module asserts the lint bar and the docs AGREE. `scripts/` became a CI
+lint target ahead of the docs sweep below, so its guard lands in `REQUIRED_TARGETS` from the
+start rather than being widened in later.
+
+The second half, added once the `rulesync` job existed to test, pins that job's wiring itself:
+that `ci-success` actually CHECKS its result rather than merely ordering after it, that its
+failure modes fail CLOSED (`set -euo pipefail`, the fail-open git-status form kept out), that
+generation runs the locked binary rather than `npx` (which can fetch an unpinned rulesync), and
+that the emitted `.claude/settings.json` is checked for the no-bypass hook -- a file COUNT alone
+cannot see a hook rulesync wrote with no `command` key. `tests/test_hooks_wiring.py` records what
+a missing assertion like that costs: "a correct guard that is not wired is inert, and this exact
+file has already shipped inert once".
 
 WHY TEXT, NOT A YAML PARSE: pyyaml is a guarded optional import in `sluice/` (CLAUDE.md's
 stdlib-only rule), so a test needing it is a test that can skip itself into uselessness on a bare
