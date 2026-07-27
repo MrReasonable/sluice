@@ -24,11 +24,12 @@ A one-shot skill: invoke it on a PR, and it drives the PR to green and merges it
 
 ## What "green" means in sluice
 
-`.github/workflows/ci.yml` defines three jobs:
+`.github/workflows/ci.yml` defines four jobs:
 
 - **`lint`**: `ruff check sluice tests scripts` (ruff pinned to `0.15.21`), then `zizmor --offline --strict-collection .github/workflows/`.
 - **`test`**: `pip install -e ".[test]"` then `python -m pytest`, across a matrix of Python 3.12, 3.13 and 3.14.
-- **`ci-success`**: the aggregate gate. It requires both of the above to succeed.
+- **`rulesync`**: `npm ci --ignore-scripts` then `npm run rulesync`, asserting the regeneration wrote every output it should (`scripts/guard_rulesync_drift.py`, a count-based check -- a clean `git status` alone cannot see a dropped hook command), that the emitted `.claude/settings.json` still carries the no-bypass hook, and that the tree is clean afterward. This is the drift gate: it fails whenever `.rulesync/` and its generated outputs (`CLAUDE.md`, `AGENTS.md`, `.claude/`, ...) have come apart.
+- **`ci-success`**: the aggregate gate. It requires all three of the above to succeed.
 
 The local bar is identical and takes seconds. The suite runs in well under a second and is fully offline:
 
@@ -218,7 +219,7 @@ gh api graphql \
 
 ALL of these must be true on the **current head SHA** (the one you just pushed):
 
-1. Every required-status check is `pass`. In sluice that means `ci-success`, and therefore `lint` and `test` across all three Python versions.
+1. Every required-status check is `pass`. In sluice that means `ci-success`, and therefore `lint`, `test` across all three Python versions, and `rulesync`.
 2. Every review thread is `isResolved == true`.
 3. Every reviewer's **latest** review state for the CURRENT SHA is `APPROVED` or `COMMENTED`. **Never `PENDING`, never `CHANGES_REQUESTED`, never `DISMISSED`.** (A reviewer can leave a body-only `CHANGES_REQUESTED` review with no inline threads. That satisfies condition 2 but fails condition 3, and it is a real block.)
 4. No reviewer's CI run is still in progress for this SHA. The CodeRabbit status check reads `pass`, `fail` or `skipped`, NEVER `pending`.
@@ -268,6 +269,10 @@ For each failed gate, fetch the failure log via the `detailsUrl`. Classify:
 - **Test failure on one Python version only** (3.12, 3.13 or 3.14): a version-conditional bug, not a flake. Reproduce against that interpreter before you touch anything.
 - **Guard-test failure** (`tests/test_sluice_neutral_defaults.py`): do not "fix" the test. The guard is telling you the diff has baked a personal preference into shipped code. Fix the code, or escalate.
 - **Security scan failure**: NEVER suppress it, and fix the underlying issue instead.
+- **Rulesync drift failure** (the `rulesync` job): read the job log first -- `scripts/guard_rulesync_drift.py` prints exactly which counts it expected versus what generation produced, and tells you what to do next. Two distinct causes land here, and they take different fixes:
+  - **A version or lockfile bump** (most often a Dependabot PR touching `package.json`/`package-lock.json`): this job is EXPECTED to arrive red -- that is the gate working, not a defect. Update `EXPECTED` in `scripts/guard_rulesync_drift.py` to the new counts the guard prints, then re-audit `.gitignore`'s generated-output list (a bump is exactly when a new target or feature starts emitting into a path nothing ignores), and re-verify `.rulesync/hooks.json`'s `_comment` against the new hook schema before touching anything else.
+  - **A hand-edited generated file, or a stray tracked artefact**: the job's own `git status --porcelain` caught something dirty after regeneration. Run `npm ci --ignore-scripts && npm run rulesync` locally and diff the result against what changed -- someone edited `CLAUDE.md`/`AGENTS.md`/`.claude/`/etc directly instead of `.rulesync/`. Fix the `.rulesync/` source and let generation produce the file for real; never hand-patch a generated file to make the tree match.
+  Never widen `EXPECTED` to silence a mismatch you have not diagnosed as one of the two causes above -- that defeats the exact count-based check the guard's own docstring exists to make unfakeable.
 
 #### Case C: reviewer comment (CodeRabbit or human)
 
