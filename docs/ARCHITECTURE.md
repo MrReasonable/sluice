@@ -127,10 +127,12 @@ Two modules and a composition root make the seams real:
   fallback, over whichever provider config selects) -- and OWNS the pipeline
   operations as value-returning methods: `ingest()`, `triage()`, `compose_cv()`,
   `prep()`, `record()`, `track()`, `track_confirm()`, `track_dismiss()`,
-  `normalize_statuses()`. It also owns the state those operations need that is
-  not itself an adapter: the dossier cache (`dossier_cache()`), and track's
-  file-backed seen-message set, last-successful-run watermark, and dead-letter
-  store of un-acted-on proposals. Adapters are built lazily on first use, so an
+  `normalize_statuses()`, `expire_report()`, `expire()`. It also owns the state
+  those operations need that is not itself an adapter: the dossier cache
+  (`dossier_cache()`), the lead-staleness rule (`staleness()`, #9 -- built once
+  per invocation from `lead_ttl_days` and the `today` collaborator, so cv, apply
+  and expire cannot disagree about it), and track's file-backed seen-message set,
+  last-successful-run watermark, and dead-letter store of un-acted-on proposals. Adapters are built lazily on first use, so an
   offline command still never constructs a browser, a store or a backend.
 
 Implementations live in `sluice/stores/`, `sluice/fetchers/`, `sluice/renderers/`
@@ -186,6 +188,24 @@ report rather than raising or aborting, so one racing note never aborts the whol
 sweep. A race a bounded re-derive can resolve still commits (counted `changed`); a
 race that makes the collapse a genuine no-op is an abstain (counted `unchanged`,
 not `changed` -- nothing was written, so there is nothing to report as a change).
+
+**Lead staleness** (#9) is the other human-gated read-path pass. `lead_ttl_days`
+(root `Config`, default `0` = off) is the age past which a lead's `last_seen`
+makes it stale. `sluice leads expire` REPORTS the stale set and writes nothing;
+`--expire [SLUG...]` dismisses everything reported, or only the slugs named, by
+EXACT slug equality. It moves a lead to `dismiss` — the triage-owned end state,
+never a `_TERMINAL`, since every terminal is application-owned — recording the
+prior status in the audit note. Application-owned leads are never enumerated,
+and the write additionally passes `require_status`, which re-reads status inside
+the store's CAS transform: the read loop is a window in which a lead can enter
+the application lifecycle, and a check against the enumerated note is a snapshot
+that is stale by construction. A lead holding a #60 sign-off (`pending_cv`) is
+refused, because dismissing it would strand the hold beyond `cv signoff`'s reach.
+`cv run` and `apply prep` independently refuse a stale lead before spending
+anything, both with `--include-stale`; the policy reaching all three is one
+frozen `StalenessPolicy` built by `Sluice.staleness()`. Staleness is a cheap
+proxy: whether a role is still open can only be answered on the employer's own
+site, so it does not replace checking before applying.
 
 A fourth property sits beside the write contract, but a deliberately weaker one:
 **read-path dedup** (#23) is human-gated, not automatic. `sluice leads dedupe`
@@ -287,10 +307,14 @@ entry, and are passed in by the caller:
   parameters. `sleep` and `today` are threaded into `ingest.base.Ctx` and
   `ingest.sink.VaultSink`: the page-settle wait and the date stamp. Two clock
   shapes rather than one is deliberate — the sink stamps per lead so it needs a
-  callable, while track persists one value per run. `resolve_host` is the DNS
-  resolver the dossier url guard uses; it is deliberately NOT a seam, because a
-  registry entry is reachable from config and that would put an off switch for
-  an SSRF guard under a YAML key.
+  callable, while track persists one value per run. `today` also feeds
+  `Sluice.staleness()` (#9), which **calls** it once and freezes the resulting
+  string into a `StalenessPolicy`; that is the second consumer, and the reason
+  the callable-vs-string distinction is now load-bearing beyond ingest — binding
+  the callable itself would reach `date.fromisoformat(<function>)` inside a
+  gate. `resolve_host` is the DNS resolver the dossier url guard uses; it is
+  deliberately NOT a seam, because a registry entry is reachable from config and
+  that would put an off switch for an SSRF guard under a YAML key.
 
 The rule for a new dependency: **does a user legitimately choose among
 implementations?** If yes it is an adapter seam and belongs in the registry,
