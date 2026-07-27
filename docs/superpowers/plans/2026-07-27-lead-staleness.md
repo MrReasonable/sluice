@@ -195,8 +195,11 @@ class StalenessPolicy:
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `python -m pytest tests/test_lead_staleness.py -q` → PASS (12 tests)
-Then: `python -m pytest -q` → all green.
+Run: `python -m pytest tests/test_lead_staleness.py -q` → every test in the file passes.
+Then: `python -m pytest -q` → the full suite is green.
+
+No test COUNT is stated, here or anywhere else in this plan: a count ages the moment
+coverage grows, and a stale one reads as a failure when the suite is fine.
 
 - [ ] **Step 5: Commit**
 
