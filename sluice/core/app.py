@@ -501,10 +501,14 @@ class Sluice:
             if not policy.is_stale(last_seen):
                 continue
             # `tailored_cv` and `needs_signoff` are INFORMATIONAL. Only `pending_cv`
-            # refuses, and the distinction matters: dismissing a lead that holds a
-            # pending_cv strands it permanently, because sign_off_cv resolves through
-            # read_leads({"shortlist"}) -- `cv signoff` and `--discard` both stop finding
-            # it. A note carrying needs_signoff ALONE must NOT be refused: Vault.sign_off
+            # refuses, because dismissing that lead silently discards work IN FLIGHT: a
+            # composed CV a human has not yet signed off on, with no signal that it went.
+            # (This refusal once had a second, stronger reason -- sign_off_cv resolved via
+            # read_leads({"shortlist"}), so a dismissed lead became unreachable. That is no
+            # longer true: sign_off_cv now resolves over all of TRIAGE_OWNED, pinned by the
+            # `dismiss` case of test_a_held_lead_can_be_discharged_from_any_triage_status.
+            # The refusal survives on the discard-work reason alone.)
+            # A note carrying needs_signoff ALONE must NOT be refused: Vault.sign_off
             # no-ops without pending_cv, so the refusal message's own escape hatch would
             # do nothing and the lead would be stuck forever.
             flagged = []

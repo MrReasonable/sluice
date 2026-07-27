@@ -259,6 +259,12 @@ silent no-op is the failure mode this whole command is shaped to avoid.
 
 ### A sign-off hold is refused — scoped to `pending_cv` only
 
+> **Superseded during implementation (2026-07-27):** the stranding argument below was true when
+> written, and drove the refusal. Implementation then widened `sign_off_cv` to resolve over all of
+> `TRIAGE_OWNED` (CodeRabbit caught that `_EXPIRABLE` omits `dismiss`), so a dismissed held lead is
+> now reachable. **The refusal survives on a different reason:** dismissing it silently discards a
+> composed CV no human has signed off.
+
 Expiring a `shortlist` lead that holds a #60 sign-off strands it: `Sluice.sign_off_cv` resolves
 through `read_leads({"shortlist"})` (`core/app.py:576-580`), so once the status is `dismiss` both
 `cv signoff` and `cv signoff --discard` report no match, `cv run --lead` cannot reopen it, and the

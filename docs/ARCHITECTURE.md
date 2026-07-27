@@ -201,7 +201,10 @@ and the write additionally passes `require_status`, which re-reads status inside
 the store's CAS transform: the read loop is a window in which a lead can enter
 the application lifecycle, and a check against the enumerated note is a snapshot
 that is stale by construction. A lead holding a #60 sign-off (`pending_cv`) is
-refused, because dismissing it would strand the hold beyond `cv signoff`'s reach.
+refused, because dismissing it silently discards work in flight — a composed CV no
+human has signed off. (`sign_off_cv` resolves over all of `TRIAGE_OWNED`, so a
+dismissed lead is still reachable; the refusal rests on the discarded work, not on
+reachability.)
 `cv run` and `apply prep` independently refuse a stale lead before spending
 anything, both with `--include-stale`; the policy reaching all three is one
 frozen `StalenessPolicy` built by `Sluice.staleness()`. Staleness is a cheap
