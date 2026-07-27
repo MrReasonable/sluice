@@ -26,14 +26,14 @@ A one-shot skill: invoke it on a PR, and it drives the PR to green and merges it
 
 `.github/workflows/ci.yml` defines three jobs:
 
-- **`lint`**: `ruff check sluice tests` (ruff pinned to `0.15.21`), then `zizmor --offline --strict-collection .github/workflows/`.
+- **`lint`**: `ruff check sluice tests scripts` (ruff pinned to `0.15.21`), then `zizmor --offline --strict-collection .github/workflows/`.
 - **`test`**: `pip install -e ".[test]"` then `python -m pytest`, across a matrix of Python 3.12, 3.13 and 3.14.
 - **`ci-success`**: the aggregate gate. It requires both of the above to succeed.
 
 The local bar is identical and takes seconds. The suite runs in well under a second and is fully offline:
 
 ```bash
-ruff check sluice tests
+ruff check sluice tests scripts
 python -m pytest          # or ./run_tests.sh, which runs the same suite via .venv/bin/python
 ```
 
@@ -262,7 +262,7 @@ Proceed to **Step 7 (merge)** only when all four conditions above hold.
 
 For each failed gate, fetch the failure log via the `detailsUrl`. Classify:
 
-- **Lint failure** (`ruff check sluice tests`): reproduce locally, then let ruff fix what it can with `ruff check --fix sluice tests` and hand-fix the rest. Re-run `ruff check sluice tests` until clean. Commit as a fixup to the most recent commit that introduced the offending code. If it fails in CI but passes locally, your ruff is a different version: CI pins `0.15.21`.
+- **Lint failure** (`ruff check sluice tests scripts`): reproduce locally, then let ruff fix what it can with `ruff check --fix sluice tests scripts` and hand-fix the rest. Re-run `ruff check sluice tests scripts` until clean. Commit as a fixup to the most recent commit that introduced the offending code. If it fails in CI but passes locally, your ruff is a different version: CI pins `0.15.21`.
 - **Workflow-lint failure** (zizmor over `.github/workflows/`): fix the workflow properly. Pin actions by SHA, keep `persist-credentials: false`, keep permissions least-privilege. Never add a blanket ignore to silence it.
 - **Test failure** (`python -m pytest`): read the output and fix the code, not the test, unless the test is genuinely wrong. The suite is offline and takes about 1.5 seconds, so there is no excuse for pushing a speculative fix. Reproduce locally first.
 - **Test failure on one Python version only** (3.12, 3.13 or 3.14): a version-conditional bug, not a flake. Reproduce against that interpreter before you touch anything.
@@ -345,7 +345,7 @@ fi
 
 # Re-run the local bar after the rebase. ~2 seconds, and it catches the case where the base
 # moved under you and the branch is now semantically stale though it merged textually.
-ruff check sluice tests && python -m pytest || {
+ruff check sluice tests scripts && python -m pytest || {
   echo "local gates fail after rebase onto origin/$base, escalating" >&2
   exit 2
 }
@@ -468,4 +468,4 @@ When you reject, **always** reply on the thread with a one-sentence rationale. C
 - **Run on a branch you trust.** This skill makes commits on your behalf and pushes them. Open a draft PR first if you want a manual checkpoint.
 - **Watch the first iteration in real time.** Once you have seen how it handles this repo's common failure modes, you can trust it to run unattended.
 - **Cap iterations conservatively.** Five is enough for a legitimate fix loop. More than that means something is structurally wrong: an unresolved design question, a version-conditional bug, or a finding you keep half-fixing.
-- **The local bar is 2 seconds.** There is never a good reason to discover a lint or test failure in CI. Run `ruff check sluice tests && python -m pytest` before every push.
+- **The local bar is 2 seconds.** There is never a good reason to discover a lint or test failure in CI. Run `ruff check sluice tests scripts && python -m pytest` before every push.

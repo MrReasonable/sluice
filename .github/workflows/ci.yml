@@ -23,7 +23,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install ruff==0.15.21
-      - run: ruff check sluice tests
+      - run: ruff check sluice tests scripts
       - run: pip install --require-hashes -r .github/zizmor-requirements.txt
       - run: zizmor --offline --strict-collection .github/workflows/
 

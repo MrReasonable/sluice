@@ -22,7 +22,7 @@ pip install -e ".[test]"        # pytest + faker (the suite needs faker; see Neu
 python -m pytest                # fast (well under a second), fully offline: no Camofox, no network
 python -m pytest tests/test_triage_engine.py            # one file
 python -m pytest tests/test_triage_engine.py -k judge   # one test
-ruff check sluice tests         # NB: ruff is NOT in [test]; pip install ruff==0.15.21 (the CI pin)
+ruff check sluice tests scripts         # NB: ruff is NOT in [test]; pip install ruff==0.15.21 (the CI pin)
 
 # Run ONCE before mutation testing: content-addresses the .pyc caches so a mutant can't run
 # stale bytecode and lie green. Proving a test fails is the mutate-then-pytest step; see below.
