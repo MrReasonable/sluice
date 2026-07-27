@@ -12,8 +12,15 @@ would make this sweep vacuous exactly where it matters. So it is ASSERTED EQUAL 
 which means a bump turns this test red until a human re-verifies the emitted settings.json,
 precisely what that comment asks for and today cannot enforce.
 
-docs/superpowers/ is excluded as a dated record: the convention is a dated superseded note,
-never rewriting history.
+docs/superpowers/ is excluded WHOLESALE, by directory -- `_tracked_files()` drops the entire
+prefix unconditionally, not on any per-file date. That is broader than "a dated record" sounds:
+this branch's own plan and spec live under it and name the version repeatedly while the work is
+still in flight, well before either could be called dated. The exclusion holds anyway because
+nothing under docs/superpowers/ is canonical guidance a maintainer or agent follows day to day --
+it is process documentation (plans, specs, design records), which this repo's own convention
+already treats as point-in-time: superseded with a dated note rather than rewritten. A version
+literal sitting there is not read as current instruction the way a hit in .rulesync/ or a skill
+would be, so this sweep does not need to see it.
 """
 
 import json
