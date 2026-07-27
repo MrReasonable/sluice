@@ -294,7 +294,7 @@ Plan-shape categories (these are what make this skill different from `/review-pr
   test-engineer, a dependency addition not routed to the architect.
 - `runnability`: a step omits its exact command, its expected output, or names a path that does not
   exist. Every verification step should be copy-pasteable: `python -m pytest`,
-  `ruff check sluice tests scripts`.
+  `.venv/bin/ruff check sluice tests scripts`.
 - `convention-violation`: a hard rule from the block below, or a non-conforming Conventional Commits
   message in a commit step.
 
