@@ -26,6 +26,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).parent.parent
 CI = ROOT / ".github" / "workflows" / "ci.yml"
 RULESYNC = ROOT / ".rulesync"
@@ -42,8 +44,14 @@ _CONNECTORS = ("+", "and", "&")
 
 
 def _targets(rest: str) -> list[str]:
-    """Target paths in a `ruff check` argument string, with flags (`--fix`) dropped."""
-    return [tok for tok in rest.split() if not tok.startswith("-")]
+    """Target paths in a `ruff check` argument string, with flags (`--fix`) dropped.
+
+    Truncate at the first `#` before splitting: `_RUFF_CHECK`'s stop-class does not include `#`,
+    so a trailing shell comment (`ruff check sluice tests   # scripts is linted in CI too`) runs
+    on into `rest`, and a comment word (`scripts`, above) would otherwise be indistinguishable
+    from a real lint target -- reporting a two-target command as a complete three-target one.
+    """
+    return [tok for tok in rest.split("#", 1)[0].split() if not tok.startswith("-")]
 
 
 def _assert_bar_is_complete(text: str, where: str) -> int:
@@ -74,6 +82,27 @@ def _assert_bar_is_complete(text: str, where: str) -> int:
                 "An agent following it passes locally and lands red in CI."
             )
     return len(matches)
+
+
+def test_trailing_comment_words_are_not_counted_as_lint_targets():
+    """Regression: this exact line used to PASS `_assert_bar_is_complete` even though the real
+    command only names two of the three required targets -- `scripts` came from the comment, not
+    the command. Same shape as the bug this whole module exists to catch: a documented bar that
+    looks complete but isn't."""
+    line = "ruff check sluice tests   # scripts is linted in CI too"
+    with pytest.raises(AssertionError, match="scripts"):
+        _assert_bar_is_complete(line, "synthetic")
+
+
+def test_trailing_comment_after_a_genuine_three_target_command_still_passes():
+    """Companion to the regression above, using the real line from `.rulesync/rules/CLAUDE.md`:
+    truncating at `#` must not turn a genuinely complete command into a false failure just
+    because its trailing comment happens to repeat one of the target names."""
+    line = (
+        "ruff check sluice tests scripts         "
+        "# NB: ruff is NOT in [test]; pip install ruff==0.15.21 (the CI pin)"
+    )
+    assert _assert_bar_is_complete(line, "synthetic") == 1
 
 
 def test_ci_lints_every_required_target():
