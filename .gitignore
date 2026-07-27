@@ -34,8 +34,10 @@ dossiers/
 
 # AI-tool configs are GENERATED from .rulesync/ via `rulesync generate`. The source of
 # truth is .rulesync/ and it IS tracked; everything below is a build artifact. Run
-#   npm ci && npm run rulesync
-# after cloning to populate them locally.
+#   npm ci --ignore-scripts && npm run rulesync
+# after cloning to populate them locally. Byte-identical to what CI runs, `--ignore-scripts`
+# included: a human following a command CI does not run executes install scripts CI
+# deliberately skips, and tests/test_ci_wiring.py now fails the build if the two drift.
 #
 # Every pattern is ROOT-ANCHORED, and the leading slash is load-bearing: a bare
 # `CLAUDE.md` matches at ANY depth and silently swallows the canonical source at

@@ -42,6 +42,10 @@ _RUFF_CHECK = re.compile(r"ruff check(?P<rest>[^\n`|&;\"')]*)")
 # Prose connectors a real invocation can never begin with.
 _CONNECTORS = ("+", "and", "&")
 
+# `npm ci` and its flags. Same stop-class as `_RUFF_CHECK`, and for the same reason: the
+# documented form is `npm ci <flags> && npm run rulesync`, so the flag list ends at the `&&`.
+_NPM_CI = re.compile(r"npm ci(?P<flags>[^\n`|&;\"')]*)")
+
 
 def _targets(rest: str) -> list[str]:
     """Target paths in a `ruff check` argument string, with flags (`--fix`) dropped.
@@ -263,6 +267,58 @@ def test_the_job_uses_the_locked_binary_not_npx():
     assert "npm ci --ignore-scripts" in text
     assert "npx" not in text, "the CI job must not invoke npx: it can fetch an unpinned rulesync"
     assert text.index("npm ci --ignore-scripts") < text.index("guard_rulesync_drift.py")
+
+
+def _npm_ci_flags(text: str) -> list[str]:
+    """The flag string of every `npm ci` in `text`, whitespace-normalised."""
+    return [" ".join(match.group("flags").split()) for match in _NPM_CI.finditer(text)]
+
+
+def _doc_sources() -> list[Path]:
+    """Every canonical doc that could state the regenerate command.
+
+    Enumerated from the tree, never hand-listed. `docs/superpowers/` is deliberately absent:
+    those are dated design records, and this repo's convention is to supersede one with a dated
+    note rather than rewrite what it said at the time.
+    """
+    return [ROOT / ".gitignore", *sorted(p for p in RULESYNC.rglob("*") if p.is_file())]
+
+
+def test_the_documented_install_command_is_the_one_ci_runs():
+    """The docs and CI must install IDENTICALLY, not merely similarly.
+
+    This has now drifted twice. The decision that introduced the documented command made
+    byte-identity with CI its entire stated purpose; the later decision that added
+    `--ignore-scripts` to CI changed only CI. A human or agent following the canonical rules
+    then ran install scripts CI deliberately skips -- a different tree than the one the gate
+    downstream is asserting counts against.
+
+    Both ends are read from the files, so a change to either side has to be a change to both.
+    """
+    ci_flags = _npm_ci_flags(_ci_text())
+    assert len(ci_flags) == 1, (
+        f"expected exactly one `npm ci` in {CI}, found {len(ci_flags)}: {ci_flags}. This test "
+        "cannot say which one the docs must match."
+    )
+    expected = ci_flags[0]
+    # Non-vacuity: with no flags on either side, every doc would agree on the empty string and
+    # this test would pass without pinning anything. (`--ignore-scripts` itself is pinned by
+    # test_the_job_uses_the_locked_binary_not_npx.)
+    assert expected, f"CI's `npm ci` names no flags; {CI} no longer states an install contract"
+
+    documented = 0
+    for path in _doc_sources():
+        for flags in _npm_ci_flags(path.read_text()):
+            documented += 1
+            assert flags == expected, (
+                f"{path.relative_to(ROOT)} documents `npm ci {flags}` but CI runs "
+                f"`npm ci {expected}`. Someone following the docs installs differently from "
+                "the gate that judges them."
+            )
+    assert documented, (
+        "no `npm ci` found in any canonical doc: either the regenerate command stopped being "
+        "documented, or this sweep stopped finding it -- both leave the two ends unpinned"
+    )
 
 
 def test_package_json_runs_the_locked_binary_by_path():
