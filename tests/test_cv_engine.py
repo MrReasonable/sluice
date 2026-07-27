@@ -3,6 +3,7 @@ from sluice.cv.bundle import build_bundle, render_bundle
 from sluice.cv.engine import run_one, run_batch
 from sluice.cv.validate import validate
 from sluice.core.backends import BackendError, FallbackBackend, OpenAiCompatibleBackend
+from sluice.core.leads import StalenessPolicy
 
 class Note:
     def __init__(self, fm, path="Job Applications/Job Leads/Acme - Analyst.md"):
@@ -581,3 +582,84 @@ def test_the_fake_vault_conforms_to_the_real_store_signature():
             f"FakeVault.{name}{fake_sig} has drifted from Vault.{name}{real_sig}. "
             f"A fake that outlives the contract it fakes hides real breakage.")
     assert fake is not None
+
+
+# ── #9: the staleness gate ───────────────────────────────────────────────────
+
+class RecordingCache:
+    """A dossier cache that records whether it was asked for anything.
+
+    This is the ONLY witness for the gate's PLACEMENT. Every `skipped-stale` assertion
+    below stays green if the check is moved below `dossier_cache.get_or_build`; only a
+    zero-call assertion catches that, and catching it is the whole point -- the gate
+    exists to spend nothing on a lead whose posting has probably closed.
+    """
+    def __init__(self): self.calls = 0
+    def get_or_build(self, fm):
+        self.calls += 1
+        return {"jd": {"markdown": "we value delivery"}}
+
+
+_STALE_FM = {"status": "shortlist", "company": "Example Foundry", "role": "Analyst",
+             "last_seen": "2026-01-01"}
+_POLICY = StalenessPolicy(ttl_days=90, today="2026-07-27")
+
+
+def test_stale_lead_is_skipped_before_any_dossier_fetch():
+    v, cache, rend, be = FakeVault(ENTRIES), RecordingCache(), FakeRenderer(), FakeBackend(CLEAN_CV)
+    r = run_one(Note(dict(_STALE_FM)), v, _cfg(), be, cache, renderer=rend,
+                policy=_POLICY)
+    assert r.status == "skipped-stale"
+    assert cache.calls == 0, "a stale lead must cost no dossier fetch"
+    assert be.calls == 0, "a stale lead must cost no compose"
+    assert rend.rendered == []
+    assert v.written == {}
+
+
+def _ran(note_fm, policy=None):
+    """Run to completion with serve disabled and report whether the gate let it past.
+
+    Asserting on the RECORDING CACHE rather than on `status != "skipped-stale"` is the
+    stronger claim: it says the lead actually reached the first line that spends, which
+    is what "the gate did not fire" means.
+    """
+    cfg = _cfg()
+    cfg.served_dir = ""          # the existing no-serve idiom; keeps this off the disk
+    cache = RecordingCache()
+    kw = {"policy": policy} if policy is not None else {}
+    run_one(Note(note_fm), FakeVault(ENTRIES), cfg, FakeBackend(CLEAN_CV), cache,
+            renderer=FakeRenderer(), **kw)
+    return cache.calls
+
+
+def test_fresh_lead_is_unaffected_by_the_gate():
+    assert _ran(dict(_STALE_FM, last_seen="2026-07-20"), _POLICY) == 1
+
+
+def test_include_stale_composes_a_stale_lead():
+    p = StalenessPolicy(ttl_days=90, today="2026-07-27", include_stale=True)
+    assert _ran(dict(_STALE_FM), p) == 1
+
+
+def test_default_policy_leaves_the_gate_inert():
+    # A call site that forgets to thread a policy must fail SAFE.
+    assert _ran(dict(_STALE_FM)) == 1
+
+
+def test_a_lead_both_HELD_and_stale_still_reports_needs_signoff():
+    # The gate sits AFTER the #60 latch, so it is strictly additive: it can only fire on
+    # leads that would otherwise have gone on to compose. #60's observable behaviour must
+    # not move.
+    held = dict(_STALE_FM, pending_cv="CV.pdf")
+    r = run_one(Note(held), FakeVault(ENTRIES), _cfg(), FakeBackend(CLEAN_CV),
+                FakeCache(), renderer=FakeRenderer(), policy=_POLICY)
+    assert r.status == "skipped-needs-signoff"
+
+
+def test_run_batch_skips_a_stale_lead():
+    v = FakeVault(ENTRIES, notes=[Note(dict(_STALE_FM))])
+    cache = RecordingCache()
+    out = run_batch(v, _cfg(), FakeBackend(CLEAN_CV), cache, renderer=FakeRenderer(),
+                    policy=_POLICY)
+    assert [r.status for r in out] == ["skipped-stale"]
+    assert cache.calls == 0

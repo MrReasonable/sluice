@@ -269,3 +269,45 @@ def test_staleness_include_stale_is_per_invocation_not_config():
 def test_staleness_defaults_off_with_an_unconfigured_config():
     s = Sluice(Config(), today=lambda: "2026-07-27")
     assert s.staleness().is_stale("2020-01-01") is False
+
+
+# ── #9: the policy actually reaches each consumer ────────────────────────────
+# Every OTHER staleness test pins the off state or drives an engine directly with an
+# explicit policy, and a permanently-inert knob satisfies both. These are the only tests
+# that redden if `policy=` is dropped between Sluice and an engine.
+
+class _StaleNoteStore(_FakeStore):
+    """A store holding exactly one ancient shortlist lead."""
+    def __init__(self, **fm):
+        super().__init__()
+        base = {"status": "shortlist", "company": "Example Ltd", "role": "Example Role",
+                "last_seen": "2026-01-01", "url": "https://example.invalid/1"}
+        base.update(fm)
+        self._note = type("N", (), {"fm": base, "ref": "r1",
+                                    "slug": "Example Ltd - Example Role",
+                                    "status": base["status"], "body": ""})()
+
+    def read_leads(self, statuses=None):
+        return [self._note]
+
+
+def test_compose_cv_threads_the_policy_into_the_engine(tmp_path, monkeypatch):
+    monkeypatch.setenv("SLUICE_CONFIG", "")
+    s = Sluice(Config(lead_ttl_days=30), store=_StaleNoteStore(),
+               backend=_Recorder(), renderer=object(), today=lambda: "2026-07-27")
+    results = s.compose_cv(lead="Example Ltd - Example Role", dry_run=True)
+    assert [r.status for r in results] == ["skipped-stale"]
+
+
+def test_compose_cv_include_stale_reaches_the_engine(tmp_path, monkeypatch):
+    # The lead gets far enough to attempt a DOSSIER FETCH, which is precisely what the
+    # gate would have prevented -- so tripping the suite's DNS guard is the proof that
+    # --include-stale was threaded. DnsUsedInTests subclasses BaseException exactly so
+    # it cannot be swallowed by an `except Exception` on the way out.
+    from tests.conftest import DnsUsedInTests
+    monkeypatch.setenv("SLUICE_CONFIG", "")
+    s = Sluice(Config(lead_ttl_days=30), store=_StaleNoteStore(),
+               backend=_Recorder(), renderer=object(), today=lambda: "2026-07-27")
+    with pytest.raises(DnsUsedInTests):
+        s.compose_cv(lead="Example Ltd - Example Role", dry_run=True,
+                     include_stale=True)

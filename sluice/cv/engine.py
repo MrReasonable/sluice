@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from sluice.core import status as _status
+from sluice.core.leads import StalenessPolicy
 from sluice.core.log import get_logger
 from sluice.cv import bundle as _bundle
 from sluice.cv import compose as _compose
@@ -23,6 +24,8 @@ _log = get_logger("cv.engine")
 @dataclass
 class CvResult:
     """status is one of: rendered, skipped-gate, skipped-selection, skipped-has-cv,
+    skipped-stale (#9: last_seen older than lead_ttl_days, refused before any dossier
+    fetch or compose -- see run_one),
     needs-signoff (an unsupported profile audit flag withheld the send-ready pointer,
     #60), skipped-needs-signoff (a re-run over a lead already held for sign-off),
     dry-run, error (a single lead's exception caught by run_batch -- see run_batch --
@@ -51,7 +54,7 @@ def _jd_keywords(role: str, jd: str) -> list:
 
 
 def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=False,
-           guard_existing_cv=False) -> CvResult:
+           guard_existing_cv=False, policy=StalenessPolicy()) -> CvResult:
     fm = note.fm
     # Process ONLY shortlist leads. This enforces the shortlist-only constraint and
     # inherently never touches (never clobbers) application-owned leads.
@@ -66,6 +69,18 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
     # early return covers both. `sluice cv signoff [--discard]` is the only way out.
     if fm.get("pending_cv"):
         return CvResult(note.ref, "skipped-needs-signoff")
+
+    # #9: refuse a stale lead before ANY spend. Placed AFTER the #60 latch so the check
+    # is strictly additive -- it can only fire on leads that would otherwise have gone on
+    # to compose, so a held lead still reports skipped-needs-signoff and #60's observable
+    # behaviour does not move. Placed BEFORE get_or_build because that is the first line
+    # that costs anything: a dossier fetch drives a real browser, and the compose below
+    # is an LLM call. Tailoring a CV for a closed posting is exactly the spend this
+    # exists to stop.
+    # `blocks`, never `is_stale`: that is what keeps --include-stale one decision rather
+    # than two that could drift apart between here and apply.
+    if policy.blocks(fm.get("last_seen", "")):
+        return CvResult(note.ref, "skipped-stale")
 
     company, role = fm.get("company", ""), fm.get("role", "")
     jd, dossier_failed = "", False
@@ -189,7 +204,8 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
         raise
 
 
-def run_batch(vault, cvcfg, backend, dossier_cache, *, renderer, limit=None, dry_run=False) -> list:
+def run_batch(vault, cvcfg, backend, dossier_cache, *, renderer, limit=None,
+              dry_run=False, policy=StalenessPolicy()) -> list:
     notes = [n for n in vault.read_leads({"shortlist"})]
     results = []
     for note in notes:
@@ -201,7 +217,7 @@ def run_batch(vault, cvcfg, backend, dossier_cache, *, renderer, limit=None, dry
         try:
             results.append(run_one(note, vault, cvcfg, backend, dossier_cache,
                                    renderer=renderer, dry_run=dry_run,
-                                   guard_existing_cv=True))
+                                   guard_existing_cv=True, policy=policy))
         except Exception as e:
             _log.warning("cv run failed for %s: %s", note.ref, e)
             # run_one stamps dossier_failed onto the exception before re-raising (see
