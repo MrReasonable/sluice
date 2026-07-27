@@ -96,7 +96,14 @@ class Store(Protocol):
 
         `require_status`, when given, is re-read from the FRESH stored note and the write
         is abstained -- nothing written, returns False -- if the status is not in that
-        set. This CANNOT be delegated to the caller, which is why it is on the contract
+        set. Two semantics an implementation MUST honour, both pinned by the conformance
+        suite: the comparison is against the NORMALIZED status (`core.status.normalize`),
+        because real vaults carry drift like `Shortlist`/`dismissed`/`needs review` and a
+        raw comparison would abstain on those forever -- reporting the lead stale on every
+        run and never writing it; and the returned bool reports whether the stored record
+        CHANGED, so a write of a value the note already holds returns False.
+
+        This CANNOT be delegated to the caller, which is why it is on the contract
         rather than in `leads expire`: a caller-side check reads a snapshot taken before
         the write and cannot see a concurrent entry into the application lifecycle (via
         `apply record` or a #10 receipt). A store that ignored it would silently write a

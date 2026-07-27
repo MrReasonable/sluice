@@ -216,7 +216,14 @@ def cmd_leads_expire(args, config) -> int:
         # a user believe a knob they never configured is protecting them.
         print("expire: lead_ttl_days is unset (0) -- staleness is off, nothing to report",
               file=sys.stderr)
-        return 0
+        # Still emit a document on --json: a consumer that parses stdout must not have to
+        # distinguish "no output" from "empty result", and the knob-ON empty case prints
+        # `[]`. `leads dedupe --json` always prints one too.
+        if args.json:
+            print(json.dumps([]))
+        # And a NAMED --expire that wrote nothing is a failure, not a success. Exiting 0
+        # here is the silent no-op the no-match exit below exists to prevent.
+        return 1 if args.expire is not None else 0
 
     app = Sluice(config)
     if args.expire is not None:      # NOT truthiness: [] is the bulk case and is falsy
@@ -224,13 +231,22 @@ def cmd_leads_expire(args, config) -> int:
         counts = {}
         for slug, outcome in outcomes:
             counts[outcome] = counts.get(outcome, 0) + 1
-            if outcome != "dismissed":
+            if outcome == "refused-signoff":
+                # Print the way OUT, not just the refusal. Without it this is a permanent
+                # no with no stated remedy, on every run.
+                print(f'expire: {slug}: refused (sign-off hold) -- resolve it first: '
+                      f'sluice cv signoff --lead "{slug}" --discard', file=sys.stderr)
+            elif outcome != "dismissed":
                 print(f"expire: {slug}: {outcome}", file=sys.stderr)
         print("expire: " + ", ".join(f"{n} {o}" for o, n in sorted(counts.items())),
               file=sys.stderr)
-        # A named slug that matched nothing exits non-zero: a silent no-op is the exact
-        # failure mode this report-first command is shaped to avoid.
-        return 1 if any(o == "no-match" for _, o in outcomes) else 0
+        # Any outcome where the write did not happen exits non-zero: a silent no-op is the
+        # exact failure mode this report-first command is shaped to avoid. `conflict` and
+        # `unreadable` belong here for the same reason `no-match` does -- the user asked
+        # for a write and did not get one. `skipped` too: it means the lead left the
+        # triage lifecycle mid-sweep, which is precisely the case a caller must notice.
+        _FAILED = {"no-match", "conflict", "unreadable", "skipped"}
+        return 1 if any(o in _FAILED for _, o in outcomes) else 0
 
     report = app.expire_report()
     if args.json:
