@@ -336,6 +336,10 @@ def parse_summary(text: str) -> dict[str, int]:
         )
     if len(found) > 1:
         raise ValueError(f"found {len(found)} summary lines, expected exactly 1")
+    # Shipped stricter than this draft: the parenthetical must be FULLY consumed, no feature
+    # may repeat, and the gap BETWEEN terms may not be empty. A bare find-all silently skips
+    # what it cannot read, which made the guard certify output it had not understood. See
+    # scripts/guard_rulesync_drift.py for the shipped form.
     return {name: int(count) for count, name in _TERM.findall(found[0])}
 
 
@@ -782,7 +786,7 @@ git commit -m "ci(rulesync): gate regeneration hygiene and output completeness"
 
 - [ ] **Step 8: Mutation-witness the wiring**
 
-Each mutant by deletion; after each, run the named test by node id, confirm FAIL, then `git checkout -- .github/workflows/ci.yml`.
+Each mutant by deletion; after each, run the named test by node id, confirm FAIL, then restore **the file that mutant actually touched** -- mutants 1-6 are `.github/workflows/ci.yml`, mutant 7 is `package.json`. Restoring only `ci.yml` leaves the manifest mutated and contaminates every later check.
 
 | # | Mutation | Must be killed by |
 |---|---|---|
