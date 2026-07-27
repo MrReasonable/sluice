@@ -300,3 +300,25 @@ def test_expire_dispatch_distinguishes_absent_from_bulk():
     p = _build_parser()
     assert (p.parse_args(["leads", "expire"]).expire is not None) is False
     assert (p.parse_args(["leads", "expire", "--expire"]).expire is not None) is True
+
+
+# ── the sign-off hold must stay reachable from EVERY triage status ───────────
+
+@pytest.mark.parametrize("status", ["new", "shortlist", "research", "needs_review",
+                                    "dismiss"])
+def test_a_held_lead_can_be_discharged_from_any_triage_status(tmp_path, status):
+    """`cv signoff --discard` must find a held lead wherever triage has left it.
+
+    `dismiss` is the case that matters and the one a narrower lookup misses: it is the
+    single triage verdict `_EXPIRABLE` omits (being expire's own destination), and it is
+    the most likely demotion for a lead a re-run of `sluice triage run` has reconsidered.
+    Resolved over anything narrower, `cv signoff` reports no match for a hold that
+    demonstrably exists, and the pending CV is unresolvable except by hand-editing
+    frontmatter.
+    """
+    slug = _seed(tmp_path, status=status, pending_cv="CV-2026.pdf",
+                 needs_signoff='["a claim"]')
+    got = _app(tmp_path).sign_off_cv(lead=slug, accept=False)
+    assert got == (slug, "discarded"), f"a held lead at status={status} was unreachable"
+    fm = Vault(str(tmp_path)).read_leads()[0].fm
+    assert "pending_cv" not in fm and "needs_signoff" not in fm
