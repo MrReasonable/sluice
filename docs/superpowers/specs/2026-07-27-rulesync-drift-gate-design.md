@@ -283,8 +283,17 @@ Offline and hermetic; the suite never shells out to npm or npx.
 ```
 
 The second is what a malformed `hooks.json` produces — it omits the term rather than printing
-`0 hooks`. Both are literal 9.6.3 output including the emoji; a bump may change the wording and the
-expected failure is then a loud parse error, not a silent pass. Say so in the fixture comment.
+`0 hooks`. Both are captured output including the emoji.
+
+**Correction (2026-07-27, after CodeRabbit's review of #77).** An earlier revision of this section
+claimed the fixtures' realness meant a version bump "produces a loud parse error, not a silent
+pass" *in these tests*. That is false, and the argument was used to reject a review finding before
+being reversed. A fixture is a constant in a test file: once frozen, a copied capture and a
+hand-authored string are indistinguishable, and neither notices that rulesync has started phrasing
+its summary differently. Provenance buys exactly one thing — at capture time the parser and
+`EXPECTED` were validated against real output rather than an assumption. Drift against the *live*
+generator is caught only by the `rulesync` CI job, which pipes the pinned binary's actual stdout
+into the guard. Say that in the fixture comment, not the stronger claim.
 
 Parser cases: 243 passes; 226 reports `hooks: 0`; no summary line errors; an unexpected feature
 fails; two summary lines error.
