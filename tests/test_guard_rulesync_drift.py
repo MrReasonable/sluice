@@ -59,6 +59,31 @@ def test_a_repeated_feature_is_a_hard_error():
         guard.parse_summary(GREEN.replace("17 hooks)", "17 hooks + 99 hooks)"))
 
 
+def test_terms_running_together_are_a_hard_error():
+    """The gap between two terms may not be EMPTY.
+
+    The first strictness pass rejected trailing junk and duplicates but matched the gap with
+    `[\\s+]*`, so `20 rules114 subagents92 skills17 hooks` yielded exactly the expected map from
+    a line no rulesync has ever emitted -- the guard certifying output it had not understood.
+    """
+    with pytest.raises(ValueError, match="run together"):
+        guard.parse_summary(
+            "All done! Written 243 file(s) total (20 rules114 subagents92 skills17 hooks)"
+        )
+
+
+def test_the_edges_of_the_parenthetical_may_be_bare():
+    """The counterpart the obvious fix gets wrong.
+
+    Requiring a separator EVERYWHERE rejects every real summary: nothing precedes the first term
+    and nothing follows the last, so both edge gaps are empty by construction. A one-line `*` ->
+    `+` swap would have turned this guard red on correct input, which is why the separator is
+    mandatory only BETWEEN terms.
+    """
+    assert guard.parse_summary(GREEN) == guard.EXPECTED
+    assert guard.parse_summary(GREEN.replace("total (", "total ( ")) == guard.EXPECTED
+
+
 def test_main_returns_zero_on_a_matching_capture(tmp_path):
     capture = tmp_path / "out.txt"
     capture.write_text(GREEN, encoding="utf-8")
