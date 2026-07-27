@@ -86,6 +86,14 @@ Each sub-app has its own `load_*_config()` reading its own top-level block of th
 everything runs with no config file at all. New tunables go in the relevant `*Config` dataclass and
 `sluice.yaml.example` — never hardcoded in logic.
 
+**The `leads` passes report by default; the pipeline commands write by default.** `leads dedupe`
+(`--merge ID [ID ...]`) and `leads expire` (`--expire [SLUG...]`) print and change nothing until
+told otherwise, and neither offers `--dry-run` — the default IS the dry run, and a flag that does
+nothing is drift. `triage run`/`ingest run`/`track run` invert both halves. The distinguishing
+property is whose judgement the write encodes: a pipeline command acts on a verdict the user
+configured, while a `leads` pass writes over a set the TOOL computed, so a mistyped one should print
+a list rather than change a hundred notes. (`docs/ARCHITECTURE.md` has the per-pass mechanics.)
+
 **Backends are selected by role, not provider.** `--backend` takes `auto|primary|fallback`
 (`claude-max`/`deepseek` survive as deprecated aliases). Which provider fills each role is config
 (`primary_backend`, `fallback_backend`). `auto` degrades to primary-only when the fallback has no API
@@ -119,7 +127,12 @@ a temp-file + `os.replace` (torn-file safety), so a concurrent writer's other ke
 sustained race raises `VaultConflict` (`core/protocols.py`, a Store-contract outcome) rather than
 clobbering, and callers treat that as a non-fatal outcome. It is best-effort under a residual
 compare→replace micro-window, not a lock — the primary threat is a human editing the note in Obsidian,
-who takes no lock (#16).
+who takes no lock (#16). `update_fields` also accepts `require_status` (#9): a frozen set the
+transform re-reads the *fresh* status against, abstaining (returning `False`, writing nothing) on a
+mismatch. That check CANNOT be hoisted into the caller — probed against a real vault, a guard on the
+enumerated `LeadNote` is byte-identical to no guard at all, because the snapshot is stale by
+construction. It is a parameter on the existing writer rather than a second write function, because
+CodeQL flags a new write function as a new sink.
 
 **Never-regress (status).** One `status` frontmatter key, two lifecycles with separate owners
 (`core/status.py`). Triage owns `new/shortlist/research/needs_review/dismiss` and may rewrite them;
@@ -137,12 +150,26 @@ in `shortlist_by_slug`, `can_apply`, and `confidence >= auto_apply_min`. Every w
 proposes to the dead-letter for a human, because a wrong `applied` silently suppresses a real
 application and is irreversible.
 An unrecognized status is passed through untouched rather than silently rewritten.
+`sluice leads expire` (#9) writes `dismiss` — triage-owned, so never-regress permits it — and never
+a `_TERMINAL`, since every terminal is application-owned. It reads only
+`TRIAGE_OWNED - {"dismiss"}` (derived, never hand-listed, so the set cannot name an
+application-owned state) and passes that same set as `require_status`, which is what actually holds
+the invariant when a lead enters the application lifecycle mid-sweep. It is NOT unconditional: a
+lead holding a `pending_cv` sign-off hold (#60) is refused, because dismissing it silently discards
+a composed CV no human has signed off. Any second bulk-dismiss path must refuse the same.
 
 **Empty config means abstain, not match-nothing.** Every preference gate (`accept_titles`,
 `target_locations`, `reject_companies`, `relevance_keep`/`relevance_drop`, pay floors) defaults to
 empty/zero, and an unconfigured gate passes every lead through. Getting this backwards silently bins
 someone's entire job hunt — it has happened once already (`672ad2a`), and
-`tests/test_sluice_neutral_defaults.py` now fails the build if it recurs.
+`tests/test_sluice_neutral_defaults.py` now fails the build if it recurs. `lead_ttl_days` (#9) is
+the same shape at the root config: `0` means staleness is OFF, so an unconfigured install expires
+nothing and refuses nothing. Its validator rejects `bool` *before* checking `int`, because `bool`
+subclasses `int` and PyYAML resolves `yes`/`on`/`true` to `True` — so `lead_ttl_days: yes`, the
+natural thing to type to turn the feature ON, would otherwise load as a one-day TTL and mark every
+lead stale with no error anywhere. The list-keyed neutral-defaults sweep does NOT cover int fields
+and must not be widened to: `0 == abstain` is not universal (the dossier-cache `ttl_days: int = 7`
+is a legitimate non-zero default), so this knob carries its own named guard.
 
 **The CV fabrication gate is hard.** `cv/validate.py` is pure and deterministic: every WORK bullet
 must cite a real bundle `[id]` and every number in a bullet must appear in a cited entry; the PROFILE
