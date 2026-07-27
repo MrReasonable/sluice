@@ -199,8 +199,10 @@ def test_named_slug_that_is_not_stale_is_refused(tmp_path):
 # ── the sign-off hold ────────────────────────────────────────────────────────
 
 def test_pending_cv_lead_is_refused_by_bulk(tmp_path):
-    # Dismissing it strands the hold permanently: sign_off_cv resolves through
-    # read_leads({"shortlist"}), so `cv signoff` and `--discard` both stop finding it.
+    # Dismissing it silently discards work in flight: a composed CV no human has signed
+    # off, with no signal that it went. (sign_off_cv resolves over all of TRIAGE_OWNED, so
+    # the lead stays reachable -- see test_a_held_lead_can_be_discharged_from_any_triage_status.
+    # The refusal rests on the discarded work, not on reachability.)
     slug = _seed(tmp_path, pending_cv="CV-2026.pdf")
     outcomes = _app(tmp_path).expire(slugs=[])
     assert outcomes == [(slug, "refused-signoff")]
