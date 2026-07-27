@@ -72,7 +72,7 @@ def _targets(rest: str) -> list[str]:
 
 
 def _assert_bar_is_complete(text: str, where: str) -> int:
-    """Assert every `ruff check` in `text` names all REQUIRED_TARGETS. Returns the match count."""
+    """Assert every `ruff check` in `text` names EXACTLY REQUIRED_TARGETS. Returns the match count."""
     matches = list(_RUFF_CHECK.finditer(text))
     for match in matches:
         rest = match.group("rest").strip()
@@ -93,11 +93,20 @@ def _assert_bar_is_complete(text: str, where: str) -> int:
                 f"(rest={rest!r}). A command degraded to a bare `ruff check` lints nothing."
             )
             continue
-        for required in REQUIRED_TARGETS:
-            assert required in targets, (
-                f"{where}: quality bar drops {required!r} (targets={targets}). "
-                "An agent following it passes locally and lands red in CI."
-            )
+        # Exact set equality, not mere containment. A `for required in REQUIRED_TARGETS: assert
+        # required in targets` only ever checks the missing direction, so a doc naming a target
+        # BEYOND the three ("... scripts extra") passed just as readily as the real command --
+        # overstating the bar CI actually enforces is the same kind of drift as understating it.
+        missing = [t for t in REQUIRED_TARGETS if t not in targets]
+        assert not missing, (
+            f"{where}: quality bar drops {missing!r} (targets={targets}). "
+            "An agent following it passes locally and lands red in CI."
+        )
+        extra = sorted(set(targets) - set(REQUIRED_TARGETS))
+        assert not extra, (
+            f"{where}: quality bar names targets beyond what CI enforces: {extra!r} "
+            f"(targets={targets}). REQUIRED_TARGETS is the authoritative list."
+        )
     return len(matches)
 
 
@@ -120,6 +129,16 @@ def test_trailing_comment_after_a_genuine_three_target_command_still_passes():
         "# NB: ruff is NOT in [test]; pip install ruff==0.15.21 (the CI pin)"
     )
     assert _assert_bar_is_complete(line, "synthetic") == 1
+
+
+def test_extra_targets_beyond_required_are_not_silently_accepted():
+    """Regression: a containment-only check (`required in targets` for each REQUIRED target)
+    passes a command naming a target BEYOND the three just as readily as the real one --
+    `ruff check sluice tests scripts extra` used to pass. That overstates what CI actually
+    lints, which is just as misleading to a reader as understating it."""
+    line = "ruff check sluice tests scripts extra"
+    with pytest.raises(AssertionError, match="extra"):
+        _assert_bar_is_complete(line, "synthetic")
 
 
 def test_ampersand_led_command_fails_as_broken_not_tolerated_as_prose():
