@@ -22,6 +22,7 @@ as prose and silently pass. So a match with no targets is only tolerated when a 
 (`+`, `and`), which a shell command cannot start with; anything else with no targets fails.
 """
 
+import json
 import re
 from pathlib import Path
 
@@ -96,3 +97,77 @@ def test_every_documented_quality_bar_matches_ci():
         f"no `ruff check` found anywhere under {RULESYNC}: either the docs stopped stating the "
         "quality bar, or this sweep stopped finding it -- both leave the bar unguarded"
     )
+
+
+def _ci_text() -> str:
+    return CI.read_text()
+
+
+def test_ci_success_requires_the_rulesync_job():
+    """Membership asserted SEPARATELY from the consistency check below.
+
+    Consistency alone is not enough: deleting the `needs:` entry AND its conjunct together
+    leaves both sides agreeing while the gate is unwired.
+    """
+    text = _ci_text()
+    assert "rulesync" in text.split("ci-success:")[1].split("if:")[0], (
+        "ci-success does not depend on the rulesync job"
+    )
+    assert 'needs.rulesync.result }}" = success' in text, (
+        "ci-success does not CHECK the rulesync result. `if: always()` means `needs:` only "
+        "orders the job -- the && chain is the only thing that can fail ci-success, so a red "
+        "gate would yield a green required check."
+    )
+
+
+def test_every_needed_job_is_checked_in_the_success_chain():
+    """Both ends enumerated from the file, never hand-listed."""
+    block = _ci_text().split("ci-success:")[1]
+    needed = re.search(r"needs:\s*\[([^\]]*)\]", block).group(1)
+    jobs = [j.strip() for j in needed.split(",") if j.strip()]
+    assert jobs, "ci-success declares no needs: this test would pass without checking anything"
+    for job in jobs:
+        assert f'needs.{job}.result }}}}" = success' in block, (
+            f"ci-success needs {job!r} but never checks its result"
+        )
+
+
+def test_the_rulesync_job_sets_pipefail():
+    """`bash -e {0}` is the default -- `-e` but NOT pipefail, so `cmd | tee` reports tee's
+    status and a rulesync exit 1 would be swallowed."""
+    assert "set -euo pipefail" in _ci_text()
+
+
+def test_the_capture_file_is_outside_the_work_tree():
+    """A scratch file beside the checkout is itself untracked and trips the porcelain check."""
+    assert '$RUNNER_TEMP/rulesync-output.txt' in _ci_text()
+
+
+def test_the_guard_runs_before_the_porcelain_check():
+    """Index comparison, not substring presence: a substring test passes when EITHER is
+    deleted. A fail-open produces a CLEAN tree, so porcelain-first would pass on it."""
+    text = _ci_text()
+    guard_at = text.index("guard_rulesync_drift.py")
+    porcelain_at = text.index("git status --porcelain")
+    assert guard_at < porcelain_at, "the completeness guard must run before the tree check"
+
+
+def test_the_job_uses_the_locked_binary_not_npx():
+    """Substituting `npx rulesync@<pinned-version> generate ...` back keeps the counts identical
+    and the guard green while silently discarding the locked transitive tree the pin exists for.
+
+    Deliberately no literal version digit here: tests/test_rulesync_version_pin.py enforces that
+    package.json is the ONLY tracked file allowed to name the pinned rulesync version, and this
+    docstring is not on its allowlist.
+    """
+    text = _ci_text()
+    assert "npm ci --ignore-scripts" in text
+    assert "npx" not in text, "the CI job must not invoke npx: it can fetch an unpinned rulesync"
+    assert text.index("npm ci --ignore-scripts") < text.index("guard_rulesync_drift.py")
+
+
+def test_package_json_runs_the_locked_binary_by_path():
+    """`npm run` PREPENDS node_modules/.bin to PATH, it does not restrict PATH. Measured: with
+    no node_modules, a bare `rulesync` silently ran a global 9.2.0 and exited 0."""
+    manifest = json.loads((ROOT / "package.json").read_text())
+    assert manifest["scripts"]["rulesync"] == "node_modules/.bin/rulesync generate -t '*' -f '*'"
