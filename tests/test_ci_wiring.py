@@ -132,6 +132,27 @@ def _ci_text() -> str:
     return CI.read_text()
 
 
+def _job_directives(name: str) -> str:
+    """One job's YAML, sliced out of ci.yml by indentation, with COMMENT LINES REMOVED.
+
+    Sliced, because whole-file substring assertions pass on the wrong job: `set -euo pipefail`
+    matched ANY job, so moving it to `lint` -- where it does nothing for the rulesync
+    pipeline -- kept every such assertion green. A job key is the only thing at two-space
+    indent; steps sit at four or more, so the next two-space key ends the block.
+
+    Comment-stripped, because a substring test over raw text matches the PROSE EXPLAINING a
+    rule as readily as the rule. tests/test_no_leaked_files.py records this exact bug from the
+    other side, and it fired here immediately: the comment above this job's tree check quotes
+    the fail-open form verbatim, so a check for its absence found it in the warning against it.
+    """
+    text = _ci_text()
+    start = text.index(f"\n  {name}:\n")
+    rest = text[start + 1 :]
+    end = re.search(r"\n  [a-z][\w-]*:\n", rest)
+    block = rest[: end.start()] if end else rest
+    return "\n".join(ln for ln in block.splitlines() if not ln.lstrip().startswith("#"))
+
+
 def test_ci_success_requires_the_rulesync_job():
     """Membership asserted SEPARATELY from the consistency check below.
 
@@ -163,13 +184,37 @@ def test_every_needed_job_is_checked_in_the_success_chain():
 
 def test_the_rulesync_job_sets_pipefail():
     """`bash -e {0}` is the default -- `-e` but NOT pipefail, so `cmd | tee` reports tee's
-    status and a rulesync exit 1 would be swallowed."""
-    assert "set -euo pipefail" in _ci_text()
+    status and a rulesync exit 1 would be swallowed.
+
+    Scoped to the job, not the file: pipefail set anywhere else protects nothing here.
+    """
+    assert "set -euo pipefail" in _job_directives("rulesync")
 
 
 def test_the_capture_file_is_outside_the_work_tree():
     """A scratch file beside the checkout is itself untracked and trips the porcelain check."""
-    assert '$RUNNER_TEMP/rulesync-output.txt' in _ci_text()
+    assert "$RUNNER_TEMP/rulesync-output.txt" in _job_directives("rulesync")
+
+
+def test_the_tree_check_fails_closed_when_git_fails():
+    """`if [ -n "$(git status --porcelain)" ]` DISCARDS the substitution's exit status, and
+    `set -e` is suppressed inside an `if` condition. Verified in bash: when git cannot run, that
+    form reports a CLEAN tree and exits 0, so a gitignore gap ships green -- the fails-open class
+    this repo spends its life engineering out, and one the Python side already closed
+    (tests/test_no_leaked_files.py's `test_the_gate_fails_closed_when_git_fails`).
+
+    Assign first, check the status, THEN test the value.
+    """
+    block = _job_directives("rulesync")
+    assert 'if ! dirty=$(git status --porcelain); then' in block, (
+        "the tree check no longer captures git's exit status separately from its output: a "
+        "failing git would be read as a clean tree"
+    )
+    assert '[ -n "$dirty" ]' in block, "the tree check no longer tests the captured output"
+    assert 'if [ -n "$(git status --porcelain)" ]' not in block, (
+        "the fail-OPEN form is back: a command substitution inside `[ -n ... ]` throws away the "
+        "exit status, and `set -e` does not fire inside an `if` condition"
+    )
 
 
 def test_the_guard_runs_before_the_porcelain_check():

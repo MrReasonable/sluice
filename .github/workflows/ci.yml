@@ -65,8 +65,16 @@ jobs:
           set -euo pipefail
           npm run rulesync | tee "$RUNNER_TEMP/rulesync-output.txt"
           python scripts/guard_rulesync_drift.py "$RUNNER_TEMP/rulesync-output.txt"
-          if [ -n "$(git status --porcelain)" ]; then
-            git status --porcelain
+          # FAIL CLOSED, twice over. `if [ -n "$(git status --porcelain)" ]` DISCARDS the
+          # substitution's exit status, and `set -e` is suppressed inside an `if` condition --
+          # so a git that cannot run reports a CLEAN tree and a gitignore gap ships green.
+          # Assign first, check the status, then test the value.
+          if ! dirty=$(git status --porcelain); then
+            echo "git status failed -- refusing to certify a clean tree" >&2
+            exit 1
+          fi
+          if [ -n "$dirty" ]; then
+            printf '%s\n' "$dirty"
             exit 1
           fi
 
