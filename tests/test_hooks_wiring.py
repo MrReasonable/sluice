@@ -11,10 +11,11 @@ prints "All done!". Omit the top-level `hooks` record and it prints a Zod error,
 "All files are up to date", writes nothing, and exits 0. An exit-code check would pass all
 of it. So these assert the shape.
 
-WHY THE SOURCE AND NOT THE GENERATED FILE: `.claude/settings.json` is gitignored and
-produced by `npx rulesync generate`, which needs node and network. CI never runs it, so
-asserting the generated artifact could not be hermetic. `.rulesync/hooks.json` is the
-tracked input, and the schema is what actually goes wrong.
+WHY THE SOURCE AND NOT THE GENERATED FILE: `.claude/settings.json` is gitignored and produced
+by `npm run rulesync`, which needs node and network. CI DOES now run the generator, in the
+separate `rulesync` job -- but this suite must stay offline and hermetic, so asserting the
+generated artifact here still could not work. `.rulesync/hooks.json` is the tracked input, and
+the schema is what actually goes wrong. The conclusion is unchanged; only its reason moved.
 """
 import json
 from pathlib import Path
