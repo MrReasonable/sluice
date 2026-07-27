@@ -1,7 +1,10 @@
 """One place chooses the rulesync version; everywhere else agrees or says nothing.
 
-Before this, `9.6.3` sat in four live places and a bump meant four edits kept in step by
-nothing. package.json is now the only place that CHOOSES. One exception is deliberate:
+Before this, a hardcoded version string sat in several live places and a bump meant several
+edits kept in step by nothing -- including, self-referentially, this file's own docstring: the
+sweep below treats this module as a tracked file like any other, so naming the literal here
+would fail on itself the moment it was committed. package.json is now the only place that
+CHOOSES. One exception is deliberate:
 .rulesync/hooks.json's `_comment` records which version's schema that file was written
 against, and that comment calls itself the only defence against a version bump silently
 dropping the hook command. Erasing the literal would lose the record; excluding the file
