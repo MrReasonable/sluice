@@ -192,9 +192,10 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
-
-import guard_rulesync_drift as guard  # noqa: E402
+# `scripts/` is a package (`scripts/__init__.py`) and the repo root is on sys.path under pytest,
+# so this is a plain import -- matching tests/test_guard_no_bypass.py, which does the same. No
+# sys.path manipulation.
+from scripts import guard_rulesync_drift as guard
 
 GREEN = "🎉 All done! Written 243 file(s) total (20 rules + 114 subagents + 92 skills + 17 hooks)"
 # What a malformed .rulesync/hooks.json actually produces. Note it OMITS the hooks term rather
@@ -279,7 +280,7 @@ def test_the_module_exits_nonzero_as_a_process(tmp_path):
 - [ ] **Step 2: Run to verify they fail**
 
 Run: `python -m pytest tests/test_guard_rulesync_drift.py -q`
-Expected: collection error — `ModuleNotFoundError: No module named 'guard_rulesync_drift'`.
+Expected: collection error — `ModuleNotFoundError: No module named 'scripts.guard_rulesync_drift'`.
 
 - [ ] **Step 3: Write the guard**
 
