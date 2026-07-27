@@ -29,10 +29,18 @@ EXPECTED = {"rules": 20, "subagents": 114, "skills": 92, "hooks": 17}
 
 _SUMMARY = re.compile(r"All done! Written \d+ file\(s\) total \(([^)]*)\)")
 _TERM = re.compile(r"(\d+)\s+([a-z]+)")
-# What may legitimately sit between two terms, and nowhere else. rulesync joins with ` + `;
-# whitespace alone is admitted because a bare join is still unambiguous, and pinning the exact
-# separator would turn a cosmetic reformat into a parse error with no drift behind it.
-_SEPARATOR = re.compile(r"[\s+]*")
+# What may legitimately sit between two terms. rulesync joins with ` + `; whitespace alone is
+# admitted because a bare join is still unambiguous, and pinning the exact separator would turn
+# a cosmetic reformat into a parse error with no drift behind it.
+#
+# TWO patterns, not one, and the difference is load-bearing. BETWEEN two terms a separator is
+# REQUIRED: with `*` the gap may be empty, so `20 rules114 subagents92 skills17 hooks` parsed as
+# four clean terms and this guard reported a match on output it had not understood. But an empty
+# gap is CORRECT in the two places nothing needs separating -- before the first term, and after
+# the last -- so `+` cannot simply replace `*` at every site: that would reject every real
+# summary, whose trailing remainder is always empty.
+_SEPARATOR_BETWEEN = re.compile(r"[\s+]+")
+_SEPARATOR_EDGE = re.compile(r"[\s+]*")
 
 
 def parse_summary(text: str) -> dict[str, int]:
@@ -63,12 +71,20 @@ def parse_summary(text: str) -> dict[str, int]:
     inner = found[0]
     counts: dict[str, int] = {}
     cursor = 0
-    for term in _TERM.finditer(inner):
+    for index, term in enumerate(_TERM.finditer(inner)):
         gap = inner[cursor : term.start()]
-        if not _SEPARATOR.fullmatch(gap):
+        # Nothing precedes the first term, so only later gaps must actually separate something.
+        if not (_SEPARATOR_EDGE if index == 0 else _SEPARATOR_BETWEEN).fullmatch(gap):
+            # Distinguish the two shapes: an EMPTY gap means two terms ran together, which reads
+            # nothing like "unparsed text ''" to whoever hits it at 2am.
+            detail = (
+                "two terms run together with no separator between them"
+                if gap == ""
+                else f"unparsed text {gap!r}"
+            )
             raise ValueError(
-                f"unparsed text {gap!r} in the summary parenthetical {inner!r}. Discarding it "
-                "would report a clean parse of output this guard does not understand."
+                f"{detail} in the summary parenthetical {inner!r}. Accepting it would report a "
+                "clean parse of output this guard does not understand."
             )
         name, count = term.group(2), int(term.group(1))
         if name in counts:
@@ -80,7 +96,7 @@ def parse_summary(text: str) -> dict[str, int]:
         cursor = term.end()
 
     trailing = inner[cursor:]
-    if not _SEPARATOR.fullmatch(trailing):
+    if not _SEPARATOR_EDGE.fullmatch(trailing):
         raise ValueError(
             f"unparsed trailing text {trailing!r} in the summary parenthetical {inner!r}. "
             "Discarding it would report a clean parse of output this guard does not understand."
