@@ -59,3 +59,18 @@ updates:
     groups:
       pip:
         patterns: ["*"]
+
+  # npm covers package.json -- the rulesync generator only; sluice itself ships no JS.
+  # A bump here is EXPECTED to land red: scripts/guard_rulesync_drift.py pins the per-feature
+  # output counts, and a new rulesync version moves them. That is the gate working. Update
+  # EXPECTED and re-audit .gitignore's generated-output list on the bump PR, then merge.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      npm:
+        patterns: ["*"]
