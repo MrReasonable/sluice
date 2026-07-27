@@ -116,12 +116,24 @@ def test_the_gate_covers_every_path_gitignore_covers():
     `.memsearch`, so a later addition to FORBIDDEN_COMPONENTS -- `.npmrc`, which stops a
     registry credential becoming committable -- would have sat outside the check entirely.
     Enumerate, never hand-list.
+
+    Compares against parsed RULE lines, not a raw substring-of-the-whole-file check: a plain
+    `path in ignored` matched the explanatory comment above the `.npmrc` rule -- which names
+    `.npmrc` in its own prose -- and stayed green with the rule line itself deleted. That
+    checked the comment describing the rule, not the rule. Comparing with `.strip("/")` on
+    both sides lets an anchored rule (`/node_modules/`) match an unanchored gate entry
+    (`node_modules/`) and vice versa.
     """
     ignored = (REPO / ".gitignore").read_text()
+    rules = {
+        line.strip().strip("/")
+        for line in ignored.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    }
     gated = FORBIDDEN_EXACT + FORBIDDEN_PREFIXES + FORBIDDEN_COMPONENTS
     assert gated, "no paths gated: this test would pass without checking anything"
     for path in gated:
-        assert path.strip("/") in ignored, f"{path} is gated but NOT gitignored -- they must agree"
+        assert path.strip("/") in rules, f"{path} is gated but NOT gitignored -- they must agree"
 
 
 def test_the_gate_fails_closed_when_git_fails():
