@@ -61,7 +61,9 @@ shows corrected code while stale bytecode executes. Run the function and look at
 
 The suite is fast and hermetic — there is no reason not to run all of it. `run_tests.sh` is the same
 thing via `.venv/bin/python`, so it needs a `.venv/` (gitignored) to exist first. CI
-(`.github/workflows/ci.yml`) runs ruff + zizmor, then pytest on Python 3.12/3.13/3.14.
+(`.github/workflows/ci.yml`) runs four jobs: `lint` (ruff + zizmor), `test` (pytest on Python
+3.12/3.13/3.14), `rulesync` (regenerates `.rulesync/`'s outputs and fails the build on any drift
+or hand-edited generated file), and `ci-success`, the aggregate gate over the first three.
 
 Running the pipeline:
 
@@ -196,7 +198,10 @@ anyone's taste. Personal values reach the code only through `sluice.local.yaml` 
 **`sluice/` is standard-library only.** The sole exceptions: `yaml`, imported under a guarded
 `try/except ImportError` in each config module, and the Google client libraries, imported lazily
 inside functions in `track/google_client.py`. HTTP goes through `urllib`, not `requests`. Do not add
-a runtime dependency without a deliberate decision.
+a runtime dependency without a deliberate decision. The rule binds `sluice/` -- what ships to a
+user. The root `package.json` is not an exception to it: it pins the Node-based `rulesync` CLI
+that regenerates `.rulesync/`'s AI-tool outputs, a CI-only dev-time tool that never ships in the
+package and nothing a user installing `sluice` ever sees.
 
 **Fail loudly at construction.** An unknown backend/adapter name raises and lists the valid names
 rather than falling through to a default. A quiet wrong default is the bug class this codebase most
