@@ -364,7 +364,7 @@ rm -f "$body_file"
 The sluice quality bar. Both must pass before any push:
 
 ```bash
-.venv/bin/ruff check sluice tests      # CI pins ruff==0.15.21
+.venv/bin/ruff check sluice tests scripts      # CI pins ruff==0.15.21
 .venv/bin/python -m pytest             # fast, fully offline
 ```
 
@@ -480,7 +480,7 @@ Then return to Step 3 (re-fetch all three sources × all pages). If everything's
 | Fetch latest CR review body | `gh api "repos/$repo_full/pulls/$PR/reviews/$ID" --jq .body` |
 | Originating-commit lookup | `git blame -L LINE,LINE --porcelain FILE \| head -1 \| cut -d' ' -f1` |
 | Create fixup commit | `git commit --fixup=$ORIGIN_SHA` |
-| Quality bar | `.venv/bin/ruff check sluice tests && .venv/bin/python -m pytest` |
+| Quality bar | `.venv/bin/ruff check sluice tests scripts && .venv/bin/python -m pytest` |
 | Autosquash | `GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash $(git merge-base HEAD origin/main)` |
 | **Resolve thread** (only reliable method) | GraphQL `resolveReviewThread` mutation |
 | Reply to inline thread | `jq -n --arg body "$BODY" '{body:$body}' \| gh api "repos/$repo_full/pulls/$PR/comments/$ID/replies" --input -` |

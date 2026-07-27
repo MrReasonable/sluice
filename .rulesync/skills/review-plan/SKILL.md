@@ -82,7 +82,7 @@ Read the plan header and task list. Extract:
   `sluice/cv/`, `sluice/apply/`, `sluice/track/`, `tests/`, `docs/`, `pyproject.toml`.
 - The owner agent named on each task, if the plan annotates them.
 - The definition of done, and whether it names runnable commands (`python -m pytest`,
-  `ruff check sluice tests`).
+  `ruff check sluice tests scripts`).
 
 A plan with no stated goal, no task breakdown, or no definition of done cannot be executed as
 written. Record that as a `scope-gap` finding, then continue with the full roster.
@@ -294,7 +294,7 @@ Plan-shape categories (these are what make this skill different from `/review-pr
   test-engineer, a dependency addition not routed to the architect.
 - `runnability`: a step omits its exact command, its expected output, or names a path that does not
   exist. Every verification step should be copy-pasteable: `python -m pytest`,
-  `ruff check sluice tests`.
+  `ruff check sluice tests scripts`.
 - `convention-violation`: a hard rule from the block below, or a non-conforming Conventional Commits
   message in a commit step.
 
