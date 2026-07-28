@@ -288,10 +288,37 @@ def test_the_emitted_hook_command_is_asserted_after_generation():
         "the settings.json check no longer names the command it is looking for, so it can pass "
         "on a settings.json with hooks and no commands"
     )
+    assert "PreToolUse" in block, (
+        "the settings.json check is no longer STRUCTURAL -- it names no hook event, so it is "
+        "back to proving only that the file CONTAINS the string. Measured: a settings.json "
+        "whose command had been re-nested under PostToolUse still satisfies `grep -q "
+        "guard_no_bypass.py` while Claude Code, which reads hooks.PreToolUse[*].hooks[*]."
+        "command and nothing else, runs nothing at all."
+    )
     assert block.index("guard_rulesync_drift.py") < block.index(".claude/settings.json"), (
         "the artifact check must run AFTER generation is confirmed complete: on a run that "
         "wrote nothing, a stale settings.json from the checkout would satisfy it"
     )
+
+
+def test_the_emitted_agent_and_skill_names_are_asserted_against_the_source():
+    """A file COUNT cannot see a RENAMED agent, and these agents are the merge gate.
+
+    Same argument the hook-command check already rests on, applied to the other content the
+    drift guard pins by number alone. `EXPECTED` fixes 5 subagents and 4 skills; rename one on
+    the way out and it is still 5 and still 4. Measured against a real generated tree: the
+    guard stays green, the tree stays clean, and a review this repo's merge gate is built from
+    silently never runs. Only comparing the emitted NAMES against `.rulesync/` can tell.
+
+    Both ends enumerated from the filesystem in the job itself, never hand-listed here -- a
+    written-out roster is stale the moment an agent is added.
+    """
+    block = _job_directives("rulesync")
+    for path in (".claude/agents", ".rulesync/subagents", ".claude/skills", ".rulesync/skills"):
+        assert path in block, (
+            f"the rulesync job no longer compares {path}. A renamed or dropped review agent or "
+            "skill ships with the file count intact and nothing red anywhere."
+        )
 
 
 def test_the_guard_runs_before_the_porcelain_check():
