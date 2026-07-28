@@ -34,14 +34,19 @@ REPO = Path(__file__).parent.parent
 # every rule in it to be gated here, and the companion test requires every entry here to be a
 # real ignore rule -- so the two files are pinned to each other in both directions.
 FORBIDDEN_EXACT = (
-    # Two of these are still WRITTEN: package.json's rulesync script targets
-    # `claudecode,agentsmd`, which emits CLAUDE.md and AGENTS.md. Everything else in this
-    # tuple is a LEGACY OUTPUT of the earlier `-t '*'`, which emitted a file for every tool
-    # rulesync knew about.
+    # THREE of these are reachable under the CURRENT target set, not two. package.json's
+    # rulesync script targets `claudecode,agentsmd`, which writes CLAUDE.md and AGENTS.md
+    # today; `.mcp.json` joins them the moment `.rulesync/mcp.json` exists -- measured, the
+    # narrowed set emits it. Its absence is one source file away from being undone, which is a
+    # different thing from a target that can no longer emit at all, and `.gitignore` keeps it in
+    # the GENERATED block for that reason. Classifying it as legacy here would put the two files
+    # out of step and invite pruning a live guard.
     "CLAUDE.md",
     "AGENTS.md",
-    "GEMINI.md",
     ".mcp.json",
+    # Everything below is a LEGACY OUTPUT of the earlier `-t '*'`, which emitted a file for
+    # every tool rulesync knew about.
+    "GEMINI.md",
     ".cursorrules",
     ".github/copilot-instructions.md",
     # ...continued. LEGACY DOES NOT MEAN DEAD, and the inference that it does has already cost
