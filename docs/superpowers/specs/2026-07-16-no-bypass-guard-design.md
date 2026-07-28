@@ -1,5 +1,7 @@
 # No-bypass guard — design
 
+> **Superseded 2026-07-28:** the regenerate command named below is stale — it is now `npm ci --ignore-scripts && npm run rulesync`, which reads the version AND the target list from `package.json`. Running the `-t '*'` form as written re-creates the ~34 legacy output directories this repo no longer generates. The steps are left as executed; only the command has moved.
+
 - **Date**: 2026-07-16
 - **Status**: reviewed (5 specialists, 0 Critical / 2 High / 7 Medium / 10 Low); findings folded in; approved for implementation
 - **Origin**: branch `chore/no-bypass-guard` (unmerged); user decision 2026-07-16 to land it, repairing all four rules

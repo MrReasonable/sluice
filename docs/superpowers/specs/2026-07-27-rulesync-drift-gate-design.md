@@ -1,5 +1,7 @@
 # rulesync drift gate — enforce what `.gitignore` currently only asks for (#2)
 
+> **Superseded 2026-07-28:** the `package.json` snippet below still shows `generate -t '*' -f '*'` and the version pinned at the time. The shipped script targets `claudecode,agentsmd`, and the `-t '*'` form re-creates the ~34 legacy output directories this repo no longer generates. Regenerate with `npm ci --ignore-scripts && npm run rulesync`; `package.json` is the one place that chooses the version and the targets. The design is left as approved.
+
 **Status:** design approved 2026-07-27; revised three times after `/review-plan` (5 reviewers each
 round). R1: 1 Critical, 9 High, 7 Medium, 10 Low. R2: 5 High, 9 Medium, 5 Low. R3: 4 High, 6 Medium,
 5 Low. The decisions have not changed; several mechanisms underneath them have been replaced twice.

@@ -1,5 +1,7 @@
 # Read-Path Dedup Implementation Plan
 
+> **Superseded 2026-07-28:** the regenerate command named below is stale — it is now `npm ci --ignore-scripts && npm run rulesync`, which reads the version AND the target list from `package.json`. Running the `-t '*'` form as written re-creates the ~34 legacy output directories this repo no longer generates. The steps are left as executed; only the command has moved.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a human-gated `sluice leads dedupe` command that reconciles duplicate lead notes (the same role reaching the vault as several notes when company/title strings drift), without ever silently merging two genuinely different roles.
