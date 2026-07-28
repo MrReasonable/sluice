@@ -34,15 +34,28 @@ REPO = Path(__file__).parent.parent
 # every rule in it to be gated here, and the companion test requires every entry here to be a
 # real ignore rule -- so the two files are pinned to each other in both directions.
 FORBIDDEN_EXACT = (
-    # The AI tools this repo hand-maintains.
+    # Two of these are still WRITTEN: package.json's rulesync script targets
+    # `claudecode,agentsmd`, which emits CLAUDE.md and AGENTS.md. Everything else in this
+    # tuple is a LEGACY OUTPUT of the earlier `-t '*'`, which emitted a file for every tool
+    # rulesync knew about.
     "CLAUDE.md",
     "AGENTS.md",
     "GEMINI.md",
     ".mcp.json",
     ".cursorrules",
     ".github/copilot-instructions.md",
-    # ...and the rest of what `-t '*'` emits: rulesync writes an output for EVERY tool the
-    # pinned version knows about, not only the ones above.
+    # ...continued. LEGACY DOES NOT MEAN DEAD, and the inference that it does has already cost
+    # this branch a near-miss. "Those targets no longer generate, so these entries can go" is
+    # true in its premise and false in its conclusion: every machine that ever ran `-t '*'`
+    # still has these files ON DISK. Narrowing `-t` stops them being REGENERATED; it cannot
+    # delete what already exists, and an ignore rule plus this gate are the only things keeping
+    # them out of the index. Acting on that inference -- deleting .gitignore's parallel block
+    # AND trimming these tuples in one change -- let `git add -A` commit 232 files and 46,553
+    # lines of build output here with the suite still GREEN. Green precisely BECAUSE the gate
+    # that would have caught it was trimmed in the same breath, which is why no future
+    # narrowing of `-t` is a reason to prune this list. .gitignore's LEGACY OUTPUTS block
+    # carries the same warning; this is its mirror and the two are pruned together or not at
+    # all.
     ".goosehints",
     ".hermes.md",
     ".roomodes",
