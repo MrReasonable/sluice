@@ -51,15 +51,18 @@ dossiers/
 /.cursorrules
 /.github/copilot-instructions.md
 
-# The list above covers the AI tools this repo hand-maintains. But the documented regenerate
-# command uses `-t '*'` (ALL targets), so `rulesync generate` also emits an output for every
-# other tool the pinned rulesync knows about. Those are build artifacts too -- ignore them so the
-# documented command leaves a clean tree instead of 32 untracked entries. Root-anchored for the
-# same reason as the block above. Re-audit this list on a rulesync version bump (the target set
-# is what changes) AND whenever a new rulesync FEATURE is turned on: `-f '*'` covers
-# rules/ignore/mcp/subagents/commands/skills/hooks/permissions, and enabling one emits a fresh
-# output per target. scripts/guard_rulesync_drift.py is what now FORCES that re-audit: it pins
-# the per-feature output counts, so a bump or a new feature fails CI until a human looks here.
+# LEGACY OUTPUTS -- no longer generated, and NOT removable. package.json's rulesync script
+# targets `claudecode,agentsmd`; under the previous `-t '*'` it emitted an output for every tool
+# rulesync knew about, and every machine that ran that command still has these ~34 directories on
+# disk. Narrowing `-t` stops them being REGENERATED; it cannot delete what already exists. Drop
+# these ignores and a single `git add -A` commits ~46k lines of build output -- measured, on this
+# branch, by doing exactly that.
+#
+# So this list is now STATIC rather than growing: a new upstream target never needs adding here,
+# because it is never generated. Re-audit only when `-t` is WIDENED, or when a new rulesync
+# FEATURE is turned on (`-f '*'` covers rules/ignore/mcp/subagents/commands/skills/hooks/
+# permissions). scripts/guard_rulesync_drift.py pins the per-feature output counts and fails CI
+# until a human looks here.
 #
 # NOTE: `.github/` is TRACKED (workflows/, and the copilot handling above), so only rulesync's
 # generated SUBdirs under it are ignored here -- never a bare `.github/`.
