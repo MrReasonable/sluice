@@ -109,7 +109,7 @@ _NAME = r"[^/\s'\"`,)\]]+"
 _HOME_PATH_RE = re.compile(r"/(?:Users|home)/" + _NAME)
 
 # Where .gitignore's generated-output list begins and ends. The boundary is drawn
-# STRUCTURALLY -- by the two markers below, not by a line count and not by hand -- because the
+# STRUCTURALLY -- by the markers below, not by a line count and not by hand -- because the
 # gate's coverage claim is about `rulesync generate` outputs and nothing else.
 #
 # HOW TO EXTEND THIS CORRECTLY: a rule that lands BETWEEN these markers is a generated output
@@ -121,6 +121,10 @@ _HOME_PATH_RE = re.compile(r"/(?:Users|home)/" + _NAME)
 # gated anyway, deliberately -- gating more than the block is allowed, gating less is not.
 _GENERATED_BLOCK_START = "# AI-tool configs are GENERATED from .rulesync/"
 _GENERATED_BLOCK_END = "!/.rulesync/**"
+# The block is in TWO halves -- currently-written outputs, then LEGACY OUTPUTS -- and the legacy
+# half holds 34 of the 41 rules. Pinning that the header sits INSIDE the markers is what makes
+# the end marker's position load-bearing rather than incidental. See the moved-marker test.
+_LEGACY_HEADER = "# LEGACY OUTPUTS"
 
 
 def _git(*args: str, allow: tuple = (0,)) -> str:
@@ -135,12 +139,15 @@ def _git(*args: str, allow: tuple = (0,)) -> str:
     return proc.stdout
 
 
-def _generated_output_rules() -> list[str]:
-    """Every .gitignore rule that covers a `rulesync generate` output, read from the file.
+def _parse_generated_block(lines: list[str]) -> list[str]:
+    """Every .gitignore rule that covers a `rulesync generate` output. Pure, given the lines.
 
     Derived, never transcribed: 41 rules hand-copied into a test are 41 chances to copy 40.
+
+    Takes LINES rather than reading the file, so the moved-marker case below can feed it a
+    deliberately broken copy. A parser that can only be run against the one input it is supposed
+    to accept cannot be shown to reject anything.
     """
-    lines = (REPO / ".gitignore").read_text().splitlines()
     starts = [i for i, line in enumerate(lines) if line.startswith(_GENERATED_BLOCK_START)]
     ends = [i for i, line in enumerate(lines) if line.strip() == _GENERATED_BLOCK_END]
     assert len(starts) == 1 and len(ends) == 1 and starts[0] < ends[0], (
@@ -148,12 +155,24 @@ def _generated_output_rules() -> list[str]:
         f"{len(ends)} end marker(s)). A reworded marker would silently reduce this sweep to "
         "covering nothing, so it fails instead."
     )
+    legacy = [i for i, line in enumerate(lines) if line.startswith(_LEGACY_HEADER)]
+    assert len(legacy) == 1 and starts[0] < legacy[0] < ends[0], (
+        f"the {_LEGACY_HEADER!r} header is not inside .gitignore's generated-output block "
+        f"({len(legacy)} header(s); block spans lines {starts[0] + 1}-{ends[0] + 1}). The legacy "
+        "half holds 34 of the 41 rules, so an end marker that drifted ABOVE this header leaves "
+        "the sweep parsing 4 rules and passing -- a count the `> 1` floor below cannot tell from "
+        "a healthy one. Assert the structure, not the size."
+    )
     return [
         line.strip()
         for line in lines[starts[0] : ends[0]]
         # `!` is the re-include that closes the block, `#` the prose inside it.
         if line.strip() and not line.strip().startswith(("#", "!"))
     ]
+
+
+def _generated_output_rules() -> list[str]:
+    return _parse_generated_block((REPO / ".gitignore").read_text().splitlines())
 
 
 def _probe_path(rule: str) -> str:
@@ -264,7 +283,9 @@ def test_the_gate_covers_every_generated_output_gitignore_covers():
     rules = _generated_output_rules()
     assert len(rules) > 1, (
         f"only {len(rules)} rule(s) parsed out of .gitignore's generated-output block: the "
-        "block moved or the parse broke, and this sweep would pass having checked ~nothing"
+        "parse broke badly enough to leave almost nothing, and this sweep would pass having "
+        "checked ~nothing. A block that MOVED is caught structurally in _parse_generated_block, "
+        "not here -- this floor cannot see it, which is the whole reason that check exists."
     )
     ungated = [rule for rule in rules if not _is_forbidden(_probe_path(rule))]
     assert not ungated, (
@@ -272,6 +293,40 @@ def test_the_gate_covers_every_generated_output_gitignore_covers():
         "Add each to FORBIDDEN_EXACT (a file) or FORBIDDEN_PREFIXES (a directory rule). "
         "An ignore rule does not stop an already-tracked file; only this gate does."
     )
+
+
+def test_an_end_marker_moved_above_the_legacy_header_fails_loudly():
+    """The catastrophic-parse-loss case the `> 1` floor structurally cannot see.
+
+    WITNESSED by MOVING, not deleting. Relocating `!/.rulesync/**` to just above the LEGACY
+    OUTPUTS header -- a plausible tidy-up now that the block is split in two, since the re-include
+    reads like it belongs with the entries it re-includes -- drops the parse from 41 rules to
+    exactly 4 (`/CLAUDE.md`, `/AGENTS.md`, `/.claude/`, `/.mcp.json`) while every assertion in
+    this file stays GREEN. 4 is more than 1, so the floor passes; the 34 legacy rules simply stop
+    being swept, and the gate silently stops guarding the entries that exist precisely because
+    `.gitignore` alone cannot protect an already-tracked file.
+
+    Mutates the REAL `.gitignore` in memory rather than a synthetic stand-in, so the case is the
+    one a human would actually commit and not a shape chosen to fail.
+    """
+    lines = (REPO / ".gitignore").read_text().splitlines()
+    end = next(i for i, line in enumerate(lines) if line.strip() == _GENERATED_BLOCK_END)
+    lines.pop(end)
+    legacy = next(i for i, line in enumerate(lines) if line.startswith(_LEGACY_HEADER))
+    lines.insert(legacy, _GENERATED_BLOCK_END)
+
+    # Non-vacuity: the mutation really does leave a parse that the old floor waves through.
+    starts = next(i for i, line in enumerate(lines) if line.startswith(_GENERATED_BLOCK_START))
+    ends = next(i for i, line in enumerate(lines) if line.strip() == _GENERATED_BLOCK_END)
+    survivors = [
+        line.strip()
+        for line in lines[starts:ends]
+        if line.strip() and not line.strip().startswith(("#", "!"))
+    ]
+    assert len(survivors) == 4 and len(survivors) > 1, survivors
+
+    with pytest.raises(AssertionError, match=_LEGACY_HEADER):
+        _parse_generated_block(lines)
 
 
 def test_prefix_rules_are_root_anchored_and_component_rules_are_not():
