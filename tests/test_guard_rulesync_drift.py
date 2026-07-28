@@ -26,11 +26,11 @@ import pytest
 # sys.path manipulation.
 from scripts import guard_rulesync_drift as guard
 
-GREEN = "🎉 All done! Written 243 file(s) total (20 rules + 114 subagents + 92 skills + 17 hooks)"
+GREEN = "🎉 All done! Written 12 file(s) total (2 rules + 5 subagents + 4 skills + 1 hooks)"
 # What a malformed .rulesync/hooks.json actually produces. Note it OMITS the hooks term rather
 # than printing `0 hooks` -- a parser regexing `(\d+) hooks` finds no match and, if it treats
 # "no match" as "skip", reports success on the one input this guard exists to reject.
-BROKEN_HOOKS = "🎉 All done! Written 226 file(s) total (20 rules + 114 subagents + 92 skills)"
+BROKEN_HOOKS = "🎉 All done! Written 11 file(s) total (2 rules + 5 subagents + 4 skills)"
 
 
 def test_a_matching_summary_parses_to_the_expected_map():
@@ -58,26 +58,26 @@ def test_a_term_the_parser_cannot_read_is_a_hard_error():
     line it had only partly understood. `NONSENSE` stands in for whatever a version bump starts
     appending -- the point is that the parenthetical must be fully consumed."""
     with pytest.raises(ValueError, match="unparsed"):
-        guard.parse_summary(GREEN.replace("17 hooks)", "17 hooks + NONSENSE)"))
+        guard.parse_summary(GREEN.replace("1 hooks)", "1 hooks + NONSENSE)"))
 
 
 def test_a_repeated_feature_is_a_hard_error():
     """Last-wins made this yield `hooks: 99` -- one of the two counts silently chosen, the
     other silently dropped. Either could have been the real one."""
     with pytest.raises(ValueError, match="twice"):
-        guard.parse_summary(GREEN.replace("17 hooks)", "17 hooks + 99 hooks)"))
+        guard.parse_summary(GREEN.replace("1 hooks)", "1 hooks + 99 hooks)"))
 
 
 def test_terms_running_together_are_a_hard_error():
     """The gap between two terms may not be EMPTY.
 
     The first strictness pass rejected trailing junk and duplicates but matched the gap with
-    `[\\s+]*`, so `20 rules114 subagents92 skills17 hooks` yielded exactly the expected map from
+    `[\\s+]*`, so `2 rules5 subagents4 skills1 hooks` yielded exactly the expected map from
     a line no rulesync has ever emitted -- the guard certifying output it had not understood.
     """
     with pytest.raises(ValueError, match="run together"):
         guard.parse_summary(
-            "All done! Written 243 file(s) total (20 rules114 subagents92 skills17 hooks)"
+            "All done! Written 12 file(s) total (2 rules5 subagents4 skills1 hooks)"
         )
 
 
@@ -106,16 +106,19 @@ def test_main_rejects_a_silently_dropped_feature(tmp_path):
 
 
 def test_main_rejects_a_partial_drop_that_a_non_zero_check_would_pass(tmp_path):
-    """16 of 17 hooks. Only an equality comparison catches this; `> 0` does not."""
+    """4 of 5 subagents. Only an equality comparison catches this; `> 0` does not.
+
+    Uses subagents rather than hooks deliberately: hooks is 1, so nudging it tests the
+    ABSENT-feature path, not the partial-drop one these two cases separate."""
     capture = tmp_path / "out.txt"
-    capture.write_text(GREEN.replace("17 hooks", "16 hooks"), encoding="utf-8")
+    capture.write_text(GREEN.replace("5 subagents", "4 subagents"), encoding="utf-8")
     assert guard.main([str(capture)]) != 0
 
 
 def test_main_rejects_an_unexpected_feature(tmp_path):
     """A newly-enabled rulesync feature is drift: it emits into paths nothing ignores yet."""
     capture = tmp_path / "out.txt"
-    capture.write_text(GREEN.replace("+ 17 hooks", "+ 17 hooks + 3 commands"), encoding="utf-8")
+    capture.write_text(GREEN.replace("+ 1 hooks", "+ 1 hooks + 3 commands"), encoding="utf-8")
     assert guard.main([str(capture)]) != 0
 
 

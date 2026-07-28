@@ -3,7 +3,7 @@
   "private": true,
   "description": "CI tooling only. sluice itself is stdlib-only Python; this pins the rulesync generator so its output is determined by tracked inputs.",
   "scripts": {
-    "rulesync": "node_modules/.bin/rulesync generate -t '*' -f '*'"
+    "rulesync": "node_modules/.bin/rulesync generate -t 'claudecode,agentsmd' -f '*'"
   },
   "devDependencies": {
     "rulesync": "15.1.0"
