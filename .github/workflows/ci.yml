@@ -65,21 +65,63 @@ jobs:
           set -euo pipefail
           npm run rulesync | tee "$RUNNER_TEMP/rulesync-output.txt"
           python scripts/guard_rulesync_drift.py "$RUNNER_TEMP/rulesync-output.txt"
-          # The guard above counts FILES, and a file count cannot see the failure that
-          # motivates it: rulesync can write a hook file with no `command` key, print
-          # "All done!" and exit 0. The count is IDENTICAL either way, whatever the count
-          # happens to be this release -- which is why this check reads CONTENT and names no
-          # number. The emitted artifact is the only thing that can tell the difference, and
-          # this job is the first environment where node exists and the generator has actually
-          # run -- so assert it here. It cannot live in the pytest suite, which is offline and
-          # never shells out to npm.
-          if ! grep -q 'guard_no_bypass.py' .claude/settings.json; then
-            echo "rulesync emitted its hook files but .claude/settings.json carries no" >&2
-            echo "guard_no_bypass.py command. The hooks are registered with nothing behind" >&2
-            echo "them: the no-bypass guard would ship INERT. Re-verify .rulesync/hooks.json" >&2
-            echo "against this rulesync version's hook schema before touching anything else." >&2
-            exit 1
-          fi
+          # CONTENT assertions the drift guard structurally cannot make. It counts FILES, and
+          # a count is IDENTICAL whether or not the hook it counted carries a command, and
+          # identical whether the agents emitted are this repo's or somebody else's. Only the
+          # emitted artifact can tell those apart, and this job is the first environment where
+          # node exists and the generator has actually run -- so assert it here. None of it can
+          # live in the pytest suite, which is offline and never shells out to npm.
+          #
+          # STRUCTURAL, not a grep. `grep -q guard_no_bypass.py .claude/settings.json` only
+          # proves the STRING is in the file: a rulesync that re-nested the command under a
+          # different event, or under none, still matches while Claude Code -- which reads
+          # exactly one path -- runs nothing. So the PATH is what gets asserted.
+          #
+          # The agent and skill NAMES are checked for the same reason the hook command is. The
+          # five subagents and four skills are this repo's merge gate; a renamed or dropped one
+          # is a review that silently never runs, and the count stays 5 and 4 throughout.
+          python - <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          settings = json.loads(pathlib.Path(".claude/settings.json").read_text(encoding="utf-8"))
+          commands = [
+              hook.get("command", "")
+              for matcher in settings.get("hooks", {}).get("PreToolUse", [])
+              for hook in matcher.get("hooks", [])
+          ]
+          if not any("guard_no_bypass.py" in command for command in commands):
+              sys.exit(
+                  "rulesync emitted .claude/settings.json, but no guard_no_bypass.py command "
+                  "sits under hooks.PreToolUse[*].hooks[*].command.\n"
+                  f"  commands found at that path: {commands}\n"
+                  "Either the command was dropped, or this rulesync version nests hooks "
+                  "somewhere else. Both ship the no-bypass guard INERT -- Claude Code reads "
+                  "that path and nothing else, so a command sitting anywhere else in the file "
+                  "never runs. Re-verify .rulesync/hooks.json against this version's hook "
+                  "schema before touching anything else."
+              )
+
+          for label, emitted, source in (
+              ("agents",
+               {p.stem for p in pathlib.Path(".claude/agents").glob("*.md")},
+               {p.stem for p in pathlib.Path(".rulesync/subagents").glob("*.md")}),
+              ("skills",
+               {p.name for p in pathlib.Path(".claude/skills").glob("*/") if p.is_dir()},
+               {p.name for p in pathlib.Path(".rulesync/skills").glob("*/") if p.is_dir()}),
+          ):
+              if emitted != source:
+                  sys.exit(
+                      f"the emitted .claude/{label}/ does not match its .rulesync/ source.\n"
+                      f"  in the source but NOT emitted: {sorted(source - emitted)}\n"
+                      f"  emitted but NOT in the source: {sorted(emitted - source)}\n"
+                      "The file count can match exactly while the names do not. These are the "
+                      "review agents and skills this repo's merge gate is built from, so a "
+                      "renamed or dropped one is a review that never runs, with nothing red "
+                      "anywhere to say so."
+                  )
+          PY
           # FAIL CLOSED, twice over. `if [ -n "$(git status --porcelain)" ]` DISCARDS the
           # substitution's exit status, and `set -e` is suppressed inside an `if` condition --
           # so a git that cannot run reports a CLEAN tree and a gitignore gap ships green.
