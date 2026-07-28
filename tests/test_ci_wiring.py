@@ -400,4 +400,6 @@ def test_package_json_runs_the_locked_binary_by_path():
     """`npm run` PREPENDS node_modules/.bin to PATH, it does not restrict PATH. Measured: with
     no node_modules, a bare `rulesync` silently ran a global 9.2.0 and exited 0."""
     manifest = json.loads((ROOT / "package.json").read_text())
-    assert manifest["scripts"]["rulesync"] == "node_modules/.bin/rulesync generate -t 'claudecode,agentsmd' -f '*'"
+    assert manifest["scripts"]["rulesync"] == (
+        "node_modules/.bin/rulesync generate -t 'claudecode,agentsmd' -f '*'"
+    )
