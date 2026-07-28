@@ -80,7 +80,7 @@ dossiers/
 # So this list is now STATIC rather than growing: a new upstream target never needs adding here,
 # because it is never generated. Re-audit only when `-t` is WIDENED, or when a new rulesync
 # FEATURE is turned on (`-f '*'` covers rules/ignore/mcp/subagents/commands/skills/hooks/
-# permissions). scripts/guard_rulesync_drift.py pins the per-feature output counts and fails CI
+# permissions, checks). scripts/guard_rulesync_drift.py pins the per-feature output counts and fails CI
 # until a human looks here.
 #
 # NOTE: `.github/` is TRACKED (workflows/), so only rulesync's generated SUBdirs and files under

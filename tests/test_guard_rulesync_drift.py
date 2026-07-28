@@ -37,7 +37,7 @@ BROKEN_HOOKS = "🎉 All done! Written 11 file(s) total (2 rules + 5 subagents +
 # no per-feature counts exist to compare against EXPECTED.
 UP_TO_DATE = (
     "✓ All files are up to date "
-    "(rules, ignore, mcp, subagents, commands, skills, hooks, permissions)"
+    "(rules, ignore, mcp, subagents, commands, skills, hooks, permissions, checks)"
 )
 
 
