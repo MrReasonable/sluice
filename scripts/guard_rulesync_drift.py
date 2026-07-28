@@ -69,12 +69,30 @@ def parse_summary(text: str) -> dict[str, int]:
     """
     found = _SUMMARY.findall(text)
     if not found:
+        # ORDER MEASURED, not guessed, and it changed when `-t` was narrowed to a hand-written
+        # target list. The already-generated case CANNOT happen in CI -- the checkout is always
+        # fresh -- so leading with it sent the one reader who hits this in CI to look at the one
+        # cause CI cannot produce. A typo in `-t` can, and rulesync FAILS OPEN on it: measured,
+        # `-t 'bogus'` exits 0, never names the unrecognised target, and on a fresh tree prints
+        # precisely the `All files are up to date` line, i.e. it is INDISTINGUISHABLE here from
+        # a tree that was already built. (A typo in only SOME names is different and lands
+        # elsewhere: the surviving targets still print `All done!`, so it reaches the count
+        # mismatch in `main` instead. Measured too.)
+        #
+        # This is diagnosis quality, not a hole. Every typo probed still fails the gate, and
+        # tests/test_ci_wiring.py pins package.json's script string byte-exactly, so a typo
+        # cannot land without reddening that test as well. What the ordering buys is the
+        # minutes a human spends looking in the right place.
         raise ValueError(
-            "no `All done!` summary line in the captured output. Causes, commonest first: the "
-            "tree was ALREADY generated, so rulesync wrote nothing and printed its other summary "
-            "form, `All files are up to date (...)` -- these counts are only valid on a FRESH "
-            "checkout; rulesync did not finish; the capture is empty; or the output format "
-            "changed on a version bump. Any of those must fail loudly rather than pass."
+            "no `All done!` summary line in the captured output. Causes, in the order worth "
+            "checking: a TYPO in package.json's `-t` target list -- rulesync FAILS OPEN on a "
+            "target name it does not recognise, exiting 0, writing nothing, and never naming "
+            "the unknown target; on a fresh tree that prints exactly the line named next, so "
+            "the two look identical from here. Then: the tree was ALREADY generated, so "
+            "rulesync skipped every file and printed its other summary form, `All files are up "
+            "to date (...)` -- a LOCAL-run cause only, since CI always starts from a fresh "
+            "checkout. Then: rulesync did not finish; the capture is empty; or the output "
+            "format changed on a version bump. Any of those must fail loudly rather than pass."
         )
     if len(found) > 1:
         raise ValueError(f"found {len(found)} summary lines, expected exactly 1")
