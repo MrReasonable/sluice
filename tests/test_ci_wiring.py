@@ -282,9 +282,9 @@ def test_the_emitted_content_guard_runs_after_generation():
     """
     block = _job_directives("rulesync")
     assert "scripts/guard_emitted_outputs.py" in block, (
-        "the rulesync job no longer runs the emitted-content guard. Without it, rulesync "
-        "dropping a hook's `command` key -- or renaming a review agent -- ships with the file "
-        "count intact, the tree clean, and nothing red anywhere."
+        "the rulesync job no longer runs the emitted-hook guard. Without it, rulesync "
+        "dropping a hook's `command` key ships the no-bypass guard INERT with the file count "
+        "intact, the tree clean, and nothing red anywhere."
     )
     assert block.index("guard_rulesync_drift.py") < block.index("guard_emitted_outputs.py"), (
         "the artifact check must run AFTER generation is confirmed complete: on a run that "
