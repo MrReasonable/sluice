@@ -31,6 +31,14 @@ GREEN = "🎉 All done! Written 12 file(s) total (2 rules + 5 subagents + 4 skil
 # than printing `0 hooks` -- a parser regexing `(\d+) hooks` finds no match and, if it treats
 # "no match" as "skip", reports success on the one input this guard exists to reject.
 BROKEN_HOOKS = "🎉 All done! Written 11 file(s) total (2 rules + 5 subagents + 4 skills)"
+# rulesync's OTHER summary form, printed whenever nothing needed writing. Captured from a real
+# run -- an unknown `-t` target on a fresh tree produces exactly this line, and so does a re-run
+# in a tree the generator has already populated. There is no `All done!` line anywhere in it, so
+# no per-feature counts exist to compare against EXPECTED.
+UP_TO_DATE = (
+    "✓ All files are up to date "
+    "(rules, ignore, mcp, subagents, commands, skills, hooks, permissions)"
+)
 
 
 def test_a_matching_summary_parses_to_the_expected_map():
@@ -136,6 +144,24 @@ def test_an_empty_capture_file_is_a_hard_error_not_a_pass(tmp_path):
     """
     capture = tmp_path / "out.txt"
     capture.write_text("", encoding="utf-8")
+    assert guard.main([str(capture)]) != 0
+
+
+def test_an_already_generated_tree_is_rejected_not_read_as_a_pass(tmp_path):
+    """`parse_summary`'s error names this cause FIRST and nothing exercised it.
+
+    The counts are only valid on a fresh checkout -- rulesync skips any file whose content
+    already matches -- so a re-run prints this line and no per-feature counts exist at all.
+    Reading it as a pass would certify a tree the generator never wrote, and in CI, where the
+    checkout is always fresh, would certify a run that generated NOTHING: an unknown `-t`
+    target produces this same line and rulesync exits 0 on it.
+
+    WITNESSED, not reasoned about. Inserting `if "All files are up to date" in text: return 0`
+    ahead of the `parse_summary` call in `main` leaves the entire rest of the suite green while
+    turning this real capture into an exit 0. Only this case reddens.
+    """
+    capture = tmp_path / "out.txt"
+    capture.write_text(UP_TO_DATE, encoding="utf-8")
     assert guard.main([str(capture)]) != 0
 
 
