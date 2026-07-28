@@ -7,9 +7,16 @@ guarding the wiring was prose -- and prose failing is the whole reason the guard
 
 Every rulesync failure mode here is SILENT. Feed it Claude Code's native PascalCase/nested
 shape and it skips the event, drops the command, writes a hook with no `command` key, and
-prints "All done!". Omit the top-level `hooks` record and it prints a Zod error, then
-"All files are up to date", writes nothing, and exits 0. An exit-code check would pass all
-of it. So these assert the shape.
+prints "All done!". Omit the top-level `hooks` record and it prints a Zod error, exits 0,
+and -- re-measured on the pinned version -- writes every other output anyway, leaving ONLY
+.claude/settings.json missing under an ordinary "All done!" summary. An exit-code check
+would pass all of it, and so would a glance at the tree. So these assert the shape.
+
+That second mode CHANGED SHAPE across a version bump, in the dangerous direction: the
+previously pinned rulesync wrote nothing and printed "All files are up to date", which no
+one could miss. Do not carry this description across the next bump on trust -- re-run it.
+`.rulesync/hooks.json`'s own comment records the same measurement, and the drift guard plus
+the CI grep on the emitted settings.json are what actually catch it.
 
 WHY THE SOURCE AND NOT THE GENERATED FILE: `.claude/settings.json` is gitignored and produced
 by `npm run rulesync`, which needs node and network. CI DOES now run the generator, in the
@@ -33,7 +40,9 @@ def _definitions():
 
 
 def test_the_top_level_hooks_record_exists():
-    """Zod-required. Omit it and generate writes nothing, silently, exiting 0."""
+    """Zod-required. Omit it and generate drops ONLY `.claude/settings.json` -- silently,
+    exiting 0, with every other output written. See the module docstring: this failure mode
+    got QUIETER across a version bump, not louder."""
     assert isinstance(_config().get("hooks"), dict)
 
 
