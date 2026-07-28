@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assert the emitted `.claude/settings.json` still carries the no-bypass hook command.
+"""Assert the emitted tree still carries the no-bypass hook, and the same agents and skills.
 
 WHY THIS EXISTS ALONGSIDE `guard_rulesync_drift.py`. That guard counts FILES, and a count is
 identical whether or not the hook it counted carries a command. `.rulesync/hooks.json` records
@@ -13,14 +13,20 @@ WHY IT IS A SCRIPT AND NOT INLINE IN `ci.yml`. It began as a heredoc. Inline int
 are invisible to `ruff check`, cannot be unit-tested, and leave a `run:` step whose command name
 says nothing about what it does.
 
-WHY IT CHECKS ONLY THIS, AND DELIBERATELY STOPS. An earlier draft also compared emitted agent and
-skill NAMES against `.rulesync/`, then read their frontmatter back. Reviewers then correctly found
-the next uncovered field each round -- skill frontmatter, the hook `matcher`, `CLAUDE.md` bodies --
-because that regress has no natural end. It amounts to re-verifying that a lockfile-pinned
-third-party generator emitted everything correctly, which is unbounded work for a gate whose job
-is to make a human re-audit `.gitignore` when a bump is due. The bounded question is the one
-`.rulesync/hooks.json` actually documents, and this answers it. Widening this script again is a
-decision to take on that regress, not a small addition.
+WHY THE NAMES ARE COMPARED BUT THE FILES ARE NOT OPENED. The five subagents and four skills ARE
+this repo's merge gate, and `EXPECTED` in the drift guard pins their COUNT, not their identity: a
+renamed agent leaves it 5, the tree clean (they are gitignored), and a review that silently never
+runs. Measured on a real emitted tree -- renaming one agent passed every other gate. So the name
+SETS are compared.
+
+That is where it stops, deliberately. An earlier draft went on to read frontmatter back, and each
+review round then correctly found the next uncovered field -- skill frontmatter, the hook
+`matcher`, `CLAUDE.md` bodies -- because opening files has no natural end: it amounts to
+re-verifying that a lockfile-pinned third-party generator emitted everything correctly, which is
+unbounded work for a gate whose job is to make a human re-audit `.gitignore` on a bump. Comparing
+two sets of names is a complete answer to a bounded question ("are the same units present?").
+Reading what is inside them is not. Widening this script past that line is a decision to take on
+the regress, not a small addition.
 
 WHY IT IS STRUCTURAL, NOT A GREP. `grep -q guard_no_bypass.py .claude/settings.json` proves only
 that the STRING is somewhere in the file. A rulesync that re-nested the command under a different
@@ -75,11 +81,56 @@ def is_guard_command(command: str) -> bool:
     return command.startswith(_COMMAND_HEAD) and command.endswith(_COMMAND_TAIL)
 
 
-def violations(root: Path) -> list[str]:
-    """Every reason the emitted settings.json would leave the no-bypass guard inert.
+def _names(directory: Path, *, dirs: bool) -> set[str] | None:
+    """The unit names in `directory`, or None if it does not exist. Pure.
 
-    Pure given the tree; empty means the emitted hook is faithful.
+    None rather than an empty set, and the distinction is load-bearing: with a set(), a source
+    tree and an emitted tree that had BOTH vanished would compare equal and pass. Absence is a
+    finding, so the caller has to handle it rather than compare it away.
     """
+    if not directory.is_dir():
+        return None
+    if dirs:
+        return {p.name for p in directory.iterdir() if p.is_dir()}
+    return {p.stem for p in directory.glob("*.md")}
+
+
+def _name_violations(root: Path) -> list[str]:
+    """Emitted agent and skill names, against the `.rulesync/` sources they come from."""
+    found: list[str] = []
+    for label, emitted_dir, source_dir, dirs in (
+        ("agents", root / ".claude" / "agents", root / ".rulesync" / "subagents", False),
+        ("skills", root / ".claude" / "skills", root / ".rulesync" / "skills", True),
+    ):
+        emitted, source = _names(emitted_dir, dirs=dirs), _names(source_dir, dirs=dirs)
+        for missing, path in ((emitted is None, emitted_dir), (source is None, source_dir)):
+            if missing:
+                found.append(
+                    f"{path} does not exist. The emitted tree and its source must both be "
+                    f"present for the {label} comparison to mean anything; a vanished directory "
+                    "is a finding, not an empty comparison."
+                )
+        if emitted is None or source is None or emitted == source:
+            continue
+        found.append(
+            f"the emitted .claude/{label}/ does not match its .rulesync/ source.\n"
+            f"  in the source but NOT emitted: {sorted(source - emitted)}\n"
+            f"  emitted but NOT in the source: {sorted(emitted - source)}\n"
+            "The file COUNT can match exactly while the names do not, so the drift guard cannot "
+            "see this. These are the review agents and skills this repo's merge gate is built "
+            "from: a renamed or dropped one is a review that never runs, with nothing red "
+            "anywhere to say so."
+        )
+    return found
+
+
+def violations(root: Path) -> list[str]:
+    """Every reason the emitted tree would leave a gate inert. Pure; empty means faithful."""
+    return [*_hook_violations(root), *_name_violations(root)]
+
+
+def _hook_violations(root: Path) -> list[str]:
+    """Every reason the emitted settings.json would leave the no-bypass guard inert."""
     settings_path = root / ".claude" / "settings.json"
     if not settings_path.is_file():
         # Measured on 15.1.0: a malformed hooks.json emits CLAUDE.md, AGENTS.md and .claude/ but
