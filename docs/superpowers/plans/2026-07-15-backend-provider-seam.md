@@ -1,7 +1,7 @@
 # Backend Provider Seam Implementation Plan (Stage 2)
 
 > **Superseded 2026-07-28:** the regenerate command named below is stale — it is now `npm ci --ignore-scripts && npm run rulesync`, which reads the version AND the target list from `package.json`. Running the `-t '*'` form as written re-creates the ~34 legacy output directories this repo no longer generates. The steps are left as executed; only the command has moved.
-
+>
 > **Status: IMPLEMENTED — landed in PR #19 (2026-07-15).** This document is retained as a historical
 > record of the plan as it was executed; it is **not** outstanding work. The unchecked `- [ ]` boxes
 > below are the original step list, and the "Execution handoff" section describes how the plan *was*
