@@ -16,7 +16,9 @@ That second mode CHANGED SHAPE across a version bump, in the dangerous direction
 previously pinned rulesync wrote nothing and printed "All files are up to date", which no
 one could miss. Do not carry this description across the next bump on trust -- re-run it.
 `.rulesync/hooks.json`'s own comment records the same measurement, and the drift guard plus
-the CI grep on the emitted settings.json are what actually catch it.
+`scripts/guard_emitted_outputs.py` on the emitted settings.json are what actually catch it.
+That second one is a STRUCTURAL check, not a grep: it requires a command that runs the guard
+at `hooks.PreToolUse[*].hooks[*]` with type `command`, the one path Claude Code executes.
 
 WHY THE SOURCE AND NOT THE GENERATED FILE: `.claude/settings.json` is gitignored and produced
 by `npm run rulesync`, which needs node and network. CI DOES now run the generator, in the
