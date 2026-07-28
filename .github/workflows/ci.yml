@@ -65,14 +65,14 @@ jobs:
           set -euo pipefail
           npm run rulesync | tee "$RUNNER_TEMP/rulesync-output.txt"
           python scripts/guard_rulesync_drift.py "$RUNNER_TEMP/rulesync-output.txt"
-          # CONTENT assertions the drift guard structurally cannot make: it counts FILES,
-          # and a count is identical whether or not the hook it counted carries a command, and
-          # identical whether the agents emitted are this repo's or somebody else's. This job is
-          # the first environment where node exists and the generator has actually run, so the
-          # emitted artifact is asserted here. It cannot live in the pytest suite, which is
-          # offline and never shells out to npm. The checks themselves live in a SCRIPT, not a
-          # heredoc: an inline interpreter block is invisible to `ruff check`, cannot be
+          # The one content assertion the drift guard structurally cannot make: it counts
+          # FILES, and a count is identical whether or not the hook it counted carries a
+          # command. Only the emitted artifact can tell, and this job is the first environment
+          # where node exists and the generator has actually run. It cannot live in the pytest
+          # suite, which is offline and never shells out to npm. The check lives in a SCRIPT,
+          # not a heredoc: an inline interpreter block is invisible to `ruff check`, cannot be
           # unit-tested, and leaves a step whose command says nothing about what it does.
+          # Its docstring records why it checks ONLY the hook and deliberately stops there.
           python scripts/guard_emitted_outputs.py .
           # FAIL CLOSED, twice over. `if [ -n "$(git status --porcelain)" ]` DISCARDS the
           # substitution's exit status, and `set -e` is suppressed inside an `if` condition --
