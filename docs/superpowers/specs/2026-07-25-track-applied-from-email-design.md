@@ -1,5 +1,7 @@
 # Advance a lead to `applied` from its confirmation email (#10)
 
+> **Superseded 2026-07-28:** the regenerate command named below is stale — it is now `npm ci --ignore-scripts && npm run rulesync`, which reads the version AND the target list from `package.json`. Running the `-t '*'` form as written re-creates the ~34 legacy output directories this repo no longer generates. The steps are left as executed; only the command has moved.
+
 **Status:** design approved 2026-07-25; revised twice after `/review-plan` (5 reviewers each round).
 Round 1 addressed 3 High + mediums (match-rule ambiguity, `.co.uk` false-proof, msg/slug wiring).
 Round 2 confirmed those fixed (0 Critical/High) and folded 2 Medium + 3 Low mechanical items
