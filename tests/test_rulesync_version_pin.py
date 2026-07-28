@@ -12,9 +12,11 @@ this test red until a human re-verifies the emitted settings.json.
 
 WHAT THAT RECORD IS AND IS NOT. This docstring, and the assertion message below, used to call
 it the ONLY defence against a bump silently dropping the hook command. That stopped being true
-when the rulesync CI job started grepping the emitted .claude/settings.json for the guard
-command and failing closed on its absence -- a STRONGER check, because it reads the generated
-artifact rather than the input this offline suite is confined to. What the version record still
+when `scripts/guard_emitted_outputs.py` started asserting the emitted .claude/settings.json in
+the rulesync CI job and failing closed on its absence -- a STRONGER check, because it reads the
+generated artifact rather than the input this offline suite is confined to. It is structural
+rather than a grep: the guard command must sit at the one path Claude Code executes, so a
+command re-nested elsewhere in the document does not satisfy it. What the version record still
 buys is the PROMPT: it makes a human look at the artifact before the next bump, which is how
 the failure shapes the artifact check was never written for get noticed at all.
 
@@ -70,8 +72,9 @@ def test_hooks_json_records_the_version_it_was_verified_against():
     assert found, (
         ".rulesync/hooks.json's _comment no longer records which rulesync version its schema was "
         "verified against. That record is what forces a human to re-check the emitted "
-        "settings.json on a bump -- restore it rather than deleting it. (CI's grep on the emitted "
-        "artifact is the other defence; neither one replaces the other.)"
+        "settings.json on a bump -- restore it rather than deleting it. "
+        "(scripts/guard_emitted_outputs.py on the emitted artifact is the other defence; "
+        "neither one replaces the other.)"
     )
     for version in found:
         assert version == _pinned_version(), (
