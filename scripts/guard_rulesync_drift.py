@@ -25,7 +25,7 @@ from __future__ import annotations
 import re
 import sys
 
-EXPECTED = {"rules": 20, "subagents": 114, "skills": 92, "hooks": 17}
+EXPECTED = {"rules": 2, "subagents": 5, "skills": 4, "hooks": 1}
 
 _SUMMARY = re.compile(r"All done! Written \d+ file\(s\) total \(([^)]*)\)")
 _TERM = re.compile(r"(\d+)\s+([a-z]+)")
@@ -61,9 +61,11 @@ def parse_summary(text: str) -> dict[str, int]:
     found = _SUMMARY.findall(text)
     if not found:
         raise ValueError(
-            "no `All done!` summary line in the captured output. rulesync did not finish, the "
-            "capture is empty, or the output format changed on a version bump. Any of those "
-            "must fail loudly rather than pass."
+            "no `All done!` summary line in the captured output. Causes, commonest first: the "
+            "tree was ALREADY generated, so rulesync wrote nothing and printed its other summary "
+            "form, `All files are up to date (...)` -- these counts are only valid on a FRESH "
+            "checkout; rulesync did not finish; the capture is empty; or the output format "
+            "changed on a version bump. Any of those must fail loudly rather than pass."
         )
     if len(found) > 1:
         raise ValueError(f"found {len(found)} summary lines, expected exactly 1")
