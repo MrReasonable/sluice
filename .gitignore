@@ -52,10 +52,19 @@ dossiers/
 /.claude/
 # Not written today, but REACHABLE, which is why it stays here rather than moving down: `-f '*'`
 # includes the `mcp` feature and `claudecode` supports it, so this file appears the moment
-# someone adds `.rulesync/mcp.json`. Measured -- with that source present the run emits
-# `/.mcp.json`, and the drift guard goes red on the new feature term. Its reason for being
-# absent (no source file) is one file away from being undone; a legacy entry's reason (no
-# target) is not.
+# someone adds `.rulesync/mcp.json`.
+#
+# AND THIS ENTRY IS THE ONLY THING THAT WOULD CATCH IT. An earlier note here claimed the drift
+# guard reds on the new feature term; re-measured on the pinned version, that is false in the
+# case that matters. With a source holding an EMPTY `mcpServers` map -- what a placeholder or a
+# half-finished commit looks like -- the run writes `/.mcp.json` and prints a summary
+# BYTE-IDENTICAL to the green one: `12 file(s) total (2 rules + 5 subagents + 4 skills + 1
+# hooks)`, no `mcp` term, the total unmoved despite a 13th file on disk. guard_rulesync_drift.py
+# exits 0. It reds only once that source actually names a server, and then on `unparsed text`
+# rather than on the feature, because rulesync prints `1 MCP files` and the guard's term pattern
+# is lower-case. So there is no second gate behind this line -- which is a reason to keep it,
+# not a reason to trust something else. Its reason for being absent (no source file) is one file
+# away from being undone; a legacy entry's reason (no target) is not.
 /.mcp.json
 
 # LEGACY OUTPUTS -- no longer generated. THE IGNORE ENTRIES are what cannot be removed; the
