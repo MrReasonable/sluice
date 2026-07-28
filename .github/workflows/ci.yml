@@ -67,10 +67,12 @@ jobs:
           python scripts/guard_rulesync_drift.py "$RUNNER_TEMP/rulesync-output.txt"
           # The guard above counts FILES, and a file count cannot see the failure that
           # motivates it: rulesync can write a hook file with no `command` key, print
-          # "All done!" and exit 0, so 17 command-less hook files pass. The emitted artifact is
-          # the only thing that can tell the difference, and this job is the first environment
-          # where node exists and the generator has actually run -- so assert it here. It
-          # cannot live in the pytest suite, which is offline and never shells out to npm.
+          # "All done!" and exit 0. The count is IDENTICAL either way, whatever the count
+          # happens to be this release -- which is why this check reads CONTENT and names no
+          # number. The emitted artifact is the only thing that can tell the difference, and
+          # this job is the first environment where node exists and the generator has actually
+          # run -- so assert it here. It cannot live in the pytest suite, which is offline and
+          # never shells out to npm.
           if ! grep -q 'guard_no_bypass.py' .claude/settings.json; then
             echo "rulesync emitted its hook files but .claude/settings.json carries no" >&2
             echo "guard_no_bypass.py command. The hooks are registered with nothing behind" >&2

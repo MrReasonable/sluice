@@ -1,15 +1,24 @@
 #!/usr/bin/env python3
 """Assert `rulesync generate` produced every output it was supposed to.
 
-WHY COUNTS AND NOT JUST A CLEAN TREE. A malformed `.rulesync/hooks.json` makes rulesync drop 17
-files, exit **0**, and leave `git status --porcelain` **empty**. Exit code and porcelain both
-pass green on the one failure this gate exists to catch. Reproduced again on a real version
-delta: an older rulesync against a .gitignore audited for the pinned version emitted 238 files
-with a clean tree.
+WHY COUNTS AND NOT JUST A CLEAN TREE. A malformed `.rulesync/hooks.json` makes rulesync drop
+outputs, exit **0**, and leave `git status --porcelain` **empty** -- every output it writes is
+gitignored, so their ABSENCE is exactly what a tree check cannot see. Exit code and porcelain
+both pass green on the one failure this gate exists to catch. Reproduced again on a real
+version delta, where a rulesync emitting a wholly different output set still left a clean tree.
 
-WHY EXACT COUNTS AND NOT "NON-ZERO". A partial drop -- 16 of 17 hooks -- passes a non-zero
-check. The output set is fully determined by tracked inputs (`.rulesync/` AND
-`package-lock.json`, which is why the lockfile exists), so an exact pin is legitimate.
+WHY EXACT COUNTS AND NOT "NON-ZERO". A feature that drops only SOME of its files still reports
+a non-zero count, so `> 0` passes a partial drop. The output set is fully determined by tracked
+inputs (`.rulesync/` AND `package-lock.json`, which is why the lockfile exists), so an exact
+pin is legitimate.
+
+NO DIGITS IN THAT REASONING, deliberately. It used to argue from "17 files" and "a partial drop
+-- 16 of 17 hooks", and both went stale on a single Dependabot bump: `hooks` is 1 now, which
+makes 16-of-17 unreachable, and the test witnessing the partial-drop case was retargeted to
+"4 of 5 subagents" while this docstring still cited hooks -- a rationale and its own witness
+contradicting each other. The argument is about counts versus content, and equality versus
+non-zero. Neither depends on which feature happens to be large this release. `EXPECTED` below
+carries the digits, and it is the one place that should.
 
 WHEN EXPECTED CHANGES. Only when `.rulesync/` or the lockfile changes. Updating it is the moment
 to re-audit `.gitignore`'s generated-output list, because a version bump is exactly when a new
@@ -53,8 +62,8 @@ def parse_summary(text: str) -> dict[str, int]:
 
     The parenthetical must be FULLY CONSUMED, and no feature may appear twice. A find-all over
     `(\\d+) ([a-z]+)` is happy to skip whatever it does not understand, which made this guard
-    quietly more permissive than every claim it makes about itself: `(... + 17 hooks +
-    NONSENSE)` parsed clean with NONSENSE discarded, and `(... + 17 hooks + 99 hooks)` yielded
+    quietly more permissive than every claim it makes about itself: `(... + 1 hooks +
+    NONSENSE)` parsed clean with NONSENSE discarded, and `(... + 1 hooks + 99 hooks)` yielded
     `hooks: 99` on last-wins. Both are exactly the "the output format changed on a version
     bump" case the error below promises to fail loudly on.
     """
