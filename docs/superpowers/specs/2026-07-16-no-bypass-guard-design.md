@@ -246,6 +246,10 @@ Every step copy-pasteable:
 - `npx rulesync@9.6.3 generate -t '*' -f '*'` then `git status --porcelain` → shows **only** the
   intended tracked files. (This is a *content* check by necessity: rulesync exits 0 on schema
   violations, so an exit-code check would pass a silently-dropped hook. Never relax it.)
+  > **Do not run this step as written (2026-07-28).** `-t '*'` re-creates the ~34 legacy output
+  > directories this repo no longer generates, and `npx` fetches outside the locked tree. The
+  > equivalent today is `npm ci --ignore-scripts && npm run rulesync`. The check itself still
+  > stands; only its command has moved.
 - `python3 -c "import json;d=json.load(open('.claude/settings.json'));print(json.dumps(d['hooks']['PreToolUse'],indent=2))"`
   → shows the guard hook with its `command` intact.
 - `ruff check sluice tests scripts/guard_no_bypass.py` → clean.
