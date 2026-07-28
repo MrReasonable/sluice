@@ -22,8 +22,12 @@ carries the digits, and it is the one place that should.
 
 WHEN EXPECTED CHANGES. Only when `.rulesync/` or the lockfile changes. Updating it is the moment
 to re-audit `.gitignore`'s generated-output list, because a version bump is exactly when a new
-target or feature starts emitting into a path nothing ignores. A Dependabot rulesync PR is
-therefore EXPECTED to arrive red: that is the gate working, not a defect to debug away.
+FEATURE starts emitting into a path nothing ignores. A new TARGET cannot: `-t` names the two
+tools this repo reads, so a target it does not name never generates at all, and widening `-t` is
+a deliberate edit rather than something a bump can do. `.gitignore`'s LEGACY OUTPUTS block states
+that same rule and is the authority on it; this sentence used to say "target or feature" and
+contradicted it outright. A Dependabot rulesync PR is therefore EXPECTED to arrive red: that is
+the gate working, not a defect to debug away.
 
 THE COUNTS ARE ONLY VALID ON A FRESH TREE. rulesync skips writing a file whose content already
 matches, so re-running in a working copy reports a handful of files rather than the full set.
