@@ -1,7 +1,7 @@
 # rulesync Drift Gate Implementation Plan (#2)
 
 > **Superseded 2026-07-28:** the regenerate command named below is stale — it is now `npm ci --ignore-scripts && npm run rulesync`, which reads the version AND the target list from `package.json`. Running the `-t '*'` form as written re-creates the ~34 legacy output directories this repo no longer generates. The steps are left as executed; only the command has moved.
-
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make CI fail when `rulesync generate` on a fresh checkout either dirties the tree or stops producing the outputs it should, so the `.gitignore` re-audit obligation that today exists only as prose has something behind it.
@@ -84,6 +84,11 @@ The explicit `node_modules/.bin/` path is load-bearing. `npm run` *prepends* `no
   }
 }
 ```
+
+> **Do not copy this snippet (2026-07-28).** `-t '*'` was narrowed to `-t 'claudecode,agentsmd'`
+> and the version has moved on. Running it as shown re-creates the ~34 legacy output directories
+> this repo no longer generates. The tracked `package.json` is the only place that chooses either
+> value; read it there. Left unedited because it records the step as executed.
 
 - [ ] **Step 2: Generate the lockfile**
 

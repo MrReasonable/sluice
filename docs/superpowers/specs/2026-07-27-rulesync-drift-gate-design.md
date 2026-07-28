@@ -144,6 +144,11 @@ Pinned rather than non-zero because the output set is fully determined by tracke
 }
 ```
 
+> **Do not copy this snippet (2026-07-28).** `-t '*'` was narrowed to `-t 'claudecode,agentsmd'`
+> and the version has moved on. Running it as shown re-creates the ~34 legacy output directories
+> this repo no longer generates. The tracked `package.json` is the only place that chooses either
+> value; read it there. Left unedited because it records the design as approved.
+
 **The explicit `node_modules/.bin/` path is load-bearing** (trap 5). `npm run` prepends
 `node_modules/.bin` to PATH but does not restrict it, so a bare `rulesync` falls through to any
 global install; the explicit path exits 127 when absent.
