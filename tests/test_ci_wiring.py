@@ -269,11 +269,15 @@ def test_the_emitted_hook_command_is_asserted_after_generation():
     """The drift guard counts FILES, so it cannot close the failure it cites as its motivation.
 
     `.rulesync/hooks.json`'s own comment records that rulesync can write a hook with NO
-    `command` key while printing "All done!" and exiting 0, and that against a version bump
-    that comment "is the ONLY defence". A file count sees 17 hooks either way. Only the emitted
-    `.claude/settings.json` can tell them apart -- and the rulesync job is the first environment
-    in this repo where node exists and the generator has run, so the artifact can finally be
-    checked. This test is what keeps that check wired.
+    `command` key while printing "All done!" and exiting 0. The file count is IDENTICAL in both
+    cases, so no number makes that check work -- which is why this one reads content instead.
+    Only the emitted `.claude/settings.json` can tell them apart, and the rulesync job is the
+    first environment in this repo where node exists and the generator has run, so the artifact
+    can finally be checked. This test is what keeps that check wired.
+
+    It is also why that comment no longer calls itself the ONLY defence against a version bump:
+    a check on the generated ARTIFACT survives an input-schema rename that would leave the
+    offline suite -- which can only assert the input -- entirely green.
     """
     block = _job_directives("rulesync")
     assert ".claude/settings.json" in block, (
