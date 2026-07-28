@@ -4,11 +4,12 @@ This code ran as a heredoc inside `.github/workflows/ci.yml` until a security re
 inline interpreter: unlinted, untestable, and a `run:` step whose command name said nothing about
 what it did. These are the cases that were impossible to write while it lived in YAML.
 
-SCOPE. The guard deliberately checks one thing -- that the emitted `settings.json` still invokes
-the no-bypass guard. An earlier draft also compared agent and skill names, then their frontmatter;
-each round of review then found the next uncovered field, because re-verifying a pinned
-generator's whole output is unbounded. `scripts/guard_emitted_outputs.py`'s docstring records why
-it stops here. Tests for the dropped checks were removed with them rather than left asserting
+SCOPE. Two bounded checks: the emitted `settings.json` still INVOKES the no-bypass guard, and the
+emitted agent and skill NAME SETS match their `.rulesync/` sources. An earlier draft went further
+and read frontmatter back, after which each review round found the next uncovered field, because
+opening files has no end. Comparing two sets of names does -- it is a complete answer to "are the
+same units present?". `scripts/guard_emitted_outputs.py`'s docstring records where the line is and
+why. Tests for the dropped content checks were removed with them rather than left asserting
 nothing.
 
 Offline and hermetic -- every case builds a synthetic tree under `tmp_path`. Nothing shells out to
@@ -34,9 +35,18 @@ SCRIPT = Path(__file__).parent.parent / "scripts" / "guard_emitted_outputs.py"
 OMIT = object()
 
 
-def _tree(root: Path, *, command=GUARD, settings=True, event="PreToolUse", hook_type="command"):
-    """A synthetic emitted tree carrying just the artifact this guard reads."""
+def _tree(root: Path, *, command=GUARD, settings=True, event="PreToolUse", hook_type="command",
+          agents=("a", "b"), skills=("s",)):
+    """A synthetic emitted tree. Sources and emitted names agree unless a test diverges them."""
     (root / ".claude").mkdir(parents=True)
+    (root / ".rulesync" / "subagents").mkdir(parents=True)
+    (root / ".claude" / "agents").mkdir(parents=True)
+    for name in agents:
+        (root / ".rulesync" / "subagents" / f"{name}.md").write_text("x", encoding="utf-8")
+        (root / ".claude" / "agents" / f"{name}.md").write_text("x", encoding="utf-8")
+    for name in skills:
+        (root / ".rulesync" / "skills" / name).mkdir(parents=True)
+        (root / ".claude" / "skills" / name).mkdir(parents=True)
     if settings:
         hook = {"type": hook_type}
         if command is not OMIT:
@@ -134,6 +144,42 @@ def test_is_guard_command_needs_both_ends():
     assert is_guard_command(GUARD)
     assert not is_guard_command('echo "$CLAUDE_PROJECT_DIR/scripts/guard_no_bypass.py"')
     assert not is_guard_command('python3 "$CLAUDE_PROJECT_DIR/scripts/other.py"')
+
+
+def test_a_renamed_agent_is_caught_though_the_COUNT_is_unchanged(tmp_path):
+    """Five agents before, five after -- `EXPECTED` in the drift guard sees nothing.
+
+    Measured on the real emitted tree before this check existed: renaming one agent passed the
+    drift guard (count still 5), passed this guard, and left `git status` clean because the
+    emitted tree is gitignored. A review agent that IS the merge gate could vanish unnoticed.
+    """
+    root = _tree(tmp_path)
+    (root / ".claude" / "agents" / "b.md").rename(root / ".claude" / "agents" / "typo.md")
+    found = violations(root)
+    assert any("does not match its .rulesync/ source" in v for v in found)
+    assert any("'b'" in v and "'typo'" in v for v in found)
+
+
+def test_a_renamed_skill_is_caught(tmp_path):
+    root = _tree(tmp_path)
+    (root / ".claude" / "skills" / "s").rename(root / ".claude" / "skills" / "other")
+    assert any("skills/" in v for v in violations(root))
+
+
+@pytest.mark.parametrize(
+    "gone", [".claude/agents", ".rulesync/subagents"], ids=["emitted", "source"]
+)
+def test_a_vanished_directory_is_a_finding_not_an_empty_comparison(tmp_path, gone):
+    """Both sides missing would compare equal with a `set()` fallback, and pass.
+
+    That is why `_names` returns None: a comparison whose operands do not exist is not evidence
+    of agreement. Each side is asserted separately so a mutant restoring the fallback reds here.
+    """
+    root = _tree(tmp_path)
+    for path in (root / gone).iterdir():
+        path.unlink()
+    (root / gone).rmdir()
+    assert any("does not exist" in v for v in violations(root))
 
 
 def test_main_returns_zero_on_a_faithful_tree(tmp_path):
