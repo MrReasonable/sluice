@@ -9,8 +9,8 @@ from the other end, and it is stated once here rather than repeated at each call
 
 `resolve` performs NO WRITES: it never creates a directory, so RESOLVING a path cannot
 touch the disk; the writer that needs a parent creates it. It does read -- the
-environment, and (when `legacy` is given) whether the legacy path, the resolved path and each
-known companion exist -- so this is "no writes", not "no I/O". The XDG variables are read per call, never snapshotted at import,
+environment, and (when `legacy` is given) whether the legacy path, the resolved path and
+each known companion exist -- so this is "no writes", not "no I/O". The XDG variables are read per call, never snapshotted at import,
 because an import-time snapshot is unpatchable by tests.
 
 That is a claim about `resolve` ONLY, and deliberately not about a `--dry-run` as a
@@ -133,14 +133,22 @@ def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> s
                  if os.path.exists(legacy + s)]
         moves.append((legacy, resolved))
         parent = os.path.dirname(resolved)
-        # `-m 700` because this directory also holds the OAuth token, and
-        # `_write_token`'s `makedirs(mode=0o700, exist_ok=True)` NO-OPS once it exists:
-        # a plain `mkdir -p` here leaves it 0755 permanently. Measured.
-        # `mv -n` because only the store's move is gated on the destination being
-        # absent; without it a newer companion already at the destination is silently
-        # overwritten by an older one.
-        steps = ([f"mkdir -p -m 700 {shlex.quote(parent)}"] if parent else [])
-        steps += [f"mv -n {shlex.quote(src)} {shlex.quote(dst)}" for src, dst in moves]
+        # `chmod` SEPARATELY, not `mkdir -m`: the mode flag applies only to directories
+        # mkdir creates, and six ordinary writers already create this one at 0755
+        # (`seendb`, `health`, `cli`, `app` x2, `triage/audit`). It also holds the OAuth
+        # token, whose `makedirs(mode=0o700, exist_ok=True)` no-ops for the same reason,
+        # so without the explicit chmod the credential's parent stays 0755 permanently.
+        #
+        # `[ ! -e DST ] && mv` rather than `mv -n`: `-n` SKIPS an existing destination and
+        # exits 0, so the `&&` chain carries on and moves the store anyway -- leaving an
+        # old store beside a foreign watermark, with `exists(legacy)` now false and the
+        # refusal disarmed for good. A skip is not an interruption. The test returns
+        # non-zero, so the chain stops BEFORE the store move and the next run says so
+        # again.
+        steps = ([f"mkdir -p {shlex.quote(parent)} && chmod 700 {shlex.quote(parent)}"]
+                 if parent else [])
+        steps += [f"[ ! -e {shlex.quote(dst)} ] && mv {shlex.quote(src)} {shlex.quote(dst)}"
+                  for src, dst in moves]
         remedy = " && ".join(steps)
         msg = (f"{name} now lives at {resolved}, but a file remains at {legacy}. "
                f"sluice never moves your data -- run:  {remedy}")
@@ -150,9 +158,12 @@ def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> s
                     f"un-acted-on proposal backlog.)")
         linked = [src for src, _ in moves if os.path.islink(src)]
         if linked:
-            # `mv` moves the LINK, not its target, so a relative one lands dangling and
-            # the next run reads it as "no history yet" rather than refusing again.
-            msg += f"   (symlinks -- copy the targets instead: {', '.join(linked)})"
+            # `mv` moves the LINK, not its target, so a relative one lands dangling. The
+            # STORES are safe -- `lexists` makes both dedup loaders raise on a broken link
+            # -- but `_load_lastrun` swallows OSError by design, so a dangling `.lastrun`
+            # reads as "no prior run" and silently narrows the receipt window.
+            msg += (f"   (symlinked -- copy the targets rather than the links, e.g. "
+                    f"cp -L: {', '.join(linked)})")
         if fatal:
             # Only the two dedup stores. Continuing with an empty dedup set re-creates
             # every lead a human merged away (#81 -- `_resolve_path` never consults
