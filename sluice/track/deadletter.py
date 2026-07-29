@@ -70,8 +70,20 @@ class DeadLetterDb:
         # MISSING db -> empty (first run), without creating it. CORRUPT/unreadable
         # db, or an existing file with no track_deadletter table -> RAISE (the
         # SELECT below throws); never a silent empty (F1).
-        if not os.path.exists(self.path):
+        #
+        # `lexists` first, for the same reason the dedup loaders use it (#80): a DANGLING
+        # SYMLINK is present-but-unreadable, not absent, and `exists` follows the link so
+        # it landed in the empty arm -- discarding the whole backlog of proposals nobody
+        # has acted on, silently, which is exactly what "never a silent empty" forbids.
+        # Reachable because `.deadletter.db` is a migration companion: `mv` moves a link
+        # rather than its target.
+        if not os.path.lexists(self.path):
             return []
+        if not os.path.exists(self.path):
+            raise FileNotFoundError(
+                f"the dead-letter store at {self.path} is a symlink to something that "
+                f"does not exist. Fix or remove the link; it holds the proposals no one "
+                f"has acted on yet.")
         db = self._open()
         try:
             rows = db.execute(
