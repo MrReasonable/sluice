@@ -416,6 +416,15 @@ def _config_constructions(tree, watched):
     Module level and shared, because the self-test below used to re-implement this walk:
     a copy certifies the copy, and both alias branches were measured still-inert through
     it -- deleting either from the real sweep left the whole suite green.
+
+    COVERAGE IS BOUNDED, and stated rather than implied. Caught: a plain name, a renamed
+    import, an attribute on any module alias, a chained rebinding, and construction inside
+    a comprehension, lambda, decorator, nested function or class body. NOT caught: an
+    ANNOTATED rebinding (`_X: type = TrackConfig` is an `ast.AnnAssign`, which the
+    Assign-only pass skips), tuple unpacking, a walrus, `globals()[...]`, a dict-of-classes
+    registry, and `functools.partial`. All but the first need an adversary rather than
+    ordinary drift; the annotated rebinding is the one a typed refactor could reach by
+    accident, so it is the one to add if this ever surprises someone.
     """
     import ast
 

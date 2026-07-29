@@ -67,8 +67,9 @@ found by running the guard rather than reading it:
   the violations: a guard must pin that it enumerated the things it meant to look at (the loaders,
   the `*Config` classes, the settings in the example file), because for a *negative* guard — a leak
   gate, a forbidden-pattern sweep — finding nothing is the success case, and demanding a non-empty
-  result there would be backwards. Two such assertions, added late, each caught their own sweep
-  matching nothing at all on the first run.
+  result there would be backwards. One such assertion, added late, caught its own sweep matching
+  nothing at all on the very first run — the walk resolved imports but not class definitions, so it
+  had been enumerating an empty set.
 - **A pattern consumed by two engines must be asserted through the engine that RUNS it.** A regex
   built for Python `re` and handed to `git grep -E` is not the same regex: inside a bracket
   expression POSIX treats `\` as a literal member, not an escape, so the class terminates early. A
