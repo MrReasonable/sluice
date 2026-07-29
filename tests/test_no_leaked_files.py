@@ -275,6 +275,27 @@ def test_no_generated_or_personal_artefact_is_tracked():
     )
 
 
+# EMPTY = every tracked file. This was an include-list, and each round bolted another
+# entry on -- `*.json`, `scripts`, `run_tests.sh`, `.github` -- which is the unbounded
+# shape: "what did we forget?" has no answer, and four rounds each found one more thing.
+# Sweeping everything makes it bounded, and it is a no-op today: measured, the same grep
+# with no pathspec returns exactly the allow-listed literals in their allowed files.
+#
+# Narrowing this is what `test_the_gate_leaves_no_tracked_file_unsearched` forbids --
+# without it, deleting entries from the old include-list was invisible to the suite.
+_GATE_PATHSPEC: tuple = ()
+
+
+def test_the_gate_leaves_no_tracked_file_unsearched():
+    everything = set(_git("ls-files").split())
+    searched = (set(_git("ls-files", "--", *_GATE_PATHSPEC).split())
+                if _GATE_PATHSPEC else everything)
+    missed = everything - searched
+    assert not missed, (
+        "these tracked files are outside the leak gate's pathspec, so a home path in "
+        f"one of them ships unnoticed: {sorted(missed)}")
+
+
 def _is_allowed_hit(line):
     """True if a `git grep -n` hit line is a documented synthetic literal IN ITS OWN FILE.
 
@@ -303,9 +324,11 @@ def _is_allowed_hit(line):
     ("tests/test_backends.py:1: /home/example/.local/bin/claude and /home/other/x", False,
      "one allowed literal does not cover the rest of the line"),
     # BOTH literals are on the allow-list, with DIFFERENT allowed files. Only the first
-    # belongs here, so the line must still be reported -- a mutant that checks scoping
-    # for `found[0]` instead of every match survived every other row, because their
-    # second literal fails MEMBERSHIP before scoping is ever reached.
+    # belongs here, so the line must still be reported. This row is the only one that
+    # catches SCOPE CONFLATION -- a mutant that keeps `all(...)` but looks up `found[0]`'s
+    # allowed files for every match. (An earlier comment credited it with catching a
+    # plain `found[:1]` mutant instead; measured, the row above catches that one too,
+    # because `found[:1]` never evaluates the second literal at all.)
     ("tests/test_backends.py:1: /home/example/.local/bin/claude then /Users/someone/vault",
      False, "each match is scoped, not just the first"),
     ("tests/test_backends.py:1: nothing here", False,
@@ -313,7 +336,6 @@ def _is_allowed_hit(line):
 ])
 def test_the_allowance_is_scoped_to_the_file_that_needs_it(line, allowed, why):
     assert _is_allowed_hit(line) is allowed, why
-
 
 
 @pytest.mark.parametrize("prefix", ["/Users/", "/home/"])
@@ -331,19 +353,8 @@ def test_no_absolute_home_path_is_tracked_in_source_or_config(prefix):
     # 3300-line npm-generated package-lock.json, and scripts/guard_rulesync_drift.py -- all
     # three sat outside the old pathspec, and a generated lockfile is precisely what nobody
     # reads before committing.
-    out = _git("grep", "-n", "-I", "-E", re.escape(prefix) + _GREP_NAME, "--",
-               "sluice", "tests", "docs", "scripts",
-               # `*.yaml` does NOT match `sluice.yaml.example`, and that is the one file the
-               # quickstart copies verbatim onto a stranger's machine -- so it was outside
-               # this gate entirely. Named explicitly rather than widened to `*example*`,
-               # which would be a guess about future filenames.
-               "*.md", "*.yaml", "*.yml", "*.toml", "*.json", ".gitignore",
-               # `sluice.yaml.example` and `run_tests.sh` are named because no glob here
-               # reaches them: `*.yaml` does not match the former, and the latter is a
-               # hand-written local runner, which is exactly the shape that carries a
-               # developer's absolute path.
-               "sluice.yaml.example", "run_tests.sh", ".github",
-               allow=(0, 1))
+    out = _git("grep", "-n", "-I", "-E", re.escape(prefix) + _GREP_NAME,
+               *(("--",) + _GATE_PATHSPEC if _GATE_PATHSPEC else ()), allow=(0, 1))
     hits = []
     for line in out.splitlines():
         # this file necessarily contains the strings it is searching for

@@ -414,11 +414,13 @@ def test_the_remedy_does_not_clobber_a_companion_at_the_destination(
 
 
 def test_the_state_directory_the_remedy_creates_stays_private(monkeypatch, tmp_path):
-    """`mkdir -p -m 700`.
+    """`mkdir -p` then an explicit `chmod 700`.
 
     The same directory holds the OAuth token, and `_write_token`'s
-    `makedirs(mode=0o700, exist_ok=True)` NO-OPS once it exists -- so a plain `mkdir -p`
-    here leaves the credential's parent 0755 permanently.
+    `makedirs(mode=0o700, exist_ok=True)` no-ops once it exists -- so the parent's mode
+    has to be set by whoever gets there first. `mkdir -m` cannot do it: that flag applies
+    only to directories mkdir CREATES, and by the time a user runs this the directory
+    usually exists already, which is why this row plants it first.
     """
     import stat
     import subprocess
@@ -444,3 +446,28 @@ def test_the_state_directory_the_remedy_creates_stays_private(monkeypatch, tmp_p
         os.umask(old)
     mode = stat.S_IMODE(os.stat(root / "sluice").st_mode)
     assert mode == 0o700, f"the remedy left the token's parent at {oct(mode)}"
+
+
+def test_a_dangling_dead_letter_store_is_not_an_empty_one(tmp_path):
+    """The #49 store is in the RAISE tier, and a broken link belongs there too.
+
+    `open_entries` guarded on `os.path.exists`, which FOLLOWS the link, so a dangling
+    one landed in the missing-file arm and returned `[]` -- discarding every proposal
+    nobody has acted on, in silence, which its own comment forbids. Reachable because
+    `.deadletter.db` is a migration companion and `mv` moves a link rather than its
+    target.
+    """
+    from sluice.track.deadletter import DeadLetterDb
+
+    link = tmp_path / "track-seen.db.deadletter.db"
+    os.symlink(str(tmp_path / "nothere.db"), link)
+    with pytest.raises(OSError) as e:
+        DeadLetterDb(str(link)).open_entries()
+    assert "symlink" in str(e.value)
+
+
+def test_a_missing_dead_letter_store_is_still_an_empty_one(tmp_path):
+    # The other arm: absent is the ordinary first-run state and must stay quiet.
+    from sluice.track.deadletter import DeadLetterDb
+
+    assert DeadLetterDb(str(tmp_path / "nope.db")).open_entries() == []

@@ -134,8 +134,8 @@ def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> s
         moves.append((legacy, resolved))
         parent = os.path.dirname(resolved)
         # `chmod` SEPARATELY, not `mkdir -m`: the mode flag applies only to directories
-        # mkdir creates, and six ordinary writers already create this one at 0755
-        # (`seendb`, `health`, `cli`, `app` x2, `triage/audit`). It also holds the OAuth
+        # mkdir creates, and by the time a user runs this the directory usually exists --
+        # every state writer creates it at 0755 on the way past. It also holds the OAuth
         # token, whose `makedirs(mode=0o700, exist_ok=True)` no-ops for the same reason,
         # so without the explicit chmod the credential's parent stays 0755 permanently.
         #
@@ -156,12 +156,19 @@ def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> s
             msg += (f"   ({len(moves) - 1} companion file(s) must move with it: leaving "
                     f"them behind silently loses the last-run watermark and the "
                     f"un-acted-on proposal backlog.)")
+        # The `[ ! -e ]` guards stop the chain without printing anything, so a user who
+        # gets a bare non-zero exit needs to be told what it means. Said here rather than
+        # wrapped into the shell: an echo per step turns a copy-pasteable line into a
+        # thicket of quoting, which is its own hazard.
+        msg += ("   (if any destination already exists the command stops without moving "
+                "anything further -- deal with that file by hand, then re-run.)")
         linked = [src for src, _ in moves if os.path.islink(src)]
         if linked:
-            # `mv` moves the LINK, not its target, so a relative one lands dangling. The
-            # STORES are safe -- `lexists` makes both dedup loaders raise on a broken link
-            # -- but `_load_lastrun` swallows OSError by design, so a dangling `.lastrun`
-            # reads as "no prior run" and silently narrows the receipt window.
+            # `mv` moves the LINK, not its target, so a relative one lands dangling.
+            # Every reader that matters now RAISES on that (`lexists` in both dedup
+            # loaders and in the dead-letter store), except `_load_lastrun`, which
+            # swallows OSError by design -- so a dangling `.lastrun` reads as "no prior
+            # run" and silently narrows the receipt window.
             msg += (f"   (symlinked -- copy the targets rather than the links, e.g. "
                     f"cp -L: {', '.join(linked)})")
         if fatal:
