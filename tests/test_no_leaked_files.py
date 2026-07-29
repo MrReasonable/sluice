@@ -160,6 +160,14 @@ _HOME_PATH_RE = re.compile(r"/(?:Users|home)/(" + _NAME + ")")
 # being silently skipped.
 _FULL_HOME_PATH_RE = re.compile(rf"/(?:Users|home)/[{_NAME_CHARS}/-]+")
 
+# The Python mirror of `_GREP_NAME`: a NEGATED class, so it sees every path git can find,
+# including non-ASCII ones the ASCII parser above cannot represent. Used only to COUNT.
+# Without it the fail-closed property had a hole: on a line carrying an allow-listed
+# literal AND a real non-ASCII path, `_FULL_HOME_PATH_RE` finds only the allowed one, so
+# `all()` runs over a single permitted match and the line is skipped -- the real path
+# rides along invisibly. Measured before this existed.
+_WIDE_HOME_PATH_RE = re.compile(r"""/(?:Users|home)/[^\s'"`,)<>\]]+""")
+
 # The exact home-rooted strings that legitimately appear in this repo, in full.
 #
 # Deliberately whole paths and not a set of placeholder USERNAMES, which is what this
@@ -287,9 +295,11 @@ _GATE_PATHSPEC: tuple = ()
 
 
 def test_the_gate_leaves_no_tracked_file_unsearched():
-    everything = set(_git("ls-files").split())
-    searched = (set(_git("ls-files", "--", *_GATE_PATHSPEC).split())
-                if _GATE_PATHSPEC else everything)
+    # No conditional: `ls-files -- ` with no pathspec lists everything, so the empty
+    # case compares the real thing against the real thing instead of a constant against
+    # itself. `splitlines`, not `split`, or a filename with a space in it becomes two.
+    everything = set(_git("ls-files").splitlines())
+    searched = set(_git("ls-files", "--", *_GATE_PATHSPEC).splitlines())
     missed = everything - searched
     assert not missed, (
         "these tracked files are outside the leak gate's pathspec, so a home path in "
@@ -309,6 +319,10 @@ def _is_allowed_hit(line):
     """
     path_in_repo = line.split(":", 1)[0]
     found = _FULL_HOME_PATH_RE.findall(line)
+    # If git can see more home paths on this line than the allow-list parser can, the
+    # extra ones are unexaminable -- so the line is REPORTED, never skipped.
+    if len(found) != len(_WIDE_HOME_PATH_RE.findall(line)):
+        return False
     return bool(found) and all(
         any(path_in_repo.startswith(w)
             for w in _ALLOWED_HOME_PATH_FILES.get(m, ()))

@@ -466,6 +466,39 @@ def test_a_dangling_dead_letter_store_is_not_an_empty_one(tmp_path):
     assert "symlink" in str(e.value)
 
 
+@pytest.mark.parametrize("call", [
+    lambda db: db.open_entries(),
+    lambda db: db.bump_surfaced(),
+    lambda db: db.clear_lead("x"),
+    lambda db: db.clear_id("x"),
+], ids=["open_entries", "bump_surfaced", "clear_lead", "clear_id"])
+def test_every_dead_letter_reader_refuses_a_dangling_store(tmp_path, call):
+    """All four, not just the one a review happened to name.
+
+    The guard first landed on `open_entries` alone; the other three kept following the
+    symlink and quietly did nothing -- `clear_*` reporting success having cleared
+    nothing. Enumerated here so a fifth reader added without the check is caught.
+    """
+    from sluice.track.deadletter import DeadLetterDb
+
+    link = tmp_path / "track-seen.db.deadletter.db"
+    os.symlink(str(tmp_path / "nothere.db"), link)
+    with pytest.raises(OSError) as e:
+        call(DeadLetterDb(str(link)))
+    assert "symlink" in str(e.value)
+
+
+def test_every_dead_letter_reader_still_tolerates_a_missing_store(tmp_path):
+    # The other arm: absent is the ordinary first-run state for all of them.
+    from sluice.track.deadletter import DeadLetterDb
+
+    db = DeadLetterDb(str(tmp_path / "nope.db"))
+    assert db.open_entries() == []
+    assert db.bump_surfaced() is None
+    assert db.clear_lead("x") == 0
+    assert db.clear_id("x") == 0
+
+
 def test_a_missing_dead_letter_store_is_still_an_empty_one(tmp_path):
     # The other arm: absent is the ordinary first-run state and must stay quiet.
     from sluice.track.deadletter import DeadLetterDb

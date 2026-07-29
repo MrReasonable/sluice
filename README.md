@@ -80,7 +80,7 @@ Each of those is a seam meant to become a pluggable adapter. The roadmap:
 pip install -e .
 config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/sluice"
 mkdir -p "$config_dir"
-cp sluice.yaml.example "$config_dir/config.yaml"
+cp -n sluice.yaml.example "$config_dir/config.yaml"   # -n: never clobber an existing one
 sluice ingest run --help
 sluice triage run --help
 ```
