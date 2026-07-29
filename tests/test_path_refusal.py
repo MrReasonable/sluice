@@ -108,16 +108,33 @@ def test_a_dry_run_leaves_the_refusal_armed_for_the_next_real_run(legacy):
 
 def test_a_json_sink_does_not_refuse(legacy):
     # --sink json is an explicit request to skip the vault, so it writes no dedup
-    # state either and has nothing to lose.
+    # state either and has nothing to lose. Asserted with the same second half as the
+    # dry-run row: not refusing is only half the property, and a run that quietly
+    # created the resolved db would disarm the refusal for every later real run.
+    statedir = pathlib.Path(os.environ["XDG_STATE_HOME"]) / "sluice"
+    statedir.mkdir(parents=True, exist_ok=True)
     _app().ingest([], json_sink=True, out=io.StringIO())
+    assert not (statedir / "seen.db").exists()
+    with pytest.raises(RuntimeError):
+        _app().ingest([])
 
 
 def test_naming_the_seen_db_explicitly_does_not_refuse(legacy, monkeypatch, tmp_path):
     # Immune BY CONSTRUCTION, not by a rule repeated at each site: an explicit env var
     # short-circuits resolution before the legacy check is reached. Without this
     # property, everyone who already exports SEEN_DB would be refused at startup.
-    monkeypatch.setenv("SEEN_DB", str(tmp_path / "mine.db"))
+    #
+    # The observable half: the run must actually have USED the named path, so the
+    # per-system location is never touched and the legacy file is left alone. Without
+    # these, "did not raise" would also be satisfied by a run that silently resolved
+    # somewhere else entirely.
+    mine = tmp_path / "mine.db"
+    monkeypatch.setenv("SEEN_DB", str(mine))
     _app().ingest([])
+    from sluice.core.seendb import SeenDb
+    assert SeenDb().path == str(mine)
+    assert not (pathlib.Path(os.environ["XDG_STATE_HOME"]) / "sluice" / "seen.db").exists()
+    assert (legacy / "seen.db").read_text(encoding="utf-8") == _LEGACY_TEXT
 
 
 def test_seen_db_defaults_under_the_state_root(monkeypatch):
