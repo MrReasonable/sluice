@@ -137,7 +137,16 @@ def _save_seen(path, seen):
 def _load_lastrun(path):
     """Read the ISO timestamp of the previous successful (non-dry-run) track run,
     so the next run's Gmail query can be scoped since then (F10) instead of the
-    fixed lookback window. Missing/unreadable file just means "no prior run"."""
+    fixed lookback window. Missing/unreadable file just means "no prior run".
+
+    Swallowing the error is right here, unlike the dedup loaders beside it: nothing is
+    destroyed, and `_save_lastrun` repairs the file with a correct value on the next
+    successful run. But "no prior run" is not free. The fallback is
+    `gmail_lookback_days` (default 2), and `_gmail_query` uses `since_iso` INSTEAD of
+    that window rather than widening to whichever is larger -- so on an install idle
+    longer than the lookback, the fallback window is NARROWER than the real gap, and a
+    receipt that landed in it is never queried again. The lead then sits in `applied`
+    indefinitely. Losing this file is cheap; losing it after a long gap is not."""
     try:
         with open(path) as f:
             return f.read().strip() or None
