@@ -85,11 +85,33 @@ Pipeline: `ingest -> triage -> cv -> apply -> track`. Five sub-apps under `sluic
 `sluice/core/`. `docs/ARCHITECTURE.md` has the per-module detail; what follows is what you cannot
 see from the file tree.
 
-**Config is layered and single-file.** Code defaults < the YAML file at `$SLUICE_CONFIG` < env vars.
-Each sub-app has its own `load_*_config()` reading its own top-level block of that same file
-(`triage:`, `cv:`, `apply:`, `track:`); ingest reads the root keys. Every knob has a code default, so
-everything runs with no config file at all. New tunables go in the relevant `*Config` dataclass and
-`sluice.yaml.example` — never hardcoded in logic.
+**Config is layered and single-file.** Code defaults < the YAML file at `$SLUICE_CONFIG` (else
+`<XDG config>/sluice/config.yaml`) < env vars. Each sub-app has its own `load_*_config()` reading
+its own top-level block of that same file (`triage:`, `cv:`, `apply:`, `track:`); ingest reads the
+root keys. Every knob has a code default, so everything runs with no config file at all. New
+tunables go in the relevant `*Config` dataclass and `sluice.yaml.example` — never hardcoded in
+logic. Only `load_config` names its fields explicitly; the four sub-app loaders are
+`hasattr`-filtered `setattr` loops, so a new ROOT field is dead until `load_config` names it, and
+the sub-app loaders must not be "fixed" into naming theirs (`load_track_config`'s merged-denylist
+branch lives in that loop).
+
+**Every path goes through `core/paths.py` (#80).** One `resolve()`, one order — env var, then
+config key, then the XDG base directory for that `kind`. Two things follow that are easy to undo by
+accident. A path's config default must be `""`: a non-empty default is always truthy, so it
+short-circuits the chain, the XDG location is never reached, and nothing goes red while the feature
+is inert. And precedence belongs in the FACTORY, never ahead of an explicit constructor argument —
+`stores/vault.py:_make` and `HealthStore`/`SeenDb`'s `path or resolve(...)` are that shape, because
+the reverse would make an env var beat the ~150 positional `Vault(str(tmp_path))` constructions in
+the suite and retarget them at a developer's real vault, green in CI throughout. The vault itself
+does NOT relocate (it is the user's Obsidian directory), and its two-term `or` lives in `_make`.
+
+Nothing is auto-migrated. A path left behind warns; the two dedup stores REFUSE, because continuing
+with an empty dedup set re-creates every lead a human merged away and can mean a second application
+under the user's name. That refusal is scoped to commands that write — never `--dry-run`, `--sink
+json`, or `doctor` — and an explicitly named path short-circuits before the check, so callers who
+name their own paths are immune by construction. `tests/conftest.py`'s autouse fixture sandboxes
+every one of these; `XDG_CONFIG_HOME` and `HOME` are consecutive rungs of one chain, so both are
+load-bearing and neither substitutes for the other.
 
 **The `leads` passes report by default; the pipeline commands write by default.** `leads dedupe`
 (`--merge ID [ID ...]`) and `leads expire` (`--expire [SLUG...]`) print and change nothing until
