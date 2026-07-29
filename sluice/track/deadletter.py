@@ -50,6 +50,11 @@ def _broken_ancestor(path: str) -> str | None:
     A MISSING ancestor is not broken: `<state>/sluice/` legitimately does not exist before
     the first `record`, so walk past those and judge the first one that exists.
     """
+    # Starts at the PARENT, which is equivalent to starting at `path` only because the
+    # sole caller enters here from inside `_absent`'s `except FileNotFoundError` arm --
+    # `path` itself is already known not to lstat. Measured: with a dangling store this
+    # returns None where starting at `path` returns the store itself, so a SECOND caller
+    # that has not made that check would get a different answer with nothing going red.
     cur = os.path.dirname(path)
     while cur:
         try:
