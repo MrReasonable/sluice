@@ -112,10 +112,6 @@ Either way the config file holds personal material (locations, employer lists,
 contact details, hosts), so keep it out of any public repo -- `sluice.local.yaml`
 is git-ignored for that reason.
 
-Your vault is the one thing sluice does NOT relocate: it is your Obsidian
-directory, not sluice's state. It defaults to `./vault`; set `vault_dir` in your
-config (or `$VAULT_DIR`) to point at the real one.
-
 Upgrading from a version that kept `seen.db`, `track-seen.db`,
 `sluice_health.json`, `sluice_disabled.json`, `triage-audit.jsonl`,
 `google_token.json` or `dossiers/` next to where you ran it? sluice never moves
