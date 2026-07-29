@@ -149,7 +149,7 @@ def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> s
         #   directory does not exist yet and a bare `mv` fails with "No such file or
         #   directory", moving nothing.
         #
-        #   Companions BEFORE the store. The legacy gate is `exists(legacy) and not
+        #   Companions BEFORE the store. The legacy gate is `lexists(legacy) and not
         #   exists(resolved)`, keyed on the STORE alone: move it first and a chain that
         #   then fails leaves the companions orphaned AND silences the only notice that
         #   names them, permanently. Moving the store last means any interruption leaves
