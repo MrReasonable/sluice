@@ -494,6 +494,25 @@ def test_every_dead_letter_reader_refuses_a_dangling_store(tmp_path, name):
     assert "symlink" in str(e.value)
 
 
+@pytest.mark.parametrize("name", sorted(_DEADLETTER_READERS), ids=sorted(_DEADLETTER_READERS))
+def test_every_dead_letter_reader_refuses_a_dangling_ANCESTOR(tmp_path, name):
+    """A broken link ON THE WAY to the store is the same silent empty as a broken store.
+
+    `os.lstat(store)` raises ENOENT for this exactly as it does for a genuinely-absent
+    store, so before `_broken_ancestor` every reader read it as "first run": measured,
+    `open_entries` returned `[]` and the entire un-actioned backlog vanished.
+    """
+    from sluice.track.deadletter import DeadLetterDb
+
+    os.symlink(str(tmp_path / "moved-away"), str(tmp_path / "statedir"))
+    store = tmp_path / "statedir" / "track-seen.db.deadletter.db"
+    with pytest.raises(OSError) as e:
+        _DEADLETTER_READERS[name](DeadLetterDb(str(store)))
+    assert "symlink" in str(e.value)
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0,
+                    reason="root traverses a 0o000 directory, so this route cannot be staged")
 def test_an_unreadable_dead_letter_store_is_not_an_absent_one(tmp_path):
     """`os.path.lexists` returns False on ANY OSError, so a store under a directory the
     user cannot traverse read as "absent" and the backlog came back empty -- the same
@@ -513,13 +532,43 @@ def test_an_unreadable_dead_letter_store_is_not_an_absent_one(tmp_path):
         os.chmod(locked, 0o755)
 
 
-def test_every_dead_letter_reader_still_tolerates_a_missing_store(tmp_path):
-    # The other arm: absent is the ordinary first-run state for all of them.
+# What each reader returns when the store is genuinely absent. Keyed by the SAME roster,
+# with the completeness assertion below, so a new reader cannot be added to one and
+# forgotten in the other -- which is what let `check_reachable` slip past the hand-list
+# this replaced (it named four readers and omitted the fifth).
+_MISSING_STORE_RESULT = {
+    "open_entries": [],
+    "bump_surfaced": None,
+    "clear_lead": 0,
+    "clear_id": 0,
+    "check_reachable": None,
+}
+
+
+def test_the_missing_store_expectations_cover_every_reader():
+    assert set(_MISSING_STORE_RESULT) == set(_DEADLETTER_READERS)
+
+
+@pytest.mark.parametrize("name", sorted(_DEADLETTER_READERS), ids=sorted(_DEADLETTER_READERS))
+def test_every_dead_letter_reader_still_tolerates_a_missing_store(tmp_path, name):
+    # The other arm: absent is the ordinary first-run state for all of them. Asserting the
+    # store is still absent afterwards is the #80 half -- a read that CREATES the file
+    # disarms the relocation refusal for every later run.
     from sluice.track.deadletter import DeadLetterDb
 
-    db = DeadLetterDb(str(tmp_path / "nope.db"))
-    assert db.open_entries() == []
-    assert db.bump_surfaced() is None
-    assert db.clear_lead("x") == 0
-    assert db.clear_id("x") == 0
+    store = tmp_path / "nope.db"
+    assert _DEADLETTER_READERS[name](DeadLetterDb(str(store))) == _MISSING_STORE_RESULT[name]
+    assert not os.path.lexists(store), f"{name} created the store on a read"
+
+
+@pytest.mark.parametrize("name", sorted(_DEADLETTER_READERS), ids=sorted(_DEADLETTER_READERS))
+def test_a_missing_parent_chain_is_still_just_a_first_run(tmp_path, name):
+    # The counterpart to the dangling-ancestor row: `<state>/sluice/` legitimately does
+    # not exist before the first `record`, so the ancestor walk must step PAST missing
+    # directories and only judge one that exists without resolving. A guard that refused
+    # here would fail every genuine first run.
+    from sluice.track.deadletter import DeadLetterDb
+
+    store = tmp_path / "not" / "created" / "yet" / "track-seen.db.deadletter.db"
+    assert _DEADLETTER_READERS[name](DeadLetterDb(str(store))) == _MISSING_STORE_RESULT[name]
 

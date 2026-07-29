@@ -1,4 +1,4 @@
-import json, tempfile, pathlib, sqlite3
+import json, os, tempfile, pathlib, sqlite3
 import pytest
 from sluice.core.protocols import VaultConflict
 from sluice.core.vault import Vault
@@ -273,6 +273,63 @@ def test_confirm_clears_dead_letter_on_success():
     out = E.confirm(v, TrackConfig(), "Tidemark - Analyst", "interview", deadletter=dl)
     assert out["ok"] is True
     assert dl.open_entries() == []                 # the lead's proposals are resolved
+
+
+def _unclearable_dl(kind):
+    """A store that EXISTS but on which `clear_lead` cannot work, one shape per route.
+
+    Every one of these was measured to pass a bare existence check and then raise in
+    `clear_lead` -- which is the whole reason `check_reachable` probes the DELETE rather
+    than the path.
+    """
+    tmp = tempfile.mkdtemp()
+    p = pathlib.Path(tmp, "track-seen.db.deadletter.db")
+    if kind == "dangling-symlink":
+        p.symlink_to(pathlib.Path(tmp, "moved-away.db"))
+    elif kind == "not-a-database":
+        p.write_bytes(b"a text file someone left here\n")
+    elif kind == "no-table":
+        c = sqlite3.connect(str(p))
+        c.execute("CREATE TABLE unrelated (x TEXT)"); c.commit(); c.close()
+    elif kind == "read-only":
+        DeadLetterDb(str(p)).record(Entry("m0", "Other - Role", "", "rejection", "p", "h",
+                                          "2026-07-10", 1))
+        p.chmod(0o444); pathlib.Path(tmp).chmod(0o555)
+    return DeadLetterDb(str(p)), tmp
+
+
+@pytest.mark.parametrize("kind", [
+    "dangling-symlink",
+    "not-a-database",
+    "no-table",
+    pytest.param("read-only", marks=pytest.mark.skipif(
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        reason="root writes a 0444 file regardless, so this route cannot be staged")),
+])
+def test_confirm_refuses_an_unclearable_store_before_writing_status(kind):
+    """The status write must not land when the row it pairs with cannot be cleared.
+
+    `confirm` advances the lead and THEN clears its dead-letter row. If the clear raises,
+    the advance has already happened, and re-running is refused on a transition that is
+    now a no-op -- so the row is unclearable forever and #49's backlog keeps re-surfacing
+    a proposal the human already actioned.
+
+    The byte-identical assertion is the load-bearing one, and it is what an
+    exception-only test misses: `pytest.raises` alone stays GREEN with the probe moved
+    BELOW `update_fields` (measured, 1462 passed), because the failure still escapes --
+    it just escapes too late. This also fails if the probe reverts to an existence check,
+    since every `kind` here exists.
+    """
+    v, path = _vault("phone_screen")
+    dl, tmp = _unclearable_dl(kind)
+    before = pathlib.Path(path).read_bytes()
+    try:
+        with pytest.raises((OSError, sqlite3.DatabaseError)):
+            E.confirm(v, TrackConfig(), "Tidemark - Analyst", "interview", deadletter=dl)
+        assert pathlib.Path(path).read_bytes() == before, (
+            f"confirm wrote status with an unclearable ({kind}) store, stranding the row")
+    finally:
+        pathlib.Path(tmp).chmod(0o755)
 
 
 def test_confirm_dry_run_does_not_clear():

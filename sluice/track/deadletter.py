@@ -39,6 +39,35 @@ class Entry:
     times_surfaced: int
 
 
+def _broken_ancestor(path: str) -> str | None:
+    """The nearest ancestor that exists as a NAME but does not resolve, else None.
+
+    A dangling link ON THE WAY to the store makes `os.lstat(store)` raise ENOENT -- the
+    same exception a genuinely-absent store raises -- so without this the whole backlog
+    read as "first run". Measured: with `<state>/sluice` a dangling link, `open_entries`
+    returned `[]`. That is the silent empty F1 forbids, reached by a third route.
+
+    A MISSING ancestor is not broken: `<state>/sluice/` legitimately does not exist before
+    the first `record`, so walk past those and judge the first one that exists.
+    """
+    cur = os.path.dirname(path)
+    while cur:
+        try:
+            os.lstat(cur)                     # exists as a name?
+        except FileNotFoundError:
+            parent = os.path.dirname(cur)
+            if parent == cur:                 # reached the root; nothing above exists
+                return None
+            cur = parent
+            continue
+        try:
+            os.stat(cur)                      # ...and does it resolve?
+        except FileNotFoundError:
+            return cur
+        return None
+    return None
+
+
 def _absent(path: str) -> bool:
     """True if the store genuinely does not exist yet; RAISES if it is unreachable.
 
@@ -59,6 +88,12 @@ def _absent(path: str) -> bool:
     try:
         os.lstat(path)
     except FileNotFoundError:
+        broken = _broken_ancestor(path)
+        if broken is not None:
+            raise FileNotFoundError(
+                f"the dead-letter store at {path} sits under {broken}, a symlink to "
+                f"something that does not exist. Fix or remove the link; the store holds "
+                f"the proposals no one has acted on yet.") from None
         return True
     try:
         os.stat(path)          # the name exists; does it resolve?
@@ -136,15 +171,37 @@ class DeadLetterDb:
             db.close()
 
     def check_reachable(self) -> None:
-        """Raise if the store exists but cannot be read; silent if it is genuinely absent.
+        """Raise unless `clear_lead` would work; silent if the store is genuinely absent.
 
         For callers that WRITE something else first and clear afterwards. `engine.confirm`
         advances the lead's status and then clears its row: once `clear_lead` could raise,
         a dangling or unreadable store meant the status write landed, the error escaped,
         and the row became unclearable -- the re-run is refused because the transition has
         already happened. Probing first moves the failure ahead of the write.
+
+        It probes the OPERATION, not the path. `_absent` alone answers "does the file
+        exist", and every way of being unreadable answers yes: measured, a store at mode
+        000, one holding non-sqlite bytes, one with no `track_deadletter` table, and a
+        read-only one ALL passed an existence check and then raised in `clear_lead` --
+        so the guard had none of the coverage this docstring used to claim.
         """
-        _absent(self.path)
+        if _absent(self.path):
+            return
+        db = self._open()
+        try:
+            # `clear_lead`'s own statement, restricted to nothing. One statement settles
+            # all four failures at once -- openable, the table exists, and the file is
+            # WRITABLE -- because it is the very operation being protected.
+            #
+            # Writability needs the DELETE specifically. `BEGIN IMMEDIATE`/`BEGIN
+            # EXCLUSIVE` were both measured NOT to raise on a 0444 store (SQLite defers
+            # the write lock), and a `SELECT` never could: a read-only store answers it
+            # happily and then fails the DELETE. Rolled back, so a healthy store is
+            # untouched -- and `WHERE 0` means there is nothing to roll back anyway.
+            db.execute("DELETE FROM track_deadletter WHERE 0")
+        finally:
+            db.rollback()
+            db.close()
 
     def clear_lead(self, slug: str) -> int:
         if _absent(self.path):
