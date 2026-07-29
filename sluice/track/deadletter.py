@@ -18,6 +18,9 @@ import os
 import sqlite3
 from dataclasses import dataclass
 
+from sluice.core.paths import absent as paths_absent
+from sluice.core.paths import existing_db_uri
+
 # The store lives beside the track seen file at `<seen_db>.deadletter.db`. The
 # `.db` ending is load-bearing: `.gitignore`'s `*.db` keeps this private runtime
 # state (message-ids, slugs, proposal text) out of the public repo. `.lastrun` is
@@ -39,79 +42,17 @@ class Entry:
     times_surfaced: int
 
 
-def _broken_ancestor(path: str) -> str | None:
-    """The nearest ancestor that exists as a NAME but does not resolve, else None.
-
-    A dangling link ON THE WAY to the store makes `os.lstat(store)` raise ENOENT -- the
-    same exception a genuinely-absent store raises -- so without this the whole backlog
-    read as "first run". Measured: with `<state>/sluice` a dangling link, `open_entries`
-    returned `[]`. That is the silent empty F1 forbids, reached by a third route.
-
-    A MISSING ancestor is not broken: `<state>/sluice/` legitimately does not exist before
-    the first `record`, so walk past those and judge the first one that exists.
-    """
-    # Starts at the PARENT, which is equivalent to starting at `path` only because the
-    # sole caller enters here from inside `_absent`'s `except FileNotFoundError` arm --
-    # `path` itself is already known not to lstat. Measured: with a dangling store this
-    # returns None where starting at `path` returns the store itself, so a SECOND caller
-    # that has not made that check would get a different answer with nothing going red.
-    cur = os.path.dirname(path)
-    while cur:
-        try:
-            os.lstat(cur)                     # exists as a name?
-        except FileNotFoundError:
-            parent = os.path.dirname(cur)
-            if parent == cur:
-                # Termination insurance, not a reachable case: `/` always lstats, so the
-                # loop exits above before `dirname` can reach its own fixed point.
-                # Deleting this line is measurably green -- it is here so the walk cannot
-                # spin on a path shape nobody has thought of, not because one is known.
-                return None
-            cur = parent
-            continue
-        try:
-            os.stat(cur)                      # ...and does it resolve?
-        except FileNotFoundError:
-            return cur
-        return None
-    return None
-
-
 def _absent(path: str) -> bool:
     """True if the store genuinely does not exist yet; RAISES if it is unreachable.
 
-    Every reader here asks this question, and each used to ask it with `os.path.exists`,
-    which FOLLOWS a symlink -- so a dangling one read as "first run" and the method
-    quietly did nothing. For `open_entries` that discards the whole backlog of proposals
-    nobody has acted on; for `clear_*` it reports success having cleared nothing. Both are
-    the silent empty this module's F1 rule forbids.
-
-    It is reachable because `.deadletter.db` is a migration companion (#80) and `mv` moves
-    a link rather than its target. One helper rather than the check repeated four times,
-    so the next reader cannot be added without it.
+    The logic lives in `core.paths.absent` because it was written twice and diverged
+    twice -- the EACCES fix and then the dangling-ANCESTOR guard each landed on one store
+    and missed the other. This wrapper only supplies the wording, so the refusal still
+    says what a dead-letter store is and why an empty read is not acceptable here (F1).
     """
-    # `lstat`/`stat`, NOT `os.path.lexists`/`exists`: those return False on ANY OSError,
-    # so a store under a directory the user cannot traverse read as "absent" and the
-    # backlog came back empty -- the same silent empty by a different route. Measured.
-    # Here only FileNotFoundError means absent; EACCES and friends propagate.
-    try:
-        os.lstat(path)
-    except FileNotFoundError:
-        broken = _broken_ancestor(path)
-        if broken is not None:
-            raise FileNotFoundError(
-                f"the dead-letter store at {path} sits under {broken}, a symlink to "
-                f"something that does not exist. Fix or remove the link; the store holds "
-                f"the proposals no one has acted on yet.") from None
-        return True
-    try:
-        os.stat(path)          # the name exists; does it resolve?
-    except FileNotFoundError:
-        raise FileNotFoundError(
-            f"the dead-letter store at {path} is a symlink to something that does not "
-            f"exist. Fix or remove the link; it holds the proposals no one has acted on "
-            f"yet.") from None
-    return False
+    return paths_absent(
+        path, what="the dead-letter store",
+        why="It holds the proposals no one has acted on yet.")
 
 
 def deadletter_path(seen_db: str) -> str:
@@ -136,10 +77,18 @@ class DeadLetterDb:
         return db
 
     def _open(self):
-        # No DDL: the caller has already guarded os.path.exists, and only `record`
-        # creates the store. An existing-but-tableless/corrupt file therefore RAISES
-        # here (fail-loud), never silently gets its table created on a read.
-        return sqlite3.connect(self.path)
+        # No DDL, and CANNOT create: only `record` creates the store. An
+        # existing-but-tableless/corrupt file therefore RAISES here (fail-loud), never
+        # silently gets its table created on a read.
+        #
+        # `existing_db_uri` rather than a plain connect, because the caller's `_absent`
+        # check and this open are two syscalls: measured by forcing the window open, a
+        # store removed in between left a fresh 0-BYTE `.deadletter.db` behind. That file
+        # then satisfies `exists(resolved + suffix)` in `paths.resolve`, dropping the
+        # sidecar from `stranded` -- so the notice about the real backlog still sitting at
+        # the legacy path goes quiet permanently. `SeenDb.load` was fixed for this first
+        # and this store was missed, which is why both now share one helper.
+        return sqlite3.connect(existing_db_uri(self.path), uri=True)
 
     def open_entries(self) -> list[Entry]:
         # MISSING db -> empty (first run), without creating it. CORRUPT/unreadable

@@ -99,3 +99,46 @@ def test_open_entries_on_existing_tableless_db_raises_not_silent_empty():
     con.close()
     with pytest.raises(Exception):
         DeadLetterDb(dbpath).open_entries()
+
+
+def test_a_read_never_creates_the_store_when_it_vanishes_mid_check(tmp_path, monkeypatch):
+    """`_open` must not be able to CREATE, and the cost here is worse than a lost read.
+
+    The `_absent` check and the open are two syscalls, and a plain `sqlite3.connect`
+    creates on open, so a store removed between them left a fresh 0-BYTE
+    `.deadletter.db`. That file then satisfies `exists(resolved + suffix)` in
+    `paths.resolve`, which drops the sidecar from `stranded` -- so the notice about the
+    real backlog still sitting at the legacy path goes quiet PERMANENTLY, and #49's whole
+    point is that a proposal re-surfaces until a human acts on it.
+
+    `SeenDb.load` was fixed for this first and this store was missed, which is the same
+    way the EACCES and dangling-ancestor gaps happened. Both now share
+    `core.paths.existing_db_uri`.
+
+    The window has to be forced open: pointing at an already-absent path proves nothing,
+    because `_absent` returns before the open is reached. `stat`/`unlink` are captured
+    before patching and the removal is one-shot, or anything in the hook that touches the
+    filesystem re-enters it.
+    """
+    import sluice.core.paths as paths_mod
+
+    store = tmp_path / "track-seen.db.deadletter.db"
+    DeadLetterDb(str(store)).record(
+        Entry("m1", "Example - Analyst", "", "rejection", "p", "h", "2026-07-10", 1))
+    assert store.exists()
+
+    real_stat, real_unlink, fired = os.stat, os.unlink, []
+
+    def _stat_then_vanish(path, *a, **k):
+        result = real_stat(path, *a, **k)
+        if not fired and str(path) == str(store):
+            fired.append(True)
+            real_unlink(str(store))
+        return result
+
+    monkeypatch.setattr(paths_mod.os, "stat", _stat_then_vanish)
+    with pytest.raises(sqlite3.OperationalError):
+        DeadLetterDb(str(store)).open_entries()
+    assert not store.exists(), (
+        "a READ created the dead-letter store; that file silences the migration notice "
+        "for the real backlog at the legacy path")
