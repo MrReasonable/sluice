@@ -41,6 +41,42 @@ Shared by every sub-app:
   two lifecycles, `shortlist -> applied`, has two actors -- apply (on send)
   and track (on a domain-matched confirmation receipt) -- both gated by the
   same `can_apply` predicate.
+- `paths.py`: where every path sluice owns lives (#80). One `resolve()`, one
+  order -- env var, then config key, then the XDG base directory for that
+  `kind` (`config`/`state`/`cache`, validated against that closed set). It
+  performs no writes, so `--dry-run` cannot touch the disk; the writer that
+  needs a parent creates it. Reads `XDG_*` per call, never at import, because
+  an import-time snapshot is unpatchable by tests. It also holds the table of
+  where each path lived BEFORE the sweep, so the migration has one home and
+  the cwd-relative literals survive in exactly one module.
+
+  Disposition, complete:
+
+  | what | env var | now under | note |
+  | --- | --- | --- | --- |
+  | config file | `SLUICE_CONFIG` | config | all five loaders, via `config_file()` |
+  | dedup state | `SEEN_DB` | state | **refuses** to start if left behind |
+  | track dedup state | *none* | state | **refuses**; `.lastrun` + #49 store derive from it |
+  | source health | `SLUICE_HEALTH` | state | |
+  | disabled sources | `SLUICE_DISABLED` | state | |
+  | triage audit | `TRIAGE_AUDIT` | state | was a dead config key |
+  | dossier cache | `DOSSIER_DIR` | cache | ONE root key; was two sub-app keys |
+  | Google OAuth token | *none* | state | written `0600`, parent created |
+  | vault | `VAULT_DIR` | **unmoved** | gains a config key; precedence in `stores/vault.py:_make` |
+
+  The cv/apply artefact paths (`cv-output`, `cv-served`, `cv-home`,
+  `cv-host`, `cv-uploads`, the render script) stay cwd-relative by design:
+  they are outputs a user places, not state sluice owns.
+
+  Nothing is ever moved automatically. A path left at its old location warns
+  and names the `mv`, except the two dedup stores, which refuse -- continuing
+  with an empty dedup set re-creates every lead a human merged away, which can
+  mean a second application under their name (see #81). The refusal is scoped
+  to commands that write: `--dry-run` and `--sink json` proceed, and so does
+  `doctor`, since a relocated file is exactly what one runs doctor to hear
+  about. An explicitly named path (env var or config key) short-circuits
+  resolution before the check, so callers who name their own paths are immune
+  by construction rather than by a rule repeated at each site.
 - `seendb.py`: a sqlite dedup store for already-seen leads.
 - `resilience.py`: retry-with-backoff, hard timeout, and rate-limit
   precheck helpers that wrap each source's I/O.

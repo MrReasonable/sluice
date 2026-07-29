@@ -78,14 +78,37 @@ Each of those is a seam meant to become a pluggable adapter. The roadmap:
 
 ```bash
 pip install -e .
-cp sluice.yaml.example sluice.local.yaml
-export SLUICE_CONFIG=$(pwd)/sluice.local.yaml
+mkdir -p ~/.config/sluice
+cp sluice.yaml.example ~/.config/sluice/config.yaml
 sluice ingest run --help
 sluice triage run --help
 ```
 
-`sluice.local.yaml` is git-ignored, so personal config (locations, employer
-lists, contact details, hosts) never lands in the repo.
+sluice reads `$XDG_CONFIG_HOME/sluice/config.yaml` (`~/.config/sluice/config.yaml`
+on a default setup) and keeps its own state and caches under the matching XDG
+directories, so you can run it from anywhere rather than from one project
+directory. `$SLUICE_CONFIG` still overrides the location if you would rather keep
+the file elsewhere:
+
+```bash
+cp sluice.yaml.example sluice.local.yaml     # git-ignored
+export SLUICE_CONFIG=$(pwd)/sluice.local.yaml
+```
+
+Either way the config file holds personal material (locations, employer lists,
+contact details, hosts), so keep it out of any public repo -- `sluice.local.yaml`
+is git-ignored for that reason.
+
+Your vault is the one thing sluice does NOT relocate: it is your Obsidian
+directory, not sluice's state. It defaults to `./vault`; set `vault_dir` in your
+config (or `$VAULT_DIR`) to point at the real one.
+
+Upgrading from a version that kept `seen.db`, `track-seen.db`,
+`sluice_health.json`, `sluice_disabled.json`, `triage-audit.jsonl`,
+`google_token.json` or `dossiers/` next to where you ran it? sluice never moves
+your data. It prints the `mv` for each one, and for the two dedup databases it
+refuses to run until you have moved them -- starting with an empty dedup set can
+re-create leads you merged away, which risks applying to the same job twice.
 
 ## Configuration
 
