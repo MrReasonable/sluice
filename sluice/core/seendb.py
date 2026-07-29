@@ -35,18 +35,38 @@ class SeenDb:
         # the empty file behind, and the REAL run that follows then proceeds with an
         # empty dedup set instead of refusing. That re-creates every lead a human merged
         # away and can mean a second application under their name (#81), reported as
-        # ordinary `created: N`. It also broke this design's own promise that a dry run
-        # touches no disk. Same shape as `DeadLetterDb.open_entries`, for the same
-        # reason. A file that EXISTS but is corrupt still falls to the except below.
+        # ordinary `created: N`.
+        #
+        # A CORRUPT db raises rather than reading as empty, which is the same harm by a
+        # different route: `except Exception: return set()` turned an unreadable dedup
+        # store into a silent full dedup loss, and refusing to start over a RELOCATED
+        # store while shrugging at an unreadable one is incoherent. `DeadLetterDb`
+        # already rules that way for its own store (F1, "never a silent empty").
+        #
+        # It is NOT identical to that sibling, though, and the difference is deliberate:
+        # an existing db with no `seen_jobs` table reads as EMPTY here, where
+        # `DeadLetterDb` raises. That state is a real one users have -- the bug above
+        # left 0-byte files behind, and a 0-byte file is a valid empty sqlite db -- so
+        # raising on it would turn this fix into a hard failure on the next run for
+        # exactly the people the fix is for. `save` creates the table.
+        #
+        # Asked as a question rather than caught as an exception: a bare `except` here is
+        # what hid the corruption case, and `OperationalError` covers "database is
+        # locked" as well as "no such table", so discriminating on the exception would
+        # silently swallow a transient lock too.
         if not os.path.exists(self.path):
             return set()
+        db = sqlite3.connect(self.path)
         try:
-            db = sqlite3.connect(self.path)
+            known = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='seen_jobs'"
+            ).fetchone()
+            if not known:
+                return set()
             rows = db.execute("SELECT url FROM seen_jobs").fetchall()
+        finally:
             db.close()
-            return {r[0] for r in rows if r[0]}
-        except Exception:
-            return set()
+        return {r[0] for r in rows if r[0]}
 
     def _init(self) -> None:
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
