@@ -11,6 +11,7 @@ group pins shut.
 it would still pass with the sandbox removed, and the sandbox is what stops this file
 writing into a developer's real `~/.local/state`.
 """
+import dataclasses
 import fnmatch
 import importlib
 import os
@@ -179,6 +180,42 @@ def _override(block, fieldname, value):
     """(yaml text, expected) for the same block carrying a DIFFERENT value."""
     other = value + 1 if isinstance(value, int) else "Other.pdf"
     return block.replace(f"{fieldname}: {value}", f"{fieldname}: {other}"), other
+
+
+@pytest.mark.parametrize("name,module,_snippet,_field,_value", _CONFIG_LOADERS,
+                         ids=_LOADER_IDS)
+def test_a_valueless_key_never_becomes_None(tmp_path, name, module, _snippet, _field,
+                                            _value):
+    """`seen_db:` with nothing after it parses as None, and None must not reach a field.
+
+    A half-edited or commented-out value is an ordinary thing to leave in a config file,
+    and every sub-app loader guards it with `v is not None` inside its setattr loop. That
+    guard was measurably inert in ALL FOUR of them: removing it left the whole suite
+    green, while the harm is a `None` where a path or a list belongs -- `os.path.dirname(
+    None)` and `deadletter_path(None)` downstream, from a config file that looks fine.
+
+    Swept over the roster rather than the two loaders a review happened to name, and the
+    roster is pinned complete by `test_config_loader_roster_is_complete`. The ROOT loader
+    is in here too: it has no such loop, so it reaches the same outcome by another route,
+    and this is what would notice if that route ever stopped working.
+    """
+    loader = _loader(module, name)
+    base = loader(None)
+    fields = [f.name for f in dataclasses.fields(base)]
+    # Derived from the loader's own name, so a new sub-app needs no edit here:
+    # `load_track_config` -> the `track:` block, `load_config` -> the root keys.
+    stem = name[len("load_"):-len("_config")]
+    prefix = f"{stem}:\n" if stem else ""
+    indent = "  " if stem else ""
+    body = prefix + "".join(f"{indent}{f}:\n" for f in fields)
+    p = tmp_path / f"{name}.yaml"
+    p.write_text(body, encoding="utf-8")
+
+    cfg = loader(str(p))
+    nulled = [f for f in fields if getattr(cfg, f) is None]
+    assert not nulled, (
+        f"a valueless key set {name}'s {nulled} to None; a None path or list reaches "
+        f"os.path.* and the store constructors from a config file that looks fine")
 
 
 def test_load_star_config_glob_matches_the_root_loader_too():

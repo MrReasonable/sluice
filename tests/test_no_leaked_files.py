@@ -471,6 +471,38 @@ def test_the_gate_catches_real_shapes_and_spares_bare_prefixes(tmp_path):
             f"gate false-positives on a detector: {detector}"
 
 
+def _sweep_verdict(git_hits, python_hits, sep_lines):
+    """(narrowed, fail_open) for one sweep. Both are sets of line numbers.
+
+    Extracted for the same reason `_is_allowed_hit` was: a guard whose whole job is to
+    catch a FUTURE regression cannot be witnessed by a suite in which that regression does
+    not occur. Deleting these two comparisons in place left everything green -- the healthy
+    tree simply never produces a non-empty set -- so the logic lives here where synthetic
+    inputs can drive it, and the rows below are what actually pin it.
+
+    `narrowed` is the scope half, and it is a SET rather than a count. A threshold (`>
+    half the lines`) carried roughly 2x slack, so a narrowing confined to one block --
+    discovery quietly dropping everything above 0x200, say -- stayed comfortably above it
+    and read as healthy. Everything git legitimately declines to match is a codepoint
+    POSIX `[:space:]` calls whitespace and Python's spelled-out class does not; anything
+    else is a regression, whatever the count says.
+    """
+    return (python_hits - git_hits - sep_lines, git_hits - python_hits)
+
+
+@pytest.mark.parametrize("git,py,seps,narrowed,fail_open,why", [
+    ({1, 2, 3}, {1, 2, 3}, set(), set(), set(), "healthy: both engines agree"),
+    ({1, 2}, {1, 2, 3}, {3}, set(), set(), "a known whitespace divergence is not a regression"),
+    ({1, 2}, {1, 2, 3}, set(), {3}, set(), "the same gap with no divergence to explain it IS"),
+    ({1, 2, 3}, {1, 2}, set(), set(), {3}, "git sees a line the parser cannot -- fail OPEN"),
+    (set(), {1, 2, 3}, set(), {1, 2, 3}, set(), "discovery found nothing at all"),
+    ({1, 2, 3}, set(), set(), set(), {1, 2, 3}, "the parser matched nothing at all"),
+])
+def test_the_sweep_verdict_separates_narrowing_from_failing_open(
+        git, py, seps, narrowed, fail_open, why):
+    assert _sweep_verdict(git, py, seps) == (narrowed, fail_open), why
+
+
 def test_the_python_parser_sees_every_line_git_can_find(tmp_path):
     """The gate's fail-closed property, pinned STRUCTURALLY rather than by a chosen table.
 
@@ -500,19 +532,11 @@ def test_the_python_parser_sees_every_line_git_can_find(tmp_path):
     git_hits = {int(x.split(":")[1]) for x in r.stdout.splitlines() if x.count(":") >= 2}
     python_hits = {i + 1 for i, line in enumerate(lines) if _WIDE_HOME_PATH_RE.search(line)}
 
-    assert git_hits, "the sweep discovered nothing -- the subset check below is vacuous"
-    # The scope guard, as a SET rather than a count. A threshold (`> half the lines`) had
-    # roughly 2x slack, so a narrowing confined to one block -- discovery quietly dropping
-    # everything above 0x200, say -- stayed comfortably above it and read as healthy.
-    # Everything git legitimately declines to match is a codepoint POSIX `[:space:]` calls
-    # whitespace and Python's spelled-out class does not; anything else is a regression,
-    # whatever the count says.
     sep_lines = {i + 1 for i, c in enumerate(codepoints) if c in seps}
-    narrowed = python_hits - git_hits - sep_lines
+    narrowed, fail_open = _sweep_verdict(git_hits, python_hits, sep_lines)
     assert not narrowed, (
         "discovery stopped matching codepoints that are not the known whitespace "
         f"divergence: {[hex(codepoints[i - 1]) for i in sorted(narrowed)][:8]}")
-    fail_open = git_hits - python_hits
     assert not fail_open, (
         "git discovers lines the allow-list parser cannot see, so a real path beside an "
         "allow-listed literal would be skipped: "
