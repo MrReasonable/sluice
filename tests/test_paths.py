@@ -305,6 +305,35 @@ def test_an_orphaned_companion_still_refuses(monkeypatch, tmp_path):
     assert f"mv {legacy} " not in msg, "the remedy moves an absent store, so step one fails"
 
 
+def test_a_companion_left_behind_by_a_hand_move_still_refuses(monkeypatch, tmp_path):
+    """The cell a user reaches by DOING WHAT THE NOTICE SAYS, and the one a first fix missed.
+
+    Gating the companions on the STORE's destination -- `(store or companions) and not
+    exists(resolved)` -- closes only the orphan case. Someone who reads the refusal and
+    hand-moves just the store leaves `.lastrun` and `.deadletter.db` behind; the
+    destination store now exists, the whole clause goes false, and `track run` reads the
+    new location and prints `open=0` with #49's backlog sitting at the old path. Measured
+    silent. Each file is judged against ITS OWN destination now.
+    """
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.delenv("TRACK_SEEN_DB", raising=False)
+    legacy = tmp_path / "track-seen.db"                    # already hand-moved
+    resolved = tmp_path / "state" / "sluice" / "track-seen.db"
+    resolved.parent.mkdir(parents=True)
+    resolved.write_text("moved by hand", encoding="utf-8")
+    companion = tmp_path / "track-seen.db.deadletter.db"   # left behind
+    companion.write_text("rows", encoding="utf-8")
+
+    with pytest.raises(RuntimeError) as e:
+        paths.resolve(env_var="TRACK_SEEN_DB", config_value="", kind="state",
+                      name="track-seen.db", legacy=str(legacy), fatal=True)
+    msg = str(e.value)
+    assert str(companion) in msg
+    assert "1 companion file(s)" in msg
+    # ...and it must not claim a store remains at a path the user already cleared
+    assert f"a file remains at {legacy}" not in msg
+
+
 def test_a_dangling_link_is_not_told_to_run_cp_dash_L(monkeypatch, tmp_path):
     """`cp -L` on a dangling link exits 1 (measured), so offering it for a link that no
     longer resolves sends the user in a circle. Resolvable and broken links get different
