@@ -486,8 +486,10 @@ def test_the_python_parser_sees_every_line_git_can_find(tmp_path):
     # 0x0a/0x0d would end the line and 0x00 would make git call the file binary, so the
     # sweep cannot speak for those three; everything else through 0x2FF, plus every
     # Unicode separator, which is where the two engines' whitespace notions diverge.
-    seps = (0xa0, 0x1680, *range(0x2000, 0x200b), 0x2028, 0x2029, 0x202f, 0x205f, 0x3000)
-    codepoints = [c for c in range(0x01, 0x300) if c not in (0x0a, 0x0d)] + list(seps)
+    seps = {0xa0, 0x1680, *range(0x2000, 0x200b), 0x2028, 0x2029, 0x202f, 0x205f, 0x3000}
+    # A set union, not a concatenation: 0xa0 falls inside the range as well and was
+    # planted twice, which quietly weighted one codepoint double in every count below.
+    codepoints = sorted({c for c in range(0x01, 0x300) if c not in (0x0a, 0x0d)} | seps)
     lines = [f"/Users/{chr(c)}x{i}/y" for i, c in enumerate(codepoints)]
     (tmp_path / "sweep.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -498,9 +500,18 @@ def test_the_python_parser_sees_every_line_git_can_find(tmp_path):
     git_hits = {int(x.split(":")[1]) for x in r.stdout.splitlines() if x.count(":") >= 2}
     python_hits = {i + 1 for i, line in enumerate(lines) if _WIDE_HOME_PATH_RE.search(line)}
 
-    assert len(git_hits) > len(codepoints) // 2, (
-        f"the sweep discovered only {len(git_hits)} of {len(codepoints)} planted lines -- "
-        f"it is not exercising the discovery pattern, so the subset check below is vacuous")
+    assert git_hits, "the sweep discovered nothing -- the subset check below is vacuous"
+    # The scope guard, as a SET rather than a count. A threshold (`> half the lines`) had
+    # roughly 2x slack, so a narrowing confined to one block -- discovery quietly dropping
+    # everything above 0x200, say -- stayed comfortably above it and read as healthy.
+    # Everything git legitimately declines to match is a codepoint POSIX `[:space:]` calls
+    # whitespace and Python's spelled-out class does not; anything else is a regression,
+    # whatever the count says.
+    sep_lines = {i + 1 for i, c in enumerate(codepoints) if c in seps}
+    narrowed = python_hits - git_hits - sep_lines
+    assert not narrowed, (
+        "discovery stopped matching codepoints that are not the known whitespace "
+        f"divergence: {[hex(codepoints[i - 1]) for i in sorted(narrowed)][:8]}")
     fail_open = git_hits - python_hits
     assert not fail_open, (
         "git discovers lines the allow-list parser cannot see, so a real path beside an "
