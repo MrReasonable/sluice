@@ -372,7 +372,22 @@ _ROOTED = re.compile(r"""^["'\[\s-]*[/~]""")
 # double slash: without both, every `https://` in the example config reads as a filesystem
 # path. Executed against the real file -- four false positives before, none after.
 _ROOTED_ANYWHERE = re.compile(
-    r"""(?:^|[\s'"\[{,:])~/|(?:^|[\s'"\[{,])/(?![/\s])""")
+    r"""(?:^|[\s'"\[{,:])~/"""            # a home-relative path anywhere
+    r"""|(?:^|[\s'"\[{,])/(?![/\s])"""    # ...or an absolute one, but not a URL's //
+    r"""|\$\{?HOME\b"""                    # ...or $HOME / ${HOME}, equally an opinion
+    r"""|(?:^|[\s'"\[{,])[A-Za-z]:[\\/]""")  # ...or a Windows drive-letter root
+
+
+def _setting_value(line):
+    """The value of one example-config line, or None if the line is not a setting.
+
+    Shared by the file sweep and the predicate rows below, deliberately: a helper that
+    re-implemented this was measured unable to see a change to the real extraction, which
+    is the copy-certifies-the-copy failure a reviewer found in the sibling guard one round
+    earlier.
+    """
+    m = _EXAMPLE_SETTING.match(line)
+    return None if m is None else m.group(2).strip()
 
 
 def _example_setting_values():
@@ -391,8 +406,9 @@ def _example_setting_values():
 
     KNOWN LIMITS, measured rather than assumed, so nobody reads this as total coverage:
     a block-scalar body (`vault_dir: |` then an indented path on the NEXT line) is not
-    seen, because this is line-oriented; nor is `$HOME/...` or a Windows drive-letter path,
-    neither of which starts with `/` or `~`; nor a `file:///` URL, whose first slash is
+    seen, because this is line-oriented. `$HOME/...` and a Windows drive-letter root ARE
+    now caught, after a reviewer pointed out that documenting them was the wrong call --
+    they are machine-specific opinions exactly as `~/` is. Still missed: a `file:///` URL, whose first slash is
     preceded by the colon this pattern excludes so that `https://` does not read as a
     path. None of those shapes appears in the example file. The leak gate backstops the `/Users|/home`
     ones but never greps `~`, so the block-scalar tilde case has no second line of
@@ -402,15 +418,15 @@ def _example_setting_values():
     text = _EXAMPLE_PATH.read_text(encoding="utf-8")
     out = []
     for line in text.splitlines():
-        m = _EXAMPLE_SETTING.match(line)
-        if not m:
+        value = _setting_value(line)
+        if value is None:
             continue
         # The trailing comment is NOT stripped. It used to be, which left
         # `vault_dir: vault  # e.g. ~/mine` -- the file's own idiom -- unswept; measured
         # against the real file, keeping the comment yields zero offenders, so the
         # coverage is free. (Full-line prose comments are excluded by _EXAMPLE_SETTING
         # not matching at all, which is what the strip was mistakenly credited with.)
-        out.append((line, m.group(2).strip()))
+        out.append((line, value))
     return out
 
 
@@ -486,9 +502,77 @@ def test_the_example_file_really_contains_both_commented_and_active_settings():
     which point the sweep silently covers less than it reads as covering.
     """
     lines = [line for line, _ in _example_setting_values()]
-    commented = [ln for ln in lines if ln.lstrip().startswith("#")]
-    active = [ln for ln in lines if not ln.lstrip().startswith("#")]
-    indented = [ln for ln in lines if ln.startswith((" ", "\t"))]
-    assert commented and active and indented, (
-        f"commented={len(commented)} active={len(active)} indented={len(indented)} -- "
-        "the sweep no longer exercises every line form it claims to cover")
+
+    def _count(commented, indented):
+        return sum(1 for ln in lines
+                   if (ln.lstrip().startswith("#")) is commented
+                   and (ln.startswith((" ", "\t"))) is indented)
+
+    # Each COMBINATION independently. An aggregate `commented and active and indented`
+    # passes while, say, no commented-and-indented line exists at all -- and that is the
+    # class every sub-app path key belongs to.
+    missing = [f"commented={c} indented={i}"
+               for c in (True, False) for i in (True, False)
+               if _count(c, i) == 0]
+    assert not missing, (
+        f"the example file no longer exercises these line forms: {missing} -- the sweep "
+        "covers less than it reads as covering")
+
+
+# The DETECTOR half. `_EXAMPLE_LINE_FORMS` above pins what the extractor SEES; nothing
+# pinned what the predicate FLAGS, so both patterns could be replaced with never-matching
+# ones and the suite stayed green -- with planted machine-specific values shipping clean.
+# Same vacuity class as the extractor gap, one stage downstream, found the round after.
+_MUST_FLAG = [
+    ("bare home", "vault_dir: ~/my-vault"),
+    ("quoted home", 'vault_dir: "~/my-vault"'),
+    ("single-quoted home", "vault_dir: '~/my-vault'"),
+    ("bare absolute", "vault_dir: /Users/someone/vault"),
+    ("quoted absolute", 'vault_dir: "/opt/vault"'),
+    ("home in a flow list", "dirs: [~/a, ~/b]"),
+    ("absolute in a flow list", "dirs: [rel, /abs/b]"),
+    ("absolute in a mapping", "vault_dir: {path: /abs/x}"),
+    ("home in a trailing comment", "vault_dir: vault  # e.g. ~/mine"),
+    ("block-sequence item", "  - ~/from-a-list"),
+    ("indented and commented", "  # seen_db: ~/mine/seen.db"),
+    # These are what `_ROOTED` alone catches -- `_ROOTED_ANYWHERE` requires `~/` or a
+    # delimiter before `/`, so without these rows the whole `_ROOTED` pattern could be
+    # replaced with a never-matching one and the suite stayed green. Each is a real
+    # machine-specific value: the bare home directory, another user's home, and a UNC
+    # or double-slash root.
+    ("the home directory itself", "vault_dir: ~"),
+    ("quoted home directory", 'vault_dir: "~"'),
+    ("another user's home", "vault_dir: ~someone/vault"),
+    ("double-slash root", "vault_dir: //server/share"),
+    ("env expansion", "vault_dir: $HOME/vault"),
+    ("braced env expansion", "vault_dir: ${HOME}/vault"),
+    ("windows drive letter", "vault_dir: C:\\Users\\someone\\vault"),
+]
+_MUST_NOT_FLAG = [
+    ("relative", "vault_dir: ./vault"),
+    ("bare word", "store: vault"),
+    ("store-relative path", "baseline_rel: My CV/CV.md"),
+    ("https url", "homepage: https://example.invalid/a/b"),
+    ("http url with port", "homepage: http://h:1/p"),
+    ("slash in prose", "note: a CIDR / bare IP"),
+    ("number", "auto_apply_min: 0.75"),
+    ("placeholder", "claude_max_host: <your-claude-host>"),
+]
+
+
+def _flags(line):
+    value = _setting_value(line)
+    assert value is not None, f"the extractor did not even see {line!r}"
+    return bool(_ROOTED.match(value) or _ROOTED_ANYWHERE.search(value))
+
+
+@pytest.mark.parametrize("label,line", _MUST_FLAG, ids=[f[0] for f in _MUST_FLAG])
+def test_the_example_predicate_flags_every_machine_specific_shape(label, line):
+    assert _flags(line), f"{label}: a machine-specific value would ship undetected"
+
+
+@pytest.mark.parametrize("label,line", _MUST_NOT_FLAG, ids=[f[0] for f in _MUST_NOT_FLAG])
+def test_the_example_predicate_spares_every_legitimate_shape(label, line):
+    # The other direction matters as much: a guard that flags `https://` or `My CV/CV.md`
+    # gets switched off, and then it guards nothing at all.
+    assert not _flags(line), f"{label}: false positive on a legitimate value"
