@@ -295,16 +295,28 @@ def _unclearable_dl(kind):
         DeadLetterDb(str(p)).record(Entry("m0", "Other - Role", "", "rejection", "p", "h",
                                           "2026-07-10", 1))
         p.chmod(0o444); pathlib.Path(tmp).chmod(0o555)
+    elif kind == "mode-000":
+        DeadLetterDb(str(p)).record(Entry("m0", "Other - Role", "", "rejection", "p", "h",
+                                          "2026-07-10", 1))
+        p.chmod(0o000)
     return DeadLetterDb(str(p)), tmp
 
 
+_NOT_AS_ROOT = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root ignores the permission bits this route is staged from")
+
+
+# Every route `check_reachable`'s docstring claims to close gets a row here. They were
+# kept in step by hand once and drifted immediately: the prose named `mode 000` while the
+# roster tested `dangling-symlink`, so the one claim nobody had a falsifying case for was
+# the one most loudly asserted.
 @pytest.mark.parametrize("kind", [
     "dangling-symlink",
     "not-a-database",
     "no-table",
-    pytest.param("read-only", marks=pytest.mark.skipif(
-        hasattr(os, "geteuid") and os.geteuid() == 0,
-        reason="root writes a 0444 file regardless, so this route cannot be staged")),
+    pytest.param("read-only", marks=_NOT_AS_ROOT),
+    pytest.param("mode-000", marks=_NOT_AS_ROOT),
 ])
 def test_confirm_refuses_an_unclearable_store_before_writing_status(kind):
     """The status write must not land when the row it pairs with cannot be cleared.
@@ -329,7 +341,49 @@ def test_confirm_refuses_an_unclearable_store_before_writing_status(kind):
         assert pathlib.Path(path).read_bytes() == before, (
             f"confirm wrote status with an unclearable ({kind}) store, stranding the row")
     finally:
+        # Both, and the file second: leaving the store at 0444 leaks an undeletable file
+        # into $TMPDIR on every run (measured, dozens in one session) because `mkdtemp`
+        # dirs are not cleaned up for us.
         pathlib.Path(tmp).chmod(0o755)
+        store = pathlib.Path(tmp, "track-seen.db.deadletter.db")
+        if store.exists():
+            store.chmod(0o644)
+
+
+def test_the_reachability_probe_issues_a_write_not_a_read(monkeypatch):
+    """Root-immune pin on the DELETE, which is the whole point of the probe.
+
+    Writability is otherwise carried by the `read-only` parameter alone, and that row is
+    skipped under root -- so on a rootful CI image, relaxing the probe to a `SELECT`
+    passes and a 0444 store silently stops being caught. Measured: DELETE -> SELECT
+    reddens `[read-only]` and nothing else, so without this the guard's reason for
+    existing rests on a row half the world does not run.
+
+    Asserted through the statements SQLite actually executes rather than the source, so
+    it cannot be satisfied by a comment claiming a write.
+    """
+    from sluice.track.deadletter import DeadLetterDb
+
+    tmp = tempfile.mkdtemp()
+    dl = DeadLetterDb(str(pathlib.Path(tmp, "track-seen.db.deadletter.db")))
+    _seed(dl)
+
+    statements = []
+    real_open = DeadLetterDb._open
+
+    def _traced(self):
+        conn = real_open(self)
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    monkeypatch.setattr(DeadLetterDb, "_open", _traced)
+    dl.check_reachable()
+
+    assert statements, "the probe issued no statement at all"
+    assert any(s.strip().upper().startswith("DELETE") for s in statements), (
+        f"the probe must exercise a WRITE -- a read cannot detect a read-only "
+        f"store -- but it issued only {statements}")
+    assert len(dl.open_entries()) == 1, "the probe deleted a row"
 
 
 def test_confirm_dry_run_does_not_clear():
