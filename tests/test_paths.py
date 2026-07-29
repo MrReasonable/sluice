@@ -257,6 +257,30 @@ def test_a_dangling_companion_is_still_named_in_the_remedy(monkeypatch, tmp_path
         "refusal and loses the dead-letter backlog")
 
 
+def test_the_remedy_says_how_many_companions_must_move(monkeypatch, tmp_path):
+    """The sentence, not just the `mv` operands, which is what the sidecar test pins.
+
+    Deleting the whole "N companion file(s) must move with it" clause was measurably
+    green: the existing row is satisfied by the companion appearing in the command. The
+    sentence is what tells a human that a partial paste LOSES the last-run watermark and
+    the un-acted-on proposal backlog -- a command they can read but not weigh.
+    """
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.delenv("TRACK_SEEN_DB", raising=False)
+    legacy = tmp_path / "track-seen.db"
+    legacy.write_text("watermark", encoding="utf-8")
+    (tmp_path / "track-seen.db.lastrun").write_text("2026-07-10", encoding="utf-8")
+    (tmp_path / "track-seen.db.deadletter.db").write_text("rows", encoding="utf-8")
+
+    with pytest.raises(RuntimeError) as e:
+        paths.resolve(env_var="TRACK_SEEN_DB", config_value="", kind="state",
+                      name="track-seen.db", legacy=str(legacy), fatal=True)
+    msg = str(e.value)
+    assert "2 companion file(s)" in msg, "the count is missing or wrong"
+    assert "watermark" in msg and "backlog" in msg, (
+        "the message names the command but never says what a partial paste costs")
+
+
 def test_a_dangling_link_is_not_told_to_run_cp_dash_L(monkeypatch, tmp_path):
     """`cp -L` on a dangling link exits 1 (measured), so offering it for a link that no
     longer resolves sends the user in a circle. Resolvable and broken links get different
