@@ -446,6 +446,17 @@ def test_no_production_code_builds_a_sub_app_config_directly():
             # first run.
             elif isinstance(node, ast.ClassDef) and node.name in watched:
                 bound[node.name] = node.name
+        # ...and a local rebinding (`_X = TrackConfig`) binds too. Two passes, because
+        # an assignment can only name something already bound above it, and a guard that
+        # missed this shape was measured GREEN.
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)
+                    and isinstance(node.value, ast.Name)):
+                src = bound.get(node.value.id) or (
+                    node.value.id if node.value.id in watched else None)
+                if src:
+                    bound[node.targets[0].id] = src
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -476,6 +487,8 @@ def test_no_production_code_builds_a_sub_app_config_directly():
     ("renamed import", "from sluice.track.config import TrackConfig as _TC\n_TC()\n", True),
     ("module attribute", "from sluice.track import config as m\nm.TrackConfig()\n", True),
     ("dotted module", "import sluice.track.config\nsluice.track.config.TrackConfig()\n", True),
+    ("local rebinding",
+     "from sluice.track.config import TrackConfig\n_X = TrackConfig\n_X()\n", True),
     ("unrelated call", "from sluice.core.config import Config\nConfig()\n", False),
 ], ids=lambda v: v if isinstance(v, str) and " " in v or isinstance(v, str) else str(v))
 def test_the_config_construction_matcher_sees_every_call_shape(label, source, expected):
@@ -501,6 +514,14 @@ def test_the_config_construction_matcher_sees_every_call_shape(label, source, ex
                     bound[a.asname or a.name] = a.name
         elif isinstance(node, ast.ClassDef) and node.name in watched:
             bound[node.name] = node.name
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.Name)):
+            src = bound.get(node.value.id) or (
+                node.value.id if node.value.id in watched else None)
+            if src:
+                bound[node.targets[0].id] = src
     hits = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):

@@ -340,7 +340,7 @@ def test_example_config_ships_lead_ttl_days_off():
     # the cv and apply refusals, neither of which is human-gated the way --expire is.
     # test_config_example.py guards only the sub-app blocks, so a root key is otherwise
     # unguarded entirely.
-    text = Path("sluice.yaml.example").read_text(encoding="utf-8")
+    text = _EXAMPLE_PATH.read_text(encoding="utf-8")
     active = [ln for ln in text.splitlines()
               if ln.strip().startswith("lead_ttl_days:")]
     assert all(ln.split(":", 1)[1].strip() == "0" for ln in active), \
@@ -352,6 +352,12 @@ def test_example_config_ships_lead_ttl_days_off():
 
 # `key: value` on a line that may be commented out, or a block-sequence item (`- value`).
 # The key class allows digits and hyphens: `[a-z_]+` alone would skip `oauth2_path:`.
+# Anchored to the repo root, not the cwd. Three rows read this file, and a cwd-relative
+# `Path("sluice.yaml.example")` makes every one of them FileNotFoundError when pytest is
+# invoked from a subdirectory -- loud rather than silent, but a neutrality guard should
+# not be contingent on where you happen to stand.
+_EXAMPLE_PATH = Path(__file__).resolve().parent.parent / "sluice.yaml.example"
+
 _EXAMPLE_SETTING = re.compile(r"^\s*#?\s*(?:([A-Za-z0-9_-]+):|-)(.*)$")
 
 # A value is machine-specific if it is rooted at `/` or `~` -- but only AFTER quotes and
@@ -385,12 +391,14 @@ def _example_setting_values():
     KNOWN LIMITS, measured rather than assumed, so nobody reads this as total coverage:
     a block-scalar body (`vault_dir: |` then an indented path on the NEXT line) is not
     seen, because this is line-oriented; nor is `$HOME/...` or a Windows drive-letter path,
-    neither of which starts with `/` or `~`. The leak gate backstops the `/Users|/home`
+    neither of which starts with `/` or `~`; nor a path in a TRAILING comment
+    (`vault_dir: vault  # e.g. ~/mine`), which is stripped before the check so that the
+    file's own explanatory comments do not all read as settings. The leak gate backstops the `/Users|/home`
     ones but never greps `~`, so the block-scalar tilde case has no second line of
     defence. Left as limits rather than chased, because each costs a YAML parser or a
     second pattern language, and the shapes the example file actually uses are covered.
     """
-    text = Path("sluice.yaml.example").read_text(encoding="utf-8")
+    text = _EXAMPLE_PATH.read_text(encoding="utf-8")
     out = []
     for line in text.splitlines():
         m = _EXAMPLE_SETTING.match(line)
@@ -407,7 +415,7 @@ def test_example_config_documents_every_root_path_key():
     # below would pass over it in silence.
     keys = [f.name for f in dataclasses.fields(Config) if f.name.endswith("_dir")]
     assert keys, "no root *_dir key found -- the sweep below would be vacuous"
-    text = Path("sluice.yaml.example").read_text(encoding="utf-8")
+    text = _EXAMPLE_PATH.read_text(encoding="utf-8")
     missing = [k for k in keys if k not in text]
     assert not missing, f"root path keys undocumented in sluice.yaml.example: {missing}"
 
