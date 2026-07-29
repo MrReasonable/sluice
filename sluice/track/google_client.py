@@ -3,10 +3,33 @@ libs, lazy-imported inside methods so this module imports fine in the offline de
 venv (where those libs are absent). All offline tests use a fake with the same
 shape."""
 import base64
+import os
 
 
 class GoogleAuthError(Exception):
     pass
+
+
+def _write_token(path: str, data: str) -> None:
+    """Write the OAuth token, creating its parent and forcing mode 0600.
+
+    Two things the bare `open(path, "w")` this replaces got wrong. It created no parent
+    directory, which was survivable while the token sat in the cwd and is not now that
+    it resolves under the per-system state root (#80): on a fresh install the first
+    refresh would raise FileNotFoundError, mid auth flow. And it left the file at the
+    umask default, typically 0644 -- a world-readable credential.
+
+    The chmod is UNCONDITIONAL rather than folded into an `os.open(..., 0o600)`, because
+    `os.open` does not change an EXISTING file's mode: a refresh over a token an older
+    sluice wrote at 0644 would keep it at 0644 forever, and nobody looks at that mode
+    again. Stdlib only, like the rest of `sluice/`.
+    """
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(data)
+    os.chmod(path, 0o600)
 
 
 class RealGoogleClient:
@@ -24,8 +47,7 @@ class RealGoogleClient:
             creds = Credentials.from_authorized_user_file(self.token_path)
             if not creds.valid and creds.refresh_token:
                 creds.refresh(Request())
-                with open(self.token_path, "w") as f:
-                    f.write(creds.to_json())
+                _write_token(self.token_path, creds.to_json())
             if not creds.valid:
                 raise GoogleAuthError("google token invalid and could not refresh")
             return creds

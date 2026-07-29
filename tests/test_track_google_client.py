@@ -1,3 +1,8 @@
+import os
+import stat
+
+import pytest
+
 import sluice.track.google_client as gc
 
 
@@ -86,3 +91,88 @@ def test_get_message_decodes_inline_ics():
     c._gmail = _FakeGmail({"payload": payload, "threadId": "t"})
     out = c.get_message("m1")
     assert out["attachments"] and out["attachments"][0]["data"].startswith(b"BEGIN:VEVENT")
+
+
+# ── the OAuth token is a CREDENTIAL, so it is written 0600 (#80, table row #8) ─
+
+@pytest.fixture
+def pinned_umask():
+    """0o022 -- the ordinary developer/CI value.
+
+    Load-bearing, not tidiness: under `umask 077` a plain `open(path, "w")` already
+    yields 0600 (0o644 & ~0o077 == 0o600), so every assertion below would pass on the
+    UNFIXED code on such a machine and fail to reproduce anywhere else. Pinning makes
+    the rows mean the same thing on every machine.
+    """
+    old = os.umask(0o022)
+    try:
+        yield
+    finally:
+        os.umask(old)
+
+
+def _mode(path):
+    return stat.S_IMODE(os.stat(path).st_mode)
+
+
+def test_a_fresh_token_is_written_private(tmp_path, pinned_umask):
+    from sluice.track.google_client import _write_token
+    p = tmp_path / "google_token.json"
+    _write_token(str(p), '{"token": "x"}')
+    assert _mode(p) == 0o600, "an OAuth token is a credential, not a data file"
+    assert p.read_text(encoding="utf-8") == '{"token": "x"}'
+
+
+def test_a_refresh_over_a_world_readable_token_tightens_it(tmp_path, pinned_umask):
+    # The reason the chmod is UNCONDITIONAL. `os.open(..., 0o600)` does not change an
+    # EXISTING file's mode, so a refresh over a token left at 0644 by an older sluice
+    # (or by a user's own editor) would silently stay 0644 forever -- the mode nobody
+    # ever looks at again.
+    from sluice.track.google_client import _write_token
+    p = tmp_path / "google_token.json"
+    p.write_text("old", encoding="utf-8")
+    os.chmod(p, 0o644)
+    _write_token(str(p), "new")
+    assert _mode(p) == 0o600
+
+
+def test_writing_a_token_creates_its_parent_directory(tmp_path, pinned_umask):
+    # #80 moved this file under the per-system state root, which on a fresh install
+    # does not exist yet. The old bare `open(path, "w")` would raise FileNotFoundError
+    # on the first refresh -- during an auth flow, which is the worst moment.
+    from sluice.track.google_client import _write_token
+    p = tmp_path / "state" / "sluice" / "google_token.json"
+    _write_token(str(p), "tok")
+    assert p.read_text(encoding="utf-8") == "tok"
+
+
+def test_the_refresh_path_writes_through_write_token(tmp_path, monkeypatch, pinned_umask):
+    """The CALLER half, which the three rows above cannot see.
+
+    They drive `_write_token` directly, so reverting `_creds` to its old bare
+    `open(self.token_path, "w")` leaves every one of them green -- measured, not
+    assumed. The google libs live only in the container venv, so this stands fake
+    modules up under their import names; `_creds` imports them lazily, inside the
+    method, which is exactly what makes that possible.
+    """
+    import sys
+    import types
+
+    class _Creds:
+        valid = False
+        refresh_token = "r"
+        def refresh(self, request): type(self).valid = True
+        def to_json(self): return '{"refreshed": true}'
+
+    cred_mod = types.ModuleType("google.oauth2.credentials")
+    cred_mod.Credentials = types.SimpleNamespace(
+        from_authorized_user_file=lambda path: _Creds())
+    req_mod = types.ModuleType("google.auth.transport.requests")
+    req_mod.Request = lambda: object()
+    monkeypatch.setitem(sys.modules, "google.oauth2.credentials", cred_mod)
+    monkeypatch.setitem(sys.modules, "google.auth.transport.requests", req_mod)
+
+    p = tmp_path / "state" / "sluice" / "google_token.json"
+    gc.RealGoogleClient(str(p))._creds()
+    assert p.read_text(encoding="utf-8") == '{"refreshed": true}'
+    assert _mode(p) == 0o600, "a refreshed token must not be left world-readable"
