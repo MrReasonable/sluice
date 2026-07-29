@@ -173,7 +173,9 @@ def test_a_corrupt_database_names_the_file_and_a_remedy(tmp_path):
     # pinned on the type alone. `raises(Exception)` for both passed with SeenDb's message
     # emptied, which is the half that tells a user what to fix.
     (lambda p: SeenDb(str(p)).load(), sqlite3.DatabaseError, "symlink"),
-    (lambda p: _load_seen(str(p)), OSError, ""),
+    # FileNotFoundError's str carries the path, so this is a free non-vacuous pin --
+    # `fragment=""` made the assertion below a tautology.
+    (lambda p: _load_seen(str(p)), OSError, "store.db"),
 ], ids=["SeenDb.load", "_load_seen"])
 def test_a_dangling_symlink_is_not_an_absent_store(tmp_path, loader, exc, fragment):
     # Both dedup loaders use `lexists`. With `exists` a broken link lands in the MISSING
@@ -382,9 +384,14 @@ def test_the_printed_remedy_survives_a_state_root_with_a_space(monkeypatch, tmp_
 
 def test_the_remedy_does_not_clobber_a_companion_at_the_destination(
         monkeypatch, tmp_path):
-    # `mv -n`. Only the STORE's move is gated on the destination being absent; a
-    # companion already there (a newer watermark from a partial migration) would
-    # otherwise be silently overwritten by the older one.
+    """A companion already at the destination must STOP the chain, not be skipped.
+
+    `mv -n` was the first attempt and is wrong: it skips and exits 0, so the chain
+    carries on and moves the store anyway -- leaving an old store beside a foreign
+    watermark, `exists(legacy)` now false, and the refusal disarmed for good. A skip is
+    not an interruption. Asserting only that the destination file survived could not see
+    that; the properties that matter are that the chain HALTED and the store stayed put.
+    """
     import subprocess
 
     monkeypatch.chdir(tmp_path)
@@ -398,9 +405,12 @@ def test_the_remedy_does_not_clobber_a_companion_at_the_destination(
 
     cmd = _refusal_remedy()
     assert cmd
-    subprocess.run(cmd, shell=True, capture_output=True, text=True, cwd=tmp_path)
-    assert (dest / "track-seen.db.lastrun").read_text(encoding="utf-8") == "NEWER", \
-        "the remedy overwrote a newer companion at the destination"
+    r = subprocess.run(cmd, shell=True, capture_output=True, text=True, cwd=tmp_path)
+    assert r.returncode != 0, "a destination collision must stop the chain, not skip it"
+    assert (dest / "track-seen.db.lastrun").read_text(encoding="utf-8") == "NEWER"
+    assert (tmp_path / "track-seen.db").exists(), "the store moved after a halted step"
+    assert not (dest / "track-seen.db").exists()
+    assert _refusal_remedy() is not None, "the refusal was disarmed by a partial run"
 
 
 def test_the_state_directory_the_remedy_creates_stays_private(monkeypatch, tmp_path):
@@ -417,6 +427,13 @@ def test_the_state_directory_the_remedy_creates_stays_private(monkeypatch, tmp_p
     root = tmp_path / "state"
     monkeypatch.setenv("XDG_STATE_HOME", str(root))
     (tmp_path / "track-seen.db").write_text("x", encoding="utf-8")
+
+    # The directory ALREADY EXISTS at 0755 -- the ordinary case, since six plain
+    # `makedirs(exist_ok=True)` writers create it. `mkdir -p -m 700` applies its mode
+    # only to directories it creates, so it was a no-op here and this row could not fail
+    # until it planted the directory first.
+    (root / "sluice").mkdir(parents=True)
+    os.chmod(root / "sluice", 0o755)
 
     old = os.umask(0o022)
     try:
