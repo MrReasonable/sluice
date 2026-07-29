@@ -233,6 +233,30 @@ def test_the_remedy_refuses_to_move_onto_a_dangling_destination(monkeypatch, tmp
     assert open(legacy, encoding="utf-8").read() == "dedup state"
 
 
+def test_a_dangling_companion_is_still_named_in_the_remedy(monkeypatch, tmp_path):
+    """The THIRD `lexists` site, which an aggregate witness could not see.
+
+    One mutant flipping the shared pattern reddened two tests, which read as "both sites
+    pinned" -- but per site it is legacy 1, destination 1, sidecar 0. With `exists` here
+    the remedy omitted a dangling `.deadletter.db` entirely: the store then moves,
+    `lexists(legacy)` goes false, the refusal is disarmed for good, and `open_entries`
+    reads empty -- the #49 backlog gone with nothing said.
+    """
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.delenv("TRACK_SEEN_DB", raising=False)
+    legacy = tmp_path / "track-seen.db"
+    legacy.write_text("watermark", encoding="utf-8")
+    companion = tmp_path / "track-seen.db.deadletter.db"
+    companion.symlink_to(tmp_path / "moved-away.db")
+
+    with pytest.raises(RuntimeError) as e:
+        paths.resolve(env_var="TRACK_SEEN_DB", config_value="", kind="state",
+                      name="track-seen.db", legacy=str(legacy), fatal=True)
+    assert str(companion) in str(e.value), (
+        "a dangling companion was left out of the remedy, so following it disarms the "
+        "refusal and loses the dead-letter backlog")
+
+
 def test_a_dangling_link_is_not_told_to_run_cp_dash_L(monkeypatch, tmp_path):
     """`cp -L` on a dangling link exits 1 (measured), so offering it for a link that no
     longer resolves sends the user in a circle. Resolvable and broken links get different
