@@ -278,3 +278,83 @@ def test_triage_writes_its_audit_where_the_config_says(tmp_path, monkeypatch):
     monkeypatch.setattr(audit_mod, "AuditLog", _Audit)
     Sluice(Config()).triage(no_llm=True)
     assert seen == [str(mine)]
+
+
+# ── one dossier cache, one root key (table row #7) ───────────────────────────
+
+class _NullCache:
+    """Faithful enough for a --no-llm triage and a dry-run compose: neither reaches a
+    cache miss, but both hold the object."""
+    def get_or_build(self, lead): return {"jd": {"markdown": ""}}
+
+
+def _dossier_dirs_used(app, monkeypatch):
+    """The directory each sub-app hands to dossier_cache, in call order."""
+    seen = []
+
+    def _capture(dossier_dir, ttl_days):
+        seen.append(dossier_dir)
+        return _NullCache()
+
+    monkeypatch.setattr(app, "dossier_cache", _capture)
+    app.triage(no_llm=True)
+    app.compose_cv(all_shortlist=True, dry_run=True)
+    return seen
+
+
+def _app(tmp_path, monkeypatch, **kw):
+    from sluice.core.app import Sluice
+    from sluice.core.config import Config
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path / "vault"))
+    monkeypatch.delenv("DOSSIER_DIR", raising=False)
+    return Sluice(Config(**kw))
+
+
+def test_triage_and_cv_share_one_dossier_directory(tmp_path, monkeypatch):
+    # NOT red-first, and labelled rather than presented as a witness: two keys both
+    # defaulting to "./dossiers" made this true by coincidence of the literal already.
+    # What changes is WHY it is true -- one root key and one resolution, so it cannot
+    # come apart. A partial sweep here is worse than none: split the cache and cv
+    # re-fetches every dossier over the live SSRF-guarded network path.
+    used = _dossier_dirs_used(_app(tmp_path, monkeypatch), monkeypatch)
+    assert len(used) == 2 and used[0] == used[1]
+
+
+def test_unconfigured_dossier_dir_lands_under_the_cache_root(tmp_path, monkeypatch):
+    # CACHE, not state: a dossier is a re-fetchable copy of a job ad, so losing it
+    # costs a refetch, not data.
+    used = _dossier_dirs_used(_app(tmp_path, monkeypatch), monkeypatch)
+    assert used == [os.path.join(os.environ["XDG_CACHE_HOME"], "sluice", "dossiers")] * 2
+
+
+def test_the_root_dossier_dir_key_reaches_both_sub_apps(tmp_path, monkeypatch):
+    mine = str(tmp_path / "mine-dossiers")
+    used = _dossier_dirs_used(_app(tmp_path, monkeypatch, dossier_dir=mine), monkeypatch)
+    assert used == [mine, mine]
+
+
+def test_dossier_dir_env_var_beats_the_root_key(tmp_path, monkeypatch):
+    app = _app(tmp_path, monkeypatch, dossier_dir=str(tmp_path / "from-config"))
+    monkeypatch.setenv("DOSSIER_DIR", str(tmp_path / "from-env"))
+    used = _dossier_dirs_used(app, monkeypatch)
+    assert used == [str(tmp_path / "from-env")] * 2
+
+
+@pytest.mark.parametrize("block,loader_name,module", [
+    ("cv", "load_cv_config", "sluice.cv.config"),
+    ("triage", "load_triage_config", "sluice.triage.config"),
+])
+def test_retired_sub_app_dossier_dir_raises(block, loader_name, module, tmp_path):
+    # The cv.baseline_rel precedent: these loaders filter unknown keys with `hasattr`,
+    # so a retired key would otherwise be dropped in SILENCE -- and a user who had
+    # pointed cv at its own dossier dir would get a different one with no signal.
+    secret = tmp_path / "somewhere-personal"
+    p = tmp_path / "c.yaml"
+    p.write_text(f'{block}:\n  dossier_dir: "{secret}"\n', encoding="utf-8")
+    with pytest.raises(ValueError) as e:
+        _loader(module, loader_name)(str(p))
+    assert f"{block}.dossier_dir" in str(e.value) and "dossier_dir:" in str(e.value)
+    # Unlike baseline_rel (a store-RELATIVE name), this is a host path usually under a
+    # home directory, so the message must not echo it -- core/config.py already rules
+    # that way for dossier_allow_hosts. An exception travels further than a config file.
+    assert str(secret) not in str(e.value)
