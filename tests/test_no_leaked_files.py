@@ -170,14 +170,11 @@ _FULL_HOME_PATH_RE = re.compile(rf"/(?:Users|home)/[{_NAME_CHARS}/-]+")
 # Every entry is a deliberate act. `example` is the RFC-reserved placeholder the
 # redaction fixtures use (labelled as such where they are defined); `someone` appears in
 # a guard comment naming the shape it rejects; the elided form names nobody at all.
-_ALLOWED_HOME_PATHS = frozenset({
-    "/home/example/.local/bin/claude",
-    "/Users/someone/vault",
-    "/home/.../claude",
-})
-
-# ...and WHERE each may appear. Repo-wide allowance is wider than the reason for it: a
-# synthetic literal earns its exemption in the file that needs it, not everywhere.
+# ...and WHERE each may appear. One table, not two: a separate membership set was
+# redundant with this one (a literal absent here has no allowed files, so it is rejected
+# either way), and keeping both meant a test whose only job was to hold the redundancy
+# in sync. Repo-wide allowance is wider than the reason for it -- a synthetic literal
+# earns its exemption in the file that needs it, not everywhere.
 _ALLOWED_HOME_PATH_FILES = {
     "/home/example/.local/bin/claude": ("tests/test_backends.py", "docs/"),
     "/Users/someone/vault": ("tests/test_sluice_neutral_defaults.py",),
@@ -292,9 +289,8 @@ def _is_allowed_hit(line):
     path_in_repo = line.split(":", 1)[0]
     found = _FULL_HOME_PATH_RE.findall(line)
     return bool(found) and all(
-        m in _ALLOWED_HOME_PATHS
-        and any(path_in_repo.startswith(w)
-                for w in _ALLOWED_HOME_PATH_FILES.get(m, ()))
+        any(path_in_repo.startswith(w)
+            for w in _ALLOWED_HOME_PATH_FILES.get(m, ()))
         for m in found)
 
 
@@ -306,11 +302,18 @@ def _is_allowed_hit(line):
     ("tests/test_backends.py:1: /home/realperson/x", False, "not on the allow-list"),
     ("tests/test_backends.py:1: /home/example/.local/bin/claude and /home/other/x", False,
      "one allowed literal does not cover the rest of the line"),
+    # BOTH literals are on the allow-list, with DIFFERENT allowed files. Only the first
+    # belongs here, so the line must still be reported -- a mutant that checks scoping
+    # for `found[0]` instead of every match survived every other row, because their
+    # second literal fails MEMBERSHIP before scoping is ever reached.
+    ("tests/test_backends.py:1: /home/example/.local/bin/claude then /Users/someone/vault",
+     False, "each match is scoped, not just the first"),
     ("tests/test_backends.py:1: nothing here", False,
      "no parseable path -- an unparseable git hit must report, not skip"),
 ])
 def test_the_allowance_is_scoped_to_the_file_that_needs_it(line, allowed, why):
     assert _is_allowed_hit(line) is allowed, why
+
 
 
 @pytest.mark.parametrize("prefix", ["/Users/", "/home/"])
@@ -339,7 +342,7 @@ def test_no_absolute_home_path_is_tracked_in_source_or_config(prefix):
                # reaches them: `*.yaml` does not match the former, and the latter is a
                # hand-written local runner, which is exactly the shape that carries a
                # developer's absolute path.
-               "sluice.yaml.example", "run_tests.sh",
+               "sluice.yaml.example", "run_tests.sh", ".github",
                allow=(0, 1))
     hits = []
     for line in out.splitlines():
