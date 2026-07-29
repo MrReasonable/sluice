@@ -10,8 +10,7 @@ dangling symlink read as "no history yet", and, worst, `enable`/`disable` silent
 back to the warning variant and rebuilding the operator's overlay from an empty set. None
 of it was hypothetical; none of it was covered.
 
-Each row below names the mutant it kills. Where a row says it was witnessed, it was run;
-two rows in the first version of this file were NOT, and both are noted where they sit.
+Where a row explains itself, that explanation was run, not reasoned.
 """
 import ast
 import os
@@ -169,18 +168,22 @@ def test_a_corrupt_database_names_the_file_and_a_remedy(tmp_path):
     assert str(p) in str(e.value) and "SEEN_DB" in str(e.value)
 
 
-@pytest.mark.parametrize("loader", [
-    lambda p: SeenDb(str(p)).load(),
-    lambda p: _load_seen(str(p)),
+@pytest.mark.parametrize("loader,exc,fragment", [
+    # SeenDb says WHICH state this is; `_load_seen` has no message of its own, so it is
+    # pinned on the type alone. `raises(Exception)` for both passed with SeenDb's message
+    # emptied, which is the half that tells a user what to fix.
+    (lambda p: SeenDb(str(p)).load(), sqlite3.DatabaseError, "symlink"),
+    (lambda p: _load_seen(str(p)), OSError, ""),
 ], ids=["SeenDb.load", "_load_seen"])
-def test_a_dangling_symlink_is_not_an_absent_store(tmp_path, loader):
+def test_a_dangling_symlink_is_not_an_absent_store(tmp_path, loader, exc, fragment):
     # Both dedup loaders use `lexists`. With `exists` a broken link lands in the MISSING
     # arm -- the one state the guard exists to separate -- and the writer then creates or
     # overwrites through it.
     link = tmp_path / "store.db"
     os.symlink(str(tmp_path / "nothere.db"), link)
-    with pytest.raises(Exception):
+    with pytest.raises(exc) as e:
         loader(link)
+    assert fragment in str(e.value)
     # NB no "and the target was not created" assertion here. The first version had one;
     # it could never fire, because both loaders return before any connect or open. The
     # property that IS load-bearing is that a broken link raises instead of reading as
@@ -194,9 +197,7 @@ def test_the_refusal_names_the_sidecars_that_must_move_with_the_store(
     """`.lastrun` and the #49 dead-letter store are derived from `seen_db` by string
     concatenation, so a remedy naming only the database orphans both -- silently.
 
-    Measured before this guard: running the printed command verbatim on a 30-day-old
-    install moved the database and left both companions behind, after which receipts in
-    the gap were never re-queried and the proposal backlog read as empty.
+    Two rows below execute the remedy and its ordering; this one only checks the text.
     """
     from sluice.core import paths
 
@@ -353,3 +354,76 @@ def test_the_remedy_moves_the_store_last_so_an_interruption_stays_armed(
     subprocess.run(" && ".join(steps[:-1]), shell=True, check=True, cwd=tmp_path)
     assert _refusal_remedy() is not None, \
         "an interrupted migration silenced the refusal, orphaning the companions"
+
+
+def test_the_printed_remedy_survives_a_state_root_with_a_space(monkeypatch, tmp_path):
+    """`shlex.quote` on every operand, pinned.
+
+    Deleting all three quote calls left the whole suite green: `tmp_path` never contains
+    a space, so the quoting is a no-op everywhere the suite otherwise looks. A home
+    directory with a space in it is ordinary, and unquoted the command silently means
+    something else.
+    """
+    import subprocess
+
+    root = tmp_path / "Some One" / "st ate"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("XDG_STATE_HOME", str(root))
+    names = ("track-seen.db", "track-seen.db.lastrun", "track-seen.db.deadletter.db")
+    for n in names:
+        (tmp_path / n).write_text(n, encoding="utf-8")
+
+    cmd = _refusal_remedy()
+    assert cmd
+    r = subprocess.run(cmd, shell=True, capture_output=True, text=True, cwd=tmp_path)
+    assert r.returncode == 0, f"unquoted operands broke the remedy: {r.stderr.strip()}"
+    assert sorted(p.name for p in (root / "sluice").iterdir()) == sorted(names)
+
+
+def test_the_remedy_does_not_clobber_a_companion_at_the_destination(
+        monkeypatch, tmp_path):
+    # `mv -n`. Only the STORE's move is gated on the destination being absent; a
+    # companion already there (a newer watermark from a partial migration) would
+    # otherwise be silently overwritten by the older one.
+    import subprocess
+
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(root))
+    for n in ("track-seen.db", "track-seen.db.lastrun"):
+        (tmp_path / n).write_text("OLD", encoding="utf-8")
+    dest = root / "sluice"
+    dest.mkdir(parents=True)
+    (dest / "track-seen.db.lastrun").write_text("NEWER", encoding="utf-8")
+
+    cmd = _refusal_remedy()
+    assert cmd
+    subprocess.run(cmd, shell=True, capture_output=True, text=True, cwd=tmp_path)
+    assert (dest / "track-seen.db.lastrun").read_text(encoding="utf-8") == "NEWER", \
+        "the remedy overwrote a newer companion at the destination"
+
+
+def test_the_state_directory_the_remedy_creates_stays_private(monkeypatch, tmp_path):
+    """`mkdir -p -m 700`.
+
+    The same directory holds the OAuth token, and `_write_token`'s
+    `makedirs(mode=0o700, exist_ok=True)` NO-OPS once it exists -- so a plain `mkdir -p`
+    here leaves the credential's parent 0755 permanently.
+    """
+    import stat
+    import subprocess
+
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(root))
+    (tmp_path / "track-seen.db").write_text("x", encoding="utf-8")
+
+    old = os.umask(0o022)
+    try:
+        cmd = _refusal_remedy()
+        assert cmd
+        subprocess.run(cmd, shell=True, check=True, cwd=tmp_path)
+    finally:
+        os.umask(old)
+    mode = stat.S_IMODE(os.stat(root / "sluice").st_mode)
+    assert mode == 0o700, f"the remedy left the token's parent at {oct(mode)}"

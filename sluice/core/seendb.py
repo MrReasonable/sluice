@@ -59,8 +59,8 @@ class SeenDb:
             # arm a broken link reads as "no dedup history yet" and the run proceeds with
             # an empty set -- the #81 harm -- when what it actually means is that someone's
             # store has been moved or deleted out from under a link that still points at
-            # it. (Nothing is CREATED by the read either way: the `return set()` above
-            # happens before any connect. Creation is on the write path.)
+            # it. (Nothing is CREATED by the read either way -- both loaders return
+            # before any connect. Creation is on the write path.)
             if os.path.lexists(self.path):
                 raise sqlite3.DatabaseError(
                     f"the dedup database path {self.path} is a symlink to something that "

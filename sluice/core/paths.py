@@ -9,8 +9,8 @@ from the other end, and it is stated once here rather than repeated at each call
 
 `resolve` performs NO WRITES: it never creates a directory, so RESOLVING a path cannot
 touch the disk; the writer that needs a parent creates it. It does read -- the
-environment, and (when `legacy` is given) whether two paths exist -- so this is "no
-writes", not "no I/O". The XDG variables are read per call, never snapshotted at import,
+environment, and (when `legacy` is given) whether the legacy path, the resolved path and each
+known companion exist -- so this is "no writes", not "no I/O". The XDG variables are read per call, never snapshotted at import,
 because an import-time snapshot is unpatchable by tests.
 
 That is a claim about `resolve` ONLY, and deliberately not about a `--dry-run` as a
@@ -133,8 +133,14 @@ def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> s
                  if os.path.exists(legacy + s)]
         moves.append((legacy, resolved))
         parent = os.path.dirname(resolved)
-        steps = ([f"mkdir -p {shlex.quote(parent)}"] if parent else [])
-        steps += [f"mv {shlex.quote(src)} {shlex.quote(dst)}" for src, dst in moves]
+        # `-m 700` because this directory also holds the OAuth token, and
+        # `_write_token`'s `makedirs(mode=0o700, exist_ok=True)` NO-OPS once it exists:
+        # a plain `mkdir -p` here leaves it 0755 permanently. Measured.
+        # `mv -n` because only the store's move is gated on the destination being
+        # absent; without it a newer companion already at the destination is silently
+        # overwritten by an older one.
+        steps = ([f"mkdir -p -m 700 {shlex.quote(parent)}"] if parent else [])
+        steps += [f"mv -n {shlex.quote(src)} {shlex.quote(dst)}" for src, dst in moves]
         remedy = " && ".join(steps)
         msg = (f"{name} now lives at {resolved}, but a file remains at {legacy}. "
                f"sluice never moves your data -- run:  {remedy}")
@@ -142,6 +148,11 @@ def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> s
             msg += (f"   ({len(moves) - 1} companion file(s) must move with it: leaving "
                     f"them behind silently loses the last-run watermark and the "
                     f"un-acted-on proposal backlog.)")
+        linked = [src for src, _ in moves if os.path.islink(src)]
+        if linked:
+            # `mv` moves the LINK, not its target, so a relative one lands dangling and
+            # the next run reads it as "no history yet" rather than refusing again.
+            msg += f"   (symlinks -- copy the targets instead: {', '.join(linked)})"
         if fatal:
             # Only the two dedup stores. Continuing with an empty dedup set re-creates
             # every lead a human merged away (#81 -- `_resolve_path` never consults
