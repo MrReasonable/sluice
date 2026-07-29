@@ -361,7 +361,11 @@ _EXAMPLE_SETTING = re.compile(r"^\s*#?\s*(?:([A-Za-z0-9_-]+):|-)(.*)$")
 # never greps `~` at all. The second pattern catches a home path anywhere inside a flow
 # list or an inline comment-free tail, e.g. `dirs: [~/a, ~/b]`.
 _ROOTED = re.compile(r"""^["'\[\s-]*[/~]""")
-_ROOTED_ANYWHERE = re.compile(r"""(?:^|[\s'"\[,])~/""")
+# `~/...` anywhere, or an absolute `/...` that is NOT a URL scheme's `//`. The colon is
+# deliberately absent from the second alternative's delimiter class and `(?!/)` guards the
+# double slash: without both, every `https://` in the example config reads as a filesystem
+# path. Executed against the real file -- four false positives before, none after.
+_ROOTED_ANYWHERE = re.compile(r"""(?:^|[\s'"\[{,:])~/|(?:^|[\s'"\[{,])/(?!/)""")
 
 
 def _example_setting_values():
@@ -377,6 +381,14 @@ def _example_setting_values():
     rather than on a list of key names, because the names are the part nobody remembers
     to update: `baseline_rel` is a path too, and a `*_dir`-only scan read as though it
     covered the file while leaving that one open.
+
+    KNOWN LIMITS, measured rather than assumed, so nobody reads this as total coverage:
+    a block-scalar body (`vault_dir: |` then an indented path on the NEXT line) is not
+    seen, because this is line-oriented; nor is `$HOME/...` or a Windows drive-letter path,
+    neither of which starts with `/` or `~`. The leak gate backstops the `/Users|/home`
+    ones but never greps `~`, so the block-scalar tilde case has no second line of
+    defence. Left as limits rather than chased, because each costs a YAML parser or a
+    second pattern language, and the shapes the example file actually uses are covered.
     """
     text = Path("sluice.yaml.example").read_text(encoding="utf-8")
     out = []
@@ -404,7 +416,22 @@ def test_example_config_ships_no_absolute_or_home_path():
     # sluice.yaml.example is COPIED VERBATIM by the documented quickstart, so a shipped
     # `/Users/someone/vault` is both a copied-in wrong answer and a person's machine
     # name in a public repo. Same rule the baseline_rel assertion applies one file over.
-    offenders = [line for line, value in _example_setting_values()
+    values = _example_setting_values()
+    # The paired "it discovered something" assertion. Without it the whole row is
+    # satisfied by a broken extractor: witnessed by three reviewers independently --
+    # move one character in _EXAMPLE_SETTING and a planted `vault_dir: ~/real` passes
+    # green. Pinned to the ROOT path keys rather than a bare count, so a drift that
+    # still matches 60 lines but loses the path ones also reddens.
+    assert values, "the example-config extractor matched nothing -- this row is vacuous"
+    keys = [f.name for f in dataclasses.fields(Config) if f.name.endswith("_dir")]
+    found_keys = {m.group(1) for m in
+                  (_EXAMPLE_SETTING.match(line) for line, _ in values)
+                  if m and m.group(1)}
+    missing = [k for k in keys if k not in found_keys]
+    assert not missing, (
+        f"the extractor no longer sees the root path keys it exists to check: {missing}")
+
+    offenders = [line for line, value in values
                  if _ROOTED.match(value) or _ROOTED_ANYWHERE.search(value)]
     assert not offenders, (
         "sluice.yaml.example must ship no absolute or home-relative path -- it is "

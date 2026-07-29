@@ -37,10 +37,27 @@ def _disabled_path() -> str:
 
 # ── operator on/off overlay ──────────────────────────────────────────────────
 def _load_disabled() -> set:
+    path = _disabled_path()
+    # MISSING -> nothing disabled (the ordinary state). An unreadable or malformed
+    # overlay is NOT that, and reading it as "nothing disabled" silently RE-ENABLES
+    # every source the operator turned off -- which #80 newly made reachable, because
+    # this file used to sit in the cwd and now resolves per-system, so an upgrader's
+    # overlay is at the old location. `paths.resolve` warns about the move, but that
+    # notice names the file and not the consequence, and this is the consequence.
+    #
+    # Warn rather than refuse, deliberately: re-enabling a source costs a wasted scrape
+    # and is fixed by disabling it again, which is a different order of harm from the
+    # dedup stores (a duplicate application, irreversible). But it must not be SILENT.
+    if not os.path.exists(path):
+        return set()
     try:
-        with open(_disabled_path(), encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return set(json.load(f))
-    except (OSError, ValueError):
+    except (OSError, ValueError) as e:
+        _log.warning(
+            "could not read the disabled-sources overlay at %s (%s): treating every "
+            "source as ENABLED for this run. Any source you disabled will be scraped.",
+            path, e)
         return set()
 
 

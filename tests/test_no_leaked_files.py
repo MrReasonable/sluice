@@ -120,15 +120,27 @@ FORBIDDEN_COMPONENTS = (".memsearch", ".npmrc")
 # expression at all. It still spares the bare-prefix detector forms (a backtick or a quote
 # right after the slash is not in the class).
 #
-# Known limit, stated rather than overclaimed: a WHOLLY non-ASCII first component
-# (`/home/<non-ascii>`) is not matched. Widening to a negated class is what broke this
-# gate the last time, and `[^[:space:]]` would re-admit the detector forms it must spare,
-# so the ASCII class stays and the gap is documented. A mixed component (`jos<accent>`)
-# IS caught, via its ASCII prefix.
-_NAME = r"[A-Za-z0-9._-]+"
+# Known limit, measured rather than guessed: a first component that does not START with
+# `[A-Za-z0-9._-]` is not matched. `/home/jose<accent>` IS caught (its ASCII prefix
+# matches), but `/home/<accented-initial>` is not -- which covers ordinary European
+# given names, so this is wider than "wholly non-ASCII" and is stated that way after a
+# reviewer measured it. Widening to a negated class is what broke this gate the last
+# time, and `[^[:space:]]` would re-admit the detector forms it must spare, so the ASCII
+# class stays and the gap is documented instead.
+# The hyphen is NOT in here: it must be the LAST member of a bracket expression or it
+# reads as a range, and `[A-Za-z0-9._-/]` is the error `_-/` -- caught immediately when
+# this was first factored out, which is the cheap version of the mistake that left this
+# gate inert for its whole life.
+_NAME_CHARS = r"A-Za-z0-9._"
+_NAME = f"[{_NAME_CHARS}-]+"
 _HOME_PATH_RE = re.compile(r"/(?:Users|home)/(" + _NAME + ")")
-# The WHOLE path, not just its first component, for the allow-list below.
-_FULL_HOME_PATH_RE = re.compile(r"/(?:Users|home)/[A-Za-z0-9._/-]+")
+# The WHOLE path, not just its first component, for the allow-list below. Built from the
+# SAME character set plus `/`, so it is a strict superset of the pattern handed to git
+# grep by construction rather than by coincidence -- which is what makes the
+# `found and ...` guard below fail closed. Stated because it is load-bearing: if the two
+# ever diverge so grep can match a line this does not, the guard is what stops the line
+# being silently skipped.
+_FULL_HOME_PATH_RE = re.compile(rf"/(?:Users|home)/[{_NAME_CHARS}/-]+")
 
 # The exact home-rooted strings that legitimately appear in this repo, in full.
 #
@@ -292,7 +304,7 @@ def test_the_gate_catches_real_shapes_and_spares_bare_prefixes(tmp_path):
     the real one (which necessarily contains the strings being searched for).
     """
     (tmp_path / "leaks.txt").write_text(
-        "/Users/devuser/.claude/x.jsonl\n/Users/Alice/dev\n/home/2runner/work\n",
+        "/Users/devuser/.claude/x.jsonl\n/Users/ExampleUser/dev\n/home/2runner/work\n",
         encoding="utf-8")
     (tmp_path / "detectors.txt").write_text(
         "`/Users/`\n`/home/`, `.local`, `ssh`\n", encoding="utf-8")
@@ -310,7 +322,7 @@ def test_the_gate_catches_real_shapes_and_spares_bare_prefixes(tmp_path):
         "the gate false-positives on a bare-prefix detector under git grep -E"
 
     # ...and Python's `re` must agree, since _HOME_PATH_RE is used elsewhere in this file.
-    for leak in ("/Users/devuser/.claude/x.jsonl", "/Users/Alice/dev", "/home/2runner/work"):
+    for leak in ("/Users/devuser/.claude/x.jsonl", "/Users/ExampleUser/dev", "/home/2runner/work"):
         assert _HOME_PATH_RE.search(leak), f"gate would MISS a real leak: {leak}"
     for detector in ("`/Users/`", "`/home/`, `.local`, `ssh`"):
         assert not _HOME_PATH_RE.search(detector), f"gate false-positives on a detector: {detector}"
