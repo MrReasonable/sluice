@@ -56,8 +56,8 @@ def test_an_existing_db_with_no_table_reads_as_empty(tmp_path):
     assert SeenDb(str(p)).load() == set()
 
 
-@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0,
-                    reason="root traverses a 0o000 directory, so this route cannot be staged")
+@pytest.mark.skipif(os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+                    reason="needs POSIX mode bits, and root traverses a 0o000 directory anyway")
 def test_an_unreadable_db_raises_rather_than_reading_as_empty(tmp_path):
     """`os.path.exists` returns False on ANY OSError, so a store under a directory the
     user cannot traverse read as "absent" and the run proceeded with an EMPTY dedup set.
@@ -132,6 +132,8 @@ def test_a_path_with_uri_metacharacters_still_loads(tmp_path, name, why):
     assert store.exists(), f"{why}: the store was written somewhere else"
 
 
+@pytest.mark.skipif(os.name == "nt",
+                    reason="`//x` is a UNC prefix on Windows, not the same file")
 def test_a_path_with_a_leading_double_slash_still_loads(tmp_path):
     """A leading `//` is a legal POSIX path, and building a URI made it fatal.
 
