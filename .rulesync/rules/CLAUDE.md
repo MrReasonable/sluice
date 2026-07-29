@@ -59,6 +59,27 @@ deleted:
 `inspect.getsource` cannot diagnose the second one — it re-reads the source file, so it happily
 shows corrected code while stale bytecode executes. Run the function and look at what it returns.
 
+**Guard tests fail open, and the failure is invisible.** Four ways it has actually happened here, each
+found by running the guard rather than reading it:
+
+- **A sweep that discovers nothing passes.** `all([])` is `True`, and a discovery loop whose matcher
+  is broken yields an empty set that satisfies every assertion over it. Every sweep needs a paired
+  assertion that it discovered *something*; one added late caught its own sweep matching nothing at
+  all on the first run.
+- **A pattern consumed by two engines must be asserted through the engine that RUNS it.** A regex
+  built for Python `re` and handed to `git grep -E` is not the same regex: inside a bracket
+  expression POSIX treats `\` as a literal member, not an escape, so the class terminates early. A
+  neutrality gate written that way matched nothing for its entire life while its regression test —
+  which compiled the string with `re`, where the escapes do work — certified it green.
+- **Hand-listed names lose to an import alias.** `from x import y as _z` walks straight past a sweep
+  keyed on `"y"`. Derive the local bindings from each file's own `ImportFrom` and `ClassDef` nodes.
+  For the same reason, an allow-list of path COMPONENTS accepts anything after the component; allow
+  whole values.
+- **A comment that states a mechanism needs a row that falsifies it.** `except BaseException` was
+  justified in a comment by `KeyboardInterrupt`; swapping it to `except Exception` left the whole
+  suite green, because nothing tested that arm. Prose is not a check, and a *reason* stated in a
+  comment goes stale silently — grep the CLAIM, not just the code that changed.
+
 The suite is fast and hermetic — there is no reason not to run all of it. `run_tests.sh` is the same
 thing via `.venv/bin/python`, so it needs a `.venv/` (gitignored) to exist first. CI
 (`.github/workflows/ci.yml`) runs four jobs: `lint` (ruff + zizmor), `test` (pytest on Python
@@ -107,7 +128,12 @@ does NOT relocate (it is the user's Obsidian directory), and its two-term `or` l
 
 Nothing is auto-migrated. A path left behind warns; the two dedup stores REFUSE, because continuing
 with an empty dedup set re-creates every lead a human merged away and can mean a second application
-under the user's name. The two are scoped DIFFERENTLY, and the difference is deliberate: `ingest`
+under the user's name. **That notice is keyed on the resolved path not EXISTING, so any code that
+touches it — even harmlessly — disarms it from then on.** `sqlite3.connect` creates a 0-byte file
+merely by opening one, which is how a `--dry-run` silently disabled the refusal for every later real
+run; a store therefore must not create anything on a read. For the same reason a store must not read
+an unreadable file as empty: the relocated case and the corrupt case cause the identical harm, so
+both are loud. The two are scoped DIFFERENTLY, and the difference is deliberate: `ingest`
 refuses only when the run actually writes dedup state (`--dry-run` and `--sink json` proceed), while
 every `track` command refuses including its dry runs, because a track dry run READS the #49
 dead-letter store to report what it would do and against a relocated store would report nothing to
