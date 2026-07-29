@@ -210,3 +210,25 @@ def test_an_interrupted_write_leaves_no_stray_temp(tmp_path, monkeypatch, pinned
     with pytest.raises(OSError):
         mod._write_token(str(p), "tok")
     assert list(tmp_path.iterdir()) == [], f"stray temp left behind: {list(tmp_path.iterdir())}"
+
+
+def test_an_interrupted_write_cleans_up_on_keyboard_interrupt(tmp_path, monkeypatch,
+                                                              pinned_umask):
+    """The reason `_write_token` catches BaseException rather than Exception.
+
+    Ctrl-C during a token refresh is the realistic interruption, and `KeyboardInterrupt`
+    does not inherit from `Exception` -- so an `except Exception` would leave a 0600
+    temp file behind on the one interruption users actually cause. Without this row that
+    justification was untestable prose: swapping the handler to `except Exception` left
+    the whole suite green, because the only other interruption row raises `OSError`.
+    """
+    from sluice.track import google_client as mod
+    p = tmp_path / "google_token.json"
+
+    def _interrupt(*a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(mod.os, "replace", _interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        mod._write_token(str(p), "tok")
+    assert list(tmp_path.iterdir()) == [], "a temp survived Ctrl-C during a token write"
