@@ -108,6 +108,19 @@ def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> s
     # It is ignored rather than rejected because a bad value in the environment must not
     # stop a user running sluice at all, and the fallback is always correct.
     root = os.environ.get(var) or ""
+    if root and not os.path.isabs(root):
+        # SAID OUT LOUD, which is the whole point. Ignoring it silently relocates the
+        # user's store: measured, `XDG_STATE_HOME=relative/state` with a real two-row
+        # `seen.db` under `<cwd>/relative/state/sluice/` resolved to the XDG default,
+        # loaded an EMPTY dedup set, printed nothing and exited 0 -- the #81 harm, in the
+        # one module whose doctrine is that a store never moves silently. `_LEGACY` cannot
+        # cover it either, since the abandoned location is wherever the user last ran
+        # from, so neither the warn tier nor the refusal can see it.
+        _log.warning(
+            "%s is %r, a relative path. The XDG base-directory spec requires a relative "
+            "base to be ignored, so sluice is using %s instead -- if you have state under "
+            "the relative location, move it or set %s to an absolute path.",
+            var, root, os.path.expanduser(fallback), var)
     if not os.path.isabs(root):
         root = os.path.expanduser(fallback)
     resolved = os.path.join(root, "sluice", name)
@@ -117,13 +130,18 @@ def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> s
     # with no entry has nothing to migrate from and skips the check entirely.
     legacy = _LEGACY.get(name) if legacy is None else legacy
 
-    # `lexists` on BOTH sides, not `exists`. A dangling symlink is state that needs a
-    # human, and `exists` follows the link and calls it absent: measured, a legacy
-    # `seen.db` that is a broken link skipped the refusal entirely and the run proceeded
-    # with an empty dedup set -- the #81 harm the refusal exists to prevent. On the
-    # destination side the same call keeps a dangling link from being treated as free
-    # space to move onto.
-    if legacy and os.path.lexists(legacy) and not os.path.lexists(resolved):
+    # `lexists` on the LEGACY side, `exists` on the destination, and the asymmetry is
+    # deliberate. `exists` follows the link and calls a broken one absent: measured, a
+    # legacy `seen.db` that is a dangling symlink skipped the refusal entirely and the run
+    # proceeded with an empty dedup set -- the #81 harm the refusal exists to prevent.
+    #
+    # The destination stays `exists` because the two sides answer different questions.
+    # Here it asks "has the migration already happened", and a DANGLING destination means
+    # it has not: `lexists` there only SUPPRESSES the notice, and protects nothing, since
+    # `[ ! -L DST ]` in the remedy below is what actually stops the move. Measured with a
+    # real legacy file and a broken destination link: `lexists` returned silently and left
+    # the store where it was, while `exists` refuses and names both paths.
+    if legacy and os.path.lexists(legacy) and not os.path.exists(resolved):
         # Every file the migration has to carry, and in an order that survives being
         # interrupted. Three properties, each measured:
         #
@@ -181,15 +199,24 @@ def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> s
         # thicket of quoting, which is its own hazard.
         msg += ("   (if any destination already exists the command stops without moving "
                 "anything further -- deal with that file by hand, then re-run.)")
+        # SPLIT by whether the link still resolves, because the advice differs and one of
+        # the two does not work: `cp -L` on a dangling link exits 1 (measured), so telling
+        # someone to run it on a broken link sends them in a circle.
         linked = [src for src, _ in moves if os.path.islink(src)]
-        if linked:
+        resolvable = [s for s in linked if os.path.exists(s)]
+        dangling = [s for s in linked if not os.path.exists(s)]
+        if resolvable:
             # `mv` moves the LINK, not its target, so a relative one lands dangling.
             # Every reader that matters now RAISES on that (`lexists` in both dedup
             # loaders and in the dead-letter store), except `_load_lastrun`, which
             # swallows OSError by design -- so a dangling `.lastrun` reads as "no prior
             # run" and silently narrows the receipt window.
             msg += (f"   (symlinked -- copy the targets rather than the links, e.g. "
-                    f"cp -L: {', '.join(linked)})")
+                    f"cp -L: {', '.join(resolvable)})")
+        if dangling:
+            msg += (f"   (already broken -- these point at something that no longer "
+                    f"exists, so there is nothing to copy: find the real file or remove "
+                    f"the link: {', '.join(dangling)})")
         if fatal:
             # Only the two dedup stores. Continuing with an empty dedup set re-creates
             # every lead a human merged away (#81 -- `_resolve_path` never consults
