@@ -551,8 +551,8 @@ def test_every_dead_letter_reader_refuses_a_dangling_ANCESTOR(tmp_path, name, de
     assert "symlink" in str(e.value)
 
 
-@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0,
-                    reason="root traverses a 0o000 directory, so this route cannot be staged")
+@pytest.mark.skipif(os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+                    reason="needs POSIX mode bits, and root traverses a 0o000 directory anyway")
 def test_an_unreadable_dead_letter_store_is_not_an_absent_one(tmp_path):
     """`os.path.lexists` returns False on ANY OSError, so a store under a directory the
     user cannot traverse read as "absent" and the backlog came back empty -- the same
