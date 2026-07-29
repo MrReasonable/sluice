@@ -50,6 +50,23 @@ class Config:
     # at a curated baseline would get a stale one, with the fabrication gate still green --
     # so load_cv_config RAISES on the old key rather than dropping it.
     baseline_rel: str = "My CV/CV.md"
+    # Where the vault lives (#80). It had no config key at all before, so it was
+    # settable only by a VAULT_DIR env var that does not survive a new shell. Blank
+    # means UNSET: stores/vault.py:_make does `env or this or None` and lets
+    # Vault.__init__ keep supplying ./vault, so the store still owns its own default.
+    # Unlike everything else #80 swept, the vault deliberately does NOT relocate to an
+    # XDG root -- it is the user's Obsidian directory, their data, not sluice's state.
+    vault_dir: str = ""
+    # The dossier cache directory (#80). ONE root key, replacing the two sub-app keys
+    # (triage.dossier_dir, cv.dossier_dir) that both defaulted to the same ./dossiers
+    # literal -- so the cache was shared only by coincidence of that literal. Moving
+    # one and not the other splits it and cv re-fetches every dossier over the live
+    # SSRF-guarded network path, so the sharing is now structural rather than
+    # tested-for. Lives on the root Config for the same reason dossier_allow_hosts
+    # does: dossier_cache is called from BOTH sub-apps. Blank means UNSET -- resolution
+    # is `env or config key or XDG`, and a non-empty default here short-circuits that
+    # chain so the XDG location is never reached.
+    dossier_dir: str = ""
     # Hosts/CIDRs exempt from the dossier fetcher's SSRF guard (#18). A SAFETY
     # allowlist, not a preference gate: empty means "no exceptions granted", NOT
     # "match nothing" -- an unconfigured install still fetches every public url,
@@ -150,9 +167,15 @@ def load_config(path: str | None = None) -> Config:
         raise ValueError(
             f"lead_ttl_days must be a non-negative integer (0 = off), got {raw_ttl!r}")
 
+    # NB this loader names every field EXPLICITLY -- no splat, no loop, unlike the four
+    # sub-app loaders' hasattr+setattr loops. A dataclass field added without a line
+    # here is therefore dead: it loads as its default whatever the YAML says, silently.
+    # That is exactly how triage/config.py:39,40 became dead keys.
     return Config(sources=sources, locations=locations, notify=notify,
                   store=str(data.get("store") or "vault"),
                   baseline_rel=str(data.get("baseline_rel") or "My CV/CV.md"),
+                  vault_dir=str(data.get("vault_dir") or ""),
+                  dossier_dir=str(data.get("dossier_dir") or ""),
                   fetcher=str(data.get("fetcher") or "camofox"),
                   relevance_keep=list(data.get("relevance_keep") or []),
                   relevance_drop=list(data.get("relevance_drop") or []),
