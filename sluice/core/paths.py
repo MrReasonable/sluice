@@ -27,6 +27,28 @@ _ROOTS = {
     "cache": ("XDG_CACHE_HOME", "~/.cache"),
 }
 
+# Where each moving path lived before #80. Every one was `./<basename>`, which is
+# precisely what made a `cd` silently repoint them all at once.
+#
+# Tabulated HERE rather than passed in from each call site, for two reasons. It gives
+# the migration ONE home: a call site names only what it wants, and cannot forget the
+# legacy half or misspell it into a check that never fires. And these `"./"` literals
+# must not survive anywhere else under `sluice/` -- the definition-of-done grep excludes
+# this module alone, so a copy left at a call site shows up as drift.
+#
+# The config file is deliberately absent: an unset SLUICE_CONFIG meant "no config file",
+# never "./config.yaml", so there is nothing to migrate from and a `config.yaml` in
+# someone's cwd is somebody else's file.
+_LEGACY = {
+    "seen.db": "./seen.db",
+    "track-seen.db": "./track-seen.db",
+    "sluice_health.json": "./sluice_health.json",
+    "sluice_disabled.json": "./sluice_disabled.json",
+    "triage-audit.jsonl": "./triage-audit.jsonl",
+    "google_token.json": "./google_token.json",
+    "dossiers": "./dossiers",
+}
+
 
 def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> str:
     """Where `name` lives. `kind` is one of `_ROOTS`; an unknown one raises and lists
@@ -53,6 +75,11 @@ def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> s
     var, fallback = _ROOTS[kind]
     root = os.environ.get(var) or os.path.expanduser(fallback)
     resolved = os.path.join(root, "sluice", name)
+
+    # The table supplies the legacy path; an explicit `legacy=` overrides it, which is
+    # how the tests plant a file somewhere they control instead of the real cwd. A name
+    # with no entry has nothing to migrate from and skips the check entirely.
+    legacy = _LEGACY.get(name) if legacy is None else legacy
 
     if legacy and os.path.exists(legacy) and not os.path.exists(resolved):
         msg = (f"{name} now lives at {resolved}, but a file remains at {legacy}. "

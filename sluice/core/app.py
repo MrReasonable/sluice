@@ -657,7 +657,12 @@ class Sluice:
         from sluice.triage.config import load_triage_config
         from sluice.triage.engine import run as _triage_run
         tcfg = load_triage_config()
-        audit = AuditLog(os.environ.get("TRIAGE_AUDIT", "./triage-audit.jsonl"))
+        # `tcfg.audit_jsonl`, not a second $TRIAGE_AUDIT read: this key was DEAD --
+        # declared on TriageConfig and read by nothing, because this line carried its
+        # own env read and its own literal default, so setting it in YAML changed
+        # nothing and said nothing. The loader resolves it (env -> config key -> the
+        # per-system state root), and that one value is what everything uses.
+        audit = AuditLog(tcfg.audit_jsonl)
         backend = None if no_llm else self.backend(
             backend_role, primary_name=tcfg.primary_backend,
             primary_model=tcfg.claude_max_model, effort=tcfg.claude_max_effort,

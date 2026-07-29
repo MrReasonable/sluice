@@ -20,16 +20,19 @@ from dataclasses import asdict
 from sluice.core.config import load_config
 from sluice.core.health import HealthStore
 from sluice.core.log import get_logger, notify
+from sluice.core.paths import resolve
 from sluice.ingest import sources as registry
 
 _log = get_logger("cli")
 
 
-# Read the disabled-overlay path lazily (each call) so env overrides - and tests'
-# monkeypatch - win. The health path's equivalent default now lives solely in
-# HealthStore.__init__ (sluice/core/health.py) -- see cmd_health/cmd_list_sources.
+# Resolve the disabled-overlay path lazily (each call) so env overrides - and tests'
+# monkeypatch - win; an import-time snapshot would be unpatchable. The health path's
+# equivalent resolution lives solely in HealthStore.__init__ (sluice/core/health.py) --
+# see cmd_health/cmd_list_sources.
 def _disabled_path() -> str:
-    return os.environ.get("SLUICE_DISABLED", "./sluice_disabled.json")
+    return resolve(env_var="SLUICE_DISABLED", config_value="", kind="state",
+                   name="sluice_disabled.json")
 
 
 # ── operator on/off overlay ──────────────────────────────────────────────────
