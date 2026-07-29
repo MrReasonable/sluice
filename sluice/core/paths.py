@@ -7,11 +7,22 @@ Every path sluice owns resolves through `resolve` below, in one order:
 That order is the repo's documented config layering (code default < YAML < env) read
 from the other end, and it is stated once here rather than repeated at each call site.
 
-`resolve` performs NO WRITES. It never creates a directory, so `--dry-run` cannot touch
-the disk; the writer that needs a parent creates it. It does read -- the environment,
-and (when `legacy` is given) whether two paths exist -- so this is "no writes", not
-"no I/O". The XDG variables are read per call, never snapshotted at import, because an
-import-time snapshot is unpatchable by tests.
+`resolve` performs NO WRITES: it never creates a directory, so RESOLVING a path cannot
+touch the disk; the writer that needs a parent creates it. It does read -- the
+environment, and (when `legacy` is given) whether two paths exist -- so this is "no
+writes", not "no I/O". The XDG variables are read per call, never snapshotted at import,
+because an import-time snapshot is unpatchable by tests.
+
+That is a claim about `resolve` ONLY, and deliberately not about a `--dry-run` as a
+whole, which does still write: `ingest run --dry-run` records per-source health, so it
+creates `sluice_health.json` under the state root. Measured, not assumed. That matters
+here because the legacy check below is keyed on the resolved path NOT existing, so a
+writer that creates it silently disarms that path's notice from then on. It is tolerable
+for health -- warn-only, and the file is rebuildable telemetry -- and it is exactly why
+the two dedup stores no longer create anything on a read (`SeenDb.load`). Health's
+dry-run write is left as it is on purpose: whether a dry run should record run history
+is a drift-detection question, not a path question, and changing it here would be a
+behaviour change smuggled into a path sweep.
 """
 import os
 

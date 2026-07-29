@@ -118,7 +118,13 @@ FORBIDDEN_COMPONENTS = (".memsearch", ".npmrc")
 #
 # So: a POSITIVE class, valid and identical in BOTH engines, and no escapes inside a bracket
 # expression at all. It still spares the bare-prefix detector forms (a backtick or a quote
-# right after the slash is not in the class) while matching every real username shape.
+# right after the slash is not in the class).
+#
+# Known limit, stated rather than overclaimed: a WHOLLY non-ASCII first component
+# (`/home/<non-ascii>`) is not matched. Widening to a negated class is what broke this
+# gate the last time, and `[^[:space:]]` would re-admit the detector forms it must spare,
+# so the ASCII class stays and the gap is documented. A mixed component (`jos<accent>`)
+# IS caught, via its ASCII prefix.
 _NAME = r"[A-Za-z0-9._-]+"
 _HOME_PATH_RE = re.compile(r"/(?:Users|home)/(" + _NAME + ")")
 # The WHOLE path, not just its first component, for the allow-list below.
