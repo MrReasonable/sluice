@@ -426,19 +426,39 @@ def test_no_production_code_builds_a_sub_app_config_directly():
     """
     import ast
 
+    watched = {"TrackConfig", "TriageConfig", "CvConfig", "ApplyConfig"}
     pkg = pathlib.Path(__file__).resolve().parent.parent / "sluice"
-    offenders = []
+    offenders, seen_any = [], False
     for path in sorted(pkg.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
+        # Local binding -> the config class it actually names, read off this file's own
+        # imports. `from sluice.track.config import TrackConfig as _TC` would otherwise
+        # walk straight past a hard-coded name list -- witnessed green before this.
+        bound = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                for a in node.names:
+                    if a.name in watched:
+                        bound[a.asname or a.name] = a.name
+            # ...and a class DEFINED here binds its own name: each `config.py` defines
+            # its config rather than importing it, so import-resolution alone saw
+            # nothing at all -- which the non-vacuity assertion below caught on its
+            # first run.
+            elif isinstance(node, ast.ClassDef) and node.name in watched:
+                bound[node.name] = node.name
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
-            name = getattr(node.func, "id", None)
-            if name in ("TrackConfig", "TriageConfig", "CvConfig", "ApplyConfig"):
-                # its own loader is the one legitimate construction
-                if path.name == "config.py":
-                    continue
-                offenders.append(f"{path.relative_to(pkg.parent)}:{node.lineno} {name}()")
+            real = bound.get(getattr(node.func, "id", None))
+            if real is None:
+                continue
+            seen_any = True
+            # its own loader is the one legitimate construction
+            if path.name == "config.py":
+                continue
+            offenders.append(f"{path.relative_to(pkg.parent)}:{node.lineno} {real}()")
+    assert seen_any, ("found no sub-app config construction anywhere -- the sweep is "
+                      "vacuous, which is how it would pass if the walk broke")
     assert not offenders, (
         "a sub-app config must come from its loader, which is what fills in the blank "
         f"path defaults; these build one directly: {offenders}")
