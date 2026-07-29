@@ -350,9 +350,18 @@ def test_example_config_ships_lead_ttl_days_off():
 
 # ── #80: the example config must ship no machine-specific path ───────────────
 
-# `key: value` on a line that may be commented out. Anchored so a line of prose
-# containing a colon is not mistaken for a setting.
-_EXAMPLE_SETTING = re.compile(r"^\s*#?\s*([a-z_]+):(.*)$")
+# `key: value` on a line that may be commented out, or a block-sequence item (`- value`).
+# The key class allows digits and hyphens: `[a-z_]+` alone would skip `oauth2_path:`.
+_EXAMPLE_SETTING = re.compile(r"^\s*#?\s*(?:([A-Za-z0-9_-]+):|-)(.*)$")
+
+# A value is machine-specific if it is rooted at `/` or `~` -- but only AFTER quotes and
+# list punctuation come off. `value.startswith(("/", "~"))` against the raw text was the
+# whole bug this pair had on its first attempt: `vault_dir: "~/my-vault"` starts with a
+# quote, so it sailed through, and the leak gate does not back that case up because it
+# never greps `~` at all. The second pattern catches a home path anywhere inside a flow
+# list or an inline comment-free tail, e.g. `dirs: [~/a, ~/b]`.
+_ROOTED = re.compile(r"""^["'\[\s-]*[/~]""")
+_ROOTED_ANYWHERE = re.compile(r"""(?:^|[\s'"\[,])~/""")
 
 
 def _example_setting_values():
@@ -396,7 +405,7 @@ def test_example_config_ships_no_absolute_or_home_path():
     # `/Users/someone/vault` is both a copied-in wrong answer and a person's machine
     # name in a public repo. Same rule the baseline_rel assertion applies one file over.
     offenders = [line for line, value in _example_setting_values()
-                 if value.startswith(("/", "~"))]
+                 if _ROOTED.match(value) or _ROOTED_ANYWHERE.search(value)]
     assert not offenders, (
         "sluice.yaml.example must ship no absolute or home-relative path -- it is "
         f"copied verbatim by the quickstart, and it is someone's machine: {offenders}")

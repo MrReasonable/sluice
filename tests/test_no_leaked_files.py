@@ -121,18 +121,24 @@ FORBIDDEN_COMPONENTS = (".memsearch", ".npmrc")
 # right after the slash is not in the class) while matching every real username shape.
 _NAME = r"[A-Za-z0-9._-]+"
 _HOME_PATH_RE = re.compile(r"/(?:Users|home)/(" + _NAME + ")")
+# The WHOLE path, not just its first component, for the allow-list below.
+_FULL_HOME_PATH_RE = re.compile(r"/(?:Users|home)/[A-Za-z0-9._/-]+")
 
-# First path components that are DELIBERATELY not a person. Kept short, named, and
-# reviewable: every addition widens a neutrality gate, so it is a deliberate act, not a
-# convenience. `example` is the RFC-reserved placeholder the redaction fixtures use
-# (`/home/example/.local/bin/claude`, labelled as such at its definition); `someone` is the
-# placeholder this file's own sibling guards name; a purely-elided component (`/home/.../x`)
-# names nobody at all. Anything else under a home prefix is a person and their machine.
-_PLACEHOLDER_USERS = frozenset({"example", "someone"})
-
-
-def _is_placeholder(name: str) -> bool:
-    return name in _PLACEHOLDER_USERS or set(name) == {"."}
+# The exact home-rooted strings that legitimately appear in this repo, in full.
+#
+# Deliberately whole paths and not a set of placeholder USERNAMES, which is what this
+# started as: keying on the first component alone accepted anything after it, so
+# `/home/example/Documents/<a real vault name>` passed a neutrality gate silently. A
+# placeholder root does not make the tail impersonal.
+#
+# Every entry is a deliberate act. `example` is the RFC-reserved placeholder the
+# redaction fixtures use (labelled as such where they are defined); `someone` appears in
+# a guard comment naming the shape it rejects; the elided form names nobody at all.
+_ALLOWED_HOME_PATHS = frozenset({
+    "/home/example/.local/bin/claude",
+    "/Users/someone/vault",
+    "/home/.../claude",
+})
 
 # Where .gitignore's generated-output list begins and ends. The boundary is drawn
 # STRUCTURALLY -- by the markers below, not by a line count and not by hand -- because the
@@ -257,7 +263,11 @@ def test_no_absolute_home_path_is_tracked_in_source_or_config(prefix):
         # this file necessarily contains the strings it is searching for
         if line.startswith("tests/test_no_leaked_files.py:"):
             continue
-        if all(_is_placeholder(m) for m in _HOME_PATH_RE.findall(line)):
+        # `found` must be non-empty: `all([])` is True, so a line git grep matched but
+        # Python's `re` did not would otherwise be dropped in silence -- a gate failing
+        # open, which is the bug this whole file just spent a round fixing.
+        found = _FULL_HOME_PATH_RE.findall(line)
+        if found and all(m in _ALLOWED_HOME_PATHS for m in found):
             continue
         hits.append(line)
     assert not hits, f"absolute home path under {prefix!r} in tracked files: {hits}"
@@ -288,8 +298,6 @@ def test_the_gate_catches_real_shapes_and_spares_bare_prefixes(tmp_path):
         assert r.returncode in (0, 1), f"git grep failed to run: {r.stderr}"
         return r.returncode == 0
 
-    for prefix in ("/Users/", "/home/"):
-        pass
     assert _grep(r"/(Users|home)/" + _NAME, "leaks.txt"), \
         "the gate's own pattern MISSES real leaks under git grep -E"
     assert not _grep(r"/(Users|home)/" + _NAME, "detectors.txt"), \
