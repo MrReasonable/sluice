@@ -186,17 +186,22 @@ def _resolve_call_names():
     names = set()
     for path in sorted((Path(__file__).resolve().parent.parent / "sluice").rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
+        # The names `paths.resolve` is bound to IN THIS FILE, read off its own imports
+        # rather than hard-coded. `core/app.py` imports it as `_resolve_path` to avoid
+        # colliding with `dossier_cache`'s local SSRF resolver, and a sweep matching only
+        # the bare name missed both of that file's call sites -- which this test caught
+        # the first time it ran. A hard-coded pair would have missed the NEXT alias just
+        # as silently, so the aliases are derived too.
+        aliases = {"resolve"}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "sluice.core.paths":
+                aliases |= {a.asname or a.name for a in node.names if a.name == "resolve"}
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
             fn = node.func
             fn_name = getattr(fn, "id", None) or getattr(fn, "attr", None)
-            # `_resolve_path` too: `core/app.py` imports `resolve` under an alias to
-            # avoid colliding with `dossier_cache`'s local SSRF resolver. A sweep that
-            # matched only the bare name silently missed both of app.py's call sites --
-            # caught when this test first ran, which is the whole argument for
-            # discovering rather than hand-listing.
-            if fn_name not in ("resolve", "_resolve_path"):
+            if fn_name not in aliases:
                 continue
             for kw in node.keywords:
                 if kw.arg == "name" and isinstance(kw.value, ast.Constant):
