@@ -1,5 +1,6 @@
 import dataclasses
 import importlib
+import re
 from pathlib import Path
 
 import pytest
@@ -309,9 +310,17 @@ def test_lead_ttl_days_rejects_negative_and_non_int(tmp_path, monkeypatch, value
 #     per-system sweep goes inert with every test still green.
 
 def test_path_keys_dataclass_defaults_are_blank():
+    # DERIVED from the dataclass, not hand-listed. Mutation-witnessed as inadequate:
+    # adding a fourth `*_dir` field with a non-empty default left the hand-written pair
+    # green, which is the same enumeration failure the sweep above exists to close.
     c = Config()
-    assert c.vault_dir == ""
-    assert c.dossier_dir == ""
+    keys = [f.name for f in dataclasses.fields(Config) if f.name.endswith("_dir")]
+    assert keys, "no root *_dir field found -- this guard would be vacuous"
+    offenders = {k: getattr(c, k) for k in keys if getattr(c, k) != ""}
+    assert offenders == {}, (
+        "a root path key must default blank -- a non-empty default is always truthy, so "
+        "it short-circuits `env or config or XDG` and the per-system location is never "
+        f"reached, with nothing going red: {offenders}")
 
 
 def test_path_keys_loader_defaults_are_blank(monkeypatch):
@@ -341,22 +350,32 @@ def test_example_config_ships_lead_ttl_days_off():
 
 # ── #80: the example config must ship no machine-specific path ───────────────
 
-def _example_dir_values():
-    """(line, value) for every `*_dir:` key in sluice.yaml.example, COMMENTS INCLUDED.
+# `key: value` on a line that may be commented out. Anchored so a line of prose
+# containing a colon is not mistaken for a setting.
+_EXAMPLE_SETTING = re.compile(r"^\s*#?\s*([a-z_]+):(.*)$")
 
-    Comments are the whole point. The model for this scan
-    (test_example_config_ships_lead_ttl_days_off) uses `ln.strip().startswith(...)`,
-    which EXCLUDES comment lines -- and both keys here ship commented out, so that
-    shape would be vacuous in the good state AND the bad one (`all()` over an empty
-    list passes either way).
+
+def _example_setting_values():
+    """(line, value) for EVERY setting in sluice.yaml.example, COMMENTS INCLUDED.
+
+    Two properties, both learned the hard way. Comments are the whole point: the model
+    for this scan (test_example_config_ships_lead_ttl_days_off) uses
+    `ln.strip().startswith(...)`, which EXCLUDES comment lines -- and the path keys ship
+    commented out, so that shape would be vacuous in the good state AND the bad one
+    (`all()` over an empty list passes either way).
+
+    And it sweeps every key, not just `*_dir:` ones. Keyed on the SHAPE of the value
+    rather than on a list of key names, because the names are the part nobody remembers
+    to update: `baseline_rel` is a path too, and a `*_dir`-only scan read as though it
+    covered the file while leaving that one open.
     """
     text = Path("sluice.yaml.example").read_text(encoding="utf-8")
     out = []
     for line in text.splitlines():
-        if "_dir:" not in line:
+        m = _EXAMPLE_SETTING.match(line)
+        if not m:
             continue
-        rhs = line.split("_dir:", 1)[1]
-        value = rhs.split("#", 1)[0].strip()   # drop any trailing comment
+        value = m.group(2).split("#", 1)[0].strip()   # drop any trailing comment
         out.append((line, value))
     return out
 
@@ -376,7 +395,7 @@ def test_example_config_ships_no_absolute_or_home_path():
     # sluice.yaml.example is COPIED VERBATIM by the documented quickstart, so a shipped
     # `/Users/someone/vault` is both a copied-in wrong answer and a person's machine
     # name in a public repo. Same rule the baseline_rel assertion applies one file over.
-    offenders = [line for line, value in _example_dir_values()
+    offenders = [line for line, value in _example_setting_values()
                  if value.startswith(("/", "~"))]
     assert not offenders, (
         "sluice.yaml.example must ship no absolute or home-relative path -- it is "

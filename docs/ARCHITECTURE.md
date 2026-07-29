@@ -71,12 +71,18 @@ Shared by every sub-app:
   Nothing is ever moved automatically. A path left at its old location warns
   and names the `mv`, except the two dedup stores, which refuse -- continuing
   with an empty dedup set re-creates every lead a human merged away, which can
-  mean a second application under their name (see #81). The refusal is scoped
-  to commands that write: `--dry-run` and `--sink json` proceed, and so does
-  `doctor`, since a relocated file is exactly what one runs doctor to hear
-  about. An explicitly named path (env var or config key) short-circuits
-  resolution before the check, so callers who name their own paths are immune
-  by construction rather than by a rule repeated at each site.
+  mean a second application under their name (see #81).
+
+  The two refusals are scoped differently, deliberately. `ingest` refuses only
+  when the run actually writes dedup state, so `--dry-run` and `--sink json`
+  proceed. Every `track` command refuses, dry runs included, because a track dry
+  run reads the #49 dead-letter store to report what it WOULD do, and against a
+  relocated store it would report nothing to do -- a silently wrong answer a
+  human then acts on. `doctor` never refuses, since a relocated file is exactly
+  what one runs doctor to hear about. An explicitly named path (env var or
+  config key) short-circuits resolution before the check either way, so callers
+  who name their own paths are immune by construction rather than by a rule
+  repeated at each site.
 - `seendb.py`: a sqlite dedup store for already-seen leads.
 - `resilience.py`: retry-with-backoff, hard timeout, and rate-limit
   precheck helpers that wrap each source's I/O.

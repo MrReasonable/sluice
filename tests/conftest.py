@@ -16,11 +16,17 @@ def _pin_paths(tmp_path, monkeypatch):
     could not reach a real home directory. Afterwards it can, and would pass while
     doing it -- which is why this is autouse rather than opt-in.
 
-    All five names are load-bearing, and the two config ones do NOT substitute for each
-    other: `$XDG_CONFIG_HOME` and `~` are consecutive rungs of one fallback chain, so
-    which is consulted depends on the machine. macOS conventionally leaves `XDG_*`
-    unset, so `HOME` is the pin that matters there. `VAULT_DIR` was never pinned at all
-    -- a developer with it exported ran the whole suite against their real vault.
+    All five names are load-bearing, but not all on the same machine, and the two config
+    ones do NOT substitute for each other: `$XDG_CONFIG_HOME` and `~` are consecutive
+    rungs of ONE fallback chain, so which is consulted depends on the environment. macOS
+    and CI conventionally leave `XDG_*` unset, so there `HOME` does the work and deleting
+    the XDG pins alone leaves the suite green; on a machine that EXPORTS
+    `XDG_CONFIG_HOME` the reverse holds, and that pin is the only thing between the
+    neutrality guard and a real config. Pin both, and witness each with its OWN variable
+    aimed at a planted config -- deleting one and watching for green proves nothing,
+    because the other masks it.
+    `VAULT_DIR` was never pinned at all -- a developer with it exported ran the whole
+    suite against their real vault.
 
     `tests/harness/config.py` pins every per-path env var itself, so the e2e and
     functional tiers never reach these; that is why this cannot be the only guard, and
