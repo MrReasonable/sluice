@@ -303,8 +303,8 @@ def _unclearable_dl(kind):
 
 
 _NOT_AS_ROOT = pytest.mark.skipif(
-    hasattr(os, "geteuid") and os.geteuid() == 0,
-    reason="root ignores the permission bits this route is staged from")
+    os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="needs POSIX mode bits, which root ignores in any case")
 
 
 # Every route `check_reachable`'s docstring claims to close gets a row here. They were
