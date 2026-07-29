@@ -127,10 +127,12 @@ FORBIDDEN_COMPONENTS = (".memsearch", ".npmrc")
 # reviewer measured it. Widening to a negated class is what broke this gate the last
 # time, and `[^[:space:]]` would re-admit the detector forms it must spare, so the ASCII
 # class stays and the gap is documented instead.
-# The hyphen is NOT in here: it must be the LAST member of a bracket expression or it
-# reads as a range, and `[A-Za-z0-9._-/]` is the error `_-/` -- caught immediately when
-# this was first factored out, which is the cheap version of the mistake that left this
-# gate inert for its whole life.
+# The hyphen is NOT in here: it has to sit at one END of a bracket expression -- first
+# or last -- or it reads as a range. `[A-Za-z0-9._-/]` is the error `_-/`; `[-A-Za-z0-9._]`
+# would be fine. Keeping it out of the shared constant and appending it in each pattern
+# is what lets both patterns be built from one source without either of them tripping
+# that. Caught immediately when this was first factored out, which is the cheap version
+# of the mistake that left this gate inert for its whole life.
 _NAME_CHARS = r"A-Za-z0-9._"
 _NAME = f"[{_NAME_CHARS}-]+"
 _HOME_PATH_RE = re.compile(r"/(?:Users|home)/(" + _NAME + ")")

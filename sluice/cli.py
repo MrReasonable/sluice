@@ -37,27 +37,57 @@ def _disabled_path() -> str:
 
 # ── operator on/off overlay ──────────────────────────────────────────────────
 def _load_disabled() -> set:
+    """The operator's disabled-source ids. RAISES if the overlay exists but is unusable.
+
+    MISSING -> nothing disabled, the ordinary state. `lexists`, not `exists`: a DANGLING
+    SYMLINK is not an absent file, and treating it as one sends `_save_disabled` writing
+    through the link.
+
+    Anything else raises, and the raise is the point. `enable`/`disable` READ-MODIFY-WRITE
+    this file, so a swallowed read there does not lose one run's worth of state -- it
+    rewrites the overlay from an empty set and destroys every decision the operator ever
+    made, reporting success. That is the same read-empty-then-write-back compounding the
+    dedup stores refuse over. Read-only callers want the softer behaviour and opt into it
+    via `_disabled_or_warn` below; that choice belongs to the CALLER, because only the
+    caller knows whether it is about to write the file back.
+
+    The shape is validated for the reason `_merge_denylist` exists in track/config.py:
+    `set(json.load(f))` over a dict yields its KEYS and over a string yields its
+    CHARACTERS, so a malformed overlay would silently become a nonsense set of source ids
+    rather than an error.
+    """
     path = _disabled_path()
-    # MISSING -> nothing disabled (the ordinary state). An unreadable or malformed
-    # overlay is NOT that, and reading it as "nothing disabled" silently RE-ENABLES
-    # every source the operator turned off -- which #80 newly made reachable, because
-    # this file used to sit in the cwd and now resolves per-system, so an upgrader's
-    # overlay is at the old location. `paths.resolve` warns about the move, but that
-    # notice names the file and not the consequence, and this is the consequence.
-    #
-    # Warn rather than refuse, deliberately: re-enabling a source costs a wasted scrape
-    # and is fixed by disabling it again, which is a different order of harm from the
-    # dedup stores (a duplicate application, irreversible). But it must not be SILENT.
-    if not os.path.exists(path):
+    if not os.path.lexists(path):
         return set()
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, list) or any(not isinstance(x, str) for x in data):
+        raise ValueError(
+            f"the disabled-sources overlay at {path} must be a JSON list of source ids, "
+            f"got {type(data).__name__}. Fix or delete it; deleting it re-enables every "
+            f"source you had turned off.")
+    return set(data)
+
+
+def _disabled_or_warn() -> set:
+    """`_load_disabled` for READ-ONLY callers: warn and treat nothing as disabled.
+
+    Only for callers that do not write the overlay back. #80 newly made this reachable:
+    the file used to sit in the cwd and now resolves per-system, so an upgrader's overlay
+    is at the old location. `paths.resolve` warns about the move, but that notice names
+    the file and not the consequence -- and this is the consequence.
+
+    Warn rather than refuse, deliberately: a re-enabled source costs a wasted scrape and
+    is fixed by disabling it again, a different order of harm from the dedup stores
+    (a duplicate application, irreversible). It must not be SILENT, though.
+    """
     try:
-        with open(path, encoding="utf-8") as f:
-            return set(json.load(f))
+        return _load_disabled()
     except (OSError, ValueError) as e:
         _log.warning(
             "could not read the disabled-sources overlay at %s (%s): treating every "
             "source as ENABLED for this run. Any source you disabled will be scraped.",
-            path, e)
+            _disabled_path(), e)
         return set()
 
 
@@ -86,7 +116,7 @@ def _selected(args, config, disabled) -> list:
 
 # ── commands ─────────────────────────────────────────────────────────────────
 def cmd_list_sources(args, config) -> int:
-    disabled = _load_disabled()
+    disabled = _disabled_or_warn()   # read-only: never writes the overlay back
     health = HealthStore() if getattr(args, "health", False) else None
     for src in sorted(registry.all_sources(), key=lambda s: s.id):
         state = "enabled" if _is_enabled(src, config, disabled) else "disabled"
@@ -129,7 +159,7 @@ def cmd_run(args, config) -> int:
     # Imported here so offline commands (and their tests) never touch Camofox.
     from sluice.core.app import Sluice
 
-    disabled = _load_disabled()
+    disabled = _disabled_or_warn()   # read-only: never writes the overlay back
     srcs = _selected(args, config, disabled)
     if not srcs:
         _log.warning("no enabled sources selected")
