@@ -3,6 +3,8 @@ Every field has a sane default so track runs with no config file."""
 import os
 from dataclasses import dataclass, field
 
+from sluice.core.paths import resolve
+
 try:
     import yaml
 except ImportError:  # pragma: no cover
@@ -86,8 +88,17 @@ def _merge_denylist(key: str, value):
 
 @dataclass
 class TrackConfig:
-    token_path: str = "./google_token.json"
-    seen_db: str = "./track-seen.db"
+    # Blank, not a path (#80), and load_track_config fills both in. Resolution is
+    # `env or config key or XDG`, so a non-empty default is ALWAYS truthy: it
+    # short-circuits the chain before the XDG location is reached, the field never
+    # moves, and every test stays green while it does not. Neither honours an env var
+    # -- there has never been one for either -- so the config key is the only override.
+    token_path: str = ""
+    # The worst of the cwd-relative paths. app.py derives THREE things from it: the
+    # `.lastrun` watermark, the seen-message set, and the #49 dead-letter store. Run
+    # track from another directory and the entire backlog of un-acted-on proposals
+    # silently disappears, reported as an ordinary run.
+    seen_db: str = ""
     gmail_lookback_days: int = 2
     gmail_extra_query: str = ""
     calendar_lookahead_days: int = 45
@@ -114,19 +125,31 @@ class TrackConfig:
 def load_track_config(path: str | None = None) -> TrackConfig:
     cfg = TrackConfig()
     path = path or os.environ.get("SLUICE_CONFIG")
-    if not (path and os.path.exists(path) and yaml is not None):
-        return cfg
-    with open(path, encoding="utf-8") as f:
-        data = (yaml.safe_load(f) or {}).get("track") or {}
-    for k, v in data.items():
-        if not (hasattr(cfg, k) and v is not None):
-            continue
-        if k in _MERGED_DENYLISTS:
-            # Merge, never replace -- see _MERGED_DENYLISTS. No `isinstance` test guarding
-            # the branch: a non-mapping value must RAISE, not fall through to the plain
-            # setattr below, which would replace the safety denylist with whatever the
-            # user wrote (see _merge_denylist).
-            setattr(cfg, k, _merge_denylist(k, v))
-        else:
-            setattr(cfg, k, v)
+    # An INVERTED guard rather than the early `return cfg` this replaced (#80). The
+    # resolution below has to run on every path out of this function: the no-config-file
+    # case is precisely what a fresh install gets, and an early return would leave it
+    # holding the blank defaults -- `""` reaching `os.makedirs(os.path.dirname(""))` and
+    # `deadletter_path("")`.
+    if path and os.path.exists(path) and yaml is not None:
+        with open(path, encoding="utf-8") as f:
+            data = (yaml.safe_load(f) or {}).get("track") or {}
+        for k, v in data.items():
+            if not (hasattr(cfg, k) and v is not None):
+                continue
+            if k in _MERGED_DENYLISTS:
+                # Merge, never replace -- see _MERGED_DENYLISTS. No `isinstance` test
+                # guarding the branch: a non-mapping value must RAISE, not fall through
+                # to the plain setattr below, which would replace the safety denylist
+                # with whatever the user wrote (see _merge_denylist).
+                setattr(cfg, k, _merge_denylist(k, v))
+            else:
+                setattr(cfg, k, v)
+    # AFTER the loop, so a user who writes `seen_db: ""` gets a resolved path rather than
+    # the empty string the loop just set (`v is not None` admits it). Non-fatal: the
+    # refusal for the relocated dedup store is scoped to the commands that actually run
+    # track, because doctor() calls this loader too and must not refuse to report.
+    cfg.token_path = resolve(env_var=None, config_value=cfg.token_path,
+                             kind="state", name="google_token.json")
+    cfg.seen_db = resolve(env_var=None, config_value=cfg.seen_db,
+                          kind="state", name="track-seen.db")
     return cfg
