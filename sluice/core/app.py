@@ -471,9 +471,11 @@ class Sluice:
 
         `dry_run` OR `json_sink` both route to `JsonSink`, never `VaultSink`: a
         dry run's whole point is to change nothing on disk, and `--sink json` is
-        an explicit request to skip the vault -- so both must skip the store and
-        seen.db entirely rather than constructing them and then merely not
-        calling write(). `out` lets a caller (a future surface, or a test) capture
+        an explicit request to skip the vault -- so neither constructs the store.
+        `SeenDb` IS constructed on both branches, and read: a dry run that lied
+        about what had already been seen would be useless. What those branches
+        skip is the dedup-state WRITE, not the read (see the comment on `seen`
+        below, and `_ingest_run`'s sink). `out` lets a caller (a future surface, or a test) capture
         the JSON lines somewhere other than stdout; it defaults to stdout because
         that is what `sluice ingest run --dry-run`/`--sink json` has always done."""
         import sys

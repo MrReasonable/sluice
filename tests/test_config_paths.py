@@ -434,14 +434,6 @@ def _config_constructions(tree, watched):
             for a in node.names:
                 if a.name in watched:
                     bound[a.asname or a.name] = a.name
-        # A class DEFINED here binds its own name: each `config.py` defines its config
-        # rather than importing it, so import-resolution ALONE once matched nothing at
-        # all. It is kept for legibility, not for coverage: since the `in watched`
-        # fallback below was added, this branch is a provably equivalent mutant --
-        # deleting it changes the output for no file in `sluice/` and no adversarial
-        # shape tried. Do not cite it as load-bearing.
-        elif isinstance(node, ast.ClassDef) and node.name in watched:
-            bound[node.name] = node.name
     # Second pass: a local rebinding (`_X = TrackConfig`) can only name something bound
     # above it.
     for node in ast.walk(tree):

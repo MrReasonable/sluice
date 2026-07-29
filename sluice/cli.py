@@ -43,13 +43,21 @@ def _load_disabled() -> set:
     SYMLINK is not an absent file, and treating it as one sends `_save_disabled` writing
     through the link.
 
-    Anything else raises, and the raise is the point. `enable`/`disable` READ-MODIFY-WRITE
-    this file, so a swallowed read there does not lose one run's worth of state -- it
-    rewrites the overlay from an empty set and destroys every decision the operator ever
-    made, reporting success. That is the same read-empty-then-write-back compounding the
-    dedup stores refuse over. Read-only callers want the softer behaviour and opt into it
-    via `_disabled_or_warn` below; that choice belongs to the CALLER, because only the
-    caller knows whether it is about to write the file back.
+    Anything else raises, and the raise is the point. THE CRITERION IS WHAT THE CALLER
+    DOES WITH THE ANSWER, not whether it writes this file back:
+
+        reports it  -> `_disabled_or_warn` (today: `list-sources`, which prints a status
+                       line, so a wrong answer misprints one)
+        ACTS on it  -> this function (today: `ingest run`, which would scrape the sources
+                       the operator turned off and write their leads into the vault)
+        WRITES it   -> this function (today: `enable`/`disable`, which read-modify-write,
+                       so a swallowed read rewrites the overlay from an empty set and
+                       destroys every decision the operator ever made, reporting success)
+
+    Only the last of those three can be enumerated mechanically, and
+    `test_every_overlay_writer_reads_through_the_raising_loader` does enumerate it. No
+    guard can enumerate "acts on the answer", so for that case this docstring is the only
+    steer -- which is why it states the criterion rather than a proxy for it.
 
     The shape is validated for the reason `_merge_denylist` exists in track/config.py:
     `set(json.load(f))` over a dict yields its KEYS and over a string yields its
@@ -87,9 +95,13 @@ def _load_disabled() -> set:
 
 
 def _disabled_or_warn() -> set:
-    """`_load_disabled` for READ-ONLY callers: warn and treat nothing as disabled.
+    """`_load_disabled` for callers that only REPORT the answer: warn, and treat nothing
+    as disabled.
 
-    Only for callers that do not write the overlay back. #80 newly made this reachable:
+    Today that is `cmd_list_sources` alone. NOT `cmd_run`: it does not write this file
+    either, but it ACTS on the answer, and scraping the sources someone turned off is a
+    different order of wrong from misprinting a status line. See `_load_disabled` for the
+    criterion. #80 newly made this reachable:
     the file used to sit in the cwd and now resolves per-system, so an upgrader's overlay
     is at the old location. `paths.resolve` warns about the move, but that notice names
     the file and not the consequence -- and this is the consequence.
@@ -176,13 +188,10 @@ def cmd_run(args, config) -> int:
     # Imported here so offline commands (and their tests) never touch Camofox.
     from sluice.core.app import Sluice
 
-    # REFUSES, unlike cmd_list_sources. The split is by what the caller DOES with the
-    # answer, not by whether it writes the overlay file: list-sources reads and PRINTS, so
-    # a wrong answer misprints a status line. `run` reads and ACTS -- it scrapes, and a
-    # wrong answer scrapes the sources the operator explicitly turned off and writes their
-    # leads into the vault. Refusing does NOT hard-fail upgraders: an overlay still at the
-    # pre-#80 location leaves the resolved path missing, which is the abstain arm, so the
-    # raise needs a file that is present AND unusable. Measured.
+    # REFUSES, unlike cmd_list_sources: this command ACTS on the answer (see
+    # `_load_disabled` for the criterion). Refusing does NOT hard-fail upgraders -- an
+    # overlay still at the pre-#80 location leaves the resolved path missing, which is
+    # the abstain arm, so the raise needs a file that is present AND unusable. Measured.
     try:
         disabled = _load_disabled()
     except (OSError, ValueError) as e:

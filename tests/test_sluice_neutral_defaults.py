@@ -535,15 +535,16 @@ _MUST_FLAG = [
     ("home in a trailing comment", "vault_dir: vault  # e.g. ~/mine"),
     ("block-sequence item", "  - ~/from-a-list"),
     ("indented and commented", "  # seen_db: ~/mine/seen.db"),
-    # These are what `_ROOTED` alone catches -- `_ROOTED_ANYWHERE` requires `~/` or a
-    # delimiter before `/`, so without these rows the whole `_ROOTED` pattern could be
-    # replaced with a never-matching one and the suite stayed green. Each is a real
-    # machine-specific value: the bare home directory, another user's home, and a UNC
-    # or double-slash root.
+    # The four below are what `_ROOTED` ALONE catches: each is a home or root that is not
+    # followed by the `/` its sibling's first alternative needs. Without them the whole
+    # `_ROOTED` pattern could be replaced with a never-matching one and the suite stayed
+    # green -- measured.
     ("the home directory itself", "vault_dir: ~"),
     ("quoted home directory", 'vault_dir: "~"'),
     ("another user's home", "vault_dir: ~someone/vault"),
     ("double-slash root", "vault_dir: //server/share"),
+    # ...and these three are the inverse: `_ROOTED_ANYWHERE` only, via the alternatives
+    # added for them. They are not rooted at `/` or `~` at all.
     ("env expansion", "vault_dir: $HOME/vault"),
     ("braced env expansion", "vault_dir: ${HOME}/vault"),
     ("windows drive letter", "vault_dir: C:\\Users\\someone\\vault"),
