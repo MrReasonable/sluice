@@ -15,8 +15,13 @@ is conventionally unset, so `HOME` is the only pin standing between the neutrali
 and a real config.
 """
 import os
+import pathlib
+import re
+
+import pytest
 
 from sluice.core import paths
+from tests.conftest import PATH_ENV_VARS
 
 
 def _under(child, parent):
@@ -54,3 +59,36 @@ def test_vault_dir_is_pinned(tmp_path):
     note's status -- and CI, which has no VAULT_DIR, stayed green throughout."""
     from sluice.core.vault import Vault
     assert _under(Vault().dir, tmp_path)
+
+
+def test_the_sandbox_covers_every_path_env_var():
+    """`PATH_ENV_VARS` is a hand-list, so this pins it against the source.
+
+    `paths.resolve` consults `env_var` BEFORE the config key and before the XDG root, so
+    each of these outranks every pin the autouse fixture sets. A developer with
+    `SLUICE_CONFIG` or `TRIAGE_AUDIT` exported ran the whole suite against a real config
+    file or audit log -- passing, because nothing here looked. Every other sandbox test in
+    this file passes `env_var=None`, which is exactly why none of them could see it.
+
+    Discovery reads the call sites rather than importing, so it cannot be satisfied by a
+    variable that is merely mentioned: the pattern is the `env_var=` keyword itself.
+    """
+    pkg = pathlib.Path(__file__).resolve().parent.parent / "sluice"
+    found = set()
+    for py in sorted(pkg.rglob("*.py")):
+        found |= set(re.findall(r'env_var\s*=\s*"([A-Z_]+)"', py.read_text(encoding="utf-8")))
+    assert found, "discovery found no path env vars at all -- the pattern stopped matching"
+    assert found == set(PATH_ENV_VARS), (
+        "sluice/ resolves env vars the sandbox does not neutralise, so a developer with "
+        f"one exported runs the suite against a real file: {sorted(found ^ set(PATH_ENV_VARS))}"
+    )
+
+
+@pytest.mark.parametrize("var", PATH_ENV_VARS)
+def test_no_path_env_var_survives_into_a_test(var):
+    # The behavioural half: the roster above can be complete and the fixture still not
+    # apply it. Reads the live environment, so it fails on the machine that actually has
+    # one exported rather than only in review.
+    assert var not in os.environ, (
+        f"{var} is set during a test; it outranks every sandbox pin, so this run is "
+        f"resolving against whatever it points at")

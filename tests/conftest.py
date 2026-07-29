@@ -7,6 +7,20 @@ deterministic enough to assert on, and revealing nothing about whoever runs slui
 import pytest
 from faker import Faker
 
+# Every variable `paths.resolve` consults as `env_var=`, i.e. the rung that outranks the
+# XDG pins below. Hand-listed HERE so the fixture stays trivial, and pinned against the
+# source by `test_path_sandbox.py::test_the_sandbox_covers_every_path_env_var` -- adding a
+# seventh in `sluice/` without adding it here reddens there rather than silently opening
+# the sandbox for whoever happens to have it exported.
+PATH_ENV_VARS = (
+    "DOSSIER_DIR",
+    "SEEN_DB",
+    "SLUICE_CONFIG",
+    "SLUICE_DISABLED",
+    "SLUICE_HEALTH",
+    "TRIAGE_AUDIT",
+)
+
 
 @pytest.fixture(autouse=True)
 def _pin_paths(tmp_path, monkeypatch):
@@ -38,6 +52,13 @@ def _pin_paths(tmp_path, monkeypatch):
         monkeypatch.setenv(var, str(tmp_path / "xdg" / sub))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("VAULT_DIR", str(tmp_path / "vault"))
+    # The rung ABOVE all of those. `paths.resolve` consults `env_var` FIRST, so any of
+    # these outranks every pin set above: a developer with `SLUICE_CONFIG` exported ran
+    # the suite against their real config file, and `TRIAGE_AUDIT` against a real audit
+    # log -- the same shape as the `VAULT_DIR` hole, one rung higher. Every existing
+    # sandbox test passes `env_var=None`, so none of them could see it.
+    for var in PATH_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
 
 
 def _title_pool(n=60):

@@ -168,8 +168,15 @@ class DeadLetterDb:
             # untouched -- and `WHERE 0` means there is nothing to roll back anyway.
             db.execute("DELETE FROM track_deadletter WHERE 0")
         finally:
-            db.rollback()
-            db.close()
+            # NESTED, so `close` runs even when `rollback` raises. Flat in one `finally`,
+            # an I/O error from the rollback -- the realistic one, on a store that just
+            # failed the DELETE -- skips the close and leaks the handle for the life of
+            # the process. The probe exists for stores that are already misbehaving, so
+            # that is exactly the case it must not make worse.
+            try:
+                db.rollback()
+            finally:
+                db.close()
 
     def clear_lead(self, slug: str) -> int:
         if _absent(self.path):
