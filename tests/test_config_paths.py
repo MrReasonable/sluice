@@ -207,3 +207,74 @@ def test_config_loader_roster_is_complete():
                 discovered[name] = module.__name__
     assert discovered, "discovery found no config loaders at all"
     assert discovered == {n: m for n, m, *_ in _CONFIG_LOADERS}
+
+
+# ── the call sites that resolve their own path (table rows #4, #5, #6) ───────
+
+def test_health_store_defaults_under_the_state_root():
+    from sluice.core.health import HealthStore
+    assert HealthStore().path == os.path.join(
+        os.environ["XDG_STATE_HOME"], "sluice", "sluice_health.json")
+
+
+def test_health_store_still_honours_its_env_var(monkeypatch, tmp_path):
+    from sluice.core.health import HealthStore
+    monkeypatch.setenv("SLUICE_HEALTH", str(tmp_path / "h.json"))
+    assert HealthStore().path == str(tmp_path / "h.json")
+
+
+def test_an_explicit_health_path_beats_the_env_var(monkeypatch, tmp_path):
+    # Precedence belongs in the FACTORY, never ahead of an explicit constructor
+    # argument. Putting the env read first here would retarget every
+    # `HealthStore(str(tmp_path / ...))` in the suite at a developer's real file, green
+    # in CI throughout -- the mistake this design made once for the vault and caught in
+    # review. `path or resolve(...)` also means resolve is not even CALLED when a
+    # caller names a path, so an explicit caller cannot trip the migration warning.
+    from sluice.core.health import HealthStore
+    monkeypatch.setenv("SLUICE_HEALTH", str(tmp_path / "from-env.json"))
+    assert HealthStore(str(tmp_path / "explicit.json")).path == str(
+        tmp_path / "explicit.json")
+
+
+def test_disabled_overlay_defaults_under_the_state_root(monkeypatch):
+    from sluice.cli import _disabled_path
+    monkeypatch.delenv("SLUICE_DISABLED", raising=False)
+    assert _disabled_path() == os.path.join(
+        os.environ["XDG_STATE_HOME"], "sluice", "sluice_disabled.json")
+
+
+def test_disabled_overlay_still_honours_its_env_var(monkeypatch, tmp_path):
+    from sluice.cli import _disabled_path
+    monkeypatch.setenv("SLUICE_DISABLED", str(tmp_path / "d.json"))
+    assert _disabled_path() == str(tmp_path / "d.json")
+
+
+def test_triage_writes_its_audit_where_the_config_says(tmp_path, monkeypatch):
+    """`triage.audit_jsonl` was a DEAD KEY: declared on TriageConfig and read by
+    nothing, because `Sluice.triage` read $TRIAGE_AUDIT directly with its own literal
+    default. A user setting it in YAML changed nothing, silently -- the exact defect
+    class this sweep exists to remove. One resolution site, in the loader, is what
+    makes it live; this row drives the real command to prove the loader's value is
+    what actually reaches the AuditLog.
+    """
+    from sluice.core.app import Sluice
+    from sluice.core.config import Config
+    import sluice.triage.audit as audit_mod
+
+    mine = tmp_path / "mine" / "audit.jsonl"
+    cfgp = tmp_path / "c.yaml"
+    cfgp.write_text(f'triage:\n  audit_jsonl: "{mine}"\n', encoding="utf-8")
+    monkeypatch.setenv("SLUICE_CONFIG", str(cfgp))
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path / "vault"))
+    monkeypatch.setenv("DOSSIER_DIR", str(tmp_path / "dossiers"))
+
+    seen = []
+
+    class _Audit(audit_mod.AuditLog):
+        def __init__(self, path):
+            seen.append(path)
+            super().__init__(path)
+
+    monkeypatch.setattr(audit_mod, "AuditLog", _Audit)
+    Sluice(Config()).triage(no_llm=True)
+    assert seen == [str(mine)]
