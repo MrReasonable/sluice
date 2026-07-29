@@ -448,44 +448,69 @@ def test_the_state_directory_the_remedy_creates_stays_private(monkeypatch, tmp_p
     assert mode == 0o700, f"the remedy left the token's parent at {oct(mode)}"
 
 
-def test_a_dangling_dead_letter_store_is_not_an_empty_one(tmp_path):
-    """The #49 store is in the RAISE tier, and a broken link belongs there too.
 
-    `open_entries` guarded on `os.path.exists`, which FOLLOWS the link, so a dangling
-    one landed in the missing-file arm and returned `[]` -- discarding every proposal
-    nobody has acted on, in silence, which its own comment forbids. Reachable because
-    `.deadletter.db` is a migration companion and `mv` moves a link rather than its
-    target.
+# Every public method that READS the store. `record` is excluded because it creates the
+# store deliberately, which is its job.
+_DEADLETTER_READERS = {
+    "open_entries": lambda db: db.open_entries(),
+    "bump_surfaced": lambda db: db.bump_surfaced(),
+    "clear_lead": lambda db: db.clear_lead("x"),
+    "clear_id": lambda db: db.clear_id("x"),
+    "check_reachable": lambda db: db.check_reachable(),
+}
+
+
+def test_the_dead_letter_reader_roster_is_complete():
+    """The roster above is a hand-list, so this pins it against the real class.
+
+    Its predecessor's docstring claimed "a fifth reader added without the check is
+    caught". Measured: adding a fifth reader on `os.path.exists` left the suite green,
+    because four lambdas are not an enumeration. This is.
     """
+    import inspect
+
     from sluice.track.deadletter import DeadLetterDb
 
-    link = tmp_path / "track-seen.db.deadletter.db"
-    os.symlink(str(tmp_path / "nothere.db"), link)
-    with pytest.raises(OSError) as e:
-        DeadLetterDb(str(link)).open_entries()
-    assert "symlink" in str(e.value)
+    public = {n for n, _ in inspect.getmembers(DeadLetterDb, inspect.isfunction)
+              if not n.startswith("_")}
+    assert public - {"record"} == set(_DEADLETTER_READERS), (
+        "DeadLetterDb's public readers changed; every one must be checked for the "
+        f"dangling-store guard. Class has {sorted(public)}")
 
 
-@pytest.mark.parametrize("call", [
-    lambda db: db.open_entries(),
-    lambda db: db.bump_surfaced(),
-    lambda db: db.clear_lead("x"),
-    lambda db: db.clear_id("x"),
-], ids=["open_entries", "bump_surfaced", "clear_lead", "clear_id"])
-def test_every_dead_letter_reader_refuses_a_dangling_store(tmp_path, call):
-    """All four, not just the one a review happened to name.
+@pytest.mark.parametrize("name", sorted(_DEADLETTER_READERS), ids=sorted(_DEADLETTER_READERS))
+def test_every_dead_letter_reader_refuses_a_dangling_store(tmp_path, name):
+    """All of them, not just the one a review happened to name.
 
     The guard first landed on `open_entries` alone; the other three kept following the
-    symlink and quietly did nothing -- `clear_*` reporting success having cleared
-    nothing. Enumerated here so a fifth reader added without the check is caught.
+    symlink and quietly did nothing -- `clear_*` reporting success having cleared nothing.
     """
     from sluice.track.deadletter import DeadLetterDb
 
     link = tmp_path / "track-seen.db.deadletter.db"
     os.symlink(str(tmp_path / "nothere.db"), link)
     with pytest.raises(OSError) as e:
-        call(DeadLetterDb(str(link)))
+        _DEADLETTER_READERS[name](DeadLetterDb(str(link)))
     assert "symlink" in str(e.value)
+
+
+def test_an_unreadable_dead_letter_store_is_not_an_absent_one(tmp_path):
+    """`os.path.lexists` returns False on ANY OSError, so a store under a directory the
+    user cannot traverse read as "absent" and the backlog came back empty -- the same
+    silent empty by a different route. `lstat` distinguishes them.
+    """
+    from sluice.track.deadletter import DeadLetterDb
+
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    store = locked / "track-seen.db.deadletter.db"
+    store.write_bytes(b"")
+    os.chmod(locked, 0o000)
+    try:
+        with pytest.raises(PermissionError):
+            DeadLetterDb(str(store)).open_entries()
+    finally:
+        os.chmod(locked, 0o755)
 
 
 def test_every_dead_letter_reader_still_tolerates_a_missing_store(tmp_path):
@@ -498,9 +523,3 @@ def test_every_dead_letter_reader_still_tolerates_a_missing_store(tmp_path):
     assert db.clear_lead("x") == 0
     assert db.clear_id("x") == 0
 
-
-def test_a_missing_dead_letter_store_is_still_an_empty_one(tmp_path):
-    # The other arm: absent is the ordinary first-run state and must stay quiet.
-    from sluice.track.deadletter import DeadLetterDb
-
-    assert DeadLetterDb(str(tmp_path / "nope.db")).open_entries() == []

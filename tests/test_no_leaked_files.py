@@ -20,6 +20,7 @@ this repo spends its life engineering out, reproduced inside the test written to
 """
 import re
 import subprocess
+import pathlib
 from pathlib import Path
 
 import pytest
@@ -166,7 +167,13 @@ _FULL_HOME_PATH_RE = re.compile(rf"/(?:Users|home)/[{_NAME_CHARS}/-]+")
 # literal AND a real non-ASCII path, `_FULL_HOME_PATH_RE` finds only the allowed one, so
 # `all()` runs over a single permitted match and the line is skipped -- the real path
 # rides along invisibly. Measured before this existed.
-_WIDE_HOME_PATH_RE = re.compile(r"""/(?:Users|home)/[^\s'"`,)<>\]]+""")
+# The whitespace is spelled OUT, not `\s`. Python's `\s` also matches 0x1c-0x1f and
+# 0x85, which POSIX `[:space:]` does not -- so git kept matching through those bytes and
+# this pattern stopped, going BLIND to `/Users/<0x1f>name/vault` entirely while git
+# reported it. A blind spot here is a skip: the allowed literal elsewhere on the line is
+# then the only match, and the line passes. Measured across 0x01-0x2FF plus the Unicode
+# separator categories; these five bytes were the whole divergence.
+_WIDE_HOME_PATH_RE = re.compile(r"""/(?:Users|home)/[^ \t\n\r\f\v'"`,)<>\]]+""")
 
 # The exact home-rooted strings that legitimately appear in this repo, in full.
 #
@@ -294,6 +301,22 @@ def test_no_generated_or_personal_artefact_is_tracked():
 _GATE_PATHSPEC: tuple = ()
 
 
+def test_the_gate_actually_uses_the_declared_pathspec():
+    """...and the gate must READ that constant, not carry its own.
+
+    The completeness check below constrains `_GATE_PATHSPEC` only: hardcoding a pathspec
+    at the grep call site while leaving the constant empty passed every test. Reading the
+    source is crude, but it is the connection between the two that was missing.
+    """
+    src = pathlib.Path(__file__).read_text(encoding="utf-8")
+    call = src[src.index("out = _git(\"grep\""):]
+    call = call[:call.index("allow=(0, 1))")]
+    assert "_GATE_PATHSPEC" in call, (
+        "the gate no longer derives its pathspec from _GATE_PATHSPEC, so the "
+        "completeness guard below constrains nothing")
+    assert '"--", "' not in call, f"a literal pathspec is hardcoded at the call site: {call}"
+
+
 def test_the_gate_leaves_no_tracked_file_unsearched():
     # No conditional: `ls-files -- ` with no pathspec lists everything, so the empty
     # case compares the real thing against the real thing instead of a constant against
@@ -318,11 +341,16 @@ def _is_allowed_hit(line):
     so a line git matched and this cannot parse must be REPORTED, not skipped.
     """
     path_in_repo = line.split(":", 1)[0]
-    found = _FULL_HOME_PATH_RE.findall(line)
-    # If git can see more home paths on this line than the allow-list parser can, the
-    # extra ones are unexaminable -- so the line is REPORTED, never skipped.
-    if len(found) != len(_WIDE_HOME_PATH_RE.findall(line)):
-        return False
+    # Decided on the WIDE matches, not the ASCII ones, and not on a count comparison.
+    # Counting only catches a SEPARATE extra match: a wide match that EXTENDS PAST the
+    # narrow one keeps the count at 1, so `<allowed literal>:<real non-ASCII path>` --
+    # or `[`, `@`, `{` -- read as a single permitted match and the real path rode along.
+    # Measured: the space-separated shape was caught and the other three were not.
+    #
+    # Matching on the wide pattern makes the compared string the whole run git saw, so a
+    # concatenation is simply not the allow-listed literal and is reported. `rstrip` for
+    # trailing sentence punctuation, which the wide class admits.
+    found = [m.rstrip(":.,;") for m in _WIDE_HOME_PATH_RE.findall(line)]
     return bool(found) and all(
         any(path_in_repo.startswith(w)
             for w in _ALLOWED_HOME_PATH_FILES.get(m, ()))
@@ -347,6 +375,26 @@ def _is_allowed_hit(line):
      False, "each match is scoped, not just the first"),
     ("tests/test_backends.py:1: nothing here", False,
      "no parseable path -- an unparseable git hit must report, not skip"),
+    # The fail-open rows. Every row above is ASCII, so the guard against a real path
+    # riding along beside an allowed literal could be DELETED with the suite green --
+    # measured, twice, by two reviewers. These are the four separators that reach it;
+    # only the first was caught when the guard compared match COUNTS.
+    ("tests/test_backends.py:1: /home/example/.local/bin/claude and /home/\u00e9ric/x",
+     False, "a real path space-separated from an allowed literal"),
+    ("tests/test_backends.py:1: /home/example/.local/bin/claude:/home/\u00e9ric/x",
+     False, "...colon-separated, which a count comparison could not see"),
+    ("tests/test_backends.py:1: /home/example/.local/bin/claude[/home/\u00e9ric/x",
+     False, "...bracket-separated"),
+    ("tests/test_backends.py:1: /home/example/.local/bin/claude@/home/\u00e9ric/x",
+     False, "...at-sign-separated"),
+    ("tests/test_backends.py:1: /home/example/.local/bin/claude.", True,
+     "trailing sentence punctuation is not part of the path"),
+    # A control byte INSIDE the component. Python's `\s` treats 0x1f as whitespace and
+    # POSIX `[:space:]` does not, so this pattern saw nothing here while git saw the whole
+    # path -- and a blind spot is a skip.
+    ("tests/test_backends.py:1: /home/example/.local/bin/claude and "
+     "/Users/\x1fleakedperson/vault", False,
+     "a path whose component carries a byte Python calls whitespace and POSIX does not"),
 ])
 def test_the_allowance_is_scoped_to_the_file_that_needs_it(line, allowed, why):
     assert _is_allowed_hit(line) is allowed, why
