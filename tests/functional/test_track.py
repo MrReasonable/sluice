@@ -86,6 +86,31 @@ def test_track_run_lastrun_gating(cli, monkeypatch):
     assert not os.path.exists(lastrun)
 
 
+def test_open_proposals_print_the_id_dismiss_needs(cli, monkeypatch):
+    """A NO-LEAD row's label renders as `?`, and `--id` is its only lever.
+
+    `Sluice.track_dismiss` states that message_id is the only way to clear a classify
+    failure or an unmatched proposal -- and the id appeared nowhere in any command's
+    output, so the one documented route needed a value obtainable only by opening the
+    SQLite file by hand. Those rows re-surface every run until someone acts on them, so
+    "unreachable" means "re-surfaces forever".
+    """
+    import sluice.track.engine as teng
+    from sluice.track.engine import RunReport
+
+    h, run = cli(backend=ScriptedBackend())
+    orphan = Entry("m-classify-fail", "", "", "unknown", "could not classify", "h",
+                   "2026-07-10", 1)
+    monkeypatch.setattr(teng, "run",
+                        lambda *a, **k: RunReport(msgs=1, open_proposals=[orphan]))
+    rc, _out, err = run(["track", "run"])
+
+    assert rc == 0
+    assert "m-classify-fail" in err, (
+        "the id `track dismiss --id` needs is not printed, so a no-lead row cannot be "
+        "cleared from anything the tool tells you")
+
+
 def test_track_dismiss_dry_run_then_real(cli):
     # cmd_track_dismiss dispatch: args -> Sluice.track_dismiss pass-through and the
     # rc contract, which neither the parser-only nor the Sluice-method-only tests

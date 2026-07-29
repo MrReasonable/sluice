@@ -141,7 +141,14 @@ def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> s
     # `[ ! -L DST ]` in the remedy below is what actually stops the move. Measured with a
     # real legacy file and a broken destination link: `lexists` returned silently and left
     # the store where it was, while `exists` refuses and names both paths.
-    if legacy and os.path.lexists(legacy) and not os.path.exists(resolved):
+    # A COMPANION counts as legacy state in its own right, not only the store. Keyed on
+    # the store alone this went silent in one cell of the matrix: a `.deadletter.db`
+    # holding un-acted-on proposals with its `track-seen.db` already gone resolved
+    # quietly, and `track run` then read the NEW location and printed `open=0` -- #49's
+    # whole backlog invisible, which is the outcome the companion ordering below exists to
+    # prevent mid-migration and had no answer for after one.
+    companions = [s for s in _SIDECARS.get(name, ()) if legacy and os.path.lexists(legacy + s)]
+    if legacy and (os.path.lexists(legacy) or companions) and not os.path.exists(resolved):
         # Every file the migration has to carry, and in an order that survives being
         # interrupted. Three properties, each measured:
         #
@@ -149,21 +156,23 @@ def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> s
         #   directory does not exist yet and a bare `mv` fails with "No such file or
         #   directory", moving nothing.
         #
-        #   Companions BEFORE the store. The legacy gate is `lexists(legacy) and not
-        #   exists(resolved)`, keyed on the STORE alone: move it first and a chain that
-        #   then fails leaves the companions orphaned AND silences the only notice that
-        #   names them, permanently. Moving the store last means any interruption leaves
-        #   the refusal armed.
+        #   Companions BEFORE the store: move the store first and a chain that then fails
+        #   leaves the companions orphaned, and -- before the gate above also counted them
+        #   -- silenced the only notice that names them, permanently. Moving the store
+        #   last means any interruption leaves the refusal armed.
         #
         #   `shlex.quote`, because these paths come from the environment and a home
         #   directory with a space in it otherwise produces a command that does something
         #   else entirely.
         #
         # A companion is named only when it actually exists, so the remedy stays
-        # copy-pasteable rather than failing on a file the user never had.
-        moves = [(legacy + s, resolved + s) for s in _SIDECARS.get(name, ())
-                 if os.path.lexists(legacy + s)]
-        moves.append((legacy, resolved))
+        # copy-pasteable rather than failing on a file the user never had. The STORE gets
+        # the same treatment, because the gate above now also fires for an orphaned
+        # companion -- an unconditional `mv` of an absent store would hand the user a
+        # command whose first step fails.
+        moves = [(legacy + s, resolved + s) for s in companions]
+        if os.path.lexists(legacy):
+            moves.append((legacy, resolved))
         parent = os.path.dirname(resolved)
         # `chmod` SEPARATELY, not `mkdir -m`: the mode flag applies only to directories
         # mkdir creates, and by the time a user runs this the directory usually exists --
@@ -187,12 +196,22 @@ def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> s
                   f"mv {shlex.quote(src)} {shlex.quote(dst)}"
                   for src, dst in moves]
         remedy = " && ".join(steps)
-        msg = (f"{name} now lives at {resolved}, but a file remains at {legacy}. "
-               f"sluice never moves your data -- run:  {remedy}")
-        if len(moves) > 1:
-            msg += (f"   ({len(moves) - 1} companion file(s) must move with it: leaving "
-                    f"them behind silently loses the last-run watermark and the "
-                    f"un-acted-on proposal backlog.)")
+        # Counted from `companions`, never `len(moves) - 1`: that arithmetic assumed the
+        # store was always one of the moves, and now that an orphaned companion opens the
+        # gate on its own it would report one fewer than there are -- and claim a file
+        # remains at a path that does not exist.
+        if os.path.lexists(legacy):
+            msg = (f"{name} now lives at {resolved}, but a file remains at {legacy}. "
+                   f"sluice never moves your data -- run:  {remedy}")
+            if companions:
+                msg += (f"   ({len(companions)} companion file(s) must move with it: "
+                        f"leaving them behind silently loses the last-run watermark and "
+                        f"the un-acted-on proposal backlog.)")
+        else:
+            msg = (f"{name} is already gone from {legacy}, but {len(companions)} companion "
+                   f"file(s) remain beside it and still hold state -- the last-run "
+                   f"watermark and the un-acted-on proposal backlog. sluice never moves "
+                   f"your data -- run:  {remedy}")
         # The `[ ! -e ]` guards stop the chain without printing anything, so a user who
         # gets a bare non-zero exit needs to be told what it means. Said here rather than
         # wrapped into the shell: an echo per step turns a copy-pasteable line into a
