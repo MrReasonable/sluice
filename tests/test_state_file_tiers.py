@@ -5,10 +5,13 @@ WARN when it is recoverable but discards an explicit human decision, SILENT when
 is derived and rebuilds itself. This file is the executable half of that.
 
 It exists because a review round found SIX production behaviour changes shipped with zero
-rows between them. Every one was mutation-proven non-equivalent afterwards -- a locked
-database reported as corruption, a dangling symlink creating its own target, and, worst,
-`enable`/`disable` silently going back to the warning variant and rebuilding the operator's
-overlay from an empty set. None of it was hypothetical; none of it was covered.
+rows between them: a locked database reported as corruption with a destructive remedy, a
+dangling symlink read as "no history yet", and, worst, `enable`/`disable` silently going
+back to the warning variant and rebuilding the operator's overlay from an empty set. None
+of it was hypothetical; none of it was covered.
+
+Each row below names the mutant it kills. Where a row says it was witnessed, it was run;
+two rows in the first version of this file were NOT, and both are noted where they sit.
 """
 import ast
 import os
@@ -65,8 +68,13 @@ def test_a_dangling_overlay_symlink_raises(overlay, tmp_path):
     # `lexists`, not `exists`: a broken link is not an absent file, and treating it as one
     # sends _save_disabled writing THROUGH the link.
     os.symlink(str(tmp_path / "nothere.json"), overlay)
-    with pytest.raises(OSError):
+    with pytest.raises(OSError) as e:
         cli._load_disabled()
+    # On the MESSAGE, not just the type. `open()` already raises FileNotFoundError, an
+    # OSError subclass, so `pytest.raises(OSError)` alone passes with the entire guard
+    # deleted -- measured. The guard's whole value is saying which of the two states this
+    # is, so that is what gets asserted.
+    assert "symlink" in str(e.value)
 
 
 def test_the_read_only_wrapper_warns_and_continues(overlay, caplog):
@@ -95,10 +103,13 @@ def test_every_overlay_writer_reads_through_the_raising_loader():
     tree = ast.parse(src)
     writers, checked = [], 0
     for node in ast.walk(tree):
-        if not isinstance(node, ast.FunctionDef):
+        # AsyncFunctionDef too, and attribute calls as well as bare names: an `async def`
+        # writer and a `mod._save_disabled()` writer both evaded the first version of this
+        # guard while `checked >= 2` stayed satisfied.
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        called = {c.func.id for c in ast.walk(node)
-                  if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
+        called = {getattr(c.func, "id", None) or getattr(c.func, "attr", None)
+                  for c in ast.walk(node) if isinstance(c, ast.Call)}
         if "_save_disabled" not in called:
             continue
         checked += 1
@@ -114,7 +125,7 @@ def test_every_overlay_writer_reads_through_the_raising_loader():
 
 # ── the dedup stores: raise, and say something useful ────────────────────────
 
-def test_a_locked_database_is_not_reported_as_corruption(tmp_path):
+def test_a_locked_database_is_not_reported_as_corruption(tmp_path, monkeypatch):
     """`OperationalError` SUBCLASSES `DatabaseError`.
 
     So a corruption arm placed first swallows "database is locked" -- two overlapping
@@ -125,19 +136,29 @@ def test_a_locked_database_is_not_reported_as_corruption(tmp_path):
     """
     p = tmp_path / "seen.db"
     db = sqlite3.connect(str(p))
-    db.execute("CREATE TABLE seen_jobs (url TEXT PRIMARY KEY, scanned_at TEXT)")
-    db.execute("INSERT INTO seen_jobs VALUES ('u', 't')")
-    db.commit()
-    holder = sqlite3.connect(str(p), isolation_level=None, timeout=0)
-    holder.execute("BEGIN EXCLUSIVE")
     try:
+        db.execute("CREATE TABLE seen_jobs (url TEXT PRIMARY KEY, scanned_at TEXT)")
+        db.execute("INSERT INTO seen_jobs VALUES ('u', 't')")
+        db.commit()
+    finally:
+        db.close()
+
+    # `timeout=0` on the READER, patched in for this row only. `SeenDb.load` calls
+    # `sqlite3.connect` untimed, so it inherits the 5s default busy timeout and this test
+    # alone cost 5.2s -- a third of a suite CLAUDE.md documents as sub-second. The lock is
+    # acquired INSIDE the try, so a SQLITE_BUSY on the way in cannot leak the connection.
+    real_connect = sqlite3.connect
+    monkeypatch.setattr(sqlite3, "connect",
+                        lambda *a, **k: real_connect(*a, **{**k, "timeout": 0}))
+    holder = real_connect(str(p), isolation_level=None, timeout=0)
+    try:
+        holder.execute("BEGIN EXCLUSIVE")
         with pytest.raises(sqlite3.OperationalError) as e:
             SeenDb(str(p)).load()
         assert "Move or delete" not in str(e.value), \
             "a transient lock must not be given a destructive remedy"
     finally:
         holder.close()
-        db.close()
 
 
 def test_a_corrupt_database_names_the_file_and_a_remedy(tmp_path):
@@ -157,11 +178,13 @@ def test_a_dangling_symlink_is_not_an_absent_store(tmp_path, loader):
     # arm -- the one state the guard exists to separate -- and the writer then creates or
     # overwrites through it.
     link = tmp_path / "store.db"
-    target = tmp_path / "nothere.db"
-    os.symlink(str(target), link)
+    os.symlink(str(tmp_path / "nothere.db"), link)
     with pytest.raises(Exception):
         loader(link)
-    assert not target.exists(), "reading created the symlink's target"
+    # NB no "and the target was not created" assertion here. The first version had one;
+    # it could never fire, because both loaders return before any connect or open. The
+    # property that IS load-bearing is that a broken link raises instead of reading as
+    # "no history yet", which is what the raises() above pins.
 
 
 # ── the migration remedy has to name every file it carries ───────────────────
@@ -267,3 +290,66 @@ def test_list_sources_still_only_warns(overlay, capsys):
 
     assert cli.cmd_list_sources(_Args(), Config()) == 0
     assert capsys.readouterr().out, "list-sources printed nothing"
+
+
+def _refusal_remedy(name="track-seen.db"):
+    """The shell command the relocation refusal prints, or None if it did not fire."""
+    from sluice.core import paths
+    try:
+        paths.resolve(env_var=None, config_value="", kind="state", name=name, fatal=True)
+        return None
+    except RuntimeError as e:
+        return str(e).split("run:  ")[1].split("   (")[0]
+
+
+def test_the_printed_remedy_actually_runs(monkeypatch, tmp_path):
+    """Pasted verbatim into a shell, it must succeed and move everything.
+
+    It did not. Both fatal refusals fire BEFORE any writer, so the destination directory
+    does not exist yet and a bare `mv` failed with "No such file or directory" -- exit 1,
+    nothing moved, against a user who did exactly what they were told.
+    """
+    import subprocess
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    names = ("track-seen.db", "track-seen.db.lastrun", "track-seen.db.deadletter.db")
+    for n in names:
+        (tmp_path / n).write_text(n, encoding="utf-8")
+
+    cmd = _refusal_remedy()
+    assert cmd, "the refusal did not fire, so there is no remedy to run"
+    r = subprocess.run(cmd, shell=True, capture_output=True, text=True, cwd=tmp_path)
+    assert r.returncode == 0, f"the printed remedy failed: {r.stderr.strip()}"
+
+    landed = tmp_path / "state" / "sluice"
+    assert sorted(p.name for p in landed.iterdir()) == sorted(names)
+    assert not any((tmp_path / n).exists() for n in names), "something was left behind"
+
+
+def test_the_remedy_moves_the_store_last_so_an_interruption_stays_armed(
+        monkeypatch, tmp_path):
+    """Order matters, and the dangerous order is the intuitive one.
+
+    The legacy gate is `exists(legacy) and not exists(resolved)`, keyed on the STORE
+    alone. Move it first and a chain that then fails leaves the companions orphaned AND
+    silences the only notice that names them -- permanently. Moving it last means any
+    interruption leaves the refusal armed, so the next run says so again.
+    """
+    import subprocess
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    for n in ("track-seen.db", "track-seen.db.lastrun", "track-seen.db.deadletter.db"):
+        (tmp_path / n).write_text(n, encoding="utf-8")
+
+    cmd = _refusal_remedy()
+    steps = cmd.split(" && ")
+    assert "track-seen.db.lastrun" not in steps[-1], \
+        "a companion moves last; an interruption before it orphans that file silently"
+    assert steps[-1].endswith("track-seen.db"), "the store must move last"
+
+    # Run everything except the final step -- the interruption.
+    subprocess.run(" && ".join(steps[:-1]), shell=True, check=True, cwd=tmp_path)
+    assert _refusal_remedy() is not None, \
+        "an interrupted migration silenced the refusal, orphaning the companions"

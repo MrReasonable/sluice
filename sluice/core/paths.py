@@ -25,6 +25,7 @@ is a drift-detection question, not a path question, and changing it here would b
 behaviour change smuggled into a path sweep.
 """
 import os
+import shlex
 
 from sluice.core.log import get_logger
 
@@ -50,6 +51,17 @@ _ROOTS = {
 # The config file is deliberately absent: an unset SLUICE_CONFIG meant "no config file",
 # never "./config.yaml", so there is nothing to migrate from and a `config.yaml` in
 # someone's cwd is somebody else's file.
+_LEGACY = {
+    "seen.db": "./seen.db",
+    "track-seen.db": "./track-seen.db",
+    "sluice_health.json": "./sluice_health.json",
+    "sluice_disabled.json": "./sluice_disabled.json",
+    "triage-audit.jsonl": "./triage-audit.jsonl",
+    "google_token.json": "./google_token.json",
+    "dossiers": "./dossiers",
+}
+
+
 # Files DERIVED from a resolved path by string concatenation, and which therefore have to
 # move WITH it. `core/app.py` builds track's `.lastrun` watermark and its #49 dead-letter
 # store by appending to `seen_db`, so a remedy naming only the database leaves both behind
@@ -59,21 +71,10 @@ _ROOTS = {
 # forever. Without the dead-letter store, `open_entries` reads empty and the whole
 # un-acted-on proposal backlog is discarded. Both report as an ordinary successful run.
 #
-# Measured: running the one-file remedy verbatim on a 30-day-old install moved the db and
-# orphaned both companions. A refusal that exists to guide a safe migration must name
-# everything the migration has to carry.
+# A refusal that exists to guide a safe migration must name everything the migration has
+# to carry; `tests/test_state_file_tiers.py` pins that it does.
 _SIDECARS = {
     "track-seen.db": (".lastrun", ".deadletter.db"),
-}
-
-_LEGACY = {
-    "seen.db": "./seen.db",
-    "track-seen.db": "./track-seen.db",
-    "sluice_health.json": "./sluice_health.json",
-    "sluice_disabled.json": "./sluice_disabled.json",
-    "triage-audit.jsonl": "./triage-audit.jsonl",
-    "google_token.json": "./google_token.json",
-    "dossiers": "./dossiers",
 }
 
 
@@ -109,13 +110,32 @@ def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> s
     legacy = _LEGACY.get(name) if legacy is None else legacy
 
     if legacy and os.path.exists(legacy) and not os.path.exists(resolved):
-        # Every file the migration has to carry, not just the one that was resolved. A
-        # companion is named only when it actually EXISTS, so the remedy stays copy-
-        # pasteable rather than failing halfway on a file the user never had.
-        moves = [(legacy, resolved)]
-        moves += [(legacy + s, resolved + s) for s in _SIDECARS.get(name, ())
-                  if os.path.exists(legacy + s)]
-        remedy = " && ".join(f"mv {src} {dst}" for src, dst in moves)
+        # Every file the migration has to carry, and in an order that survives being
+        # interrupted. Three properties, each measured:
+        #
+        #   `mkdir -p` first -- the refusal fires BEFORE any writer, so the destination
+        #   directory does not exist yet and a bare `mv` fails with "No such file or
+        #   directory", moving nothing.
+        #
+        #   Companions BEFORE the store. The legacy gate is `exists(legacy) and not
+        #   exists(resolved)`, keyed on the STORE alone: move it first and a chain that
+        #   then fails leaves the companions orphaned AND silences the only notice that
+        #   names them, permanently. Moving the store last means any interruption leaves
+        #   the refusal armed.
+        #
+        #   `shlex.quote`, because these paths come from the environment and a home
+        #   directory with a space in it otherwise produces a command that does something
+        #   else entirely.
+        #
+        # A companion is named only when it actually exists, so the remedy stays
+        # copy-pasteable rather than failing on a file the user never had.
+        moves = [(legacy + s, resolved + s) for s in _SIDECARS.get(name, ())
+                 if os.path.exists(legacy + s)]
+        moves.append((legacy, resolved))
+        parent = os.path.dirname(resolved)
+        steps = ([f"mkdir -p {shlex.quote(parent)}"] if parent else [])
+        steps += [f"mv {shlex.quote(src)} {shlex.quote(dst)}" for src, dst in moves]
+        remedy = " && ".join(steps)
         msg = (f"{name} now lives at {resolved}, but a file remains at {legacy}. "
                f"sluice never moves your data -- run:  {remedy}")
         if len(moves) > 1:
