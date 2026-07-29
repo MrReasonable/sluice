@@ -148,6 +148,12 @@ Row #16 (`cv-uploads`) is a path **inside the browser container**, not a host pa
 2. **Resolution order is `env → config key → XDG`, through one function.**
 3. **Never move a file.**
 4. **But refuse to start for the two dedup stores** — scoped so it never fires on a read-only command.
+   *(Implementation, 2026-07-29: the two are scoped DIFFERENTLY, and "never on a read-only command"
+   is too broad. `ingest` refuses only when the run actually writes dedup state, so `--dry-run` and
+   `--sink json` proceed. Every `track` command refuses INCLUDING its dry runs, because a track dry
+   run reads the #49 dead-letter store to report what it would do and against a relocated store
+   would report nothing to do — a silently wrong answer a human then acts on. `doctor` never
+   refuses either way.)*
 5. **`vault_dir` becomes a config key; `./vault` stays its default; precedence lives in the factory.**
 6. **Sweep state, cache and credentials only.**
 7. **One root `Config.dossier_dir`** replaces the two sub-app keys.
@@ -179,10 +185,16 @@ two-term `or` lives in `stores/vault.py:_make`.
 XDG roots: `$XDG_CONFIG_HOME | ~/.config`, `$XDG_STATE_HOME | ~/.local/state`,
 `$XDG_CACHE_HOME | ~/.cache`, each under `sluice/`.
 
-**Purity, stated honestly.** `resolve` performs **no writes** — no `mkdir`, so `--dry-run` cannot
-touch the disk. It *does* read: the environment, and (when `legacy` is given) `os.path.exists` on two
-paths. Draft 2's "pure, no I/O" was already false of its own env reads. Directories are created by
-the writer that needs them.
+**Purity, stated honestly.** `resolve` performs **no writes** — no `mkdir` — so RESOLVING a path
+cannot touch the disk. It *does* read: the environment, and (when `legacy` is given)
+`os.path.exists` on two paths. Draft 2's "pure, no I/O" was already false of its own env reads.
+Directories are created by the writer that needs them.
+
+*(Implementation, 2026-07-29: this said "so `--dry-run` cannot touch the disk", which is a claim
+about the COMMAND and does not follow. `ingest run --dry-run` records per-source health and so
+writes `sluice_health.json`; measured. That matters because the legacy check is keyed on the
+resolved path not existing, so any writer that creates it disarms that path's notice — which is why
+the dedup stores no longer create anything on a read.)*
 
 Read `XDG_*` per call, never at import: an import-time snapshot is unpatchable by tests.
 

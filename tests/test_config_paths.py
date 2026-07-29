@@ -410,6 +410,48 @@ def test_an_explicit_vault_argument_still_beats_the_env_var(monkeypatch, tmp_pat
     assert Vault(str(tmp_path / "explicit")).dir == str(tmp_path / "explicit")
 
 
+def _config_constructions(tree, watched):
+    """Every watched sub-app config CONSTRUCTED in `tree`, as (name, lineno).
+
+    Module level and shared, because the self-test below used to re-implement this walk:
+    a copy certifies the copy, and both alias branches were measured still-inert through
+    it -- deleting either from the real sweep left the whole suite green.
+    """
+    import ast
+
+    bound = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for a in node.names:
+                if a.name in watched:
+                    bound[a.asname or a.name] = a.name
+        # A class DEFINED here binds its own name: each `config.py` defines its config
+        # rather than importing it, so import-resolution alone matched nothing at all.
+        elif isinstance(node, ast.ClassDef) and node.name in watched:
+            bound[node.name] = node.name
+    # Second pass: a local rebinding (`_X = TrackConfig`) can only name something bound
+    # above it.
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.Name)):
+            src = bound.get(node.value.id) or (
+                node.value.id if node.value.id in watched else None)
+            if src:
+                bound[node.targets[0].id] = src
+    out = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        # BOTH shapes: a bare name, and an attribute (`m.TrackConfig()`), which `id`
+        # alone missed while the sibling sweep in test_paths.py caught it.
+        called = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+        real = bound.get(called) or (called if called in watched else None)
+        if real is not None:
+            out.append((real, node.lineno))
+    return out
+
+
 def test_no_production_code_builds_a_sub_app_config_directly():
     """The blank path defaults are only safe because the LOADER is the only way in.
 
@@ -431,50 +473,11 @@ def test_no_production_code_builds_a_sub_app_config_directly():
     offenders, seen_any = [], False
     for path in sorted(pkg.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        # Local binding -> the config class it actually names, read off this file's own
-        # imports. `from sluice.track.config import TrackConfig as _TC` would otherwise
-        # walk straight past a hard-coded name list -- witnessed green before this.
-        bound = {}
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom):
-                for a in node.names:
-                    if a.name in watched:
-                        bound[a.asname or a.name] = a.name
-            # ...and a class DEFINED here binds its own name: each `config.py` defines
-            # its config rather than importing it, so import-resolution alone saw
-            # nothing at all -- which the non-vacuity assertion below caught on its
-            # first run.
-            elif isinstance(node, ast.ClassDef) and node.name in watched:
-                bound[node.name] = node.name
-        # ...and a local rebinding (`_X = TrackConfig`) binds too. Two passes, because
-        # an assignment can only name something already bound above it, and a guard that
-        # missed this shape was measured GREEN.
-        for node in ast.walk(tree):
-            if (isinstance(node, ast.Assign) and len(node.targets) == 1
-                    and isinstance(node.targets[0], ast.Name)
-                    and isinstance(node.value, ast.Name)):
-                src = bound.get(node.value.id) or (
-                    node.value.id if node.value.id in watched else None)
-                if src:
-                    bound[node.targets[0].id] = src
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            # BOTH shapes. `id` alone missed `from sluice.track import config as m;
-            # m.TrackConfig()` -- the sibling sweep in test_paths.py caught that same
-            # shape via `attr`, so this one was fixed asymmetrically against it. The
-            # `bound` lookup resolves a renamed direct import (`TrackConfig as _TC`);
-            # the `in watched` fallback resolves attribute access through any module
-            # alias, where the class name is the attribute rather than a local binding.
-            called = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
-            real = bound.get(called) or (called if called in watched else None)
-            if real is None:
-                continue
+        for real, lineno in _config_constructions(tree, watched):
             seen_any = True
-            # its own loader is the one legitimate construction
-            if path.name == "config.py":
+            if path.name == "config.py":   # its own loader is the one legitimate one
                 continue
-            offenders.append(f"{path.relative_to(pkg.parent)}:{node.lineno} {real}()")
+            offenders.append(f"{path.relative_to(pkg.parent)}:{lineno} {real}()")
     assert seen_any, ("found no sub-app config construction anywhere -- the sweep is "
                       "vacuous, which is how it would pass if the walk broke")
     assert not offenders, (
@@ -505,29 +508,5 @@ def test_the_config_construction_matcher_sees_every_call_shape(label, source, ex
     import ast
 
     watched = {"TrackConfig", "TriageConfig", "CvConfig", "ApplyConfig"}
-    tree = ast.parse(source)
-    bound = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            for a in node.names:
-                if a.name in watched:
-                    bound[a.asname or a.name] = a.name
-        elif isinstance(node, ast.ClassDef) and node.name in watched:
-            bound[node.name] = node.name
-    for node in ast.walk(tree):
-        if (isinstance(node, ast.Assign) and len(node.targets) == 1
-                and isinstance(node.targets[0], ast.Name)
-                and isinstance(node.value, ast.Name)):
-            src = bound.get(node.value.id) or (
-                node.value.id if node.value.id in watched else None)
-            if src:
-                bound[node.targets[0].id] = src
-    hits = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        called = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
-        real = bound.get(called) or (called if called in watched else None)
-        if real is not None:
-            hits.append(real)
+    hits = _config_constructions(ast.parse(source), watched)
     assert bool(hits) is expected, f"{label}: matcher saw {hits!r}"

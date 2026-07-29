@@ -36,6 +36,11 @@ class HealthStore:
         self._data = self._load()
 
     def _load(self) -> dict:
+        # SILENT on any failure, and that is the right tier for this file (see
+        # docs/ARCHITECTURE.md): run history is DERIVED telemetry that rebuilds itself
+        # on the next run, so a wrong answer costs a drift-detection baseline rather
+        # than data. `ingest/engine.py` rules the same way on the write side. Do not
+        # copy this into a store whose empty read gets written back as truth.
         try:
             with open(self.path, encoding="utf-8") as f:
                 return json.load(f)
