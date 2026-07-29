@@ -50,6 +50,22 @@ _ROOTS = {
 # The config file is deliberately absent: an unset SLUICE_CONFIG meant "no config file",
 # never "./config.yaml", so there is nothing to migrate from and a `config.yaml` in
 # someone's cwd is somebody else's file.
+# Files DERIVED from a resolved path by string concatenation, and which therefore have to
+# move WITH it. `core/app.py` builds track's `.lastrun` watermark and its #49 dead-letter
+# store by appending to `seen_db`, so a remedy naming only the database leaves both behind
+# -- and losing either is SILENT. Without the watermark, `_gmail_query` falls back to
+# `gmail_lookback_days` INSTEAD of "since the last run", so on an install idle longer than
+# that window every receipt in the gap goes unqueried and its lead sits in `applied`
+# forever. Without the dead-letter store, `open_entries` reads empty and the whole
+# un-acted-on proposal backlog is discarded. Both report as an ordinary successful run.
+#
+# Measured: running the one-file remedy verbatim on a 30-day-old install moved the db and
+# orphaned both companions. A refusal that exists to guide a safe migration must name
+# everything the migration has to carry.
+_SIDECARS = {
+    "track-seen.db": (".lastrun", ".deadletter.db"),
+}
+
 _LEGACY = {
     "seen.db": "./seen.db",
     "track-seen.db": "./track-seen.db",
@@ -93,8 +109,19 @@ def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> s
     legacy = _LEGACY.get(name) if legacy is None else legacy
 
     if legacy and os.path.exists(legacy) and not os.path.exists(resolved):
+        # Every file the migration has to carry, not just the one that was resolved. A
+        # companion is named only when it actually EXISTS, so the remedy stays copy-
+        # pasteable rather than failing halfway on a file the user never had.
+        moves = [(legacy, resolved)]
+        moves += [(legacy + s, resolved + s) for s in _SIDECARS.get(name, ())
+                  if os.path.exists(legacy + s)]
+        remedy = " && ".join(f"mv {src} {dst}" for src, dst in moves)
         msg = (f"{name} now lives at {resolved}, but a file remains at {legacy}. "
-               f"sluice never moves your data -- run:  mv {legacy} {resolved}")
+               f"sluice never moves your data -- run:  {remedy}")
+        if len(moves) > 1:
+            msg += (f"   ({len(moves) - 1} companion file(s) must move with it: leaving "
+                    f"them behind silently loses the last-run watermark and the "
+                    f"un-acted-on proposal backlog.)")
         if fatal:
             # Only the two dedup stores. Continuing with an empty dedup set re-creates
             # every lead a human merged away (#81 -- `_resolve_path` never consults

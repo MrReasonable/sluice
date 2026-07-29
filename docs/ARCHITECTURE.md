@@ -57,8 +57,8 @@ Shared by every sub-app:
   | what | env var | now under | note |
   | --- | --- | --- | --- |
   | config file | `SLUICE_CONFIG` | config | all five loaders, via `config_file()` |
-  | dedup state | `SEEN_DB` | state | **refuses** to start if left behind |
-  | track dedup state | *none* | state | **refuses**; `.lastrun` + #49 store derive from it |
+  | dedup state | `SEEN_DB` | state | **refuses** if left behind, on a writing ingest run only |
+  | track dedup state | *none* | state | **refuses** (incl. dry runs); `.lastrun` + #49 store derive from it and move with it |
   | source health | `SLUICE_HEALTH` | state | |
   | disabled sources | `SLUICE_DISABLED` | state | |
   | triage audit | `TRIAGE_AUDIT` | state | was a dead config key |
@@ -85,24 +85,36 @@ Shared by every sub-app:
   config key) short-circuits resolution before the check either way, so callers
   who name their own paths are immune by construction rather than by a rule
   repeated at each site.
+
 **How a state file behaves when it cannot be read** is one convention, keyed on
 what a wrong answer COSTS, not on which module happens to own the file. A
 seventh state file should pick its tier from this list rather than copy
 whichever neighbour it was written next to:
 
-- **Raise** when a silent empty is irreversible: `seendb.py`'s `SeenDb.load`,
-  `track/deadletter.py`'s `open_entries`, and `core/app.py`'s `_load_seen`. All
-  three are dedup state, and all three are read-modify-written, so an empty read
-  is not one lost run -- it is written back as the new truth. For the two dedup
-  databases that is a duplicate application under the user's name.
-- **Warn and continue** when a wrong answer is recoverable but discards an
-  explicit human decision: `cli.py`'s `_disabled_or_warn`. Re-enabling a source
-  costs a wasted scrape. Note that its raising sibling `_load_disabled` is what
-  `enable`/`disable` call, precisely because those rewrite the file.
-- **Silent** when the value is derived and rebuilds itself next run:
-  `health.py`'s `_load` and `core/app.py`'s `_load_lastrun`. `ingest/engine.py`
-  already rules the same way on the write side ("health is best-effort; never
-  fail a run over it").
+- **Raise** when a silent empty is irreversible.
+  - `SeenDb.load` (`seendb.py`) and `_load_seen` (`core/app.py`) are dedup state
+    and are read-modify-written, so an empty read is not one lost run: it is
+    written back as the new truth, and for a dedup store that means a duplicate
+    application under the user's name.
+  - `open_entries` (`track/deadletter.py`) is neither -- it is the #49 proposal
+    queue and every writer hits the database independently. It raises for its
+    own reason (F1): an empty read silently discards the backlog of proposals a
+    human has not acted on, and reports the run as ordinary.
+- **Warn and continue** when a wrong answer is recoverable AND the caller only
+  reports it: `_disabled_or_warn` (`cli.py`), used by `list-sources`, where a
+  wrong answer misprints a status line. Its raising sibling `_load_disabled` is
+  what `enable`/`disable` call, because those rewrite the file, and what
+  `ingest run` calls, because that ACTS on the answer -- it would scrape the
+  sources the operator turned off. The tier follows what the caller does with
+  the value, which the file itself cannot know.
+- **Silent** when the value is derived and the next successful run repairs it:
+  `HealthStore._load` (`health.py`) and `_load_lastrun` (`core/app.py`).
+  `ingest/engine.py` rules the same way on the write side ("health is
+  best-effort; never fail a run over it"). NB repairing the FILE is not the same
+  as recovering the information: a lost `.lastrun` is rewritten next run, but the
+  receipts in the gap it no longer covers are never re-queried -- see that
+  function's docstring. It sits here because nothing is destroyed by the read
+  itself, not because the loss is free.
 
 - `seendb.py`: a sqlite dedup store for already-seen leads. Reading it never
   CREATES it (`sqlite3.connect` would, and the resulting empty file disarms the
