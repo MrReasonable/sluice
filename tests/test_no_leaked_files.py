@@ -107,11 +107,32 @@ FORBIDDEN_PREFIXES = (
 # file that can carry a registry auth token, catching them anywhere is the safer default.
 FORBIDDEN_COMPONENTS = (".memsearch", ".npmrc")
 
-# The first path component after the home prefix, whatever it is called. The first version of
-# this gate used `/Users/[a-z]`, which missed /Users/Alice and /home/2runner -- a personal path
-# walking straight through.
-_NAME = r"[^/\s'\"`,)\]]+"
-_HOME_PATH_RE = re.compile(r"/(?:Users|home)/" + _NAME)
+# The first path component after the home prefix, whatever it is called. This has now been
+# wrong TWICE. The first version used `/Users/[a-z]`, which missed /Users/Alice and
+# /home/2runner. The second was a NEGATED class written with Python escapes --
+# `[^/\s'"`,)\]]+` -- and handed to `git grep -E`, where a bracket expression treats the
+# backslash as a LITERAL MEMBER, not an escape: the class terminated at the `\]`, leaving a
+# pattern that required one or more literal `]` characters. No real path has those, so the
+# gate matched NOTHING for its entire life. Verified by planting a home path in a tracked
+# file and watching the gate pass.
+#
+# So: a POSITIVE class, valid and identical in BOTH engines, and no escapes inside a bracket
+# expression at all. It still spares the bare-prefix detector forms (a backtick or a quote
+# right after the slash is not in the class) while matching every real username shape.
+_NAME = r"[A-Za-z0-9._-]+"
+_HOME_PATH_RE = re.compile(r"/(?:Users|home)/(" + _NAME + ")")
+
+# First path components that are DELIBERATELY not a person. Kept short, named, and
+# reviewable: every addition widens a neutrality gate, so it is a deliberate act, not a
+# convenience. `example` is the RFC-reserved placeholder the redaction fixtures use
+# (`/home/example/.local/bin/claude`, labelled as such at its definition); `someone` is the
+# placeholder this file's own sibling guards name; a purely-elided component (`/home/.../x`)
+# names nobody at all. Anything else under a home prefix is a person and their machine.
+_PLACEHOLDER_USERS = frozenset({"example", "someone"})
+
+
+def _is_placeholder(name: str) -> bool:
+    return name in _PLACEHOLDER_USERS or set(name) == {"."}
 
 # Where .gitignore's generated-output list begins and ends. The boundary is drawn
 # STRUCTURALLY -- by the markers below, not by a line count and not by hand -- because the
@@ -222,18 +243,59 @@ def test_no_absolute_home_path_is_tracked_in_source_or_config(prefix):
     # 3300-line npm-generated package-lock.json, and scripts/guard_rulesync_drift.py -- all
     # three sat outside the old pathspec, and a generated lockfile is precisely what nobody
     # reads before committing.
-    out = _git("grep", "-l", "-I", "-E", re.escape(prefix) + _NAME, "--",
+    out = _git("grep", "-n", "-I", "-E", re.escape(prefix) + _NAME, "--",
                "sluice", "tests", "docs", "scripts",
+               # `*.yaml` does NOT match `sluice.yaml.example`, and that is the one file the
+               # quickstart copies verbatim onto a stranger's machine -- so it was outside
+               # this gate entirely. Named explicitly rather than widened to `*example*`,
+               # which would be a guess about future filenames.
                "*.md", "*.yaml", "*.yml", "*.toml", "*.json", ".gitignore",
+               "sluice.yaml.example",
                allow=(0, 1))
-    hits = [f for f in out.splitlines()
-            # this file necessarily contains the strings it is searching for
-            if not f.endswith("test_no_leaked_files.py")]
+    hits = []
+    for line in out.splitlines():
+        # this file necessarily contains the strings it is searching for
+        if line.startswith("tests/test_no_leaked_files.py:"):
+            continue
+        if all(_is_placeholder(m) for m in _HOME_PATH_RE.findall(line)):
+            continue
+        hits.append(line)
     assert not hits, f"absolute home path under {prefix!r} in tracked files: {hits}"
 
 
-def test_the_gate_catches_real_shapes_and_spares_bare_prefixes():
-    """The gate's own regression test. It has already been wrong once: lowercase-ASCII only."""
+def test_the_gate_catches_real_shapes_and_spares_bare_prefixes(tmp_path):
+    """The gate's own regression test, run through the engine the GATE uses.
+
+    It has been wrong twice, and the second time is why this no longer uses Python's `re`.
+    `_NAME` is compiled by `re` here AND handed to `git grep -E` there, and the two disagree
+    about backslashes inside a bracket expression -- so a `re`-based check certified a pattern
+    the gate never actually ran, and the gate matched nothing for its entire life. Asserting
+    through `git grep` is the only form that can catch that class of divergence.
+
+    `--no-index` searches a plain directory, so this needs no repo and cannot be confused by
+    the real one (which necessarily contains the strings being searched for).
+    """
+    (tmp_path / "leaks.txt").write_text(
+        "/Users/iandominey/.claude/x.jsonl\n/Users/Alice/dev\n/home/2runner/work\n",
+        encoding="utf-8")
+    (tmp_path / "detectors.txt").write_text(
+        "`/Users/`\n`/home/`, `.local`, `ssh`\n", encoding="utf-8")
+
+    def _grep(pattern, name):
+        r = subprocess.run(["git", "grep", "--no-index", "-l", "-I", "-E", pattern,
+                            "--", name],
+                           cwd=tmp_path, capture_output=True, text=True)
+        assert r.returncode in (0, 1), f"git grep failed to run: {r.stderr}"
+        return r.returncode == 0
+
+    for prefix in ("/Users/", "/home/"):
+        pass
+    assert _grep(r"/(Users|home)/" + _NAME, "leaks.txt"), \
+        "the gate's own pattern MISSES real leaks under git grep -E"
+    assert not _grep(r"/(Users|home)/" + _NAME, "detectors.txt"), \
+        "the gate false-positives on a bare-prefix detector under git grep -E"
+
+    # ...and Python's `re` must agree, since _HOME_PATH_RE is used elsewhere in this file.
     for leak in ("/Users/iandominey/.claude/x.jsonl", "/Users/Alice/dev", "/home/2runner/work"):
         assert _HOME_PATH_RE.search(leak), f"gate would MISS a real leak: {leak}"
     for detector in ("`/Users/`", "`/home/`, `.local`, `ssh`"):

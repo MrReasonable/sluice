@@ -178,17 +178,35 @@ def test_the_refresh_path_writes_through_write_token(tmp_path, monkeypatch, pinn
     assert _mode(p) == 0o600, "a refreshed token must not be left world-readable"
 
 
-def test_a_fresh_token_is_private_before_any_chmod(tmp_path, monkeypatch, pinned_umask):
-    """The file must be private at CREATION, not merely by the time we finish.
+def test_a_fresh_token_is_private_at_every_instant(tmp_path, monkeypatch, pinned_umask):
+    """Private at CREATION, not merely by the time the function returns.
 
     A plain `open()` followed by a `chmod` leaves a window in which the token exists
-    world-readable, which is enough for a local reader to copy it -- a real finding
-    against the first version of this function. `os.chmod` is neutralised here because
-    it normalises both arms: with it in place, a mutant that weakens the creation mode
-    is an EQUIVALENT mutant and this row could never see the difference.
+    world-readable -- long enough for a local reader to copy it, and a real finding
+    against the first version of this function. `os.chmod` is neutralised here so the
+    row cannot be satisfied by a late tightening: with a chmod in play, a mutant that
+    weakens the creation mode is an EQUIVALENT mutant and this could never see it.
     """
     from sluice.track import google_client as mod
     monkeypatch.setattr(mod.os, "chmod", lambda *a, **k: None)
     p = tmp_path / "google_token.json"
     mod._write_token(str(p), "tok")
-    assert _mode(p) == 0o600, "the token was world-readable between creation and chmod"
+    assert _mode(p) == 0o600, "the token was world-readable at some point during the write"
+
+
+def test_the_token_parent_directory_is_private(tmp_path, pinned_umask):
+    from sluice.track.google_client import _write_token
+    parent = tmp_path / "state" / "sluice"
+    _write_token(str(parent / "google_token.json"), "tok")
+    assert _mode(parent) == 0o700, "sluice's state directory holds a credential"
+
+
+def test_an_interrupted_write_leaves_no_stray_temp(tmp_path, monkeypatch, pinned_umask):
+    # The temp file is created 0600 in the same directory. If the write blows up, it must
+    # not be left behind -- a stray private file that never gets cleaned up.
+    from sluice.track import google_client as mod
+    p = tmp_path / "google_token.json"
+    monkeypatch.setattr(mod.os, "replace", lambda *a, **k: (_ for _ in ()).throw(OSError("boom")))
+    with pytest.raises(OSError):
+        mod._write_token(str(p), "tok")
+    assert list(tmp_path.iterdir()) == [], f"stray temp left behind: {list(tmp_path.iterdir())}"

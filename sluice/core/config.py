@@ -199,7 +199,12 @@ def load_config(path: str | None = None) -> Config:
     # NB this loader names every field EXPLICITLY -- no splat, no loop, unlike the four
     # sub-app loaders' hasattr+setattr loops. A dataclass field added without a line
     # here is therefore dead: it loads as its default whatever the YAML says, silently.
-    # That is exactly how triage/config.py:39,40 became dead keys.
+    #
+    # That is NOT what happened to triage/config.py's two dead keys, which is a different
+    # failure with the same symptom and worth keeping distinct: the triage LOADER read
+    # them fine (its loop sets any field the dataclass declares), but nothing downstream
+    # ever consulted the result -- app.py read $TRIAGE_AUDIT and $DOSSIER_DIR directly.
+    # A key can therefore die at either end, and only enumerating BOTH finds them.
     return Config(sources=sources, locations=locations, notify=notify,
                   store=str(data.get("store") or "vault"),
                   baseline_rel=str(data.get("baseline_rel") or "My CV/CV.md"),

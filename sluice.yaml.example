@@ -94,6 +94,10 @@ relevance_drop: ['sport and exercise psychologist']   # ...then drop any contain
 triage:
   batch_size: 5
   ttl_days: 7
+  # Where the rejected-leads audit log is written. Unset, it resolves per-system under
+  # $XDG_STATE_HOME (or ~/.local/state); $TRIAGE_AUDIT still wins over this key. This key
+  # was declared but read by nothing before #80 -- setting it did nothing, silently.
+  # audit_jsonl:        # <- uncomment and set YOUR OWN
   contract_floor_gbp_day: 450     # illustrative; set your own (0 = no floor)
   perm_floor_gbp: 90000          # illustrative; set your own (0 = no floor)
   primary_backend: claude-max
@@ -152,6 +156,14 @@ triage:
 # Track (sub-app #5): reconciles Gmail/Calendar signals against shortlisted and
 # applied leads (scheduling, offers, rejections, and application receipts).
 track:
+  # track's own dedup database, and the Google OAuth token. NEITHER has an environment
+  # override, so these config keys are the only way to move them. Unset, both resolve
+  # per-system under $XDG_STATE_HOME (or ~/.local/state). seen_db is the one that costs
+  # most when it is wrong: the last-run watermark and the dead-letter store of
+  # un-acted-on proposals are both derived from it, so a stray value silently hides the
+  # whole backlog. sluice refuses to start rather than run against a relocated one.
+  # seen_db:            # <- uncomment and set YOUR OWN
+  # token_path:         # <- uncomment and set YOUR OWN (written 0600)
   # Minimum confidence (0..1) for the LLM's "this is an application receipt"
   # classification to AUTO-advance a shortlist lead to `applied` on a domain-PROOF
   # match. Proof also requires that the delivering server AUTHENTICATED the sender

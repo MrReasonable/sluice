@@ -11,13 +11,21 @@ application sent under the user's name, reported as ordinary activity:
     CREATED afresh as `status: new` -> if its twin was already `applied`, a second
     application goes out, counted as `created: N`.
 
-The refusal has to be SCOPED, though: it must never fire on a command that reads.
+The refusal is SCOPED, and the two stores are scoped differently. `ingest` refuses only
+when the run actually writes dedup state, so `--dry-run` and `--sink json` proceed. Every
+`track` command refuses, dry runs INCLUDED, because a track dry run reads the #49
+dead-letter store to report what it would do -- against a relocated store it reports
+nothing to do, which is a silently wrong answer a human then acts on. `doctor` never
+refuses either way.
+
 Each "does not refuse" row below plants the same legacy file as the raising rows --
 without that, "did not raise" is satisfied by there being nothing to raise about, and
-the row passes no matter what the code does.
+the row passes no matter what the code does. "Did not raise" is also not the whole
+property: see the row asserting a dry run leaves the refusal ARMED.
 """
 import io
 import os
+import pathlib
 
 import pytest
 
@@ -77,6 +85,27 @@ def test_a_dry_run_does_not_refuse(legacy):
     _app().ingest([], dry_run=True, out=io.StringIO())
 
 
+def test_a_dry_run_leaves_the_refusal_armed_for_the_next_real_run(legacy):
+    """"Did not refuse" is NOT the whole property, and asserting only that hid a real
+    defect: `SeenDb.load` opened the resolved path with `sqlite3.connect`, which creates
+    a 0-byte file merely by opening it. `paths.resolve` refuses only while the resolved
+    path does not EXIST, so that empty file disarmed the refusal permanently -- and the
+    sequence was the cautious one, dry run first and then the real run, which then
+    proceeded with an empty dedup set and re-created every merged-away lead (#81).
+
+    The state directory is pre-created here because that is the ordinary condition: every
+    other state file (health, disabled sources, the triage audit, track's db, the OAuth
+    token) resolves into that same directory, and each of their writers creates it.
+    """
+    statedir = pathlib.Path(os.environ["XDG_STATE_HOME"]) / "sluice"
+    statedir.mkdir(parents=True, exist_ok=True)
+    _app().ingest([], dry_run=True, out=io.StringIO())
+    assert not (statedir / "seen.db").exists(), \
+        "the dry run created the resolved db, which disarms the refusal below"
+    with pytest.raises(RuntimeError):
+        _app().ingest([])
+
+
 def test_a_json_sink_does_not_refuse(legacy):
     # --sink json is an explicit request to skip the vault, so it writes no dedup
     # state either and has nothing to lose.
@@ -133,4 +162,9 @@ def test_the_loader_alone_never_refuses(legacy):
 
 
 def test_doctor_never_refuses(legacy):
-    _app().doctor(offline=True)
+    # ...and asserts doctor actually REPORTED, not merely that it returned. "Did not
+    # raise" is also satisfied by a doctor that silently did nothing, which is the same
+    # weak shape as the refusal rows that plant no legacy file.
+    rep = _app().doctor(offline=True)
+    assert rep.checks, "doctor returned without running any check"
+    assert hasattr(rep, "exit_code")

@@ -337,10 +337,13 @@ class Sluice:
         than two keys and a test that they match.
 
         Resolved HERE and not in `load_config`, for the same reason `vault_dir` is
-        resolved in the store factory: a Config carries the value a user CONFIGURED,
-        and the composition root decides what that means. A `Sluice(Config())` built by
-        hand -- which every test does -- would otherwise hold a blank and write its
-        cache into the cwd.
+        resolved in the store factory: the value reaches this class through a ROOT
+        Config a caller can build by hand -- `Sluice(Config())`, which every test does --
+        so a blank left unresolved would write the cache into the cwd. The sub-app paths
+        (`seen_db`, `token_path`, `audit_jsonl`) resolve inside their LOADERS instead,
+        because nothing constructs a `TrackConfig`/`TriageConfig` by hand and hands it to
+        a command: the loader is their only entry point. Two placements, one rule --
+        resolve at whichever boundary every caller has to pass through.
         """
         return _resolve_path(env_var="DOSSIER_DIR",
                              config_value=getattr(self.config, "dossier_dir", ""),

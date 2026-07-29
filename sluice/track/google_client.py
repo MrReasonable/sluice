@@ -3,7 +3,9 @@ libs, lazy-imported inside methods so this module imports fine in the offline de
 venv (where those libs are absent). All offline tests use a fake with the same
 shape."""
 import base64
+import contextlib
 import os
+import tempfile
 
 
 class GoogleAuthError(Exception):
@@ -19,27 +21,41 @@ def _write_token(path: str, data: str) -> None:
     refresh would raise FileNotFoundError, mid auth flow. And it left the file at the
     umask default, typically 0644 -- a world-readable credential.
 
-    BOTH halves are needed, and neither replaces the other. `os.open(..., 0o600)` makes
-    the file private at CREATION, closing the window a plain `open` + later `chmod`
-    leaves, in which the token exists world-readable and a local reader can copy it. But
-    `os.open` does not change an EXISTING file's mode, so a refresh over a token an
-    older sluice wrote at 0644 would keep it at 0644 forever, and nobody looks at that
-    mode again -- hence the chmod as well, unconditional.
+    Written to a temp file in the same directory and moved into place with `os.replace`,
+    the shape `core/vault.py` already uses for the same reason: a refresh that is
+    interrupted partway must not leave a truncated token behind. `O_TRUNC` writing in
+    place would, and an unparseable token means a full reauth.
 
-    A consequence worth knowing when mutation-testing this: the chmod normalises both
-    arms, so a mutant that weakens the CREATION mode alone is equivalent and stays
-    green. `test_a_fresh_token_is_private_before_any_chmod` neutralises `os.chmod` for
-    exactly that reason.
+    That also settles the permissions, in both directions at once. `mkstemp` creates at
+    0600, so the credential is never briefly world-readable -- the window a plain `open`
+    followed by a `chmod` leaves open, which is long enough for a local reader to copy
+    it. And `os.replace` carries the TEMP file's mode onto the destination, so a refresh
+    over a token an older sluice left at 0644 ends up 0600 without a separate `chmod`
+    that would have to be remembered. No `chmod` call is therefore needed or wanted here:
+    one would normalise both arms and make a weakened creation mode an equivalent mutant.
+
+    The parent is created 0700: it holds this credential alongside the rest of sluice's
+    state. Only newly created directories get that mode -- an existing directory's
+    permissions are the user's business, and silently tightening or refusing on one would
+    be a surprise from a token write.
 
     Stdlib only, like the rest of `sluice/`.
     """
-    parent = os.path.dirname(path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(data)
-    os.chmod(path, 0o600)
+    parent = os.path.dirname(path) or "."
+    os.makedirs(parent, mode=0o700, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=parent, prefix=".google_token.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        # Never leave a stray 0600 temp behind on failure -- including on KeyboardInterrupt,
+        # which is why this catches BaseException and re-raises rather than `except OSError`.
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 class RealGoogleClient:

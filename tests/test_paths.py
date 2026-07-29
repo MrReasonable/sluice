@@ -5,6 +5,7 @@ autouse fixture, because these are the tests OF the resolver: a test that inheri
 its answer from the sandbox could not tell a working resolver from a broken one.
 """
 import os
+from pathlib import Path
 
 import pytest
 
@@ -170,6 +171,53 @@ def test_every_legacy_entry_is_the_cwd_relative_form_of_its_own_name():
     # mapping (rather than spot-checking one) means an entry that drifts to some other
     # basename -- a legacy check that then never fires -- reddens here.
     assert paths._LEGACY == {name: f"./{name}" for name, _ in _MOVING}
+
+
+def _resolve_call_names():
+    """Every `name=` literal passed to `resolve(...)` anywhere under `sluice/`.
+
+    DISCOVERED, not hand-listed. `_MOVING` above and `_LEGACY` are two literals the same
+    author edits together, so comparing them catches a typo and nothing else: a NEW
+    `resolve(name=...)` call site with no `_LEGACY` entry leaves both sides unchanged,
+    the migration warning for that path silently never fires, and everything stays green
+    -- exactly the case `_LEGACY`'s own comment claims nothing would notice.
+    """
+    import ast
+    names = set()
+    for path in sorted((Path(__file__).resolve().parent.parent / "sluice").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            fn_name = getattr(fn, "id", None) or getattr(fn, "attr", None)
+            # `_resolve_path` too: `core/app.py` imports `resolve` under an alias to
+            # avoid colliding with `dossier_cache`'s local SSRF resolver. A sweep that
+            # matched only the bare name silently missed both of app.py's call sites --
+            # caught when this test first ran, which is the whole argument for
+            # discovering rather than hand-listing.
+            if fn_name not in ("resolve", "_resolve_path"):
+                continue
+            for kw in node.keywords:
+                if kw.arg == "name" and isinstance(kw.value, ast.Constant):
+                    names.add(kw.value.value)
+    return names
+
+
+def test_every_resolve_call_site_has_a_legacy_entry_or_is_deliberately_exempt():
+    called = _resolve_call_names()
+    assert called, "found no resolve(name=...) call sites -- the sweep would be vacuous"
+    # The config file is the one deliberate exemption: an unset SLUICE_CONFIG meant "no
+    # config file", never "./config.yaml", so there is nothing to migrate from. Listing
+    # it here rather than in `_LEGACY` keeps the exemption explicit and reviewable.
+    exempt = {"config.yaml"}
+    missing = called - set(paths._LEGACY) - exempt
+    assert not missing, (
+        "these paths resolve through paths.resolve but have no _LEGACY entry, so a user "
+        f"upgrading is never told their old file was left behind: {sorted(missing)}")
+    stale = set(paths._LEGACY) - called
+    assert not stale, (
+        f"_LEGACY names paths nothing resolves any more: {sorted(stale)}")
 
 
 @pytest.mark.parametrize("name,kind", _MOVING, ids=[n for n, _ in _MOVING])
