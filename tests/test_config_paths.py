@@ -11,7 +11,10 @@ group pins shut.
 it would still pass with the sandbox removed, and the sandbox is what stops this file
 writing into a developer's real `~/.local/state`.
 """
+import fnmatch
+import importlib
 import os
+import pathlib
 
 import pytest
 
@@ -101,3 +104,106 @@ def test_a_blank_path_never_escapes_a_loader(
     empty.write_text(f"{block}: {{}}\n", encoding="utf-8")
     for cfg in (loader(None), loader(str(empty)), loader(str(blank))):
         assert getattr(cfg, fieldname) != ""
+
+
+# ── the config FILE itself (table row #1) ────────────────────────────────────
+# Every loader that reads $SLUICE_CONFIG, each with a key only it reads, so a row
+# passing proves THAT loader found the file rather than some other one having done so.
+# The roster is PINNED, and test_config_loader_roster_is_complete asserts it is also
+# COMPLETE: converting four loaders and missing the fifth gives a config file that
+# half-loads with no error anywhere, which is the failure this pair exists to prevent.
+_CONFIG_LOADERS = [
+    ("load_config", "sluice.core.config", "lead_ttl_days: 13\n", "lead_ttl_days", 13),
+    ("load_triage_config", "sluice.triage.config", "triage:\n  batch_size: 11\n",
+     "batch_size", 11),
+    ("load_cv_config", "sluice.cv.config", "cv:\n  ttl_days: 12\n", "ttl_days", 12),
+    ("load_apply_config", "sluice.apply.config", "apply:\n  neutral_name: Example.pdf\n",
+     "neutral_name", "Example.pdf"),
+    ("load_track_config", "sluice.track.config", "track:\n  gmail_lookback_days: 9\n",
+     "gmail_lookback_days", 9),
+]
+_LOADER_IDS = [r[0] for r in _CONFIG_LOADERS]
+
+
+def _loader(module, name):
+    return getattr(importlib.import_module(module), name)
+
+
+def _plant_config(root):
+    """Write one config file carrying every loader's block, at the XDG location."""
+    p = pathlib.Path(root) / "sluice" / "config.yaml"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("".join(r[2] for r in _CONFIG_LOADERS), encoding="utf-8")
+    return p
+
+
+@pytest.mark.parametrize("name,module,block,fieldname,value", _CONFIG_LOADERS,
+                         ids=_LOADER_IDS)
+def test_loader_reads_the_config_file_under_xdg(name, module, block, fieldname, value):
+    # The sweep's ONE behaviour change: an unset SLUICE_CONFIG used to mean "no config
+    # file", and now means "read $XDG_CONFIG_HOME/sluice/config.yaml if it exists".
+    _plant_config(os.environ["XDG_CONFIG_HOME"])
+    assert getattr(_loader(module, name)(), fieldname) == value
+
+
+@pytest.mark.parametrize("name,module,block,fieldname,value", _CONFIG_LOADERS,
+                         ids=_LOADER_IDS)
+def test_sluice_config_env_still_beats_the_xdg_file(name, module, block, fieldname,
+                                                    value, tmp_path, monkeypatch):
+    # env > config > XDG holds for the config file too. BOTH files exist and carry the
+    # SAME key with DIFFERENT values, so this cannot pass by one of them being absent --
+    # and it asserts the winner's value rather than merely "not the loser's".
+    _plant_config(os.environ["XDG_CONFIG_HOME"])
+    other = tmp_path / "explicit.yaml"
+    text, expected = _override(block, fieldname, value)
+    other.write_text(text, encoding="utf-8")
+    monkeypatch.setenv("SLUICE_CONFIG", str(other))
+    assert getattr(_loader(module, name)(), fieldname) == expected
+
+
+@pytest.mark.parametrize("name,module,block,fieldname,value", _CONFIG_LOADERS,
+                         ids=_LOADER_IDS)
+def test_explicit_path_argument_still_beats_both(name, module, block, fieldname, value,
+                                                 tmp_path):
+    # The `path=` argument is how tests and doctor name a file directly; the XDG
+    # fallback must not reach past it. SLUICE_CONFIG is unset by the autouse fixture,
+    # so the loser here is specifically the XDG file.
+    _plant_config(os.environ["XDG_CONFIG_HOME"])
+    other = tmp_path / "explicit.yaml"
+    text, expected = _override(block, fieldname, value)
+    other.write_text(text, encoding="utf-8")
+    assert getattr(_loader(module, name)(str(other)), fieldname) == expected
+
+
+def _override(block, fieldname, value):
+    """(yaml text, expected) for the same block carrying a DIFFERENT value."""
+    other = value + 1 if isinstance(value, int) else "Other.pdf"
+    return block.replace(f"{fieldname}: {value}", f"{fieldname}: {other}"), other
+
+
+def test_load_star_config_glob_matches_the_root_loader_too():
+    # Pinned because it is counter-intuitive and has already been got wrong: the
+    # obvious glob `load_*_config` does NOT match `load_config`. A discovery that used
+    # it would silently skip the ROOT loader while still reddening on a sub-app one --
+    # reading as proof of exactly the completeness it lacks.
+    assert not fnmatch.fnmatch("load_config", "load_*_config")
+    assert all(fnmatch.fnmatch(n, "load*config") for n in _LOADER_IDS)
+
+
+def test_config_loader_roster_is_complete():
+    # The roster above is an ENUMERATION, so it ships green on a loader nobody named.
+    # Discovery closes that: every `load*config` function DEFINED in a sluice */config.py
+    # module must be listed. Globs the source tree and imports only config.py modules
+    # (each imports os, a guarded yaml and core.paths), so this stays offline -- the same
+    # discipline as _discover_config_dataclasses in test_sluice_neutral_defaults.py.
+    pkg = pathlib.Path(__file__).resolve().parent.parent / "sluice"
+    discovered = {}
+    for path in sorted(pkg.rglob("config.py")):
+        dotted = ".".join(path.relative_to(pkg.parent).with_suffix("").parts)
+        module = importlib.import_module(dotted)
+        for name, obj in vars(module).items():
+            if (fnmatch.fnmatch(name, "load*config") and callable(obj)
+                    and getattr(obj, "__module__", None) == module.__name__):
+                discovered[name] = module.__name__
+    assert discovered, "discovery found no config loaders at all"
+    assert discovered == {n: m for n, m, *_ in _CONFIG_LOADERS}

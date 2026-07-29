@@ -3,6 +3,8 @@ sluice.yaml. Every field has a sane default so apply runs with no config file.""
 import os
 from dataclasses import dataclass
 
+from sluice.core.paths import config_file
+
 try:
     import yaml
 except ImportError:  # pragma: no cover
@@ -22,7 +24,7 @@ class ApplyConfig:
 
 def load_apply_config(path: str | None = None) -> ApplyConfig:
     cfg = ApplyConfig()
-    path = path or os.environ.get("SLUICE_CONFIG")
+    path = path or config_file()
     if not (path and os.path.exists(path) and yaml is not None):
         return cfg
     with open(path, encoding="utf-8") as f:
