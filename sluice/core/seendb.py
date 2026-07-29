@@ -6,13 +6,23 @@ import sqlite3
 from collections.abc import Iterable
 
 from sluice.core.leads import Lead
-
-_DEFAULT = "./seen.db"
+from sluice.core.paths import resolve
 
 
 class SeenDb:
     def __init__(self, path: str | None = None):
-        self.path = path or os.environ.get("SEEN_DB", _DEFAULT)
+        # `path or resolve(...)`, in that order: an explicit constructor argument beats
+        # the environment, or every SeenDb(str(tmp_path / ...)) in the suite would
+        # retarget a developer's real dedup store, green throughout.
+        #
+        # Non-fatal HERE even though a relocated seen.db is the one path that refuses.
+        # The refusal is scoped to the commands that actually WRITE dedup state, so it
+        # is `Sluice.ingest` that resolves with fatal=True and hands the result in --
+        # this constructor is also reached by read-only callers, which must not be
+        # refused. An explicit argument short-circuits resolution entirely, so nothing
+        # is resolved twice.
+        self.path = path or resolve(env_var="SEEN_DB", config_value="",
+                                    kind="state", name="seen.db")
 
     def load(self) -> set[str]:
         try:

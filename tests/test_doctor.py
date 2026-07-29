@@ -379,7 +379,11 @@ def test_enumerate_matches_operation_backend_wiring(monkeypatch, tmp_path):
         fallback_backend="trk-fbprov", cheap_model="trk-fbmodel")
     monkeypatch.setattr("sluice.triage.config.load_triage_config", lambda: tri)
     monkeypatch.setattr("sluice.cv.config.load_cv_config", lambda: cvc)
-    monkeypatch.setattr("sluice.track.config.load_track_config", lambda: trk)
+    # `**_` and not a bare lambda: `Sluice.track` passes refuse_relocated_seen_db=True
+    # (#80), and a stub that does not accept the real signature fails with a TypeError
+    # instead of exercising this test's actual assertion -- the same faithful-fake rule
+    # the _FakeGoogle docstring in test_app_operations.py records.
+    monkeypatch.setattr("sluice.track.config.load_track_config", lambda *a, **_: trk)
 
     class _Stop(Exception):
         pass

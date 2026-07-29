@@ -466,8 +466,23 @@ class Sluice:
         # for one remoteok search, against a whole suite that runs in ~1.2s). Without
         # the second, nothing above the sink can move the clock, so date-dependent
         # behaviour -- `last_seen` monotonicity especially -- is untestable from here.
+        # Resolved FIRST, before any adapter is built: refusing after a browser has
+        # been started is wasted work, and the whole point is to stop before touching
+        # anything.
+        #
+        # `fatal=not (dry_run or json_sink)` and NOT a check placed after the dry-run
+        # branch below -- there is no such position. `seen` is constructed here and
+        # reaches the engine on BOTH sides of that branch, correctly: a dry run that
+        # lied about what had already been seen would be useless. So the refusal
+        # decision is made at construction, from the same two flags the sink choice
+        # uses. A dry run and a --sink json run write no dedup state and have nothing
+        # to lose; a real run that silently starts from an EMPTY dedup set re-creates
+        # every lead a human merged away, which can mean a second application under
+        # their name (#81), reported as ordinary `created: N` activity.
+        seen = SeenDb(_resolve_path(env_var="SEEN_DB", config_value="", kind="state",
+                                    name="seen.db",
+                                    fatal=not (dry_run or json_sink)))
         ctx = Ctx(camofox=self.fetcher(), config=self.config, sleep=self._sleep)
-        seen = SeenDb()
         health = HealthStore()  # default path lives in HealthStore.__init__ (SLUICE_HEALTH)
         if dry_run or json_sink:
             sink = JsonSink(out or sys.stdout)
@@ -886,7 +901,7 @@ class Sluice:
         from sluice.track.deadletter import DeadLetterDb, deadletter_path
         from sluice.track.google_client import RealGoogleClient
 
-        tcfg = load_track_config()
+        tcfg = load_track_config(refuse_relocated_seen_db=True)
         lastrun_path = tcfg.seen_db + ".lastrun"
         seen = _load_seen(tcfg.seen_db)
         deadletter = DeadLetterDb(deadletter_path(tcfg.seen_db))
@@ -914,7 +929,7 @@ class Sluice:
         from sluice.track import engine as track_engine
         from sluice.track.config import load_track_config
         from sluice.track.deadletter import DeadLetterDb, deadletter_path
-        tcfg = load_track_config()
+        tcfg = load_track_config(refuse_relocated_seen_db=True)
         return track_engine.confirm(self.store(), tcfg, lead, to,
                                     deadletter=DeadLetterDb(deadletter_path(tcfg.seen_db)),
                                     when=when, dry_run=dry_run)
@@ -938,7 +953,7 @@ class Sluice:
             raise ValueError("track_dismiss requires exactly one of message_id or lead")
         from sluice.track.config import load_track_config
         from sluice.track.deadletter import DeadLetterDb, deadletter_path
-        tcfg = load_track_config()
+        tcfg = load_track_config(refuse_relocated_seen_db=True)
         dl = DeadLetterDb(deadletter_path(tcfg.seen_db))
         if dry_run:
             entries = dl.open_entries()
