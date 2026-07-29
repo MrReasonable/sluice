@@ -5,6 +5,7 @@ autouse fixture, because these are the tests OF the resolver: a test that inheri
 its answer from the sandbox could not tell a working resolver from a broken one.
 """
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -40,6 +41,28 @@ def test_falls_back_under_home_when_xdg_unset(monkeypatch, kind, tail):
     monkeypatch.setenv("HOME", "/h")
     assert paths.resolve(env_var=None, config_value="", kind=kind,
                          name="n") == f"/h/{tail}/sluice/n"
+
+
+@pytest.mark.parametrize("bad", ["relative/state", "state", "./state", "../state", ""])
+@pytest.mark.parametrize("kind,var,tail", [
+    ("config", "XDG_CONFIG_HOME", ".config"),
+    ("state", "XDG_STATE_HOME", ".local/state"),
+    ("cache", "XDG_CACHE_HOME", ".cache"),
+])
+def test_a_relative_xdg_root_is_ignored(monkeypatch, kind, var, tail, bad):
+    """The XDG spec says a relative base directory MUST be ignored, and here that rule
+    is the feature itself: `XDG_STATE_HOME=relative/state` resolved to
+    `relative/state/sluice/seen.db` -- a CWD-RELATIVE store, the exact class of path #80
+    exists to remove, reintroduced through the variable meant to remove it.
+
+    Ignored rather than rejected: a bad value in someone's environment must not stop
+    sluice running, and the fallback is always correct.
+    """
+    monkeypatch.setenv("HOME", "/h")
+    monkeypatch.setenv(var, bad)
+    got = paths.resolve(env_var=None, config_value="", kind=kind, name="n")
+    assert got == f"/h/{tail}/sluice/n"
+    assert os.path.isabs(got)
 
 
 def test_env_var_wins_over_both_config_and_xdg(monkeypatch):
@@ -113,6 +136,70 @@ def test_fatal_legacy_raises_naming_both_paths(monkeypatch, tmp_path):
         paths.resolve(env_var="SEEN_DB", config_value="", kind="state",
                       name="seen.db", legacy=legacy, fatal=True)
     assert legacy in str(e.value) and "mv" in str(e.value)
+    assert open(legacy, encoding="utf-8").read() == "dedup state"
+
+
+def test_a_dangling_legacy_store_still_refuses(monkeypatch, tmp_path):
+    """`os.path.exists` FOLLOWS the link and calls a broken one absent, so the refusal
+    never fired and the run proceeded with an empty dedup set -- the #81 harm this whole
+    check exists to prevent, reached by the one shape most likely to occur (the remedy
+    itself moves links, and `mv` moves the link rather than its target).
+    """
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.delenv("SEEN_DB", raising=False)
+    legacy = tmp_path / "seen.db"
+    legacy.symlink_to(tmp_path / "moved-away.db")
+    assert not os.path.exists(legacy) and os.path.lexists(legacy)
+    with pytest.raises(RuntimeError) as e:
+        paths.resolve(env_var="SEEN_DB", config_value="", kind="state",
+                      name="seen.db", legacy=str(legacy), fatal=True)
+    assert str(legacy) in str(e.value)
+
+
+def test_a_dangling_destination_is_not_free_space(monkeypatch, tmp_path):
+    """The other side of the same call. A broken link at the RESOLVED path means someone
+    has already been here; treating it as absent would print a remedy that moves the
+    store onto it, destroying the link and hiding the store. The `-L` in the generated
+    command is the shell half of the same rule -- `-e` alone follows the link.
+    """
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.delenv("SEEN_DB", raising=False)
+    legacy = tmp_path / "seen.db"
+    legacy.write_text("dedup state", encoding="utf-8")
+    resolved = tmp_path / "state" / "sluice" / "seen.db"
+    resolved.parent.mkdir(parents=True)
+    resolved.symlink_to(tmp_path / "nowhere.db")
+
+    # No refusal: the destination is occupied, which is the "already migrated" case.
+    out = paths.resolve(env_var="SEEN_DB", config_value="", kind="state",
+                        name="seen.db", legacy=str(legacy), fatal=True)
+    assert out == str(resolved)
+
+
+def test_the_remedy_refuses_to_move_onto_a_dangling_destination(monkeypatch, tmp_path):
+    """Execute the generated command against a dangling destination and assert it moved
+    nothing. `[ ! -e DST ]` alone is TRUE for a broken link, so the `mv` ran, clobbered
+    the link and left the store somewhere nobody looks.
+    """
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.delenv("SEEN_DB", raising=False)
+    legacy = tmp_path / "seen.db"
+    legacy.write_text("dedup state", encoding="utf-8")
+    with pytest.raises(RuntimeError) as e:
+        paths.resolve(env_var="SEEN_DB", config_value="", kind="state",
+                      name="seen.db", legacy=str(legacy), fatal=True)
+    remedy = str(e.value).split("run:", 1)[1].split("   (")[0].strip()
+
+    # Stage the dangling destination the remedy is about to be pointed at.
+    resolved = tmp_path / "state" / "sluice" / "seen.db"
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    resolved.symlink_to(tmp_path / "nowhere.db")
+    # `shell=True` is the POINT: the artefact under test is a shell command string we
+    # tell a human to paste, and `[ ! -e ]`/`[ ! -L ]` only mean anything to a shell.
+    # The string comes from our own resolver over a tmp_path, not from user input.
+    subprocess.run(remedy, shell=True, cwd=tmp_path)  # noqa: S602
+
+    assert legacy.exists(), "the remedy moved the store onto a dangling destination"
     assert open(legacy, encoding="utf-8").read() == "dedup state"
 
 
