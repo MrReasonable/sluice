@@ -128,16 +128,23 @@ FORBIDDEN_COMPONENTS = (".memsearch", ".npmrc")
 # a narrower Python class could only create blind spots, and blind spots here are SKIPS.
 
 # What GIT GREP searches for. A NEGATED class, so a component starting with a non-ASCII
-# character (`/home/<accented>`) is caught; written with a POSIX `[:space:]` and no
-# backslashes, because a backslash inside a bracket expression is a literal MEMBER in ERE.
+# character (`/home/<accented>`) is caught; written with a POSIX `[:space:]` and NO
+# BACKSLASHES, because a backslash inside a bracket expression is a literal MEMBER in ERE.
 # Python's `re` cannot compile this string at all (`[:space:]` is not a POSIX class there,
 # and the `)` inside breaks the expression), which is why it is asserted only through
-# `git grep` below.
+# `git grep` below. That no-backslash rule is about THIS pattern and the engine it goes
+# to; `_WIDE_HOME_PATH_RE` below carries `\t` and `\]` correctly, because Python honours
+# them.
 #
 # `<` and `>` are excluded so an angle-bracket placeholder (`/home/<user>/...`, which the
 # design docs use) is not a match at all; without that, widening turned every documented
 # placeholder into a hit.
-_GREP_NAME = r"""[^]/[:space:]'"`,)<>]"""
+#
+# `/` is NOT excluded. It was, and that silently cost discovery: `/home//realname/vault`
+# -- the shape naive f-string concatenation produces -- matched nothing at all, so it
+# never reached the parser to be judged. Measured over the whole repo, admitting `/` adds
+# zero hits, so it closes that hole at no cost.
+_GREP_NAME = r"""[^][:space:]'"`,)<>]"""
 
 # The Python mirror, used by `_is_allowed_hit` to decide whether a matched line is a
 # documented literal. It must see EVERY path git can find: whatever it cannot represent
@@ -147,9 +154,9 @@ _GREP_NAME = r"""[^]/[:space:]'"`,)<>]"""
 # The whitespace is spelled OUT, not `\s`. Python's `\s` also matches 0x1c-0x1f and
 # 0x85, which POSIX `[:space:]` does not -- so git kept matching through those bytes and
 # this pattern stopped, going BLIND to `/Users/<0x1f>name/vault` entirely while git
-# reported it. Measured across 0x01-0x2FF plus the Unicode separator categories; those
-# five codepoints were the whole divergence. Every remaining difference goes the other way
-# (this matches where git does not), which fails closed.
+# reported it. Every remaining difference goes the other way (this matches where git does
+# not), which fails closed -- and that is not asserted by a chosen table: the sweep in
+# `test_the_python_parser_sees_every_line_git_can_find` pins it structurally.
 _WIDE_HOME_PATH_RE = re.compile(r"""/(?:Users|home)/[^ \t\n\r\f\v'"`,)<>\]]+""")
 
 # The exact home-rooted strings that legitimately appear in this repo, in full.
@@ -430,6 +437,9 @@ def test_the_gate_catches_real_shapes_and_spares_bare_prefixes(tmp_path):
         "digit-initial": "/home/2runner/work",
         "non-ascii-initial": "/home/\u00c9xample/vault",
         "non-ascii-scandinavian": "/Users/\u00d8xample/y",
+        # `/` used to be excluded from the discovery class, so this shape -- what naive
+        # f-string concatenation produces -- was never discovered at all.
+        "doubled-slash": "/home//example/vault",
     }
     for label, value in shapes.items():
         (tmp_path / f"{label}.txt").write_text(value + "\n", encoding="utf-8")
@@ -459,6 +469,43 @@ def test_the_gate_catches_real_shapes_and_spares_bare_prefixes(tmp_path):
     for detector in ("`/Users/`", "`/home/`, `.local`, `ssh`"):
         assert not _WIDE_HOME_PATH_RE.search(detector), \
             f"gate false-positives on a detector: {detector}"
+
+
+def test_the_python_parser_sees_every_line_git_can_find(tmp_path):
+    """The gate's fail-closed property, pinned STRUCTURALLY rather than by a chosen table.
+
+    Discovery (git) and the allow-list parser (Python) are separate patterns in separate
+    engines. If git can match a line the parser cannot, the allow-listed literal on that
+    line becomes the only match `_is_allowed_hit` sees, and a real path beside it is
+    silently skipped -- the documented incident. The rows above are shapes SOMEONE CHOSE,
+    and a table whose cases you chose certifies nothing; this sweeps the space instead.
+
+    Asserts on the SCOPE first: a sweep that discovers nothing satisfies a subset check
+    vacuously, which for a negative property is exactly how a gate dies quietly.
+    """
+    # 0x0a/0x0d would end the line and 0x00 would make git call the file binary, so the
+    # sweep cannot speak for those three; everything else through 0x2FF, plus every
+    # Unicode separator, which is where the two engines' whitespace notions diverge.
+    seps = (0xa0, 0x1680, *range(0x2000, 0x200b), 0x2028, 0x2029, 0x202f, 0x205f, 0x3000)
+    codepoints = [c for c in range(0x01, 0x300) if c not in (0x0a, 0x0d)] + list(seps)
+    lines = [f"/Users/{chr(c)}x{i}/y" for i, c in enumerate(codepoints)]
+    (tmp_path / "sweep.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    r = subprocess.run(["git", "grep", "--no-index", "-n", "-I", "-E",
+                        r"/(Users|home)/" + _GREP_NAME, "--", "sweep.txt"],
+                       cwd=tmp_path, capture_output=True, text=True)
+    assert r.returncode in (0, 1), f"git grep failed to run: {r.stderr}"
+    git_hits = {int(x.split(":")[1]) for x in r.stdout.splitlines() if x.count(":") >= 2}
+    python_hits = {i + 1 for i, line in enumerate(lines) if _WIDE_HOME_PATH_RE.search(line)}
+
+    assert len(git_hits) > len(codepoints) // 2, (
+        f"the sweep discovered only {len(git_hits)} of {len(codepoints)} planted lines -- "
+        f"it is not exercising the discovery pattern, so the subset check below is vacuous")
+    fail_open = git_hits - python_hits
+    assert not fail_open, (
+        "git discovers lines the allow-list parser cannot see, so a real path beside an "
+        "allow-listed literal would be skipped: "
+        f"{[hex(codepoints[i - 1]) for i in sorted(fail_open)][:8]}")
 
 
 def test_every_gated_path_is_also_gitignored():
