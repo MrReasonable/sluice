@@ -494,18 +494,28 @@ def test_every_dead_letter_reader_refuses_a_dangling_store(tmp_path, name):
     assert "symlink" in str(e.value)
 
 
+@pytest.mark.parametrize("depth", [1, 2], ids=["parent", "grandparent-production-layout"])
 @pytest.mark.parametrize("name", sorted(_DEADLETTER_READERS), ids=sorted(_DEADLETTER_READERS))
-def test_every_dead_letter_reader_refuses_a_dangling_ANCESTOR(tmp_path, name):
+def test_every_dead_letter_reader_refuses_a_dangling_ANCESTOR(tmp_path, name, depth):
     """A broken link ON THE WAY to the store is the same silent empty as a broken store.
 
     `os.lstat(store)` raises ENOENT for this exactly as it does for a genuinely-absent
     store, so before `_broken_ancestor` every reader read it as "first run": measured,
     `open_entries` returned `[]` and the entire un-actioned backlog vanished.
+
+    BOTH DEPTHS, and the second one is the one that matters: production is
+    `<XDG state>/sluice/track-seen.db.deadletter.db`, so the link a user actually
+    relocates is the GRANDparent. With only the depth-1 row, replacing the walk's
+    step-up branch with `return None` -- reducing the loop to a single-parent check --
+    left the whole suite green while a depth-2 dangling link still returned `[]`.
     """
     from sluice.track.deadletter import DeadLetterDb
 
-    os.symlink(str(tmp_path / "moved-away"), str(tmp_path / "statedir"))
-    store = tmp_path / "statedir" / "track-seen.db.deadletter.db"
+    os.symlink(str(tmp_path / "moved-away"), str(tmp_path / "state"))
+    store = tmp_path / "state"
+    for _ in range(depth - 1):
+        store = store / "sluice"
+    store = store / "track-seen.db.deadletter.db"
     with pytest.raises(OSError) as e:
         _DEADLETTER_READERS[name](DeadLetterDb(str(store)))
     assert "symlink" in str(e.value)
@@ -554,6 +564,12 @@ def test_every_dead_letter_reader_still_tolerates_a_missing_store(tmp_path, name
     # The other arm: absent is the ordinary first-run state for all of them. Asserting the
     # store is still absent afterwards is the #80 half -- a read that CREATES the file
     # disarms the relocation refusal for every later run.
+    #
+    # KEEP the no-create line even though no SINGLE-edit mutant kills it uniquely (every
+    # candidate raises on the return value first, so that assertion fires before this one).
+    # It is the only place the #80 disarm property is stated as a check rather than as
+    # prose, and the two-edit mutant that reaches it -- drop a reader's `_absent` guard AND
+    # make `_open` create -- is exactly the drift it exists to catch.
     from sluice.track.deadletter import DeadLetterDb
 
     store = tmp_path / "nope.db"

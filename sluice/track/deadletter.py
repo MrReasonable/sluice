@@ -190,7 +190,7 @@ class DeadLetterDb:
         db = self._open()
         try:
             # `clear_lead`'s own statement, restricted to nothing. One statement settles
-            # all four failures at once -- openable, the table exists, and the file is
+            # every way it can fail at once -- openable, the table exists, and the file is
             # WRITABLE -- because it is the very operation being protected.
             #
             # Writability needs the DELETE specifically. `BEGIN IMMEDIATE`/`BEGIN
