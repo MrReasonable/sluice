@@ -157,11 +157,15 @@ def build_harness(tmp_path, monkeypatch, *, board_url, rows,
         "vault": str(tmp_path / "vault"),
         "seen_db": str(tmp_path / "seen.db"),
         "health": str(tmp_path / "health.json"),
-        "triage_dossiers": str(tmp_path / "dossiers-triage"),
         "triage_audit": str(tmp_path / "triage-audit.jsonl"),
         "cv_output": str(tmp_path / "cv-output"),
         "cv_served": str(tmp_path / "cv-served"),
-        "cv_dossiers": str(tmp_path / "dossiers-cv"),
+        # ONE dossier cache for both sub-apps (#80). This used to be two keys
+        # pointing at DIFFERENT directories -- dossiers-triage and dossiers-cv --
+        # which the harness could get away with only because the code had two keys
+        # too. With one root `dossier_dir`, a harness that still split them would
+        # have made every e2e and functional test fail on the retired-key raise.
+        "dossiers": str(tmp_path / "dossiers"),
         "cv_home": str(tmp_path / "cv-home"),
         "apply_upload": str(tmp_path / "cv-host"),
         "track_seen_db": str(tmp_path / "track-seen.db"),
@@ -171,10 +175,11 @@ def build_harness(tmp_path, monkeypatch, *, board_url, rows,
 
     # Every cwd-relative default a run could write to is pinned, across two
     # mechanisms: the *Config loaders read their block of $SLUICE_CONFIG, but
-    # Sluice.triage reads its dossier dir and audit path straight from env
-    # (DOSSIER_DIR / TRIAGE_AUDIT), and the ingest SeenDb / HealthStore honour
-    # SEEN_DB / SLUICE_HEALTH. (The spec enumerates nine at-risk defaults; the
-    # dict below also pins vault/health/upload, which are write targets too.)
+    # every per-system path now resolves through core/paths.py, whose env term wins
+    # over both the config key and the XDG root -- so pinning the env vars below is
+    # what keeps this tier off a developer's real ~/.local/state and ~/.cache.
+    # (It also means the e2e tier can never WITNESS XDG resolution: that guard has
+    # to be a unit test, see tests/test_config_paths.py.)
     cfg = {
         "fetcher": "scripted",
         "sources": {source_id: {"searches": [["harness", board_url]]}},
@@ -191,7 +196,6 @@ def build_harness(tmp_path, monkeypatch, *, board_url, rows,
             "prefix_map": prefix_map,
             "output_dir": p["cv_output"],
             "served_dir": p["cv_served"],
-            "dossier_dir": p["cv_dossiers"],
             "render_home": p["cv_home"],
         },
         "apply": {
@@ -211,7 +215,7 @@ def build_harness(tmp_path, monkeypatch, *, board_url, rows,
     monkeypatch.setenv("VAULT_DIR", p["vault"])
     monkeypatch.setenv("SEEN_DB", p["seen_db"])
     monkeypatch.setenv("SLUICE_HEALTH", p["health"])
-    monkeypatch.setenv("DOSSIER_DIR", p["triage_dossiers"])
+    monkeypatch.setenv("DOSSIER_DIR", p["dossiers"])
     monkeypatch.setenv("TRIAGE_AUDIT", p["triage_audit"])
     # The operator on/off overlay defaults to ./sluice_disabled.json (cwd-relative);
     # the functional enable/disable handlers WRITE it, so pin it into tmp_path too.

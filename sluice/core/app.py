@@ -36,6 +36,9 @@ from sluice.core import plugins
 from sluice.core import status as _status
 from sluice.core.config import Config
 from sluice.core.log import get_logger
+# Aliased: `dossier_cache` binds a LOCAL `resolve` (the SSRF host resolver), and two
+# different `resolve`s one method apart is how a reader mis-attributes a bug.
+from sluice.core.paths import resolve as _resolve_path
 
 _log = get_logger("app")
 
@@ -322,6 +325,26 @@ class Sluice:
         return StalenessPolicy(ttl_days=self.config.lead_ttl_days,
                                today=clock(),
                                include_stale=include_stale)
+
+    def _dossier_dir(self) -> str:
+        """The ONE dossier cache directory, for both triage and cv (#80).
+
+        It was two sub-app keys (`triage.dossier_dir`, `cv.dossier_dir`) that happened
+        to carry the same `./dossiers` literal, so the cache the two sub-apps share was
+        shared only by coincidence of that default. Moving one and not the other splits
+        it, and cv then re-fetches every dossier over the live SSRF-guarded network
+        path -- which is why one root key, resolved in one place, is the fix rather
+        than two keys and a test that they match.
+
+        Resolved HERE and not in `load_config`, for the same reason `vault_dir` is
+        resolved in the store factory: a Config carries the value a user CONFIGURED,
+        and the composition root decides what that means. A `Sluice(Config())` built by
+        hand -- which every test does -- would otherwise hold a blank and write its
+        cache into the cwd.
+        """
+        return _resolve_path(env_var="DOSSIER_DIR",
+                             config_value=getattr(self.config, "dossier_dir", ""),
+                             kind="cache", name="dossiers")
 
     def dossier_cache(self, dossier_dir, ttl_days):
         """A DossierCache whose fetcher is resolved lazily on the first cache miss, so a
@@ -668,8 +691,7 @@ class Sluice:
             primary_model=tcfg.claude_max_model, effort=tcfg.claude_max_effort,
             host=tcfg.claude_max_host, claude_path=tcfg.claude_max_path,
             fallback_name=tcfg.fallback_backend, fallback_model=tcfg.cheap_model)
-        cache = self.dossier_cache(os.environ.get("DOSSIER_DIR", "./dossiers"),
-                                  tcfg.ttl_days)
+        cache = self.dossier_cache(self._dossier_dir(), tcfg.ttl_days)
         return _triage_run(self.store(), tcfg, backend, cache, audit,
                            statuses=tuple(statuses), limit=limit,
                            dry_run=dry_run, no_llm=no_llm)
@@ -702,7 +724,7 @@ class Sluice:
             primary_model=cvcfg.compose_model, effort=cvcfg.compose_effort,
             host=cvcfg.compose_host, claude_path=cvcfg.compose_claude_path,
             fallback_name=cvcfg.fallback_backend, fallback_model=cvcfg.cheap_model)
-        cache = self.dossier_cache(cvcfg.dossier_dir, cvcfg.ttl_days)
+        cache = self.dossier_cache(self._dossier_dir(), cvcfg.ttl_days)
         store = self.store()
         # Built ONCE here and passed to both branches, so the single-lead and batch paths
         # cannot disagree about what stale means or about --include-stale (#9).
