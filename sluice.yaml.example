@@ -33,6 +33,18 @@ fetcher: camofox    # the browser the ingest sources drive
 # than under `cv:` because only the store can honour it.
 baseline_rel: My CV/CV.md
 
+# Where your vault lives. Unset, sluice uses ./vault (relative to wherever you run it),
+# and $VAULT_DIR still wins over this key. The vault is the one path sluice does NOT
+# relocate to a per-system directory -- it is your Obsidian directory, not sluice's
+# state -- so this key exists mainly so the answer survives a new shell.
+# vault_dir:          # <- uncomment and set YOUR OWN
+#
+# Where the dossier cache lives. ONE key for both triage and cv, which share the cache;
+# splitting them makes cv re-fetch every job ad. Unset, it resolves per-system, under
+# $XDG_CACHE_HOME (or ~/.cache) -- $DOSSIER_DIR still wins over this key. Everything
+# under it is re-fetchable, so losing it costs a refetch, not data.
+# dossier_dir:        # <- uncomment and set YOUR OWN
+
 # Hosts the dossier fetcher may reach even though they are not globally routable.
 # The fetcher follows lead urls scraped off job boards, so by default it refuses
 # non-http(s) schemes and any address that is not globally routable (loopback,
