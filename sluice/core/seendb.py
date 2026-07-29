@@ -16,15 +16,30 @@ class SeenDb:
         # retarget a developer's real dedup store, green throughout.
         #
         # Non-fatal HERE even though a relocated seen.db is the one path that refuses.
-        # The refusal is scoped to the commands that actually WRITE dedup state, so it
-        # is `Sluice.ingest` that resolves with fatal=True and hands the result in --
-        # this constructor is also reached by read-only callers, which must not be
-        # refused. An explicit argument short-circuits resolution entirely, so nothing
-        # is resolved twice.
+        # Refusing is a policy of the COMMAND, not of the store: `Sluice.ingest` -- the
+        # only production construction -- resolves with fatal= keyed on whether this run
+        # actually writes dedup state, and hands the result in. A store that refused on
+        # its own would also refuse for every test and future caller that constructs one
+        # directly. An explicit argument short-circuits resolution, so nothing is
+        # resolved twice.
         self.path = path or resolve(env_var="SEEN_DB", config_value="",
                                     kind="state", name="seen.db")
 
     def load(self) -> set[str]:
+        # MISSING db -> empty, WITHOUT creating it. `sqlite3.connect` creates a 0-byte
+        # file just by opening, and that byte-less file is enough to disarm the #80
+        # relocation refusal permanently: `paths.resolve` only refuses while the
+        # resolved path does not exist. The reachable sequence was an ordinary cautious
+        # one -- `ingest run --dry-run` (which resolves non-fatally, but still loads the
+        # dedup set, correctly, or a dry run would lie about what it had seen) leaves
+        # the empty file behind, and the REAL run that follows then proceeds with an
+        # empty dedup set instead of refusing. That re-creates every lead a human merged
+        # away and can mean a second application under their name (#81), reported as
+        # ordinary `created: N`. It also broke this design's own promise that a dry run
+        # touches no disk. Same shape as `DeadLetterDb.open_entries`, for the same
+        # reason. A file that EXISTS but is corrupt still falls to the except below.
+        if not os.path.exists(self.path):
+            return set()
         try:
             db = sqlite3.connect(self.path)
             rows = db.execute("SELECT url FROM seen_jobs").fetchall()

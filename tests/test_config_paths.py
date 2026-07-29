@@ -211,7 +211,11 @@ def test_config_loader_roster_is_complete():
 
 # ── the call sites that resolve their own path (table rows #4, #5, #6) ───────
 
-def test_health_store_defaults_under_the_state_root():
+def test_health_store_defaults_under_the_state_root(monkeypatch):
+    # The autouse fixture clears SLUICE_CONFIG/TRIAGE_AUDIT but not this one, and a
+    # developer with SLUICE_HEALTH exported would otherwise see this row pass against
+    # their own file.
+    monkeypatch.delenv("SLUICE_HEALTH", raising=False)
     from sluice.core.health import HealthStore
     assert HealthStore().path == os.path.join(
         os.environ["XDG_STATE_HOME"], "sluice", "sluice_health.json")
@@ -404,3 +408,37 @@ def test_an_explicit_vault_argument_still_beats_the_env_var(monkeypatch, tmp_pat
     from sluice.core.vault import Vault
     monkeypatch.setenv("VAULT_DIR", str(tmp_path / "from-env"))
     assert Vault(str(tmp_path / "explicit")).dir == str(tmp_path / "explicit")
+
+
+def test_no_production_code_builds_a_sub_app_config_directly():
+    """The blank path defaults are only safe because the LOADER is the only way in.
+
+    `TrackConfig()` built by hand holds `seen_db == ""`, and `deadletter_path("")` is
+    `.deadletter.db` in the cwd -- a DIFFERENT #49 store from the one `track run` opened,
+    so a confirm against it would report success while the real entry re-surfaces
+    forever. Nothing in production does that today, and this pins that it stays true
+    rather than leaving it to whoever adds the next caller. Enumerated from the source,
+    not asserted about the callers I happen to remember.
+
+    The root `Config` is deliberately NOT in scope: `Sluice(Config())` is a supported
+    construction, which is exactly why `vault_dir`/`dossier_dir` resolve in the
+    composition root instead of in `load_config`.
+    """
+    import ast
+
+    pkg = pathlib.Path(__file__).resolve().parent.parent / "sluice"
+    offenders = []
+    for path in sorted(pkg.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "id", None)
+            if name in ("TrackConfig", "TriageConfig", "CvConfig", "ApplyConfig"):
+                # its own loader is the one legitimate construction
+                if path.name == "config.py":
+                    continue
+                offenders.append(f"{path.relative_to(pkg.parent)}:{node.lineno} {name}()")
+    assert not offenders, (
+        "a sub-app config must come from its loader, which is what fills in the blank "
+        f"path defaults; these build one directly: {offenders}")

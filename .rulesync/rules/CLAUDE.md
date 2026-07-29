@@ -107,9 +107,13 @@ does NOT relocate (it is the user's Obsidian directory), and its two-term `or` l
 
 Nothing is auto-migrated. A path left behind warns; the two dedup stores REFUSE, because continuing
 with an empty dedup set re-creates every lead a human merged away and can mean a second application
-under the user's name. That refusal is scoped to commands that write — never `--dry-run`, `--sink
-json`, or `doctor` — and an explicitly named path short-circuits before the check, so callers who
-name their own paths are immune by construction. `tests/conftest.py`'s autouse fixture sandboxes
+under the user's name. The two are scoped DIFFERENTLY, and the difference is deliberate: `ingest`
+refuses only when the run actually writes dedup state (`--dry-run` and `--sink json` proceed), while
+every `track` command refuses including its dry runs, because a track dry run READS the #49
+dead-letter store to report what it would do and against a relocated store would report nothing to
+do. `doctor` never refuses — a relocated file is exactly what one runs it to hear about. An
+explicitly named path (env var or config key) short-circuits before the check either way, so callers
+who name their own paths are immune by construction. `tests/conftest.py`'s autouse fixture sandboxes
 every one of these; `XDG_CONFIG_HOME` and `HOME` are consecutive rungs of one chain, so both are
 load-bearing and neither substitutes for the other.
 

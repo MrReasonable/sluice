@@ -78,8 +78,9 @@ Each of those is a seam meant to become a pluggable adapter. The roadmap:
 
 ```bash
 pip install -e .
-mkdir -p ~/.config/sluice
-cp sluice.yaml.example ~/.config/sluice/config.yaml
+config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/sluice"
+mkdir -p "$config_dir"
+cp sluice.yaml.example "$config_dir/config.yaml"
 sluice ingest run --help
 sluice triage run --help
 ```
@@ -109,6 +110,10 @@ Upgrading from a version that kept `seen.db`, `track-seen.db`,
 your data. It prints the `mv` for each one, and for the two dedup databases it
 refuses to run until you have moved them -- starting with an empty dedup set can
 re-create leads you merged away, which risks applying to the same job twice.
+
+That only applies where sluice picked the location itself. If you name a path --
+an environment variable or a config key -- it is used as given, with no warning
+and no refusal, because there is nothing to migrate from.
 
 ## Configuration
 
