@@ -65,6 +65,32 @@ def test_a_relative_xdg_root_is_ignored(monkeypatch, kind, var, tail, bad):
     assert os.path.isabs(got)
 
 
+def test_ignoring_a_relative_xdg_root_is_said_out_loud(monkeypatch, tmp_path, caplog):
+    """Ignoring it SILENTLY relocates the user's store, which is the harm this module
+    exists to prevent rather than a lesser version of it.
+
+    Measured before this warning: `XDG_STATE_HOME=relative/state` with a real two-row
+    `seen.db` under `<cwd>/relative/state/sluice/` resolved to the XDG default, loaded an
+    EMPTY dedup set, printed nothing and exited 0. Neither the warn tier nor the refusal
+    can cover it -- `_LEGACY` holds cwd-relative names, and the abandoned location here is
+    wherever the user last ran from.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_STATE_HOME", "relative/state")
+    out = paths.resolve(env_var=None, config_value="", kind="state", name="seen.db")
+    assert "XDG_STATE_HOME" in caplog.text
+    assert "relative/state" in caplog.text, "the ignored value is not named"
+    assert out in caplog.text or str(tmp_path) in caplog.text, "the used directory is not named"
+
+
+def test_an_absolute_xdg_root_warns_about_nothing(monkeypatch, tmp_path, caplog):
+    # The other arm: the ordinary case must stay quiet, or the warning is noise and gets
+    # tuned out exactly when it matters.
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    paths.resolve(env_var=None, config_value="", kind="state", name="seen.db")
+    assert not caplog.text
+
+
 def test_env_var_wins_over_both_config_and_xdg(monkeypatch):
     """Sets env AND config on the SAME call, so swapping the two operands in the
     chain reddens this. A row that sets only one cannot see the inversion."""
@@ -156,11 +182,15 @@ def test_a_dangling_legacy_store_still_refuses(monkeypatch, tmp_path):
     assert str(legacy) in str(e.value)
 
 
-def test_a_dangling_destination_is_not_free_space(monkeypatch, tmp_path):
-    """The other side of the same call. A broken link at the RESOLVED path means someone
-    has already been here; treating it as absent would print a remedy that moves the
-    store onto it, destroying the link and hiding the store. The `-L` in the generated
-    command is the shell half of the same rule -- `-e` alone follows the link.
+def test_a_dangling_destination_still_refuses(monkeypatch, tmp_path):
+    """The two sides answer DIFFERENT questions, which is why they use different calls.
+
+    On the legacy side the question is "is there state here", and a broken link is state.
+    On the destination side it is "has the migration already happened", and a broken link
+    means it has NOT -- so `lexists` there only suppresses the notice while protecting
+    nothing, since `[ ! -L DST ]` in the remedy is what actually stops the move. Measured
+    with `lexists` on this side: resolve returned silently and left the store behind, with
+    no notice naming either path.
     """
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.delenv("SEEN_DB", raising=False)
@@ -170,10 +200,10 @@ def test_a_dangling_destination_is_not_free_space(monkeypatch, tmp_path):
     resolved.parent.mkdir(parents=True)
     resolved.symlink_to(tmp_path / "nowhere.db")
 
-    # No refusal: the destination is occupied, which is the "already migrated" case.
-    out = paths.resolve(env_var="SEEN_DB", config_value="", kind="state",
-                        name="seen.db", legacy=str(legacy), fatal=True)
-    assert out == str(resolved)
+    with pytest.raises(RuntimeError) as e:
+        paths.resolve(env_var="SEEN_DB", config_value="", kind="state",
+                      name="seen.db", legacy=str(legacy), fatal=True)
+    assert str(legacy) in str(e.value) and str(resolved) in str(e.value)
 
 
 def test_the_remedy_refuses_to_move_onto_a_dangling_destination(monkeypatch, tmp_path):
@@ -201,6 +231,37 @@ def test_the_remedy_refuses_to_move_onto_a_dangling_destination(monkeypatch, tmp
 
     assert legacy.exists(), "the remedy moved the store onto a dangling destination"
     assert open(legacy, encoding="utf-8").read() == "dedup state"
+
+
+def test_a_dangling_link_is_not_told_to_run_cp_dash_L(monkeypatch, tmp_path):
+    """`cp -L` on a dangling link exits 1 (measured), so offering it for a link that no
+    longer resolves sends the user in a circle. Resolvable and broken links get different
+    advice, and a broken one is told what is actually wrong.
+    """
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.delenv("SEEN_DB", raising=False)
+    legacy = tmp_path / "seen.db"
+    legacy.symlink_to(tmp_path / "moved-away.db")
+    with pytest.raises(RuntimeError) as e:
+        paths.resolve(env_var="SEEN_DB", config_value="", kind="state",
+                      name="seen.db", legacy=str(legacy), fatal=True)
+    msg = str(e.value)
+    assert "cp -L" not in msg, "a dangling link was told to run a command that exits 1"
+    assert "no longer exists" in msg
+
+
+def test_a_resolvable_link_is_still_told_to_copy_the_target(monkeypatch, tmp_path):
+    # The other arm, so the split above cannot be satisfied by dropping the advice.
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.delenv("SEEN_DB", raising=False)
+    target = tmp_path / "real-seen.db"
+    target.write_text("dedup state", encoding="utf-8")
+    legacy = tmp_path / "seen.db"
+    legacy.symlink_to(target)
+    with pytest.raises(RuntimeError) as e:
+        paths.resolve(env_var="SEEN_DB", config_value="", kind="state",
+                      name="seen.db", legacy=str(legacy), fatal=True)
+    assert "cp -L" in str(e.value)
 
 
 def test_fatal_legacy_silent_when_env_var_names_a_path(monkeypatch, tmp_path):
