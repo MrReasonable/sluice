@@ -5,7 +5,7 @@ with no config file at all."""
 import os
 from dataclasses import dataclass, field
 
-from sluice.core.paths import resolve
+from sluice.core.paths import config_file, resolve
 
 try:
     import yaml
@@ -60,7 +60,7 @@ class TriageConfig:
 
 def load_triage_config(path: str | None = None) -> TriageConfig:
     cfg = TriageConfig()
-    path = path or os.environ.get("SLUICE_CONFIG")
+    path = path or config_file()
     # An INVERTED guard rather than the early `return cfg` this replaced (#80): the
     # resolution below must run on every path out of this function, and the
     # no-config-file case is exactly what a fresh install gets.

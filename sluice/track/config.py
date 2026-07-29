@@ -3,7 +3,7 @@ Every field has a sane default so track runs with no config file."""
 import os
 from dataclasses import dataclass, field
 
-from sluice.core.paths import resolve
+from sluice.core.paths import config_file, resolve
 
 try:
     import yaml
@@ -124,7 +124,7 @@ class TrackConfig:
 
 def load_track_config(path: str | None = None) -> TrackConfig:
     cfg = TrackConfig()
-    path = path or os.environ.get("SLUICE_CONFIG")
+    path = path or config_file()
     # An INVERTED guard rather than the early `return cfg` this replaced (#80). The
     # resolution below has to run on every path out of this function: the no-config-file
     # case is precisely what a fresh install gets, and an early return would leave it

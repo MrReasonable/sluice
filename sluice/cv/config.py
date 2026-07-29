@@ -3,6 +3,8 @@ Every field has a sane default so cv runs with no config file. Secrets via env."
 import os
 from dataclasses import dataclass, field
 
+from sluice.core.paths import config_file
+
 try:
     import yaml
 except ImportError:  # pragma: no cover
@@ -70,7 +72,7 @@ class CvConfig:
 
 def load_cv_config(path: str | None = None) -> CvConfig:
     cfg = CvConfig()
-    path = path or os.environ.get("SLUICE_CONFIG")
+    path = path or config_file()
     if not (path and os.path.exists(path) and yaml is not None):
         return cfg
     with open(path, encoding="utf-8") as f:
