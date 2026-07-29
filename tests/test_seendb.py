@@ -116,10 +116,32 @@ def test_reading_never_creates_the_store_when_it_vanishes_mid_check(tmp_path, mo
     assert not store.exists(), "a READ created the dedup store, disarming the #80 refusal"
 
 
-def test_a_path_with_uri_metacharacters_still_loads(tmp_path):
-    # The `mode=rw` open builds a URI, so `?` and `#` in a real path would silently
-    # truncate it into a different file -- or a query string -- without the quoting.
-    store = tmp_path / "se?en#db.db"
+@pytest.mark.parametrize("name,why", [
+    ("se?en#db.db", "`?` and `#` would truncate the URI into a different file"),
+    ("se en.db", "a space is not legal in a URI unencoded"),
+    ("se%20en.db", "a literal % must not be read back as an escape"),
+    ("séen.db", "non-ASCII must survive the round trip"),
+])
+def test_a_path_with_uri_metacharacters_still_loads(tmp_path, name, why):
+    # The `mode=rw` open builds a URI, so an unquoted path would silently address a
+    # DIFFERENT file -- or a query string -- rather than failing.
+    store = tmp_path / name
     db = SeenDb(str(store))
     db.save([Lead(source="s", search="x", title="t", url="https://a/1")])
-    assert "https://a/1" in db.load()
+    assert "https://a/1" in db.load(), why
+    assert store.exists(), f"{why}: the store was written somewhere else"
+
+
+def test_a_path_with_a_leading_double_slash_still_loads(tmp_path):
+    """A leading `//` is a legal POSIX path, and building a URI made it fatal.
+
+    `resolve` hands `SEEN_DB` through unnormalised, so `SEEN_DB=//var/lib/sluice/seen.db`
+    -- which a plain `sqlite3.connect` opened without complaint -- became `file:` +
+    `//var/...`, where `var` parses as a URI AUTHORITY: `OperationalError: invalid uri
+    authority: var`. A no-create open must not cost anyone a store that used to open.
+    """
+    real = tmp_path / "seen.db"
+    SeenDb(str(real)).save([Lead(source="s", search="x", title="t", url="https://a/1")])
+    doubled = "/" + str(real)          # //private/var/... -- same file, legal spelling
+    assert doubled.startswith("//")
+    assert "https://a/1" in SeenDb(doubled).load()

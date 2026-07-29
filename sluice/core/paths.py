@@ -26,6 +26,7 @@ behaviour change smuggled into a path sweep.
 """
 import os
 import shlex
+import urllib.parse
 
 from sluice.core.log import get_logger
 
@@ -76,6 +77,95 @@ _LEGACY = {
 _SIDECARS = {
     "track-seen.db": (".lastrun", ".deadletter.db"),
 }
+
+
+def broken_ancestor(path: str) -> str | None:
+    """The nearest ancestor that exists as a NAME but does not resolve, else None.
+
+    A dangling link ON THE WAY to a store makes `os.lstat(store)` raise ENOENT -- the same
+    exception a genuinely-absent store raises -- so without this a relocated store reads as
+    "first run" and the caller proceeds with nothing.
+
+    A MISSING ancestor is not broken: `<state>/sluice/` legitimately does not exist before
+    anything is written, so walk past those and judge the first one that exists.
+    """
+    # Starts at the PARENT, which is equivalent to starting at `path` only because every
+    # caller enters from inside an `except FileNotFoundError` arm on `os.lstat(path)` --
+    # `path` itself is already known not to lstat. Measured: with a dangling store this
+    # returns None where starting at `path` returns the store itself, so a caller that has
+    # not made that check would get a different answer with nothing going red.
+    cur = os.path.dirname(path)
+    while cur:
+        try:
+            os.lstat(cur)                     # exists as a name?
+        except FileNotFoundError:
+            parent = os.path.dirname(cur)
+            if parent == cur:
+                # Termination insurance, not a reachable case: `/` always lstats, so the
+                # loop exits above before `dirname` can reach its own fixed point.
+                # Deleting this line is measurably green -- it is here so the walk cannot
+                # spin on a path shape nobody has thought of, not because one is known.
+                return None
+            cur = parent
+            continue
+        try:
+            os.stat(cur)                      # ...and does it resolve?
+        except FileNotFoundError:
+            return cur
+        return None
+    return None
+
+
+def absent(path: str, *, what: str, why: str = "") -> bool:
+    """True if `path` genuinely does not exist yet; RAISES if it is unreachable.
+
+    Lives HERE, in one copy, because it was written twice and diverged twice. `SeenDb` and
+    `DeadLetterDb` ask the same question of the same kind of file, and each fix landed on
+    one store and missed the other: the `lexists`->`lstat` EACCES fix, and then the
+    dangling-ANCESTOR guard. Both misses had the same shape -- a store read as absent, the
+    caller proceeded with an empty set, and nothing was said. `what` and `why` supply only
+    WORDING, so each store still says which state this is and what refusing costs --
+    detection is shared, the message is not.
+
+    `lstat`/`stat`, NOT `os.path.lexists`/`exists`: those return False on ANY OSError, so a
+    store under a directory the user cannot traverse read as "absent". Only
+    FileNotFoundError means absent; EACCES and friends propagate.
+    """
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        broken = broken_ancestor(path)
+        if broken is not None:
+            raise FileNotFoundError(
+                f"{what} at {path} sits under {broken}, a symlink to something that does "
+                f"not exist. {why} Fix or remove the link.".replace("  ", " ")) from None
+        return True
+    try:
+        os.stat(path)          # the name exists; does it resolve?
+    except FileNotFoundError:
+        raise FileNotFoundError(
+            f"{what} at {path} is a symlink to something that does not exist. {why} Fix "
+            f"or remove the link.".replace("  ", " ")) from None
+    return False
+
+
+def existing_db_uri(path: str) -> str:
+    """A `sqlite3.connect(..., uri=True)` target that CANNOT create the file.
+
+    `sqlite3.connect` creates a 0-byte file merely by opening one, and that file is enough
+    to disarm this module's relocation notice permanently -- the check below is keyed on
+    the resolved path NOT existing. A caller that has already established the file exists
+    still races: the check and the open are two syscalls. `mode=rw` turns that race into a
+    loud error instead of a silent creation, and SQLite falls back to read-only for a 0444
+    store, so reading one is unaffected.
+
+    `file://` with an EMPTY AUTHORITY, not a bare `file:`. A leading `//` is a legal POSIX
+    path and env vars are passed through unnormalised, so `file:` + `//var/...` parses
+    `var` as a URI authority and raises `invalid uri authority` -- breaking a store that
+    opened fine before a URI was involved. `quote` so a real `?`, `#`, `%` or space cannot
+    silently address a different file.
+    """
+    return "file://" + urllib.parse.quote(path) + "?mode=rw"
 
 
 def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> str:
