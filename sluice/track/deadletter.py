@@ -56,7 +56,11 @@ def _broken_ancestor(path: str) -> str | None:
             os.lstat(cur)                     # exists as a name?
         except FileNotFoundError:
             parent = os.path.dirname(cur)
-            if parent == cur:                 # reached the root; nothing above exists
+            if parent == cur:
+                # Termination insurance, not a reachable case: `/` always lstats, so the
+                # loop exits above before `dirname` can reach its own fixed point.
+                # Deleting this line is measurably green -- it is here so the walk cannot
+                # spin on a path shape nobody has thought of, not because one is known.
                 return None
             cur = parent
             continue
