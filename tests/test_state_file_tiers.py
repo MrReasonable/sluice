@@ -172,7 +172,15 @@ def test_a_corrupt_database_names_the_file_and_a_remedy(tmp_path):
     # SeenDb says WHICH state this is; `_load_seen` has no message of its own, so it is
     # pinned on the type alone. `raises(Exception)` for both passed with SeenDb's message
     # emptied, which is the half that tells a user what to fix.
-    (lambda p: SeenDb(str(p)).load(), sqlite3.DatabaseError, "symlink"),
+    #
+    # `FileNotFoundError`, not `sqlite3.DatabaseError`: detection moved into
+    # `core.paths.absent`, shared with `DeadLetterDb`, because writing it twice let the
+    # EACCES fix and the dangling-ANCESTOR guard each land on one store and miss the
+    # other. The two stores now raise the SAME type for the same shape, which is the
+    # point; nothing in `sluice/` caught the old type, and this one is still an OSError.
+    # The consequence clause is pinned separately below, because sharing the detector is
+    # exactly how a message turns generic without anything going red.
+    (lambda p: SeenDb(str(p)).load(), FileNotFoundError, "symlink"),
     # FileNotFoundError's str carries the path, so this is a free non-vacuous pin --
     # `fragment=""` made the assertion below a tautology.
     (lambda p: _load_seen(str(p)), OSError, "store.db"),
@@ -190,6 +198,28 @@ def test_a_dangling_symlink_is_not_an_absent_store(tmp_path, loader, exc, fragme
     # it could never fire, because both loaders return before any connect or open. The
     # property that IS load-bearing is that a broken link raises instead of reading as
     # "no history yet", which is what the raises() above pins.
+
+
+@pytest.mark.parametrize("build,what,why", [
+    (lambda p: SeenDb(str(p)).load(), "dedup database", "empty dedup set"),
+    (lambda p: __import__("sluice.track.deadletter", fromlist=["DeadLetterDb"])
+     .DeadLetterDb(str(p)).open_entries(), "dead-letter store", "no one has acted on"),
+], ids=["SeenDb", "DeadLetterDb"])
+def test_each_store_still_says_what_refusing_costs(tmp_path, build, what, why):
+    """Detection is shared; the MESSAGE is not, and this is what stops that drifting.
+
+    Both stores now route through `core.paths.absent`, which is the fix for the same
+    guard being written twice and diverging twice. The risk it introduces is the opposite
+    one: a single generic message that names neither the state nor the consequence.
+    Emptying either store's `what=`/`why=` leaves the shared detector working perfectly
+    and every other row green.
+    """
+    link = tmp_path / "store.db"
+    os.symlink(str(tmp_path / "nothere.db"), link)
+    with pytest.raises(OSError) as e:
+        build(link)
+    assert what in str(e.value), "the message does not say WHICH store this is"
+    assert why in str(e.value), "the message does not say what an empty read would cost"
 
 
 # ── the migration remedy has to name every file it carries ───────────────────
