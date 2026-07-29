@@ -122,9 +122,10 @@ branch lives in that loop).
 
 **Every RELOCATABLE path goes through `core/paths.py` (#80).** One `resolve()`, one order — env var,
 then config key, then the XDG base directory for that `kind`. It is not every path in the codebase,
-and the exceptions are deliberate: seven artefact paths stay cwd-relative (the CV working
-directories in `apply/config.py`, `cv/config.py` and `cv/render.py`, and `core/vault.py`'s
-`_DEFAULT_VAULT`), because they name a workspace the user is standing in rather than per-system
+and the exceptions are deliberate: seven artefact paths stay cwd-relative — the five CV working
+directories in `apply/config.py`, `cv/config.py` and `cv/render.py`, the render SCRIPT
+(`cv/config.py`'s `render_script`, an executable rather than a directory), and `core/vault.py`'s
+`_DEFAULT_VAULT` — because they name a workspace the user is standing in rather than per-system
 state. `grep -rn '"\./' sluice --include='*.py' | grep -v core/paths.py` pins them at nine lines
 (`cv-served` and `cv-home` appear twice each). Two things follow that are easy to undo by
 accident. A path's config default must be `""`: a non-empty default is always truthy, so it
