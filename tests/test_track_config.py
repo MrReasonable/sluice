@@ -5,7 +5,12 @@ from sluice.track.config import TrackConfig, load_track_config
 
 def test_defaults():
     c = TrackConfig()
-    assert c.token_path == "./google_token.json"
+    # token_path was asserted here as "./google_token.json". #80 made it a path field
+    # that ships BLANK -- a non-empty default is always truthy and short-circuits
+    # per-system resolution -- so the assertion MOVED rather than vanished: both the
+    # blank default and where the loader lands it live in tests/test_config_paths.py.
+    # Restating the blank here would pin the same fact in two places; restating the old
+    # literal would pin the bug.
     assert c.calendar_match_minutes == 30
     assert c.auto_reject_min == 0.9
     # Asserted as a SHAPE, not by naming a vendor: these two are safety denylists whose
@@ -33,8 +38,13 @@ def test_load_overlays_track_block(monkeypatch, tmp_path):
 
 
 def test_load_defaults_when_no_config(monkeypatch):
+    # Retargeted off token_path by #80 (see test_defaults). What this row is actually
+    # for survives unchanged: a loader with no config file at all must return the
+    # shipped defaults rather than raising. The path half is in test_config_paths.py,
+    # where the expected value can be derived from the pinned state root instead of
+    # being a literal that is different on every machine.
     monkeypatch.delenv("SLUICE_CONFIG", raising=False)
-    assert load_track_config().token_path == "./google_token.json"
+    assert load_track_config().auto_reject_min == 0.9
 
 
 def test_config_exposes_backend_selectors():

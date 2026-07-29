@@ -5,6 +5,8 @@ with no config file at all."""
 import os
 from dataclasses import dataclass, field
 
+from sluice.core.paths import resolve
+
 try:
     import yaml
 except ImportError:  # pragma: no cover
@@ -37,7 +39,10 @@ class TriageConfig:
     batch_size: int = 5
     ttl_days: int = 7
     dossier_dir: str = "./dossiers"
-    audit_jsonl: str = "./triage-audit.jsonl"
+    # Blank, not a path (#80), and load_triage_config fills it in. A non-empty default
+    # is always truthy, so it short-circuits `env or config key or XDG` before the XDG
+    # location is reached -- the field would never move, silently.
+    audit_jsonl: str = ""
     # A single rolling digest, named distinctly from the legacy per-lead
     # "Rejected Leads/" folder so the two do not collide in Obsidian.
     rejected_note: str = "Job Applications/Rejected Leads Audit.md"
@@ -56,11 +61,17 @@ class TriageConfig:
 def load_triage_config(path: str | None = None) -> TriageConfig:
     cfg = TriageConfig()
     path = path or os.environ.get("SLUICE_CONFIG")
-    if not (path and os.path.exists(path) and yaml is not None):
-        return cfg
-    with open(path, encoding="utf-8") as f:
-        data = (yaml.safe_load(f) or {}).get("triage") or {}
-    for k, v in data.items():
-        if hasattr(cfg, k) and v is not None:
-            setattr(cfg, k, v)
+    # An INVERTED guard rather than the early `return cfg` this replaced (#80): the
+    # resolution below must run on every path out of this function, and the
+    # no-config-file case is exactly what a fresh install gets.
+    if path and os.path.exists(path) and yaml is not None:
+        with open(path, encoding="utf-8") as f:
+            data = (yaml.safe_load(f) or {}).get("triage") or {}
+        for k, v in data.items():
+            if hasattr(cfg, k) and v is not None:
+                setattr(cfg, k, v)
+    # AFTER the loop, so `audit_jsonl: ""` in a config file resolves rather than
+    # escaping as the empty string the loop just set.
+    cfg.audit_jsonl = resolve(env_var="TRIAGE_AUDIT", config_value=cfg.audit_jsonl,
+                              kind="state", name="triage-audit.jsonl")
     return cfg
