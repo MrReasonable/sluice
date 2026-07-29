@@ -52,13 +52,21 @@ def _absent(path: str) -> bool:
     a link rather than its target. One helper rather than the check repeated four times,
     so the next reader cannot be added without it.
     """
-    if not os.path.lexists(path):
+    # `lstat`/`stat`, NOT `os.path.lexists`/`exists`: those return False on ANY OSError,
+    # so a store under a directory the user cannot traverse read as "absent" and the
+    # backlog came back empty -- the same silent empty by a different route. Measured.
+    # Here only FileNotFoundError means absent; EACCES and friends propagate.
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
         return True
-    if not os.path.exists(path):
+    try:
+        os.stat(path)          # the name exists; does it resolve?
+    except FileNotFoundError:
         raise FileNotFoundError(
             f"the dead-letter store at {path} is a symlink to something that does not "
             f"exist. Fix or remove the link; it holds the proposals no one has acted on "
-            f"yet.")
+            f"yet.") from None
     return False
 
 
@@ -126,6 +134,17 @@ class DeadLetterDb:
             db.commit()
         finally:
             db.close()
+
+    def check_reachable(self) -> None:
+        """Raise if the store exists but cannot be read; silent if it is genuinely absent.
+
+        For callers that WRITE something else first and clear afterwards. `engine.confirm`
+        advances the lead's status and then clears its row: once `clear_lead` could raise,
+        a dangling or unreadable store meant the status write landed, the error escaped,
+        and the row became unclearable -- the re-run is refused because the transition has
+        already happened. Probing first moves the failure ahead of the write.
+        """
+        _absent(self.path)
 
     def clear_lead(self, slug: str) -> int:
         if _absent(self.path):
