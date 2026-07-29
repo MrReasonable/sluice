@@ -110,11 +110,16 @@ _COLLABORATORS = ("sleep", "today", "resolve_host")
 # not adapters a registry resolves -- there is exactly one implementation and
 # no reason for a surface to swap it out.
 def _load_seen(path):
-    try:
-        with open(path) as f:
-            return set(line.strip() for line in f if line.strip())
-    except OSError:
+    # MISSING -> empty (first run). An UNREADABLE one raises, and the distinction is the
+    # whole point: `except OSError` conflated them, so a populated file at mode 000 -- or
+    # any I/O error -- returned an empty set while the file sat there, and `_save_seen`
+    # then rewrote it FROM the emptied set, compounding the loss. track's dedup store
+    # already REFUSES to start when it has been relocated, so shrugging at an unreadable
+    # one was incoherent. Same three-way split, and same reasoning, as `SeenDb.load`.
+    if not os.path.exists(path):
         return set()
+    with open(path) as f:
+        return set(line.strip() for line in f if line.strip())
 
 
 def _save_seen(path, seen):

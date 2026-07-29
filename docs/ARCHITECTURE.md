@@ -44,8 +44,10 @@ Shared by every sub-app:
 - `paths.py`: where every path sluice owns lives (#80). One `resolve()`, one
   order -- env var, then config key, then the XDG base directory for that
   `kind` (`config`/`state`/`cache`, validated against that closed set). It
-  performs no writes, so `--dry-run` cannot touch the disk; the writer that
-  needs a parent creates it. Reads `XDG_*` per call, never at import, because
+  performs no writes, so RESOLVING a path cannot touch the disk; the writer
+  that needs a parent creates it. That is a claim about `resolve` only, and not
+  about a `--dry-run` as a whole, which does still write: `ingest run --dry-run`
+  records per-source health. Reads `XDG_*` per call, never at import, because
   an import-time snapshot is unpatchable by tests. It also holds the table of
   where each path lived BEFORE the sweep, so the migration has one home and
   the cwd-relative literals survive in exactly one module.
@@ -83,7 +85,12 @@ Shared by every sub-app:
   config key) short-circuits resolution before the check either way, so callers
   who name their own paths are immune by construction rather than by a rule
   repeated at each site.
-- `seendb.py`: a sqlite dedup store for already-seen leads.
+- `seendb.py`: a sqlite dedup store for already-seen leads. Reading it never
+  CREATES it (`sqlite3.connect` would, and the resulting empty file disarms the
+  relocation refusal above), and an unreadable database RAISES rather than
+  reading as empty -- a silent empty dedup set re-creates every lead a human
+  merged away. An existing database with no table is the one tolerated empty:
+  that is a real first-run state.
 - `resilience.py`: retry-with-backoff, hard timeout, and rate-limit
   precheck helpers that wrap each source's I/O.
 - `health.py`, `dossier.py`, `leads.py`, `log.py`, `relevance.py`: health

@@ -449,7 +449,14 @@ def test_no_production_code_builds_a_sub_app_config_directly():
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
-            real = bound.get(getattr(node.func, "id", None))
+            # BOTH shapes. `id` alone missed `from sluice.track import config as m;
+            # m.TrackConfig()` -- the sibling sweep in test_paths.py caught that same
+            # shape via `attr`, so this one was fixed asymmetrically against it. The
+            # `bound` lookup resolves a renamed direct import (`TrackConfig as _TC`);
+            # the `in watched` fallback resolves attribute access through any module
+            # alias, where the class name is the attribute rather than a local binding.
+            called = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            real = bound.get(called) or (called if called in watched else None)
             if real is None:
                 continue
             seen_any = True
@@ -462,3 +469,44 @@ def test_no_production_code_builds_a_sub_app_config_directly():
     assert not offenders, (
         "a sub-app config must come from its loader, which is what fills in the blank "
         f"path defaults; these build one directly: {offenders}")
+
+
+@pytest.mark.parametrize("label,source,expected", [
+    ("plain", "from sluice.track.config import TrackConfig\nTrackConfig()\n", True),
+    ("renamed import", "from sluice.track.config import TrackConfig as _TC\n_TC()\n", True),
+    ("module attribute", "from sluice.track import config as m\nm.TrackConfig()\n", True),
+    ("dotted module", "import sluice.track.config\nsluice.track.config.TrackConfig()\n", True),
+    ("unrelated call", "from sluice.core.config import Config\nConfig()\n", False),
+], ids=lambda v: v if isinstance(v, str) and " " in v or isinstance(v, str) else str(v))
+def test_the_config_construction_matcher_sees_every_call_shape(label, source, expected):
+    """A self-test of the walk in the sweep above, over synthetic sources.
+
+    The sweep runs over `sluice/`, where today every watched construction happens to be
+    a plain name inside its own module. That made two of its branches unexercised: the
+    renamed-import branch was measurably INERT (deleting it reddened nothing), and the
+    module-attribute shape was missed outright while the sibling sweep in test_paths.py
+    caught it. A guard whose branches no production code reaches is a guard nobody has
+    tested, so the shapes are exercised here directly rather than waiting for one to
+    appear in `sluice/` -- by which time the miss would already have shipped.
+    """
+    import ast
+
+    watched = {"TrackConfig", "TriageConfig", "CvConfig", "ApplyConfig"}
+    tree = ast.parse(source)
+    bound = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for a in node.names:
+                if a.name in watched:
+                    bound[a.asname or a.name] = a.name
+        elif isinstance(node, ast.ClassDef) and node.name in watched:
+            bound[node.name] = node.name
+    hits = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        called = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+        real = bound.get(called) or (called if called in watched else None)
+        if real is not None:
+            hits.append(real)
+    assert bool(hits) is expected, f"{label}: matcher saw {hits!r}"

@@ -58,12 +58,22 @@ class SeenDb:
             return set()
         db = sqlite3.connect(self.path)
         try:
+            # Wrapped so the failure names the FILE and a remedy. Unwrapped, a user meets
+            # `sqlite3.DatabaseError: file is not a database` with no path in it, ten
+            # lines from a relocation refusal that names both.
             known = db.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='seen_jobs'"
             ).fetchone()
             if not known:
                 return set()
             rows = db.execute("SELECT url FROM seen_jobs").fetchall()
+        except sqlite3.DatabaseError as e:
+            raise sqlite3.DatabaseError(
+                f"the dedup database at {self.path} is unreadable ({e}). sluice will not "
+                f"run with an empty dedup set, because that re-creates leads you merged "
+                f"away and can apply to the same job twice. Move or delete it, or point "
+                f"SEEN_DB at a good copy."
+            ) from e
         finally:
             db.close()
         return {r[0] for r in rows if r[0]}
