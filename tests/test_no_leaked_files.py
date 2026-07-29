@@ -120,13 +120,9 @@ FORBIDDEN_COMPONENTS = (".memsearch", ".npmrc")
 # expression at all. It still spares the bare-prefix detector forms (a backtick or a quote
 # right after the slash is not in the class).
 #
-# Known limit, measured rather than guessed: a first component that does not START with
-# `[A-Za-z0-9._-]` is not matched. `/home/jose<accent>` IS caught (its ASCII prefix
-# matches), but `/home/<accented-initial>` is not -- which covers ordinary European
-# given names, so this is wider than "wholly non-ASCII" and is stated that way after a
-# reviewer measured it. Widening to a negated class is what broke this gate the last
-# time, and `[^[:space:]]` would re-admit the detector forms it must spare, so the ASCII
-# class stays and the gap is documented instead.
+# This class is used only by the PYTHON half (parsing a matched line for the allow-list).
+# Discovery uses `_GREP_NAME` below, which is a negated class and does catch a component
+# starting with a non-ASCII character -- the limit that used to be documented here.
 # The hyphen is NOT in here: it has to sit at one END of a bracket expression -- first
 # or last -- or it reads as a range. `[A-Za-z0-9._-/]` is the error `_-/`; `[-A-Za-z0-9._]`
 # would be fine. Keeping it out of the shared constant and appending it in each pattern
@@ -135,6 +131,26 @@ FORBIDDEN_COMPONENTS = (".memsearch", ".npmrc")
 # of the mistake that left this gate inert for its whole life.
 _NAME_CHARS = r"A-Za-z0-9._"
 _NAME = f"[{_NAME_CHARS}-]+"
+
+# What GIT GREP searches for -- deliberately different from the Python pattern, and the
+# difference is the point. A NEGATED class catches a component starting with a non-ASCII
+# character (`/home/<accented>`), which the ASCII class above misses; it is written with a
+# POSIX `[:space:]` and no backslashes at all, because a backslash inside a bracket
+# expression is a literal MEMBER in ERE -- the exact mistake that left this gate matching
+# nothing for its entire life.
+#
+# Python's `re` cannot compile this string (`[:space:]` is not a POSIX class there, and
+# the `)` inside breaks the expression), which is precisely why the two are separate
+# constants tested through their own engines instead of one string handed to both.
+#
+# The asymmetry FAILS CLOSED: git finds a non-ASCII path, `_FULL_HOME_PATH_RE` does not
+# parse it, `found` is empty, and the `found and ...` filter below therefore reports the
+# line rather than skipping it. That filter was measured unfirable while both patterns
+# shared a character set; widening this one makes it live.
+# `<` and `>` are excluded so an angle-bracket placeholder (`/home/<user>/...`, which the
+# design docs use) is not a match at all. The ASCII class never reached those because `<`
+# is not in it; widening without this turned every documented placeholder into a hit.
+_GREP_NAME = r"""[^]/[:space:]'"`,)<>]"""
 _HOME_PATH_RE = re.compile(r"/(?:Users|home)/(" + _NAME + ")")
 # The WHOLE path, not just its first component, for the allow-list below. Built from the
 # SAME character set plus `/`, so it is a strict superset of the pattern handed to git
@@ -159,6 +175,14 @@ _ALLOWED_HOME_PATHS = frozenset({
     "/Users/someone/vault",
     "/home/.../claude",
 })
+
+# ...and WHERE each may appear. Repo-wide allowance is wider than the reason for it: a
+# synthetic literal earns its exemption in the file that needs it, not everywhere.
+_ALLOWED_HOME_PATH_FILES = {
+    "/home/example/.local/bin/claude": ("tests/test_backends.py", "docs/"),
+    "/Users/someone/vault": ("tests/test_sluice_neutral_defaults.py",),
+    "/home/.../claude": ("sluice/core/backends.py",),
+}
 
 # Where .gitignore's generated-output list begins and ends. The boundary is drawn
 # STRUCTURALLY -- by the markers below, not by a line count and not by hand -- because the
@@ -269,7 +293,7 @@ def test_no_absolute_home_path_is_tracked_in_source_or_config(prefix):
     # 3300-line npm-generated package-lock.json, and scripts/guard_rulesync_drift.py -- all
     # three sat outside the old pathspec, and a generated lockfile is precisely what nobody
     # reads before committing.
-    out = _git("grep", "-n", "-I", "-E", re.escape(prefix) + _NAME, "--",
+    out = _git("grep", "-n", "-I", "-E", re.escape(prefix) + _GREP_NAME, "--",
                "sluice", "tests", "docs", "scripts",
                # `*.yaml` does NOT match `sluice.yaml.example`, and that is the one file the
                # quickstart copies verbatim onto a stranger's machine -- so it was outside
@@ -286,8 +310,13 @@ def test_no_absolute_home_path_is_tracked_in_source_or_config(prefix):
         # `found` must be non-empty: `all([])` is True, so a line git grep matched but
         # Python's `re` did not would otherwise be dropped in silence -- a gate failing
         # open, which is the bug this whole file just spent a round fixing.
+        path_in_repo = line.split(":", 1)[0]
         found = _FULL_HOME_PATH_RE.findall(line)
-        if found and all(m in _ALLOWED_HOME_PATHS for m in found):
+        if found and all(
+                m in _ALLOWED_HOME_PATHS
+                and any(path_in_repo.startswith(w)
+                        for w in _ALLOWED_HOME_PATH_FILES.get(m, ()))
+                for m in found):
             continue
         hits.append(line)
     assert not hits, f"absolute home path under {prefix!r} in tracked files: {hits}"
@@ -305,9 +334,17 @@ def test_the_gate_catches_real_shapes_and_spares_bare_prefixes(tmp_path):
     `--no-index` searches a plain directory, so this needs no repo and cannot be confused by
     the real one (which necessarily contains the strings being searched for).
     """
-    (tmp_path / "leaks.txt").write_text(
-        "/Users/devuser/.claude/x.jsonl\n/Users/ExampleUser/dev\n/home/2runner/work\n",
-        encoding="utf-8")
+    # One file per shape: a single mixed file passes on ONE match, so a shape that
+    # stopped being caught would hide behind its neighbours.
+    shapes = {
+        "lowercase": "/Users/devuser/.claude/x.jsonl",
+        "capitalised": "/Users/ExampleUser/dev",
+        "digit-initial": "/home/2runner/work",
+        "non-ascii-initial": "/home/\u00c9mile/vault",
+        "non-ascii-scandinavian": "/Users/\u00d8yvind/y",
+    }
+    for label, value in shapes.items():
+        (tmp_path / f"{label}.txt").write_text(value + "\n", encoding="utf-8")
     (tmp_path / "detectors.txt").write_text(
         "`/Users/`\n`/home/`, `.local`, `ssh`\n", encoding="utf-8")
 
@@ -318,14 +355,20 @@ def test_the_gate_catches_real_shapes_and_spares_bare_prefixes(tmp_path):
         assert r.returncode in (0, 1), f"git grep failed to run: {r.stderr}"
         return r.returncode == 0
 
-    assert _grep(r"/(Users|home)/" + _NAME, "leaks.txt"), \
-        "the gate's own pattern MISSES real leaks under git grep -E"
-    assert not _grep(r"/(Users|home)/" + _NAME, "detectors.txt"), \
+    for label in shapes:
+        assert _grep(r"/(Users|home)/" + _GREP_NAME, f"{label}.txt"), \
+            f"the gate's discovery pattern MISSES a {label} leak under git grep -E"
+    assert not _grep(r"/(Users|home)/" + _GREP_NAME, "detectors.txt"), \
         "the gate false-positives on a bare-prefix detector under git grep -E"
 
-    # ...and Python's `re` must agree, since _HOME_PATH_RE is used elsewhere in this file.
+    # The Python half is ASCII-only ON PURPOSE: it exists to parse a matched line against
+    # the allow-list, and a non-ASCII path it cannot parse yields no match, which the
+    # `found and ...` filter turns into a REPORT rather than a skip. Fail closed.
     for leak in ("/Users/devuser/.claude/x.jsonl", "/Users/ExampleUser/dev", "/home/2runner/work"):
         assert _HOME_PATH_RE.search(leak), f"gate would MISS a real leak: {leak}"
+    assert not _FULL_HOME_PATH_RE.search("/home/\u00c9mile/vault"), (
+        "the ASCII parser now matches non-ASCII, so the fail-closed path this gate "
+        "relies on for those is no longer exercised")
     for detector in ("`/Users/`", "`/home/`, `.local`, `ssh`"):
         assert not _HOME_PATH_RE.search(detector), f"gate false-positives on a detector: {detector}"
 

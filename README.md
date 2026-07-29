@@ -107,9 +107,12 @@ config (or `$VAULT_DIR`) to point at the real one.
 Upgrading from a version that kept `seen.db`, `track-seen.db`,
 `sluice_health.json`, `sluice_disabled.json`, `triage-audit.jsonl`,
 `google_token.json` or `dossiers/` next to where you ran it? sluice never moves
-your data. It prints the `mv` for each one, and for the two dedup databases it
-refuses to run until you have moved them -- starting with an empty dedup set can
-re-create leads you merged away, which risks applying to the same job twice.
+your data. It prints the `mv` commands for each one -- including the companion files
+a store has to move with it -- and for the two dedup databases it refuses to run
+until you have moved them, because starting with an empty dedup set can re-create
+leads you merged away and risks applying to the same job twice. `ingest` refuses
+only on a run that would write dedup state, so `--dry-run` and `--sink json` still
+work; every `track` command refuses, dry runs included.
 
 That only applies where sluice picked the location itself. If you name a path --
 an environment variable or a config key -- it is used as given, with no warning
