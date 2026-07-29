@@ -341,6 +341,13 @@ def test_the_printed_remedy_actually_runs(monkeypatch, tmp_path):
     It did not. Both fatal refusals fire BEFORE any writer, so the destination directory
     does not exist yet and a bare `mv` failed with "No such file or directory" -- exit 1,
     nothing moved, against a user who did exactly what they were told.
+
+    `shell=True` throughout this file is DELIBERATE and must stay. The artefact under test
+    is the `&&` chain `paths.resolve` prints, with `shlex.quote` applied to every operand,
+    and the property being asserted is that a human can paste it into a shell -- `[ ! -e ]`
+    and `&&` mean nothing to an argv list. Splitting these into `subprocess.run([...])`
+    would leave the shipped remedy untested while every assertion still passed. The
+    command comes from our own resolver over a `tmp_path`, never from user input.
     """
     import subprocess
 
