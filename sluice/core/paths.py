@@ -101,7 +101,15 @@ def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> s
         return explicit
 
     var, fallback = _ROOTS[kind]
-    root = os.environ.get(var) or os.path.expanduser(fallback)
+    # A RELATIVE value is ignored, which the XDG base-directory spec requires and which
+    # this feature exists to enforce: `XDG_STATE_HOME=relative/state` otherwise resolved
+    # to `relative/state/sluice/seen.db`, a cwd-relative store -- the exact class of path
+    # #80 removes, reintroduced through the very variable meant to remove it. Measured.
+    # It is ignored rather than rejected because a bad value in the environment must not
+    # stop a user running sluice at all, and the fallback is always correct.
+    root = os.environ.get(var) or ""
+    if not os.path.isabs(root):
+        root = os.path.expanduser(fallback)
     resolved = os.path.join(root, "sluice", name)
 
     # The table supplies the legacy path; an explicit `legacy=` overrides it, which is
@@ -109,7 +117,13 @@ def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> s
     # with no entry has nothing to migrate from and skips the check entirely.
     legacy = _LEGACY.get(name) if legacy is None else legacy
 
-    if legacy and os.path.exists(legacy) and not os.path.exists(resolved):
+    # `lexists` on BOTH sides, not `exists`. A dangling symlink is state that needs a
+    # human, and `exists` follows the link and calls it absent: measured, a legacy
+    # `seen.db` that is a broken link skipped the refusal entirely and the run proceeded
+    # with an empty dedup set -- the #81 harm the refusal exists to prevent. On the
+    # destination side the same call keeps a dangling link from being treated as free
+    # space to move onto.
+    if legacy and os.path.lexists(legacy) and not os.path.lexists(resolved):
         # Every file the migration has to carry, and in an order that survives being
         # interrupted. Three properties, each measured:
         #
@@ -130,7 +144,7 @@ def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> s
         # A companion is named only when it actually exists, so the remedy stays
         # copy-pasteable rather than failing on a file the user never had.
         moves = [(legacy + s, resolved + s) for s in _SIDECARS.get(name, ())
-                 if os.path.exists(legacy + s)]
+                 if os.path.lexists(legacy + s)]
         moves.append((legacy, resolved))
         parent = os.path.dirname(resolved)
         # `chmod` SEPARATELY, not `mkdir -m`: the mode flag applies only to directories
@@ -141,13 +155,18 @@ def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> s
         #
         # `[ ! -e DST ] && mv` rather than `mv -n`: `-n` SKIPS an existing destination and
         # exits 0, so the `&&` chain carries on and moves the store anyway -- leaving an
-        # old store beside a foreign watermark, with `exists(legacy)` now false and the
+        # old store beside a foreign watermark, with `lexists(legacy)` now false and the
         # refusal disarmed for good. A skip is not an interruption. The test returns
         # non-zero, so the chain stops BEFORE the store move and the next run says so
         # again.
+        #
+        # `-e` AND `-L`, because `-e` follows the link: a DANGLING destination link is
+        # `! -e` and would be moved onto, which both destroys the link and leaves the
+        # store somewhere nobody looks. `-L` is the only test that sees it.
         steps = ([f"mkdir -p {shlex.quote(parent)} && chmod 700 {shlex.quote(parent)}"]
                  if parent else [])
-        steps += [f"[ ! -e {shlex.quote(dst)} ] && mv {shlex.quote(src)} {shlex.quote(dst)}"
+        steps += [f"[ ! -e {shlex.quote(dst)} ] && [ ! -L {shlex.quote(dst)} ] && "
+                  f"mv {shlex.quote(src)} {shlex.quote(dst)}"
                   for src, dst in moves]
         remedy = " && ".join(steps)
         msg = (f"{name} now lives at {resolved}, but a file remains at {legacy}. "
