@@ -122,7 +122,8 @@ class TrackConfig:
     job_board_domains: dict = field(default_factory=lambda: dict(_JOB_BOARD_DOMAINS))
 
 
-def load_track_config(path: str | None = None) -> TrackConfig:
+def load_track_config(path: str | None = None, *,
+                      refuse_relocated_seen_db: bool = False) -> TrackConfig:
     cfg = TrackConfig()
     path = path or config_file()
     # An INVERTED guard rather than the early `return cfg` this replaced (#80). The
@@ -145,11 +146,22 @@ def load_track_config(path: str | None = None) -> TrackConfig:
             else:
                 setattr(cfg, k, v)
     # AFTER the loop, so a user who writes `seen_db: ""` gets a resolved path rather than
-    # the empty string the loop just set (`v is not None` admits it). Non-fatal: the
-    # refusal for the relocated dedup store is scoped to the commands that actually run
-    # track, because doctor() calls this loader too and must not refuse to report.
+    # the empty string the loop just set (`v is not None` admits it).
     cfg.token_path = resolve(env_var=None, config_value=cfg.token_path,
                              kind="state", name="google_token.json")
+    # `refuse_relocated_seen_db` defaults OFF, and doctor() is why: it calls this loader,
+    # and a diagnostic that refuses to start is the opposite of a diagnostic -- the
+    # relocated file is exactly what someone runs doctor to be told about. Only
+    # Sluice.track/track_confirm/track_dismiss, which read or write the dedup state,
+    # ask for the refusal.
+    #
+    # A flag on the resolve call rather than a separate checking helper, deliberately.
+    # The helper would need to re-derive whether this value was CONFIGURED or merely
+    # resolved -- a second resolution site, and the property that makes an explicit
+    # path immune (`env or config` short-circuits before the legacy check) would have
+    # to be reimplemented rather than inherited. Same reasoning as `update_fields`'
+    # `require_status`: a parameter on the existing function, not a second function.
     cfg.seen_db = resolve(env_var=None, config_value=cfg.seen_db,
-                          kind="state", name="track-seen.db")
+                          kind="state", name="track-seen.db",
+                          fatal=refuse_relocated_seen_db)
     return cfg
