@@ -298,6 +298,32 @@ def test_lead_ttl_days_rejects_negative_and_non_int(tmp_path, monkeypatch, value
         load_config(None)
 
 
+# ── #80: the two root path keys ──────────────────────────────────────────────
+# vault_dir and dossier_dir are str-typed, so the value-keyed sweep above misses them
+# BY DESIGN (it is list-only, and deliberately so -- see the #9 note). They carry two
+# distinct guarantees at once, either of which failing is silent:
+#   * NEUTRALITY -- a non-empty shipped default is a directory on whoever wrote it,
+#     the `baseline_rel` shape asserted 200 lines up;
+#   * MECHANISM -- paths.resolve is `env or config or XDG`, so a config term that is
+#     ALWAYS truthy short-circuits before XDG is ever reached, and the whole
+#     per-system sweep goes inert with every test still green.
+
+def test_path_keys_dataclass_defaults_are_blank():
+    c = Config()
+    assert c.vault_dir == ""
+    assert c.dossier_dir == ""
+
+
+def test_path_keys_loader_defaults_are_blank(monkeypatch):
+    # load_config names every field explicitly, so the loader default is an
+    # INDEPENDENT literal that the dataclass assertion above does not constrain --
+    # the same split the lead_ttl_days pair above exists for.
+    monkeypatch.delenv("SLUICE_CONFIG", raising=False)
+    loaded = load_config(None)
+    assert loaded.vault_dir == ""
+    assert loaded.dossier_dir == ""
+
+
 def test_example_config_ships_lead_ttl_days_off():
     # sluice.yaml.example is COPIED VERBATIM by the documented quickstart, and this same
     # file ships ACTIVE illustrative non-zero pay floors two blocks away -- so the
