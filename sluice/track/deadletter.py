@@ -185,12 +185,13 @@ class DeadLetterDb:
 
         It is BEST-EFFORT, in the same sense as the vault's compare-and-set: a store that
         becomes unreadable in the window between this call and the DELETE still fails
-        late. What that costs is bounded and recoverable -- `sluice track dismiss --id`
-        clears a row without touching status, so a stranded row needs one command rather
-        than being lost. The probe's value is that every PERSISTENT cause (a dangling
-        link, a corrupt or tableless file, a read-only or unreadable one) is caught before
-        the write instead of after it; a state change inside the window is not one of
-        those, and pretending otherwise would be the guarantee this is not.
+        late. What that costs is bounded and recoverable -- `sluice track dismiss --lead
+        <slug>` clears the row without touching status, and a row stranded this way always
+        HAS a lead (`confirm` reached it by resolving one), so the slug is the label
+        `track run` already prints. The probe's value is that every PERSISTENT cause (a
+        dangling link, a corrupt or tableless file, a read-only or unreadable one) is
+        caught before the write instead of after it; a state change inside the window is
+        not one of those, and pretending otherwise would be the guarantee this is not.
 
         It probes the OPERATION, not the path. `_absent` alone answers "does the file
         exist", and every way of being unreadable answers yes: measured, a store at mode

@@ -500,8 +500,13 @@ def cmd_track_run(args, config) -> int:
         for e in rep.open_proposals:
             tag = " (new)" if e.times_surfaced <= 1 else ""
             label = e.lead or e.candidates or "?"
-            print(f"  [{e.first_seen} x{e.times_surfaced}{tag}] {label}: {e.proposal} :: {e.hint}",
-                  file=sys.stderr)
+            # The message-id is PRINTED, because `track dismiss --id` is the only lever
+            # for a no-lead row (a classify failure, an unmatched proposal) and its label
+            # renders as `?`. Without this the id existed only inside the SQLite file, so
+            # the one documented way to clear those rows needed a value no command emitted
+            # -- and they re-surface every run until someone acts on them.
+            print(f"  [{e.first_seen} x{e.times_surfaced}{tag}] {label} <{e.message_id}>: "
+                  f"{e.proposal} :: {e.hint}", file=sys.stderr)
     return 0
 
 

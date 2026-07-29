@@ -281,6 +281,30 @@ def test_the_remedy_says_how_many_companions_must_move(monkeypatch, tmp_path):
         "the message names the command but never says what a partial paste costs")
 
 
+def test_an_orphaned_companion_still_refuses(monkeypatch, tmp_path):
+    """A companion is legacy state in its OWN right, not only an escort for the store.
+
+    Keyed on the store alone this went silent in exactly one cell: a `.deadletter.db`
+    holding un-acted-on proposals whose `track-seen.db` was already gone resolved quietly,
+    and `track run` then read the NEW location and printed `open=0` -- #49's whole backlog
+    invisible, with nothing said anywhere.
+    """
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.delenv("TRACK_SEEN_DB", raising=False)
+    legacy = tmp_path / "track-seen.db"          # deliberately NOT created
+    companion = tmp_path / "track-seen.db.deadletter.db"
+    companion.write_text("rows", encoding="utf-8")
+
+    with pytest.raises(RuntimeError) as e:
+        paths.resolve(env_var="TRACK_SEEN_DB", config_value="", kind="state",
+                      name="track-seen.db", legacy=str(legacy), fatal=True)
+    msg = str(e.value)
+    assert str(companion) in msg
+    assert "1 companion file(s)" in msg, "the count is wrong when the store is absent"
+    # and the remedy must not try to move a store that is not there
+    assert f"mv {legacy} " not in msg, "the remedy moves an absent store, so step one fails"
+
+
 def test_a_dangling_link_is_not_told_to_run_cp_dash_L(monkeypatch, tmp_path):
     """`cp -L` on a dangling link exits 1 (measured), so offering it for a link that no
     longer resolves sends the user in a circle. Resolvable and broken links get different
