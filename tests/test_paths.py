@@ -146,3 +146,55 @@ def test_unknown_kind_raises_and_lists_the_valid_ones():
     assert "data" in str(e.value)
     for valid in ("config", "state", "cache"):
         assert valid in str(e.value)
+
+
+# ── the legacy table ─────────────────────────────────────────────────────────
+# The cwd-relative locations these paths had before #80 live in `paths`, not at seven
+# call sites. That is what gives the migration one home -- and it is why the
+# definition-of-done grep for surviving `"./"` literals excludes this module: they must
+# survive HERE and nowhere else under sluice/.
+
+# (name, kind) for every path the sweep moves. PINNED: a new moving path with no table
+# entry silently loses its migration warning, and nothing else would notice.
+_MOVING = [
+    ("seen.db", "state"), ("track-seen.db", "state"),
+    ("sluice_health.json", "state"), ("sluice_disabled.json", "state"),
+    ("triage-audit.jsonl", "state"), ("google_token.json", "state"),
+    ("dossiers", "cache"),
+]
+
+
+def test_every_legacy_entry_is_the_cwd_relative_form_of_its_own_name():
+    # Not a coincidence worth leaving implicit: every one of these was `./<basename>`,
+    # which is what made a `cd` silently repoint them all at once. Asserting the whole
+    # mapping (rather than spot-checking one) means an entry that drifts to some other
+    # basename -- a legacy check that then never fires -- reddens here.
+    assert paths._LEGACY == {name: f"./{name}" for name, _ in _MOVING}
+
+
+@pytest.mark.parametrize("name,kind", _MOVING, ids=[n for n, _ in _MOVING])
+def test_the_table_supplies_the_legacy_path_when_the_caller_names_none(
+        monkeypatch, tmp_path, caplog, name, kind):
+    # The production call sites pass no `legacy=` at all, so a table entry that is
+    # missing or misspelled makes the warning unreachable while every explicit-legacy
+    # row above still passes. chdir is what lets `./<name>` be a planted file rather
+    # than whatever happens to sit in the developer's cwd.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    (tmp_path / name).write_text("legacy", encoding="utf-8")
+    out = paths.resolve(env_var=None, config_value="", kind=kind, name=name)
+    assert name in caplog.text and out in caplog.text
+    assert (tmp_path / name).read_text(encoding="utf-8") == "legacy"   # never moved
+
+
+def test_the_config_file_has_no_legacy_entry(monkeypatch, tmp_path, caplog):
+    # #1 is the one moving path with nothing to migrate FROM: an unset SLUICE_CONFIG
+    # meant "no config file", not "./config.yaml". A `config.yaml` sitting in someone's
+    # cwd is somebody else's file, and warning about it would be noise on every run.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.delenv("SLUICE_CONFIG", raising=False)
+    (tmp_path / "config.yaml").write_text("store: vault\n", encoding="utf-8")
+    assert paths.config_file() == str(tmp_path / "cfg" / "sluice" / "config.yaml")
+    assert caplog.text == ""

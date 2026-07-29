@@ -10,6 +10,8 @@ import json
 import os
 from statistics import median
 
+from sluice.core.paths import resolve
+
 
 class HealthStore:
     """JSON-backed per-source run history. One file, whole-object rewrite -
@@ -18,12 +20,19 @@ class HealthStore:
     _KEEP = 30  # cap history per source
 
     def __init__(self, path: str | None = None):
-        # Same pattern as SeenDb: an explicit path wins, otherwise fall back to the
-        # env var, otherwise the on-disk default. This is the ONE place that default
-        # lives -- app.py's ingest() and cli.py's cmd_health/cmd_list_sources all
-        # construct HealthStore() bare and get the same path, so the file `ingest`
-        # writes is always the file `health` reads.
-        self.path = path or os.environ.get("SLUICE_HEALTH", "./sluice_health.json")
+        # Same pattern as SeenDb: an explicit path wins, otherwise resolution decides
+        # (env var, then the per-system state root). This is the ONE place that lives
+        # -- app.py's ingest() and cli.py's cmd_health/cmd_list_sources all construct
+        # HealthStore() bare and get the same path, so the file `ingest` writes is
+        # always the file `health` reads.
+        #
+        # `path or resolve(...)` and not the other order: an explicit constructor
+        # argument must beat the environment, or every `HealthStore(str(tmp_path/...))`
+        # in the suite would retarget a developer's real file and stay green while
+        # doing it. It also means `resolve` is not called at all when a caller names a
+        # path, so an explicit caller can never trip the migration warning.
+        self.path = path or resolve(env_var="SLUICE_HEALTH", config_value="",
+                                    kind="state", name="sluice_health.json")
         self._data = self._load()
 
     def _load(self) -> dict:
