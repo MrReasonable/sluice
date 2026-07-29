@@ -19,15 +19,25 @@ def _write_token(path: str, data: str) -> None:
     refresh would raise FileNotFoundError, mid auth flow. And it left the file at the
     umask default, typically 0644 -- a world-readable credential.
 
-    The chmod is UNCONDITIONAL rather than folded into an `os.open(..., 0o600)`, because
-    `os.open` does not change an EXISTING file's mode: a refresh over a token an older
-    sluice wrote at 0644 would keep it at 0644 forever, and nobody looks at that mode
-    again. Stdlib only, like the rest of `sluice/`.
+    BOTH halves are needed, and neither replaces the other. `os.open(..., 0o600)` makes
+    the file private at CREATION, closing the window a plain `open` + later `chmod`
+    leaves, in which the token exists world-readable and a local reader can copy it. But
+    `os.open` does not change an EXISTING file's mode, so a refresh over a token an
+    older sluice wrote at 0644 would keep it at 0644 forever, and nobody looks at that
+    mode again -- hence the chmod as well, unconditional.
+
+    A consequence worth knowing when mutation-testing this: the chmod normalises both
+    arms, so a mutant that weakens the CREATION mode alone is equivalent and stays
+    green. `test_a_fresh_token_is_private_before_any_chmod` neutralises `os.chmod` for
+    exactly that reason.
+
+    Stdlib only, like the rest of `sluice/`.
     """
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(data)
     os.chmod(path, 0o600)
 
