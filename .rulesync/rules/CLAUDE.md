@@ -63,9 +63,12 @@ shows corrected code while stale bytecode executes. Run the function and look at
 found by running the guard rather than reading it:
 
 - **A sweep that discovers nothing passes.** `all([])` is `True`, and a discovery loop whose matcher
-  is broken yields an empty set that satisfies every assertion over it. Every sweep needs a paired
-  assertion that it discovered *something*; one added late caught its own sweep matching nothing at
-  all on the first run.
+  is broken yields an empty set that satisfies every assertion over it. Assert on the SCOPE, never on
+  the violations: a guard must pin that it enumerated the things it meant to look at (the loaders,
+  the `*Config` classes, the settings in the example file), because for a *negative* guard — a leak
+  gate, a forbidden-pattern sweep — finding nothing is the success case, and demanding a non-empty
+  result there would be backwards. Two such assertions, added late, each caught their own sweep
+  matching nothing at all on the first run.
 - **A pattern consumed by two engines must be asserted through the engine that RUNS it.** A regex
   built for Python `re` and handed to `git grep -E` is not the same regex: inside a bracket
   expression POSIX treats `\` as a literal member, not an escape, so the class terminates early. A

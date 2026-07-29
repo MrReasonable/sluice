@@ -59,3 +59,29 @@ def test_track_dismiss_requires_exactly_one_selector(tmp_path, monkeypatch):
         app.track_dismiss(message_id=None, lead=None)
     with pytest.raises(ValueError):
         app.track_dismiss(message_id="m1", lead="example-telemetry")
+
+
+def test_load_seen_raises_on_an_unreadable_store_rather_than_reading_it_empty(tmp_path):
+    """`except OSError: return set()` conflated MISSING with UNREADABLE.
+
+    track's dedup store already refuses to start when it has been relocated, so
+    shrugging at one that is present but unreadable was incoherent -- and worse than it
+    looks, because `_save_seen` then rewrites the file FROM the emptied set, turning a
+    read failure into a permanent loss of the message-id history.
+
+    A directory is used rather than `chmod 000`, which does not deny root and would make
+    this row pass for the wrong reason in a container.
+    """
+    from sluice.core.app import _load_seen
+
+    unreadable = tmp_path / "track-seen.db"
+    unreadable.mkdir()
+    with pytest.raises(OSError):
+        _load_seen(str(unreadable))
+
+
+def test_load_seen_still_reads_a_missing_store_as_empty(tmp_path):
+    # The other arm: absent is the ordinary first-run state and must stay silent.
+    from sluice.core.app import _load_seen
+
+    assert _load_seen(str(tmp_path / "nope.db")) == set()
