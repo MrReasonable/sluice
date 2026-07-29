@@ -117,62 +117,39 @@ FORBIDDEN_COMPONENTS = (".memsearch", ".npmrc")
 # gate matched NOTHING for its entire life. Verified by planting a home path in a tracked
 # file and watching the gate pass.
 #
-# So: a POSITIVE class, valid and identical in BOTH engines, and no escapes inside a bracket
-# expression at all. It still spares the bare-prefix detector forms (a backtick or a quote
-# right after the slash is not in the class).
+# So: no escapes inside a bracket expression at all, and the two engines get SEPARATE
+# constants, each asserted through the engine that runs it. A single string handed to both
+# is what produced the incident above -- a `re`-based regression test compiled the escapes,
+# where they work, and certified a pattern git had never matched anything with.
 #
-# This class is used only by the PYTHON half (parsing a matched line for the allow-list).
-# Discovery uses `_GREP_NAME` below, which is a negated class and does catch a component
-# starting with a non-ASCII character -- the limit that used to be documented here.
-# The hyphen is NOT in here: it has to sit at one END of a bracket expression -- first
-# or last -- or it reads as a range. `[A-Za-z0-9._-/]` is the error `_-/`; `[-A-Za-z0-9._]`
-# would be fine. Keeping it out of the shared constant and appending it in each pattern
-# is what lets both patterns be built from one source without either of them tripping
-# that. Caught immediately when this was first factored out, which is the cheap version
-# of the mistake that left this gate inert for its whole life.
-_NAME_CHARS = r"A-Za-z0-9._"
-_NAME = f"[{_NAME_CHARS}-]+"
+# There are exactly two, and both are live: `_GREP_NAME` DISCOVERS (git), and
+# `_WIDE_HOME_PATH_RE` PARSES the matched line for the allow-list (Python). An earlier
+# ASCII pair sat between them and is gone: once the parser had to see everything git sees,
+# a narrower Python class could only create blind spots, and blind spots here are SKIPS.
 
-# What GIT GREP searches for -- deliberately different from the Python pattern, and the
-# difference is the point. A NEGATED class catches a component starting with a non-ASCII
-# character (`/home/<accented>`), which the ASCII class above misses; it is written with a
-# POSIX `[:space:]` and no backslashes at all, because a backslash inside a bracket
-# expression is a literal MEMBER in ERE -- the exact mistake that left this gate matching
-# nothing for its entire life.
+# What GIT GREP searches for. A NEGATED class, so a component starting with a non-ASCII
+# character (`/home/<accented>`) is caught; written with a POSIX `[:space:]` and no
+# backslashes, because a backslash inside a bracket expression is a literal MEMBER in ERE.
+# Python's `re` cannot compile this string at all (`[:space:]` is not a POSIX class there,
+# and the `)` inside breaks the expression), which is why it is asserted only through
+# `git grep` below.
 #
-# Python's `re` cannot compile this string (`[:space:]` is not a POSIX class there, and
-# the `)` inside breaks the expression), which is precisely why the two are separate
-# constants tested through their own engines instead of one string handed to both.
-#
-# The asymmetry FAILS CLOSED: git finds a non-ASCII path, `_FULL_HOME_PATH_RE` does not
-# parse it, `found` is empty, and the `found and ...` filter below therefore reports the
-# line rather than skipping it. That filter was measured unfirable while both patterns
-# shared a character set; widening this one makes it live.
 # `<` and `>` are excluded so an angle-bracket placeholder (`/home/<user>/...`, which the
-# design docs use) is not a match at all. The ASCII class never reached those because `<`
-# is not in it; widening without this turned every documented placeholder into a hit.
+# design docs use) is not a match at all; without that, widening turned every documented
+# placeholder into a hit.
 _GREP_NAME = r"""[^]/[:space:]'"`,)<>]"""
-_HOME_PATH_RE = re.compile(r"/(?:Users|home)/(" + _NAME + ")")
-# The WHOLE path, not just its first component, for the allow-list below. Built from the
-# SAME character set plus `/`, so it is a strict superset of the pattern handed to git
-# grep by construction rather than by coincidence -- which is what makes the
-# `found and ...` guard below fail closed. Stated because it is load-bearing: if the two
-# ever diverge so grep can match a line this does not, the guard is what stops the line
-# being silently skipped.
-_FULL_HOME_PATH_RE = re.compile(rf"/(?:Users|home)/[{_NAME_CHARS}/-]+")
 
-# The Python mirror of `_GREP_NAME`: a NEGATED class, so it sees every path git can find,
-# including non-ASCII ones the ASCII parser above cannot represent. Used only to COUNT.
-# Without it the fail-closed property had a hole: on a line carrying an allow-listed
-# literal AND a real non-ASCII path, `_FULL_HOME_PATH_RE` finds only the allowed one, so
-# `all()` runs over a single permitted match and the line is skipped -- the real path
-# rides along invisibly. Measured before this existed.
+# The Python mirror, used by `_is_allowed_hit` to decide whether a matched line is a
+# documented literal. It must see EVERY path git can find: whatever it cannot represent
+# leaves the allow-listed literal as the only match on the line, and the real path beside
+# it is skipped.
+#
 # The whitespace is spelled OUT, not `\s`. Python's `\s` also matches 0x1c-0x1f and
 # 0x85, which POSIX `[:space:]` does not -- so git kept matching through those bytes and
 # this pattern stopped, going BLIND to `/Users/<0x1f>name/vault` entirely while git
-# reported it. A blind spot here is a skip: the allowed literal elsewhere on the line is
-# then the only match, and the line passes. Measured across 0x01-0x2FF plus the Unicode
-# separator categories; these five bytes were the whole divergence.
+# reported it. Measured across 0x01-0x2FF plus the Unicode separator categories; those
+# five codepoints were the whole divergence. Every remaining difference goes the other way
+# (this matches where git does not), which fails closed.
 _WIDE_HOME_PATH_RE = re.compile(r"""/(?:Users|home)/[^ \t\n\r\f\v'"`,)<>\]]+""")
 
 # The exact home-rooted strings that legitimately appear in this repo, in full.
@@ -336,20 +313,21 @@ def _is_allowed_hit(line):
     file-scoping clause left the whole suite green, because nothing could exercise the
     predicate without planting files in the real tree.
 
-    `found` must be non-empty. `all([])` is True, and discovery is deliberately WIDER
-    than this parser (it catches non-ASCII components the ASCII class cannot represent),
-    so a line git matched and this cannot parse must be REPORTED, not skipped.
+    `found` must be non-empty. `all([])` is True, so a line git matched and this cannot
+    parse must be REPORTED, not skipped -- the patterns are kept in step for exactly this
+    reason, and the check stands whether or not they ever drift again.
     """
     path_in_repo = line.split(":", 1)[0]
-    # Decided on the WIDE matches, not the ASCII ones, and not on a count comparison.
-    # Counting only catches a SEPARATE extra match: a wide match that EXTENDS PAST the
-    # narrow one keeps the count at 1, so `<allowed literal>:<real non-ASCII path>` --
-    # or `[`, `@`, `{` -- read as a single permitted match and the real path rode along.
-    # Measured: the space-separated shape was caught and the other three were not.
+    # Decided on the matches THEMSELVES, never on a count. Counting only catches a
+    # SEPARATE extra match: a match that EXTENDS PAST an allow-listed literal keeps the
+    # count at 1, so `<allowed literal>:<real path>` -- or `[`, `@`, `{` -- read as a
+    # single permitted match and the real path rode along. Measured: the space-separated
+    # shape was caught and the other three were not.
     #
-    # Matching on the wide pattern makes the compared string the whole run git saw, so a
-    # concatenation is simply not the allow-listed literal and is reported. `rstrip` for
-    # trailing sentence punctuation, which the wide class admits.
+    # Comparing the whole run git saw means a concatenation is simply not the allow-listed
+    # literal, and is reported. `rstrip` for trailing sentence punctuation, which the
+    # class admits; a leak can only reduce to an allowed literal if its entire tail is
+    # `[:.,;]`, which no path has.
     found = [m.rstrip(":.,;") for m in _WIDE_HOME_PATH_RE.findall(line)]
     return bool(found) and all(
         any(path_in_repo.startswith(w)
@@ -379,13 +357,13 @@ def _is_allowed_hit(line):
     # riding along beside an allowed literal could be DELETED with the suite green --
     # measured, twice, by two reviewers. These are the four separators that reach it;
     # only the first was caught when the guard compared match COUNTS.
-    ("tests/test_backends.py:1: /home/example/.local/bin/claude and /home/\u00e9ric/x",
+    ("tests/test_backends.py:1: /home/example/.local/bin/claude and /home/\u00e9xample/x",
      False, "a real path space-separated from an allowed literal"),
-    ("tests/test_backends.py:1: /home/example/.local/bin/claude:/home/\u00e9ric/x",
+    ("tests/test_backends.py:1: /home/example/.local/bin/claude:/home/\u00e9xample/x",
      False, "...colon-separated, which a count comparison could not see"),
-    ("tests/test_backends.py:1: /home/example/.local/bin/claude[/home/\u00e9ric/x",
+    ("tests/test_backends.py:1: /home/example/.local/bin/claude[/home/\u00e9xample/x",
      False, "...bracket-separated"),
-    ("tests/test_backends.py:1: /home/example/.local/bin/claude@/home/\u00e9ric/x",
+    ("tests/test_backends.py:1: /home/example/.local/bin/claude@/home/\u00e9xample/x",
      False, "...at-sign-separated"),
     ("tests/test_backends.py:1: /home/example/.local/bin/claude.", True,
      "trailing sentence punctuation is not part of the path"),
@@ -434,11 +412,12 @@ def test_no_absolute_home_path_is_tracked_in_source_or_config(prefix):
 def test_the_gate_catches_real_shapes_and_spares_bare_prefixes(tmp_path):
     """The gate's own regression test, run through the engine the GATE uses.
 
-    It has been wrong twice, and the second time is why this no longer uses Python's `re`.
-    `_NAME` is compiled by `re` here AND handed to `git grep -E` there, and the two disagree
-    about backslashes inside a bracket expression -- so a `re`-based check certified a pattern
-    the gate never actually ran, and the gate matched nothing for its entire life. Asserting
-    through `git grep` is the only form that can catch that class of divergence.
+    It has been wrong twice, and the second time is why the discovery half is asserted
+    through `git grep` rather than Python's `re`. One pattern was compiled by `re` here AND
+    handed to `git grep -E` there, and the two disagree about backslashes inside a bracket
+    expression -- so a `re`-based check certified a pattern the gate never actually ran,
+    and the gate matched nothing for its entire life. Asserting through the engine that
+    RUNS the pattern is the only form that can catch that class of divergence.
 
     `--no-index` searches a plain directory, so this needs no repo and cannot be confused by
     the real one (which necessarily contains the strings being searched for).
@@ -449,8 +428,8 @@ def test_the_gate_catches_real_shapes_and_spares_bare_prefixes(tmp_path):
         "lowercase": "/Users/devuser/.claude/x.jsonl",
         "capitalised": "/Users/ExampleUser/dev",
         "digit-initial": "/home/2runner/work",
-        "non-ascii-initial": "/home/\u00c9mile/vault",
-        "non-ascii-scandinavian": "/Users/\u00d8yvind/y",
+        "non-ascii-initial": "/home/\u00c9xample/vault",
+        "non-ascii-scandinavian": "/Users/\u00d8xample/y",
     }
     for label, value in shapes.items():
         (tmp_path / f"{label}.txt").write_text(value + "\n", encoding="utf-8")
@@ -470,16 +449,16 @@ def test_the_gate_catches_real_shapes_and_spares_bare_prefixes(tmp_path):
     assert not _grep(r"/(Users|home)/" + _GREP_NAME, "detectors.txt"), \
         "the gate false-positives on a bare-prefix detector under git grep -E"
 
-    # The Python half is ASCII-only ON PURPOSE: it exists to parse a matched line against
-    # the allow-list, and a non-ASCII path it cannot parse yields no match, which the
-    # `found and ...` filter turns into a REPORT rather than a skip. Fail closed.
-    for leak in ("/Users/devuser/.claude/x.jsonl", "/Users/ExampleUser/dev", "/home/2runner/work"):
-        assert _HOME_PATH_RE.search(leak), f"gate would MISS a real leak: {leak}"
-    assert not _FULL_HOME_PATH_RE.search("/home/\u00c9mile/vault"), (
-        "the ASCII parser now matches non-ASCII, so the fail-closed path this gate "
-        "relies on for those is no longer exercised")
+    # The Python half, asserted through the pattern the gate ACTUALLY runs. It must see
+    # every shape git can find -- including the non-ASCII ones -- because `_is_allowed_hit`
+    # decides on these matches: a shape this misses leaves the allow-listed literal as the
+    # only match on the line, and the real path beside it is skipped.
+    for label, value in shapes.items():
+        assert _WIDE_HOME_PATH_RE.search(value), \
+            f"the gate's allow-list parser MISSES a {label} leak: {value}"
     for detector in ("`/Users/`", "`/home/`, `.local`, `ssh`"):
-        assert not _HOME_PATH_RE.search(detector), f"gate false-positives on a detector: {detector}"
+        assert not _WIDE_HOME_PATH_RE.search(detector), \
+            f"gate false-positives on a detector: {detector}"
 
 
 def test_every_gated_path_is_also_gitignored():
