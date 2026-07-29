@@ -86,6 +86,18 @@ Shared by every sub-app:
   who name their own paths are immune by construction rather than by a rule
   repeated at each site.
 
+- `seendb.py`: a sqlite dedup store for already-seen leads. Reading it never
+  CREATES it (`sqlite3.connect` would, and the resulting empty file disarms the
+  relocation refusal above), and an unreadable database RAISES rather than
+  reading as empty -- a silent empty dedup set re-creates every lead a human
+  merged away. An existing database with no table is the one tolerated empty:
+  that is a real first-run state.
+- `resilience.py`: retry-with-backoff, hard timeout, and rate-limit
+  precheck helpers that wrap each source's I/O.
+- `health.py`, `dossier.py`, `leads.py`, `log.py`, `relevance.py`: health
+  reporting, per-lead dossier assembly, the source-agnostic `Lead` model,
+  logging, and the relevance gate.
+
 **How a state file behaves when it cannot be read** is one convention, keyed on
 what a wrong answer COSTS, not on which module happens to own the file. A
 seventh state file should pick its tier from this list rather than copy
@@ -116,17 +128,6 @@ whichever neighbour it was written next to:
   function's docstring. It sits here because nothing is destroyed by the read
   itself, not because the loss is free.
 
-- `seendb.py`: a sqlite dedup store for already-seen leads. Reading it never
-  CREATES it (`sqlite3.connect` would, and the resulting empty file disarms the
-  relocation refusal above), and an unreadable database RAISES rather than
-  reading as empty -- a silent empty dedup set re-creates every lead a human
-  merged away. An existing database with no table is the one tolerated empty:
-  that is a real first-run state.
-- `resilience.py`: retry-with-backoff, hard timeout, and rate-limit
-  precheck helpers that wrap each source's I/O.
-- `health.py`, `dossier.py`, `leads.py`, `log.py`, `relevance.py`: health
-  reporting, per-lead dossier assembly, the source-agnostic `Lead` model,
-  logging, and the relevance gate.
 
 ## The five sub-apps
 
