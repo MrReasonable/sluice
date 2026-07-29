@@ -58,6 +58,51 @@ specified in prose and not executed.** Everything below fell out in seconds when
 - **"Each sub-app loader names every field explicitly" is false.** Only `load_config` does; triage,
   cv, track and apply are `hasattr`-filtered `setattr` loops (`triage/config.py:63-67`).
 
+## Implementation notes (2026-07-29) — what execution changed
+
+The design above stands as approved; this records where building it diverged, and one
+witness that was **still** wrong. Nothing here reopens a settled decision.
+
+**Four deviations, each because the specified mechanism did not survive contact.**
+
+1. **`load_triage_config`/`load_track_config` needed an INVERTED guard, not "resolve
+   after the loop".** Both `return cfg` EARLY when there is no config file — which is
+   exactly what a fresh install runs — so resolution placed after the loop never ran for
+   the case it exists to serve. One exit instead. Witnessed: restoring the early return
+   reddens only the no-config rows, while the configured rows stay green.
+2. **`paths.config_file()` replaces five copies of the same `resolve` call.** "All five
+   change together" is a property worth making structural rather than tested-for.
+3. **The legacy literals are a TABLE in `paths.py`, not arguments at call sites.** Every
+   moving path was `./<basename>`, and the DoD grep requires those literals to survive in
+   that module alone; passing them in would have put a copy at each site.
+4. **Track's refusal is `refuse_relocated_seen_db=False` on `load_track_config`, not a
+   separate helper.** The helper would have to re-derive whether the value was CONFIGURED
+   or merely resolved — a second resolution site, reimplementing the short-circuit that
+   makes an explicit path immune instead of inheriting it. Same shape as `update_fields`'
+   `require_status`. R2's actual requirement (doctor must not refuse) is met by the
+   default.
+
+Likewise `dossier_dir` resolves in `Sluice._dossier_dir`, not `load_config`, matching
+`vault_dir`: a Config carries what the user CONFIGURED and the composition root decides
+what that means — every test builds `Sluice(Config())` by hand and would otherwise hold a
+blank.
+
+**M9b was wrong a fourth time.** Dropping the `HOME` pin does NOT redden the
+neutral-defaults loader assertions: those resolve `kind="config"`, where the still-pinned
+`XDG_CONFIG_HOME` wins outright, so `HOME` is never consulted. Executed. What the `HOME`
+pin actually protects is the XDG-**unset** branch, and the row that exercises it is
+`test_path_sandbox.py::test_home_is_pinned_so_the_xdg_unset_branch_cannot_escape`, which
+delenvs `XDG_CONFIG_HOME` itself — that row does redden, so the pin is witnessed, by a
+different test than this table names. **M9a is correct as written** and reddens four rows,
+both neutrality assertions among them.
+
+**A security review of the token commit found a real defect in `_write_token`.** Creating
+with a plain `open()` and tightening afterwards leaves a window in which the credential
+exists world-readable. Creation now uses `os.open(..., 0o600)` **and** keeps the
+unconditional `chmod` — neither replaces the other. The chmod normalises both arms, so a
+mutant weakening the creation mode is equivalent; the new row neutralises `os.chmod` to
+stay falsifiable.
+
 ## Problem
 
 Enumerated by two greps over `sluice/` — `os.environ.get` and `"\./` — because either alone is blind
