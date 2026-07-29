@@ -39,6 +39,29 @@ class Entry:
     times_surfaced: int
 
 
+def _absent(path: str) -> bool:
+    """True if the store genuinely does not exist yet; RAISES if it is unreachable.
+
+    Every reader here asks this question, and each used to ask it with `os.path.exists`,
+    which FOLLOWS a symlink -- so a dangling one read as "first run" and the method
+    quietly did nothing. For `open_entries` that discards the whole backlog of proposals
+    nobody has acted on; for `clear_*` it reports success having cleared nothing. Both are
+    the silent empty this module's F1 rule forbids.
+
+    It is reachable because `.deadletter.db` is a migration companion (#80) and `mv` moves
+    a link rather than its target. One helper rather than the check repeated four times,
+    so the next reader cannot be added without it.
+    """
+    if not os.path.lexists(path):
+        return True
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"the dead-letter store at {path} is a symlink to something that does not "
+            f"exist. Fix or remove the link; it holds the proposals no one has acted on "
+            f"yet.")
+    return False
+
+
 def deadletter_path(seen_db: str) -> str:
     return seen_db + _DEADLETTER_SUFFIX
 
@@ -71,19 +94,8 @@ class DeadLetterDb:
         # db, or an existing file with no track_deadletter table -> RAISE (the
         # SELECT below throws); never a silent empty (F1).
         #
-        # `lexists` first, for the same reason the dedup loaders use it (#80): a DANGLING
-        # SYMLINK is present-but-unreadable, not absent, and `exists` follows the link so
-        # it landed in the empty arm -- discarding the whole backlog of proposals nobody
-        # has acted on, silently, which is exactly what "never a silent empty" forbids.
-        # Reachable because `.deadletter.db` is a migration companion: `mv` moves a link
-        # rather than its target.
-        if not os.path.lexists(self.path):
+        if _absent(self.path):
             return []
-        if not os.path.exists(self.path):
-            raise FileNotFoundError(
-                f"the dead-letter store at {self.path} is a symlink to something that "
-                f"does not exist. Fix or remove the link; it holds the proposals no one "
-                f"has acted on yet.")
         db = self._open()
         try:
             rows = db.execute(
@@ -94,7 +106,7 @@ class DeadLetterDb:
         return [Entry(*r) for r in rows]
 
     def bump_surfaced(self) -> None:
-        if not os.path.exists(self.path):   # nothing to bump; do not create the store
+        if _absent(self.path):              # nothing to bump; do not create the store
             return
         db = self._open()
         try:
@@ -116,7 +128,7 @@ class DeadLetterDb:
             db.close()
 
     def clear_lead(self, slug: str) -> int:
-        if not os.path.exists(self.path):
+        if _absent(self.path):
             return 0
         db = self._open()
         try:
@@ -127,7 +139,7 @@ class DeadLetterDb:
             db.close()
 
     def clear_id(self, message_id: str) -> int:
-        if not os.path.exists(self.path):
+        if _absent(self.path):
             return 0
         db = self._open()
         try:
