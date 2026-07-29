@@ -358,3 +358,49 @@ def test_retired_sub_app_dossier_dir_raises(block, loader_name, module, tmp_path
     # home directory, so the message must not echo it -- core/config.py already rules
     # that way for dossier_allow_hosts. An exception travels further than a config file.
     assert str(secret) not in str(e.value)
+
+
+# ── vault_dir: precedence in the FACTORY (table row #9) ──────────────────────
+# The vault is the one path that deliberately does NOT relocate: it is the user's
+# Obsidian directory, their data, not sluice's state. What it gains is a config key --
+# before this it was settable only by an env var that does not survive a new shell, so
+# #8's wizard would have had nowhere to persist what it prompts for.
+
+def _store_dir(monkeypatch, **kw):
+    from sluice.core.app import Sluice
+    from sluice.core.config import Config
+    monkeypatch.delenv("VAULT_DIR", raising=False)
+    return Sluice(Config(**kw)).store().dir
+
+
+def test_the_vault_dir_config_key_reaches_the_store(monkeypatch, tmp_path):
+    assert _store_dir(monkeypatch, vault_dir=str(tmp_path / "mine")) == str(
+        tmp_path / "mine")
+
+
+def test_vault_dir_env_var_beats_the_config_key(monkeypatch, tmp_path):
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path / "from-env"))
+    from sluice.core.app import Sluice
+    from sluice.core.config import Config
+    app = Sluice(Config(vault_dir=str(tmp_path / "from-config")))
+    assert app.store().dir == str(tmp_path / "from-env")
+
+
+def test_an_unset_vault_dir_keeps_the_store_s_own_default(monkeypatch):
+    # Deliberately NOT an XDG location, so this row cannot be folded into the XDG
+    # rows above: doing that would be satisfiable only by relocating the vault.
+    assert _store_dir(monkeypatch) == "./vault"
+
+
+def test_an_explicit_vault_argument_still_beats_the_env_var(monkeypatch, tmp_path):
+    """The reason precedence lives in `_make` and not in `Vault.__init__`.
+
+    Putting the env read ahead of the `dir` parameter would make VAULT_DIR beat an
+    EXPLICIT constructor argument -- retargeting the ~150 positional
+    `Vault(str(tmp_path))` constructions in this suite at a developer's real vault,
+    green in CI throughout. The constructor keeps `dir or env or default`; the factory
+    decides what to inject.
+    """
+    from sluice.core.vault import Vault
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path / "from-env"))
+    assert Vault(str(tmp_path / "explicit")).dir == str(tmp_path / "explicit")

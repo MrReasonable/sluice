@@ -337,3 +337,47 @@ def test_example_config_ships_lead_ttl_days_off():
     assert all(ln.split(":", 1)[1].strip() == "0" for ln in active), \
         "lead_ttl_days must ship commented out (or 0) in sluice.yaml.example"
     assert "lead_ttl_days" in text, "the knob must be documented in the example config"
+
+
+# ── #80: the example config must ship no machine-specific path ───────────────
+
+def _example_dir_values():
+    """(line, value) for every `*_dir:` key in sluice.yaml.example, COMMENTS INCLUDED.
+
+    Comments are the whole point. The model for this scan
+    (test_example_config_ships_lead_ttl_days_off) uses `ln.strip().startswith(...)`,
+    which EXCLUDES comment lines -- and both keys here ship commented out, so that
+    shape would be vacuous in the good state AND the bad one (`all()` over an empty
+    list passes either way).
+    """
+    text = Path("sluice.yaml.example").read_text(encoding="utf-8")
+    out = []
+    for line in text.splitlines():
+        if "_dir:" not in line:
+            continue
+        rhs = line.split("_dir:", 1)[1]
+        value = rhs.split("#", 1)[0].strip()   # drop any trailing comment
+        out.append((line, value))
+    return out
+
+
+def test_example_config_documents_every_root_path_key():
+    # DERIVED from the dataclass, not hand-listed: a third root `*_dir` key added
+    # without a line in the example would otherwise ship undocumented, and the sweep
+    # below would pass over it in silence.
+    keys = [f.name for f in dataclasses.fields(Config) if f.name.endswith("_dir")]
+    assert keys, "no root *_dir key found -- the sweep below would be vacuous"
+    text = Path("sluice.yaml.example").read_text(encoding="utf-8")
+    missing = [k for k in keys if k not in text]
+    assert not missing, f"root path keys undocumented in sluice.yaml.example: {missing}"
+
+
+def test_example_config_ships_no_absolute_or_home_path():
+    # sluice.yaml.example is COPIED VERBATIM by the documented quickstart, so a shipped
+    # `/Users/someone/vault` is both a copied-in wrong answer and a person's machine
+    # name in a public repo. Same rule the baseline_rel assertion applies one file over.
+    offenders = [line for line, value in _example_dir_values()
+                 if value.startswith(("/", "~"))]
+    assert not offenders, (
+        "sluice.yaml.example must ship no absolute or home-relative path -- it is "
+        f"copied verbatim by the quickstart, and it is someone's machine: {offenders}")
