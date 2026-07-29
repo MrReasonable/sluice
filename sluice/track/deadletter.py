@@ -175,13 +175,22 @@ class DeadLetterDb:
             db.close()
 
     def check_reachable(self) -> None:
-        """Raise unless `clear_lead` would work; silent if the store is genuinely absent.
+        """PREFLIGHT for `clear_lead`, not a guarantee it will succeed.
 
         For callers that WRITE something else first and clear afterwards. `engine.confirm`
-        advances the lead's status and then clears its row: once `clear_lead` could raise,
-        a dangling or unreadable store meant the status write landed, the error escaped,
-        and the row became unclearable -- the re-run is refused because the transition has
-        already happened. Probing first moves the failure ahead of the write.
+        advances the lead's status and then clears its row, so a `clear_lead` that raises
+        leaves the advance already landed and the row still there -- and the obvious retry
+        is refused, because the transition has now happened. Probing first moves that
+        failure ahead of the write.
+
+        It is BEST-EFFORT, in the same sense as the vault's compare-and-set: a store that
+        becomes unreadable in the window between this call and the DELETE still fails
+        late. What that costs is bounded and recoverable -- `sluice track dismiss --id`
+        clears a row without touching status, so a stranded row needs one command rather
+        than being lost. The probe's value is that every PERSISTENT cause (a dangling
+        link, a corrupt or tableless file, a read-only or unreadable one) is caught before
+        the write instead of after it; a state change inside the window is not one of
+        those, and pretending otherwise would be the guarantee this is not.
 
         It probes the OPERATION, not the path. `_absent` alone answers "does the file
         exist", and every way of being unreadable answers yes: measured, a store at mode
