@@ -8,6 +8,32 @@ import pytest
 from faker import Faker
 
 
+@pytest.fixture(autouse=True)
+def _pin_paths(tmp_path, monkeypatch):
+    """Sandbox every per-system path the suite can resolve (#80).
+
+    Before #80 the defaults were cwd-relative and the suite ran in `tmp_path`, so it
+    could not reach a real home directory. Afterwards it can, and would pass while
+    doing it -- which is why this is autouse rather than opt-in.
+
+    All five names are load-bearing, and the two config ones do NOT substitute for each
+    other: `$XDG_CONFIG_HOME` and `~` are consecutive rungs of one fallback chain, so
+    which is consulted depends on the machine. macOS conventionally leaves `XDG_*`
+    unset, so `HOME` is the pin that matters there. `VAULT_DIR` was never pinned at all
+    -- a developer with it exported ran the whole suite against their real vault.
+
+    `tests/harness/config.py` pins every per-path env var itself, so the e2e and
+    functional tiers never reach these; that is why this cannot be the only guard, and
+    why `tests/test_path_sandbox.py` asserts the property directly.
+    """
+    for var, sub in (("XDG_CONFIG_HOME", "config"),
+                     ("XDG_STATE_HOME", "state"),
+                     ("XDG_CACHE_HOME", "cache")):
+        monkeypatch.setenv(var, str(tmp_path / "xdg" / sub))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path / "vault"))
+
+
 def _title_pool(n=60):
     fake = Faker("en_GB")
     Faker.seed(20260713)          # fixed: assertions must be reproducible
