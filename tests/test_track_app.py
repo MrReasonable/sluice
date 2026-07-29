@@ -65,9 +65,10 @@ def test_load_seen_raises_on_an_unreadable_store_rather_than_reading_it_empty(tm
     """`except OSError: return set()` conflated MISSING with UNREADABLE.
 
     track's dedup store already refuses to start when it has been relocated, so
-    shrugging at one that is present but unreadable was incoherent -- and worse than it
-    looks, because `_save_seen` then rewrites the file FROM the emptied set, turning a
-    read failure into a permanent loss of the message-id history.
+    shrugging at one that is present but unreadable was incoherent. The compounding is
+    narrower than "any unreadable file", though: at mode 000 the SAVE fails too, so
+    nothing is rewritten. It bites at mode 0222, where the read fails and the write
+    would have succeeded -- measured, after a reviewer falsified the broader claim.
 
     A directory is used rather than `chmod 000`, which does not deny root and would make
     this row pass for the wrong reason in a container.

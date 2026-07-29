@@ -115,8 +115,14 @@ def _load_seen(path):
     # any I/O error -- returned an empty set while the file sat there, and `_save_seen`
     # then rewrote it FROM the emptied set, compounding the loss. track's dedup store
     # already REFUSES to start when it has been relocated, so shrugging at an unreadable
-    # one was incoherent. Same three-way split, and same reasoning, as `SeenDb.load`.
-    if not os.path.exists(path):
+    # one was incoherent. TWO arms here, not the three `SeenDb.load` has: a line-oriented
+    # file has no valid-but-schemaless state to tolerate.
+    #
+    # The compounding is real but narrower than "any unreadable file": at mode 000 the
+    # SAVE fails too, so nothing is rewritten. It bites at mode 0222 (write-only), where
+    # the read raises and the save would have succeeded -- measured. `lexists` so a
+    # dangling symlink is not mistaken for an absent file and written through.
+    if not os.path.lexists(path):
         return set()
     with open(path) as f:
         return set(line.strip() for line in f if line.strip())

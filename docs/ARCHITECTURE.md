@@ -85,6 +85,25 @@ Shared by every sub-app:
   config key) short-circuits resolution before the check either way, so callers
   who name their own paths are immune by construction rather than by a rule
   repeated at each site.
+**How a state file behaves when it cannot be read** is one convention, keyed on
+what a wrong answer COSTS, not on which module happens to own the file. A
+seventh state file should pick its tier from this list rather than copy
+whichever neighbour it was written next to:
+
+- **Raise** when a silent empty is irreversible: `seendb.py`'s `SeenDb.load`,
+  `track/deadletter.py`'s `open_entries`, and `core/app.py`'s `_load_seen`. All
+  three are dedup state, and all three are read-modify-written, so an empty read
+  is not one lost run -- it is written back as the new truth. For the two dedup
+  databases that is a duplicate application under the user's name.
+- **Warn and continue** when a wrong answer is recoverable but discards an
+  explicit human decision: `cli.py`'s `_disabled_or_warn`. Re-enabling a source
+  costs a wasted scrape. Note that its raising sibling `_load_disabled` is what
+  `enable`/`disable` call, precisely because those rewrite the file.
+- **Silent** when the value is derived and rebuilds itself next run:
+  `health.py`'s `_load` and `core/app.py`'s `_load_lastrun`. `ingest/engine.py`
+  already rules the same way on the write side ("health is best-effort; never
+  fail a run over it").
+
 - `seendb.py`: a sqlite dedup store for already-seen leads. Reading it never
   CREATES it (`sqlite3.connect` would, and the resulting empty file disarms the
   relocation refusal above), and an unreadable database RAISES rather than

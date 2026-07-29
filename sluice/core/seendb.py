@@ -55,6 +55,14 @@ class SeenDb:
         # locked" as well as "no such table", so discriminating on the exception would
         # silently swallow a transient lock too.
         if not os.path.exists(self.path):
+            # `lexists` distinguishes TRULY absent from a DANGLING SYMLINK. Without it a
+            # broken link lands in this arm, and `sqlite3.connect` below would then create
+            # the link's target -- re-opening the create-on-read hole this guard closes.
+            if os.path.lexists(self.path):
+                raise sqlite3.DatabaseError(
+                    f"the dedup database path {self.path} is a symlink to something that "
+                    f"does not exist. sluice will not run with an empty dedup set; fix or "
+                    f"remove the link.")
             return set()
         db = sqlite3.connect(self.path)
         try:
@@ -67,6 +75,15 @@ class SeenDb:
             if not known:
                 return set()
             rows = db.execute("SELECT url FROM seen_jobs").fetchall()
+        except sqlite3.OperationalError:
+            # FIRST, and it must stay first: OperationalError SUBCLASSES DatabaseError,
+            # so the corruption arm below would otherwise swallow "database is locked" --
+            # two overlapping ingest runs -- and tell the user to move or delete a
+            # perfectly good dedup store, causing the exact irreversible loss that
+            # message warns about. Re-raised untouched so the type survives for a caller
+            # that wants to retry; flattening it into DatabaseError makes an
+            # `isinstance(e, OperationalError)` check downstream false.
+            raise
         except sqlite3.DatabaseError as e:
             raise sqlite3.DatabaseError(
                 f"the dedup database at {self.path} is unreadable ({e}). sluice will not "

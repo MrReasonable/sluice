@@ -371,7 +371,8 @@ _ROOTED = re.compile(r"""^["'\[\s-]*[/~]""")
 # deliberately absent from the second alternative's delimiter class and `(?!/)` guards the
 # double slash: without both, every `https://` in the example config reads as a filesystem
 # path. Executed against the real file -- four false positives before, none after.
-_ROOTED_ANYWHERE = re.compile(r"""(?:^|[\s'"\[{,:])~/|(?:^|[\s'"\[{,])/(?!/)""")
+_ROOTED_ANYWHERE = re.compile(
+    r"""(?:^|[\s'"\[{,:])~/|(?:^|[\s'"\[{,])/(?![/\s])""")
 
 
 def _example_setting_values():
@@ -391,9 +392,7 @@ def _example_setting_values():
     KNOWN LIMITS, measured rather than assumed, so nobody reads this as total coverage:
     a block-scalar body (`vault_dir: |` then an indented path on the NEXT line) is not
     seen, because this is line-oriented; nor is `$HOME/...` or a Windows drive-letter path,
-    neither of which starts with `/` or `~`; nor a path in a TRAILING comment
-    (`vault_dir: vault  # e.g. ~/mine`), which is stripped before the check so that the
-    file's own explanatory comments do not all read as settings. The leak gate backstops the `/Users|/home`
+    neither of which starts with `/` or `~`. The leak gate backstops the `/Users|/home`
     ones but never greps `~`, so the block-scalar tilde case has no second line of
     defence. Left as limits rather than chased, because each costs a YAML parser or a
     second pattern language, and the shapes the example file actually uses are covered.
@@ -404,8 +403,12 @@ def _example_setting_values():
         m = _EXAMPLE_SETTING.match(line)
         if not m:
             continue
-        value = m.group(2).split("#", 1)[0].strip()   # drop any trailing comment
-        out.append((line, value))
+        # The trailing comment is NOT stripped. It used to be, which left
+        # `vault_dir: vault  # e.g. ~/mine` -- the file's own idiom -- unswept; measured
+        # against the real file, keeping the comment yields zero offenders, so the
+        # coverage is free. (Full-line prose comments are excluded by _EXAMPLE_SETTING
+        # not matching at all, which is what the strip was mistakenly credited with.)
+        out.append((line, m.group(2).strip()))
     return out
 
 
@@ -444,3 +447,46 @@ def test_example_config_ships_no_absolute_or_home_path():
     assert not offenders, (
         "sluice.yaml.example must ship no absolute or home-relative path -- it is "
         f"copied verbatim by the quickstart, and it is someone's machine: {offenders}")
+
+
+# Every line form `sluice.yaml.example` actually uses. The scope assertion in the sweep
+# above pins that the ROOT `*_dir` keys are seen -- but both of those ship COMMENTED and
+# at column 0, so it is satisfied by the commented arm alone. Two reviewers found the
+# same hole from opposite sides: drop `\s*` and the indented sub-app keys vanish
+# (`triage.audit_jsonl`, `track.seen_db`, `track.token_path` are all indented AND
+# commented); require `#` and the UNCOMMENTED arm vanishes, which is the arm a real
+# machine-specific value would ship on. Neither drift reddened anything, and the leak
+# gate is no backstop because it never greps `~`.
+#
+# So the forms are pinned directly, against the regex, rather than inferred from which
+# keys happen to be present today.
+_EXAMPLE_LINE_FORMS = [
+    ("active at column 0", "store: vault", "vault"),
+    ("active and indented", "  batch_size: 5", "5"),
+    ("commented at column 0", "# vault_dir: x", "x"),
+    ("commented and indented", "  # seen_db: x", "x"),
+    ("block-sequence item", "  - remote", "remote"),
+]
+
+
+@pytest.mark.parametrize("label,line,expected", _EXAMPLE_LINE_FORMS,
+                         ids=[f[0] for f in _EXAMPLE_LINE_FORMS])
+def test_the_example_extractor_matches_every_line_form(label, line, expected):
+    m = _EXAMPLE_SETTING.match(line)
+    assert m, f"{label}: the extractor no longer matches {line!r}"
+    assert m.group(2).strip() == expected
+
+
+def test_the_example_file_really_contains_both_commented_and_active_settings():
+    """...and that the forms above are not hypothetical.
+
+    Pinning the regex alone would still pass if the FILE stopped exercising a form, at
+    which point the sweep silently covers less than it reads as covering.
+    """
+    lines = [line for line, _ in _example_setting_values()]
+    commented = [ln for ln in lines if ln.lstrip().startswith("#")]
+    active = [ln for ln in lines if not ln.lstrip().startswith("#")]
+    indented = [ln for ln in lines if ln.startswith((" ", "\t"))]
+    assert commented and active and indented, (
+        f"commented={len(commented)} active={len(active)} indented={len(indented)} -- "
+        "the sweep no longer exercises every line form it claims to cover")
