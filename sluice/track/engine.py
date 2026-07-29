@@ -228,6 +228,10 @@ def confirm(vault, cfg, slug, to, *, deadletter, when=None, dry_run=False) -> di
     if not _status.can_transition(note.status, to):
         return {"ok": False, "reason": note.status}
     if not dry_run:
+        # BEFORE the status write. `clear_lead` below can raise on an unreachable store,
+        # and by then the advance has already landed -- leaving a row nobody can clear,
+        # because re-running is refused on a transition that already happened.
+        deadletter.check_reachable()
         fields = {"status": _status.normalize(to), "last_signal": date.today().isoformat()}
         if when:
             fields["interview_date"] = f'"{when}"'
