@@ -67,3 +67,22 @@ def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> s
         _log.warning(msg)
 
     return resolved
+
+
+def config_file() -> str:
+    """Where the config file lives: `$SLUICE_CONFIG`, else `<config root>/config.yaml`.
+
+    A function rather than five copies of the same `resolve` call, because all FIVE
+    loaders have to agree: each reads its own block of ONE file, so converting four and
+    missing the fifth -- or spelling the name differently in one -- gives a config that
+    half-loads with nothing raising anywhere. Single-siting makes that impossible rather
+    than merely tested for.
+
+    No `config_value`: this resolves the config file itself, so a config key naming it
+    could only be read from a file already found. No `legacy` either -- there has never
+    been a default config path to migrate from; an unset `SLUICE_CONFIG` meant no config
+    file at all, and now means this one if it exists. That is the sweep's only behaviour
+    change.
+    """
+    return resolve(env_var="SLUICE_CONFIG", config_value="", kind="config",
+                   name="config.yaml")

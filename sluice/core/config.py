@@ -7,6 +7,7 @@ can override without editing files.
 import os
 from dataclasses import dataclass, field
 
+from sluice.core.paths import config_file
 from sluice.core.urlguard import parse_allow_hosts
 
 try:
@@ -114,7 +115,7 @@ def _str_list(value, name: str) -> list:
 
 def load_config(path: str | None = None) -> Config:
     data = {}
-    path = path or os.environ.get("SLUICE_CONFIG")
+    path = path or config_file()
     if path and os.path.exists(path) and yaml is not None:
         with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
