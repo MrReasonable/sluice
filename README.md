@@ -78,7 +78,12 @@ Each of those is a seam meant to become a pluggable adapter. The roadmap:
 
 ```bash
 pip install -e .
-config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/sluice"
+# sluice IGNORES a relative XDG_CONFIG_HOME (the XDG spec requires it), so mirror
+# that here -- otherwise this writes the config somewhere sluice will not read it.
+case "${XDG_CONFIG_HOME:-}" in
+  /*) config_dir="$XDG_CONFIG_HOME/sluice" ;;
+  *)  config_dir="$HOME/.config/sluice" ;;
+esac
 mkdir -p "$config_dir"
 cp -n sluice.yaml.example "$config_dir/config.yaml"   # -n: never clobber an existing one
 sluice ingest run --help

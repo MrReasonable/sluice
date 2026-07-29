@@ -470,8 +470,13 @@ class Sluice:
         cli.py's `_selected` -- this method just executes the list it is handed.
 
         `dry_run` OR `json_sink` both route to `JsonSink`, never `VaultSink`: a
-        dry run's whole point is to change nothing on disk, and `--sink json` is
+        dry run skips the vault and the dedup-state WRITE, and `--sink json` is
         an explicit request to skip the vault -- so neither constructs the store.
+        It is not disk-free, and saying so was wrong in three other places before
+        this one: `_update_health` runs on every source on every run, so a dry
+        run still records health and can create `sluice_health.json`. That is
+        deliberate -- health is a fact about the FETCH, which a dry run really
+        performs -- but it is a write, and this comment used to deny it.
         `SeenDb` IS constructed on both branches, and read: a dry run that lied
         about what had already been seen would be useless. What those branches
         skip is the dedup-state WRITE, not the read (see the comment on `seen`

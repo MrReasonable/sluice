@@ -120,8 +120,13 @@ logic. Only `load_config` names its fields explicitly; the four sub-app loaders 
 the sub-app loaders must not be "fixed" into naming theirs (`load_track_config`'s merged-denylist
 branch lives in that loop).
 
-**Every path goes through `core/paths.py` (#80).** One `resolve()`, one order — env var, then
-config key, then the XDG base directory for that `kind`. Two things follow that are easy to undo by
+**Every RELOCATABLE path goes through `core/paths.py` (#80).** One `resolve()`, one order — env var,
+then config key, then the XDG base directory for that `kind`. It is not every path in the codebase,
+and the exceptions are deliberate: seven artefact paths stay cwd-relative (the CV working
+directories in `apply/config.py`, `cv/config.py` and `cv/render.py`, and `core/vault.py`'s
+`_DEFAULT_VAULT`), because they name a workspace the user is standing in rather than per-system
+state. `grep -rn '"\./' sluice --include='*.py' | grep -v core/paths.py` pins them at nine lines
+(`cv-served` and `cv-home` appear twice each). Two things follow that are easy to undo by
 accident. A path's config default must be `""`: a non-empty default is always truthy, so it
 short-circuits the chain, the XDG location is never reached, and nothing goes red while the feature
 is inert. And precedence belongs in the FACTORY, never ahead of an explicit constructor argument —
