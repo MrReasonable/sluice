@@ -392,7 +392,9 @@ def _example_setting_values():
     KNOWN LIMITS, measured rather than assumed, so nobody reads this as total coverage:
     a block-scalar body (`vault_dir: |` then an indented path on the NEXT line) is not
     seen, because this is line-oriented; nor is `$HOME/...` or a Windows drive-letter path,
-    neither of which starts with `/` or `~`. The leak gate backstops the `/Users|/home`
+    neither of which starts with `/` or `~`; nor a `file:///` URL, whose first slash is
+    preceded by the colon this pattern excludes so that `https://` does not read as a
+    path. None of those shapes appears in the example file. The leak gate backstops the `/Users|/home`
     ones but never greps `~`, so the block-scalar tilde case has no second line of
     defence. Left as limits rather than chased, because each costs a YAML parser or a
     second pattern language, and the shapes the example file actually uses are covered.
