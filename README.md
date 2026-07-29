@@ -92,12 +92,19 @@ sluice triage run --help
 
 sluice reads `$XDG_CONFIG_HOME/sluice/config.yaml` (`~/.config/sluice/config.yaml`
 on a default setup) and keeps its own state and caches under the matching XDG
-directories, so you can run it from anywhere rather than from one project
-directory. `$SLUICE_CONFIG` still overrides the location if you would rather keep
-the file elsewhere:
+directories, so its config and state no longer follow your working directory.
+
+Your **vault** is the exception, and it is deliberate: it defaults to `./vault`,
+relative to wherever you run the command, because it is your own Obsidian
+directory rather than per-system state sluice owns. Set `vault_dir` in the config
+file (or `VAULT_DIR`) before running from anywhere else, or you will get a second,
+empty vault beside you instead of the one you meant.
+
+`$SLUICE_CONFIG` still overrides the config location if you would rather keep the
+file elsewhere:
 
 ```bash
-cp sluice.yaml.example sluice.local.yaml     # git-ignored
+cp -n sluice.yaml.example sluice.local.yaml     # -n: never clobber an existing one
 export SLUICE_CONFIG=$(pwd)/sluice.local.yaml
 ```
 
