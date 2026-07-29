@@ -276,7 +276,7 @@ def test_the_gate_catches_real_shapes_and_spares_bare_prefixes(tmp_path):
     the real one (which necessarily contains the strings being searched for).
     """
     (tmp_path / "leaks.txt").write_text(
-        "/Users/iandominey/.claude/x.jsonl\n/Users/Alice/dev\n/home/2runner/work\n",
+        "/Users/devuser/.claude/x.jsonl\n/Users/Alice/dev\n/home/2runner/work\n",
         encoding="utf-8")
     (tmp_path / "detectors.txt").write_text(
         "`/Users/`\n`/home/`, `.local`, `ssh`\n", encoding="utf-8")
@@ -296,7 +296,7 @@ def test_the_gate_catches_real_shapes_and_spares_bare_prefixes(tmp_path):
         "the gate false-positives on a bare-prefix detector under git grep -E"
 
     # ...and Python's `re` must agree, since _HOME_PATH_RE is used elsewhere in this file.
-    for leak in ("/Users/iandominey/.claude/x.jsonl", "/Users/Alice/dev", "/home/2runner/work"):
+    for leak in ("/Users/devuser/.claude/x.jsonl", "/Users/Alice/dev", "/home/2runner/work"):
         assert _HOME_PATH_RE.search(leak), f"gate would MISS a real leak: {leak}"
     for detector in ("`/Users/`", "`/home/`, `.local`, `ssh`"):
         assert not _HOME_PATH_RE.search(detector), f"gate false-positives on a detector: {detector}"
