@@ -59,13 +59,30 @@ def _load_disabled() -> set:
     path = _disabled_path()
     if not os.path.lexists(path):
         return set()
+    if not os.path.exists(path):
+        # Present as a link, absent as a file. Saying so beats the bare
+        # "No such file or directory" the open would raise for a path we just proved
+        # exists -- the sibling in seendb.py words it the same way.
+        raise OSError(
+            f"the disabled-sources overlay at {path} is a symlink to something that does "
+            f"not exist. Fix or remove the link; removing it re-enables every source you "
+            f"had turned off.")
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
-    if not isinstance(data, list) or any(not isinstance(x, str) for x in data):
+    if not isinstance(data, list):
+        bad = f"got {type(data).__name__}"
+    else:
+        # Name the ELEMENT's type, not the container's: reporting "got list" for
+        # `["reed", 1]` describes the thing that was RIGHT and hides the thing that
+        # was wrong.
+        offenders = [x for x in data if not isinstance(x, str)]
+        bad = (f"got a list containing {type(offenders[0]).__name__}" if offenders
+               else "")
+    if bad:
         raise ValueError(
             f"the disabled-sources overlay at {path} must be a JSON list of source ids, "
-            f"got {type(data).__name__}. Fix or delete it; deleting it re-enables every "
-            f"source you had turned off.")
+            f"{bad}. Fix or delete it; deleting it re-enables every source you had "
+            f"turned off.")
     return set(data)
 
 
@@ -159,7 +176,18 @@ def cmd_run(args, config) -> int:
     # Imported here so offline commands (and their tests) never touch Camofox.
     from sluice.core.app import Sluice
 
-    disabled = _disabled_or_warn()   # read-only: never writes the overlay back
+    # REFUSES, unlike cmd_list_sources. The split is by what the caller DOES with the
+    # answer, not by whether it writes the overlay file: list-sources reads and PRINTS, so
+    # a wrong answer misprints a status line. `run` reads and ACTS -- it scrapes, and a
+    # wrong answer scrapes the sources the operator explicitly turned off and writes their
+    # leads into the vault. Refusing does NOT hard-fail upgraders: an overlay still at the
+    # pre-#80 location leaves the resolved path missing, which is the abstain arm, so the
+    # raise needs a file that is present AND unusable. Measured.
+    try:
+        disabled = _load_disabled()
+    except (OSError, ValueError) as e:
+        _log.error("%s", e)
+        return 1
     srcs = _selected(args, config, disabled)
     if not srcs:
         _log.warning("no enabled sources selected")
