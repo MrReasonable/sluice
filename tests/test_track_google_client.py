@@ -176,3 +176,19 @@ def test_the_refresh_path_writes_through_write_token(tmp_path, monkeypatch, pinn
     gc.RealGoogleClient(str(p))._creds()
     assert p.read_text(encoding="utf-8") == '{"refreshed": true}'
     assert _mode(p) == 0o600, "a refreshed token must not be left world-readable"
+
+
+def test_a_fresh_token_is_private_before_any_chmod(tmp_path, monkeypatch, pinned_umask):
+    """The file must be private at CREATION, not merely by the time we finish.
+
+    A plain `open()` followed by a `chmod` leaves a window in which the token exists
+    world-readable, which is enough for a local reader to copy it -- a real finding
+    against the first version of this function. `os.chmod` is neutralised here because
+    it normalises both arms: with it in place, a mutant that weakens the creation mode
+    is an EQUIVALENT mutant and this row could never see the difference.
+    """
+    from sluice.track import google_client as mod
+    monkeypatch.setattr(mod.os, "chmod", lambda *a, **k: None)
+    p = tmp_path / "google_token.json"
+    mod._write_token(str(p), "tok")
+    assert _mode(p) == 0o600, "the token was world-readable between creation and chmod"
