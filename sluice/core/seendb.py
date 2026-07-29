@@ -3,6 +3,7 @@ carries over the cutover unchanged."""
 import datetime
 import os
 import sqlite3
+import urllib.parse
 from collections.abc import Iterable
 
 from sluice.core.leads import Lead
@@ -54,20 +55,34 @@ class SeenDb:
         # what hid the corruption case, and `OperationalError` covers "database is
         # locked" as well as "no such table", so discriminating on the exception would
         # silently swallow a transient lock too.
-        if not os.path.exists(self.path):
-            # `lexists` distinguishes TRULY absent from a DANGLING SYMLINK. Without this
-            # arm a broken link reads as "no dedup history yet" and the run proceeds with
-            # an empty set -- the #81 harm -- when what it actually means is that someone's
-            # store has been moved or deleted out from under a link that still points at
-            # it. (Nothing is CREATED by the read either way -- both loaders return
-            # before any connect. Creation is on the write path.)
-            if os.path.lexists(self.path):
-                raise sqlite3.DatabaseError(
-                    f"the dedup database path {self.path} is a symlink to something that "
-                    f"does not exist. sluice will not run with an empty dedup set; fix or "
-                    f"remove the link.")
+        # `lstat`/`stat`, NOT `os.path.exists`/`lexists`, for the reason `DeadLetterDb`
+        # states and this loader was missed on: those return False on ANY OSError, so a
+        # store under a directory the user cannot traverse read as "absent" and the run
+        # proceeded with an EMPTY DEDUP SET -- measured here, `set()` with nothing said.
+        # That is the #81 harm this whole method exists to refuse, reached by a third
+        # route. Only FileNotFoundError means absent; EACCES and friends propagate.
+        try:
+            os.lstat(self.path)
+        except FileNotFoundError:
             return set()
-        db = sqlite3.connect(self.path)
+        try:
+            os.stat(self.path)     # the name exists; does it resolve?
+        except FileNotFoundError:
+            # A DANGLING SYMLINK is not "no dedup history yet" -- it means someone's store
+            # was moved or deleted out from under a link that still points at it.
+            raise sqlite3.DatabaseError(
+                f"the dedup database path {self.path} is a symlink to something that "
+                f"does not exist. sluice will not run with an empty dedup set; fix or "
+                f"remove the link.") from None
+        # `mode=rw`, so opening CANNOT create. The docstring above warns that
+        # `sqlite3.connect` creates a 0-byte file merely by opening and that the file
+        # permanently disarms the #80 relocation refusal -- and then left a window in
+        # which exactly that happens: the check above says the store is there, the file
+        # is removed or the volume unmounts, and the plain connect below silently creates
+        # the empty store the refusal keys on. A no-create open turns that race into a
+        # loud OperationalError instead, which the arm below re-raises untouched.
+        db = sqlite3.connect(
+            "file:" + urllib.parse.quote(self.path) + "?mode=rw", uri=True)
         try:
             # Wrapped so the failure names the FILE and a remedy. Unwrapped, a user meets
             # `sqlite3.DatabaseError: file is not a database` with no path in it, ten
