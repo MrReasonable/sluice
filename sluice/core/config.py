@@ -113,6 +113,34 @@ def _str_list(value, name: str) -> list:
     return list(value)
 
 
+def refuse_retired_dossier_dir(block: str, data: dict) -> None:
+    """Raise if a sub-app block still carries the retired `dossier_dir` key (#80).
+
+    One helper rather than a raise written out in each loader, so the two cannot drift
+    apart or one of them quietly not fire -- and a partial retirement is the bad case
+    here, since it is what splits the shared cache.
+
+    Both loaders filter unknown keys with `hasattr`, so without this the key is dropped
+    in SILENCE: a user who had pointed cv at its own dossier directory would get a
+    different one, with no signal and the fabrication gate still green. Fail loudly at
+    construction, this repo's rule precisely because a quiet wrong default is the bug
+    class it most consistently engineers out.
+
+    The message names the key and its replacement and NEVER echoes the value. That
+    differs deliberately from the `cv.baseline_rel` raise it is modelled on:
+    `baseline_rel` is a store-RELATIVE name, while this is a host path usually under a
+    home directory, and an exception travels further (logs, bug reports, pasted
+    tracebacks) than the config file it came from. `dossier_allow_hosts` above already
+    rules that way for the same reason.
+    """
+    if "dossier_dir" in data:
+        raise ValueError(
+            f"{block}.dossier_dir has moved to the top level of sluice.yaml. triage and "
+            f"cv share ONE dossier cache, and two keys could split it -- with cv then "
+            f"re-fetching every dossier over the network. Move it out of the `{block}:` "
+            f"block to a root `dossier_dir:` key.")
+
+
 def load_config(path: str | None = None) -> Config:
     data = {}
     path = path or config_file()

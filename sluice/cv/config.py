@@ -3,6 +3,7 @@ Every field has a sane default so cv runs with no config file. Secrets via env."
 import os
 from dataclasses import dataclass, field
 
+from sluice.core.config import refuse_retired_dossier_dir
 from sluice.core.paths import config_file
 
 try:
@@ -46,7 +47,9 @@ class CvConfig:
     # CV (#60). A safety valve, not a job preference, so it ships LIVE (True); set False to
     # restore the old auto-serve. The hard validate gate is unaffected either way.
     require_signoff: bool = True
-    dossier_dir: str = "./dossiers"
+    # NB no `dossier_dir` here: #80 retired it in favour of one root `dossier_dir`,
+    # because triage and cv share this cache and two keys could split it.
+    # load_cv_config RAISES on it rather than letting `hasattr` drop it in silence.
     # Which renderer fills the seam. "script" is today's external WeasyPrint shell-out
     # and stays the default so an operator with a working script is unaffected;
     # "weasyprint" is the bundled in-process renderer (pip install 'sluice[render]').
@@ -86,6 +89,8 @@ def load_cv_config(path: str | None = None) -> CvConfig:
     # not check the baseline's dates and employers). Fail loudly at construction, which is
     # this codebase's rule precisely because a quiet wrong default is the bug class it
     # most consistently engineers out.
+    refuse_retired_dossier_dir("cv", data)
+
     if "baseline_rel" in data:
         raise ValueError(
             "cv.baseline_rel has moved to the top level of sluice.yaml (it is a STORE "

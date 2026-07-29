@@ -5,6 +5,7 @@ with no config file at all."""
 import os
 from dataclasses import dataclass, field
 
+from sluice.core.config import refuse_retired_dossier_dir
 from sluice.core.paths import config_file, resolve
 
 try:
@@ -38,7 +39,9 @@ class TriageConfig:
     perm_floor_gbp: int = 0
     batch_size: int = 5
     ttl_days: int = 7
-    dossier_dir: str = "./dossiers"
+    # NB no `dossier_dir` here: it was a DEAD key (declared, read by nothing) and is
+    # retired outright by #80 in favour of one root `dossier_dir`. load_triage_config
+    # RAISES on it rather than letting `hasattr` drop it in silence.
     # Blank, not a path (#80), and load_triage_config fills it in. A non-empty default
     # is always truthy, so it short-circuits `env or config key or XDG` before the XDG
     # location is reached -- the field would never move, silently.
@@ -67,6 +70,7 @@ def load_triage_config(path: str | None = None) -> TriageConfig:
     if path and os.path.exists(path) and yaml is not None:
         with open(path, encoding="utf-8") as f:
             data = (yaml.safe_load(f) or {}).get("triage") or {}
+        refuse_retired_dossier_dir("triage", data)
         for k, v in data.items():
             if hasattr(cfg, k) and v is not None:
                 setattr(cfg, k, v)
