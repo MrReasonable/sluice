@@ -104,3 +104,19 @@ def test_location_noise_words_rejects_non_string_entries(tmp_path, monkeypatch):
     p.write_text("location_noise_words:\n  - 42\n")   # a non-string entry
     with pytest.raises(ValueError, match="location_noise_words"):
         load_config(str(p))
+
+
+def test_path_keys_round_trip_through_load_config(tmp_path, monkeypatch):
+    # #80. A dataclass field ALONE is dead here: load_config names every field
+    # explicitly (no splat, no loop, unlike the four sub-app loaders' hasattr+setattr
+    # loops), so a field it does not name stays at its default no matter what the YAML
+    # says. That is the pre-existing shape of triage/config.py's two dead keys -- the
+    # user sets them, nothing happens, and nothing errors -- and it is why this row
+    # asserts the LOADER rather than the dataclass.
+    monkeypatch.delenv("SLUICE_CONFIG", raising=False)
+    vault, dossiers = tmp_path / "v", tmp_path / "d"
+    p = tmp_path / "s.yaml"
+    p.write_text(f'vault_dir: "{vault}"\ndossier_dir: "{dossiers}"\n', encoding="utf-8")
+    cfg = load_config(str(p))
+    assert cfg.vault_dir == str(vault)
+    assert cfg.dossier_dir == str(dossiers)
