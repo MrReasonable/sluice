@@ -278,6 +278,41 @@ def test_no_generated_or_personal_artefact_is_tracked():
     )
 
 
+def _is_allowed_hit(line):
+    """True if a `git grep -n` hit line is a documented synthetic literal IN ITS OWN FILE.
+
+    Extracted so it can be given synthetic input: while this was inline, deleting the
+    file-scoping clause left the whole suite green, because nothing could exercise the
+    predicate without planting files in the real tree.
+
+    `found` must be non-empty. `all([])` is True, and discovery is deliberately WIDER
+    than this parser (it catches non-ASCII components the ASCII class cannot represent),
+    so a line git matched and this cannot parse must be REPORTED, not skipped.
+    """
+    path_in_repo = line.split(":", 1)[0]
+    found = _FULL_HOME_PATH_RE.findall(line)
+    return bool(found) and all(
+        m in _ALLOWED_HOME_PATHS
+        and any(path_in_repo.startswith(w)
+                for w in _ALLOWED_HOME_PATH_FILES.get(m, ()))
+        for m in found)
+
+
+@pytest.mark.parametrize("line,allowed,why", [
+    ("tests/test_backends.py:1: /home/example/.local/bin/claude", True,
+     "a documented literal in its own file"),
+    ("sluice/core/paths.py:1: /home/example/.local/bin/claude", False,
+     "the same literal somewhere it was never exempted"),
+    ("tests/test_backends.py:1: /home/realperson/x", False, "not on the allow-list"),
+    ("tests/test_backends.py:1: /home/example/.local/bin/claude and /home/other/x", False,
+     "one allowed literal does not cover the rest of the line"),
+    ("tests/test_backends.py:1: nothing here", False,
+     "no parseable path -- an unparseable git hit must report, not skip"),
+])
+def test_the_allowance_is_scoped_to_the_file_that_needs_it(line, allowed, why):
+    assert _is_allowed_hit(line) is allowed, why
+
+
 @pytest.mark.parametrize("prefix", ["/Users/", "/home/"])
 def test_no_absolute_home_path_is_tracked_in_source_or_config(prefix):
     """An absolute home path names a person and their machine. This repo promises neither.
@@ -300,7 +335,11 @@ def test_no_absolute_home_path_is_tracked_in_source_or_config(prefix):
                # this gate entirely. Named explicitly rather than widened to `*example*`,
                # which would be a guess about future filenames.
                "*.md", "*.yaml", "*.yml", "*.toml", "*.json", ".gitignore",
-               "sluice.yaml.example",
+               # `sluice.yaml.example` and `run_tests.sh` are named because no glob here
+               # reaches them: `*.yaml` does not match the former, and the latter is a
+               # hand-written local runner, which is exactly the shape that carries a
+               # developer's absolute path.
+               "sluice.yaml.example", "run_tests.sh",
                allow=(0, 1))
     hits = []
     for line in out.splitlines():
@@ -310,13 +349,7 @@ def test_no_absolute_home_path_is_tracked_in_source_or_config(prefix):
         # `found` must be non-empty: `all([])` is True, so a line git grep matched but
         # Python's `re` did not would otherwise be dropped in silence -- a gate failing
         # open, which is the bug this whole file just spent a round fixing.
-        path_in_repo = line.split(":", 1)[0]
-        found = _FULL_HOME_PATH_RE.findall(line)
-        if found and all(
-                m in _ALLOWED_HOME_PATHS
-                and any(path_in_repo.startswith(w)
-                        for w in _ALLOWED_HOME_PATH_FILES.get(m, ()))
-                for m in found):
+        if _is_allowed_hit(line):
             continue
         hits.append(line)
     assert not hits, f"absolute home path under {prefix!r} in tracked files: {hits}"
