@@ -83,7 +83,27 @@ def _grouped(answers, default_vault):
 
 
 def _render_sources(sources):
-    return []                       # Task 7 replaces this
+    """`sources:` is a mapping keyed by source id, shaped unlike every other block, so it renders
+    separately rather than being forced through `_grouped`."""
+    out = ["", "# -- Sources " + "-" * 56,
+           "# Which boards to scrape, and the searches to run on each. A source with no `searches`",
+           "# override runs its own neutral example search."]
+    if not sources:
+        out += ["# sources:",
+                "#   example_source:",
+                "#     searches:",
+                '#       - ["Example search", "https://example.invalid/jobs"]']
+        return out
+    out.append("sources:")
+    for sid in sorted(sources):
+        spec = sources[sid]
+        out.append(f"  {sid}:")
+        out.append(f"    enabled: {scalar(bool(spec.get('enabled', True)))}")
+        searches = spec.get("searches") or []
+        if searches:
+            out.append("    searches:")
+            out += [f"      - [{scalar(label)}, {scalar(url)}]" for label, url in searches]
+    return out
 
 
 def default_sections() -> dict:
