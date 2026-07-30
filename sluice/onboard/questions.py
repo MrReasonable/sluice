@@ -124,10 +124,11 @@ def catalogue(*, default_vault: str = "") -> tuple:
     `""` so callers that only need the question TUPLE -- `plan`'s renderers, which never read
     `q.default` -- do not have to thread a value they cannot observe.
 
-    Ask order matters in one place: the coarse ingest gate is LAST. It is the most dangerous key in
-    the file -- a keep-list discards every title that does not match, before dedup and before any
-    LLM call -- so it is asked once the user has seen what the downstream gates do, and its prompt
-    states the consequence outright.
+    Ask order matters in one place: the coarse ingest gate is asked AFTER every gate whose
+    consequence it amplifies (the provider questions come later still, but they gate nothing). It
+    is the most dangerous key in the file -- a keep-list discards every title that does not match,
+    before dedup and before any LLM call -- so it is asked once the user has seen what the
+    downstream gates do, and its prompt states the consequence outright.
     """
     from sluice.core.app import Sluice
     backends = tuple(sorted(Sluice.available("backend")))
@@ -170,12 +171,15 @@ def catalogue(*, default_vault: str = "") -> tuple:
                  consequence="require a location matching: {value}"),
         Question("reject_companies", "Any companies to skip, comma-separated?", parse_csv,
                  ("triage.reject_companies",), "Want", consequence="always skip: {value}"),
-        Question("contract_floor", "Minimum day rate for contract work (GBP)?", parse_int,
-                 ("triage.contract_floor_gbp_day",), "Want", hint="0 or blank means no floor.",
-                 consequence="drop contract roles under GBP {value}/day"),
-        Question("perm_floor", "Minimum salary for permanent work (GBP)?", parse_int,
+        Question("contract_floor", "Minimum day rate for contract work?", parse_int,
+                 ("triage.contract_floor_gbp_day",), "Want",
+                 hint="0 or blank means no floor. The pay-floor config keys are named in GBP "
+                      "(contract_floor_gbp_day), so give the number in whatever currency your "
+                      "leads quote -- sluice compares numbers, not currencies.",
+                 consequence="drop contract roles under {value}/day"),
+        Question("perm_floor", "Minimum salary for permanent work?", parse_int,
                  ("triage.perm_floor_gbp",), "Want", hint="0 or blank means no floor.",
-                 consequence="drop permanent roles under GBP {value}"),
+                 consequence="drop permanent roles under {value}"),
         Question("lead_ttl_days", "Drop leads not seen in a scrape for how many days?", parse_int,
                  ("lead_ttl_days",), "Want",
                  hint="0 or blank turns staleness off, which is the shipped default.",

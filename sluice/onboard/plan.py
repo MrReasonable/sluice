@@ -11,9 +11,9 @@ construction instead of by review.
 import re
 from dataclasses import dataclass
 
+from sluice.core.criteria import DEFAULT_CRITERIA
 from sluice.onboard.emit import flow_list, scalar
 from sluice.onboard.questions import catalogue
-from sluice.triage.prompt import _DEFAULT_CRITERIA
 
 _SECTION_BLURB = {
     "Vault": "Where your notes live.",
@@ -112,13 +112,13 @@ def _render_sources(sources):
 
 
 def default_sections() -> dict:
-    """`_DEFAULT_CRITERIA` split on its own headings: heading -> the shipped prose under it.
+    """`DEFAULT_CRITERIA` split on its own headings: heading -> the shipped prose under it.
 
     DERIVED, so there is no second copy of the heading list to drift. v1 hand-wrote the five and
     pinned them by equality against this source; splitting the source removes the duplicate
     instead of testing for it.
     """
-    parts = re.split(r"^(#{2,3} .+)$", _DEFAULT_CRITERIA, flags=re.M)
+    parts = re.split(r"^(#{2,3} .+)$", DEFAULT_CRITERIA, flags=re.M)
     return {parts[i]: parts[i + 1].strip() for i in range(1, len(parts), 2)}
 
 
@@ -148,9 +148,9 @@ _PROFILE_PROMPTS = {
 
 
 def _render_profile(profile_answers):
-    """Every heading present. An UNANSWERED heading keeps `_DEFAULT_CRITERIA`'s own prose.
+    """Every heading present. An UNANSWERED heading keeps `DEFAULT_CRITERIA`'s own prose.
 
-    That is the round-1 Critical. `build_system_prompt_from` falls back to `_DEFAULT_CRITERIA` only
+    That is the round-1 Critical. `build_system_prompt_from` falls back to `DEFAULT_CRITERIA` only
     when the criteria text is missing or EMPTY, and this file is never empty -- so emitting bare
     headings would permanently strip the four instructions telling the judge to abstain ("prefer
     `research`", "do not score on role shape", "do not assume a culture preference", "never invent
@@ -186,8 +186,17 @@ def _render_profile(profile_answers):
 def _render_config(answers, sources):
     lines = [_HEADER]
     grouped = _grouped(answers)
-    # HOISTED out of the per-block loop: a fan-out question appears in three blocks, and a per-block
-    # set emitted its section header, blurb and hint once per block.
+    # Keyed on (section, BLOCK), not on section alone. A bare section key hoisted each header to
+    # whichever block happened to hold its first question, and the two blurbs that carry SAFETY
+    # information were the ones it stranded: `-- Want` rendered at root above `lead_ttl_days` alone,
+    # so "EVERY key here is optional, and an unset gate passes every lead through" -- the abstain
+    # doctrine's only appearance beside a gate -- never reached the six triage gates it describes;
+    # and "API keys come from the environment, never this file" rendered under `cv:` only, missing
+    # both other blocks that take a provider key.
+    #
+    # This still fixes what the hoist was added for. The triple emission came from ONE fan-out
+    # question writing three blocks; per (section, block) it contributes one key to each, so its
+    # header appears once per block rather than three times in one.
     sections_seen = set()
 
     for block in [""] + [b for b in grouped if b]:
@@ -197,8 +206,8 @@ def _render_config(answers, sources):
         indent = "  " if block else ""
         body = []
         for leaf, q, value in entries:
-            if q.section and q.section not in sections_seen:
-                sections_seen.add(q.section)
+            if q.section and (q.section, block) not in sections_seen:
+                sections_seen.add((q.section, block))
                 body.append("")
                 body.append(f"{indent}# -- {q.section} " + "-" * max(0, 56 - len(q.section)))
                 body += [f"{indent}# {ln}" for ln in _SECTION_BLURB.get(q.section, "").split("\n")
