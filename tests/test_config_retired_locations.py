@@ -57,13 +57,18 @@ def test_neither_message_echoes_the_value(tmp_path, monkeypatch, source):
     assert "Example Place" not in str(exc.value)
 
 
-def test_a_config_without_it_loads(tmp_path):
+def test_a_config_without_it_loads(tmp_path, monkeypatch):
+    # Every sibling sets or clears this; inheriting it makes `load_config` raise the very refusal
+    # under test, so the pass/fail here would depend on the developer's shell.
+    monkeypatch.delenv("SLUICE_LOCATIONS", raising=False)
     path = tmp_path / "c.yaml"
     path.write_text("lead_ttl_days: 0\n", encoding="utf-8")
     assert load_config(str(path)) is not None
 
 
-def test_no_config_file_at_all_still_loads():
+def test_no_config_file_at_all_still_loads(monkeypatch):
+    monkeypatch.delenv("SLUICE_LOCATIONS", raising=False)
+    monkeypatch.delenv("SLUICE_CONFIG", raising=False)
     """The refusal must not fire on a fresh install, which is the case `sluice init` runs in."""
     assert load_config(None) is not None
 

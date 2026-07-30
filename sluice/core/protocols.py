@@ -204,8 +204,11 @@ class Store(Protocol):
         create-exclusive as its primitive would silently freeze that digest at its first
         version and nothing would report it.
 
-        `rel` must also stay INSIDE the store: an absolute path or one containing `..`
-        raises ValueError rather than writing. This is the one wholesale-write primitive on
+        `rel` must also stay INSIDE the store: an absolute path, or one that RESOLVES
+        outside the store root, raises ValueError rather than writing. An interior `..`
+        that stays inside (`a/../b.md`) is accepted -- the rule is containment of the
+        resolved path, not a ban on the characters, and a second store that rejected the
+        characters would disagree with this one on the same key. This is the one wholesale-write primitive on
         a never-clobber contract, so an escape would let it scribble over `My CV/CV.md`,
         the fabrication gate's ground truth.
 
