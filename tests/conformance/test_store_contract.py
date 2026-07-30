@@ -399,8 +399,13 @@ def test_write_document_cannot_escape_the_store(store_name, tmp_path, monkeypatc
     gate's ground truth."""
     store = _make_store(store_name, tmp_path, monkeypatch)
     for escape in ("/etc/passwd", "../escaped.md", "a/../../escaped.md"):
-        with pytest.raises(ValueError):
-            store.write_document(escape, "should never be written")
+        # BOTH write paths. `only_if_absent` takes a different branch inside the writer, and one
+        # guard covering one branch is how a second implementer ends up with an escape on the arm
+        # nobody parametrised.
+        for only_if_absent in (False, True):
+            with pytest.raises(ValueError):
+                store.write_document(escape, "should never be written",
+                                     only_if_absent=only_if_absent)
 
 
 # ── empty store ──────────────────────────────────────────────────────────────
