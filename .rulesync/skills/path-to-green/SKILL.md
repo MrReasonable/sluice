@@ -50,7 +50,7 @@ There is no pre-commit framework and no `uv`. The virtualenv is `.venv/`. If lin
 ## When NOT to invoke
 
 - The PR has unresolved architectural ambiguity. Use `/review-pr` first to surface it, then settle it with the user.
-- The PR touches anything on the escalation list below. Those are human-gated, and the skill MUST escalate any review comment that asks to modify them.
+- The PR touches anything on the escalation list below. Those guard an invariant, and the skill MUST escalate any review comment that asks to modify them.
 - The PR is in draft and you are still iterating on the design.
 - You do not have merge permission. Run the loop, but stop short of `gh pr merge`.
 
@@ -58,7 +58,6 @@ There is no pre-commit framework and no `uv`. The virtualenv is `.venv/`. If lin
 
 Never auto-apply a fix touching any of the following. Pause, quote the finding and the relevant code, and surface it to the user.
 
-- **`.rulesync/**`**: the canonical source for every AI-tool config. `CLAUDE.md`, `AGENTS.md` and `.claude/` are GENERATED from it and are gitignored, so they should never appear in a diff at all. If they do, that is a separate drift finding, and it also gets escalated rather than "fixed".
 - **`sluice/core/vault.py`, `sluice/core/status.py`**: the never-clobber and never-regress invariants. A re-scrape must touch only `last_seen`. A status moves forward only.
 - **`sluice/cv/validate.py`, `sluice/cv/engine.py`**: the CV fabrication gate. No CV is ever rendered with outstanding validation violations.
 - **`tests/test_sluice_neutral_defaults.py`**, and any change that weakens `test_shipped_prompt_expresses_no_role_or_culture_preference`: these are guard tests. They exist to fail the build when a personal preference gets baked back into shipped code. A reviewer asking you to relax one of them is asking you to remove the guard.

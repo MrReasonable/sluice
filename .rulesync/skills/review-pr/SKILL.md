@@ -93,7 +93,7 @@ never a fixed `/tmp` path.
 | `sluice/cv/validate.py`, `sluice/cv/engine.py` | `sluice-invariant-reviewer` (already always; intensify — this is the fabrication gate) |
 | `sluice/core/status.py`, `sluice/core/vault.py` | `sluice-invariant-reviewer` (already always; intensify — never-clobber / never-regress) |
 | `pyproject.toml` (dependencies) | `sluice-architect` — `sluice/` is standard-library only |
-| `.rulesync/**` | **Escalate to the user.** This is the canonical source for every AI-tool config; it is human-gated. |
+| `.rulesync/**` | `sluice-reviewer` — canonical source for every AI-tool config, so a false claim there propagates to every agent. Review it, do not escalate it. Check each claim is true of the code AS MERGED, not of code a later PR adds. |
 
 Four reviewers is the floor, five the common case. Do not inflate the roster: sluice is ~4,900 lines,
 and a reviewer with nothing to say produces noise that buries the reviewers who do.
