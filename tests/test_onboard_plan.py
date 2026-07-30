@@ -70,17 +70,30 @@ def test_uncommenting_any_single_key_yields_a_config_that_still_LOADS(tmp_path):
     targets = [i for i, ln in enumerate(lines) if "<- uncomment and set YOUR OWN" in ln]
     assert len(targets) >= 15, f"only {len(targets)} uncommentable keys found"   # SCOPE
 
-    for i in targets:
-        edited = list(lines)
-        # Exactly what a user does: drop the `# ` and supply a value.
-        edited[i] = edited[i].split("#")[0] + lines[i].split("# ", 1)[1].split(":")[0] + ": []"
+    def uncomment(src, i):
+        return src[:i] + [src[i].split("#")[0] + src[i].split("# ", 1)[1].split(":")[0] + ": []"] \
+            + src[i + 1:]
+
+    # A ROOT key is uncommented alongside each nested one, because ONE key alone is not the
+    # falsifying case: an all-commented document with a single indented key still parses, so an
+    # earlier version of this test stayed GREEN with the commented-header defect fully restored.
+    # It is the COMBINATION -- a key at column 0 followed by an indented key whose parent is
+    # commented out -- that raises, and it is also what a real user does, since the template offers
+    # 4 root keys and 16 nested ones.
+    root = next(i for i in targets if not lines[i].startswith("  "))
+    nested = [i for i in targets if lines[i].startswith("  ")]
+    assert nested, "no nested key in the template; this test would prove nothing"   # SCOPE
+
+    for i in nested:
+        edited = uncomment(uncomment(list(lines), i), root)
         path = tmp_path / f"edit{i}.yaml"
         path.write_text("\n".join(edited), encoding="utf-8")
         try:
             yaml.safe_load(path.read_text(encoding="utf-8"))
         except yaml.YAMLError as exc:
             raise AssertionError(
-                f"uncommenting line {i + 1} ({lines[i].strip()!r}) broke the file: {exc}") from None
+                f"uncommenting line {i + 1} ({lines[i].strip()!r}) alongside a root key broke the "
+                f"file: {exc}") from None
 
 
 def test_prose_mentioning_a_key_does_NOT_satisfy_the_scope_matcher():
