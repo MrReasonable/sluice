@@ -27,12 +27,12 @@ def _msg(frm="jobs@company.com", subject="Interview", body="", thread="t1"):
 
 
 def test_classify_matches_single_lead():
-    leads = [_lead("Tidemark", "Banker, DevEx"), _lead("Northwind", "Analyst")]
-    be = FakeBackend(json.dumps({"lead": "Tidemark", "type": "interview", "confidence": 0.9,
+    leads = [_lead("Example Tidal", "Banker, DevEx"), _lead("Northwind", "Analyst")]
+    be = FakeBackend(json.dumps({"lead": "Example Tidal", "type": "interview", "confidence": 0.9,
                                  "when": "2026-07-20T10:00", "links": ["https://x/prep"],
                                  "materials": ["Culture deck"], "summary": "HM interview booked"}))
-    ev = C.classify(_msg(subject="Tidemark interview"), leads, be, TrackConfig(), ics=None)
-    assert ev.lead_slug is not None and "tidemark" in ev.lead_slug.lower()
+    ev = C.classify(_msg(subject="Example Tidal interview"), leads, be, TrackConfig(), ics=None)
+    assert ev.lead_slug is not None and "example tidal" in ev.lead_slug.lower()
     assert ev.type == "interview" and ev.confidence == 0.9
     assert ev.materials == ["Culture deck"] and ev.links == ["https://x/prep"]
 
@@ -46,7 +46,7 @@ def test_ambiguous_match_sets_candidates_and_no_slug():
 
 
 def test_not_job_when_no_match():
-    leads = [_lead("Tidemark", "Analyst")]
+    leads = [_lead("Example Tidal", "Analyst")]
     be = FakeBackend(json.dumps({"lead": None, "type": "not_job", "confidence": 0.99,
                                  "when": None, "links": [], "materials": [], "summary": "newsletter"}))
     ev = C.classify(_msg(), leads, be, TrackConfig(), ics=None)
@@ -56,7 +56,7 @@ def test_not_job_when_no_match():
 def test_malformed_llm_output_is_unknown():
     # No parseable JSON is a classification FAILURE, not a confident not_job (#40): the
     # model returned nothing we can read, so we have no evidence about this email at all.
-    leads = [_lead("Tidemark", "Analyst")]
+    leads = [_lead("Example Tidal", "Analyst")]
     ev = C.classify(_msg(), leads, FakeBackend("not json at all"), TrackConfig(), ics=None)
     assert ev.type == "unknown" and ev.confidence == 0.0
 
@@ -65,8 +65,8 @@ def test_wrongtyped_json_is_unknown_not_a_confident_not_job():
     # A partially-corrupt response (confidence is not a number) can't be trusted for ANY
     # field, including the type it claims -- so we surface `unknown` rather than manufacture
     # a confident not_job that reconcile would silently skip (#40).
-    leads = [_lead("Tidemark", "Analyst")]
-    be = FakeBackend(json.dumps({"lead": "Tidemark", "type": "interview", "confidence": "high",
+    leads = [_lead("Example Tidal", "Analyst")]
+    be = FakeBackend(json.dumps({"lead": "Example Tidal", "type": "interview", "confidence": "high",
                                  "links": 5, "materials": None, "summary": "x"}))
     ev = C.classify(_msg(), leads, be, TrackConfig(), ics=None)
     assert ev.type == "unknown" and ev.confidence == 0.0
@@ -76,7 +76,7 @@ def test_classify_failure_returns_unknown_not_a_confident_not_job():
     # #40: a backend error must surface as `unknown`, never as the confident default that
     # reconcile reads as "not a job email" and silently skips -- the path by which a
     # rejection email vanishes and its lead sits at `applied` forever.
-    leads = [_lead("Tidemark", "Analyst")]
+    leads = [_lead("Example Tidal", "Analyst")]
     ev = C.classify(_msg(), leads, RaisingBackend(), TrackConfig(), ics=None)
     assert ev.type == "unknown"
     assert ev.lead_slug is None and ev.candidates == []
@@ -85,7 +85,7 @@ def test_classify_failure_returns_unknown_not_a_confident_not_job():
 def test_not_job_is_only_returned_on_evidence_never_on_exception():
     # Pin the invariant behind #40: not_job is a CLAIM about the email, only ever returned
     # when the model actually said so. An exception must never manufacture that claim.
-    leads = [_lead("Tidemark", "Analyst")]
+    leads = [_lead("Example Tidal", "Analyst")]
     said = FakeBackend(json.dumps({"lead": None, "type": "not_job", "confidence": 0.9,
                                    "when": None, "links": [], "materials": [], "summary": "newsletter"}))
     assert C.classify(_msg(), leads, said, TrackConfig()).type == "not_job"
@@ -97,7 +97,7 @@ def test_model_returned_unknown_maps_to_not_job():
     # signal must be un-forgeable from model output: a model that literally emits type="unknown"
     # is a completed, evidence-bearing response, so the _TYPES clamp folds it to not_job and it
     # never reaches reconcile's failure branch. Only the except path may produce `unknown`.
-    leads = [_lead("Tidemark", "Analyst")]
+    leads = [_lead("Example Tidal", "Analyst")]
     be = FakeBackend(json.dumps({"lead": None, "type": "unknown", "confidence": 0.9,
                                  "when": None, "links": [], "materials": [], "summary": "x"}))
     ev = C.classify(_msg(), leads, be, TrackConfig(), ics=None)
@@ -107,8 +107,8 @@ def test_model_returned_unknown_maps_to_not_job():
 def test_when_falls_back_to_ics_start():
     from sluice.track.ics import IcsEvent
     from datetime import datetime, timezone
-    leads = [_lead("Tidemark", "Analyst")]
-    be = FakeBackend(json.dumps({"lead": "Tidemark", "type": "interview", "confidence": 0.9,
+    leads = [_lead("Example Tidal", "Analyst")]
+    be = FakeBackend(json.dumps({"lead": "Example Tidal", "type": "interview", "confidence": 0.9,
                                  "when": None, "links": [], "materials": [], "summary": "x"}))
     ics = IcsEvent(uid="u", start=datetime(2026, 7, 20, 10, 0, tzinfo=timezone.utc))
     ev = C.classify(_msg(), leads, be, TrackConfig(), ics=ics)
@@ -116,8 +116,8 @@ def test_when_falls_back_to_ics_start():
 
 
 def test_classify_seeds_materials_from_attachments():
-    leads = [_lead("Tidemark", "Analyst")]
-    be = FakeBackend(json.dumps({"lead": "Tidemark", "type": "interview", "confidence": 0.9,
+    leads = [_lead("Example Tidal", "Analyst")]
+    be = FakeBackend(json.dumps({"lead": "Example Tidal", "type": "interview", "confidence": 0.9,
                                  "when": None, "links": [], "materials": [], "summary": "x"}))
     msg = _msg()
     msg["attachments"] = [{"filename": "Culture Deck.pdf", "mime": "application/pdf", "data": b"x"},

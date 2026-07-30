@@ -7,7 +7,7 @@ def _db():
     return DeadLetterDb(str(pathlib.Path(tempfile.mkdtemp(), "track-seen.db.deadletter.db")))
 
 
-def _entry(mid="m1", lead="Tidemark - Analyst", **kw):
+def _entry(mid="m1", lead="Example Tidal - Analyst", **kw):
     base = dict(message_id=mid, lead=lead, candidates="", ev_type="rejection",
                 proposal="rejection (conf 0.60)", hint='sluice track confirm --lead "x" --to rejected',
                 first_seen="2026-07-10", times_surfaced=1)
@@ -52,10 +52,10 @@ def test_bump_surfaced_increments_existing_only():
 
 def test_clear_lead_and_clear_id_return_counts():
     db = _db()
-    db.record(_entry("m1", lead="Tidemark - Analyst"))
-    db.record(_entry("m2", lead="Tidemark - Analyst"))
+    db.record(_entry("m1", lead="Example Tidal - Analyst"))
+    db.record(_entry("m2", lead="Example Tidal - Analyst"))
     db.record(_entry("m3", lead="Other - Role"))
-    assert db.clear_lead("Tidemark - Analyst") == 2
+    assert db.clear_lead("Example Tidal - Analyst") == 2
     assert [e.message_id for e in db.open_entries()] == ["m3"]
     assert db.clear_id("m3") == 1
     assert db.open_entries() == []

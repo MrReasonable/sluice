@@ -41,8 +41,8 @@ def _ics():
 
 
 def test_interview_with_ics_auto_advances_and_calendars():
-    v, notes, path = _vault_with("Tidemark - EM", "applied")
-    ev = Event(lead_slug="Tidemark - EM", type="interview", confidence=0.9, ics=_ics(),
+    v, notes, path = _vault_with("Example Tidal - EM", "applied")
+    ev = Event(lead_slug="Example Tidal - EM", type="interview", confidence=0.9, ics=_ics(),
                materials=["Deck"], links=["https://x/deck"])
     res = R.reconcile(ev, notes, v, TrackConfig(), FakeGoogleClient(events=[]))
     assert res.action == "applied" and res.status_to == "interview"
@@ -52,38 +52,38 @@ def test_interview_with_ics_auto_advances_and_calendars():
 
 
 def test_cancellation_ics_does_not_advance():
-    v, notes, path = _vault_with("Tidemark - EM", "interview")
+    v, notes, path = _vault_with("Example Tidal - EM", "interview")
     ics = _ics(); ics.method = "CANCEL"
-    ev = Event(lead_slug="Tidemark - EM", type="interview", confidence=0.9, ics=ics)
+    ev = Event(lead_slug="Example Tidal - EM", type="interview", confidence=0.9, ics=ics)
     res = R.reconcile(ev, notes, v, TrackConfig(), FakeGoogleClient(events=[]))
     assert res.status_to is None and "status: interview" in pathlib.Path(path).read_text()
 
 
 def test_soft_rejection_proposes_not_auto():
-    v, notes, path = _vault_with("Tidemark - EM", "phone_screen")
-    ev = Event(lead_slug="Tidemark - EM", type="rejection", confidence=0.7, summary="on file")  # below auto_reject_min
+    v, notes, path = _vault_with("Example Tidal - EM", "phone_screen")
+    ev = Event(lead_slug="Example Tidal - EM", type="rejection", confidence=0.7, summary="on file")  # below auto_reject_min
     res = R.reconcile(ev, notes, v, TrackConfig(), FakeGoogleClient())
     assert res.action == "proposed" and "status: phone_screen" in pathlib.Path(path).read_text()
 
 
 def test_specific_high_conf_rejection_auto():
-    v, notes, path = _vault_with("Tidemark - EM", "phone_screen")
-    ev = Event(lead_slug="Tidemark - EM", type="rejection", confidence=0.95, summary="not moving forward")
+    v, notes, path = _vault_with("Example Tidal - EM", "phone_screen")
+    ev = Event(lead_slug="Example Tidal - EM", type="rejection", confidence=0.95, summary="not moving forward")
     res = R.reconcile(ev, notes, v, TrackConfig(), FakeGoogleClient())
     assert res.action == "applied" and res.status_to == "rejected"
     assert "status: rejected" in pathlib.Path(path).read_text()
 
 
 def test_ambiguous_lead_proposes():
-    v, notes, _ = _vault_with("Tidemark - EM", "applied")
+    v, notes, _ = _vault_with("Example Tidal - EM", "applied")
     ev = Event(lead_slug=None, candidates=["A", "B"], type="interview", confidence=0.9, ics=_ics())
     res = R.reconcile(ev, notes, v, TrackConfig(), FakeGoogleClient())
     assert res.action == "proposed"
 
 
 def test_never_regress_refuses():
-    v, notes, path = _vault_with("Tidemark - EM", "offer")
-    ev = Event(lead_slug="Tidemark - EM", type="phone_screen", confidence=0.9, ics=_ics())
+    v, notes, path = _vault_with("Example Tidal - EM", "offer")
+    ev = Event(lead_slug="Example Tidal - EM", type="phone_screen", confidence=0.9, ics=_ics())
     res = R.reconcile(ev, notes, v, TrackConfig(), FakeGoogleClient(events=[]))
     assert res.status_to is None and "status: offer" in pathlib.Path(path).read_text()
 
@@ -93,7 +93,7 @@ def test_unknown_event_proposes_with_an_honest_label_never_skipped():
     # not_job/update shape that reconcile silently skips, so it proposes -- and with an
     # honest label ("classification failed"), not the misleading "unmatched/ambiguous"
     # that the generic unmatched path would attach.
-    v, notes, _ = _vault_with("Tidemark - EM", "applied")
+    v, notes, _ = _vault_with("Example Tidal - EM", "applied")
     ev = Event(lead_slug=None, type="unknown", summary="")
     res = R.reconcile(ev, notes, v, TrackConfig(), FakeGoogleClient())
     assert res.action == "proposed"
@@ -105,7 +105,7 @@ def test_applied_lead_with_unclassifiable_mail_is_not_silently_unchanged():
     # become a confident not_job -> reconcile skipped it -> the lead sat at `applied` forever.
     # Now classify yields `unknown`, reconcile proposes it for review, and the note is untouched
     # -- surfaced, never skipped, never regressed.
-    v, notes, path = _vault_with("Tidemark - EM", "applied")
+    v, notes, path = _vault_with("Example Tidal - EM", "applied")
     msg = {"headers": {"from": "hr@x", "subject": "Re: your application"}, "body_text": "",
            "thread_id": "t1", "attachments": [], "message_id": "m1"}
     ev = classify(msg, list(notes.values()), RaisingBackend(), TrackConfig())
