@@ -56,6 +56,22 @@ def test_no_input_never_auto_takes_a_default():
     assert got == {"vault_dir": "/example/v"}
 
 
+def test_no_input_refuses_a_default_on_a_question_it_was_not_given():
+    """The arm the test above cannot reach, and the one the module comment is about.
+
+    `NoInputAsker.ask` ends `return None` precisely so that a FUTURE question gaining a default
+    does not get written into a config nobody was asked about. Against the real catalogue that is
+    unfalsifiable: `vault_dir` is the only defaulting question and it always arrives as a preset,
+    so the final arm never runs. Measured -- changing that `return None` to `return q.default` left
+    the whole suite green, including the test above.
+
+    A synthetic question is the only way to exercise it, so the guard is asserted against one."""
+    from sluice.onboard.questions import Question, parse_csv
+    future = Question("future_gate", "Something a later version asks?", parse_csv,
+                      ("triage.future_gate",), "Want", default=["a value nobody chose"])
+    assert collect(NoInputAsker(presets={}), (future,)) == {},         "--no-input took a default for a question it was never given an answer to"
+
+
 def test_answers_are_parsed_not_stored_raw(tmp_path):
     script = "\n".join([str(tmp_path), "", "", "", "example role, other role", "", "", "", "450"]
                        + [""] * len(_cat()))

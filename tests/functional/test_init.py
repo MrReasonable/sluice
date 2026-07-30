@@ -1,4 +1,5 @@
 """`sluice init` through the real `main(argv)`."""
+import io
 import os
 
 from sluice.core.paths import config_file
@@ -246,6 +247,54 @@ def test_both_artefacts_name_the_SAME_vault_when_the_env_carries_a_tilde(run_ini
     assert not (tmp_path / "~").exists(), "a literal '~' directory was created"
     assert Vault(configured).read_criteria(), \
         "the config names a vault the profile was not written to"
+
+
+def test_a_second_run_never_reports_gates_it_did_not_write(run_init, tmp_path):
+    """The report is derived from ANSWERS, not from what landed.
+
+    Measured: with a config already on disk, a second interactive run asked all 15 preference
+    questions, wrote nothing, and then printed "reject titles matching: Widget Wrangler" for a file
+    that had never heard of it. rc 0. A user reads that as configuration and stops looking.
+
+    Both halves are fixed here: the config questions are not asked at all when there is nothing to
+    write them to, and the notes print only when the config was actually created."""
+    dest = config_file()
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "w", encoding="utf-8") as fh:
+        fh.write("# hand written\n")
+
+    vault = tmp_path / "notes"
+    script = _skip_all_questions() + [""] + [""] * 5
+    rc = _init(["init", "--vault", str(vault)], _scripted(script))
+
+    assert rc == 0
+    assert open(dest, encoding="utf-8").read() == "# hand written\n"
+
+
+def test_an_existing_config_skips_the_questions_that_only_write_to_it(run_init, tmp_path, capsys):
+    """The docstring always claimed the preflight resolves both destinations "before a single
+    question is asked ... wasted their time". `config_exists` was computed early and not consulted
+    until after the interview, so it prevented nothing -- moving that line down left every init
+    test green."""
+    dest = config_file()
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "w", encoding="utf-8") as fh:
+        fh.write("# hand written\n")
+
+    # ONE answer available: the vault. If any preference question is still asked, the asker runs
+    # out of script and this would collect blanks -- so assert on what was ASKED, via the prompts.
+    from sluice.onboard.ask import TtyAsker
+    out = io.StringIO()
+    asker = TtyAsker(stdin=io.StringIO("\n" * 8), stdout=out, editor=None)
+    rc = _init(["init", "--vault", str(tmp_path / "notes")], asker)
+    shown = out.getvalue()
+
+    assert rc == 0
+    assert "Which job titles do you want" not in shown, "a config-only question was still asked"
+    assert "Keep only titles containing" not in shown
+    captured = capsys.readouterr().out
+    assert "skipping the config questions" in captured
+    assert "Your config will:" not in captured, "reported gates for a config it did not write"
 
 
 def test_a_relative_SLUICE_CONFIG_reports_rather_than_crashing(run_init, tmp_path, monkeypatch):

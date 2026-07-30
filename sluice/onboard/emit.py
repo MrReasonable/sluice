@@ -41,7 +41,11 @@ def _needs_hex(ch: str) -> bool:
     # Unicode line separators. C1 was previously represented by \x85 alone, which is the only
     # one PyYAML treats as a line break -- but the rest are still control characters a reader
     # is entitled to reject, and escaping them costs nothing.
-    return o < 0x20 or o == 0x7F or 0x80 <= o <= 0x9F or ch in ("\u2028", "\u2029")
+    # Lone surrogates too (0xD800-0xDFFF): YAML has no representation for them, so an unescaped
+    # one writes a config every later sluice command rejects with ReaderError. Reachable from
+    # any paste of mis-decoded text.
+    return (o < 0x20 or o == 0x7F or 0x80 <= o <= 0x9F or 0xD800 <= o <= 0xDFFF
+            or ch in ("\u2028", "\u2029"))
 
 
 def _hex_escape(ch: str) -> str:

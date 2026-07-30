@@ -22,7 +22,10 @@ CONTROLS = ([chr(c) for c in range(0x00, 0x20)]
             # write a config no later sluice command can read.
             + [chr(c) for c in range(0x80, 0xA0)]
             + ["\x7f", "\x85", "\u2028", "\u2029"]
-            + ["contact\x0bline", "a\x00b", "esc\x1bseq", "nel\x85y"])
+            # Lone surrogates: YAML cannot represent them, so an unescaped one writes a config
+            # every later sluice command rejects. Reachable from any mis-decoded paste.
+            + [chr(c) for c in (0xD800, 0xDBFF, 0xDC00, 0xDFFF)]
+            + ["contact\x0bline", "a\x00b", "esc\x1bseq", "nel\x85y", "a\ud800b"])
 
 
 @pytest.mark.parametrize("value", NASTY)
@@ -45,8 +48,7 @@ def test_a_control_character_survives_the_whole_config_render(tmp_path):
     from sluice.onboard.plan import build_plan
     pasted = "Example Person\x0b+00 0000 000000\x0chttps://example.invalid"
     path = tmp_path / "c.yaml"
-    path.write_text(build_plan({"cv_contact": pasted}, config_dest=str(path),
-                               profile_dest="/example/p.md").config_text, encoding="utf-8")
+    path.write_text(build_plan({"cv_contact": pasted}).config_text, encoding="utf-8")
     load_config(str(path))                       # must not raise ReaderError
     assert load_cv_config(str(path)).contact == pasted
 

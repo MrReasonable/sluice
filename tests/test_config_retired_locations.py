@@ -77,3 +77,23 @@ def test_the_example_documents_target_locations_and_not_the_retired_key():
     for line in example.splitlines():
         assert not line.lstrip("# ").strip().startswith("locations:"), \
             "sluice.yaml.example still documents the retired root `locations` key"
+
+
+def test_the_cli_reports_the_retirement_instead_of_crashing(tmp_path, monkeypatch, capsys):
+    """`load_config()` runs inside `main()`, so a stale `$SLUICE_LOCATIONS` reached the user as a
+    raw traceback -- and the command it blocked hardest was `sluice init`, the one that would have
+    written them a correct config, plus `doctor`, which exists to diagnose exactly this.
+
+    Reproduced before the fix. The message must also name the variable to unset: a refusal that
+    does not say how to proceed leaves the user stuck on every command."""
+    from sluice.cli import main
+    monkeypatch.setenv("SLUICE_LOCATIONS", "Example Place")
+    monkeypatch.setenv("SLUICE_CONFIG", str(tmp_path / "c.yaml"))
+
+    rc = main(["doctor", "--offline"])
+    err = capsys.readouterr().err
+
+    assert rc == 2, "a retired key is a usage error, not a crash"
+    assert "Traceback" not in err
+    assert "target_locations" in err and "unset SLUICE_LOCATIONS" in err
+    assert "Example Place" not in err, "the refusal must not echo the value"

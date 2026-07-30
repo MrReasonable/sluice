@@ -164,7 +164,8 @@ def refuse_retired_locations(data: dict) -> None:
         raise ValueError(
             "the root `locations` key (and $SLUICE_LOCATIONS) was read by nothing and "
             "has been retired. Geography is a triage concern -- move your value to the "
-            "`target_locations:` key inside the `triage:` block.")
+            "`target_locations:` key inside the `triage:` block, and `unset SLUICE_LOCATIONS` "
+            "if you exported it.")
 
 
 def load_config(path: str | None = None) -> Config:

@@ -27,7 +27,7 @@ def _msg(frm="jobs@company.com", subject="Interview", body="", thread="t1"):
 
 
 def test_classify_matches_single_lead():
-    leads = [_lead("Example Tidal", "Banker, DevEx"), _lead("Northwind", "Analyst")]
+    leads = [_lead("Example Tidal", "Banker, DevEx"), _lead("Example Northgate", "Analyst")]
     be = FakeBackend(json.dumps({"lead": "Example Tidal", "type": "interview", "confidence": 0.9,
                                  "when": "2026-07-20T10:00", "links": ["https://x/prep"],
                                  "materials": ["Culture deck"], "summary": "HM interview booked"}))
