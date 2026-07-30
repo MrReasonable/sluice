@@ -2,13 +2,11 @@
 preference question -- a wizard that fills a gate because someone fumbled a prompt is 672ad2a with
 a friendly face.
 
-Two further tests belong to this file and are NOT here yet: `test_no_shipped_prose_names_an_exemplar`
-and `test_the_prose_roster_covers_every_declared_constant`. Both read `tests/onboard_prose.py`, whose
-roster sweeps `sluice.onboard.plan` (Task 5) and `sluice.onboard.ask` (Task 8) as well as this
-module, so neither can exist before Task 8 lands the last of those three. They arrive with the
-roster, together with the four falsifying witnesses that make the sweep trustworthy. Until then this
-file pins the catalogue's own properties and the preference helper's matching, and NOTHING here may
-be read as evidence that the shipped-prose surfaces are swept -- they are not, yet.
+The two roster tests at the bottom sweep `tests/onboard_prose.py`, which reads all three of
+`questions`, `plan` and `ask` -- so they could only land once Task 8 added the last of those. They
+are what makes the claim "no shipped surface names an exemplar" true of the WHOLE package rather
+than of the catalogue alone, and each was witnessed against a separately planted offender before
+being trusted.
 """
 import pytest
 
@@ -100,6 +98,33 @@ def test_the_helper_matches_whole_words_only():
     """`senior` must not fire on `seniority` -- a bare substring match failed on the scaffold's own
     prose, and the tempting fix (deleting the word) shrinks the guard instead of the bug."""
     assert not expresses_a_preference("your background and seniority")
+
+
+def test_no_shipped_prose_names_an_exemplar():
+    """Sweeps EVERY surface this package puts in front of a user or into their files -- not just
+    the catalogue. Round 1 flagged that `_HEADER` and `_SECTION_BLURB` land in every user's config
+    and were covered by nothing; the first fix corrected the MATCHING and left the SCOPE alone,
+    which is the same enumeration failure one round later."""
+    from tests.onboard_prose import shipped_prose
+    surfaces = shipped_prose()
+    assert len(surfaces) >= 20                 # SCOPE: a sweep over nothing passes
+    for label, text in surfaces:
+        assert not expresses_a_preference(text), f"{label} names an exemplar"
+
+
+def test_the_prose_roster_covers_every_declared_constant():
+    """A new module-level constant must be either swept or NAMED as not-prose. Without this the
+    roster is an enumeration, and this repo's enumerations have leaked four times."""
+    from tests.onboard_prose import _NOT_PROSE, _declared_string_constants, shipped_prose
+    declared = _declared_string_constants()
+    assert declared, "the constant sweep found nothing"
+    swept = {lbl.split("[")[0].split(".")[-1] for lbl, _ in shipped_prose()}
+    swept |= {"catalogue"}
+    for module, name in sorted(declared):
+        if (module, name) in _NOT_PROSE:
+            continue
+        assert name in swept or name.lstrip("_") in swept, \
+            f"{module}.{name} is neither swept as prose nor named in _NOT_PROSE"
 
 
 def test_catalogue_keys_are_unique():
