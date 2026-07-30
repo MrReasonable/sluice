@@ -148,6 +148,30 @@ def test_the_commands_own_report_names_no_exemplar(run_init, tmp_path):
     assert not expresses_a_preference(out + err)
 
 
+def test_the_profile_is_probed_through_the_store_not_the_filesystem(run_init, tmp_path,
+                                                                    monkeypatch):
+    """`protocols.py` calls CRITERIA_RELPATH "an opaque DOCUMENT KEY, not a path -- nothing here
+    may assume a filesystem", and `cmd_init` used to check it with `os.path.exists`.
+
+    That cannot be witnessed by reverting the code: `vault` is the only registered store and it IS
+    a filesystem store, so both forms agree and the whole suite stays green. Measured. So the
+    MECHANISM is pinned instead -- the profile path must never be handed to `os.path.exists` --
+    which is falsifiable today rather than only when #1 lands a second store.
+    """
+    vault = tmp_path / "notes"
+    probed = os.path.join(str(vault), CRITERIA_RELPATH)
+    real_exists = os.path.exists
+
+    def refuse_to_stat_the_profile(path):
+        assert str(path) != probed, "cmd_init probed the profile through the filesystem"
+        return real_exists(path)
+
+    monkeypatch.setattr(os.path, "exists", refuse_to_stat_the_profile)
+    rc, _out, _err = run_init(["init", "--vault", str(vault), "--no-input"])
+    assert rc == 0
+    assert real_exists(probed), "precondition: the profile was actually written"
+
+
 def _skip_all_questions():
     """One blank per question `cmd_init` will ask, DERIVED from the catalogue.
 

@@ -194,7 +194,12 @@ class Store(Protocol):
         would discard the criteria the judge scores every lead against. Implementations
         must make it a property of the CREATE itself (an exclusive open), not an
         exists()-then-write pair -- the racer is a human in Obsidian, who takes no lock
-        (#16)."""
+        (#16).
+
+        The complementary requirement, because callers distinguish the two outcomes by
+        TRUTHINESS: a successful write must return a NON-EMPTY handle. A store returning
+        `""` after creating the document would make `sluice init` report "exists (left
+        alone)" for a file it had just written."""
         ...
 
     def normalize_all_statuses(self, dry_run: bool = False) -> dict:

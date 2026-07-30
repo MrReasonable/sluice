@@ -28,7 +28,7 @@ class MissingAnswer(RuntimeError):
 # Keyed to `plan._PROFILE_PROMPTS`, in ask order. Shipped prose: swept by
 # tests/onboard_prose.py, so no exemplar, no proposed taxonomy.
 _PROFILE_QUESTIONS = (
-    ("who", "In a sentence or two: your background, and how much scope you carry?"),
+    ("who", "In a sentence or two: your background, and what you do?"),
     ("target_shape", "The shape of role you want, and the shape that is wrong?"),
     ("grounding", "What should the judge assume you already satisfy?"),
     ("patterns", "Wording in a job ad that attracts you, and wording that repels you?"),

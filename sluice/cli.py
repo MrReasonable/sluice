@@ -596,8 +596,19 @@ def cmd_init(args, config, *, asker=None) -> int:
         return 2
     vault_created = not os.path.exists(vault_dir)
 
-    profile_dest = os.path.join(vault_dir, CRITERIA_RELPATH)
-    profile_exists = os.path.exists(profile_dest)
+    # The store is built ONCE, before the preflight, and ASKED whether the profile is there. The
+    # previous `os.path.exists(os.path.join(vault_dir, CRITERIA_RELPATH))` read store state through
+    # the filesystem, which protocols.py's own comment on that constant forbids ("an opaque DOCUMENT
+    # KEY, not a path -- nothing here may assume a filesystem"). The write was always safe (O_EXCL
+    # makes never-clobber a property of the open), but a non-filesystem store would get
+    # `profile_exists` wrong, mis-gate the interview, and then park the user's typed prose in a
+    # `.init-scaffold.md` they never needed. #1 is the next backlog item, so that store is close.
+    # No mkdir here: `read_criteria` returns "" for a store that does not exist yet, so the
+    # directory is still created inside the write block below, where an OSError is REPORTED rather
+    # than raised uncaught -- and an abandoned interview leaves no empty vault behind.
+    store = Sluice(dataclasses.replace(config, vault_dir=vault_dir)).store()
+    profile_exists = bool(store.read_criteria())
+    profile_dest = os.path.join(vault_dir, CRITERIA_RELPATH)   # for the report only
 
     profile_answers = {}
     sources = {}
@@ -627,12 +638,15 @@ def cmd_init(args, config, *, asker=None) -> int:
             failed.append(f"{config_dest}: {exc}")
 
     try:
-        os.makedirs(vault_dir, exist_ok=True)
         # Through the STORE SEAM, not Vault(...) directly: the profile is a store-managed document,
-        # and #1 makes the second store real rather than hypothetical.
-        store = Sluice(dataclasses.replace(config, vault_dir=vault_dir)).store()
+        # and #1 makes the second store real rather than hypothetical. The returned HANDLE is what
+        # the report names, since that is what the contract says a caller may show a user.
+        os.makedirs(vault_dir, exist_ok=True)
         handle = store.write_document(CRITERIA_RELPATH, plan.profile_text, only_if_absent=True)
-        (written if handle else skipped).append(profile_dest)
+        if handle:
+            written.append(handle)
+        else:
+            skipped.append(profile_dest)
         if not handle and profile_answers:
             # The user typed prose into an interview and the profile turned up already there. Do
             # NOT overwrite it, and do not silently bin what they wrote: park it beside the real
@@ -856,7 +870,10 @@ def _build_parser() -> argparse.ArgumentParser:
     init = top.add_parser("init", help="scaffold a config and a Judging Profile")
     init.add_argument("--vault", help="your Obsidian vault directory")
     init.add_argument("--no-input", action="store_true",
-                      help="take every default; never prompt")
+                      # NOT "take every default": NoInputAsker deliberately takes NO defaults, and
+                      # its own comment says why -- the moment a future question gains one,
+                      # --no-input would write it into a config nobody was asked about.
+                      help="never prompt; answer only from flags")
     init.set_defaults(func=cmd_init)
 
     doctor = top.add_parser("doctor", help="preflight the configured backends")

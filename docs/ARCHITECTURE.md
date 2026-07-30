@@ -197,7 +197,8 @@ and it has no engine, no store of its own and no place in any run.
 
 Split pure-from-impure, which is the whole reason its guarantees are unit-testable:
 
-- **`questions.py`** (pure): the declarative catalogue — one `Question` per key,
+- **`questions.py`** (pure apart from `parse_path`, which resolves against `$HOME` and the cwd --
+  a path parser has to consult the environment): the declarative catalogue — one `Question` per key,
   each carrying its `parse`, the dotted config keys it `writes_to`, a hint and a
   consequence line. Every preference question has `default=None`, which means a
   blank answer SKIPS it. The vault is the sole exception, and its default arrives
@@ -231,7 +232,7 @@ file. This is the empty-config-abstains invariant expressed at the wizard, and
 `672ad2a` is what happens without it.
 
 **An unanswered profile heading carries `_DEFAULT_CRITERIA`'s own prose.**
-`build_system_prompt_from` falls back to the shipped neutral criteria only when
+`build_system_prompt_from` falls back to `core/criteria.py`'s shipped neutral criteria only when
 the criteria text is missing or EMPTY, and a scaffold is never empty — so bare
 headings would permanently strip the judge's abstain instructions while the
 surrounding scaffold still told it to treat the profile as authoritative. The

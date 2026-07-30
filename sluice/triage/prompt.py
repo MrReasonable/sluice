@@ -17,6 +17,7 @@ Judging Profile, and are never committed here."""
 import os
 import re
 
+from sluice.core.criteria import DEFAULT_CRITERIA
 from sluice.core.protocols import CRITERIA_RELPATH
 
 _CRITERIA_RELPATH = CRITERIA_RELPATH
@@ -27,43 +28,11 @@ Your job: read each dossier IN FULL, including the JD markdown, and produce one 
 
 The profile and criteria below are maintained by the candidate and evolve over time. Treat them as authoritative for who the candidate is and what they want."""
 
-# Fallback used only when the vault Judging Profile is missing. It states that no
-# criteria are configured and declines to invent any -- it must never substitute an
-# opinion of its own, because whatever ships here is public and every user inherits
-# it. The real criteria always come from the vault file; this default exists only to
-# keep a fresh install from crashing or hallucinating a persona.
-_DEFAULT_CRITERIA = """## Who this candidate is
+# Imported rather than defined here: `onboard/` also needs it, and a second copy would mean the
+# scaffold `sluice init` writes could drift from the fallback the judge uses. The local alias
+# mirrors what `_CRITERIA_RELPATH` already does above.
+_DEFAULT_CRITERIA = DEFAULT_CRITERIA
 
-No Judging Profile has been configured yet (no `Job Applications/Judging Profile.md`
-in the vault). Score conservatively and generically until the candidate supplies
-their own criteria there: prefer `research` over a confident `shortlist` or
-`dismiss` whenever the fit depends on personal history, target role shape, company
-size, culture, comp or location preferences this default has no way to know.
-
-### Target and wrong shape
-
-Not configured. This default deliberately expresses NO opinion about which roles the
-candidate wants or does not want. That belongs in their vault Judging Profile, never
-in shipped code. Until it is configured, do not score on role shape: note in
-`concerns` that no role-shape criteria are available and prefer `research`.
-
-### Background grounding
-
-This default has no information about the candidate's employment history, seniority,
-or ambitions, so never invent or assume past employers, skills, achievements, or a
-desired role. Judge only from what the JD itself states.
-
-## Win patterns and anti-patterns
-
-Not configured. Do not assume a culture preference. Report the culture signals the JD
-actually contains in `culture_flags`, neutrally, and let the candidate's own criteria
-(once configured) decide whether they are positive or negative.
-
-## Industry filter (judgement-based, not categorical)
-
-No industry preferences are configured by default. Do not filter on sector alone; note
-any sector concerns in `concerns`. When the JD is ambiguous about what the product does,
-default to research with a specific question rather than guessing from sector keywords."""
 
 _SCAFFOLD_TAIL = """## Inputs
 
