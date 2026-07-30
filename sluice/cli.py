@@ -642,8 +642,19 @@ def cmd_init(args, config, *, asker=None) -> int:
 
     profile_answers = {}
     sources = {}
+    # `and not config_exists`: the board walk writes ONLY into plan.config_text, exactly like the
+    # preference questions above. Gating those and not this left a second interactive run still
+    # asking for board ids, search labels and URLs -- then discarding all of it, rc 0, no report.
+    # Same failure the .init-scaffold rescue exists to prevent for the profile.
     if interactive:
-        sources = collect_sources(asker, [s.id for s in registry.all_sources()])
+        # Each interview is gated on the artefact IT writes. `collect_sources` feeds only
+        # `plan.config_text`, so it is skipped when the config exists; `collect_profile` feeds only
+        # `plan.profile_text` and has no stake in the config at all. Nesting the second inside the
+        # first meant the common second run -- config from run one, profile still missing because
+        # the user abandoned it or the vault moved -- silently skipped the prose interview and wrote
+        # a bare scaffold without ever asking.
+        if not config_exists:
+            sources = collect_sources(asker, [s.id for s in registry.all_sources()])
         if not profile_exists:
             profile_answers = collect_profile(asker)
 

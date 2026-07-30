@@ -76,10 +76,14 @@ def test_the_scaffolds_user_instructions_never_reach_the_judge():
 def test_a_users_own_notes_to_self_are_not_treated_as_criteria():
     """Same rule for prose the user writes: a Markdown comment in their Judging Profile is a note,
     not a preference, and the judge must not score against it."""
-    criteria = "## Who this candidate is\n\nReal criteria here.\n\n<!-- TODO: rewrite this bit -->\n"
+    criteria = ("## Who this candidate is\n\nReal criteria here.\n\n"
+                "<!-- TODO: rewrite this bit -->\n%% and an Obsidian note-to-self %%\n")
     prompt = build_system_prompt_from(criteria)
     assert "Real criteria here." in prompt
     assert "TODO: rewrite this bit" not in prompt
+    # Obsidian's own syntax too: the profile's header tells the user to edit it THERE, so a claim
+    # that HTML comments were "the whole class" was false -- measured, `%%...%%` reached the judge.
+    assert "Obsidian note-to-self" not in prompt
 
 
 def test_the_scaffold_prompts_name_no_exemplar():

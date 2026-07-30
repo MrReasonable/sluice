@@ -71,9 +71,6 @@ FORBIDDEN_EXACT = (
     "replit.md",
 )
 FORBIDDEN_PREFIXES = (
-    # `./vault` is the wizard's offered default and the quickstart's argument, so a
-    # contributor running `sluice init` in a checkout lands their real job hunt here.
-    "vault/",
 
     ".claude/",
     ".cursor/",
@@ -110,7 +107,9 @@ FORBIDDEN_PREFIXES = (
 # .memsearch and .npmrc may appear at ANY depth. Both .gitignore rules are deliberately
 # unanchored -- for a directory that has already leaked personal data three times, and for a
 # file that can carry a registry auth token, catching them anywhere is the safer default.
-FORBIDDEN_COMPONENTS = (".memsearch", ".npmrc")
+# `vault` is a COMPONENT, not a root prefix: DEFAULT_VAULT is cwd-relative, so `sluice init`
+# from a subdirectory creates one at any depth. Root-anchoring it would miss exactly that.
+FORBIDDEN_COMPONENTS = (".memsearch", ".npmrc", "vault")
 
 # The first path component after the home prefix, whatever it is called. This has now been
 # wrong TWICE. The first version used `/Users/[a-z]`, which missed /Users/Alice and
@@ -668,3 +667,19 @@ def test_the_gate_fails_closed_when_git_fails():
     passed having checked nothing."""
     with pytest.raises(AssertionError, match="must NOT pass silently"):
         _git("this-is-not-a-git-command")
+
+
+def test_a_vault_written_into_the_checkout_is_refused():
+    """POSITIVE CONTROL for the `vault/` prefix.
+
+    `DEFAULT_VAULT` is `./vault` and the quickstart runs `sluice init --vault ./vault` from the
+    repo root, so a contributor following the docs writes lead notes -- employer names, job URLs,
+    verdicts -- into a public checkout. The prefix was added with nothing exercising it, which is
+    how a rule that matches nothing survives: `any([])` is False, so the sweep above passes
+    whether or not the rule works.
+    """
+    assert _is_forbidden("vault/Job Applications/Job Leads/Example Co - Analyst.md")
+    assert _is_forbidden("vault/Job Applications/Judging Profile.md")
+    # ...at ANY depth, because DEFAULT_VAULT is cwd-relative: `sluice init` from a subdirectory
+    # creates one there, and a root-anchored rule would leave it tracked.
+    assert _is_forbidden("some/subdir/vault/Job Applications/Judging Profile.md")

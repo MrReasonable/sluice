@@ -200,13 +200,13 @@ def test_the_rendered_sweep_covers_BOTH_arms_and_strips_nothing():
     assert first and first in surfaces["rendered:profile_text"]
 
 
-def test_no_shipped_prose_names_an_exemplar():
+def test_no_shipped_prose_names_an_exemplar(tmp_path):
     """Sweeps EVERY surface this package puts in front of a user or into their files -- not just
     the catalogue. Round 1 flagged that `_HEADER` and `_SECTION_BLURB` land in every user's config
     and were covered by nothing; the first fix corrected the MATCHING and left the SCOPE alone,
     which is the same enumeration failure one round later."""
     from tests.onboard_prose import shipped_prose
-    surfaces = shipped_prose()
+    surfaces = shipped_prose(str(tmp_path))
     assert len(surfaces) >= 20                 # SCOPE: a sweep over nothing passes
     for label, text in surfaces:
         assert not expresses_a_preference(text), f"{label} names an exemplar"
