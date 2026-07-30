@@ -15,13 +15,14 @@ try:
 except ImportError:  # pragma: no cover - yaml is a declared dependency
     yaml = None
 
-# Geography is a personal preference, so the code ships with none. This was
-# ["Remote"], which is the same shape as the bug 672ad2a fixed in triage: a geo
-# preference baked into shipped source. It survived here because nothing reads
-# `Config.locations` yet -- which made it a loaded gun rather than a live bug, since
-# the first consumer to wire it into a search or a gate would have inherited a
-# stranger's "remote only" and silently binned every located job.
-_DEFAULT_LOCATIONS: list = []
+# NB no root `locations` here: it was a DEAD key (declared, documented in
+# sluice.yaml.example, read by nothing) and is retired outright by #8. The comment it
+# carried called it "a loaded gun rather than a live bug, since the first consumer to
+# wire it into a search or a gate would have inherited a stranger's 'remote only'".
+# `sluice init` would have been that consumer -- a wizard asking for geography and
+# writing it into a key nothing reads -- so `refuse_retired_locations` RAISES on it
+# rather than letting it be dropped in silence. Geography lives at
+# `triage.target_locations`, which is live.
 
 
 @dataclass
@@ -75,7 +76,6 @@ class Config:
     # Config, not TriageConfig/CvConfig, because dossier_cache is called from BOTH
     # sub-apps and a security policy that differs between them is a bug.
     dossier_allow_hosts: list = field(default_factory=list)
-    locations: list = field(default_factory=lambda: list(_DEFAULT_LOCATIONS))
     notify: dict = field(default_factory=dict)
     # Coarse ingest title filter. Personal, so empty by default: an unconfigured
     # gate passes everything through rather than applying someone else's taste.
@@ -141,12 +141,42 @@ def refuse_retired_dossier_dir(block: str, data: dict) -> None:
             f"block to a root `dossier_dir:` key.")
 
 
+def refuse_retired_locations(data: dict) -> None:
+    """Raise if a config still sets the retired root `locations` key (#8).
+
+    Declared, documented in `sluice.yaml.example`, and read by NOTHING -- the comment it
+    carried called it "a loaded gun rather than a live bug, since the first consumer to
+    wire it into a search or a gate would have inherited a stranger's 'remote only'".
+    `sluice init` would have been that consumer, so the key is retired rather than
+    finally populated.
+
+    BOTH spellings, because the loader also honoured `$SLUICE_LOCATIONS`. Raising on the
+    file while staying silent on the environment is precisely the asymmetry the
+    fail-loudly rule exists to remove: a user who set geography in their shell would
+    watch it quietly stop being read, which is the same silent-wrong-default bug class
+    this codebase most consistently engineers out.
+
+    The VALUE is never echoed. Geography is personal, and an exception travels further
+    (logs, bug reports, pasted tracebacks) than the config file it came from -- the same
+    ruling `refuse_retired_dossier_dir` and `dossier_allow_hosts` already make.
+    """
+    if "locations" in data or os.environ.get("SLUICE_LOCATIONS"):
+        raise ValueError(
+            "the root `locations` key (and $SLUICE_LOCATIONS) was read by nothing and "
+            "has been retired. Geography is a triage concern -- move your value to the "
+            "`target_locations:` key inside the `triage:` block.")
+
+
 def load_config(path: str | None = None) -> Config:
     data = {}
     path = path or config_file()
     if path and os.path.exists(path) and yaml is not None:
         with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
+
+    # Before any field is read, so a retired key is reported rather than dropped in the
+    # silence a `data.get` would give it.
+    refuse_retired_locations(data)
 
     sources = {}
     for sid, sconf in (data.get("sources") or {}).items():
@@ -156,11 +186,6 @@ def load_config(path: str | None = None) -> Config:
             tuning=dict(sconf.get("tuning") or {}),
             searches=list(sconf.get("searches") or []),
         )
-
-    locations = list(data.get("locations") or _DEFAULT_LOCATIONS)
-    env_loc = os.environ.get("SLUICE_LOCATIONS")
-    if env_loc:  # env wins last: comma-separated
-        locations = [s.strip() for s in env_loc.split(",") if s.strip()]
 
     notify = dict(data.get("notify") or {})
     token = os.environ.get("SLUICE_TELEGRAM_TOKEN")
@@ -205,7 +230,7 @@ def load_config(path: str | None = None) -> Config:
     # them fine (its loop sets any field the dataclass declares), but nothing downstream
     # ever consulted the result -- app.py read $TRIAGE_AUDIT and $DOSSIER_DIR directly.
     # A key can therefore die at either end, and only enumerating BOTH finds them.
-    return Config(sources=sources, locations=locations, notify=notify,
+    return Config(sources=sources, notify=notify,
                   store=str(data.get("store") or "vault"),
                   baseline_rel=str(data.get("baseline_rel") or "My CV/CV.md"),
                   vault_dir=str(data.get("vault_dir") or ""),

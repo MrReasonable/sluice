@@ -4,13 +4,12 @@ from sluice.core.config import load_config
 
 
 def test_defaults_when_no_file(monkeypatch):
+    # SLUICE_LOCATIONS is still cleared, but for the opposite reason to before: the key
+    # is retired (#8) and an exported value now RAISES, so a developer with one set
+    # would fail here rather than silently override.
     monkeypatch.delenv("SLUICE_LOCATIONS", raising=False)
     monkeypatch.delenv("SLUICE_CONFIG", raising=False)
     cfg = load_config(None)
-    # Empty, not ["Remote"]: geography is a personal preference and none ships in
-    # code. This assertion used to PIN the non-neutral default, so the next person to
-    # neutralise it would have seen a red test and reverted the fix.
-    assert cfg.locations == []
     assert cfg.source("anything").enabled is True
     assert cfg.source("anything").tuning == {}
 
@@ -23,10 +22,12 @@ def test_yaml_disables_a_source(tmp_path):
     assert cfg.source("wttj").enabled is True  # unlisted → default enabled
 
 
-def test_yaml_tuning_and_locations(tmp_path):
+def test_yaml_tuning(tmp_path):
+    # The root `locations` key this test also covered is retired (#8): it was read by
+    # nothing, and setting it now raises. Its refusal -- in both the file and the
+    # `$SLUICE_LOCATIONS` spellings -- lives in tests/test_config_retired_locations.py.
     p = tmp_path / "sluice.yaml"
     p.write_text(textwrap.dedent("""
-        locations: [Clarkefurt]
         sources:
           jobserve:
             enabled: true
@@ -34,16 +35,7 @@ def test_yaml_tuning_and_locations(tmp_path):
               wait: 8
     """))
     cfg = load_config(str(p))
-    assert cfg.locations == ["Clarkefurt"]
     assert cfg.source("jobserve").tuning["wait"] == 8
-
-
-def test_env_locations_override(tmp_path, monkeypatch):
-    p = tmp_path / "sluice.yaml"
-    p.write_text("locations: [Clarkefurt]\n")
-    monkeypatch.setenv("SLUICE_LOCATIONS", "Palmerburgh, Remote")
-    cfg = load_config(str(p))
-    assert cfg.locations == ["Palmerburgh", "Remote"]
 
 
 def test_env_telegram_populates_notify(monkeypatch):
