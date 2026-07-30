@@ -1,5 +1,26 @@
-# `sluice init` Implementation Plan
+# `sluice init` Implementation Plan — **SUPERSEDED, DO NOT EXECUTE**
 
+> **STOP.** `/review-plan` round 1 (5 reviewers, 2026-07-30) returned **50 findings: 1 Critical,
+> 17 High, 21 Medium, 11 Low** against this document. It must be regenerated from the revised spec
+> at `docs/superpowers/specs/2026-07-30-sluice-init-design.md`, not patched.
+>
+> Executing it as written would ship the Critical: the profile scaffold permanently strips the
+> judge's abstain instructions, so running the onboarding command makes an unconfigured install stop
+> abstaining. Four Highs also make it unrunnable as written — the functional tier is built on a
+> fixture that sets `SLUICE_CONFIG`/`VAULT_DIR` so `cmd_init` always takes the skip branch; the
+> scope guard fails on 16 of 19 keys through its own renderer's double-commenting; `TtyAsker`
+> returns its default unparsed so a blank Enter writes a cwd-relative `vault_dir`; and
+> `triage.target_locations` is absent from `sluice.yaml.example`, so Task 4's sweep is red on
+> arrival.
+>
+> Two mutation witnesses were mis-aimed and would have shown false green: **M1** at a test it cannot
+> falsify (`build_plan` reads `answers.get(...)`; the defaults live in the asker, so the mutant is
+> equivalent), and **M7** at `parse_path`, which the failing path never calls.
+>
+> The findings are on disk at
+> `~/.cache/sluice/review-plan/2026-07-30-sluice-init/20260730T094207Z-4841/findings/`.
+> The spec now carries every design-level correction plus the folded-in board walk.
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship `sluice init`, a setup wizard that writes a neutral config and scaffolds a Judging Profile, so a fresh install has a path from "installed" to "configured" that cannot express a preference the user did not state.
