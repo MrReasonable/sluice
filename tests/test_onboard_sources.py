@@ -16,7 +16,7 @@ SRC = {"reed": {"enabled": True,
 
 def _text(sources=None):
     return build_plan({}, config_dest="/example/c.yaml", profile_dest="/example/p.md",
-                      default_vault="/example/vault", sources=sources).config_text
+                      sources=sources).config_text
 
 
 def test_no_sources_emits_only_the_commented_example(tmp_path):

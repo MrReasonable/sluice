@@ -100,6 +100,45 @@ def test_the_helper_matches_whole_words_only():
     assert not expresses_a_preference("your background and seniority")
 
 
+def test_no_rendered_artefact_names_an_exemplar():
+    """THE load-bearing arm. Sweeps the BYTES the user receives -- the written config and the
+    written Judging Profile -- rather than the constants that feed them.
+
+    The previous roster read module-level constants only, so an exemplar planted in
+    `plan._render_profile`'s inline preamble (text that lands in a stranger's vault and reaches the
+    judge as authoritative criteria) left the FULL SUITE green. Three reviewers found that
+    independently. A whole-artefact sweep cannot go stale as literals move in and out of function
+    bodies, which is what makes this the arm to trust."""
+    from tests.onboard_prose import rendered_artefacts, terminal_transcript
+    for label, text in list(rendered_artefacts()) + list(terminal_transcript()):
+        assert not expresses_a_preference(text), f"{label} names an exemplar"
+
+
+def test_the_terminal_transcript_covers_the_prompts_it_claims_to():
+    """SCOPE for the terminal arm. A transcript that captured nothing would satisfy the sweep
+    above, and the prompts are printed BEFORE the read, so a blank answer still emits them."""
+    from tests.onboard_prose import terminal_transcript
+    text = dict(terminal_transcript())["terminal:asker transcript"]
+    assert "Where is your Obsidian vault?" in text          # a catalogue prompt
+    assert "blank = skip" in text                           # a TtyAsker bracket line
+    assert "boards" in text                                 # ask_ids
+    assert "search label" in text                           # the per-source walk
+    assert "$EDITOR" in text                                # ask_prose
+
+
+def test_the_rendered_sweep_covers_something():
+    """SCOPE. `rendered_artefacts` strips `_DEFAULT_CRITERIA`'s prose from the profile (it has its
+    own guard in triage), and a strip that removed everything would leave the sweep above passing
+    over an empty string."""
+    from tests.onboard_prose import rendered_artefacts
+    surfaces = dict(rendered_artefacts())
+    assert len(surfaces) == 2
+    for label, text in surfaces.items():
+        assert text.strip(), f"{label} swept nothing"
+    # The walked arm of _render_sources, not just its commented-example arm.
+    assert "example_source" in surfaces["rendered:config_text"]
+
+
 def test_no_shipped_prose_names_an_exemplar():
     """Sweeps EVERY surface this package puts in front of a user or into their files -- not just
     the catalogue. Round 1 flagged that `_HEADER` and `_SECTION_BLURB` land in every user's config
