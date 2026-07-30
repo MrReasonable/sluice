@@ -604,8 +604,7 @@ def cmd_init(args, config, *, asker=None) -> int:
             profile_answers = collect_profile(asker)
 
     plan = build_plan(answers, config_dest=config_dest, profile_dest=profile_dest,
-                      default_vault=DEFAULT_VAULT, profile_answers=profile_answers,
-                      sources=sources)
+                      profile_answers=profile_answers, sources=sources)
 
     written, skipped, failed = [], [], []
 

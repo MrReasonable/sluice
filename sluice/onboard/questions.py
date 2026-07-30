@@ -115,12 +115,14 @@ class Question:
     consequence: str = ""
 
 
-def catalogue(*, default_vault: str) -> tuple:
+def catalogue(*, default_vault: str = "") -> tuple:
     """Every question, in ask order.
 
     `default_vault` is a PARAMETER: a pure catalogue must not import from `core/vault.py`, the
     concrete store, or the wizard's one non-skipping default would be pinned to the vault
-    implementation even when `store:` names something else. `cli.py` supplies it.
+    implementation even when `store:` names something else. `cli.py` supplies it. It defaults to
+    `""` so callers that only need the question TUPLE -- `plan`'s renderers, which never read
+    `q.default` -- do not have to thread a value they cannot observe.
 
     Ask order matters in one place: the coarse ingest gate is LAST. It is the most dangerous key in
     the file -- a keep-list discards every title that does not match, before dedup and before any

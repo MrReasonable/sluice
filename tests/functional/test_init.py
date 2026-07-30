@@ -134,6 +134,20 @@ def test_a_vault_path_that_is_a_file_refuses(run_init, tmp_path):
     assert rc == 2 and "not a directory" in err
 
 
+def test_the_commands_own_report_names_no_exemplar(run_init, tmp_path):
+    """The third output channel. `tests/onboard_prose.py` sweeps the rendered artefacts and the
+    asker's transcript, but `cmd_init`'s own report -- the `wrote`/`exists` lines, the vault
+    sentence, the `Your config will:` notes and the whole `Next:` block -- is printed by the CLI and
+    reaches neither. It is swept HERE, where the command actually runs.
+
+    Uses the same shared vocabulary as the unit tier, imported rather than re-listed."""
+    from sluice.onboard.questions import expresses_a_preference
+    rc, out, err = run_init(["init", "--vault", str(tmp_path / "notes"), "--no-input"])
+    assert rc == 0 and out.strip()                          # SCOPE: a sweep over nothing passes
+    assert "Next:" in out                                   # ...and reached the report's tail
+    assert not expresses_a_preference(out + err)
+
+
 def test_the_written_config_loads_and_abstains(run_init, tmp_path):
     from sluice.core.config import load_config
     from sluice.triage.config import load_triage_config

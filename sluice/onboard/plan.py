@@ -70,11 +70,16 @@ def _render_key(leaf, q, value, indent):
     return out
 
 
-def _grouped(answers, default_vault):
+def _grouped(answers):
     """Every catalogue key by its top-level YAML block, in ask order. A question can write more
-    than one block (`primary_backend` writes three), so this walks `writes_to`."""
+    than one block (`primary_backend` writes three), so this walks `writes_to`.
+
+    No `default_vault`: nothing here reads `q.default`. Threading it through was provably inert --
+    two `build_plan` calls differing only in that argument returned byte-identical text -- and it is
+    load-bearing only at `catalogue()`, where `TtyAsker` reads it. Same dead-parameter shape review
+    round 1 caught on the sibling `sources=`, one layer down."""
     out = {}
-    for q in catalogue(default_vault=default_vault):
+    for q in catalogue():
         for dotted in q.writes_to:
             parts = dotted.split(".")
             block = parts[0] if len(parts) > 1 else ""
@@ -178,9 +183,9 @@ def _render_profile(profile_answers):
     return "\n".join(out).rstrip() + "\n"
 
 
-def _render_config(answers, sources, default_vault):
+def _render_config(answers, sources):
     lines = [_HEADER]
-    grouped = _grouped(answers, default_vault)
+    grouped = _grouped(answers)
     # HOISTED out of the per-block loop: a fan-out question appears in three blocks, and a per-block
     # set emitted its section header, blurb and hint once per block.
     sections_seen = set()
@@ -220,12 +225,12 @@ def _render_config(answers, sources, default_vault):
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _notes(answers, sources, default_vault):
+def _notes(answers):
     """What the config will DO, in plain terms. Written because the shipped example once handed
     every copier an active `relevance_keep` that discarded every title but one, and nothing
     anywhere said so."""
     out = []
-    for q in catalogue(default_vault=default_vault):
+    for q in catalogue():
         value = answers.get(q.key)
         if _unset(value) or value == 0 or not q.consequence:
             continue
@@ -234,7 +239,7 @@ def _notes(answers, sources, default_vault):
     return tuple(out)
 
 
-def build_plan(answers, *, config_dest, profile_dest, default_vault,
+def build_plan(answers, *, config_dest, profile_dest,
                profile_answers=None, sources=None) -> InitPlan:
     """The two artefacts `sluice init` writes, as text.
 
@@ -243,7 +248,7 @@ def build_plan(answers, *, config_dest, profile_dest, default_vault,
     """
     sources = sources or {}
     return InitPlan(config_dest=config_dest,
-                    config_text=_render_config(answers, sources, default_vault),
+                    config_text=_render_config(answers, sources),
                     profile_dest=profile_dest,
                     profile_text=_render_profile(profile_answers),
-                    notes=_notes(answers, sources, default_vault))
+                    notes=_notes(answers))

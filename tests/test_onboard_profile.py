@@ -14,7 +14,7 @@ ABSTAIN_MARKERS = ("prefer `research`", "do not score on role shape",
 
 def _profile(**kw):
     return build_plan({}, config_dest="/example/c.yaml", profile_dest="/example/p.md",
-                      default_vault="/example/vault", **kw).profile_text
+                      **kw).profile_text
 
 
 def test_an_unanswered_profile_still_carries_every_abstain_instruction():
