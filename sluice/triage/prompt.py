@@ -91,6 +91,21 @@ def _strip_frontmatter(text: str) -> str:
     return m.group(1) if m else text
 
 
+def _strip_html_comments(text: str) -> str:
+    """Drop `<!-- ... -->` blocks before the judge sees the criteria.
+
+    These are addressed to the USER, not to the model. `sluice init` scaffolds five of them
+    ("Replace the paragraph above with ..."), and before this they reached the system prompt
+    verbatim -- inside a scaffold that tells the model to treat the criteria as authoritative. So
+    a fresh install handed the judge five instructions written for a human, one of which says the
+    profile "treats it as authoritative for who you are". A user's own notes-to-self in their
+    Judging Profile are the same shape and equally not criteria.
+
+    Markdown has no other comment syntax, so this is the whole class.
+    """
+    return re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+
+
 def load_criteria(vault_dir: str | None) -> str:
     """The candidate's judging criteria from the vault (their editable source of
     truth), or the baked-in default when the vault file is missing or empty."""
@@ -100,7 +115,7 @@ def load_criteria(vault_dir: str | None) -> str:
         text = open(os.path.join(vault_dir, _CRITERIA_RELPATH), encoding="utf-8").read()
     except OSError:
         return _DEFAULT_CRITERIA
-    body = _strip_frontmatter(text).strip()
+    body = _strip_html_comments(_strip_frontmatter(text)).strip()
     return body or _DEFAULT_CRITERIA
 
 
@@ -114,7 +129,7 @@ def build_system_prompt_from(criteria: str) -> str:
     shipped default, which states only that nothing is configured and declines to invent
     an opinion.
     """
-    body = _strip_frontmatter(criteria or "").strip() or _DEFAULT_CRITERIA
+    body = _strip_html_comments(_strip_frontmatter(criteria or "")).strip() or _DEFAULT_CRITERIA
     return f"{_SCAFFOLD_INTRO}\n\n{body}\n\n{_SCAFFOLD_TAIL}"
 
 

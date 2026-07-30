@@ -625,8 +625,13 @@ def cmd_init(args, config, *, asker=None) -> int:
     if config_exists:
         skipped.append(config_dest)
     else:
-        os.makedirs(os.path.dirname(config_dest), exist_ok=True)
         try:
+            # INSIDE the try: an OSError here (unwritable parent, or a relative $SLUICE_CONFIG whose
+            # dirname is "") must become this command's own FAILED report, not an uncaught traceback.
+            # Reproduced with SLUICE_CONFIG=sluice.local.yaml, where dirname is "".
+            parent = os.path.dirname(config_dest)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
             # "x": an exclusive create cannot truncate a config a concurrent shell just wrote.
             # Never-clobber is a property of the open, not of the check above it.
             with open(config_dest, "x", encoding="utf-8") as fh:
@@ -672,11 +677,16 @@ def cmd_init(args, config, *, asker=None) -> int:
     for line in failed:
         print(f"  FAILED  {line}", file=sys.stderr)
 
-    if vault_created:
+    # Reported from what is ON DISK now, not from the pre-flight intent: when the vault write
+    # failed, `vault_created` is still True and the old wording announced a directory that does
+    # not exist.
+    if vault_created and os.path.isdir(vault_dir):
         print(f"\ncreated a new vault directory at {vault_dir}")
         print("if you meant an existing one, re-run with --vault pointing at it")
-    else:
+    elif os.path.isdir(vault_dir):
         print(f"\nusing the existing vault at {vault_dir}")
+    else:
+        print(f"\nno vault directory at {vault_dir} -- see the FAILED line above", file=sys.stderr)
 
     if plan.notes:
         print("\nYour config will:")

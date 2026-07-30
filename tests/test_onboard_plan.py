@@ -1,6 +1,7 @@
 """`build_plan` is a pure function from a dict to two strings, which is what lets the load-bearing
 property be a unit test instead of a wizard transcript."""
 import dataclasses
+import pathlib
 import re
 
 import pytest
@@ -121,7 +122,10 @@ def test_the_fan_out_covers_every_config_declaring_a_backend():
 
 
 def test_every_emitted_key_is_documented_in_the_example_config():
-    example = open("sluice.yaml.example", encoding="utf-8").read()
+    # Resolved from __file__, not the cwd: a repo-relative open() makes this test depend on
+    # where pytest was invoked from.
+    root = pathlib.Path(__file__).resolve().parent.parent
+    example = (root / "sluice.yaml.example").read_text(encoding="utf-8")
     for q in catalogue(default_vault=VAULT):
         for dotted in q.writes_to:
             leaf = dotted.split(".")[-1]

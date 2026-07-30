@@ -1,6 +1,8 @@
 """`only_if_absent=True` is the never-clobber primitive `sluice init` scaffolds through. A
 parameter on the existing writer, not a second write function: CodeQL reads a new write function
 as a new sink (#9's `require_status` precedent)."""
+import pathlib
+
 import pytest
 
 from sluice.core.protocols import CRITERIA_RELPATH
@@ -16,7 +18,12 @@ def test_creates_when_absent(tmp_path):
 def test_abstains_and_leaves_the_file_byte_identical(tmp_path):
     v = Vault(str(tmp_path))
     v.write_document(CRITERIA_RELPATH, "human wrote this", only_if_absent=True)
+    # BYTES, snapshotted before the second write: "byte-identical" is what the name claims, and a
+    # text round-trip through read_criteria could not see a trailing-newline or encoding change.
+    target = tmp_path / "Job Applications" / "Judging Profile.md"
+    before = target.read_bytes()
     assert v.write_document(CRITERIA_RELPATH, "SCAFFOLD", only_if_absent=True) == ""
+    assert target.read_bytes() == before
     assert v.read_criteria() == "human wrote this"
 
 
@@ -24,7 +31,7 @@ def test_the_default_still_overwrites_so_the_digest_caller_is_unchanged(tmp_path
     v = Vault(str(tmp_path))
     v.write_document("Job Applications/Digest.md", "old")
     path = v.write_document("Job Applications/Digest.md", "new")
-    assert open(path, encoding="utf-8").read() == "new"
+    assert pathlib.Path(path).read_text(encoding="utf-8") == "new"
 
 
 def test_escape_guard_still_fires_under_only_if_absent(tmp_path):
