@@ -1,7 +1,8 @@
 """The shipped, opinion-free judging criteria: what the judge uses when the user has not
 written their own.
 
-It lives in `core/` beside `CRITERIA_RELPATH` -- the contract naming WHERE the document lives --
+It lives in `core/` alongside `CRITERIA_RELPATH` (which is in `core/protocols.py`, the
+contract naming WHERE the document lives) --
 because two packages now need it and neither owns it. `triage/prompt.py` uses it as the
 missing-file fallback; `onboard/plan.py` splits it on its own headings to build the scaffold
 `sluice init` writes, so that an unanswered heading still carries these abstain instructions

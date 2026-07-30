@@ -399,6 +399,21 @@ def test_only_if_absent_lets_exactly_ONE_concurrent_caller_claim_the_create(
         assert store.read_criteria().startswith("writer-")
 
 
+def test_the_default_arm_REPLACES_rather_than_abstaining(store_name, tmp_path, monkeypatch):
+    """The other arm. Twelve lines of contract specified `only_if_absent=True` and nothing
+    specified the default, and no row wrote the same key twice with it -- every existing row writes
+    each key exactly once.
+
+    The requirement is live: `triage/audit.py` regenerates the rejected-leads digest through this
+    arm on every run. A store implementing create-exclusive as its primitive would freeze that
+    digest at its first version, silently."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    assert store.write_document("My CV/CV.md", "FIRST")
+    assert store.write_document("My CV/CV.md", "SECOND"), "the default arm returned no handle"
+    assert store.read_baseline() == "SECOND", \
+        "the default arm abstained instead of replacing; the digest would freeze at version one"
+
+
 def test_write_document_cannot_escape_the_store(store_name, tmp_path, monkeypatch):
     """The ONE wholesale-write primitive on a never-clobber contract must not be able to
     scribble outside the store -- including over the baseline CV, which is the fabrication
@@ -412,6 +427,32 @@ def test_write_document_cannot_escape_the_store(store_name, tmp_path, monkeypatc
             with pytest.raises(ValueError):
                 store.write_document(escape, "should never be written",
                                      only_if_absent=only_if_absent)
+
+
+def test_write_document_accepts_interior_traversal_that_stays_inside(store_name, tmp_path,
+                                                                     monkeypatch):
+    """The PERMITTED half, which a rejection-only suite passes while disagreeing about the rule.
+
+    The contract refuses a key whose RESOLVED path leaves the store -- not one that merely contains
+    `..`. `Vault` enforces that with realpath + commonpath, so `a/../My CV/CV.md` is accepted and
+    lands on the baseline. A second store implementing the cruder rule (reject any `..` component)
+    satisfies every assertion in the escape test above and still diverges from `Vault` on this key,
+    which is exactly the split #1's second store makes real -- and the split CodeRabbit found in the
+    contract PROSE last round, where the written rule was stricter than the code.
+
+    Both write paths, for the same reason the escape test parametrises them: the two branches
+    resolve the key separately, so a guard on one says nothing about the other.
+    """
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    # Exclusive arm FIRST, while the baseline is absent -- that is the branch `sluice init` drives,
+    # and once the document exists `only_if_absent` abstains and proves nothing about the key.
+    assert store.write_document("a/../My CV/CV.md", "INTERIOR", only_if_absent=True), \
+        "an interior `..` resolving inside the store was refused by the exclusive arm"
+    assert store.read_baseline() == "INTERIOR", \
+        "the accepted key did not resolve to the baseline document"
+    assert store.write_document("a/../My CV/CV.md", "INTERIOR AGAIN"), \
+        "the default arm refused an interior `..` the exclusive arm accepted"
+    assert store.read_baseline() == "INTERIOR AGAIN"
 
 
 # ── empty store ──────────────────────────────────────────────────────────────

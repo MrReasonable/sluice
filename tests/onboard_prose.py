@@ -211,17 +211,39 @@ def cli_reports(tmp_path):
     os.environ.pop("VAULT_DIR", None)
     os.environ["SLUICE_CONFIG"] = os.path.join(tmp_path, "c.yaml")
     try:
-        with contextlib.suppress(SystemExit), contextlib.redirect_stdout(out):
+        # BOTH streams. The third vault-report arm writes to stderr, so a stdout-only capture could
+        # never see it -- and both runs below succeed, so it also needs a FAILING vault write to be
+        # reached at all. Two stacked reasons one line stayed unswept.
+        with contextlib.suppress(SystemExit), contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(out):
             main(["init", "--vault", vault, "--no-input"])     # creates: "created a new vault"
-        with contextlib.suppress(SystemExit), contextlib.redirect_stdout(out):
+        with contextlib.suppress(SystemExit), contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(out):
             main(["init", "--vault", vault, "--no-input"])     # re-uses: "using the existing vault"
+
+        # ...and the failure arm: makedirs refused, so no vault directory exists to report.
+        denied = os.path.join(tmp_path, "denied")
+        real_makedirs = os.makedirs
+
+        def refuse_the_vault(path, *a, **kw):
+            if str(path) == denied:
+                raise OSError(13, "Permission denied")
+            return real_makedirs(path, *a, **kw)
+
+        os.makedirs = refuse_the_vault
+        try:
+            with contextlib.suppress(SystemExit), contextlib.redirect_stdout(out), \
+                    contextlib.redirect_stderr(out):
+                main(["init", "--vault", denied, "--no-input"])
+        finally:
+            os.makedirs = real_makedirs
     finally:
         for k, v in saved.items():
             os.environ.pop(k, None)
             if v is not None:
                 os.environ[k] = v
 
-    return [("cli:cmd_init report (both runs)", out.getvalue())]
+    return [("cli:cmd_init report (create, re-use and failure arms)", out.getvalue())]
 
 
 def shipped_prose():
