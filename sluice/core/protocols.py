@@ -198,6 +198,17 @@ class Store(Protocol):
         exists()-then-write pair -- the racer is a human in Obsidian, who takes no lock
         (#16).
 
+        With `only_if_absent=False` -- the DEFAULT -- the write must REPLACE any existing
+        document at `rel`. That arm is not a nicety: `triage/audit.py` regenerates the
+        rejected-leads digest through it on every run, so a store implementing
+        create-exclusive as its primitive would silently freeze that digest at its first
+        version and nothing would report it.
+
+        `rel` must also stay INSIDE the store: an absolute path or one containing `..`
+        raises ValueError rather than writing. This is the one wholesale-write primitive on
+        a never-clobber contract, so an escape would let it scribble over `My CV/CV.md`,
+        the fabrication gate's ground truth.
+
         The complementary requirement, because callers distinguish the two outcomes by
         TRUTHINESS: a successful write must return a NON-EMPTY handle. A store returning
         `""` after creating the document would make `sluice init` report "exists (left

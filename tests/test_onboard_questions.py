@@ -159,10 +159,11 @@ def test_the_success_report_covers_both_the_create_and_the_reuse_arm(tmp_path):
     "using the existing vault" -- the branch every REPEAT run takes, and the one an AST sweep
     found unswept."""
     from tests.onboard_prose import cli_reports
-    text = dict(cli_reports(str(tmp_path)))["cli:cmd_init report (both runs)"]
+    text = dict(cli_reports(str(tmp_path)))["cli:cmd_init report (create, re-use and failure arms)"]
     assert "created a new vault directory" in text          # first run
     assert "using the existing vault at" in text            # second run -- the uncovered branch
     assert "exists" in text                                 # the skip lines
+    assert "no vault directory at" in text                  # the stderr failure arm
 
 
 def test_every_stderr_refusal_is_actually_captured(tmp_path):
