@@ -148,6 +148,131 @@ def test_the_commands_own_report_names_no_exemplar(run_init, tmp_path):
     assert not expresses_a_preference(out + err)
 
 
+def _skip_all_questions():
+    """One blank per question `cmd_init` will ask, DERIVED from the catalogue.
+
+    `--vault` is a preset, so it is filtered out before `collect` runs. Hardcoding the count made
+    the leading blanks eat the board answer and the walk silently collected nothing -- the script
+    has to track the catalogue or the test drifts the moment a question is added."""
+    from sluice.onboard.questions import catalogue
+    return ["" for q in catalogue() if q.key != "vault_dir"]
+
+
+def _scripted(lines):
+    """A TtyAsker driven from a list of answers, with the editor explicitly OFF.
+
+    `editor=None` is load-bearing: `tests/conftest.py` does not scrub `$EDITOR`, so an asker that
+    resolved it itself would open the developer's editor mid-suite."""
+    import io
+
+    from sluice.onboard.ask import TtyAsker
+    return TtyAsker(stdin=io.StringIO("\n".join(lines) + "\n"), stdout=io.StringIO(), editor=None)
+
+
+def _init(argv, asker):
+    """`cmd_init` through its own seam, since `main()` has no way to inject one."""
+    from sluice.cli import _build_parser, cmd_init
+    from sluice.core.config import load_config
+    args = _build_parser().parse_args(argv)
+    return cmd_init(args, load_config(), asker=asker)
+
+
+def test_a_failed_config_write_reports_and_exits_non_zero(run_init, tmp_path, monkeypatch):
+    """Hard rule 9. The whole failure arm was unwitnessed: mutating `return 1 if failed else 0` to
+    `return 0`, or either `except OSError` body to `pass`, left the full suite green -- after which
+    `init` exits 0 having written nothing while printing `wrote` for both artefacts."""
+    dest = config_file()
+    real_open = open
+
+    def refuse_the_config(path, *a, **kw):
+        if str(path) == dest:
+            raise OSError(13, "Permission denied")
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr("builtins.open", refuse_the_config)
+    rc, out, err = run_init(["init", "--vault", str(tmp_path / "notes"), "--no-input"])
+    assert rc == 1
+    assert "FAILED" in err and dest in err
+    assert f"wrote   {dest}" not in out
+
+
+def test_a_walked_board_reaches_the_written_config(run_init, tmp_path):
+    """The interactive half was deletable with the suite green -- `if interactive:` -> `if False:`
+    passed, because every other test uses `--no-input` and the mode was derived from isatty()
+    rather than from the injected asker. This drives it through the `asker=` seam."""
+    from sluice.core.config import load_config
+    from sluice.ingest import sources as registry
+    board = registry.all_sources()[0].id
+    # questions ... | board walk: pick, label, url, blank-to-finish | profile: 5 blanks
+    rc = _init(["init", "--vault", str(tmp_path / "notes")],
+               _scripted(_skip_all_questions()
+                         + [board, "Example search", "https://example.invalid/j", ""]
+                         + [""] * 5))
+    assert rc == 0
+    assert load_config(config_file()).sources[board].searches == \
+        [["Example search", "https://example.invalid/j"]]
+
+
+def _asker_that_plants_the_profile(lines, vault):
+    """A scripted asker that creates the Judging Profile part-way through the interview.
+
+    That is the ONLY way to reach the `.init-scaffold.md` branch, and getting it wrong is
+    instructive: pre-creating the profile makes `cmd_init` skip the interview entirely (correctly --
+    there is nothing to ask for), so `profile_answers` stays empty and the branch never runs. The
+    branch exists for the race where a profile appears BETWEEN the preflight check and the write --
+    a human in Obsidian, or a sync client -- which is what this reproduces.
+    """
+    from sluice.onboard.ask import TtyAsker
+
+    class _Planting(TtyAsker):
+        def ask_prose(self, prompt):
+            answer = super().ask_prose(prompt)
+            target = vault / CRITERIA_RELPATH
+            if not target.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("MY REAL CRITERIA", encoding="utf-8")
+            return answer
+
+    import io
+    return _Planting(stdin=io.StringIO("\n".join(lines) + "\n"), stdout=io.StringIO(), editor=None)
+
+
+def test_prose_typed_against_a_profile_that_appears_mid_interview_is_parked_not_binned(
+        run_init, tmp_path):
+    """`.init-scaffold.md` -- the one data-loss guard in `cmd_init` -- was structurally unreachable
+    from the suite (`grep -rn init-scaffold tests/` returned nothing). A human types five answers,
+    a profile appears underneath them, and the original must survive byte-identical while their
+    prose lands beside it."""
+    vault = tmp_path / "notes"
+    script = _skip_all_questions() + [""] + ["Example background prose."] + [""] * 4
+    rc = _init(["init", "--vault", str(vault)], _asker_that_plants_the_profile(script, vault))
+
+    assert rc == 0
+    assert (vault / CRITERIA_RELPATH).read_text(encoding="utf-8") == "MY REAL CRITERIA"
+    spare = vault / CRITERIA_RELPATH.replace(".md", ".init-scaffold.md")
+    assert spare.exists() and "Example background prose." in spare.read_text(encoding="utf-8")
+
+
+def test_a_second_collision_reports_the_loss_rather_than_binning_it(run_init, tmp_path, capsys):
+    """The spare write is itself `only_if_absent`, and its "" return was DROPPED -- so a second
+    such run discarded the answers with no output and rc 0, directly under a comment saying not
+    to."""
+    vault = tmp_path / "notes"
+    (vault / "Job Applications").mkdir(parents=True)
+    (vault / CRITERIA_RELPATH.replace(".md", ".init-scaffold.md")).write_text(
+        "FROM AN EARLIER RUN", encoding="utf-8")
+
+    script = _skip_all_questions() + [""] + ["Example background prose."] + [""] * 4
+    capsys.readouterr()
+    rc = _init(["init", "--vault", str(vault)], _asker_that_plants_the_profile(script, vault))
+    err = capsys.readouterr().err
+
+    assert rc == 1, "losing what a human typed must not be reported as success"
+    assert "init-scaffold" in err and "NOT saved" in err
+    assert (vault / CRITERIA_RELPATH.replace(".md", ".init-scaffold.md")).read_text(
+        encoding="utf-8") == "FROM AN EARLIER RUN", "the earlier run's prose must survive too"
+
+
 def test_the_written_config_loads_and_abstains(run_init, tmp_path):
     from sluice.core.config import load_config
     from sluice.triage.config import load_triage_config

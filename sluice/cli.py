@@ -569,12 +569,15 @@ def cmd_init(args, config, *, asker=None) -> int:
     if vault_arg:
         presets["vault_dir"] = os.path.abspath(os.path.expanduser(vault_arg))
 
-    interactive = not args.no_input and sys.stdin.isatty()
     if asker is None:
         # $EDITOR is resolved HERE and passed in, so the asker itself reads no environment and a
         # test can pin "no editor" without the developer's real one leaking into the run.
         asker = (TtyAsker(stdin=sys.stdin, stdout=sys.stdout, editor=os.environ.get("EDITOR"))
-                 if interactive else NoInputAsker(presets=presets))
+                 if not args.no_input and sys.stdin.isatty() else NoInputAsker(presets=presets))
+    # Ask the ASKER, not the terminal. Deriving this from isatty() independently meant an injected
+    # asker could not reach the half it governs: under pytest isatty() is False, so the board walk,
+    # the profile interview and the .init-scaffold.md rescue were all structurally unreachable.
+    interactive = asker.interactive
 
     # A preset must win over a prompt even on a TTY: someone who passed --vault has already
     # answered, and asking again invites a different answer to the same question.
@@ -637,6 +640,14 @@ def cmd_init(args, config, *, asker=None) -> int:
             spare = CRITERIA_RELPATH.replace(".md", ".init-scaffold.md")
             if store.write_document(spare, plan.profile_text, only_if_absent=True):
                 written.append(os.path.join(vault_dir, spare))
+            else:
+                # The spare exists too (a second interactive run). Reporting this is the whole
+                # point: dropping through left the user's five typed answers discarded in silence
+                # with rc 0, directly under a comment saying not to. `failed` rather than
+                # `skipped`, because something the user typed was genuinely lost.
+                failed.append(f"{os.path.join(vault_dir, spare)}: already exists, so the answers "
+                              f"you just typed were NOT saved -- copy them out of the terminal, or "
+                              f"move that file aside and re-run")
     except OSError as exc:
         failed.append(f"{profile_dest}: {exc}")
 
