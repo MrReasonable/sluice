@@ -24,6 +24,7 @@ import sluice.core.app as app_mod
 from sluice.cli import main
 from tests.harness import build_harness
 from tests.harness.config import harness_resolve
+from tests.harness.initdriver import run_init  # noqa: F401  (fixture, requested by name)
 from tests.harness.registry import isolate_plugin_registry  # noqa: F401  (autouse fixture)
 
 

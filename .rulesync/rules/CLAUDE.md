@@ -93,25 +93,26 @@ or hand-edited generated file), and `ci-success`, the aggregate gate over the fi
 Running the pipeline:
 
 ```bash
-cp sluice.yaml.example sluice.local.yaml   # git-ignored -- but read the warning below first
-export SLUICE_CONFIG=$(pwd)/sluice.local.yaml
+export SLUICE_CONFIG=$(pwd)/sluice.local.yaml   # git-ignored
+sluice init --no-input --vault ./vault           # writes the config + a Judging Profile
 sluice ingest list-sources --health
 sluice ingest run --source reed --dry-run  # dry-run/JSON sink never writes vault or seen.db
 sluice triage run --no-llm                 # deterministic classify only, no backend call
 ```
 
-**That `cp` gives you a config whose gates are already CLOSED, and nothing says so.**
-`sluice.yaml.example` is a CATALOGUE: it ships illustrative values ACTIVE, not commented, and
-`relevance_keep` is applied at ingest before dedup and before any LLM call. Measured against a
-verbatim copy, `is_relevant("Senior Software Engineer")` is `False` — only a `horticultural
-consultant` survives, and `accept_titles`, `contract_floor_gbp_day` and `perm_floor_gbp` are
-live too. So a fresh copy scrapes and then silently discards nearly everything, which reads as
-a broken source rather than a closed gate. Comment those keys out in your `sluice.local.yaml`,
-or set them to your own values, before concluding that ingest is broken.
+**Do NOT `cp sluice.yaml.example` into place — that gives you a config whose gates are already
+CLOSED, and nothing says so.** `sluice.yaml.example` is a CATALOGUE: it ships illustrative values
+ACTIVE, not commented, and `relevance_keep` is applied at ingest before dedup and before any LLM
+call. Measured against a verbatim copy, `is_relevant("Senior Software Engineer")` is `False` — only
+a `horticultural consultant` survives, and `accept_titles`, `contract_floor_gbp_day` and
+`perm_floor_gbp` are live too. So a fresh copy scrapes and then silently discards nearly
+everything, which reads as a broken source rather than a closed gate.
 
-`locations` and `lead_ttl_days` already ship commented for exactly this reason — their comments
-say "this file is COPIED". The title, relevance and pay gates never got the same treatment. That
-asymmetry is the bug, not the copy.
+`sluice init` (#8) exists to remove that trap: it renders the config FROM the question catalogue
+with every unanswered key COMMENTED, so an unanswered run writes a file that is field-for-field
+equal to no config at all. It never overwrites an artefact, so re-running is safe. The example file
+stays a catalogue to read, not a template to copy, and `tests/test_no_copy_instruction.py` fails the
+build if any shipped doc goes back to instructing the copy.
 
 `ingest run` and `ingest test-source` drive a live Camofox browser server; every other command is
 offline. `sluice ingest test-source ID --raw` prints the raw fetch payload, which is how golden
@@ -120,8 +121,10 @@ parser fixtures get captured.
 ## Architecture
 
 Pipeline: `ingest -> triage -> cv -> apply -> track`. Five sub-apps under `sluice/`, all sitting on
-`sluice/core/`. `docs/ARCHITECTURE.md` has the per-module detail; what follows is what you cannot
-see from the file tree.
+`sluice/core/`, plus `sluice/onboard/` — a COMMAND package for `sluice init`, not a sixth sub-app:
+nothing downstream imports it and it sits beside the pipeline rather than inside it.
+`docs/ARCHITECTURE.md` has the per-module detail; what follows is what you cannot see from the file
+tree.
 
 **Config is layered and single-file.** Code defaults < the YAML file at `$SLUICE_CONFIG` (else
 `<XDG config>/sluice/config.yaml`) < env vars. Each sub-app has its own `load_*_config()` reading
