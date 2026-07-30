@@ -117,12 +117,55 @@ def test_nasty_answers_still_yield_loadable_yaml(tmp_path):
     assert load_triage_config(path).accept_titles == ["yes", "#hash", "back\\slash"]
 
 
-def test_each_section_header_appears_once(tmp_path):
-    """A fan-out question writes three blocks; without hoisting, its section header and hint were
-    emitted three times."""
+def test_every_key_renders_below_its_own_section_header_in_its_own_block(tmp_path):
+    """POSITIONAL, because a count cannot falsify the defect this replaces.
+
+    The old assertion was `text.count("-- Want") == 1`, satisfied identically by a header attached
+    to its keys and by one attached to none of them. Measured, it was the latter: `-- Want` sat at
+    root above `lead_ttl_days` alone while the six triage gates it describes rendered ~40 lines
+    below, unlabelled -- and that blurb ("an unset gate passes every lead through") is the abstain
+    doctrine's only appearance next to a gate. `-- Providers` likewise carried "API keys come from
+    the environment, never this file" into `cv:` only."""
     text = _plan(tmp_path).config_text
-    assert text.count("-- Providers") == 1
-    assert text.count("-- Want") == 1
+    lines = text.splitlines()
+
+    def block_of(i):
+        """The YAML block a line belongs to: the nearest `foo:`/`# foo:` header above it."""
+        for j in range(i, -1, -1):
+            m = re.match(r"^#?\s*([a-z_]+):\s*$", lines[j])
+            if m and not lines[j].startswith(("  ", "# -")):
+                return m.group(1)
+        return ""
+
+    for q in catalogue():
+        if not q.section:
+            continue
+        for dotted in q.writes_to:
+            leaf = dotted.split(".")[-1]
+            key_at = next(i for i, ln in enumerate(lines)
+                          if re.match(rf"^\s*#?\s*{re.escape(leaf)}:", ln)
+                          and block_of(i) == (dotted.split(".")[0] if "." in dotted else ""))
+            header_at = [i for i, ln in enumerate(lines)
+                         if f"-- {q.section} " in ln and block_of(i) == block_of(key_at)]
+            assert header_at, f"{dotted} renders with no '{q.section}' header in its own block"
+            assert min(header_at) < key_at, f"{dotted} renders ABOVE its own section header"
+
+
+def test_the_safety_blurbs_reach_every_block_they_govern(tmp_path):
+    """The two blurbs that carry safety information, named explicitly: they are the reason the
+    positional test above exists rather than a tidier count."""
+    text = _plan(tmp_path).config_text
+    assert text.count("-- Want") == 2, "root (lead_ttl_days) and triage (the six gates)"
+    assert text.count("-- Providers") == 3, "cv, triage and track each take a backend"
+    assert text.count("API keys come from the environment") == 3
+
+
+def test_a_fan_out_question_still_emits_its_header_once_per_block(tmp_path):
+    """What the hoist was originally added for: ONE question writing three blocks must not emit
+    three headers in a single block."""
+    text = _plan(tmp_path).config_text
+    cv_block = text.split("# cv:")[1].split("\n# ")[0]
+    assert cv_block.count("-- Providers") == 1
 
 
 def test_notes_explain_what_a_configured_gate_will_do(tmp_path):

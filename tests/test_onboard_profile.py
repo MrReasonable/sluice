@@ -25,7 +25,7 @@ def test_an_unanswered_profile_still_carries_every_abstain_instruction():
 
 
 def test_an_unanswered_profile_is_not_treated_as_configured():
-    assert "No Judging Profile has been configured yet" in build_system_prompt_from(_profile())
+    assert "No judging criteria have been supplied yet" in build_system_prompt_from(_profile())
 
 
 def test_an_answered_heading_replaces_the_default_prose_for_that_heading_only():

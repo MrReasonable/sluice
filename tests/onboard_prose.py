@@ -30,11 +30,11 @@ _NOT_PROSE = {
     ("sluice.onboard.questions", "_BOOL_WORDS"),
     # The YAML escape table: five (raw, escaped) pairs of punctuation.
     ("sluice.onboard.emit", "_ESCAPES"),
-    # Authored outside this package and imported here; governed by
+    # Authored in core/criteria.py and imported here; governed by
     # test_shipped_prompt_expresses_no_role_or_culture_preference. Exempt on PROVENANCE, not to
     # hide a failure -- measured, it trips zero words in NO_TAXONOMY_WORDS. Re-measure before
     # widening this set: an exemption that would otherwise fire is a suppressed finding.
-    ("sluice.onboard.plan", "_DEFAULT_CRITERIA"),
+    ("sluice.onboard.plan", "DEFAULT_CRITERIA"),
     ("sluice.onboard.plan", "PROFILE_HEADINGS"),   # derived FROM the above
 }
 

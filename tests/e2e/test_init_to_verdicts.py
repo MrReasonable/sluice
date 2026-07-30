@@ -27,7 +27,7 @@ def test_a_scaffolded_profile_still_tells_the_judge_to_abstain(run_init, tmp_pat
     vault = tmp_path / "notes"
     assert run_init(["init", "--vault", str(vault), "--no-input"])[0] == 0
     prompt = build_system_prompt_from(Vault(str(vault)).read_criteria())
-    assert "No Judging Profile has been configured yet" in prompt
+    assert "No judging criteria have been supplied yet" in prompt
     assert "prefer `research`" in prompt
 
 
@@ -36,7 +36,7 @@ def test_an_install_with_no_profile_at_all_abstains_identically(tmp_path):
     human writes something. If arm 1 passed while this failed, arm 1 would prove nothing."""
     empty = tmp_path / "empty"
     empty.mkdir()
-    assert "No Judging Profile has been configured yet" in \
+    assert "No judging criteria have been supplied yet" in \
         build_system_prompt_from(Vault(str(empty)).read_criteria())
 
 
@@ -46,7 +46,7 @@ def test_a_filled_profile_reaches_the_judge_verbatim(run_init, tmp_path):
     (vault / CRITERIA_RELPATH).write_text(FILLED, encoding="utf-8")
     prompt = build_system_prompt_from(Vault(str(vault)).read_criteria())
     assert "example win phrase" in prompt and "example anti phrase" in prompt
-    assert "No Judging Profile has been configured yet" not in prompt
+    assert "No judging criteria have been supplied yet" not in prompt
 
 
 def test_the_scaffold_smuggles_no_exemplar_into_the_judge_prompt(run_init, tmp_path):

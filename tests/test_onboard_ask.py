@@ -150,6 +150,30 @@ def test_no_input_selects_no_boards_so_the_two_paths_still_converge():
     assert collect_sources(NoInputAsker(presets={}), ["reed"]) == {}
 
 
-def test_no_input_asks_no_prose_and_never_opens_an_editor():
-    """`--no-input` must reach tier 3 for every heading (the scaffold comment stays), not tier 2."""
+def test_no_input_asks_no_prose_and_never_opens_an_editor(monkeypatch):
+    """`--no-input` must reach tier 3 for every heading (the scaffold comment stays), not tier 2.
+
+    Asserts the MECHANISM, not just the return value: `== {}` alone is satisfied by an
+    implementation that shells out to `$EDITOR` and discards the result, so the second half of this
+    test's name was previously unasserted. `subprocess.call` is the one door out."""
+    import subprocess
+
+    def boom(*a, **kw):
+        raise AssertionError("--no-input must never launch a subprocess")
+
+    monkeypatch.setattr(subprocess, "call", boom)
     assert collect_profile(NoInputAsker(presets={"vault_dir": "/example/v"})) == {}
+
+
+def test_the_tty_asker_is_the_only_thing_that_can_open_an_editor(monkeypatch):
+    """The hermeticity that actually holds today comes from `cmd_init` passing `editor=` only to
+    `TtyAsker`, and nothing pinned it. With no editor configured, not even the TTY path spawns."""
+    import io
+    import subprocess
+
+    def boom(*a, **kw):
+        raise AssertionError("no editor is configured, so nothing may be launched")
+
+    monkeypatch.setattr(subprocess, "call", boom)
+    asker = TtyAsker(stdin=io.StringIO("\n" * 8), stdout=io.StringIO(), editor=None)
+    assert collect_profile(asker) == {}
