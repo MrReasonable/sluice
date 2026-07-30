@@ -2343,8 +2343,11 @@ MrReasonable <4990954+MrReasonable@users.noreply.github.com>"
 
 ```bash
 tmp=$(mktemp -d)
-env HOME="$tmp" XDG_CONFIG_HOME="$tmp/.config" XDG_STATE_HOME="$tmp/.local/state" \
-    XDG_CACHE_HOME="$tmp/.cache" -u VAULT_DIR -u SLUICE_CONFIG \
+# -u flags FIRST (see Step 6), and -u EDITOR too, or an interactive run would open the developer's
+# editor. Measured on macOS: with the -u flags after the assignments this exits 127 before running.
+env -u VAULT_DIR -u SLUICE_CONFIG -u EDITOR \
+    HOME="$tmp" XDG_CONFIG_HOME="$tmp/.config" XDG_STATE_HOME="$tmp/.local/state" \
+    XDG_CACHE_HOME="$tmp/.cache" \
     .venv/bin/python -m sluice.cli init --vault "$tmp/notes" --no-input
 cat "$tmp/.config/sluice/config.yaml"
 cat "$tmp/notes/Job Applications/Judging Profile.md"
@@ -2354,7 +2357,10 @@ find "$tmp/.local/state" "$tmp/.cache" -type f 2>/dev/null   # MUST be empty
 - [ ] **Step 6: The refusal refuses on a pipe, and does not hang**
 
 ```bash
-env HOME="$tmp" -u VAULT_DIR .venv/bin/python -m sluice.cli init --no-input < /dev/null
+# -u BEFORE the assignments: BSD/macOS env requires options first and exits 127 otherwise
+# ("env: -u: No such file or directory"), which reads as a missing binary rather than a usage error.
+env -u VAULT_DIR -u SLUICE_CONFIG HOME="$tmp" \
+    .venv/bin/python -m sluice.cli init --no-input < /dev/null
 echo "exit: $?"    # MUST be 2
 ```
 
