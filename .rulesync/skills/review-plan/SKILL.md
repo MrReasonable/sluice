@@ -107,8 +107,12 @@ written. Record that as a `scope-gap` finding, then continue with the full roste
 Four reviewers is the floor, five the common case. Do not inflate the roster: a reviewer with nothing
 to say produces noise that buries the ones who do.
 
-If the plan proposes editing `.rulesync/`, stop and **escalate to the user**. That tree is canonical
-and human-gated; `CLAUDE.md`, `AGENTS.md` and `.claude/` are generated from it and gitignored.
+A plan that edits `.rulesync/` proceeds like any other. That tree is canonical -- `CLAUDE.md`,
+`AGENTS.md` and `.claude/` are generated from it and gitignored, so a change there propagates to
+every agent -- but it does not need sign-off. Review it with the same care as code and fold the
+findings. What still applies is correctness: it is the highest-leverage place to assert something
+false, so never write a claim there that is not true YET (a rule describing code a later task
+adds belongs in that task, not ahead of it), and regenerate with `npm run rulesync` afterwards.
 
 ### Step 4: Prepare the findings directory
 
