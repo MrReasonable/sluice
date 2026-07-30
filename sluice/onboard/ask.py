@@ -14,10 +14,10 @@ import shlex
 import subprocess
 import tempfile
 
-from sluice.onboard.questions import BadAnswer
+from sluice.onboard.questions import BadAnswer, parse_url
 
 
-class MissingAnswer(ValueError):
+class MissingAnswer(RuntimeError):
     """A required answer was not supplied and cannot be asked for.
 
     Raised rather than read from stdin: a wizard blocking on a pipe is a hung CI job with no
@@ -129,6 +129,41 @@ class TtyAsker:
             return raw.strip()
         return edit_in_editor(prompt, editor=self.editor, run=self.run)
 
+    def ask_ids(self, prompt, allowed):
+        """A comma-separated subset of `allowed`. An unrecognised id is re-asked, not dropped:
+        silently ignoring a typo'd board leaves the user believing they selected it."""
+        self._say("")
+        self._say(prompt)
+        self._say(f"  {', '.join(sorted(allowed))}")
+        self._say("  [blank = skip, and every source runs its own example search]")
+        while True:
+            raw = self._read()
+            if raw == "" or not raw.strip():
+                return []
+            picked = [s.strip() for s in raw.split(",") if s.strip()]
+            unknown = [s for s in picked if s not in allowed]
+            if not unknown:
+                return picked
+            self._say(f"  not a registered source: {', '.join(unknown)}")
+
+    def ask_text_plain(self, prompt):
+        self._say(prompt)
+        raw = self._read()
+        return raw.strip() if raw != "" else ""
+
+    def ask_url(self, prompt):
+        """Re-asked on a parse failure. A mistyped board URL that is silently skipped is a source
+        the user believes is configured and is not."""
+        while True:
+            self._say(prompt)
+            raw = self._read()
+            if raw == "" or not raw.strip():
+                return None
+            try:
+                return parse_url(raw)
+            except BadAnswer as e:
+                self._say(f"  {e}")
+
 
 class NoInputAsker:
     """Answers come only from flags. Nothing is prompted for and nothing is inferred."""
@@ -151,6 +186,18 @@ class NoInputAsker:
     def ask_prose(self, prompt):
         return None
 
+    # `--no-input` selects no boards, so no `sources:` block is written and every source keeps its
+    # own neutral example search. That is exactly what entering through the TTY wizard produces,
+    # which is the convergence property stated at the top of this module.
+    def ask_ids(self, prompt, allowed):
+        return []
+
+    def ask_text_plain(self, prompt):
+        return ""
+
+    def ask_url(self, prompt):
+        return None
+
 
 def collect(asker, questions):
     """Answers for `questions`, with every skipped question ABSENT.
@@ -165,6 +212,31 @@ def collect(asker, questions):
         if value is None or value == "" or value == []:
             continue
         out[q.key] = value
+    return out
+
+
+def collect_sources(asker, source_ids) -> dict:
+    """Two passes, not one 22-deep interrogation: select boards, then collect each board's searches.
+
+    A search is a label plus a URL pasted from a browser, so the URL is re-asked on a parse failure
+    rather than dropped -- a mistyped board URL that is silently skipped leaves the user believing a
+    source is configured when it is not.
+
+    An empty selection returns `{}`, which emits the commented example block and lets every source
+    run its own neutral example search: the abstain default, unchanged.
+    """
+    picked = asker.ask_ids("Which boards do you want to scrape?", source_ids)
+    out = {}
+    for sid in picked:
+        searches = []
+        while True:
+            label = asker.ask_text_plain(f"{sid} -- search label (blank to finish)?")
+            if not label:
+                break
+            url = asker.ask_url(f"{sid} -- URL for {label!r}?")
+            if url:
+                searches.append([label, url])
+        out[sid] = {"enabled": True, "searches": searches}
     return out
 
 
