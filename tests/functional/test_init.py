@@ -220,6 +220,34 @@ def test_a_failed_config_write_reports_and_exits_non_zero(run_init, tmp_path, mo
     assert f"wrote   {dest}" not in out
 
 
+def test_both_artefacts_name_the_SAME_vault_when_the_env_carries_a_tilde(run_init, tmp_path,
+                                                                        monkeypatch):
+    """`cmd_init` expanded `~`; the store seam did not. Measured before the fix:
+    `VAULT_DIR='~/probevault' sluice init --no-input` wrote `vault_dir: <HOME>/probevault` into the
+    config while the profile landed in a literal `./~/probevault/` under the CWD -- a real directory
+    named `~`, in whatever the user happened to be standing in.
+
+    The consequence is silent: triage reads the config's path, finds no profile there, and falls
+    back to the shipped default criteria. The user's scaffold is orphaned in a directory they will
+    never look in. The --vault/$VAULT_DIR refusal does not cover this -- it guards which VARIABLE
+    wins, not how the value is normalized."""
+    monkeypatch.chdir(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("VAULT_DIR", "~/probevault")
+
+    rc, _out, _err = run_init(["init", "--no-input"])
+    assert rc == 0
+
+    from sluice.core.config import load_config
+    configured = load_config(config_file()).vault_dir
+    assert (home / "probevault" / CRITERIA_RELPATH).exists(), "the profile did not land under $HOME"
+    assert not (tmp_path / "~").exists(), "a literal '~' directory was created"
+    assert Vault(configured).read_criteria(), \
+        "the config names a vault the profile was not written to"
+
+
 def test_a_relative_SLUICE_CONFIG_reports_rather_than_crashing(run_init, tmp_path, monkeypatch):
     """`os.path.dirname("sluice.local.yaml")` is `""`, and `os.makedirs("")` raises
     FileNotFoundError. Sitting outside the try, that escaped as an uncaught traceback instead of
