@@ -83,8 +83,12 @@ def edit_in_editor(prompt, *, editor=None, run=None):
     # Drop the EXACT scaffold lines, not every line starting with `#`. A user writing Markdown
     # headings ("# My background") in their editor would otherwise have them silently deleted --
     # in a file whose whole purpose is prose they wrote.
-    scaffold_lines = set(scaffold.rstrip("\n").split("\n"))
-    kept = [ln for ln in body.split("\n") if ln not in scaffold_lines]
+    # Compared STRIPPED. An exact match breaks on any editor that trims trailing whitespace or
+    # writes CRLF: every scaffold line then differs, nothing is dropped, and the prompt is returned
+    # as if the user had written it -- landing in the Judging Profile and reaching the judge as
+    # authoritative criteria.
+    scaffold_lines = {ln.strip() for ln in scaffold.rstrip("\n").split("\n")}
+    kept = [ln for ln in body.split("\n") if ln.strip() not in scaffold_lines]
     return "\n".join(kept).strip() or None
 
 

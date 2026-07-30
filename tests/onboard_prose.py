@@ -20,6 +20,7 @@ evaded it.
 """
 import importlib
 import inspect
+import os
 import pkgutil
 
 # Module-level constants that are NOT shipped prose, each with its reason.
@@ -246,13 +247,22 @@ def cli_reports(tmp_path):
     return [("cli:cmd_init report (create, re-use and failure arms)", out.getvalue())]
 
 
-def shipped_prose():
-    """[(label, text), ...] for every surface a user reads."""
+def shipped_prose(tmp_path=None):
+    """[(label, text), ...] for every surface a user reads.
+
+    `tmp_path` is optional only because the completeness guard does not need it: the refusal and
+    report channels DRIVE `main()`, which needs somewhere to write. Pass one and they are included,
+    so a consumer of this function sees the same surfaces the exemplar sweep does rather than a
+    subset that silently omits two `cmd_init` branches.
+    """
     import sluice.onboard.ask as ask_mod
     import sluice.onboard.plan as plan_mod
     from sluice.onboard.questions import catalogue
 
     out = list(rendered_artefacts()) + list(terminal_transcript()) + list(cli_help_text())
+    if tmp_path is not None:
+        out += list(cli_refusals(os.path.join(tmp_path, "refuse")))
+        out += list(cli_reports(os.path.join(tmp_path, "report")))
     for q in catalogue(default_vault="/example/vault"):
         for attr in ("prompt", "hint", "consequence"):
             out.append((f"catalogue[{q.key}].{attr}", getattr(q, attr)))

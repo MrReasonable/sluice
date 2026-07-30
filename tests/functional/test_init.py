@@ -297,6 +297,27 @@ def test_an_existing_config_skips_the_questions_that_only_write_to_it(run_init, 
     assert "Your config will:" not in captured, "reported gates for a config it did not write"
 
 
+def test_an_existing_config_also_skips_the_board_walk(run_init, tmp_path):
+    """The sibling the round-2 fix left behind. `collect_sources` writes ONLY into
+    `plan.config_text`, exactly like the preference questions -- so gating those and not this left
+    a second interactive run printing "skipping the config questions" and then immediately asking
+    for board ids, search labels and URLs, discarding every answer with rc 0 and no report."""
+    dest = config_file()
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "w", encoding="utf-8") as fh:
+        fh.write("# hand written\n")
+
+    from sluice.onboard.ask import TtyAsker
+    out = io.StringIO()
+    asker = TtyAsker(stdin=io.StringIO("\n" * 8), stdout=out, editor=None)
+    rc = _init(["init", "--vault", str(tmp_path / "notes")], asker)
+    shown = out.getvalue()
+
+    assert rc == 0
+    assert "boards do you want" not in shown, "the board walk ran for a config it will not write"
+    assert "search label" not in shown
+
+
 def test_a_relative_SLUICE_CONFIG_reports_rather_than_crashing(run_init, tmp_path, monkeypatch):
     """`os.path.dirname("sluice.local.yaml")` is `""`, and `os.makedirs("")` raises
     FileNotFoundError. Sitting outside the try, that escaped as an uncaught traceback instead of

@@ -93,11 +93,13 @@ or hand-edited generated file), and `ci-success`, the aggregate gate over the fi
 Running the pipeline:
 
 ```bash
-export SLUICE_CONFIG=$(pwd)/sluice.local.yaml   # git-ignored
+export SLUICE_CONFIG="$(pwd)/sluice.local.yaml"  # git-ignored; quoted for paths with spaces
 sluice init --no-input --vault ./vault           # writes the config + a Judging Profile
 sluice ingest list-sources --health
 sluice ingest run --source reed --dry-run  # dry-run/JSON sink never writes vault or seen.db
 sluice triage run --no-llm                 # deterministic classify only, no backend call
+                                           # (needs leads already in the vault: the dry run above
+                                           #  writes none, so drop --dry-run to feed this)
 ```
 
 **Do NOT `cp sluice.yaml.example` into place — that gives you a config whose gates are already

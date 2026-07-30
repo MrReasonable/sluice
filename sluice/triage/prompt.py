@@ -101,9 +101,13 @@ def _strip_html_comments(text: str) -> str:
     profile "treats it as authoritative for who you are". A user's own notes-to-self in their
     Judging Profile are the same shape and equally not criteria.
 
-    Markdown has no other comment syntax, so this is the whole class.
+    BOTH syntaxes. HTML comments are the Markdown form, and `%%...%%` is Obsidian's -- which
+    matters because this document's own header tells the user to "edit it in Obsidian whenever your
+    search changes". A claim that HTML comments were "the whole class" was measured false: a
+    `%% note to self %%` survived and reached the judge as criteria.
     """
-    return re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+    return re.sub(r"%%.*?%%", "", text, flags=re.DOTALL)
 
 
 def load_criteria(vault_dir: str | None) -> str:
