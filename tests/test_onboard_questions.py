@@ -100,7 +100,7 @@ def test_the_helper_matches_whole_words_only():
     assert not expresses_a_preference("your background and seniority")
 
 
-def test_no_rendered_artefact_names_an_exemplar():
+def test_no_rendered_artefact_names_an_exemplar(tmp_path):
     """THE load-bearing arm. Sweeps the BYTES the user receives -- the written config and the
     written Judging Profile -- rather than the constants that feed them.
 
@@ -109,8 +109,11 @@ def test_no_rendered_artefact_names_an_exemplar():
     judge as authoritative criteria) left the FULL SUITE green. Three reviewers found that
     independently. A whole-artefact sweep cannot go stale as literals move in and out of function
     bodies, which is what makes this the arm to trust."""
-    from tests.onboard_prose import rendered_artefacts, terminal_transcript
-    for label, text in list(rendered_artefacts()) + list(terminal_transcript()):
+    from tests.onboard_prose import (cli_help_text, cli_refusals, rendered_artefacts,
+                                     terminal_transcript)
+    surfaces = (list(rendered_artefacts()) + list(terminal_transcript())
+                + list(cli_help_text()) + list(cli_refusals(str(tmp_path))))
+    for label, text in surfaces:
         assert not expresses_a_preference(text), f"{label} names an exemplar"
 
 
@@ -124,6 +127,40 @@ def test_the_terminal_transcript_covers_the_prompts_it_claims_to():
     assert "boards" in text                                 # ask_ids
     assert "search label" in text                           # the per-source walk
     assert "$EDITOR" in text                                # ask_prose
+
+
+def test_every_error_path_arm_is_actually_captured():
+    """SCOPE for the ERROR arm, which had none: emptying that buffer left the sweep green, so it
+    asserted nothing about the five messages it was added for. `all([])`, one more time."""
+    from tests.onboard_prose import terminal_transcript
+    text = dict(terminal_transcript())["terminal:asker error paths"]
+    assert "yes/no word" in text                            # parse_int, the #75 arm
+    assert "not a whole number" in text                     # parse_int, the not-a-number arm
+    assert "must not be negative" in text                   # parse_int, the negative arm
+    assert "is not one of" in text                          # parse_choice
+    assert "not an http(s) URL" in text                     # parse_url
+    assert "not a registered source" in text                # ask_ids
+    assert "--vault" in text                                # MissingAnswer
+
+
+def test_both_help_parsers_are_captured():
+    """SCOPE for the help arm. The child parser does NOT render `add_parser(help=...)` -- measured
+    -- so capturing only `init --help` missed the one string the helper was written for."""
+    from tests.onboard_prose import cli_help_text
+    surfaces = dict(cli_help_text())
+    assert len(surfaces) == 2
+    assert "scaffold a config" in surfaces["cli:sluice --help (the subcommand listing)"]
+    assert "--vault" in surfaces["cli:sluice init --help"]
+
+
+def test_every_stderr_refusal_is_actually_captured(tmp_path):
+    """SCOPE for the refusal arm. These are read at the moment a user is most confused, and they
+    reach neither the artefacts, the transcript, nor the functional sweep (a SUCCESSFUL run)."""
+    from tests.onboard_prose import cli_refusals
+    text = dict(cli_refusals(str(tmp_path)))["cli:cmd_init refusals (stderr)"]
+    assert "name different directories" in text             # --vault vs $VAULT_DIR
+    assert "needs to know where your vault is" in text      # MissingAnswer via --no-input
+    assert "is not a directory" in text                     # the vault-is-a-file refusal
 
 
 def test_the_rendered_sweep_covers_BOTH_arms_and_strips_nothing():
