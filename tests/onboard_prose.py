@@ -155,6 +155,7 @@ def cli_refusals(tmp_path):
 
     from sluice.cli import main
 
+    os.makedirs(tmp_path, exist_ok=True)   # callers may pass a subdirectory that does not exist yet
     out = io.StringIO()
 
     def run(argv, **env):
@@ -185,6 +186,42 @@ def cli_refusals(tmp_path):
     run(["init", "--vault", afile, "--no-input"])        # the vault path is a file
 
     return [("cli:cmd_init refusals (stderr)", out.getvalue())]
+
+
+def cli_reports(tmp_path):
+    """`cmd_init`'s SUCCESS-path report, on the branches a single happy run never reaches.
+
+    An AST sweep of every literal in the package found four still uncovered: the second-run notice,
+    the `.init-scaffold.md` data-loss message, `using the existing vault at` (the COMMON repeat
+    run), and the no-vault-directory stderr. Confirmed by mutation -- planting an exemplar in the
+    "existing vault" line left the whole suite green.
+
+    Driven rather than enumerated: a first run creates, a second run re-uses, so both arms print.
+    """
+    import contextlib
+    import io
+    import os
+
+    from sluice.cli import main
+
+    os.makedirs(tmp_path, exist_ok=True)
+    out = io.StringIO()
+    vault = os.path.join(tmp_path, "notes")
+    saved = {k: os.environ.get(k) for k in ("VAULT_DIR", "SLUICE_CONFIG")}
+    os.environ.pop("VAULT_DIR", None)
+    os.environ["SLUICE_CONFIG"] = os.path.join(tmp_path, "c.yaml")
+    try:
+        with contextlib.suppress(SystemExit), contextlib.redirect_stdout(out):
+            main(["init", "--vault", vault, "--no-input"])     # creates: "created a new vault"
+        with contextlib.suppress(SystemExit), contextlib.redirect_stdout(out):
+            main(["init", "--vault", vault, "--no-input"])     # re-uses: "using the existing vault"
+    finally:
+        for k, v in saved.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+
+    return [("cli:cmd_init report (both runs)", out.getvalue())]
 
 
 def shipped_prose():

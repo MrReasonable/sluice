@@ -13,8 +13,8 @@ def _note(company, role, slug="Whatever"):
 
 
 def test_slug_matches_on_company_role():
-    n = _note("Northwind", "Chief Financial Officer")
-    assert slug_matches(n, "northwind") is True          # company
+    n = _note("Example Northgate", "Chief Financial Officer")
+    assert slug_matches(n, "northgate") is True          # company
     assert slug_matches(n, "chief-financial-officer") is True   # role, slugified
     assert slug_matches(n, "cobalt") is False
 

@@ -385,6 +385,11 @@ def test_a_second_collision_reports_the_loss_rather_than_binning_it(run_init, tm
 
     assert rc == 1, "losing what a human typed must not be reported as success"
     assert "init-scaffold" in err and "NOT saved" in err
+    # This branch is reachable ONLY from this collision, so no rendered or transcript sweep can see
+    # it -- measured, an exemplar planted here left the whole suite green. Swept where it runs,
+    # with the shared vocabulary rather than a second copy.
+    from sluice.onboard.questions import expresses_a_preference
+    assert not expresses_a_preference(err)
     assert (vault / CRITERIA_RELPATH.replace(".md", ".init-scaffold.md")).read_text(
         encoding="utf-8") == "FROM AN EARLIER RUN", "the earlier run's prose must survive too"
 

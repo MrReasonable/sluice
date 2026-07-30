@@ -8,12 +8,12 @@ from sluice.apply import record as rec
 def _lead(fm):
     root = tempfile.mkdtemp()
     leads = pathlib.Path(root, "Job Applications", "Job Leads"); leads.mkdir(parents=True)
-    (leads / "Northwind - Analyst.md").write_text("---\n" + fm + "\n---\n\nBODY\n")
+    (leads / "Example Northgate - Analyst.md").write_text("---\n" + fm + "\n---\n\nBODY\n")
     return Vault(root)
 
 
-_SHORTLIST = ('company: "Northwind"\nrole: "Analyst"\nstatus: shortlist\n'
-              'url: "https://northwind.example/x"\ntailored_cv: CV_deadbeef.pdf (2026-07-09)')
+_SHORTLIST = ('company: "Example Northgate"\nrole: "Analyst"\nstatus: shortlist\n'
+              'url: "https://example-northgate.invalid/x"\ntailored_cv: CV_deadbeef.pdf (2026-07-09)')
 
 
 def test_record_flips_shortlist_to_applied_and_stamps():
@@ -33,7 +33,7 @@ def test_record_flips_shortlist_to_applied_and_stamps():
 def test_record_refuses_application_owned():
     v = _lead(_SHORTLIST.replace("status: shortlist", "status: interviewing"))
     # read all (not just shortlist) to get the note
-    note = [n for n in v.read_leads() if n.fm["company"] == "Northwind"][0]
+    note = [n for n in v.read_leads() if n.fm["company"] == "Example Northgate"][0]
     out = rec.record(v, note, ApplyConfig())
     assert out["ok"] is False
     assert "status: applied" not in pathlib.Path(note.ref).read_text()

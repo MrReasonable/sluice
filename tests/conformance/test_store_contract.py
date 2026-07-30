@@ -371,26 +371,32 @@ def test_only_if_absent_lets_exactly_ONE_concurrent_caller_claim_the_create(
     import threading
 
     from sluice.core.protocols import CRITERIA_RELPATH
-    store = _make_store(store_name, tmp_path, monkeypatch)
-    claimed, barrier = [], threading.Barrier(2)
 
-    def create(i):
-        barrier.wait()          # maximise the overlap rather than hoping for it
-        claimed.append(bool(store.write_document(CRITERIA_RELPATH, f"writer-{i}",
-                                                 only_if_absent=True)))
+    # ROUNDS, not one pass. Measured: a single race caught a deliberately racy exists()-then-write
+    # store only 89 times in 400, so a second implementer would have seen a green suite on ~78% of
+    # runs while shipping a writer that clobbers the user's Judging Profile. Fifty rounds takes the
+    # miss probability to effectively zero and still runs in well under a second.
+    for round_no in range(50):
+        store = _make_store(store_name, tmp_path / f"r{round_no}", monkeypatch)
+        claimed, barrier = [], threading.Barrier(2)
 
-    threads = [threading.Thread(target=create, args=(i,)) for i in range(2)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+        def create(i, _store=store, _claimed=claimed, _barrier=barrier):
+            _barrier.wait()     # maximise the overlap rather than hoping for it
+            _claimed.append(bool(_store.write_document(CRITERIA_RELPATH, f"writer-{i}",
+                                                       only_if_absent=True)))
 
-    assert len(claimed) == 2, "precondition: both callers ran"
-    assert sum(claimed) == 1, (
-        "two callers both claimed to create the same document, so only_if_absent is an "
-        "exists()-then-write pair rather than a property of the open -- the second write "
-        "clobbered the first")
-    assert store.read_criteria().startswith("writer-")
+        threads = [threading.Thread(target=create, args=(i,)) for i in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(claimed) == 2, "precondition: both callers ran"
+        assert sum(claimed) == 1, (
+            f"round {round_no}: two callers both claimed to create the same document, so "
+            "only_if_absent is an exists()-then-write pair rather than a property of the open -- "
+            "the second write clobbered the first")
+        assert store.read_criteria().startswith("writer-")
 
 
 def test_write_document_cannot_escape_the_store(store_name, tmp_path, monkeypatch):

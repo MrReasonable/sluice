@@ -109,10 +109,11 @@ def test_no_rendered_artefact_names_an_exemplar(tmp_path):
     judge as authoritative criteria) left the FULL SUITE green. Three reviewers found that
     independently. A whole-artefact sweep cannot go stale as literals move in and out of function
     bodies, which is what makes this the arm to trust."""
-    from tests.onboard_prose import (cli_help_text, cli_refusals, rendered_artefacts,
-                                     terminal_transcript)
+    from tests.onboard_prose import (cli_help_text, cli_refusals, cli_reports,
+                                     rendered_artefacts, terminal_transcript)
     surfaces = (list(rendered_artefacts()) + list(terminal_transcript())
-                + list(cli_help_text()) + list(cli_refusals(str(tmp_path))))
+                + list(cli_help_text()) + list(cli_refusals(str(tmp_path / "refuse")))
+                + list(cli_reports(str(tmp_path / "report"))))
     for label, text in surfaces:
         assert not expresses_a_preference(text), f"{label} names an exemplar"
 
@@ -151,6 +152,17 @@ def test_both_help_parsers_are_captured():
     assert len(surfaces) == 2
     assert "scaffold a config" in surfaces["cli:sluice --help (the subcommand listing)"]
     assert "--vault" in surfaces["cli:sluice init --help"]
+
+
+def test_the_success_report_covers_both_the_create_and_the_reuse_arm(tmp_path):
+    """SCOPE for the report arm. A single happy run prints "created a new vault" and never
+    "using the existing vault" -- the branch every REPEAT run takes, and the one an AST sweep
+    found unswept."""
+    from tests.onboard_prose import cli_reports
+    text = dict(cli_reports(str(tmp_path)))["cli:cmd_init report (both runs)"]
+    assert "created a new vault directory" in text          # first run
+    assert "using the existing vault at" in text            # second run -- the uncovered branch
+    assert "exists" in text                                 # the skip lines
 
 
 def test_every_stderr_refusal_is_actually_captured(tmp_path):
