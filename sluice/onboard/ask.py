@@ -274,7 +274,7 @@ def collect_sources(asker, source_ids) -> dict:
 def collect_profile(asker):
     """Prose answers per judging-profile heading, keyed for `build_plan(profile_answers=...)`.
 
-    An unanswered heading is ABSENT, and `_render_profile` then keeps `_DEFAULT_CRITERIA`'s own
+    An unanswered heading is ABSENT, and `_render_profile` then keeps `DEFAULT_CRITERIA`'s own
     prose for it -- which is what stops `sluice init` stripping the judge's abstain instructions.
     """
     out = {}

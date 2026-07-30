@@ -231,12 +231,12 @@ and commented, because the differential alone passes just as happily on an empty
 file. This is the empty-config-abstains invariant expressed at the wizard, and
 `672ad2a` is what happens without it.
 
-**An unanswered profile heading carries `_DEFAULT_CRITERIA`'s own prose.**
+**An unanswered profile heading carries `DEFAULT_CRITERIA`'s own prose.**
 `build_system_prompt_from` falls back to `core/criteria.py`'s shipped neutral criteria only when
 the criteria text is missing or EMPTY, and a scaffold is never empty — so bare
 headings would permanently strip the judge's abstain instructions while the
 surrounding scaffold still told it to treat the profile as authoritative. The
-heading set is DERIVED by splitting `_DEFAULT_CRITERIA` on its own headings, so
+heading set is DERIVED by splitting `DEFAULT_CRITERIA` on its own headings, so
 there is no second list to drift out of step.
 
 `cli.cmd_init` is the impure shell: it preflights BOTH destinations before asking
