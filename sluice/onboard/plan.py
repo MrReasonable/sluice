@@ -8,10 +8,12 @@ The config is RENDERED FROM THE CATALOGUE rather than being a static template wi
 holes, which makes "every key the wizard can write appears in the file it writes" true by
 construction instead of by review.
 """
+import re
 from dataclasses import dataclass
 
 from sluice.onboard.emit import flow_list, scalar
 from sluice.onboard.questions import catalogue
+from sluice.triage.prompt import _DEFAULT_CRITERIA
 
 _SECTION_BLURB = {
     "Vault": "Where your notes live.",
@@ -84,8 +86,76 @@ def _render_sources(sources):
     return []                       # Task 7 replaces this
 
 
-def _render_profile(_):
-    return ""                       # Task 6 replaces this
+def default_sections() -> dict:
+    """`_DEFAULT_CRITERIA` split on its own headings: heading -> the shipped prose under it.
+
+    DERIVED, so there is no second copy of the heading list to drift. v1 hand-wrote the five and
+    pinned them by equality against this source; splitting the source removes the duplicate
+    instead of testing for it.
+    """
+    parts = re.split(r"^(#{2,3} .+)$", _DEFAULT_CRITERIA, flags=re.M)
+    return {parts[i]: parts[i + 1].strip() for i in range(1, len(parts), 2)}
+
+
+PROFILE_HEADINGS = tuple(default_sections())
+
+# heading -> (answer key, the prompt shown when it is unanswered). The prompts ask what the judge
+# needs and propose no answer: a wizard suggesting "a startup, or an enterprise?" would ship an
+# opinion exactly as a default would.
+_PROFILE_PROMPTS = {
+    "## Who this candidate is": (
+        "who", "Replace the paragraph above with your background and what you are optimising\n"
+               "this search for. The judge treats it as authoritative for who you are."),
+    "### Target and wrong shape": (
+        "target_shape", "Replace the paragraph above with the shape of role you want and the\n"
+                        "shape that is wrong. Scope, level and titles are all fair game -- the\n"
+                        "judge reads this as prose."),
+    "### Background grounding": (
+        "grounding", "Replace the paragraph above with history the judge should assume you\n"
+                     "already satisfy, so it stops raising those as concerns."),
+    "## Win patterns and anti-patterns": (
+        "patterns", "Replace the paragraph above with wording in a job ad that attracts you and\n"
+                    "wording that repels you. Quote what you actually see."),
+    "## Industry filter (judgement-based, not categorical)": (
+        "industry", "Replace the paragraph above with sectors you will and will not work in.\n"
+                    "Leave it as-is if you have no sector view."),
+}
+
+
+def _render_profile(profile_answers):
+    """Every heading present. An UNANSWERED heading keeps `_DEFAULT_CRITERIA`'s own prose.
+
+    That is the round-1 Critical. `build_system_prompt_from` falls back to `_DEFAULT_CRITERIA` only
+    when the criteria text is missing or EMPTY, and this file is never empty -- so emitting bare
+    headings would permanently strip the four instructions telling the judge to abstain ("prefer
+    `research`", "do not score on role shape", "do not assume a culture preference", "never invent
+    past employers") while the surrounding scaffold still tells it to treat the profile as
+    authoritative and to be willing to dismiss. An unconfigured install would stop abstaining: the
+    672ad2a class, delivered by the feature built to fix onboarding.
+
+    Carrying the default prose means the shipped abstain instructions stay live until a human
+    replaces them -- the default IS used when the user does not answer.
+
+    No frontmatter: `_strip_frontmatter` drops a leading `---` block before the judge sees it.
+    """
+    sections = default_sections()
+    out = ["# Judging Profile", "",
+           "The criteria sluice judges every lead against. Edit it in Obsidian whenever your",
+           "search changes; the next run picks it up with no code change.",
+           "",
+           "Nothing here is shipped by sluice as an opinion about which jobs are good. The text",
+           "below each heading is the neutral default: it tells the judge to abstain where it has",
+           "no information. Replace it with your own and the judge starts using yours.",
+           ""]
+    for heading in PROFILE_HEADINGS:
+        key, prompt = _PROFILE_PROMPTS[heading]
+        answer = (profile_answers or {}).get(key)
+        out += [heading, ""]
+        if answer:
+            out += [answer.strip(), ""]
+        else:
+            out += [sections[heading], "", "<!--", prompt, "-->", ""]
+    return "\n".join(out).rstrip() + "\n"
 
 
 def _render_config(answers, sources, default_vault):
