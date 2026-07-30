@@ -8,10 +8,8 @@
 # search; set `searches` to run your own. Entries are [label, url, {params}?] -
 # the optional params tag the resulting leads (e.g. {job_type: perm}). This is
 # where your personal search list lives, so keep this file out of any public repo.
-# Geography is personal, so nothing ships in code, and nothing ships here either: this
-# file is COPIED, so an active `locations: [Remote]` would hand every copier the very
-# preference the code default just stopped expressing. Unset = no geographic preference.
-# locations: [Remote]   # <- uncomment and set YOUR OWN
+# (Geography moved: the root `locations` key was read by nothing and is retired -- setting
+# it now raises. Declare where you will work under `triage.target_locations` below.)
 
 # Days since a lead was last seen in a scrape before `sluice leads expire` proposes
 # dismissing it, and before `cv run` and `apply prep` refuse to spend on it. 0 = OFF,
@@ -112,6 +110,13 @@ triage:
   # code: declare yours here. The values below are randomly generated placeholders,
   # deliberately nonsense, so nobody inherits somebody else's taste. Leave both empty
   # and the title gate abstains: every lead reaches the LLM judge.
+  # Where you are willing to work. Empty = no geographic gate at all, which is the shipped
+  # default. Commented rather than set, for the same reason as `lead_ttl_days` above: this
+  # file is COPIED, and an active value would hand every copier a judgement about geography
+  # they never made.
+  # target_locations: [Remote]   # <- uncomment and set YOUR OWN
+  # Locations that disqualify a lead outright. Same shape, same reasoning.
+  # reject_locations: [Antarctica]   # <- uncomment and set YOUR OWN
   accept_titles: ['horticultural consultant', 'geoscientist']   # <- replace with the roles YOU want
   reject_titles: ['sport and exercise psychologist', 'broadcast engineer']   # <- replace with your disqualifiers
   route_borderline: false
