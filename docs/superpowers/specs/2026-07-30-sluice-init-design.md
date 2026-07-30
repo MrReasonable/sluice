@@ -1,6 +1,26 @@
 # `sluice init` — a setup wizard that scaffolds a config and a Judging Profile (#8)
 
-**Status:** design approved 2026-07-30. Not yet reviewed by `/review-plan`.
+**Status:** design approved 2026-07-30. **Revised after `/review-plan` round 1** — 5 reviewers,
+**50 findings (1 Critical, 17 High, 21 Medium, 11 Low)**. The Critical and four Highs were
+design-level and are folded below; the rest are plan-level and live in
+`docs/superpowers/plans/2026-07-30-sluice-init.md`.
+
+**What round 1 corrected, and the single cause under it.** Every finding that hurt was a test I
+wrote that would have passed while verifying nothing — the same failure this repo's rules call THE
+LESSON, quoted in the plan's own Global Constraints. Four instances, each measured by a reviewer
+rather than argued:
+
+- **The scaffold disarmed the judge's abstain default** (Critical), and the acceptance test asserted
+  that outcome as the success criterion.
+- **`TtyAsker` returned its default unparsed**, so the fresh-install TTY run wrote a cwd-relative
+  `vault_dir` — and the anti-drift test compared the buggy value to itself, passing *because* of the
+  bug.
+- **M1 left the neutrality test green.** `build_plan` reads `answers.get(...)` and the defaults live
+  in the asker, so the mutant was equivalent. The spec demanded in writing that M1 witness the
+  neutrality half; the plan retargeted it and tabulated it as satisfied.
+- **The functional tier ran on a fixture that sets `SLUICE_CONFIG` and `VAULT_DIR`**, so `cmd_init`
+  always took the skip branch. `tests/conftest.py:46` says the functional tier never reaches those
+  variables — a fact already recorded in this project's memory.
 
 **Issue:** #8 · **Depends on:** #80 (merged, PR #82 — settled where the config lives)
 **Related:** #81 (`_merged/` blindness — orthogonal, init creates no dedup state)
@@ -120,6 +140,26 @@ Not the filesystem. `Store.write_document` already exists, already guards path e
 `commonpath`, so a symlink inside the store cannot escape), and routing through it keeps `init`
 honest for #1's future non-vault store.
 
+**And through the SEAM, not `Vault(...)` by hand** (round-1 High, found independently by the
+architect and the invariant reviewer). The first draft constructed `Vault(vault_dir)` directly,
+which would have made `cmd_init` the only handler in `cli.py` hardwiring a store implementation —
+and would have made the ARCHITECTURE.md sentence this design adds false the day it landed. It
+resolves `Sluice(dataclasses.replace(config, vault_dir=vault_dir)).store()` instead.
+
+That route has a trap worth stating, because taking it naively reintroduces the bug it fixes:
+**`stores/vault.py:_make` is env-first** (`os.environ.get("VAULT_DIR") or config.vault_dir`), so an
+exported `VAULT_DIR` would win over the `--vault` the user just typed, and the report would name a
+directory the profile did not go to. `cmd_init` therefore **refuses when `--vault` and `$VAULT_DIR`
+disagree** rather than silently preferring either. A refusal, not a precedence rule: the two
+answers contradict each other and only the user knows which they meant.
+
+**The widened contract needs store-agnostic rows.** `core/protocols.py`'s own docstring says
+never-clobber properties live on the contract precisely because "a second store would ship without
+them", and `require_status` — the precedent cited above — got three conformance rows. So
+`only_if_absent` gets rows in `tests/conformance/test_store_contract.py`, parametrised over
+`store_name`, asserted through `read_criteria()` rather than a path. #1 is the next backlog item,
+so the second store is not hypothetical.
+
 It needs one change. It currently calls `_atomic_write`, which overwrites. Add
 `only_if_absent: bool = False`, mirroring `set_tailored_cv`'s existing parameter of the same name.
 Returns the path written, or `""` when the document existed and was skipped — the same
@@ -180,6 +220,29 @@ ingest gate ("make ingest cheap", before dedup and any LLM call); `triage.accept
 the most dangerous key in the file — it is the one measured above turning `Senior Software Engineer`
 into `False`. It is asked last, and its prompt states the consequence.
 
+### The board walk (folded in after round 1)
+
+The first plan deferred the per-source walk and left `build_plan(sources=…)` with no caller —
+an unreachable parameter, which the architect correctly called out as the premature abstraction
+the seams doctrine warns against. It is folded in instead.
+
+The walk is shaped by one fact about the data: **a search is a label plus a URL the user pastes
+from a browser**, and there are 22 registered boards. So it is two passes, not one 22-deep
+interrogation:
+
+1. **Select.** Print the boards in columns with an index, take a comma-separated list of ids or
+   indices. Empty means "leave sources unset", which emits the commented example block and lets
+   every source run its own neutral example search — the abstain default, unchanged.
+2. **Per selected board, collect searches.** Label, then URL, repeating until a blank label. A URL
+   that fails `parse_url` is re-asked rather than dropped, because a mistyped board URL that is
+   silently skipped is a source the user believes is configured and is not.
+
+Under `--no-input` the walk is skipped entirely and no `sources:` block is written — the wizard's
+enter-through equivalence is preserved exactly.
+
+Enumerating the boards is offline: measured, `sluice.ingest.sources.all_sources()` loads all 22
+with no Camofox import. The import stays inside the command function like every other handler's.
+
 ### Flags, and why there are almost none
 
 Only `--vault DIR` and `--no-input`. The vault is the sole *required* answer; everything else
@@ -203,9 +266,22 @@ is out (stdlib-only). Values are injected by a deliberately conservative emitter
 double-quoted with `\` and `"` escaped, lists as flow sequences of double-quoted scalars, integers
 bare. Double-quoted YAML scalars have a total escape grammar, so this is safe rather than lucky.
 
-Pinned by a round-trip test over a nasty corpus — `O'Brien`, `Foo: Bar`, `#hash`, `yes`, `!tag`,
+Pinned by a round-trip test over a nasty corpus — `O'Example`, `Foo: Bar`, `#hash`, `yes`, `!tag`,
 backslashes, newlines, non-ASCII. Without it, a company name with an apostrophe writes a config that
 fails to parse.
+
+**An inactive block is commented ONCE** (round-1 High, found by three reviewers and measured by
+two). The first draft commented the block header *and* re-prefixed each already-commented body
+line, producing `#   # accept_titles:` — which defeated the scope guard's own `^\s*#?\s*{leaf}:`
+matcher on 16 of 19 keys while the neutrality half stayed green. The implementer would have seen
+one red test whose message ("absent from the template") was false, which is an invitation to weaken
+exactly the guard this design spent three paragraphs justifying.
+
+The fix is the renderer, not the regex: body lines are already comments, so only the header needs
+commenting. Widening the matcher to `^[#\s]*` was rejected — that is the matched-by-adjacent-prose
+bug this repo has already shipped, and it would let a comment *about* a key satisfy a check meant to
+find the key. The guard gains a negative control: a prose line containing `<leaf>:` mid-sentence
+must not satisfy the matcher.
 
 Note `yaml` is already an `ImportError`-guarded import in each config module, and the emitter does
 not need it — it templates and quotes. No new runtime dependency.
@@ -241,6 +317,27 @@ assert scaffold == PINNED_FIVE      # scope: set() == set() must not pass
 The second assertion is load-bearing. Without it the test is the `all([])` shape — if the regex ever
 stops matching on both sides it passes for the emptiest possible reason. It also means adding a
 sixth heading forces the author to touch both sides, which is the point.
+
+### An unanswered heading carries the shipped default's prose (round-1 Critical)
+
+The first design emitted a heading plus an HTML comment addressed to the *user*. That is always a
+non-empty file, and `build_system_prompt_from` falls back to `_DEFAULT_CRITERIA` **only when the
+criteria text is missing or empty** (`triage/prompt.py:146`). So from the first `sluice init` the
+judge would permanently lose the only shipped text telling it to abstain — "prefer `research`", "do
+not score on role shape", "do not assume a culture preference", "never invent past employers" —
+while the surrounding scaffold still instructs it to *"treat them as authoritative"* and *"be
+willing to dismiss; do not hedge into research"*. Running the onboarding command would make an
+unconfigured install stop abstaining: the `672ad2a` class, delivered by the feature built to fix
+onboarding.
+
+**So each unanswered heading is rendered with `_DEFAULT_CRITERIA`'s own prose for that heading,
+followed by the `<!-- prompt -->`.** The abstain instructions stay live until a human replaces
+them, which is precisely "use the default when the user does not answer".
+
+This also **dissolves `PROFILE_HEADINGS` as a hand-copied duplicate.** The template is built by
+splitting `_DEFAULT_CRITERIA` on its own headings, so the heading set is derived rather than
+restated, and the drift pin stops being an equality assertion between two hand-maintained lists.
+The pin remains, now as a scope check that the split found all five and that no heading is empty.
 
 **Content generation is three tiers, degrading safely:**
 
@@ -358,9 +455,20 @@ function from a dict to two strings:
   empty file — or no file — passes it, because the loaders would then return the (neutral) code
   defaults and every gate would abstain for the wrong reason. This is the `all([])` shape that has
   already shipped three times in this repo. So it is paired with a **scope** assertion: the emitted
-  template must contain every key in the catalogue, commented. Neutrality proves the template
-  overrides nothing; scope proves there is a template. Neither is sufficient alone, and M1 must be
-  witnessed against the neutrality half specifically, not against the pair.
+  template must contain every key in the catalogue, commented.
+
+  **Round 1 found the pair itself insufficient, and it was right.** The neutrality half hand-listed
+  thirteen fields — an enumeration, in a design that uses discovery two tests below for the backend
+  fan-out. So it becomes an **enumerated differential**: for every loader, `loader(emitted)` is
+  field-for-field equal to `loader(None)` except `vault_dir`, plus a scope assertion that the field
+  sweep enumerated something. A future catalogue key rendered with a value now cannot pass, and
+  nothing has to be kept in step by hand.
+
+  **And M1 was aimed at the wrong test.** `build_plan` reads `answers.get(...)` while the defaults
+  live in the asker, so a default on `accept_titles` leaves the neutrality assertion green — an
+  equivalent mutant, measured. The mutant that actually falsifies neutrality is **deleting the
+  `if value is None …` arm in `_render_key`**, so an unset key emits an active value. The plan's
+  witness table names that, and stops claiming M1 witnesses a test it does not.
 - YAML emitter round-trip over the nasty corpus.
 - No answer can emit a scalar that loads as `bool` where an `int` is expected.
 - Heading drift pin, both-sides extraction plus the scope assertion.
@@ -373,8 +481,20 @@ function from a dict to two strings:
 **Functional** (`tests/functional/`, real `main(argv)`): both files land; a re-run skips both and
 leaves them byte-identical; missing `--vault` under `--no-input` exits 2 writing nothing;
 `$SLUICE_CONFIG` retargets the config; the state root stays untouched. The profile is verified by
-**calling `Vault.read_criteria()`**, not by checking a path — that is what proves init wrote where
-the judge reads.
+**calling `read_criteria()`**, not by checking a path — that is what proves init wrote where the
+judge reads.
+
+**Not through the `cli` fixture** (round-1 High, found by two reviewers). That fixture calls
+`build_harness`, which writes a config and `setenv`s `SLUICE_CONFIG` and `VAULT_DIR`
+(`tests/harness/config.py:213-215`) — *after* each test's own `delenv`. So `config_file()` would
+always resolve to an existing file, `cmd_init` would always take the skip branch, six of ten tests
+would fail and two would pass vacuously, including M6's named killer. `tests/conftest.py:46` states
+the underlying fact outright: the functional tier never reaches those variables.
+
+`init` needs no browser, renderer, backend or seeded vault, so it gets a thin `main(argv)` driver
+running under the autouse `_pin_paths` sandbox alone. Asserted paths are derived from
+`paths.config_file()`, never written as literals. This also takes the `cli`-fixture move off the
+critical path entirely.
 
 **Prompt path** (`tests/test_onboard_ask.py`): a scripted asker drives the whole catalogue including
 the source walk and a substituted `$EDITOR`, and asserts the TTY path and the `--no-input` path
@@ -395,13 +515,18 @@ nothing about a new one). Mutate by moving or deleting, never by adding. Run
 
 | | mutant | should redden |
 |---|---|---|
-| M1 | a preference question defaults to a value, not skip | enter-through neutrality |
+| M1 | **delete the `if value is None …` arm in `_render_key`** so an unset key emits an active value | enter-through **differential** |
 | M2 | drop `only_if_absent=True` at the call site | never-clobber re-run |
-| M3 | change one heading in the onboard template | drift pin |
+| M3 | change one heading in `_DEFAULT_CRITERIA` | drift pin (heading split) |
 | M4 | delete one of the three fan-out destinations | fan-out completeness |
 | M5 | emitter → naive interpolation | round-trip corpus |
 | M6 | delete the non-TTY refusal | refusal |
-| M7 | drop the `abspath` on `vault_dir` | relative-vault |
+| M7 | **make `TtyAsker` return `q.default` unparsed** on the blank branch | blank-TTY absolute vault |
+| M8 | double-comment an inactive block's body lines again | scope guard |
+| M9 | give `ApplyConfig` a `primary_backend` field | fan-out **discovery** (must redden while the hand-listed half stays green) |
+
+M1 and M7 were both mis-aimed in round 1 — M1 at a test it could not falsify, M7 at `parse_path`,
+which the failing path never calls. Each now mutates the site the assertion actually depends on.
 
 ### Neutrality
 
@@ -412,18 +537,42 @@ And the wizard's **question text must itself express no preference** — it asks
 want; it never proposes a taxonomy of good jobs. This is a new surface for the neutrality invariant:
 every prior leak risk was a *value*, and this one is a *question*.
 
+**Round 1 rejected the first guard for it**, and the reasoning generalises. A hand-listed
+banned-word blocklist is the enumeration-instead-of-a-sweep failure, and it is the approach
+`tests/test_sluice_neutral_defaults.py:15-22` explicitly rules out. Measured: a hint reading "Most
+people put a platform or infrastructure role here" leaves it green, and its bare substring match
+also fails on its own scaffold (`senior` ⊂ `seniority`). It is therefore:
+
+- **word-boundary matched** (`\b{word}\b`), not substring;
+- held in **one place** both tiers import, rather than duplicated verbatim into the e2e test;
+- swept over **everything shipped**, not just `q.prompt`/`q.hint` — `_HEADER`, `_SECTION_BLURB`, the
+  profile prompts and `ask._PROFILE_QUESTIONS` all land in a user's files and none was covered;
+- given a **scope assertion** before the loop and a **positive control** proving a synthetic string
+  containing a banned word is rejected by the same helper;
+- and **named honestly as a smoke test**, so nobody deletes a real check on the strength of it.
+
+The falsifying witness gets run *first*, before the guard is trusted.
+
 ## Definition of done
 
 - `sluice init` exists, lazy-imported, with `--vault` and `--no-input`.
-- `build_plan({})` produces a config that loads with every gate abstaining, proven by the loaders.
+- `build_plan({})` produces a config that is field-for-field identical, through every loader, to no
+  config at all — except `vault_dir`.
 - A re-run clobbers nothing and exits 0.
 - Non-TTY without `--vault` exits 2 having written nothing.
-- The profile lands where `Vault.read_criteria()` reads it, with headings pinned to the judge
-  scaffold.
-- `Config.locations` is retired with a raise and gone from `sluice.yaml.example`.
-- `CRITERIA_RELPATH` and `DEFAULT_VAULT` each have one home, imported rather than re-spelled.
-- README's quickstart uses `sluice init`; `docs/ARCHITECTURE.md` gains `onboard/`.
-- All seven mutation witnesses run and redden their named test.
+- A blank Enter at the vault prompt yields an **absolute** path, in the answers and in the file.
+- The profile lands where `read_criteria()` reads it, written through the **store seam**, with an
+  unanswered heading carrying `_DEFAULT_CRITERIA`'s prose.
+- `--vault` disagreeing with `$VAULT_DIR` refuses rather than silently preferring either.
+- The board walk configures `sources.<id>.enabled`/`.searches`; `--no-input` writes no `sources:`.
+- `only_if_absent` has store-agnostic rows in `tests/conformance/test_store_contract.py`.
+- `Config.locations` is retired with a raise — in the config file **and** via `SLUICE_LOCATIONS` —
+  and its documentation is relocated onto a commented `triage.target_locations`.
+- `CRITERIA_RELPATH` has one home; `DEFAULT_VAULT` reaches the catalogue as a parameter, not as an
+  import from the store implementation.
+- No shipped doc instructs a `cp sluice.yaml.example`, asserted by a guard test. README,
+  `docs/ARCHITECTURE.md` and `.rulesync/rules/CLAUDE.md` (human-gated) are all updated.
+- All **nine** mutation witnesses run and redden their named test, each verified to be the killer.
 - `ruff check sluice tests scripts` clean; full suite green; the `"./"` DoD grep still at 9 lines.
 
 ## Out of scope
@@ -431,7 +580,16 @@ every prior leak risk was a *value*, and this one is a *question*.
 - Wiring `Config.locations` to a real consumer — that is a feature with its own geography-preference
   risk, and its own issue.
 - #81's `_merged/` blindness.
-- Any change to `sluice.yaml.example`'s illustrative values beyond removing the retired key. It
-  remains the annotated catalogue; the fix is that nobody is told to copy it.
+- Any change to `sluice.yaml.example`'s illustrative values. It remains the annotated catalogue; the
+  fix is that nobody is told to copy it.
+
+  **Amended after round 1:** the file may still gain and lose *documentation* for keys the wizard
+  writes. `triage.target_locations` is measurably absent from it today (so is `reject_locations`),
+  which made the original scope self-contradictory three ways: the documentation sweep could not
+  pass on its first run, the retirement message redirected users to an undocumented key, and Task 7
+  deleted the only geography key the catalogue did document. So the retired `locations` block's
+  "this file is COPIED" guidance is **relocated** into the `triage:` block as a commented
+  `target_locations`. That is a move of existing documentation, not a new illustrative value, and it
+  keeps the no-new-preferences rule intact.
 - A `--force` flag. A flag that can overwrite a filled-in Judging Profile is the never-clobber
   breach this feature exists to avoid; deleting the file is already the way to redo it.
