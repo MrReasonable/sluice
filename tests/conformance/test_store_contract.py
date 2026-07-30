@@ -353,6 +353,46 @@ def test_write_document_only_if_absent_creates_then_abstains(store_name, tmp_pat
     assert store.read_criteria() == "first"
 
 
+def test_only_if_absent_lets_exactly_ONE_concurrent_caller_claim_the_create(
+        store_name, tmp_path, monkeypatch):
+    """`protocols.py` requires never-clobber be a property of the CREATE ITSELF -- an exclusive
+    open -- and not an exists()-then-write pair. Nothing could falsify that.
+
+    Measured: a store implementing `only_if_absent` as `if os.path.exists(...): return ""` followed
+    by a plain write passes every SEQUENTIAL assertion here, including the row above. It is
+    distinguishable only under concurrency, and only on this property -- the file CONTENTS do not
+    separate them, because either way one writer's text ends up on disk.
+
+    So the assertion is on how many callers claim the create. With O_CREAT|O_EXCL exactly one open
+    succeeds; with a check-then-write both callers see an absent file and both report success, and
+    the second silently overwrote the first. The racer is a human editing in Obsidian, who takes no
+    lock (#16), and #1 lands the second store next -- so this needs to bind before that arrives.
+    """
+    import threading
+
+    from sluice.core.protocols import CRITERIA_RELPATH
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    claimed, barrier = [], threading.Barrier(2)
+
+    def create(i):
+        barrier.wait()          # maximise the overlap rather than hoping for it
+        claimed.append(bool(store.write_document(CRITERIA_RELPATH, f"writer-{i}",
+                                                 only_if_absent=True)))
+
+    threads = [threading.Thread(target=create, args=(i,)) for i in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(claimed) == 2, "precondition: both callers ran"
+    assert sum(claimed) == 1, (
+        "two callers both claimed to create the same document, so only_if_absent is an "
+        "exists()-then-write pair rather than a property of the open -- the second write "
+        "clobbered the first")
+    assert store.read_criteria().startswith("writer-")
+
+
 def test_write_document_cannot_escape_the_store(store_name, tmp_path, monkeypatch):
     """The ONE wholesale-write primitive on a never-clobber contract must not be able to
     scribble outside the store -- including over the baseline CV, which is the fabrication

@@ -608,7 +608,16 @@ def cmd_init(args, config, *, asker=None) -> int:
     # than raised uncaught -- and an abandoned interview leaves no empty vault behind.
     store = Sluice(dataclasses.replace(config, vault_dir=vault_dir)).store()
     profile_exists = bool(store.read_criteria())
-    profile_dest = os.path.join(vault_dir, CRITERIA_RELPATH)   # for the report only
+    # DISPLAY ONLY, and a deliberate compromise. The write and the existence probe both go through
+    # the seam; this join exists because the two arms that do NOT get a handle -- an abstain
+    # (`write_document` returns "") and an OSError -- still have to name something to the user.
+    # A second, non-filesystem store would render this wrong in those two lines.
+    #
+    # Not fixed by adding a `Store.display_location()`: that is API surface invented for one
+    # implementation, which is the premature abstraction this codebase keeps removing. When #1
+    # lands a real second store it will have a concrete opinion about what a user should be shown,
+    # and that is the moment to add the method.
+    profile_dest = os.path.join(vault_dir, CRITERIA_RELPATH)
 
     profile_answers = {}
     sources = {}

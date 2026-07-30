@@ -93,7 +93,21 @@ VaultNote = LeadNote
 class Vault:
     def __init__(self, dir: str | None = None, *, baseline_rel: str = _MYCV_BASELINE,
                  location_noise_words=()):
-        self.dir = dir or os.environ.get("VAULT_DIR", _DEFAULT_VAULT)
+        # expanduser at CONSTRUCTION, so every route in agrees: the factory's env-or-config value,
+        # a direct `Vault(dir)`, and the default below. A literal `~` is never what anyone means by
+        # a vault path, and a shell that does not expand it (an env var set in a config file, a
+        # systemd unit, a Docker env line) hands one straight through.
+        #
+        # Measured before this: `VAULT_DIR='~/probevault' sluice init --no-input` wrote
+        # `vault_dir: <HOME>/probevault` into the config -- `cmd_init` expands -- while the profile
+        # went to a literal `./~/probevault/` under the CWD. Two artefacts naming two different
+        # vaults, and triage then reads the config's one, finds no profile, and silently falls back
+        # to the shipped default criteria.
+        #
+        # This is NORMALIZATION, not precedence, so #80's rule still holds: which value wins is
+        # decided in `stores/vault.py:_make`, and nothing here reorders that. No `abspath` --
+        # a relative vault is legitimate and documented (`./vault` is the default).
+        self.dir = os.path.expanduser(dir or os.environ.get("VAULT_DIR", _DEFAULT_VAULT))
         self.leads_dir = os.path.join(self.dir, _LEADS_SUBDIR)
         self.baseline_rel = baseline_rel
         self._name_max_cache: int | None = None
