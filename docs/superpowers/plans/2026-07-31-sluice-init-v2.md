@@ -31,7 +31,7 @@
 
 ## File Structure
 
-**Create:** `sluice/onboard/{__init__,emit,questions,plan,ask}.py`; `tests/test_onboard_{emit,questions,plan,profile,ask,sources}.py`; `tests/harness/initdriver.py`; `tests/functional/test_init.py`; `tests/e2e/test_init_to_verdicts.py`
+**Create:** `sluice/onboard/{__init__,emit,questions,plan,ask}.py`; `tests/test_onboard_{emit,questions,plan,profile,ask,sources}.py`; `tests/onboard_prose.py` (the shipped-prose roster + its completeness guard); `tests/test_config_retired_locations.py`; `tests/test_no_copy_instruction.py`; `tests/harness/initdriver.py`; `tests/functional/test_init.py`; `tests/e2e/test_init_to_verdicts.py`
 
 **Modify:** `sluice/core/{protocols,vault,config}.py`, `sluice/triage/prompt.py`, `sluice/cli.py`, `sluice.yaml.example`, `README.md`, `docs/ARCHITECTURE.md`, `.rulesync/rules/CLAUDE.md`, `tests/conformance/test_store_contract.py`, `tests/test_config.py`, `tests/test_sluice_neutral_defaults.py`
 
@@ -626,11 +626,16 @@ def test_the_helper_matches_whole_words_only():
     assert not expresses_a_preference("your background and seniority")
 
 
-def test_no_shipped_question_text_names_an_exemplar():
-    qs = catalogue(default_vault=VAULT)
-    assert len(qs) >= 15                       # SCOPE: a sweep over nothing passes
-    for q in qs:
-        assert not expresses_a_preference(f"{q.prompt} {q.hint} {q.consequence}"), q.key
+def test_no_shipped_prose_names_an_exemplar():
+    """Sweeps EVERY surface this package puts in front of a user or into their files -- not just
+    the catalogue. Round 1 flagged that `_HEADER` and `_SECTION_BLURB` land in every user's config
+    and were covered by nothing; the first fix corrected the MATCHING and left the SCOPE alone,
+    which is the same enumeration failure one round later."""
+    from tests.onboard_prose import shipped_prose
+    surfaces = shipped_prose()
+    assert len(surfaces) >= 20                 # SCOPE: a sweep over nothing passes
+    for label, text in surfaces:
+        assert not expresses_a_preference(text), f"{label} names an exemplar"
 
 
 def test_catalogue_keys_are_unique():
@@ -840,6 +845,88 @@ def catalogue(*, default_vault: str) -> tuple:
     )
 ```
 
+- [ ] **Step 3b: Write the prose roster and its completeness guard** (`tests/onboard_prose.py`)
+
+```python
+"""Every string `sluice/onboard/` puts in front of a user or into their files.
+
+A ROSTER plus a completeness guard, the shape `tests/conftest.py` already uses for
+`PATH_ENV_VARS`: the roster is hand-listed so the sweep stays legible, and the guard pins it
+against what the source actually declares, so a new constant cannot ship unswept.
+
+Discovery alone was rejected: it would sweep `NO_TAXONOMY_WORDS` (the vocabulary itself, which
+contains every banned word by construction and would fail always) and `_DEFAULT_CRITERIA`
+(imported into `plan`'s namespace, authored elsewhere, governed by its own guard). Both need a
+NAMED exemption, and once exemptions exist a bare `dir()` sweep is no simpler than a roster.
+"""
+import inspect
+
+# Module-level string constants that are NOT shipped prose, each with its reason.
+_NOT_PROSE = {
+    # The banned vocabulary itself. Sweeping it is a guaranteed self-hit.
+    ("sluice.onboard.questions", "NO_TAXONOMY_WORDS"),
+    # Authored in triage/prompt.py, imported here; governed by
+    # test_shipped_prompt_expresses_no_role_or_culture_preference. Exempt on PROVENANCE, not to
+    # hide a failure -- measured, it trips zero words in NO_TAXONOMY_WORDS. Re-measure before
+    # widening this set: an exemption that would otherwise fire is a suppressed finding.
+    ("sluice.onboard.plan", "_DEFAULT_CRITERIA"),
+    ("sluice.onboard.plan", "PROFILE_HEADINGS"),   # derived FROM the above
+}
+
+
+def shipped_prose():
+    """[(label, text), ...] for every surface a user reads."""
+    import sluice.onboard.ask as ask_mod
+    import sluice.onboard.plan as plan_mod
+    from sluice.onboard.questions import catalogue
+
+    out = []
+    for q in catalogue(default_vault="/example/vault"):
+        for attr in ("prompt", "hint", "consequence"):
+            out.append((f"catalogue[{q.key}].{attr}", getattr(q, attr)))
+    out.append(("plan._HEADER", plan_mod._HEADER))
+    for section, blurb in plan_mod._SECTION_BLURB.items():
+        out.append((f"plan._SECTION_BLURB[{section}]", blurb))
+    for heading, (_key, prompt) in plan_mod._PROFILE_PROMPTS.items():
+        out.append((f"plan._PROFILE_PROMPTS[{heading}]", prompt))
+    for key, prompt in ask_mod._PROFILE_QUESTIONS:
+        out.append((f"ask._PROFILE_QUESTIONS[{key}]", prompt))
+    return out
+
+
+def _declared_string_constants():
+    """Module-level str / dict-of-str / tuple-of-pairs constants across the package."""
+    import sluice.onboard.ask as ask_mod
+    import sluice.onboard.plan as plan_mod
+    import sluice.onboard.questions as q_mod
+
+    found = set()
+    for mod in (ask_mod, plan_mod, q_mod):
+        for name, value in vars(mod).items():
+            if name.startswith("__") or inspect.ismodule(value) or callable(value):
+                continue
+            if isinstance(value, (str, dict, tuple, list)) and value:
+                found.add((mod.__name__, name))
+    return found
+```
+
+```python
+# in tests/test_onboard_questions.py
+def test_the_prose_roster_covers_every_declared_constant():
+    """A new module-level constant must be either swept or NAMED as not-prose. Without this the
+    roster is an enumeration, and this repo's enumerations have leaked four times."""
+    from tests.onboard_prose import _NOT_PROSE, _declared_string_constants, shipped_prose
+    declared = _declared_string_constants()
+    assert declared, "the constant sweep found nothing"
+    swept = {lbl.split("[")[0].split(".")[-1] for lbl, _ in shipped_prose()}
+    swept |= {"catalogue"}
+    for module, name in sorted(declared):
+        if (module, name) in _NOT_PROSE:
+            continue
+        assert name in swept or name.lstrip("_") in swept, \
+            f"{module}.{name} is neither swept as prose nor named in _NOT_PROSE"
+```
+
 - [ ] **Step 4: Run and lint**
 
 Run: `.venv/bin/python -m pytest tests/test_onboard_questions.py -q && .venv/bin/ruff check sluice tests`
@@ -850,10 +937,34 @@ Expected: all green
 ```bash
 python -m compileall -q -f --invalidation-mode checked-hash sluice tests scripts
 cp sluice/onboard/questions.py /tmp/questions.py.bak
-# Add to the accept_titles hint: "Most people put a platform role here."
-.venv/bin/python -m pytest "tests/test_onboard_questions.py::test_no_shipped_question_text_names_an_exemplar" -v
+cp sluice/onboard/plan.py /tmp/plan.py.bak
+cp sluice/onboard/ask.py /tmp/ask.py.bak
+
+# (a) the catalogue surface -- add to the accept_titles hint:
+#     "Most people put a platform role here."
+.venv/bin/python -m pytest "tests/test_onboard_questions.py::test_no_shipped_prose_names_an_exemplar" -v
 # Expected: FAIL -- if it PASSES the guard is inert and must not be trusted or cited.
 cp /tmp/questions.py.bak sluice/onboard/questions.py
+
+# (b) a surface the ROUND-1 guard did not cover. Witness each separately: an aggregate cannot
+#     distinguish "three surfaces swept" from "one swept and two ignored".
+#     Add to plan._SECTION_BLURB["Want"]: " Most people start with a platform role."
+.venv/bin/python -m pytest "tests/test_onboard_questions.py::test_no_shipped_prose_names_an_exemplar" -v
+# Expected: FAIL
+cp /tmp/plan.py.bak sluice/onboard/plan.py
+
+# (c) and the terminal prompts, likewise uncovered in round 1.
+#     Change ask._PROFILE_QUESTIONS' "who" prompt to mention "a platform engineer".
+.venv/bin/python -m pytest "tests/test_onboard_questions.py::test_no_shipped_prose_names_an_exemplar" -v
+# Expected: FAIL
+cp /tmp/ask.py.bak sluice/onboard/ask.py
+
+# (d) the completeness guard: add a new module-level constant that is neither swept nor exempt,
+#     e.g. `_EXTRA_BLURB = "hello"` in plan.py
+.venv/bin/python -m pytest "tests/test_onboard_questions.py::test_the_prose_roster_covers_every_declared_constant" -v
+# Expected: FAIL
+cp /tmp/plan.py.bak sluice/onboard/plan.py
+
 git diff --stat   # MUST be empty
 ```
 
@@ -1773,6 +1884,29 @@ Key points, each guarding a round-1 finding:
 and in `NoInputAsker.ask`, only two arms — the preset, and the `vault_dir` refusal, then `return None`. The v1 middle arm (`q.default is not None and q.key != "vault_dir"`) was unreachable *and* the wrong rule: the moment a future question gains a default, `--no-input` would silently write it into a config nobody was asked about.
 
 Otherwise as in the spec: `edit_in_editor` returns `None` on every failure mode, uses `shlex.split`, never `shell=True`; `collect` drops `None`/`""`/`[]` so a skipped question is absent rather than present-and-empty.
+
+**The profile prompts are shipped prose and are swept by Task 4's roster** (`tests/onboard_prose.py` reads `ask._PROFILE_QUESTIONS`), so they must name no exemplar. Round 1 caught the v1 wording here — "your background and seniority" — via a substring match on `senior`; the fix is word boundaries, *and* prose that does not lean on a level word at all:
+
+```python
+# Keyed to `plan._PROFILE_PROMPTS`, in ask order. Shipped prose: swept by
+# tests/onboard_prose.py, so no exemplar, no proposed taxonomy.
+_PROFILE_QUESTIONS = (
+    ("who", "In a sentence or two: your background, and how much scope you carry?"),
+    ("target_shape", "The shape of role you want, and the shape that is wrong?"),
+    ("grounding", "What should the judge assume you already satisfy?"),
+    ("patterns", "Wording in a job ad that attracts you, and wording that repels you?"),
+    ("industry", "Sectors you will or will not work in?"),
+)
+```
+
+The keys must match `plan._PROFILE_PROMPTS`'s, since `collect_profile`'s output is passed straight to `build_plan(profile_answers=…)`. Add a test asserting the two key sets are equal — a mismatch means a typed answer is silently dropped:
+
+```python
+def test_the_asker_and_the_renderer_agree_on_the_profile_answer_keys():
+    from sluice.onboard.ask import _PROFILE_QUESTIONS
+    from sluice.onboard.plan import _PROFILE_PROMPTS
+    assert {k for k, _ in _PROFILE_QUESTIONS} == {k for k, _ in _PROFILE_PROMPTS.values()}
+```
 
 - [ ] **Step 4: Run and lint**
 
