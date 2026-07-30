@@ -166,6 +166,34 @@ def test_the_prose_roster_covers_every_declared_constant():
             f"{module}.{name} is neither swept as prose nor named in _NOT_PROSE"
 
 
+def test_every_value_bearing_question_states_its_consequence():
+    """A question whose answer changes what the pipeline DOES must say so in the post-write report.
+
+    `cv_employers` was the sole exception, and it was also the one whose hint described the
+    opposite of its mechanism -- `cv/validate.py` runs a case-sensitive COMPLETENESS check, so a
+    lower-case answer makes every `cv run` skip every lead. Silent, permanent, and the report never
+    mentioned the key at all. Exempted keys are named, not pattern-matched, so a new question
+    cannot join them by accident."""
+    # These three configure the tool rather than gating leads: the vault is a location, and the
+    # provider names are reported by `sluice doctor`, not by a lead-level consequence.
+    exempt = {"vault_dir", "primary_backend", "fallback_backend", "renderer", "cv_name",
+              "cv_contact"}
+    missing = [q.key for q in catalogue(default_vault=VAULT)
+               if q.key not in exempt and not q.consequence]
+    assert not missing, f"these answers change behaviour but the report never says so: {missing}"
+
+
+def test_the_employers_hint_describes_the_check_that_actually_runs():
+    """Pins the hint against `cv/validate.py`'s real behaviour, so the two cannot drift apart
+    again. The check is COMPLETENESS and case-SENSITIVE; probed here rather than asserted."""
+    from sluice.cv.validate import validate
+    cv = "WORK EXPERIENCE\nPROFILE\nExample Alpha Ltd did a thing."
+    assert any("MISSING EMPLOYER" in v for v in validate(cv, "", employers=["example alpha ltd"]))
+    assert not any("MISSING EMPLOYER" in v for v in validate(cv, "", employers=["Example Alpha Ltd"]))
+    hint = {q.key: q for q in catalogue(default_vault=VAULT)}["cv_employers"].hint
+    assert "VERBATIM" in hint and "case" in hint.lower()
+
+
 def test_catalogue_keys_are_unique():
     keys = [q.key for q in catalogue(default_vault=VAULT)]
     assert len(keys) == len(set(keys))
