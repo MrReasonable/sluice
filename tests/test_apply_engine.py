@@ -15,14 +15,14 @@ def _vault(notes):
     return Vault(root), ApplyConfig(served_dir=str(served), camofox_upload_dir=str(upload))
 
 
-_GOOD = ('company: "Northwind"\nrole: "Analyst"\nstatus: shortlist\n'
-         'url: "https://northwind.example/x"\ntailored_cv: CV_deadbeef.pdf (2026-07-09)')
+_GOOD = ('company: "Example Northgate"\nrole: "Analyst"\nstatus: shortlist\n'
+         'url: "https://example-northgate.invalid/x"\ntailored_cv: CV_deadbeef.pdf (2026-07-09)')
 _LEGACY = 'company: "B"\nrole: "Analyst"\nstatus: shortlist\nurl: "https://x/y"\ntailored_cv: "My CV/CV_B.pdf"'
 
 
 def test_prep_one_stages_cv_and_builds_packet():
-    v, cfg = _vault([("Northwind - Analyst.md", _GOOD)])
-    r = engine.prep_one(v, cfg, "northwind")
+    v, cfg = _vault([("Example Northgate - Analyst.md", _GOOD)])
+    r = engine.prep_one(v, cfg, "northgate")
     assert r.status == "staged"
     assert r.staged.endswith("CV.pdf")
     assert pathlib.Path(r.staged).exists()
@@ -36,7 +36,7 @@ def test_prep_one_skips_ineligible():
 
 
 def test_preview_all_stages_no_cv():
-    v, cfg = _vault([("Northwind - Analyst.md", _GOOD), ("B.md", _LEGACY)])
+    v, cfg = _vault([("Example Northgate - Analyst.md", _GOOD), ("B.md", _LEGACY)])
     results = engine.preview_all(v, cfg)
     prev = [r for r in results if r.status == "previewed"]
     assert prev and all(r.packet["cv_path"] is None for r in prev)
@@ -47,42 +47,42 @@ def test_preview_all_stages_no_cv():
 
 def test_record_one_refuses_ambiguous():
     v, cfg = _vault([
-        ("flowline - Analyst.md", _GOOD.replace("Northwind", "flowline")),
-        ("flowlineRemote in London - Analyst.md", _GOOD.replace("Northwind", "flowlineRemote in London")),
+        ("flowline - Analyst.md", _GOOD.replace("Example Northgate", "flowline")),
+        ("flowlineRemote in London - Analyst.md", _GOOD.replace("Example Northgate", "flowlineRemote in London")),
     ])
     out = engine.record_one(v, cfg, "flowline")
     assert out["ok"] is False and out["reason"].startswith("ambiguous")
 
 
 def test_prep_one_failed_when_stage_raises(monkeypatch):
-    v, cfg = _vault([("Northwind - Analyst.md", _GOOD)])
+    v, cfg = _vault([("Example Northgate - Analyst.md", _GOOD)])
     def _boom(*a, **k):
         raise engine.CvFileError("boom")
     monkeypatch.setattr(engine, "stage", _boom)
-    r = engine.prep_one(v, cfg, "northwind")
+    r = engine.prep_one(v, cfg, "northgate")
     assert r.status == "failed" and "boom" in r.reason
 
 
 def test_record_one_no_match():
-    v, cfg = _vault([("Northwind - Analyst.md", _GOOD)])
+    v, cfg = _vault([("Example Northgate - Analyst.md", _GOOD)])
     out = engine.record_one(v, cfg, "zzz")
     assert out["ok"] is False and out["reason"] == "no_match"
 
 
 def test_record_one_success_flips_status():
-    v, cfg = _vault([("Northwind - Analyst.md", _GOOD)])
-    out = engine.record_one(v, cfg, "northwind", ats="greenhouse")
+    v, cfg = _vault([("Example Northgate - Analyst.md", _GOOD)])
+    out = engine.record_one(v, cfg, "northgate", ats="greenhouse")
     assert out["ok"] is True
 
 
 def test_preview_all_limit_caps_eligible():
-    v, cfg = _vault([("Northwind - Analyst.md", _GOOD), ("Beavni - Analyst.md", _GOOD.replace("Northwind", "Beavni"))])
+    v, cfg = _vault([("Example Northgate - Analyst.md", _GOOD), ("Beavni - Analyst.md", _GOOD.replace("Example Northgate", "Beavni"))])
     prev = [r for r in engine.preview_all(v, cfg, limit=1) if r.status == "previewed"]
     assert len(prev) == 1
 
 
 def test_preview_all_resilient_to_build_failure(monkeypatch):
-    v, cfg = _vault([("Northwind - Analyst.md", _GOOD), ("B.md", _LEGACY)])
+    v, cfg = _vault([("Example Northgate - Analyst.md", _GOOD), ("B.md", _LEGACY)])
     def _boom(*a, **k):
         raise ValueError("bad packet")
     monkeypatch.setattr(engine._packet, "build_packet", _boom)

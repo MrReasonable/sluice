@@ -241,7 +241,7 @@ surrounding scaffold still told it to treat the profile as authoritative. The
 heading set is DERIVED by splitting `DEFAULT_CRITERIA` on its own headings, so
 there is no second list to drift out of step.
 
-`cli.cmd_init` is the impure shell: it preflights BOTH destinations before asking
+`cli.cmd_init` is the impure shell: it preflights the CONFIG destination before asking
 anything, writes the config with an exclusive `open(dest, "x")` and the profile
 through the STORE SEAM via `write_document(..., only_if_absent=True)`, and rolls
 nothing back on a partial failure. It REFUSES when `--vault` and `$VAULT_DIR`

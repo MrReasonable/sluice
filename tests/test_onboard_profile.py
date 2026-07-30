@@ -86,6 +86,9 @@ def test_the_scaffold_prompts_name_no_exemplar():
     from sluice.onboard.questions import expresses_a_preference
     text = _profile()
     assert text.strip()                                     # SCOPE
+    # ...and that the findall below ENUMERATED something: asserting the source text is
+    # non-empty leaves `for x in []` passing, which is the all([]) shape this repo keeps hitting.
+    assert "<!--" in text, "no HTML comment to sweep"
     # The DEFAULT prose is `_DEFAULT_CRITERIA`, already governed by its own guard; sweep only the
     # HTML-comment prompts this module adds.
     for prompt in re.findall(r"<!--(.*?)-->", text, re.S):

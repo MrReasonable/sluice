@@ -146,3 +146,8 @@ dossiers/
 # a directory that has already leaked personal data into this repo twice, catching it at
 # ANY depth is the safer default, and there is nothing for it to shadow.
 .memsearch/
+
+# The wizard's offered default is `./vault` (core/vault.py:DEFAULT_VAULT), and the quickstart runs
+# it from the repo root -- so a contributor following the docs writes lead notes (employer names,
+# job URLs, verdicts) into a PUBLIC checkout. Ignored here AND refused by tests/test_no_leaked_files.py.
+/vault/

@@ -16,19 +16,19 @@ def _vault(notes):
     return Vault(root), cfg
 
 
-_GOOD = ('company: "Northwind"\nrole: "Banker"\nstatus: shortlist\n'
-         'url: "https://northwind.example/careers/em"\ntailored_cv: CV_deadbeef.pdf (2026-07-09)')
+_GOOD = ('company: "Example Northgate"\nrole: "Banker"\nstatus: shortlist\n'
+         'url: "https://example-northgate.invalid/careers/em"\ntailored_cv: CV_deadbeef.pdf (2026-07-09)')
 
 
 def test_eligibility_all_conditions_pass():
-    v, cfg = _vault([("Northwind - Analyst.md", _GOOD)])
+    v, cfg = _vault([("Example Northgate - Analyst.md", _GOOD)])
     note = v.read_leads({"shortlist"})[0]
     assert select.eligibility(note, cfg) == (True, "")
 
 
 def test_eligibility_rejects_non_shortlist():
     v, cfg = _vault([("Applied.md", _GOOD.replace("status: shortlist", "status: applied"))])
-    note = [n for n in v.read_leads() if n.fm["company"] == "Northwind"][0]
+    note = [n for n in v.read_leads() if n.fm["company"] == "Example Northgate"][0]
     assert select.eligibility(note, cfg) == (False, "not_shortlist")
 
 
@@ -47,33 +47,33 @@ def test_eligibility_reasons():
 
 
 def test_select_one_resolves_single_eligible():
-    v, cfg = _vault([("Northwind - Analyst.md", _GOOD)])
-    note, reason = select.select_one(v, "northwind", cfg)
+    v, cfg = _vault([("Example Northgate - Analyst.md", _GOOD)])
+    note, reason = select.select_one(v, "northgate", cfg)
     assert reason == "" and note is not None
 
 
 def test_select_one_refuses_ambiguous_shortlist_match():
     v, cfg = _vault([
-        ("flowline - Analyst.md", _GOOD.replace("Northwind", "flowline")),
-        ("flowlineRemote in London - Analyst.md", _GOOD.replace("Northwind", "flowlineRemote in London")),
+        ("flowline - Analyst.md", _GOOD.replace("Example Northgate", "flowline")),
+        ("flowlineRemote in London - Analyst.md", _GOOD.replace("Example Northgate", "flowlineRemote in London")),
     ])
     note, reason = select.select_one(v, "flowline", cfg)
     assert note is None and reason.startswith("ambiguous")
 
 
 def test_select_one_no_match():
-    v, cfg = _vault([("Northwind - Analyst.md", _GOOD)])
+    v, cfg = _vault([("Example Northgate - Analyst.md", _GOOD)])
     note, reason = select.select_one(v, "zzz", cfg)
     assert note is None and reason == "no_match"
 
 
 def test_select_all_partitions_eligible_and_skipped():
     v, cfg = _vault([
-        ("Northwind - Analyst.md", _GOOD),
+        ("Example Northgate - Analyst.md", _GOOD),
         ("Legacy.md", 'company: "B"\nrole: "Analyst"\nstatus: shortlist\nurl: "https://x/y"\ntailored_cv: "My CV/CV_B.pdf"'),
     ])
     eligible, skipped = select.select_all(v, cfg)
-    assert [n.fm["company"] for n in eligible] == ["Northwind"]
+    assert [n.fm["company"] for n in eligible] == ["Example Northgate"]
     assert [(n.fm["company"], r) for n, r in skipped] == [("B", "no_artifact")]
 
 
@@ -86,7 +86,7 @@ _FRESH = _GOOD + "\nlast_seen: 2026-07-20"
 
 
 def test_eligibility_refuses_a_stale_lead():
-    v, cfg = _vault([("Northwind - Analyst.md", _STALE)])
+    v, cfg = _vault([("Example Northgate - Analyst.md", _STALE)])
     note = v.read_leads({"shortlist"})[0]
     assert select.eligibility(note, cfg, _POLICY) == (False, "stale")
 
@@ -95,37 +95,37 @@ def test_eligibility_reports_stale_rather_than_no_artifact():
     # A stale lead must not be reported as `no_artifact`: that sends the user to run
     # `cv run`, which would itself refuse it, for a reason the message never mentioned.
     no_cv = _STALE.replace("tailored_cv: CV_deadbeef.pdf (2026-07-09)", "")
-    v, cfg = _vault([("Northwind - Analyst.md", no_cv)])
+    v, cfg = _vault([("Example Northgate - Analyst.md", no_cv)])
     note = v.read_leads({"shortlist"})[0]
     assert select.eligibility(note, cfg, _POLICY) == (False, "stale")
 
 
 def test_eligibility_default_policy_abstains():
-    v, cfg = _vault([("Northwind - Analyst.md", _STALE)])
+    v, cfg = _vault([("Example Northgate - Analyst.md", _STALE)])
     note = v.read_leads({"shortlist"})[0]
     assert select.eligibility(note, cfg) == (True, "")
 
 
 def test_eligibility_include_stale_passes_a_stale_lead():
     p = StalenessPolicy(ttl_days=90, today="2026-07-27", include_stale=True)
-    v, cfg = _vault([("Northwind - Analyst.md", _STALE)])
+    v, cfg = _vault([("Example Northgate - Analyst.md", _STALE)])
     note = v.read_leads({"shortlist"})[0]
     assert select.eligibility(note, cfg, p) == (True, "")
 
 
 def test_fresh_lead_is_unaffected():
-    v, cfg = _vault([("Northwind - Analyst.md", _FRESH)])
+    v, cfg = _vault([("Example Northgate - Analyst.md", _FRESH)])
     note = v.read_leads({"shortlist"})[0]
     assert select.eligibility(note, cfg, _POLICY) == (True, "")
 
 
 def test_select_one_reports_stale():
-    v, cfg = _vault([("Northwind - Analyst.md", _STALE)])
-    assert select.select_one(v, "Northwind", cfg, _POLICY) == (None, "stale")
+    v, cfg = _vault([("Example Northgate - Analyst.md", _STALE)])
+    assert select.select_one(v, "Example Northgate", cfg, _POLICY) == (None, "stale")
 
 
 def test_select_all_reports_stale():
-    v, cfg = _vault([("Northwind - Analyst.md", _STALE)])
+    v, cfg = _vault([("Example Northgate - Analyst.md", _STALE)])
     eligible, skipped = select.select_all(v, cfg, _POLICY)
     assert eligible == []
     assert [reason for _, reason in skipped] == ["stale"]
