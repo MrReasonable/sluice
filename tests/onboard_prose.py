@@ -47,21 +47,26 @@ _SOURCES_FIXTURE = {"example_source": {
 def rendered_artefacts():
     """[(label, text), ...] for the two files `sluice init` writes.
 
-    The profile carries `_DEFAULT_CRITERIA`'s prose verbatim -- that IS the round-1 Critical fix --
-    and that prose has its own guard in triage, so it is stripped here. What remains is what THIS
-    package authored around it. `test_the_rendered_sweep_covers_something` asserts the remainder is
-    non-empty, because a strip that removed everything would leave a sweep over nothing, which
-    passes.
-    """
-    from sluice.onboard.plan import build_plan, default_sections
+    NOTHING IS STRIPPED, and BOTH arms of every branch are rendered. Two holes lived here:
 
-    plan = build_plan({}, config_dest="/example/config.yaml", profile_dest="/example/profile.md",
-                      sources=_SOURCES_FIXTURE)
-    authored = plan.profile_text
-    for body in default_sections().values():
-        authored = authored.replace(body, "")
-    return [("rendered:config_text", plan.config_text),
-            ("rendered:profile_text(minus the shipped default prose)", authored)]
+    - The profile used to have `DEFAULT_CRITERIA`'s prose removed before the sweep, on the grounds
+      that it has its own guard in triage. It does not: that guard's vocabulary is disjoint from
+      `NO_TAXONOMY_WORDS`. Measured -- planting a role-and-culture phrase into `core/criteria.py`
+      left the FULL SUITE green while the written profile carried it to the judge as authoritative
+      criteria. This feature CHANGED the stakes of that prose: it is now bytes in a stranger's
+      vault, not merely a fallback string.
+    - `sources` used to be rendered only non-empty, so `_render_sources`' commented-example arm --
+      the DEFAULT path, taken by every `--no-input` run and every user who skips the board
+      question -- was never swept at all.
+    """
+    from sluice.onboard.plan import build_plan
+
+    common = dict(config_dest="/example/config.yaml", profile_dest="/example/profile.md")
+    walked = build_plan({}, sources=_SOURCES_FIXTURE, **common)
+    default = build_plan({}, **common)
+    return [("rendered:config_text(sources walked)", walked.config_text),
+            ("rendered:config_text(sources skipped -- the DEFAULT path)", default.config_text),
+            ("rendered:profile_text", walked.profile_text)]
 
 
 def terminal_transcript():
@@ -74,7 +79,8 @@ def terminal_transcript():
     """
     import io
 
-    from sluice.onboard.ask import TtyAsker, collect, collect_profile, collect_sources
+    from sluice.onboard.ask import (MissingAnswer, NoInputAsker, TtyAsker, collect,
+                                    collect_profile, collect_sources)
     from sluice.onboard.questions import catalogue
 
     out = io.StringIO()
@@ -88,7 +94,34 @@ def terminal_transcript():
         TtyAsker(stdin=io.StringIO("example_source\nExample search\nhttps://example.invalid/j\n\n"),
                  stdout=out),
         ["example_source", "other_source"])
-    return [("terminal:asker transcript", out.getvalue())]
+    # The ERROR paths are prose a user reads at the moment they are most confused, and driving only
+    # the happy path never prints them. A bad int, a bad URL and an unknown board id each re-ask.
+    err = io.StringIO()
+    bad = TtyAsker(stdin=io.StringIO("notanumber\n90\n"), stdout=err)
+    bad.ask(next(q for q in questions if q.key == "lead_ttl_days"))
+    TtyAsker(stdin=io.StringIO("nonsense\nhttps://example.invalid/j\n"), stdout=err).ask_url("url?")
+    TtyAsker(stdin=io.StringIO("no-such-board\n\n"), stdout=err).ask_ids("boards?", ["example_a"])
+    try:
+        NoInputAsker(presets={}).ask(next(q for q in questions if q.key == "vault_dir"))
+    except MissingAnswer as exc:                       # printed on every --no-input run w/o --vault
+        print(exc, file=err)
+
+    return [("terminal:asker transcript", out.getvalue()),
+            ("terminal:asker error paths", err.getvalue())]
+
+
+def cli_help_text():
+    """`sluice init --help` -- shipped prose the functional sweep cannot see, because it captures a
+    RUN's output and never the parser's."""
+    import contextlib
+    import io
+
+    from sluice.cli import _build_parser
+
+    buf = io.StringIO()
+    with contextlib.suppress(SystemExit), contextlib.redirect_stdout(buf):
+        _build_parser().parse_args(["init", "--help"])
+    return [("cli:init --help", buf.getvalue())]
 
 
 def shipped_prose():
@@ -97,7 +130,7 @@ def shipped_prose():
     import sluice.onboard.plan as plan_mod
     from sluice.onboard.questions import catalogue
 
-    out = list(rendered_artefacts()) + list(terminal_transcript())
+    out = list(rendered_artefacts()) + list(terminal_transcript()) + list(cli_help_text())
     for q in catalogue(default_vault="/example/vault"):
         for attr in ("prompt", "hint", "consequence"):
             out.append((f"catalogue[{q.key}].{attr}", getattr(q, attr)))

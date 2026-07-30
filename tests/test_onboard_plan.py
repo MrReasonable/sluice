@@ -57,6 +57,31 @@ def test_the_template_contains_every_catalogue_key_COMMENTED(tmp_path):
                 f"{dotted} is not present-and-commented in the template init writes"
 
 
+def test_uncommenting_any_single_key_yields_a_config_that_still_LOADS(tmp_path):
+    """The file's own headline instruction, executed.
+
+    `# <- uncomment and set YOUR OWN` was false for 16 of 19 keys: the block header rendered
+    commented, so uncommenting a nested key left an indented key with no parent and PyYAML raised
+    a ParserError pointing at line 1 rather than the edited line. Nothing tested the uncomment
+    path, which is the one action the file tells every user to take."""
+    text = _plan(tmp_path).config_text
+    lines = text.splitlines()
+    targets = [i for i, ln in enumerate(lines) if "<- uncomment and set YOUR OWN" in ln]
+    assert len(targets) >= 15, f"only {len(targets)} uncommentable keys found"   # SCOPE
+
+    for i in targets:
+        edited = list(lines)
+        # Exactly what a user does: drop the `# ` and supply a value.
+        edited[i] = edited[i].split("#")[0] + lines[i].split("# ", 1)[1].split(":")[0] + ": []"
+        path = tmp_path / f"edit{i}.yaml"
+        path.write_text("\n".join(edited), encoding="utf-8")
+        try:
+            yaml.safe_load(path.read_text(encoding="utf-8"))
+        except yaml.YAMLError as exc:
+            raise AssertionError(
+                f"uncommenting line {i + 1} ({lines[i].strip()!r}) broke the file: {exc}") from None
+
+
 def test_prose_mentioning_a_key_does_NOT_satisfy_the_scope_matcher():
     """NEGATIVE CONTROL. Widening the matcher to `^[#\\s]*` would let an explanatory comment stand
     in for the key -- the matched-by-adjacent-prose bug this repo already shipped."""
@@ -163,9 +188,12 @@ def test_the_safety_blurbs_reach_every_block_they_govern(tmp_path):
 def test_a_fan_out_question_still_emits_its_header_once_per_block(tmp_path):
     """What the hoist was originally added for: ONE question writing three blocks must not emit
     three headers in a single block."""
-    text = _plan(tmp_path).config_text
-    cv_block = text.split("# cv:")[1].split("\n# ")[0]
-    assert cv_block.count("-- Providers") == 1
+    lines = _plan(tmp_path).config_text.splitlines()
+    start = next(i for i, ln in enumerate(lines) if ln == "cv:")
+    end = next((i for i in range(start + 1, len(lines))
+                if re.match(r"^[a-z_]+:\s*$", lines[i])), len(lines))
+    assert end > start + 1, "the cv: block rendered empty"        # SCOPE
+    assert sum("-- Providers" in ln for ln in lines[start + 1:end]) == 1
 
 
 def test_notes_explain_what_a_configured_gate_will_do(tmp_path):

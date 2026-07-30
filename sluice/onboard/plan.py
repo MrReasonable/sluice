@@ -214,18 +214,25 @@ def _render_config(answers, sources):
                          if ln]
             body += _render_key(leaf, q, value, indent)
         if block:
-            # A bare `triage:` with only comments beneath parses as `{'triage': None}`, and relying
-            # on each loader to treat that as an empty mapping is a coupling nobody asked for. So
-            # the HEADER is commented when every key under it is unset.
+            # The header is ACTIVE even when every key beneath it is unset, and that is load-bearing
+            # for the file's own headline instruction.
             #
-            # ONLY the header. Every line in `body` is already a comment, and re-prefixing them
-            # produced `#   # accept_titles:` -- which defeated the scope guard's own matcher on 16
-            # of 19 keys while the neutrality half stayed green, so the implementer saw one red test
-            # whose message was false. Widening the matcher instead would let a comment ABOUT a key
-            # stand in for the key: the matched-by-adjacent-prose bug this repo has already shipped.
-            active = any(not _unset(v) for _, _, v in entries)
+            # It used to render commented (`# triage:`) on the theory that a bare `triage:` parsing
+            # as `{'triage': None}` was "a coupling nobody asked for". That reasoning was simply
+            # wrong: all four loaders already do `(yaml.safe_load(f) or {}).get(BLOCK) or {}`, so a
+            # null block has always been fine -- verified against all four.
+            #
+            # What the commented header DID do was make the file lie. Every key under it renders at
+            # indent 2, so a user following `# <- uncomment and set YOUR OWN` on a nested key got an
+            # indented key with no parent and a PyYAML ParserError pointing at line 1 rather than
+            # the line they edited. Measured: 16 of 19 keys were in that state, and the header prose
+            # "Uncomment a key to turn that gate on" was false for every one of them.
+            #
+            # Body lines are NOT re-prefixed. Every line in `body` is already a comment, and
+            # double-commenting produced `#   # accept_titles:`, which defeated the scope guard's
+            # own matcher on 16 of 19 keys while the neutrality half stayed green.
             lines.append("")
-            lines.append(f"{block}:" if active else f"# {block}:")
+            lines.append(f"{block}:")
             lines += body
         else:
             lines += body

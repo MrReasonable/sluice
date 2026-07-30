@@ -23,12 +23,15 @@ def test_no_sources_emits_only_the_commented_example(tmp_path):
     """The abstain default: every source runs its own neutral example search."""
     text = _text()
     assert "# sources:" in text
-    # An unanswered run emits a document that is ALL comments, so it loads as None rather than as a
-    # mapping with a null `sources`. That is the abstain property at full strength -- there is no
-    # active key to override anything -- and every loader tolerates it (pinned by the enumerated
-    # differential in test_onboard_plan.py). Asserting `.get("sources")` on the loaded document
-    # AttributeErrors here, which is how this was found.
-    assert yaml.safe_load(text) is None
+    # Block headers render ACTIVE (so that uncommenting a nested key produces a loadable file), and
+    # every key beneath them stays commented. So an unanswered document is a mapping of NULL blocks
+    # -- no `sources` key at all, and no block carrying a single set key. That is the abstain
+    # property: nothing here can override a code default, which the enumerated differential in
+    # test_onboard_plan.py pins field-for-field.
+    loaded = yaml.safe_load(text)
+    assert loaded is not None, "the document should carry its block headers"
+    assert "sources" not in loaded
+    assert all(v is None for v in loaded.values()), f"a block carries a set key: {loaded}"
 
 
 def test_a_walked_source_round_trips_through_the_real_loader(tmp_path):

@@ -126,17 +126,28 @@ def test_the_terminal_transcript_covers_the_prompts_it_claims_to():
     assert "$EDITOR" in text                                # ask_prose
 
 
-def test_the_rendered_sweep_covers_something():
-    """SCOPE. `rendered_artefacts` strips `_DEFAULT_CRITERIA`'s prose from the profile (it has its
-    own guard in triage), and a strip that removed everything would leave the sweep above passing
-    over an empty string."""
+def test_the_rendered_sweep_covers_BOTH_arms_and_strips_nothing():
+    """SCOPE, and it has to name the two ways this sweep went hollow before.
+
+    It stripped `DEFAULT_CRITERIA`'s prose out of the profile on a justification that did not hold,
+    and it rendered `sources` only non-empty -- so the commented-example arm, which is the DEFAULT
+    path for every `--no-input` run, was never swept at all."""
+    from sluice.core.criteria import DEFAULT_CRITERIA
     from tests.onboard_prose import rendered_artefacts
     surfaces = dict(rendered_artefacts())
-    assert len(surfaces) == 2
+    assert len(surfaces) == 3
     for label, text in surfaces.items():
         assert text.strip(), f"{label} swept nothing"
-    # The walked arm of _render_sources, not just its commented-example arm.
-    assert "example_source" in surfaces["rendered:config_text"]
+
+    walked = surfaces["rendered:config_text(sources walked)"]
+    default = surfaces["rendered:config_text(sources skipped -- the DEFAULT path)"]
+    assert "example_source" in walked                      # the walked arm
+    assert "#   example_source:" in default                # ...and the commented-example arm
+    assert walked != default, "both arms rendered identically; one of them is not being exercised"
+
+    # The shipped default prose is swept, not stripped: it is written into the user's vault.
+    first = DEFAULT_CRITERIA.split("\n\n")[1].strip()
+    assert first and first in surfaces["rendered:profile_text"]
 
 
 def test_no_shipped_prose_names_an_exemplar():
