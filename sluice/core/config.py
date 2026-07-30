@@ -160,7 +160,7 @@ def refuse_retired_locations(data: dict) -> None:
     (logs, bug reports, pasted tracebacks) than the config file it came from -- the same
     ruling `refuse_retired_dossier_dir` and `dossier_allow_hosts` already make.
     """
-    if "locations" in data or os.environ.get("SLUICE_LOCATIONS"):
+    if "locations" in data or "SLUICE_LOCATIONS" in os.environ:
         raise ValueError(
             "the root `locations` key (and $SLUICE_LOCATIONS) was read by nothing and "
             "has been retired. Geography is a triage concern -- move your value to the "

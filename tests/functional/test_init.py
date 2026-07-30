@@ -220,13 +220,28 @@ def test_a_failed_config_write_reports_and_exits_non_zero(run_init, tmp_path, mo
     assert f"wrote   {dest}" not in out
 
 
+def test_a_relative_SLUICE_CONFIG_reports_rather_than_crashing(run_init, tmp_path, monkeypatch):
+    """`os.path.dirname("sluice.local.yaml")` is `""`, and `os.makedirs("")` raises
+    FileNotFoundError. Sitting outside the try, that escaped as an uncaught traceback instead of
+    this command's own FAILED report -- reproduced. A relative $SLUICE_CONFIG is a documented way
+    to use sluice, so this is an ordinary path, not an edge case."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SLUICE_CONFIG", "sluice.local.yaml")
+    rc, out, _err = run_init(["init", "--vault", str(tmp_path / "notes"), "--no-input"])
+    assert rc == 0, "a relative config path must simply work"
+    assert (tmp_path / "sluice.local.yaml").exists()
+    assert "wrote" in out
+
+
 def test_a_walked_board_reaches_the_written_config(run_init, tmp_path):
     """The interactive half was deletable with the suite green -- `if interactive:` -> `if False:`
     passed, because every other test uses `--no-input` and the mode was derived from isatty()
     rather than from the injected asker. This drives it through the `asker=` seam."""
     from sluice.core.config import load_config
     from sluice.ingest import sources as registry
-    board = registry.all_sources()[0].id
+    # sorted(), not [0]: registry order follows import order, so an unsorted pick makes this
+    # test depend on which plugin happens to load first.
+    board = sorted(s.id for s in registry.all_sources())[0]
     # questions ... | board walk: pick, label, url, blank-to-finish | profile: 5 blanks
     rc = _init(["init", "--vault", str(tmp_path / "notes")],
                _scripted(_skip_all_questions()

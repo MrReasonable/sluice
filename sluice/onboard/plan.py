@@ -102,7 +102,9 @@ def _render_sources(sources):
     out.append("sources:")
     for sid in sorted(sources):
         spec = sources[sid]
-        out.append(f"  {sid}:")
+        # Through scalar(): a source id is a registry key, but nothing downstream forces it to
+        # be YAML-safe, and an unquoted mapping key with a `:` or `#` in it breaks the file.
+        out.append(f"  {scalar(sid)}:")
         out.append(f"    enabled: {scalar(bool(spec.get('enabled', True)))}")
         searches = spec.get("searches") or []
         if searches:

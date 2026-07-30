@@ -9,9 +9,12 @@ import yaml
 from sluice.core.config import load_config
 from sluice.onboard.plan import build_plan
 
-SRC = {"reed": {"enabled": True,
-                "searches": [["Example search", "https://example.invalid/jobs"]]},
-       "remoteok": {"enabled": False, "searches": []}}
+# Synthetic ids: `_render_sources` and `load_config` treat a source id as an opaque key, so this
+# fixture never needed real registry entries. Tests that DO need a real one derive it from
+# `registry.all_sources()` rather than naming it.
+SRC = {"example_board_a": {"enabled": True,
+                           "searches": [["Example search", "https://example.invalid/jobs"]]},
+       "example_board_b": {"enabled": False, "searches": []}}
 
 
 def _text(sources=None):
@@ -38,17 +41,17 @@ def test_a_walked_source_round_trips_through_the_real_loader(tmp_path):
     path = tmp_path / "c.yaml"
     path.write_text(_text(SRC), encoding="utf-8")
     cfg = load_config(str(path))
-    assert cfg.sources["reed"].enabled is True
-    assert cfg.sources["remoteok"].enabled is False
-    assert cfg.sources["reed"].searches == [["Example search", "https://example.invalid/jobs"]]
+    assert cfg.sources["example_board_a"].enabled is True
+    assert cfg.sources["example_board_b"].enabled is False
+    assert cfg.sources["example_board_a"].searches == [["Example search", "https://example.invalid/jobs"]]
 
 
 def test_a_search_label_with_yaml_metacharacters_survives(tmp_path):
-    nasty = {"reed": {"enabled": True,
+    nasty = {"example_board_a": {"enabled": True,
                       "searches": [["O'Example: #1, \"remote\"", "https://example.invalid/j?a=b"]]}}
     path = tmp_path / "c.yaml"
     path.write_text(_text(nasty), encoding="utf-8")
-    assert load_config(str(path)).sources["reed"].searches[0][0] == "O'Example: #1, \"remote\""
+    assert load_config(str(path)).sources["example_board_a"].searches[0][0] == "O'Example: #1, \"remote\""
 
 
 def test_the_board_prompt_promises_only_what_the_config_encodes(tmp_path):

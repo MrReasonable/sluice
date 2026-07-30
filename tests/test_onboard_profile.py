@@ -57,6 +57,32 @@ def test_the_profile_carries_no_frontmatter():
     assert not _profile().startswith("---")
 
 
+def test_the_scaffolds_user_instructions_never_reach_the_judge():
+    """The `<!-- Replace the paragraph above with ... -->` blocks are addressed to the USER.
+
+    All five reached the system prompt verbatim, inside a scaffold that tells the model to treat
+    the criteria as authoritative -- one of them literally says the profile "treats it as
+    authoritative for who you are". A fresh install therefore handed the judge five instructions
+    written for a human. Before this feature existed, a fresh install got clean criteria."""
+    text = _profile()
+    assert "<!--" in text, "precondition: the scaffold does emit user-directed blocks"
+    prompt = build_system_prompt_from(text)
+    assert "<!--" not in prompt
+    assert "Replace the paragraph above" not in prompt
+    # ...and stripping them must not take the abstain instructions with it.
+    for marker in ABSTAIN_MARKERS:
+        assert marker in prompt
+
+
+def test_a_users_own_notes_to_self_are_not_treated_as_criteria():
+    """Same rule for prose the user writes: a Markdown comment in their Judging Profile is a note,
+    not a preference, and the judge must not score against it."""
+    criteria = "## Who this candidate is\n\nReal criteria here.\n\n<!-- TODO: rewrite this bit -->\n"
+    prompt = build_system_prompt_from(criteria)
+    assert "Real criteria here." in prompt
+    assert "TODO: rewrite this bit" not in prompt
+
+
 def test_the_scaffold_prompts_name_no_exemplar():
     from sluice.onboard.questions import expresses_a_preference
     text = _profile()

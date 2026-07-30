@@ -60,7 +60,14 @@ def edit_in_editor(prompt, *, editor=None, run=None):
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(scaffold)
         try:
-            if run([*shlex.split(editor), path]) != 0:
+            # ValueError as well as OSError: `shlex.split` raises on an unbalanced quote, and
+            # $EDITOR is user-supplied, so a malformed value would otherwise escape the "every
+            # failure mode returns None" contract this docstring states.
+            argv = [*shlex.split(editor), path]
+        except ValueError:
+            return None
+        try:
+            if run(argv) != 0:
                 return None
         except OSError:
             # The editor is not installed, or is not executable. Not the user's problem to debug
@@ -73,7 +80,11 @@ def edit_in_editor(prompt, *, editor=None, run=None):
             os.unlink(path)
         except OSError:
             pass
-    kept = [ln for ln in body.split("\n") if not ln.lstrip().startswith("#")]
+    # Drop the EXACT scaffold lines, not every line starting with `#`. A user writing Markdown
+    # headings ("# My background") in their editor would otherwise have them silently deleted --
+    # in a file whose whole purpose is prose they wrote.
+    scaffold_lines = set(scaffold.rstrip("\n").split("\n"))
+    kept = [ln for ln in body.split("\n") if ln not in scaffold_lines]
     return "\n".join(kept).strip() or None
 
 
@@ -87,11 +98,10 @@ class TtyAsker:
     # `.init-scaffold.md` rescue -- the one data-loss guard in the command -- were unreachable.
     interactive = True
 
-    def __init__(self, *, stdin=None, stdout=None, editor=None, run=None):
+    def __init__(self, *, stdin=None, stdout=None, editor=None):
         self.stdin = stdin
         self.stdout = stdout
         self.editor = editor
-        self.run = run
 
     def _say(self, text):
         print(text, file=self.stdout)
@@ -134,7 +144,7 @@ class TtyAsker:
         raw = self._read()
         if raw != "" and raw.strip():
             return raw.strip()
-        return edit_in_editor(prompt, editor=self.editor, run=self.run)
+        return edit_in_editor(prompt, editor=self.editor)
 
     def ask_ids(self, prompt, allowed):
         """A comma-separated subset of `allowed`. An unrecognised id is re-asked, not dropped:

@@ -36,7 +36,12 @@ def _needs_hex(ch: str) -> bool:
     """
     # Written as escapes, never as literals: U+2028/U+2029 are invisible in an editor, and a
     # literal one here actually SPLIT this source line -- Python treats it as a line break.
-    return ord(ch) < 0x20 or ch in ("\x7f", "\x85", "\u2028", "\u2029")
+    o = ord(ch)
+    # C0 (< 0x20), DEL, the WHOLE C1 block (0x80-0x9f -- not just NEL at 0x85), and the two
+    # Unicode line separators. C1 was previously represented by \x85 alone, which is the only
+    # one PyYAML treats as a line break -- but the rest are still control characters a reader
+    # is entitled to reject, and escaping them costs nothing.
+    return o < 0x20 or o == 0x7F or 0x80 <= o <= 0x9F or ch in ("\u2028", "\u2029")
 
 
 def _hex_escape(ch: str) -> str:

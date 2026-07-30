@@ -17,6 +17,10 @@ NASTY = ["O'Example", "Foo: Bar", "#hash", "yes", "no", "on", "null", "~", "!tag
 # round-tripped silently to a space. Reachable through cv_contact -- text pasted out of a PDF,
 # where \x0b and \x0c are routine extraction artefacts.
 CONTROLS = ([chr(c) for c in range(0x00, 0x20)]
+            # The WHOLE C1 block, not just NEL: measured, a raw U+0080/U+0090/U+009F each
+            # makes PyYAML raise ReaderError, so escaping only \x85 left the rest able to
+            # write a config no later sluice command can read.
+            + [chr(c) for c in range(0x80, 0xA0)]
             + ["\x7f", "\x85", "\u2028", "\u2029"]
             + ["contact\x0bline", "a\x00b", "esc\x1bseq", "nel\x85y"])
 
