@@ -24,13 +24,24 @@ from datetime import date
 from sluice.core import status as _status
 from sluice.core.leads import SAME, UNKNOWN, Lead, _norm_url, same_opportunity
 from sluice.core.log import get_logger
-from sluice.core.protocols import LeadNote, MalformedNoteField, VaultConflict
+from sluice.core.protocols import (
+    CRITERIA_RELPATH,
+    LeadNote,
+    MalformedNoteField,
+    VaultConflict,
+)
 
 _LEADS_SUBDIR = os.path.join("Job Applications", "Job Leads")
 _EXP_SUBDIR = os.path.join("Job Applications", "Experience Library")
 _MYCV_BASELINE = os.path.join("My CV", "CV.md")
-_CRITERIA_RELPATH = os.path.join("Job Applications", "Judging Profile.md")
-_DEFAULT_VAULT = "./vault"
+_CRITERIA_RELPATH = CRITERIA_RELPATH
+# Public: `sluice init` offers this as the vault question's default. Imported by `cli.py` and
+# PASSED to the catalogue rather than imported by it -- the pure question data must not depend on
+# a concrete store. A second literal for the same default would also take the cwd-relative-path
+# DoD grep from 9 to 10. (Spelled without the leading quote character on purpose: that grep
+# matches a quote followed by ./, so naming the value in prose here would inflate its own count.)
+DEFAULT_VAULT = "./vault"
+_DEFAULT_VAULT = DEFAULT_VAULT
 
 _SEP = " - "        # note-name separator; identity-determining, stays a literal (never config)
 _SUFFIX_MAX = 40    # max chars of the location suffix on candidate 2; identity-determining literal
@@ -314,9 +325,10 @@ class Vault:
         except OSError:
             return ""
 
-    def write_document(self, rel: str, text: str) -> str:
+    def write_document(self, rel: str, text: str, *, only_if_absent: bool = False) -> str:
         """Write a store-managed document (the rejected-leads digest). Returns an opaque
-        handle. Also formerly an os.path.join onto `vault.dir`.
+        handle, or `""` when `only_if_absent` found the document already there. Also
+        formerly an os.path.join onto `vault.dir`.
 
         `rel` must stay INSIDE the store. An absolute path makes os.path.join discard
         self.dir entirely, and "../" walks out -- either would let the one wholesale-write
@@ -332,6 +344,15 @@ class Vault:
         if os.path.isabs(rel) or os.path.commonpath([root, path]) != root:
             raise ValueError(f"write_document: '{rel}' escapes the store root")
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        if only_if_absent:
+            # O_CREAT|O_EXCL, not exists()-then-write: the check and the write are two syscalls,
+            # and the racer on the other side is a human editing the note in Obsidian, who takes
+            # no lock (#16). An exclusive create makes never-clobber a property of the open.
+            try:
+                _write(path, text, exclusive=True)
+            except FileExistsError:
+                return ""
+            return path
         _atomic_write(path, text)
         return path
 

@@ -10,8 +10,19 @@ there, because a second store would ship without them. They are properties of *b
 store*, pinned by the conformance suite, and that is the whole point of writing this
 contract down.
 """
+import os
 from dataclasses import dataclass
 from typing import Protocol
+
+# Where the judge's criteria live inside a store. Here, in the contract module, because it IS
+# part of the Store contract -- the document `read_criteria` serves. It was previously two
+# independent literals (`core/vault.py`, `triage/prompt.py`); `sluice init` would have made three,
+# and a divergence means init writes a profile the judge never reads, silently, because a missing
+# profile falls back to the shipped default rather than raising.
+#
+# A non-filesystem store treats this as an opaque DOCUMENT KEY, not a path -- the separator is
+# incidental, and nothing here may assume a filesystem.
+CRITERIA_RELPATH = os.path.join("Job Applications", "Judging Profile.md")
 
 
 class VaultConflict(RuntimeError):
@@ -172,9 +183,18 @@ class Store(Protocol):
         the user is shown."""
         ...
 
-    def write_document(self, rel: str, text: str) -> str:
+    def write_document(self, rel: str, text: str, *, only_if_absent: bool = False) -> str:
         """Write a store-managed document (the rejected-leads digest) and return an
-        opaque handle."""
+        opaque handle.
+
+        `only_if_absent=True` writes NOTHING and returns `""` when the document already
+        exists. This is the never-clobber primitive `sluice init` scaffolds the Judging
+        Profile through, and it belongs on the contract rather than on one store: the
+        document it protects is the one a human hand-edits, and a store that overwrote it
+        would discard the criteria the judge scores every lead against. Implementations
+        must make it a property of the CREATE itself (an exclusive open), not an
+        exists()-then-write pair -- the racer is a human in Obsidian, who takes no lock
+        (#16)."""
         ...
 
     def normalize_all_statuses(self, dry_run: bool = False) -> dict:
