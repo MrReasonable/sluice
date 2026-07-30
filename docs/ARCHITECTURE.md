@@ -189,6 +189,62 @@ whichever neighbour it was written next to:
    lead's own proposals are cleared automatically when it auto-advances --
    so a proposal never vanishes after a single report.
 
+## `onboard/` — a command package, not a sixth sub-app
+
+`sluice/onboard/` backs `sluice init` (#8). It sits BESIDE the pipeline rather
+than inside it: nothing in `ingest -> triage -> cv -> apply -> track` imports it,
+and it has no engine, no store of its own and no place in any run.
+
+Split pure-from-impure, which is the whole reason its guarantees are unit-testable:
+
+- **`questions.py`** (pure): the declarative catalogue — one `Question` per key,
+  each carrying its `parse`, the dotted config keys it `writes_to`, a hint and a
+  consequence line. Every preference question has `default=None`, which means a
+  blank answer SKIPS it. The vault is the sole exception, and its default arrives
+  as a `catalogue(default_vault=...)` PARAMETER so a pure catalogue never imports
+  the concrete store. Backend and renderer choices are derived from the live
+  registries, never hand-listed.
+- **`emit.py`** (pure): hand-rolled YAML scalars. `safe_dump` would destroy the
+  comments that are most of the template's value and a round-tripping loader is
+  barred by the standard-library-only rule, so strings are always double-quoted —
+  the one form with a total escape grammar.
+- **`plan.py`** (pure): `build_plan(answers, ...) -> InitPlan`, producing the two
+  artefact texts plus the notes the report prints. The config is RENDERED FROM THE
+  CATALOGUE, which makes "every key the wizard can write appears in the file it
+  writes" true by construction. An unanswered key is emitted COMMENTED, and an
+  inactive block's HEADER is commented too (only the header — every line beneath
+  is already a comment).
+- **`ask.py`** (impure): the only half that touches a terminal. `TtyAsker` prompts
+  and re-asks on a bad answer; `NoInputAsker` answers only from flags and REFUSES
+  rather than reading stdin, because a wizard blocking on a pipe is a hung CI job
+  with no diagnosis. Both satisfy one small interface, so `--no-input` is the same
+  wizard with the prompting removed rather than a second code path.
+
+Two properties are load-bearing and each has its own guard:
+
+**An unanswered run writes a config identical to no config at all.** Asserted as
+an enumerated differential — `dataclasses.asdict(loader(emitted))` equals
+`dataclasses.asdict(loader(None))` field-for-field, for all four loaders, except
+`vault_dir` — paired with a scope assertion that every catalogue key is present
+and commented, because the differential alone passes just as happily on an empty
+file. This is the empty-config-abstains invariant expressed at the wizard, and
+`672ad2a` is what happens without it.
+
+**An unanswered profile heading carries `_DEFAULT_CRITERIA`'s own prose.**
+`build_system_prompt_from` falls back to the shipped neutral criteria only when
+the criteria text is missing or EMPTY, and a scaffold is never empty — so bare
+headings would permanently strip the judge's abstain instructions while the
+surrounding scaffold still told it to treat the profile as authoritative. The
+heading set is DERIVED by splitting `_DEFAULT_CRITERIA` on its own headings, so
+there is no second list to drift out of step.
+
+`cli.cmd_init` is the impure shell: it preflights BOTH destinations before asking
+anything, writes the config with an exclusive `open(dest, "x")` and the profile
+through the STORE SEAM via `write_document(..., only_if_absent=True)`, and rolls
+nothing back on a partial failure. It REFUSES when `--vault` and `$VAULT_DIR`
+disagree, because `stores/vault.py:_make` is env-first and a precedence rule would
+write to one path while the report named the other.
+
 ## The plugin core
 
 Two modules and a composition root make the seams real:

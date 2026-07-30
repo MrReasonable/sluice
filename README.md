@@ -78,17 +78,25 @@ Each of those is a seam meant to become a pluggable adapter. The roadmap:
 
 ```bash
 pip install -e .
-# sluice IGNORES a relative XDG_CONFIG_HOME (the XDG spec requires it), so mirror
-# that here -- otherwise this writes the config somewhere sluice will not read it.
-case "${XDG_CONFIG_HOME:-}" in
-  /*) config_dir="$XDG_CONFIG_HOME/sluice" ;;
-  *)  config_dir="$HOME/.config/sluice" ;;
-esac
-mkdir -p "$config_dir"
-cp -n sluice.yaml.example "$config_dir/config.yaml"   # -n: never clobber an existing one
+sluice init                 # asks a few questions, writes a config and a Judging Profile
 sluice ingest run --help
 sluice triage run --help
 ```
+
+`sluice init` resolves the config location for you, so nothing here has to
+reason about `XDG_CONFIG_HOME`. It never overwrites an artefact that already
+exists -- re-running it is safe, and it reports what it left alone. Every
+question is optional except where your vault is: a blank answer leaves that
+preference gate UNSET, and an unset gate passes every lead through rather than
+filtering on a value you did not choose. `--no-input --vault PATH` does the
+whole thing without prompting.
+
+Do **not** copy `sluice.yaml.example` into place instead. It is a catalogue that
+ships illustrative values ACTIVE rather than commented, so a verbatim copy
+arrives with its title, relevance and pay gates already closed and nothing
+saying so -- measured, `is_relevant("Senior Software Engineer")` is `False`
+against a fresh copy. Read it to see what a knob does; let `sluice init` write
+the file.
 
 sluice reads `$XDG_CONFIG_HOME/sluice/config.yaml` (`~/.config/sluice/config.yaml`
 on a default setup) and keeps its own state and caches under the matching XDG
@@ -104,8 +112,8 @@ empty vault beside you instead of the one you meant.
 file elsewhere:
 
 ```bash
-cp -n sluice.yaml.example sluice.local.yaml     # -n: never clobber an existing one
-export SLUICE_CONFIG=$(pwd)/sluice.local.yaml
+export SLUICE_CONFIG="$(pwd)/sluice.local.yaml"   # quoted: a path with spaces
+sluice init                 # writes to $SLUICE_CONFIG when it is set
 ```
 
 Either way the config file holds personal material (locations, employer lists,

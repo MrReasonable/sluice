@@ -532,6 +532,144 @@ def cmd_track_dismiss(args, config) -> int:
     return 0
 
 
+# ── init ──────────────────────────────────────────────────────────────────────
+def cmd_init(args, config, *, asker=None) -> int:
+    """Scaffold a config and a Judging Profile (#8).
+
+    Preflight resolves BOTH destinations before a single question is asked: a wizard that
+    interviews someone for five minutes and then says "config already exists" wasted their time to
+    learn something it knew at the start.
+    """
+    import dataclasses
+
+    from sluice.core.app import Sluice
+    from sluice.core.paths import config_file
+    from sluice.core.protocols import CRITERIA_RELPATH
+    from sluice.core.vault import DEFAULT_VAULT
+    from sluice.onboard.ask import (MissingAnswer, NoInputAsker, TtyAsker, collect,
+                                    collect_profile, collect_sources)
+    from sluice.onboard.plan import build_plan
+    from sluice.onboard.questions import catalogue
+
+    # `stores/vault.py:_make` is ENV-FIRST, so routing a --vault through the seam while $VAULT_DIR
+    # is also set would write to the ENV path while this command's report named the flag. A
+    # precedence rule would pick a winner silently; only the user knows which they meant.
+    env_vault = os.environ.get("VAULT_DIR")
+    if args.vault and env_vault and os.path.abspath(os.path.expanduser(env_vault)) != \
+            os.path.abspath(os.path.expanduser(args.vault)):
+        print("sluice init: --vault and $VAULT_DIR name different directories. Unset one, or pass "
+              "the one you mean.", file=sys.stderr)
+        return 2
+
+    config_dest = config_file()
+    config_exists = os.path.exists(config_dest)
+
+    presets = {}
+    vault_arg = args.vault or env_vault or config.vault_dir
+    if vault_arg:
+        presets["vault_dir"] = os.path.abspath(os.path.expanduser(vault_arg))
+
+    interactive = not args.no_input and sys.stdin.isatty()
+    if asker is None:
+        # $EDITOR is resolved HERE and passed in, so the asker itself reads no environment and a
+        # test can pin "no editor" without the developer's real one leaking into the run.
+        asker = (TtyAsker(stdin=sys.stdin, stdout=sys.stdout, editor=os.environ.get("EDITOR"))
+                 if interactive else NoInputAsker(presets=presets))
+
+    # A preset must win over a prompt even on a TTY: someone who passed --vault has already
+    # answered, and asking again invites a different answer to the same question.
+    questions = tuple(q for q in catalogue(default_vault=DEFAULT_VAULT) if q.key not in presets)
+
+    try:
+        answers = dict(presets)
+        answers.update(collect(asker, questions))
+    except MissingAnswer as exc:
+        print(f"sluice init: {exc}", file=sys.stderr)
+        return 2
+
+    vault_dir = answers["vault_dir"]
+    if os.path.exists(vault_dir) and not os.path.isdir(vault_dir):
+        print(f"sluice init: {vault_dir} is not a directory.", file=sys.stderr)
+        return 2
+    vault_created = not os.path.exists(vault_dir)
+
+    profile_dest = os.path.join(vault_dir, CRITERIA_RELPATH)
+    profile_exists = os.path.exists(profile_dest)
+
+    profile_answers = {}
+    sources = {}
+    if interactive:
+        sources = collect_sources(asker, [s.id for s in registry.all_sources()])
+        if not profile_exists:
+            profile_answers = collect_profile(asker)
+
+    plan = build_plan(answers, config_dest=config_dest, profile_dest=profile_dest,
+                      default_vault=DEFAULT_VAULT, profile_answers=profile_answers,
+                      sources=sources)
+
+    written, skipped, failed = [], [], []
+
+    if config_exists:
+        skipped.append(config_dest)
+    else:
+        os.makedirs(os.path.dirname(config_dest), exist_ok=True)
+        try:
+            # "x": an exclusive create cannot truncate a config a concurrent shell just wrote.
+            # Never-clobber is a property of the open, not of the check above it.
+            with open(config_dest, "x", encoding="utf-8") as fh:
+                fh.write(plan.config_text)
+            written.append(config_dest)
+        except FileExistsError:
+            skipped.append(config_dest)
+        except OSError as exc:
+            failed.append(f"{config_dest}: {exc}")
+
+    try:
+        os.makedirs(vault_dir, exist_ok=True)
+        # Through the STORE SEAM, not Vault(...) directly: the profile is a store-managed document,
+        # and #1 makes the second store real rather than hypothetical.
+        store = Sluice(dataclasses.replace(config, vault_dir=vault_dir)).store()
+        handle = store.write_document(CRITERIA_RELPATH, plan.profile_text, only_if_absent=True)
+        (written if handle else skipped).append(profile_dest)
+        if not handle and profile_answers:
+            # The user typed prose into an interview and the profile turned up already there. Do
+            # NOT overwrite it, and do not silently bin what they wrote: park it beside the real
+            # one and say so.
+            spare = CRITERIA_RELPATH.replace(".md", ".init-scaffold.md")
+            if store.write_document(spare, plan.profile_text, only_if_absent=True):
+                written.append(os.path.join(vault_dir, spare))
+    except OSError as exc:
+        failed.append(f"{profile_dest}: {exc}")
+
+    for path in written:
+        print(f"  wrote   {path}")
+    for path in skipped:
+        print(f"  exists  {path}  (left alone)")
+    for line in failed:
+        print(f"  FAILED  {line}", file=sys.stderr)
+
+    if vault_created:
+        print(f"\ncreated a new vault directory at {vault_dir}")
+        print("if you meant an existing one, re-run with --vault pointing at it")
+    else:
+        print(f"\nusing the existing vault at {vault_dir}")
+
+    if plan.notes:
+        print("\nYour config will:")
+        for note in plan.notes:
+            print(f"  {note}")
+
+    print("\nNext:")
+    print("  1. fill in the headings in your Judging Profile")
+    print("  2. sluice ingest list-sources --health")
+    print("  3. sluice triage run --no-llm")
+
+    # Nothing is rolled back on a partial failure. Deleting a file we just wrote to someone's disk,
+    # to tidy up after a failure they can see and retry, is a destructive act -- and a re-run skips
+    # what landed and retries what did not.
+    return 1 if failed else 0
+
+
 # ── doctor ────────────────────────────────────────────────────────────────────
 def cmd_doctor(args, config) -> int:
     from sluice.core.app import Sluice
@@ -704,6 +842,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     health = top.add_parser("health")
     health.set_defaults(func=cmd_health)
+
+    init = top.add_parser("init", help="scaffold a config and a Judging Profile")
+    init.add_argument("--vault", help="your Obsidian vault directory")
+    init.add_argument("--no-input", action="store_true",
+                      help="take every default; never prompt")
+    init.set_defaults(func=cmd_init)
 
     doctor = top.add_parser("doctor", help="preflight the configured backends")
     doctor.add_argument("--offline", action="store_true",
