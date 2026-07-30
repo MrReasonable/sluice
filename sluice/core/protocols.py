@@ -10,7 +10,6 @@ there, because a second store would ship without them. They are properties of *b
 store*, pinned by the conformance suite, and that is the whole point of writing this
 contract down.
 """
-import os
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -20,9 +19,12 @@ from typing import Protocol
 # and a divergence means init writes a profile the judge never reads, silently, because a missing
 # profile falls back to the shipped default rather than raising.
 #
-# A non-filesystem store treats this as an opaque DOCUMENT KEY, not a path -- the separator is
-# incidental, and nothing here may assume a filesystem.
-CRITERIA_RELPATH = os.path.join("Job Applications", "Judging Profile.md")
+# A non-filesystem store treats this as an opaque DOCUMENT KEY, not a path -- and it is spelled with
+# a literal "/" rather than os.path.join for exactly that reason. os.path.join makes the SEPARATOR
+# platform-dependent, so the "opaque key" would silently be backslash-separated on Windows and two
+# stores would disagree about the same document. Translating the key to a filesystem path is the
+# FILESYSTEM store's job (see Vault._doc_path), not the contract's.
+CRITERIA_RELPATH = "Job Applications/Judging Profile.md"
 
 
 class VaultConflict(RuntimeError):

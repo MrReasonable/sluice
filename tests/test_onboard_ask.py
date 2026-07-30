@@ -90,6 +90,32 @@ def test_every_editor_failure_mode_falls_back_to_the_scaffold():
     assert edit_in_editor("p", editor="nope", run=boom) is None           # not installed
 
 
+def test_a_users_markdown_headings_survive_the_editor():
+    """The scaffold is written as `#` comment lines and stripped afterwards -- but stripping EVERY
+    line starting with `#` silently deleted the user's own Markdown headings, in the one file whose
+    entire purpose is prose they wrote. Only the exact scaffold lines are removed."""
+    def fake_run(argv):
+        with open(argv[-1], "w", encoding="utf-8") as fh:
+            fh.write("# My background\n\nExample prose.\n\n## Detail\n\nMore.\n")
+        return 0
+    got = edit_in_editor("prompt", editor="vi", run=fake_run)
+    assert got is not None
+    assert "# My background" in got and "## Detail" in got and "Example prose." in got
+
+
+def test_a_malformed_EDITOR_falls_back_rather_than_raising():
+    """`shlex.split` raises ValueError on an unbalanced quote, and $EDITOR is user-supplied. The
+    docstring promises EVERY failure mode returns None; without catching it, a stray quote in the
+    variable crashed `sluice init` instead."""
+    import shlex
+    with pytest.raises(ValueError):                       # precondition: shlex really does raise
+        shlex.split('vi "unbalanced')
+
+    def never(argv):
+        raise AssertionError("a malformed $EDITOR must not reach the runner")
+    assert edit_in_editor("p", editor='vi "unbalanced', run=never) is None
+
+
 def test_editor_command_is_split_not_shelled():
     seen = {}
 
@@ -116,9 +142,9 @@ def test_the_asker_and_the_renderer_agree_on_the_profile_answer_keys():
 
 def test_collect_sources_takes_ids_then_label_url_pairs_until_a_blank_label():
     from sluice.onboard.ask import collect_sources
-    script = "reed\nExample search\nhttps://example.invalid/jobs\n\n"
-    got = collect_sources(_tty(script), ["reed", "remoteok"])
-    assert got == {"reed": {"enabled": True,
+    script = "example_board_a\nExample search\nhttps://example.invalid/jobs\n\n"
+    got = collect_sources(_tty(script), ["example_board_a", "example_board_b"])
+    assert got == {"example_board_a": {"enabled": True,
                             "searches": [["Example search", "https://example.invalid/jobs"]]}}
 
 
@@ -126,28 +152,28 @@ def test_a_bad_search_url_is_re_asked_not_dropped():
     """A mistyped board URL that is silently skipped is a source the user believes is configured
     and is not."""
     from sluice.onboard.ask import collect_sources
-    script = "reed\nExample search\nnot-a-url\nhttps://example.invalid/jobs\n\n"
-    got = collect_sources(_tty(script), ["reed"])
-    assert got["reed"]["searches"] == [["Example search", "https://example.invalid/jobs"]]
+    script = "example_board_a\nExample search\nnot-a-url\nhttps://example.invalid/jobs\n\n"
+    got = collect_sources(_tty(script), ["example_board_a"])
+    assert got["example_board_a"]["searches"] == [["Example search", "https://example.invalid/jobs"]]
 
 
 def test_no_selection_means_no_sources_block():
     from sluice.onboard.ask import collect_sources
-    assert collect_sources(_tty("\n"), ["reed"]) == {}
+    assert collect_sources(_tty("\n"), ["example_board_a"]) == {}
 
 
 def test_an_unregistered_board_id_is_re_asked_not_silently_dropped():
     """Same reasoning as the URL: a typo'd id accepted-and-ignored leaves the user believing the
     board is selected."""
     from sluice.onboard.ask import collect_sources
-    asker = _tty("reedd\nreed\n\n")
-    assert set(collect_sources(asker, ["reed", "remoteok"])) == {"reed"}
+    asker = _tty("example_board_x\nexample_board_a\n\n")
+    assert set(collect_sources(asker, ["example_board_a", "example_board_b"])) == {"example_board_a"}
     assert "not a registered source" in asker.stdout.getvalue()
 
 
 def test_no_input_selects_no_boards_so_the_two_paths_still_converge():
     from sluice.onboard.ask import collect_sources
-    assert collect_sources(NoInputAsker(presets={}), ["reed"]) == {}
+    assert collect_sources(NoInputAsker(presets={}), ["example_board_a"]) == {}
 
 
 def test_no_input_asks_no_prose_and_never_opens_an_editor(monkeypatch):

@@ -13,7 +13,7 @@ from sluice.core.config import load_config
 
 def test_a_config_that_sets_locations_refuses_and_names_the_replacement(tmp_path):
     path = tmp_path / "c.yaml"
-    path.write_text("locations: [Alfa]\n", encoding="utf-8")
+    path.write_text("locations: [Example Place]\n", encoding="utf-8")
     with pytest.raises(ValueError, match="target_locations"):
         load_config(str(path))
 
@@ -22,13 +22,25 @@ def test_the_env_spelling_refuses_too(tmp_path, monkeypatch):
     """Raising on the file and staying silent on the environment is exactly the asymmetry the
     fail-loudly rule exists to remove: a user who configured geography in their shell would watch
     it quietly stop being read."""
-    monkeypatch.setenv("SLUICE_LOCATIONS", "Alfa")
+    monkeypatch.setenv("SLUICE_LOCATIONS", "Example Place")
     path = tmp_path / "c.yaml"
     path.write_text("lead_ttl_days: 0\n", encoding="utf-8")
     with pytest.raises(ValueError, match="target_locations"):
         load_config(str(path))
 
 
+def test_an_exported_but_EMPTY_env_spelling_refuses_too(tmp_path, monkeypatch):
+    """`os.environ.get(...)` is falsy for an exported empty string, so `SLUICE_LOCATIONS=` slipped
+    past the refusal -- the one case where a user has demonstrably touched the variable. Presence,
+    not truthiness, is the question being asked."""
+    monkeypatch.setenv("SLUICE_LOCATIONS", "")
+    path = tmp_path / "c.yaml"
+    path.write_text("lead_ttl_days: 0\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="target_locations"):
+        load_config(str(path))
+
+
+# Geography placeholder: the repo's synthetic convention, so no real place name appears in tests.
 @pytest.mark.parametrize("source", ["file", "env"])
 def test_neither_message_echoes_the_value(tmp_path, monkeypatch, source):
     """Geography is personal, and an exception travels further than the file it came from -- logs,
@@ -36,13 +48,13 @@ def test_neither_message_echoes_the_value(tmp_path, monkeypatch, source):
     `dossier_allow_hosts`."""
     path = tmp_path / "c.yaml"
     if source == "file":
-        path.write_text("locations: [Alfa]\n", encoding="utf-8")
+        path.write_text("locations: [Example Place]\n", encoding="utf-8")
     else:
         path.write_text("lead_ttl_days: 0\n", encoding="utf-8")
-        monkeypatch.setenv("SLUICE_LOCATIONS", "Alfa")
+        monkeypatch.setenv("SLUICE_LOCATIONS", "Example Place")
     with pytest.raises(ValueError) as exc:
         load_config(str(path))
-    assert "Alfa" not in str(exc.value)
+    assert "Example Place" not in str(exc.value)
 
 
 def test_a_config_without_it_loads(tmp_path):

@@ -312,6 +312,15 @@ class Vault:
             out.append(entry)
         return out
 
+    def _doc_path(self, rel: str) -> str:
+        """Translate a store-contract DOCUMENT KEY into a filesystem path.
+
+        The key is always "/"-separated (see `CRITERIA_RELPATH`); turning that into this platform's
+        separator is the filesystem store's business. `os.path.join(*rel.split("/"))` is correct on
+        POSIX and on Windows, where the contract's own key must not carry a backslash.
+        """
+        return os.path.join(self.dir, *rel.split("/"))
+
     def read_criteria(self) -> str:
         """The user's judging criteria, from their editable source of truth. Returns ""
         when unset; the caller falls back to the shipped (opinion-free) default.
@@ -321,7 +330,7 @@ class Vault:
         so a second store would have AttributeError'd on the judge's critical path.
         """
         try:
-            return _read(os.path.join(self.dir, _CRITERIA_RELPATH))
+            return _read(self._doc_path(_CRITERIA_RELPATH))
         except OSError:
             return ""
 
@@ -340,7 +349,7 @@ class Vault:
         # realpath, not abspath: a symlink INSIDE the store (link -> /etc) would otherwise
         # satisfy commonpath and escape anyway.
         root = os.path.realpath(self.dir)
-        path = os.path.realpath(os.path.join(root, rel))
+        path = os.path.realpath(self._doc_path(rel))
         if os.path.isabs(rel) or os.path.commonpath([root, path]) != root:
             raise ValueError(f"write_document: '{rel}' escapes the store root")
         os.makedirs(os.path.dirname(path), exist_ok=True)

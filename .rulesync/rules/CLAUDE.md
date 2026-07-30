@@ -110,9 +110,11 @@ everything, which reads as a broken source rather than a closed gate.
 
 `sluice init` (#8) exists to remove that trap: it renders the config FROM the question catalogue
 with every unanswered key COMMENTED, so an unanswered run writes a file that is field-for-field
-equal to no config at all. It never overwrites an artefact, so re-running is safe. The example file
-stays a catalogue to read, not a template to copy, and `tests/test_no_copy_instruction.py` fails the
-build if any shipped doc goes back to instructing the copy.
+equal to no config at all EXCEPT `vault_dir` — the wizard's one required answer, and the one
+difference `tests/test_onboard_plan.py` exempts by name. It never overwrites an artefact, so
+re-running is safe. The example file stays a catalogue to read, not a template to copy, and
+`tests/test_no_copy_instruction.py` fails the build if any shipped doc goes back to instructing
+the copy.
 
 `ingest run` and `ingest test-source` drive a live Camofox browser server; every other command is
 offline. `sluice ingest test-source ID --raw` prints the raw fetch payload, which is how golden

@@ -344,7 +344,11 @@ def test_write_document_only_if_absent_creates_then_abstains(store_name, tmp_pat
     Asserted through read_criteria(), never a path: a store need not have one."""
     from sluice.core.protocols import CRITERIA_RELPATH
     store = _make_store(store_name, tmp_path, monkeypatch)
-    assert store.write_document(CRITERIA_RELPATH, "first", only_if_absent=True)
+    handle = store.write_document(CRITERIA_RELPATH, "first", only_if_absent=True)
+    # The contract states BOTH halves: "" on abstain, and a NON-EMPTY handle on a real write,
+    # because callers distinguish the two by truthiness. A bare truthiness check here would
+    # accept a store returning a non-str sentinel.
+    assert isinstance(handle, str) and handle
     assert store.write_document(CRITERIA_RELPATH, "second", only_if_absent=True) == ""
     assert store.read_criteria() == "first"
 

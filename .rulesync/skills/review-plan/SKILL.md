@@ -375,7 +375,9 @@ point of reviewing at plan time.
     `type[(scope)]: description`. **Medium**.
 15. **`.rulesync/` is canonical.** `CLAUDE.md`, `AGENTS.md` and `.claude/` are generated and
     gitignored. A task that edits a generated file instead of its source is **Medium** drift; a task
-    that edits `.rulesync/` is escalated to the user, not auto-approved.
+    that edits `.rulesync/` is REVIEWED like any other change, not escalated -- see the
+    `.rulesync/` paragraph in Step 3. What matters there is correctness, because it is the
+    highest-leverage place to assert something false.
 
 The operating manual is `.rulesync/rules/CLAUDE.md`. The architecture is `docs/ARCHITECTURE.md`. A
 plan that contradicts either without a task to update it is `docs-drift`.

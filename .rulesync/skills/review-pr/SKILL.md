@@ -246,7 +246,9 @@ failure, and most have an incident or a dedicated test behind them.
 14. **Conventional Commits.** `type[(scope)]: description`. **Medium** (amendable pre-merge).
 15. **`.rulesync/` is canonical.** `CLAUDE.md`, `AGENTS.md` and `.claude/` are generated and
     gitignored. Editing a generated file instead of the source is **Medium** drift; a `.rulesync/`
-    change in a PR is escalated to the user, not auto-approved.
+    change in a PR is REVIEWED like any other change, not escalated -- see the `.rulesync/**`
+    row in Step 2. Verify each claim is true of the code AS MERGED, never of code a later PR
+    adds.
 
 ## Aggregated summary template
 

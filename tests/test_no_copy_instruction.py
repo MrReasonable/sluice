@@ -6,11 +6,27 @@ import re
 
 # The harm is "a stranger is told to put this file into place", not "a line starts with cp".
 # Witnessed: the prose form ("Copy `sluice.yaml.example` to ...") and `cat sluice.yaml.example >`
-# both passed the old `^\s*cp\b` matcher while a literal `cp` line was correctly caught.
-_INSTRUCTS_A_COPY = re.compile(
-    r"^(?![^\n]*\bnot\b)[^\n]*(?:^\s*cp\b|\bcopy\b|^\s*cat\b[^\n]*>)[^\n]*sluice\.yaml\.example"
-    r"|^(?![^\n]*\bnot\b)[^\n]*sluice\.yaml\.example[^\n]*(?:\bcopy\b|>)",
-    re.M | re.I)
+# both passed an earlier `^\s*cp\b` matcher while a literal `cp` line was correctly caught.
+_COPY_VERB = re.compile(r"\bcp\b|\bcopy\b|\bcat\b[^\n]*>", re.I)
+
+# A NEGATED copy -- the docs must be able to say "do not copy this", which is the whole
+# remediation. Markdown emphasis is allowed inside the negation (`Do **not** copy`).
+_NEGATED_COPY = re.compile(
+    r"\b(?:do\s+[*`]*not[*`]*|don't|never|no\s+need\s+to)[\s*`]+(?:cp|copy)\b", re.I)
+
+
+def _instructs_a_copy(line: str) -> bool:
+    """Written as a function, not one clever regex.
+
+    The regex version exempted any line containing the word "not" ANYWHERE, so
+    "This does not apply here. Copy sluice.yaml.example into place." sailed through -- measured.
+    Deleting the negated phrases and then re-checking for a surviving verb is the same rule
+    stated in a way a reader can actually falsify.
+    """
+    if "sluice.yaml.example" not in line or not _COPY_VERB.search(line):
+        return False
+    return bool(_COPY_VERB.search(_NEGATED_COPY.sub("", line)))
+
 
 # What a USER reads. `docs/*.md` alone resolved to one file that was already hand-listed, so the
 # old glob contributed nothing to the SCOPE count.
@@ -40,8 +56,8 @@ def test_no_shipped_doc_tells_anyone_to_copy_the_example():
         except OSError:
             continue
         checked += 1
-        hit = _INSTRUCTS_A_COPY.search(text)
-        assert not hit, f"{path} instructs a copy of the example config: {hit.group(0)[:80]!r}"
+        hits = [ln for ln in text.splitlines() if _instructs_a_copy(ln)]
+        assert not hits, f"{path} instructs a copy of the example config: {hits[0][:90]!r}"
     assert checked >= 5, f"the sweep read only {checked} files"          # SCOPE
 
 
@@ -51,14 +67,20 @@ def test_the_matcher_catches_every_form_the_instruction_takes():
     for offender in ("cp sluice.yaml.example ~/.config/sluice/config.yaml",
                      "Copy `sluice.yaml.example` to your config directory.",
                      "cat sluice.yaml.example > config.yaml",
-                     "  cp -n sluice.yaml.example sluice.local.yaml"):
-        assert _INSTRUCTS_A_COPY.search(offender), f"not caught: {offender!r}"
+                     "  cp -n sluice.yaml.example sluice.local.yaml",
+                     # The word "not" elsewhere on the line must not buy an exemption.
+                     "This does not apply here. Copy sluice.yaml.example into place.",
+                     "Whether or not you use XDG, cp sluice.yaml.example into place."):
+        assert _instructs_a_copy(offender), f"not caught: {offender!r}"
 
 
 def test_the_matcher_does_not_fire_on_the_warning_against_copying():
     """NEGATIVE CONTROL. The docs must be able to SAY not to copy it -- that is the whole
     remediation -- without tripping the guard that enforces it."""
     for allowed in ("Do **not** copy `sluice.yaml.example` into place.",
+                    "Never copy sluice.yaml.example into your config directory.",
+                    # The exact form the rules file uses -- a backtick between negation and verb.
+                    "**Do NOT `cp sluice.yaml.example` into place -- it closes your gates.**",
                     "`sluice.yaml.example` documents every knob.",
                     "New tunables go in the dataclass and sluice.yaml.example."):
-        assert not _INSTRUCTS_A_COPY.search(allowed), f"false positive: {allowed!r}"
+        assert not _instructs_a_copy(allowed), f"false positive: {allowed!r}"
