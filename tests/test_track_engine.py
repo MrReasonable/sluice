@@ -15,20 +15,20 @@ def _dl():
 def _vault(status="applied"):
     root = tempfile.mkdtemp()
     leads = pathlib.Path(root, "Job Applications", "Job Leads"); leads.mkdir(parents=True)
-    (leads / "Tidemark - Analyst.md").write_text(f'---\ncompany: "Tidemark"\nrole: "Analyst"\nstatus: {status}\n---\n\nBODY\n')
-    return Vault(root), str(leads / "Tidemark - Analyst.md")
+    (leads / "Example Tidal - Analyst.md").write_text(f'---\ncompany: "Example Tidal"\nrole: "Analyst"\nstatus: {status}\n---\n\nBODY\n')
+    return Vault(root), str(leads / "Example Tidal - Analyst.md")
 
 
 class OneMsgClient(FakeGoogleClient):
     def __init__(self):
-        super().__init__(messages={"m1": {"headers": {"from": "jobs@tidemark.com", "subject": "Interview"},
+        super().__init__(messages={"m1": {"headers": {"from": "jobs@example-tidal.invalid", "subject": "Interview"},
                                            "body_text": "We'd like to interview you", "thread_id": "t1",
                                            "attachments": []}}, events=[])
 
 
 class OneMsgRejectClient(FakeGoogleClient):
     def __init__(self):
-        super().__init__(messages={"m1": {"headers": {"from": "jobs@tidemark.com", "subject": "Update"},
+        super().__init__(messages={"m1": {"headers": {"from": "jobs@example-tidal.invalid", "subject": "Update"},
                                            "body_text": "an update on your application", "thread_id": "t1",
                                            "attachments": []}}, events=[])
 
@@ -36,9 +36,9 @@ class OneMsgRejectClient(FakeGoogleClient):
 class TwoMsgClient(FakeGoogleClient):
     def __init__(self):
         super().__init__(messages={
-            "mA": {"headers": {"from": "jobs@tidemark.com", "subject": "Update"},
+            "mA": {"headers": {"from": "jobs@example-tidal.invalid", "subject": "Update"},
                    "body_text": "unfortunately not moving forward", "thread_id": "t", "attachments": []},
-            "mB": {"headers": {"from": "jobs@tidemark.com", "subject": "Interview"},
+            "mB": {"headers": {"from": "jobs@example-tidal.invalid", "subject": "Interview"},
                    "body_text": "we would like to interview you", "thread_id": "t", "attachments": []},
         }, events=[])
 
@@ -56,7 +56,7 @@ class FakeBackend:
 
 def test_run_auto_advances_and_reports():
     v, path = _vault("applied")
-    be = FakeBackend(json.dumps({"lead": "Tidemark", "type": "interview", "confidence": 0.9,
+    be = FakeBackend(json.dumps({"lead": "Example Tidal", "type": "interview", "confidence": 0.9,
                                  "when": "2026-07-20T10:00", "links": [], "materials": [], "summary": "interview"}))
     seen = set()
     rep = E.run(v, TrackConfig(), OneMsgClient(), be, seen=seen, deadletter=_dl(),
@@ -68,7 +68,7 @@ def test_run_auto_advances_and_reports():
 
 def test_run_skips_seen_and_dry_run_writes_nothing():
     v, path = _vault("applied")
-    be = FakeBackend(json.dumps({"lead": "Tidemark", "type": "interview", "confidence": 0.9,
+    be = FakeBackend(json.dumps({"lead": "Example Tidal", "type": "interview", "confidence": 0.9,
                                  "when": None, "links": [], "materials": [], "summary": "x"}))
     assert E.run(v, TrackConfig(), OneMsgClient(), be, seen={"m1"}, deadletter=_dl(),
                  now_iso="2026-07-10T12:00:00+00:00").msgs == 0
@@ -88,17 +88,17 @@ def test_run_resilient_to_bad_message():
 
 def test_confirm_never_clobber():
     v, path = _vault("interview")
-    assert E.confirm(v, TrackConfig(), "Tidemark - Analyst", "offer", deadletter=_dl())["ok"] is True
+    assert E.confirm(v, TrackConfig(), "Example Tidal - Analyst", "offer", deadletter=_dl())["ok"] is True
     assert "status: offer" in pathlib.Path(path).read_text()
-    assert E.confirm(v, TrackConfig(), "Tidemark - Analyst", "phone_screen", deadletter=_dl())["ok"] is False  # backward refused
+    assert E.confirm(v, TrackConfig(), "Example Tidal - Analyst", "phone_screen", deadletter=_dl())["ok"] is False  # backward refused
 
 
 def test_same_lead_two_messages_no_regression():
     v, path = _vault("applied")
     be = SeqBackend([
-        json.dumps({"lead": "Tidemark", "type": "rejection", "confidence": 0.95,
+        json.dumps({"lead": "Example Tidal", "type": "rejection", "confidence": 0.95,
                     "when": None, "links": [], "materials": [], "summary": "rejected"}),
-        json.dumps({"lead": "Tidemark", "type": "interview", "confidence": 0.9,
+        json.dumps({"lead": "Example Tidal", "type": "interview", "confidence": 0.9,
                     "when": "2026-07-20T10:00", "links": [], "materials": [], "summary": "interview"}),
     ])
     E.run(v, TrackConfig(), TwoMsgClient(), be, seen=set(), deadletter=_dl(),
@@ -108,7 +108,7 @@ def test_same_lead_two_messages_no_regression():
 
 def test_proposal_carries_real_confirm_command():
     v, _ = _vault("phone_screen")
-    be = FakeBackend(json.dumps({"lead": "Tidemark", "type": "rejection", "confidence": 0.6,
+    be = FakeBackend(json.dumps({"lead": "Example Tidal", "type": "rejection", "confidence": 0.6,
                                  "when": None, "links": [], "materials": [], "summary": "soft"}))
     rep = E.run(v, TrackConfig(), OneMsgRejectClient(), be, seen=set(), deadletter=_dl(),
                 now_iso="2026-07-10T12:00:00+00:00")
@@ -125,7 +125,7 @@ def test_gmail_query_uses_since_iso():
 
 def test_update_proposal_has_no_broken_command():
     v, _ = _vault("applied")
-    be = FakeBackend(json.dumps({"lead": "Tidemark", "type": "update", "confidence": 0.8,
+    be = FakeBackend(json.dumps({"lead": "Example Tidal", "type": "update", "confidence": 0.8,
                                  "when": None, "links": [], "materials": [], "summary": "under review"}))
     rep = E.run(v, TrackConfig(), OneMsgClient(), be, seen=set(), deadletter=_dl(),
                 now_iso="2026-07-10T12:00:00+00:00")
@@ -136,7 +136,7 @@ def test_update_proposal_has_no_broken_command():
 
 def test_offer_stage_lead_is_in_flight():
     v, path = _vault("offer")
-    be = FakeBackend(json.dumps({"lead": "Tidemark", "type": "rejection", "confidence": 0.95,
+    be = FakeBackend(json.dumps({"lead": "Example Tidal", "type": "rejection", "confidence": 0.95,
                                  "when": None, "links": [], "materials": [], "summary": "withdrawn"}))
     E.run(v, TrackConfig(), OneMsgClient(), be, seen=set(), deadletter=_dl(),
           now_iso="2026-07-10T12:00:00+00:00")
@@ -156,7 +156,7 @@ def test_unmatched_proposal_has_no_fake_lead_command():
 
 def test_dry_run_previews_without_writing():
     v, path = _vault("applied")
-    be = FakeBackend(json.dumps({"lead": "Tidemark", "type": "interview", "confidence": 0.9,
+    be = FakeBackend(json.dumps({"lead": "Example Tidal", "type": "interview", "confidence": 0.9,
                                  "when": "2026-07-20T10:00", "links": [], "materials": [], "summary": "iv"}))
     rep = E.run(v, TrackConfig(), OneMsgClient(), be, seen=set(), deadletter=_dl(),
                 now_iso="2026-07-10T12:00:00+00:00", dry_run=True)
@@ -167,16 +167,16 @@ def test_dry_run_previews_without_writing():
 class TwoSoftRejectClient(FakeGoogleClient):
     def __init__(self):
         super().__init__(messages={
-            "mA": {"headers": {"from": "jobs@tidemark.com", "subject": "Update"},
+            "mA": {"headers": {"from": "jobs@example-tidal.invalid", "subject": "Update"},
                    "body_text": "an update on your application", "thread_id": "t", "attachments": []},
-            "mB": {"headers": {"from": "jobs@tidemark.com", "subject": "Update"},
+            "mB": {"headers": {"from": "jobs@example-tidal.invalid", "subject": "Update"},
                    "body_text": "an update on your application", "thread_id": "t", "attachments": []},
         }, events=[])
 
 
 def _soft_reject_backend():
     # low confidence -> reconcile returns `proposed`, not an auto-advance
-    return FakeBackend(json.dumps({"lead": "Tidemark", "type": "rejection", "confidence": 0.6,
+    return FakeBackend(json.dumps({"lead": "Example Tidal", "type": "rejection", "confidence": 0.6,
                                    "when": None, "links": [], "materials": [], "summary": "soft"}))
 
 
@@ -262,7 +262,7 @@ def test_bump_failure_aborts_run_before_any_save():
               seen=set(), deadletter=boom, now_iso="2026-07-10T12:00:00+00:00")
 
 
-def _seed(dl, mid="m1", lead="Tidemark - Analyst", candidates=""):
+def _seed(dl, mid="m1", lead="Example Tidal - Analyst", candidates=""):
     dl.record(Entry(message_id=mid, lead=lead, candidates=candidates, ev_type="rejection",
                     proposal="soft", hint="h", first_seen="2026-07-10", times_surfaced=1))
 
@@ -270,7 +270,7 @@ def _seed(dl, mid="m1", lead="Tidemark - Analyst", candidates=""):
 def test_confirm_clears_dead_letter_on_success():
     v, _ = _vault("phone_screen")
     dl = _dl(); _seed(dl)
-    out = E.confirm(v, TrackConfig(), "Tidemark - Analyst", "interview", deadletter=dl)
+    out = E.confirm(v, TrackConfig(), "Example Tidal - Analyst", "interview", deadletter=dl)
     assert out["ok"] is True
     assert dl.open_entries() == []                 # the lead's proposals are resolved
 
@@ -337,7 +337,7 @@ def test_confirm_refuses_an_unclearable_store_before_writing_status(kind):
     before = pathlib.Path(path).read_bytes()
     try:
         with pytest.raises((OSError, sqlite3.DatabaseError)):
-            E.confirm(v, TrackConfig(), "Tidemark - Analyst", "interview", deadletter=dl)
+            E.confirm(v, TrackConfig(), "Example Tidal - Analyst", "interview", deadletter=dl)
         assert pathlib.Path(path).read_bytes() == before, (
             f"confirm wrote status with an unclearable ({kind}) store, stranding the row")
     finally:
@@ -389,14 +389,14 @@ def test_the_reachability_probe_issues_a_write_not_a_read(monkeypatch):
 def test_confirm_dry_run_does_not_clear():
     v, _ = _vault("phone_screen")
     dl = _dl(); _seed(dl)
-    E.confirm(v, TrackConfig(), "Tidemark - Analyst", "interview", deadletter=dl, dry_run=True)
+    E.confirm(v, TrackConfig(), "Example Tidal - Analyst", "interview", deadletter=dl, dry_run=True)
     assert len(dl.open_entries()) == 1             # a preview clears nothing
 
 
 def test_confirm_refused_advance_does_not_clear():
     v, _ = _vault("interview")
     dl = _dl(); _seed(dl)
-    out = E.confirm(v, TrackConfig(), "Tidemark - Analyst", "phone_screen", deadletter=dl)  # backward
+    out = E.confirm(v, TrackConfig(), "Example Tidal - Analyst", "phone_screen", deadletter=dl)  # backward
     assert out["ok"] is False
     assert len(dl.open_entries()) == 1             # a refused confirm must NOT delete the row
 
@@ -413,7 +413,7 @@ def test_confirm_returns_conflict_on_vault_conflict(monkeypatch):
         raise VaultConflict("x")
     monkeypatch.setattr(v, "update_fields", boom)
 
-    out = E.confirm(v, TrackConfig(), "Tidemark - Analyst", "offer", deadletter=dl)
+    out = E.confirm(v, TrackConfig(), "Example Tidal - Analyst", "offer", deadletter=dl)
     assert out == {"ok": False, "reason": "conflict"}
     assert len(dl.open_entries()) == 1             # NOT cleared on a conflicted write
 
@@ -421,16 +421,16 @@ def test_confirm_returns_conflict_on_vault_conflict(monkeypatch):
 def test_confirm_lead_does_not_clear_ambiguous_candidates_entry():
     v, _ = _vault("phone_screen")
     dl = _dl()
-    _seed(dl, mid="mAmb", lead="", candidates="Tidemark - Analyst,Other - Role")  # ambiguous: lead=""
-    E.confirm(v, TrackConfig(), "Tidemark - Analyst", "interview", deadletter=dl)
+    _seed(dl, mid="mAmb", lead="", candidates="Example Tidal - Analyst,Other - Role")  # ambiguous: lead=""
+    E.confirm(v, TrackConfig(), "Example Tidal - Analyst", "interview", deadletter=dl)
     assert len(dl.open_entries()) == 1             # exact-match clear misses it; dismiss --id clears it
 
 
 def test_auto_advance_clears_dead_letter_for_that_lead():
     v, _ = _vault("applied")
     dl = _dl()
-    _seed(dl, mid="m_old", lead="Tidemark - Analyst")   # a pending soft-proposal from an earlier run
-    be = FakeBackend(json.dumps({"lead": "Tidemark", "type": "rejection", "confidence": 0.95,
+    _seed(dl, mid="m_old", lead="Example Tidal - Analyst")   # a pending soft-proposal from an earlier run
+    be = FakeBackend(json.dumps({"lead": "Example Tidal", "type": "rejection", "confidence": 0.95,
                                  "when": None, "links": [], "materials": [], "summary": "rejected"}))
     rep = E.run(v, TrackConfig(), OneMsgClient(), be, seen=set(), deadletter=dl,
                 now_iso="2026-07-10T12:00:00+00:00")
@@ -441,8 +441,8 @@ def test_auto_advance_clears_dead_letter_for_that_lead():
 def test_auto_advance_dry_run_does_not_clear():
     v, _ = _vault("applied")
     dl = _dl()
-    _seed(dl, mid="m_old", lead="Tidemark - Analyst")
-    be = FakeBackend(json.dumps({"lead": "Tidemark", "type": "rejection", "confidence": 0.95,
+    _seed(dl, mid="m_old", lead="Example Tidal - Analyst")
+    be = FakeBackend(json.dumps({"lead": "Example Tidal", "type": "rejection", "confidence": 0.95,
                                  "when": None, "links": [], "materials": [], "summary": "rejected"}))
     E.run(v, TrackConfig(), OneMsgClient(), be, seen=set(), deadletter=dl,
           now_iso="2026-07-10T12:00:00+00:00", dry_run=True)
@@ -461,9 +461,9 @@ def test_clear_failure_holds_watermark():
     # app.py (per #49) holds the lastrun watermark rather than losing the message.
     v, _ = _vault("applied")
     dl = BoomClearDL(_dl().path)
-    _seed(dl, mid="m_old", lead="Tidemark - Analyst")  # record() is inherited and still works;
+    _seed(dl, mid="m_old", lead="Example Tidal - Analyst")  # record() is inherited and still works;
                                                         # only clear_lead is overridden to fail
-    be = FakeBackend(json.dumps({"lead": "Tidemark", "type": "rejection", "confidence": 0.95,
+    be = FakeBackend(json.dumps({"lead": "Example Tidal", "type": "rejection", "confidence": 0.95,
                                  "when": None, "links": [], "materials": [], "summary": "rejected"}))
     seen = set()
     rep = E.run(v, TrackConfig(), OneMsgClient(), be, seen=seen, deadletter=dl,
@@ -679,7 +679,7 @@ def test_receipt_proposal_carries_real_confirm_command():
 class InFlightReceiptClient(FakeGoogleClient):
     def __init__(self):
         super().__init__(messages={
-            # Sender domain matches nothing (Tidemark carries no `url` at all in `_vault`),
+            # Sender domain matches nothing (Example Tidal carries no `url` at all in `_vault`),
             # so match_receipt (shortlist-only) can never find this lead -- it is already
             # `applied`, past shortlist. The LLM's own guess is the only signal available.
             # The domain itself is arbitrary for that purpose -- example.com (RFC 2606
@@ -696,16 +696,16 @@ def test_receipt_about_inflight_lead_surfaces_without_writing():
     # stuck at `applied` forever, zero signal anywhere). The LLM's own name resolution
     # (llm_lead_slug) must surface exactly one dead-letter row naming the lead, WITHOUT
     # writing to the note at all -- no status change, no evidence section.
-    v, path = _vault("applied")  # Tidemark, url-less, already in-flight
+    v, path = _vault("applied")  # Example Tidal, url-less, already in-flight
     before = pathlib.Path(path).read_text()
-    be = FakeBackend(json.dumps({"lead": "Tidemark", "type": "receipt", "confidence": 0.9,
+    be = FakeBackend(json.dumps({"lead": "Example Tidal", "type": "receipt", "confidence": 0.9,
                                  "when": None, "links": [], "materials": [], "summary": "received"}))
     dl = _dl()
     rep = E.run(v, TrackConfig(), InFlightReceiptClient(), be, seen=set(), deadletter=dl,
                 now_iso="2026-07-10T12:00:00+00:00")
     entries = dl.open_entries()
     assert len(entries) == 1
-    assert entries[0].lead == "Tidemark - Analyst"          # named, not blank/ambiguous
+    assert entries[0].lead == "Example Tidal - Analyst"          # named, not blank/ambiguous
     assert "--to applied" not in entries[0].hint             # can_apply is False -- no fake command
     assert rep.auto == 0 and rep.proposed == 1
     assert pathlib.Path(path).read_text() == before          # byte-unchanged: no write at all
@@ -718,7 +718,7 @@ def test_receipt_deadletter_fallback_records_nothing_in_dry_run():
     # persisted, and the note must stay byte-unchanged.
     v, path = _vault("applied")
     before = pathlib.Path(path).read_text()
-    be = FakeBackend(json.dumps({"lead": "Tidemark", "type": "receipt", "confidence": 0.9,
+    be = FakeBackend(json.dumps({"lead": "Example Tidal", "type": "receipt", "confidence": 0.9,
                                  "when": None, "links": [], "materials": [], "summary": "received"}))
     dl = _dl()
     rep = E.run(v, TrackConfig(), InFlightReceiptClient(), be, seen=set(), deadletter=dl,
@@ -755,15 +755,15 @@ def test_receipt_matching_nothing_stays_quiet():
 
 def _vault_two_inflight_same_company():
     # Two DIFFERENT leads sharing a company name, both already in-flight (past shortlist) --
-    # the LLM's own "Tidemark" guess cannot resolve uniquely between them (_resolve_lead's
+    # the LLM's own "Example Tidal" guess cannot resolve uniquely between them (_resolve_lead's
     # existing ambiguous branch), mirroring test_ambiguous_match_sets_candidates_and_no_slug's
     # vault shape but for the fallback fields (#10 fix-round-2).
     root = tempfile.mkdtemp()
     leads = pathlib.Path(root, "Job Applications", "Job Leads"); leads.mkdir(parents=True)
-    p1 = leads / "Tidemark - Analyst.md"
-    p2 = leads / "Tidemark - Associate.md"
-    p1.write_text('---\ncompany: "Tidemark"\nrole: "Analyst"\nstatus: applied\n---\n\nBODY\n')
-    p2.write_text('---\ncompany: "Tidemark"\nrole: "Associate"\nstatus: applied\n---\n\nBODY\n')
+    p1 = leads / "Example Tidal - Analyst.md"
+    p2 = leads / "Example Tidal - Associate.md"
+    p1.write_text('---\ncompany: "Example Tidal"\nrole: "Analyst"\nstatus: applied\n---\n\nBODY\n')
+    p2.write_text('---\ncompany: "Example Tidal"\nrole: "Associate"\nstatus: applied\n---\n\nBODY\n')
     return Vault(root), str(p1), str(p2)
 
 
@@ -774,14 +774,14 @@ def test_receipt_ambiguous_inflight_fallback_surfaces_both_candidates():
     # note touched at all.
     v, path1, path2 = _vault_two_inflight_same_company()
     before1, before2 = pathlib.Path(path1).read_text(), pathlib.Path(path2).read_text()
-    be = FakeBackend(json.dumps({"lead": "Tidemark", "type": "receipt", "confidence": 0.9,
+    be = FakeBackend(json.dumps({"lead": "Example Tidal", "type": "receipt", "confidence": 0.9,
                                  "when": None, "links": [], "materials": [], "summary": "received"}))
     dl = _dl()
     rep = E.run(v, TrackConfig(), InFlightReceiptClient(), be, seen=set(), deadletter=dl,
                 now_iso="2026-07-10T12:00:00+00:00")
     entries = dl.open_entries()
     assert len(entries) == 1
-    assert set(entries[0].candidates.split(",")) == {"Tidemark - Analyst", "Tidemark - Associate"}
+    assert set(entries[0].candidates.split(",")) == {"Example Tidal - Analyst", "Example Tidal - Associate"}
     assert "--to applied" not in entries[0].hint   # both candidates are in-flight -- can_apply False
     assert rep.auto == 0 and rep.proposed == 1
     assert pathlib.Path(path1).read_text() == before1   # neither note written
