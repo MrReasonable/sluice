@@ -101,6 +101,13 @@ def terminal_transcript():
     bad.ask(next(q for q in questions if q.key == "lead_ttl_days"))
     TtyAsker(stdin=io.StringIO("nonsense\nhttps://example.invalid/j\n"), stdout=err).ask_url("url?")
     TtyAsker(stdin=io.StringIO("no-such-board\n\n"), stdout=err).ask_ids("boards?", ["example_a"])
+    # parse_int's OTHER two arms (the #75 yes/no word, and the negative) and parse_choice's message
+    # are each reached only by a specific bad answer, so each needs its own line.
+    for bad, key in (("yes", "lead_ttl_days"), ("-1", "lead_ttl_days")):
+        TtyAsker(stdin=io.StringIO(f"{bad}\n90\n"), stdout=err).ask(
+            next(q for q in questions if q.key == key))
+    TtyAsker(stdin=io.StringIO("not-a-backend\nanthropic\n"), stdout=err).ask(
+        next(q for q in questions if q.key == "primary_backend"))
     try:
         NoInputAsker(presets={}).ask(next(q for q in questions if q.key == "vault_dir"))
     except MissingAnswer as exc:                       # printed on every --no-input run w/o --vault
@@ -110,9 +117,7 @@ def terminal_transcript():
             ("terminal:asker error paths", err.getvalue())]
 
 
-def cli_help_text():
-    """`sluice init --help` -- shipped prose the functional sweep cannot see, because it captures a
-    RUN's output and never the parser's."""
+def _render_help(argv):
     import contextlib
     import io
 
@@ -120,8 +125,67 @@ def cli_help_text():
 
     buf = io.StringIO()
     with contextlib.suppress(SystemExit), contextlib.redirect_stdout(buf):
-        _build_parser().parse_args(["init", "--help"])
-    return [("cli:init --help", buf.getvalue())]
+        _build_parser().parse_args(argv)
+    return buf.getvalue()
+
+
+def cli_help_text():
+    """Argparse help -- shipped prose the functional sweep cannot see, because that captures a
+    RUN's output and never the parser's.
+
+    BOTH parsers. `sluice init --help` renders the CHILD, and a string passed to
+    `add_parser("init", help=...)` appears only in the PARENT's subcommand listing -- so an earlier
+    version of this helper could not see the single string it was written for. Measured:
+    "scaffold a config" is absent from the child and present in the parent.
+    """
+    return [("cli:sluice --help (the subcommand listing)", _render_help(["--help"])),
+            ("cli:sluice init --help", _render_help(["init", "--help"]))]
+
+
+def cli_refusals(tmp_path):
+    """Every message `cmd_init` writes to STDERR.
+
+    These are prose a user reads at the moment they are most confused, and they reach neither the
+    rendered artefacts, the asker transcript, nor the functional sweep -- which captures a
+    SUCCESSFUL run. Driven for real rather than enumerated, so the sweep cannot drift from the
+    branches it means to cover.
+    """
+    import contextlib
+    import io
+    import os
+
+    from sluice.cli import main
+
+    out = io.StringIO()
+
+    def run(argv, **env):
+        """Run with an EXPLICIT environment. Each refusal needs its own: the ambient VAULT_DIR that
+        `tests/conftest.py` sets would send every case down the --vault/$VAULT_DIR disagreement
+        branch, so two of the three messages would never be printed and this sweep would silently
+        cover one arm. Measured -- the transcript carried the same refusal twice."""
+        saved = {k: os.environ.get(k) for k in ("VAULT_DIR", "SLUICE_CONFIG")}
+        os.environ.pop("VAULT_DIR", None)
+        os.environ.update(env)
+        try:
+            with contextlib.suppress(SystemExit), contextlib.redirect_stderr(out):
+                main(argv)
+        finally:
+            for k, v in saved.items():
+                os.environ.pop(k, None)
+                if v is not None:
+                    os.environ[k] = v
+
+    vault = os.path.join(tmp_path, "notes")
+    afile = os.path.join(tmp_path, "not-a-dir")
+    with open(afile, "w", encoding="utf-8") as fh:
+        fh.write("x")
+
+    run(["init", "--vault", vault, "--no-input"],
+        VAULT_DIR=os.path.join(tmp_path, "elsewhere"))   # --vault vs $VAULT_DIR
+    run(["init", "--no-input"])                          # no vault anywhere
+    run(["init", "--vault", afile, "--no-input"])        # the vault path is a file
+
+    return [("cli:cmd_init refusals (stderr)", out.getvalue())]
 
 
 def shipped_prose():
