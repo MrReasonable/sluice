@@ -335,6 +335,20 @@ def test_write_document_round_trips(store_name, tmp_path, monkeypatch):
     assert store.read_baseline() == "ROUND TRIP", "write_document returned a handle but wrote nothing"
 
 
+def test_write_document_only_if_absent_creates_then_abstains(store_name, tmp_path, monkeypatch):
+    """On the CONTRACT, not on Vault. protocols.py's own docstring says never-clobber lives here
+    precisely because 'a second store would ship without them', and #1 (the store seam) is the
+    next backlog item -- so the second store is not hypothetical. `require_status`, the precedent
+    this parameter follows, got three conformance rows.
+
+    Asserted through read_criteria(), never a path: a store need not have one."""
+    from sluice.core.protocols import CRITERIA_RELPATH
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    assert store.write_document(CRITERIA_RELPATH, "first", only_if_absent=True)
+    assert store.write_document(CRITERIA_RELPATH, "second", only_if_absent=True) == ""
+    assert store.read_criteria() == "first"
+
+
 def test_write_document_cannot_escape_the_store(store_name, tmp_path, monkeypatch):
     """The ONE wholesale-write primitive on a never-clobber contract must not be able to
     scribble outside the store -- including over the baseline CV, which is the fabrication
