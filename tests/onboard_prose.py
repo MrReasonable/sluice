@@ -61,9 +61,8 @@ def rendered_artefacts():
     """
     from sluice.onboard.plan import build_plan
 
-    common = dict(config_dest="/example/config.yaml", profile_dest="/example/profile.md")
-    walked = build_plan({}, sources=_SOURCES_FIXTURE, **common)
-    default = build_plan({}, **common)
+    walked = build_plan({}, sources=_SOURCES_FIXTURE)
+    default = build_plan({})
     return [("rendered:config_text(sources walked)", walked.config_text),
             ("rendered:config_text(sources skipped -- the DEFAULT path)", default.config_text),
             ("rendered:profile_text", walked.profile_text)]

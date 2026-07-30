@@ -42,9 +42,14 @@ _HEADER = """\
 
 @dataclass(frozen=True)
 class InitPlan:
-    config_dest: str
+    """The two artefact TEXTS, plus what the report should say about them.
+
+    No destinations. They were carried here and read by nobody -- measured, two calls with wildly
+    different `config_dest`/`profile_dest` produced byte-identical text and notes. `cmd_init` knows
+    where it is writing; it does not need this object to tell it. Dropping them also keeps a
+    filesystem path out of a module whose first line claims no I/O.
+    """
     config_text: str
-    profile_dest: str
     profile_text: str
     notes: tuple = ()
 
@@ -257,16 +262,13 @@ def _notes(answers):
     return tuple(out)
 
 
-def build_plan(answers, *, config_dest, profile_dest,
-               profile_answers=None, sources=None) -> InitPlan:
+def build_plan(answers, *, profile_answers=None, sources=None) -> InitPlan:
     """The two artefacts `sluice init` writes, as text.
 
     `answers` holds only the questions the user actually answered -- a skipped question is ABSENT,
     never present-and-empty, so a blank cannot be mistaken downstream for a deliberate empty list.
     """
     sources = sources or {}
-    return InitPlan(config_dest=config_dest,
-                    config_text=_render_config(answers, sources),
-                    profile_dest=profile_dest,
+    return InitPlan(config_text=_render_config(answers, sources),
                     profile_text=_render_profile(profile_answers),
                     notes=_notes(answers))

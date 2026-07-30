@@ -19,8 +19,7 @@ LOADERS = (load_config, load_triage_config, load_cv_config, load_track_config)
 
 
 def _plan(tmp_path, answers=None, **kw):
-    return build_plan(answers or {}, config_dest=str(tmp_path / "config.yaml"),
-                      profile_dest=str(tmp_path / "Profile.md"), **kw)
+    return build_plan(answers or {}, **kw)
 
 
 def _written(tmp_path, answers=None, **kw):
@@ -94,6 +93,26 @@ def test_uncommenting_any_single_key_yields_a_config_that_still_LOADS(tmp_path):
             raise AssertionError(
                 f"uncommenting line {i + 1} ({lines[i].strip()!r}) alongside a root key broke the "
                 f"file: {exc}") from None
+
+
+def test_the_architecture_doc_describes_the_header_behaviour_that_ships(tmp_path):
+    """`docs/ARCHITECTURE.md` is the architecture of record, and this exact claim has now gone
+    stale TWICE -- the second time because a `.replace()` with a mismatched anchor silently no-op'd
+    and the fix was reported as landed without being checked.
+
+    So the doc is asserted against the RENDERED OUTPUT rather than trusted. A reader following a
+    stale architecture doc re-introduces a measured bug."""
+    doc = (pathlib.Path(__file__).resolve().parent.parent / "docs/ARCHITECTURE.md").read_text(
+        encoding="utf-8")
+    onboard = doc.split("## `onboard/`")[1].split("\n## ")[0]
+    assert onboard.strip(), "the onboard/ section vanished"          # SCOPE
+
+    active = [ln for ln in _plan(tmp_path).config_text.splitlines()
+              if re.match(r"^[a-z_]+:\s*$", ln)]
+    assert active, "no active block header in the rendered config"   # SCOPE
+    assert "HEADER stays ACTIVE" in onboard, \
+        "the doc no longer describes the active block headers the renderer emits"
+    assert "HEADER is commented" not in onboard
 
 
 def test_prose_mentioning_a_key_does_NOT_satisfy_the_scope_matcher():

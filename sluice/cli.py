@@ -536,9 +536,14 @@ def cmd_track_dismiss(args, config) -> int:
 def cmd_init(args, config, *, asker=None) -> int:
     """Scaffold a config and a Judging Profile (#8).
 
-    Preflight resolves BOTH destinations before a single question is asked: a wizard that
-    interviews someone for five minutes and then says "config already exists" wasted their time to
-    learn something it knew at the start.
+    The CONFIG destination is resolved before any question is asked, and when it already exists the
+    questions that write only to it are skipped -- a wizard that interviews someone for five
+    minutes and then says "config already exists" wasted their time to learn something it knew at
+    the start. It used to do exactly that, and then report the discarded answers as live gates.
+
+    The PROFILE destination cannot be preflighted the same way: it lives inside the vault, so it is
+    not known until the vault question is answered. The profile interview is gated on it as soon as
+    it IS known, which is the earliest honest point.
     """
     import dataclasses
 
@@ -583,8 +588,24 @@ def cmd_init(args, config, *, asker=None) -> int:
     # answered, and asking again invites a different answer to the same question.
     questions = tuple(q for q in catalogue(default_vault=DEFAULT_VAULT) if q.key not in presets)
 
+    # When the config is already there, ask ONLY what the profile still needs. Every other question
+    # writes exclusively to the config, so asking them was a 15-question interview whose answers
+    # were then discarded -- and the report went on to describe them as live gates. Measured: a
+    # second run printed "reject titles matching: ..." for a file it had just declined to touch.
+    #
+    # This is also what the docstring above has always CLAIMED: `config_exists` was computed before
+    # the interview and not consulted until after it, so the preflight prevented nothing.
+    if config_exists:
+        questions = tuple(q for q in questions if q.key == "vault_dir")
+        print(f"  exists  {config_dest}  (left alone -- skipping the config questions)")
+
     try:
-        answers = dict(presets)
+        # Presets go through the QUESTION'S OWN parser, exactly as a typed answer does. `--vault`
+        # previously bypassed `parse_path` entirely, so the two routes in could normalize
+        # differently -- the same class of split that let the config and the store name different
+        # vaults.
+        by_key = {q.key: q for q in catalogue(default_vault=DEFAULT_VAULT)}
+        answers = {k: by_key[k].parse(v) if k in by_key else v for k, v in presets.items()}
         answers.update(collect(asker, questions))
     except MissingAnswer as exc:
         print(f"sluice init: {exc}", file=sys.stderr)
@@ -626,8 +647,7 @@ def cmd_init(args, config, *, asker=None) -> int:
         if not profile_exists:
             profile_answers = collect_profile(asker)
 
-    plan = build_plan(answers, config_dest=config_dest, profile_dest=profile_dest,
-                      profile_answers=profile_answers, sources=sources)
+    plan = build_plan(answers, profile_answers=profile_answers, sources=sources)
 
     written, skipped, failed = [], [], []
 
@@ -697,7 +717,10 @@ def cmd_init(args, config, *, asker=None) -> int:
     else:
         print(f"\nno vault directory at {vault_dir} -- see the FAILED line above", file=sys.stderr)
 
-    if plan.notes:
+    # ONLY when the config was actually written. `plan.notes` is derived from the ANSWERS, not from
+    # what landed, so printing it after an abstain told the user their gates were live when the file
+    # on disk had never heard of them.
+    if plan.notes and config_dest in written:
         print("\nYour config will:")
         for note in plan.notes:
             print(f"  {note}")
@@ -906,7 +929,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = _build_parser().parse_args(argv)
-    config = load_config()
+    try:
+        config = load_config()
+    except ValueError as exc:
+        # A retired or malformed config key is a USAGE error, not a crash. It reached the user as a
+        # raw traceback, and the command it blocked hardest was `sluice init` -- the one that would
+        # have written them a correct config -- plus `doctor`, which exists to diagnose exactly this.
+        print(f"sluice: {exc}", file=sys.stderr)
+        return 2
     return args.func(args, config)
 
 

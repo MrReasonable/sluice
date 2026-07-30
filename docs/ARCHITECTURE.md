@@ -212,9 +212,11 @@ Split pure-from-impure, which is the whole reason its guarantees are unit-testab
 - **`plan.py`** (pure): `build_plan(answers, ...) -> InitPlan`, producing the two
   artefact texts plus the notes the report prints. The config is RENDERED FROM THE
   CATALOGUE, which makes "every key the wizard can write appears in the file it
-  writes" true by construction. An unanswered key is emitted COMMENTED, and an
-  inactive block's HEADER is commented too (only the header — every line beneath
-  is already a comment).
+  writes" true by construction. An unanswered key is emitted COMMENTED; the block
+  HEADER stays ACTIVE, because a commented header made the file's own
+  `# <- uncomment and set YOUR OWN` marker produce an unparseable config for every
+  nested key (16 of 19), and all four loaders have always read a null block as
+  empty.
 - **`ask.py`** (impure): the only half that touches a terminal. `TtyAsker` prompts
   and re-asks on a bad answer; `NoInputAsker` answers only from flags and REFUSES
   rather than reading stdin, because a wizard blocking on a pipe is a hung CI job

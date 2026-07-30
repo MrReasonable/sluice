@@ -18,8 +18,7 @@ SRC = {"example_board_a": {"enabled": True,
 
 
 def _text(sources=None):
-    return build_plan({}, config_dest="/example/c.yaml", profile_dest="/example/p.md",
-                      sources=sources).config_text
+    return build_plan({}, sources=sources).config_text
 
 
 def test_no_sources_emits_only_the_commented_example(tmp_path):
