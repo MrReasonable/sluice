@@ -17,7 +17,9 @@ Judging Profile, and are never committed here."""
 import os
 import re
 
-_CRITERIA_RELPATH = os.path.join("Job Applications", "Judging Profile.md")
+from sluice.core.protocols import CRITERIA_RELPATH
+
+_CRITERIA_RELPATH = CRITERIA_RELPATH
 
 _SCAFFOLD_INTRO = """You are the batched judgment stage of a job-lead triage pipeline.
 
