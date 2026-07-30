@@ -80,6 +80,13 @@ def edit_in_editor(prompt, *, editor=None, run=None):
 class TtyAsker:
     """Prompts on a terminal, re-asking on a bad answer."""
 
+    # Whether the caller should run the parts of the wizard that only make sense with a human
+    # present. It lives on the ASKER because `cmd_init` used to derive it from `sys.stdin.isatty()`
+    # independently, which meant an INJECTED asker could never reach the interactive half: under
+    # pytest isatty() is always False, so the board walk, the profile interview and the
+    # `.init-scaffold.md` rescue -- the one data-loss guard in the command -- were unreachable.
+    interactive = True
+
     def __init__(self, *, stdin=None, stdout=None, editor=None, run=None):
         self.stdin = stdin
         self.stdout = stdout
@@ -135,6 +142,9 @@ class TtyAsker:
         self._say("")
         self._say(prompt)
         self._say(f"  {', '.join(sorted(allowed))}")
+        self._say("  Every registered board stays enabled either way -- this only replaces a "
+                  "board's built-in example search with your own.")
+        self._say("  To stop a board running at all: sluice ingest disable ID")
         self._say("  [blank = skip, and every source runs its own example search]")
         while True:
             raw = self._read()
@@ -167,6 +177,8 @@ class TtyAsker:
 
 class NoInputAsker:
     """Answers come only from flags. Nothing is prompted for and nothing is inferred."""
+
+    interactive = False
 
     def __init__(self, *, presets=None):
         self.presets = presets or {}
@@ -225,7 +237,16 @@ def collect_sources(asker, source_ids) -> dict:
     An empty selection returns `{}`, which emits the commented example block and lets every source
     run its own neutral example search: the abstain default, unchanged.
     """
-    picked = asker.ask_ids("Which boards do you want to scrape?", source_ids)
+    # The prompt describes what this actually COLLECTS -- searches -- not what it sounded like it
+    # collected. It read "Which boards do you want to scrape?", but the answer never reached
+    # enablement: `_render_sources` emits only the picked ids and an unlisted source defaults to
+    # enabled, so picking one of 22 still ran all 22. Measured.
+    #
+    # The fix is the wording, NOT emitting `enabled: false` for the rest. That would write 21
+    # preferences the user never stated -- the empty-config-abstains invariant inverted -- and a
+    # board registered later would silently fall outside the list. `sluice ingest disable ID` is
+    # the explicit route, and the bracket hint says so.
+    picked = asker.ask_ids("Which boards do you want to add your own searches to?", source_ids)
     out = {}
     for sid in picked:
         searches = []

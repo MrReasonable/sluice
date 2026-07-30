@@ -142,9 +142,20 @@ def catalogue(*, default_vault: str = "") -> tuple:
                  ("cv.name",), "You"),
         Question("cv_contact", "Contact block for the CV (email, phone, links)?", parse_text,
                  ("cv.contact",), "You", hint="One line; edit the config for a multi-line block."),
+        # The hint states the mechanism the code ACTUALLY implements. It previously said this
+        # checked that a CV "only cites places you worked" -- a soundness check -- while
+        # `cv/validate.py` runs the opposite: a case-sensitive COMPLETENESS check that every name
+        # listed here appears VERBATIM in each tailored CV. Measured, `example alpha ltd` against a
+        # CV saying `Example Alpha Ltd` yields MISSING EMPLOYER, which the hard gate blocks and the
+        # engine retries once then skips -- so typing your employers in lower case here turns the
+        # whole cv sub-app off, silently, forever. A wizard hint that inverts its key's meaning is
+        # worse than no hint.
         Question("cv_employers", "Places you have worked, comma-separated?", parse_csv,
                  ("cv.employers",), "You",
-                 hint="Used to check a composed CV only cites places you worked."),
+                 hint="Every name here must appear VERBATIM in each tailored CV or the fabrication "
+                      "gate blocks it. Match your baseline CV's spelling and case exactly, or "
+                      "leave blank.",
+                 consequence="require every tailored CV to name, verbatim: {value}"),
 
         Question("accept_titles", "Which job titles do you want, comma-separated?", parse_csv,
                  ("triage.accept_titles",), "Want",
