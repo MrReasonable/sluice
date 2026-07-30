@@ -19,7 +19,7 @@ LOADERS = (load_config, load_triage_config, load_cv_config, load_track_config)
 
 def _plan(tmp_path, answers=None, **kw):
     return build_plan(answers or {}, config_dest=str(tmp_path / "config.yaml"),
-                      profile_dest=str(tmp_path / "Profile.md"), default_vault=VAULT, **kw)
+                      profile_dest=str(tmp_path / "Profile.md"), **kw)
 
 
 def _written(tmp_path, answers=None, **kw):
