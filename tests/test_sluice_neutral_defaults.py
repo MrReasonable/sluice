@@ -49,12 +49,18 @@ def test_triage_defaults_carry_no_pii():
 
 def test_ingest_defaults_carry_no_preference(monkeypatch):
     # The root Config gates ingest, and its defaults were NOT guarded here at all:
-    # `locations` shipped as ["Remote"] (the same geo-preference-in-source shape as
-    # the 672ad2a bug), and relevance_keep/relevance_drop had no assertion anywhere
-    # in the suite -- a regression to relevance_keep = ["engineer"] would have shipped
-    # green. An unset gate must express no opinion.
+    # relevance_keep/relevance_drop had no assertion anywhere in the suite, so a
+    # regression to relevance_keep = ["engineer"] would have shipped green. An unset
+    # gate must express no opinion.
+    #
+    # The root `locations` key was guarded here too, for shipping as ["Remote"] -- the
+    # same geo-preference-in-source shape as the 672ad2a bug. It is now RETIRED (#8):
+    # nothing ever read it, so setting it raises rather than defaulting to anything.
+    # Geography is guarded on the live key instead, `triage.target_locations`, asserted
+    # in test_triage_defaults_carry_no_pii above; the refusal itself is pinned in
+    # tests/test_config_retired_locations.py. A retired key cannot carry a preference,
+    # which is strictly stronger than an empty default.
     c = Config()
-    assert c.locations == []
     assert c.relevance_keep == []
     assert c.relevance_drop == []
     assert c.location_noise_words == []   # #5 gate abstains: no noise subtracted by default
@@ -78,13 +84,14 @@ def test_ingest_defaults_carry_no_preference(monkeypatch):
     assert c.fetcher == "camofox"
 
     # ...and the same must hold through the real loader with no config file, which is
-    # what a fresh install actually gets. Both env overrides are cleared: without this
-    # the assertion would silently read the developer's own SLUICE_CONFIG and pass for
-    # the wrong reason.
+    # what a fresh install actually gets. SLUICE_CONFIG is cleared because otherwise the
+    # assertion would silently read the developer's own config and pass for the wrong
+    # reason. SLUICE_LOCATIONS is cleared for a different reason since #8 retired that
+    # key: an exported value now RAISES, so a developer with one set would see a red
+    # test here rather than a silent override.
     monkeypatch.delenv("SLUICE_CONFIG", raising=False)
     monkeypatch.delenv("SLUICE_LOCATIONS", raising=False)
     loaded = load_config(None)
-    assert loaded.locations == []
     assert loaded.relevance_keep == []
     assert loaded.relevance_drop == []
     assert loaded.location_noise_words == []
