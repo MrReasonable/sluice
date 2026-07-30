@@ -71,6 +71,10 @@ FORBIDDEN_EXACT = (
     "replit.md",
 )
 FORBIDDEN_PREFIXES = (
+    # `./vault` is the wizard's offered default and the quickstart's argument, so a
+    # contributor running `sluice init` in a checkout lands their real job hunt here.
+    "vault/",
+
     ".claude/",
     ".cursor/",
     "node_modules/",

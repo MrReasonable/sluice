@@ -42,7 +42,9 @@ def test_an_install_with_no_profile_at_all_abstains_identically(tmp_path):
 
 def test_a_filled_profile_reaches_the_judge_verbatim(run_init, tmp_path):
     vault = tmp_path / "notes"
-    run_init(["init", "--vault", str(vault), "--no-input"])
+    # rc asserted, not discarded: `init` writes the profile BEFORE it can fail on anything later,
+    # so a run that returned 2 still leaves a readable scaffold and every assertion below passes.
+    assert run_init(["init", "--vault", str(vault), "--no-input"])[0] == 0
     (vault / CRITERIA_RELPATH).write_text(FILLED, encoding="utf-8")
     prompt = build_system_prompt_from(Vault(str(vault)).read_criteria())
     assert "example win phrase" in prompt and "example anti phrase" in prompt
@@ -52,8 +54,11 @@ def test_a_filled_profile_reaches_the_judge_verbatim(run_init, tmp_path):
 def test_the_scaffold_smuggles_no_exemplar_into_the_judge_prompt(run_init, tmp_path):
     """Same shared vocabulary as the unit tier, imported not re-listed."""
     vault = tmp_path / "notes"
-    run_init(["init", "--vault", str(vault), "--no-input"])
+    assert run_init(["init", "--vault", str(vault), "--no-input"])[0] == 0
     criteria = Vault(str(vault)).read_criteria()
     assert criteria.strip()                                  # SCOPE
+    # ...and that the findall below ENUMERATED something: asserting the source text is
+    # non-empty leaves `for x in []` passing, which is the all([]) shape this repo keeps hitting.
+    assert "<!--" in criteria, "no HTML comment to sweep"
     for prompt in re.findall(r"<!--(.*?)-->", criteria, re.S):
         assert not expresses_a_preference(prompt)
