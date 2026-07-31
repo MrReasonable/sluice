@@ -48,6 +48,9 @@ _SUFFIX_MAX = 40    # max chars of the location suffix on candidate 2; identity-
 _CHAR_CAP = 120     # max chars of a note stem before the byte-clamp; identity-determining literal
 _CREATE_RACE_RETRIES = 3  # #16: bounded re-reconciles when a create loses the TOCTOU race
 _RMW_RACE_RETRIES = 3  # #16: bounded re-derivations before a modify-write refuses loudly
+_MERGED_SUBDIR = "_merged"          # where merge_cluster archives losers (#23)
+_ARCHIVED = "merged_away"           # #81: proven -- SAME verdict; the sink records it
+_ARCHIVED_UNPROVEN = "merged_away_unproven"   # #81: UNKNOWN verdict; NEVER recorded
 
 _log = get_logger("core.vault")
 
@@ -200,6 +203,70 @@ class Vault:
             return "merge"
         return "advance"
 
+    def _archived_match(self, names, lead: Lead, capped: bool) -> str | None:
+        """#81: has a human already merged this lead away? Returns the outcome string, or
+        None to let the walk create.
+
+        Probes EVERY name candidate, not just the one the walk stopped at: the walk returns
+        at its first ABSENT candidate, but the loser may have been archived under its
+        location-suffixed or title-digest name, which the walk would never reach.
+
+        The match is ANCHORED -- exact name, or exact name plus merge_cluster's numeric
+        suffix. NOT a bare prefix: same_opportunity compares only url and location, never
+        company or title, so in the active walk the exact FILENAME is what carries title
+        identity. A bare prefix removes that anchor and cannot get it back -- a merged-away
+        `X - Y II` would swallow a genuinely different `X - Y` at the same location, and
+        (on the SAME arm) record it in seen.db, so the real job could never be created.
+        `title_lost` is no backstop: it is gated on `capped`, dormant under 120 chars.
+
+        A sequential `<stem>.1.md`, `<stem>.2.md` walk is NOT equivalent to the listdir: it
+        stops at the first miss, and restoring a note out of `_merged/` -- the documented
+        recovery -- punches exactly that hole, hiding every archive behind it."""
+        merged_dir = os.path.join(self.leads_dir, _MERGED_SUBDIR)
+        try:
+            entries = sorted(os.listdir(merged_dir))
+        except FileNotFoundError:
+            # Never merged: the overwhelmingly common case, and NOT an error. Caught
+            # specifically rather than by a bare `except OSError`, which would also swallow
+            # an unreadable directory and silently disarm this guard on the vaults where it
+            # matters most.
+            return None
+        for name in names:
+            pattern = re.compile(re.escape(name) + r"(?:\.\d+)?\.md\Z")
+            for entry in entries:
+                if not pattern.match(entry):
+                    continue
+                path = os.path.join(merged_dir, entry)
+                # No `except OSError` here, deliberately. The nearest neighbour, read_leads,
+                # does `except OSError: continue` -- copying that shape would make an
+                # UNREADABLE archived loser stop suppressing, re-minting the lead as an
+                # ordinary `created: N`: resurrection by way of a permissions error. Letting
+                # it propagate makes the sink count the lead `skipped` and keep it out of
+                # seen.db for a retry next run.
+                inner, _ = _split_frontmatter(_read(path))
+                fm = _fm_dict(inner)
+                # Is this a NOTE at all? Keyed on company/role, never on url/location: a real
+                # note can carry url:"" (google leads) AND a blank location, which is exactly
+                # the UNKNOWN case this probe exists to suppress. Testing the same keys the
+                # verdict consumes would collapse "is this a note" into "what does it say"
+                # and skip a legitimate loser. merge_cluster's own O_EXCL reservation leaves
+                # a 0-byte file here if the process dies before os.replace, and its cleanup
+                # is best-effort, so this arm is reachable in the field.
+                if not fm.get("company") and not fm.get("role"):
+                    _log.warning("vault: ignoring unreadable archived note %s", path)
+                    continue
+                action = self._reconcile(fm, lead, capped)
+                if action == "update":
+                    _log.warning("vault: %r was merged away (archived at %s); not re-created",
+                                 lead.dedup_key, path)
+                    return _ARCHIVED
+                if action == "merge":
+                    # UNKNOWN -- suppressed on weak evidence, so it must NEVER enter seen.db.
+                    _log.warning("vault: %r may have been merged away (archived at %s, "
+                                 "evidence inconclusive); not re-created", lead.dedup_key, path)
+                    return _ARCHIVED_UNPROVEN
+        return None
+
     def _resolve_path(self, lead: Lead) -> tuple[str | None, str]:
         """Walk the nameable candidates and return (path, action), action one of
         "create"/"update"/"merge"/"refuse". Candidate 1 is the clean `Company - Title` name
@@ -231,6 +298,12 @@ class Vault:
         for name in names:
             path = os.path.join(self.leads_dir, f"{name}.md")
             if not os.path.exists(path):
+                # #81. Returns None, or one of the TWO outcome strings -- never a bool: the
+                # SAME/UNKNOWN distinction decides whether the lead enters seen.db, which is
+                # irreversible in one direction, so a bool cannot carry it.
+                archived = self._archived_match(names, lead, capped)
+                if archived:
+                    return None, archived
                 return path, "create"
             inner, _ = _split_frontmatter(_read(path))
             action = self._reconcile(_fm_dict(inner), lead, capped)
@@ -731,7 +804,7 @@ class Vault:
                 inner = _set_fm(inner, "last_seen", last_seen)   # monotonic: only advance
             return f"---\n{inner}\n---\n{body}"
         _cas_write(survivor_ref, transform)   # raises VaultConflict/MalformedNoteField BEFORE any archive
-        merged_dir = os.path.join(self.leads_dir, "_merged")
+        merged_dir = os.path.join(self.leads_dir, _MERGED_SUBDIR)
         os.makedirs(merged_dir, exist_ok=True)
         archived = []
         for ref in loser_refs:
