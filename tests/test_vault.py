@@ -337,12 +337,28 @@ def test_make_threads_noise_words_from_config(tmp_path, monkeypatch):
     assert v._noise == frozenset({"remote"})
 
 
-def _seed_note(tmp_path, name, location="", url=""):
+def _seed_note(tmp_path, name, location="", url="", role="Y"):
     from sluice.core.vault import _LEADS_SUBDIR
     d = tmp_path / _LEADS_SUBDIR
     d.mkdir(parents=True, exist_ok=True)
     (d / f"{name}.md").write_text(
-        f'---\ncompany: "X"\nrole: "Y"\nlocation: "{location}"\nurl: "{url}"\n---\n\nbody\n')
+        f'---\ncompany: "X"\nrole: "{role}"\nlocation: "{location}"\nurl: "{url}"\n---\n\nbody\n')
+
+
+def test_capped_gate_on_title_lost_is_load_bearing(tmp_path):
+    """`title_lost` is gated on `capped`; without that gate a SHORT-title lead whose stored
+    `role` was hand-corrected in Obsidian (#16's threat model) advances instead of merging,
+    so `last_seen` stops advancing and #9's staleness sweep can expire a live posting.
+    Deleting `capped and` from _reconcile leaves the rest of the suite green -- this is the
+    only test that reddens.
+
+    The note sits at `X - Y` but carries role "Z": url-less and location-less, so the
+    verdict is UNKNOWN, and the title is short, so `capped` is False and title_lost MUST
+    stay dormant. Under the mutant title_lost fires, the walk advances past the only
+    candidate, and upsert refuses instead of merging."""
+    v = Vault(str(tmp_path)); v._name_max_cache = 255
+    _seed_note(tmp_path, "X - Y", location="", url="", role="Z")
+    assert v.upsert(_lead(company="X", title="Y", location="", url="")) == "merged"
 
 
 def test_resolve_path_free_candidate1_creates(tmp_path):
