@@ -101,8 +101,12 @@ beside the existing `refuse` check.
 for name in names:
     path = os.path.join(self.leads_dir, f"{name}.md")
     if not os.path.exists(path):
-        if self._archived_match(names, lead, capped):   # #81
-            return None, "merged_away"
+        # #81. Returns None, or ONE OF THE TWO outcome strings -- never a bool: the
+        # SAME/UNKNOWN distinction decides whether the lead enters seen.db, and a bool
+        # cannot carry it. See Outcome plumbing.
+        archived = self._archived_match(names, lead, capped)
+        if archived:
+            return None, archived
         return path, "create"
     ...                                                  # update / merge / advance: untouched
 ```
@@ -113,8 +117,8 @@ hard-won reasoning, and #81 was filed separately BECAUSE editing it is delicate.
 
 **`upsert` needs its own branch, and WHERE it goes is load-bearing.** `_resolve_path` is called only
 from `upsert`, which dispatches on the action string: `refuse` returns early, then `update` and
-`merge` bump `last_seen`, and anything else falls through to the create arm. A fifth action with no
-branch reaches `_write(None, ...)` and raises `TypeError` — which `sink.py:47` does NOT catch (it
+`merge` bump `last_seen`, and anything else falls through to the create arm. Either new action
+without a branch reaches `_write(None, ...)` and raises `TypeError` — which `sink.py:46` does NOT catch (it
 catches `OSError`), and `engine.py:60` calls `sink.write` OUTSIDE the per-source try, so the whole
 ingest run aborts. Verified by execution against the real `Vault` and `VaultSink`.
 
@@ -129,21 +133,52 @@ either way, because `leads_dir` already exists in that scenario).
 its first absent candidate, but the loser may have been archived under its location-suffixed or
 title-digest name (candidates 2 and 3), which the walk would never reach.
 
-**It matches by PREFIX over one `os.listdir`, not by walking `<stem>.1.md`, `<stem>.2.md`, … .**
-`merge_cluster`'s `O_EXCL` reservation loop (`vault.py:736-744`) archives a name-colliding loser
-under a numeric suffix, so probing `<name>.md` alone misses every loser after the first at a given
-name. But a sequential walk that stops at the first miss is exhaustive only while the sequence has
-no holes — and **the documented recovery action punches one**: restoring `<stem>.1.md` out of
-`_merged/` leaves `<stem>.2.md` unreachable, which fails toward resurrection. Proven by execution:
-three archives built through the real `merge_cluster`, `.1.md` restored, and a sequential walk
-misses `.2.md`. One `os.listdir` filtered by prefix is immune, and it also bounds the cost question
-below.
+**It selects entries from one `os.listdir` by an ANCHORED match — exact name, or exact name plus a
+numeric suffix — never by a bare prefix.** `merge_cluster`'s `O_EXCL` reservation loop
+(`vault.py:736-744`) archives a name-colliding loser under a numeric suffix, so probing `<name>.md`
+alone misses every loser after the first at a given name. But a sequential `<stem>.1.md`,
+`<stem>.2.md`, … walk that stops at the first miss is exhaustive only while the sequence has no
+holes — and **the documented recovery action punches one**: restoring `<stem>.1.md` out of `_merged/`
+leaves `<stem>.2.md` unreachable, which fails toward resurrection. Proven by execution: three
+archives built through the real `merge_cluster`, `.1.md` restored, and a sequential walk misses
+`.2.md`. One `os.listdir` is immune to holes.
+
+**The anchor is load-bearing, and an earlier draft got this wrong in the dangerous direction.** That
+draft said "filtered by prefix", which is a NEW resurrection-class bug — worse than the one the
+`listdir` was fixing, and reachable two different ways, each found independently by a different
+reviewer:
+
+- `same_opportunity` (`leads.py:198-209`) compares **only url and location — never company, never
+  title**. In the active walk the exact filename is what carries title identity; a bare prefix
+  removes that anchor and `same_opportunity` cannot recover it. Executed: a merged-away
+  `Acme - Widget Engineer, Senior` bare-prefix-matches a later, genuinely different, url-less
+  `Acme - Widget Engineer` at the same location → verdict SAME → suppressed **and recorded in
+  `seen.db`**, so the real job is never created and never can be, while the run prints a
+  `merged_away` count that reads as the fix working.
+- Executed separately: `Acme - Widget Engineer` and `Acme - Widget Engineer II`, the second merged
+  away, a later scrape of the FIRST → verdict UNKNOWN → also a hit. So the over-match is reachable
+  under two different verdicts, which matters because it means the "treat `DIFFERENT` as a hit"
+  mutation row does not cover it and it needs its own.
+
+`title_lost` is no backstop — it is gated on `capped` and dormant under 120 chars. Round 1's
+sequential `<stem>.N.md` walk could not reach either entry at all, so this defect was created
+entirely by the fix for round 1's finding. The match must therefore be
+`entry == f"{name}.md"` or `re.fullmatch(re.escape(name) + r"\.\d+\.md", entry)` — hole-immune like
+the `listdir`, exact like the sequential walk, which is precisely the set `merge_cluster` produces.
+
+**`_merged/` may not exist at all.** It is created lazily (`vault.py:718`), so on any install that
+has never merged, the `listdir` raises `FileNotFoundError`. That is the expected, overwhelmingly
+common case and means "no hit" — but it must be handled as its own condition, NOT by a bare
+`except OSError`, which would swallow an unreadable-directory error and silently disarm the guard on
+exactly the vaults where it matters.
 
 **Cost.** The create path today does ZERO reads — `_resolve_path` returns at the first absent
 candidate before any `_read`. The probe changes that to one `os.listdir` of `_merged/` plus a read
-and frontmatter parse per prefix-matching entry, because reaching a verdict needs `fm`, not a
+and frontmatter parse per ANCHOR-matching entry, because reaching a verdict needs `fm`, not a
 `stat`. That is a real complexity change on the create path and `docs/ARCHITECTURE.md` should record
-it, not the "at most three `os.path.exists` calls" this spec claimed in an earlier draft.
+it, not the "at most three `os.path.exists` calls" this spec claimed in an earlier draft. The
+directory is at human scale — only a `leads dedupe --merge` adds to it — so no pruning machinery is
+warranted.
 
 ### The verdict must be SHARED with the active walk, not re-implemented
 
@@ -174,16 +209,33 @@ Verdict handling in the probe:
 
 | archived entry | probe |
 | --- | --- |
-| unparseable or 0-byte | **skip** — not a note, never a hit |
+| read succeeded, `fm` carries no identity keys (no `url`, no `location`) | **skip** — not a note, never a hit; log it |
 | `DIFFERENT` (or `title_lost`) | keep probing — this lead is genuinely a different job |
 | `SAME` | hit → `merged_away`, recorded in `seen.db` |
-| `UNKNOWN` | hit → `merged_away`, **NOT** recorded, logged with the lead and the matched path |
+| `UNKNOWN` | hit → `merged_away_unproven`, **NOT** recorded, logged with the lead and the matched path |
 
-**The unparseable arm is not an edge case, and it needs no policy call.** `merge_cluster`'s own
-`O_EXCL` reservation leaves a **0-byte file** under a real lead's archived name if the process dies
-before `os.replace`, and its cleanup runs only inside `except OSError` with the unlink itself
-wrapped in `except OSError: pass`. An empty note parses to `fm={}`, which `same_opportunity` scores
-UNKNOWN. Without this arm, one orphaned reservation would suppress every future lead at that name.
+**The skip arm is a PREDICATE, not an outcome, and an earlier draft stated it as the latter.**
+"Unparseable or 0-byte" names a symptom an implementer cannot test for: a 0-byte reservation yields
+`inner=None`, while a file carrying a `---` block whose lines do not parse yields a non-empty
+`inner` and the SAME `fm={}`. Both must skip, so the condition has to be written against the parsed
+result — no identity keys — not against the file's shape.
+
+**It is not an edge case.** `merge_cluster`'s own `O_EXCL` reservation leaves a 0-byte file under a
+real lead's archived name if the process dies before `os.replace`, and its cleanup runs only inside
+`except OSError` with the unlink itself wrapped in `except OSError: pass`. `same_opportunity` scores
+`fm={}` as UNKNOWN, so without this arm one orphaned reservation would suppress every future lead at
+that name — permanently, since the UNKNOWN arm used to enter `seen.db`.
+
+**An `OSError` reading an archived entry must NOT be skipped.** The nearest neighbour is the trap:
+`read_leads` (`vault.py:244-247`) does `except OSError: continue`, and copying that shape here would
+make an *unreadable* archived loser stop suppressing, re-minting the lead as ordinary `created: N` —
+resurrection by way of a permissions error. The error must propagate so `sink.py:46` counts the lead
+`skipped` and keeps it out of `seen.db` for a retry next run. Skip means "we read it and it carries
+no identity"; it never means "we could not read it".
+
+**The skip arm logs too.** Both hit arms log, and an earlier draft left this one silent — yet it is
+the only arm that fails toward *resurrection*, so an archived loser whose note becomes unparseable
+would silently stop suppressing with nothing said.
 
 **Why the SAME and UNKNOWN arms are recorded differently.** An earlier draft justified suppressing
 on UNKNOWN by saying a wrong suppress is "counted in the report and recovered by moving the archived
@@ -206,30 +258,48 @@ bare count cannot identify the job.
 
 ## Outcome plumbing
 
-`merged_away` becomes a fifth `upsert` outcome, threaded through four sites:
+**The outcome vocabulary goes from four members to SIX, not five.** Suppression carries an evidence
+strength, and that strength decides whether the lead enters `seen.db` — a decision that is
+irreversible in one direction, so it cannot ride on a side channel:
+
+| outcome | verdict | enters `seen.db`? |
+| --- | --- | --- |
+| `merged_away` | SAME — proven | yes; the dedup state self-heals |
+| `merged_away_unproven` | UNKNOWN — weak | **no**; re-surfaces and re-reports until a human acts |
+
+Two strings rather than one-plus-a-flag: a single string with a side channel is the second source of
+truth this codebase engineers out, and the sink's allowlist is deliberately POSITIVE, so an
+unrecognised outcome fails safe by staying out of `seen.db`. This split is a STORE concern despite
+looking like policy — the store is the only thing that can report how strong its evidence was; the
+sink maps that strength to `seen.db` policy. The MAY-return split below already covers a store with
+no such concept.
+
+Threaded through four sites:
 
 1. **`core/vault.py:upsert`** — the branch described above, beside `refuse` and before the makedirs.
    This is the site an earlier draft omitted, and omitting it is not cosmetic: without it the run
-   aborts with an uncaught `TypeError`.
-2. **`ingest/sink.py`** — the positive allowlist at `sink.py:41`. Only the **SAME** arm enters
-   `seen.db`; the UNKNOWN arm must not. Since `upsert` returns one string, the two arms need
-   distinguishing — either two outcome strings, or the sink keying on something the store reports
-   alongside. Prefer two strings (`merged_away` and `merged_away_unproven`, names to settle at
-   implementation time): a single string plus a side channel is exactly the kind of second source of
-   truth this codebase engineers out, and the sink's allowlist is deliberately POSITIVE so an
-   unrecognised outcome fails safe by staying out of `seen.db`. The allowlist's comment states its
-   rule as "a note now EXISTS"; the archived note does exist, so the rule holds for the SAME arm,
-   but the comment must say so explicitly rather than leaving a widened list under prose that no
-   longer obviously covers it (#9/PR #76).
-3. **`cli.py:225`** — sparse report lines, printed only when non-zero, alongside `merged` and
+   aborts with an uncaught `TypeError`. **Both** strings need the branch; an uncounted second string
+   walks straight into that same abort.
+2. **`ingest/sink.py`** — the positive allowlist at `sink.py:41`. `merged_away` joins it;
+   `merged_away_unproven` must NOT. The allowlist's comment states its rule as "a note now EXISTS";
+   the archived note does exist, so the rule holds for the proven arm, but the comment must say so
+   explicitly rather than leaving a widened list under prose that no longer obviously covers it
+   (#9/PR #76).
+3. **`cli.py:225`** — two sparse report lines, printed only when non-zero, alongside `merged` and
    `refused`.
 4. **`tests/conformance/test_store_contract.py::test_upsert_return_is_always_within_the_vocabulary`**
    — pins a four-member vocabulary and its own docstring calls itself "the assertion that stops an
-   out-of-vocab outcome slipping past the sink's allowlist". A fifth outcome makes it state a
-   contract the code no longer matches, and it stays **GREEN unmodified**, because its scenario never
-   produces `merged_away`. It must be widened deliberately.
+   out-of-vocab outcome slipping past the sink's allowlist". It stays **GREEN unmodified**, because
+   its scenario produces neither new string — so it is also green against an UNDER-widening that adds
+   only one of the two. It must be widened deliberately, to six.
 
 **`ingest/engine.py:34`** needs no change — `written` is a sparse dict and every read uses `.get`.
+
+**The four-member vocabulary is asserted as complete in prose in at least 11 places across 6 files,
+and none of them reddens.** Derive that list rather than copying one — the same treatment DoD 7
+applies to `#81`'s rationale, for the same reason. It includes `_resolve_path`'s own docstring
+(`vault.py:175` — the function being edited), `Vault.upsert`'s (`vault.py:547`), `sink.py:4`, `:9`
+and `:39`, and `cli.py:222`. An earlier draft named three of them.
 
 **Naming.** `merged_away` shares a word with `upsert`'s existing `merged` (merged-on-uncertainty,
 which WRITES a `last_seen` bump), so a run can print `2 merged, 1 merged_away`. It was chosen anyway
@@ -274,24 +344,46 @@ implementation must do is drift unless the human-readable contract moves with it
   store implementing `merge_cluster`. Those are different strengths and the docstring must not
   collapse them.
 - `core/protocols.py` — **`merge_cluster`'s docstring (`protocols.py:127-140`), the site an earlier
-  draft missed.** It currently says losers are "removed/archived" and nowhere requires RETENTION. A
-  store that hard-deletes cannot honour non-resurrection by construction, so the new MUST silently
-  narrows `merge_cluster`'s contract — in the one place a second-store author implementing
-  `merge_cluster` will actually read, since they have no reason to read `upsert`'s docstring. This is
-  the same PR #45 lesson applied to one method and missed on the other.
+  draft missed.** It currently says losers are "removed/archived" and imposes no obligation that
+  survives the call. A store that hard-deletes cannot honour non-resurrection by construction, so the
+  new MUST silently narrows `merge_cluster`'s contract — in the one place a second-store author
+  implementing `merge_cluster` will actually read, since they have no reason to read `upsert`'s
+  docstring. This is the same PR #45 lesson applied to one method and missed on the other.
+
+  **State the OBLIGATION, not the vault's mechanism.** An earlier draft said "requires RETENTION",
+  which names how the vault happens to do it and over-constrains everyone else. The obligation is:
+  *a merged-away loser must remain discoverable by `upsert` and invisible to `read_leads`.* A
+  natural-key tombstone satisfies that; keeping the whole note, as the vault does, is one way and not
+  the required one. The docstring must also say what the returned "archived loser handles" mean for a
+  store that archives nothing — a tombstone id is a handle.
 - `docs/ARCHITECTURE.md` — the store-contract paragraph near line 293 and the dedupe section near
   line 378, plus the create-path cost note.
 
 ## Testing
 
-**Fixture discipline.** Locations come from `tests/conftest.py`'s `LOCATIONS` constant
-(`Alfa`/`Bravo`/`Charlie`, "never a real place") — `tests/test_vault.py` already imports it and uses
-it in every location-carrying lead, and the no-personal-data rule binds `tests/` (DoD 11 permitted
-place words in a `sluice/` docstring only, and does not reach here). Titles and companies follow
-`test_vault.py`'s abstract-placeholder convention (`X`, `Y`, `Acme`); the seeded-faker `titles` pool
-is needed only by a test routed through `cluster_duplicates`, which needs constructed token
-relationships faker cannot produce — and note `_title_pool` filters commas (`conftest.py:69`), so a
-word-order-drift pair must be built by mutating a pool title programmatically, never hardcoded.
+**Fixture discipline.** The control is *non-preference placeholder*, not *randomly generated* — and
+an earlier draft got the reasoning backwards, saying the faker pool was "needed only by" the
+`cluster_duplicates`-routed test while also saying that test needs relationships "faker cannot
+produce". Both cannot hold. The repo has already ruled: `tests/test_leads_cluster.py`'s module
+docstring says its cluster fixtures are deliberately generic non-preference placeholders chosen to
+exercise specific token-set relationships "that a faker-generated string cannot reliably produce --
+**they are not faker-derived**". So a `cluster_duplicates`-routed test is precisely the case faker
+cannot serve, and **no test here needs the faker pools**.
+
+What binds:
+
+- **Locations** come from `tests/conftest.py`'s `LOCATIONS` constant (`Alfa`/`Bravo`/`Charlie`,
+  "never a real place"). Both files these tests join import it — `tests/test_vault.py:7` and
+  `tests/conformance/test_store_contract.py:30` — and the no-personal-data rule binds `tests/` (DoD
+  11 permitted place words in a `sluice/` docstring only, and does not reach here).
+- **Titles and companies** follow `test_vault.py`'s abstract-placeholder convention (`X`, `Y`,
+  `Acme`). A word-order-drift pair is constructed, not hardcoded from a real posting.
+- **URLs** — an earlier draft omitted these entirely, and this plan needs url-carrying fixtures for
+  the `url_proven` probe test and for the `seen.db` contents assertion, where the recorded
+  `dedup_key` IS the normalized url (`core/leads.py:173-174`). Use the `.invalid` convention of the
+  files being joined: `ex.invalid` in `tests/test_vault_merge_cluster.py` (38 uses) and
+  `example.invalid` in `tests/conformance/test_store_contract.py` (14 uses), both zero `.example`.
+  (`.example` dominates repo-wide at ~103 uses, but not in these files — match the neighbours.)
 
 Unit, against a real `Vault` on `tmp_path`:
 
@@ -309,7 +401,16 @@ Unit, against a real `Vault` on `tmp_path`:
 - A loser archived under a **numeric-suffix** name is found. The recipe "resurrect, then merge away
   again" is **unreachable post-fix** — the resurrect step now returns `merged_away` and writes no
   note, so nothing exists to archive second. Working recipe, all through the public API: merge A
-  away; let a proven-DIFFERENT B take the same name; merge B away.
+  away; let a proven-DIFFERENT B take the same name; merge B away. **Then re-upsert B, not A** — A
+  sits at `_merged/<base>.md` and an exact-name probe already catches it, so only B's re-upsert
+  exercises the suffix path at all. Getting this wrong makes the test green against the
+  exact-name-only mutant.
+- **The over-match test**: two genuinely different jobs whose names share a prefix
+  (`Acme - Widget Engineer`, `Acme - Widget Engineer II`), the second merged away, the first
+  re-scraped — assert it is `created`. This is the anchored-match witness, and its verdict is
+  UNKNOWN, so no other row covers it.
+- **An unreadable archived entry** does not silently stop suppressing: the `OSError` reaches the
+  sink as `skipped`, and the lead stays out of `seen.db` for a retry.
 - **A hole in the numeric sequence does not hide an archive behind it**: build three archives at one
   stem, restore `<stem>.1.md` out of `_merged/`, assert the lead behind `<stem>.2.md` is still
   suppressed. This is the case the prefix scan exists for.
@@ -345,12 +446,23 @@ catches the mutant.
 | --- | --- |
 | delete the `_archived_match` branch entirely | acceptance (+ others; see below) |
 | probe only the candidate the walk stopped at | location-suffix (with cand-1-absent fixture) |
-| sequential suffix walk instead of the prefix scan | the hole test |
+| **match `<name>.md` exactly, no suffix handling at all** | the numeric-suffix test |
+| sequential suffix walk instead of the anchored scan | the hole test |
+| **drop the anchor — bare `startswith` instead of exact-or-numeric-suffix** | the over-match test |
 | treat `UNKNOWN` as "keep probing" | the UNKNOWN test |
 | treat `DIFFERENT` as a hit | the proven-different test |
 | treat an unparseable entry as UNKNOWN rather than skipping | the 0-byte test |
+| `except OSError: continue` on an unreadable entry | the unreadable-entry test |
 | drop the SAME arm from the sink allowlist | the seen.db test |
 | record the UNKNOWN arm in `seen.db` | the UNKNOWN-not-recorded test |
+
+Two of these rows are new because an earlier draft's table could not police them. **The
+exact-name-only row is the simplest slip available** and had no row at all — the sequential-walk row
+is strictly weaker, and "no row is inert" cannot police a row that does not exist. **The anchor row
+needs its own test** because the over-match's verdict is `UNKNOWN`, so the "treat `DIFFERENT` as a
+hit" row does not reach it: the over-match test is two genuinely different jobs whose names share a
+prefix (`Acme - Widget Engineer` and `Acme - Widget Engineer II`), the second merged away, the first
+re-scraped — it must be `created`, never suppressed.
 
 **Extraction witnesses — these are the rows an earlier draft lacked entirely.** Every row above
 mutates the new branch's control flow; none touches the verdict, which is the only edit that reaches
