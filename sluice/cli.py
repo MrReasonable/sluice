@@ -219,13 +219,18 @@ def _print_report(report) -> None:
               f"fresh={r.fresh} drift={r.drift or '-'}"
               f"{' RETIRED' if r.retired else ''}", file=sys.stderr)
     w = report.written
-    # Sparse: merged/refused (#5) are printed only when non-zero, and every read uses
-    # .get so a clean run — whose sink never adds those keys — does not KeyError.
+    # Sparse: merged/refused (#5) and merged_away/merged_away_unproven (#81) are printed
+    # only when non-zero, and every read uses .get so a clean run — whose sink never
+    # adds those keys — does not KeyError.
     parts = [f"{w.get('created', 0)} created", f"{w.get('updated', 0)} updated"]
     if w.get("merged"):
         parts.append(f"{w['merged']} merged")
     if w.get("refused"):
         parts.append(f"{w['refused']} refused")
+    if w.get("merged_away"):
+        parts.append(f"{w['merged_away']} merged-away")
+    if w.get("merged_away_unproven"):
+        parts.append(f"{w['merged_away_unproven']} merged-away (unproven)")
     parts.append(f"{w.get('skipped', 0)} skipped")
     print("written: " + ", ".join(parts), file=sys.stderr)
 

@@ -1,12 +1,15 @@
 """Sinks: where deduped, relevance-passed leads land.
 
 VaultSink stamps first_seen/last_seen, upserts each lead into the Obsidian vault
-(never clobbering status). upsert returns created/updated/merged/refused; only the
-first three mean a note now EXISTS, so only those are recorded in seen.db. `refused`
-(a #5 name-collision decline) and `skipped` (a #24 OSError write failure) stay OUT of
-seen.db so the next run retries them, rather than aborting the run. JsonSink emits one
-JSON object per line - for `--sink json` and the legacy-diff tool. Both return sparse
-count dicts (merged/refused keys appear only when non-zero).
+(never clobbering status). upsert returns one of created/updated/merged/refused/
+merged_away/merged_away_unproven; created, updated, merged, and merged_away all mean a
+note now EXISTS (merged_away's is archived under _merged/), so only those are recorded
+in seen.db. `refused` (a #5 name-collision decline), `merged_away_unproven` (a #81
+evidence-inconclusive suppression -- see the allowlist below for why it must never be
+recorded), and `skipped` (a #24 OSError write failure) stay OUT of seen.db so the next
+run retries or re-reports them, rather than aborting the run. JsonSink emits one JSON
+object per line - for `--sink json` and the legacy-diff tool. Both return sparse count
+dicts (merged/refused/merged_away/merged_away_unproven keys appear only when non-zero).
 """
 import json
 from dataclasses import asdict
@@ -36,12 +39,20 @@ class VaultSink:
                 lead.first_seen = stamp
             lead.last_seen = stamp
             try:
-                outcome = self.vault.upsert(lead)  # created | updated | merged | refused
+                # created | updated | merged | refused | merged_away | merged_away_unproven
+                outcome = self.vault.upsert(lead)
                 counts[outcome] = counts.get(outcome, 0) + 1
-                if outcome in ("created", "updated", "merged"):
+                if outcome in ("created", "updated", "merged", "merged_away"):
                     # Allowlist over "a note now exists", stated positively so an unknown
                     # outcome fails safe: refused (and the OSError->skipped below) stay OUT
                     # of `recorded` -> never enter seen.db -> retried next run. See #5.
+                    #
+                    # `merged_away` (#81) qualifies: the note exists, ARCHIVED under
+                    # _merged/, so recording it self-heals the dedup set and the suppression
+                    # happens once rather than on every run. `merged_away_unproven` does NOT
+                    # and must never be added -- it is a suppression on UNKNOWN evidence, and
+                    # seen.db has no removal path (load/save only), so recording it would
+                    # make engine.py filter that key forever with no note anywhere.
                     recorded.append(lead)
             except OSError as e:
                 # A lead the store cannot write (name too long on an odd FS,
