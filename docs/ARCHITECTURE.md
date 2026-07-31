@@ -343,6 +343,23 @@ until a human acts, because `seen.db` has no removal path and a same-company/tit
 location RE-POST carrying a brand-new url is a real job -- recording it would suppress
 that job permanently and invisibly, with no note anywhere to reverse it from.
 
+**"Until a human acts" means one specific action**, and it is the same hand-move the
+dedupe section below documents as the *recovery* path: move the archived note back out of
+`_merged/`. The two are the same operation because the count is what a persistent
+unproven match looks like from the outside. Once restored, the note is in the active view
+again and the next scrape reconciles against it as an ordinary note. The outcome is
+`updated` when the restored note matches on location (a location-only SAME) and `merged`
+when the comparison stays inconclusive -- the same two verdicts that sent the lead to the
+unproven arm in the first place, now reached against a live note. BOTH are on the sink's
+allowlist, so either way it enters `seen.db` and the count stops; measured on both arms.
+Nothing else clears it: there is no acknowledge command, and none should be added without
+deciding what an acknowledgement would mean for a lead the tool could not identify. Note
+what restoring costs when the two really were different jobs: the re-post's `last_seen`
+lands on the restored note rather than minting its own, so a human who wanted them split
+has to split them by hand. The run summary prints this as `N merged-away (unproven)`
+(`cli.py:_print_report`), distinct from `N merged-away`, so the two are told apart without
+opening the vault.
+
 Another property joins those: **the conflict outcome**. A modify-write that
 keeps losing the race against a concurrent editor (a human in Obsidian, Syncthing, a
 second `sluice` process) must refuse loudly rather than clobber -- raising

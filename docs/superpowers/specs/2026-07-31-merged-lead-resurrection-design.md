@@ -589,3 +589,25 @@ Four, all narrower than the defect being closed and all failing toward the safe 
   residual, not a hypothetical one. Gating the seen.db-recording arm on `url_proven` rather than on
   SAME -- letting a location-only SAME fall to the never-recorded unproven arm instead -- was
   considered and NOT taken on this branch.
+
+  _(Superseded 2026-07-31, pre-push review: it WAS taken. See the note at the top of this file. The
+  consequence that gating creates is recorded as the next bullet.)_
+- **A tracking-parameter board re-reports forever.** The accepted consequence of gating the recorded
+  arm on `url_proven`, stated so it is not rediscovered as a bug. `_norm_url` (`core/leads.py`)
+  deliberately keeps the QUERY STRING -- it drops only the `#fragment` -- because several boards
+  encode the job id there (`?jobId=`, `?jk=`), so stripping it would collapse distinct jobs into
+  one. The cost is that a board which rotates tracking parameters on a re-post emits a url that is
+  byte-different for the same posting, `url_proven` is False, and the lead lands on the unproven arm
+  on EVERY run: never recorded in `seen.db`, so it never self-heals, and the run summary carries a
+  standing `N merged-away (unproven)` count for as long as the board keeps listing it. The human can
+  clear it (restore the note out of `_merged/`), but on such a board the default state is a
+  permanent non-zero count.
+
+  This is the trade the url-proof gate knowingly chose, and it is the right way round: the
+  alternative -- recording a location-only match -- suppresses a genuinely new requisition
+  irreversibly and invisibly, since `seen.db` has no removal path and no note exists anywhere to
+  reverse it from. A recurring line in a run summary is visible, bounded, and undoable; a silently
+  binned job is none of those. Do NOT "fix" the noise by widening what may enter `seen.db`. If it
+  becomes a real annoyance, the fixes that preserve the asymmetry are a query-parameter allowlist in
+  `_norm_url` (per-board, so a genuine id-in-query board is unaffected) or surfacing the standing
+  set in `leads dedupe report` -- both out of scope here.
