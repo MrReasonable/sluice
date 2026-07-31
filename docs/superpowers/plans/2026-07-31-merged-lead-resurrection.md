@@ -1,5 +1,13 @@
 # Merged-Lead Resurrection (#81) Implementation Plan
 
+> **Superseded 2026-07-31 (pre-push review):** the outcome mapping this plan implements changed
+> during the review that preceded the push. `_ARCHIVED`/`merged_away` is now gated on a url-PROVEN
+> match, not on `same_opportunity`'s SAME verdict -- a location-only SAME falls to
+> `merged_away_unproven` and is never recorded in `seen.db`, because a same-company/title/location
+> re-post carrying a brand-new url is a real job and `seen.db` has no removal path. `_reconcile`
+> accordingly returns `(action, url_proven)` rather than an action alone. The steps are left as
+> executed; see `docs/ARCHITECTURE.md` and `core/protocols.py` for the shipped contract.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Stop a lead a human merged away via `sluice leads dedupe --merge` from being silently re-created when the dedup set is empty.

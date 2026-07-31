@@ -318,21 +318,30 @@ shipped without them. They are now properties of the contract, and a store passe
 that suite or it does not ship.
 
 Another property joins those: **non-resurrection** (#81). A lead a human has merged
-away via `merge_cluster` must never be silently re-created by a later re-scrape --
-`test_merged_away_lead_is_never_recreated` pins this at the contract, the same safety
-class as never-clobber: a synthetic-id store does not get it for free just by archiving
-losers, since creating freely on top of that still resurrects them. `upsert`'s return
-vocabulary is six-member: `created`/`updated`/`merged`/`refused` as before, plus
-`merged_away` (`same_opportunity`'s SAME verdict against an archived note -- a url match,
-or a location overlap when the urls don't match) and `merged_away_unproven` (its UNKNOWN
-verdict) -- both write nothing, and only
-`merged_away` may enter the dedup store (`merged_away_unproven` never does: seen.db has
-no removal path, so recording an unproven suppression would make it permanent with no
-note anywhere to reverse it). The property is bounded, not absolute: the probe that
-recognises an archived lead is name-keyed -- the same `Company - Title` candidates
-`_resolve_path` already builds -- so a re-scrape whose title has drifted past every
-candidate is still created. A url index over the archive would close that gap; it is
-#23 territory and changes `upsert`'s cost model, so it is deliberately out of scope here.
+away via `merge_cluster` must remain discoverable by `upsert` **through the identity the
+store recorded at merge time**, and must not be re-created when that identity is
+presented again -- `test_merged_away_lead_is_never_recreated` pins this at the contract,
+the same safety class as never-clobber: a synthetic-id store does not get it for free
+just by archiving losers, since creating freely on top of that still resurrects them.
+
+State it that way, not as an absolute "never re-created": a re-scrape whose identity has
+**drifted beyond what the store recorded** is outside the guarantee. For the vault the
+recorded identity is the note NAME the loser was seated at, so a re-scrape whose title
+has drifted past every `Company - Title` name candidate `_resolve_path` builds is still
+created -- a visible duplicate a human can merge again. The conformance suite exercises
+only the location-split shape, so it does not police that residual; the contract does, by
+naming it. A url index over the archive would close the gap; it is `#23` territory and
+changes `upsert`'s cost model, so it is deliberately out of scope here.
+
+`upsert`'s return vocabulary is six-member: `created`/`updated`/`merged`/`refused` as
+before, plus `merged_away` and `merged_away_unproven`. Both write nothing. `merged_away`
+requires the store to have PROVED identity -- for the vault, a matching non-empty url on
+both sides -- and only it may enter the dedup store. Every weaker match is
+`merged_away_unproven`: the vault's location-token overlap, or an inconclusive
+comparison. That one still suppresses, but it re-surfaces and re-reports on every run
+until a human acts, because `seen.db` has no removal path and a same-company/title/
+location RE-POST carrying a brand-new url is a real job -- recording it would suppress
+that job permanently and invisibly, with no note anywhere to reverse it from.
 
 Another property joins those: **the conflict outcome**. A modify-write that
 keeps losing the race against a concurrent editor (a human in Obsidian, Syncthing, a
@@ -413,14 +422,25 @@ merge would discard before naming it.
 too: before minting a brand-new note, it lists the archive and, for each entry whose
 filename could belong to one of the incoming lead's name candidates, compares the name
 `merge_cluster` stamped onto that entry (or, for a legacy or stamp-failed one, its own
-filename) against the candidate, then runs the same verdict the active walk uses. A SAME
-match (a url match, or a location overlap when the urls don't match) returns
-`merged_away` and creates nothing; an UNKNOWN match returns `merged_away_unproven`. This
-moves the create path's cost: it used to be a bare
+filename) against the candidate, then runs the same verdict the active walk uses. A match
+the incoming lead's own url PROVES -- both urls non-empty and equal -- returns
+`merged_away` and creates nothing; every weaker match (a location-token overlap, or an
+inconclusive comparison) returns `merged_away_unproven`, which also creates nothing but
+never enters `seen.db`. This moves the create path's cost: it used to be a bare
 `not os.path.exists` check, ZERO reads. It now costs one `os.listdir(_merged/)` on
 every create -- cheap, and the overwhelmingly common case when nothing has ever been
 merged -- plus, only for an entry whose filename matches a candidate, one read and one
 frontmatter parse.
+
+**Do not prune `_merged/`.** It was a reversible archive; it is now load-bearing. It is
+the backstop the write path consults when the dedup set is empty -- a fresh machine, a
+retargeted `SEEN_DB`, a 0-byte or tableless database -- which is precisely the situation
+non-resurrection exists for. Deleting entries out of it destroys both halves at once: the
+guarantee (a pruned lead is re-created on the next scrape, which can mean a second
+application under the user's name) and the documented recovery path (moving the note back
+out of `_merged/` by hand is the only way to get a merged-away loser's scores, notes,
+rendered CV or sign-off hold back). Nothing in sluice prunes it, and nothing should; a
+vault-cleanup script that treats it as scratch is the way this gets lost.
 
 The Store-contract surface changed to carry this: `merge_cluster` was ADDED to
 the `Store` protocol and its conformance suite, and the dead `existing_keys` --

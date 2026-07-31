@@ -156,9 +156,12 @@ the reverse would make an env var beat the ~150 positional `Vault(str(tmp_path))
 the suite and retarget them at a developer's real vault, green in CI throughout. The vault itself
 does NOT relocate (it is the user's Obsidian directory), and its two-term `or` lives in `_make`.
 
-Nothing is auto-migrated. A path left behind warns; the two dedup stores REFUSE, because continuing
-with an empty dedup set re-creates every lead a human merged away and can mean a second application
-under the user's name. **That notice is keyed on the resolved path not EXISTING, so any code that
+Nothing is auto-migrated. A path left behind warns; the two dedup stores REFUSE, because an empty
+dedup set makes every already-known lead read as unseen and silently re-submits it to the write
+path. `Vault.upsert` now probes `_merged/` by name before creating (#81), so a lead a human merged
+away usually self-heals rather than being re-created -- but that probe is name-keyed, so a re-scrape
+whose title has drifted past every name candidate still slips past it and is created afresh, and if
+its twin was already `applied` that is a second application under the user's name. **That notice is keyed on the resolved path not EXISTING, so any code that
 touches it — even harmlessly — disarms it from then on.** `sqlite3.connect` creates a 0-byte file
 merely by opening one, which is how a `--dry-run` silently disabled the refusal for every later real
 run; a store therefore must not create anything on a read. For the same reason a store must not read
@@ -220,6 +223,28 @@ mismatch. That check CANNOT be hoisted into the caller — probed against a real
 enumerated `LeadNote` is byte-identical to no guard at all, because the snapshot is stale by
 construction. It is a parameter on the existing writer rather than a second write function, because
 CodeQL flags a new write function as a new sink.
+
+**Non-resurrection (#81), in the never-clobber family.** A lead a human merged away via
+`sluice leads dedupe --merge` must not be silently re-created by a later re-scrape — a wrong create
+undoes a human's decision and, if its surviving twin was already `applied`, means a second
+application under the user's name. `merge_cluster` archives each loser under `leads_dir/_merged/`
+and stamps the note name it was seated at into it (`archived_from_note`); `Vault._resolve_path`
+probes that archive before returning `create`, via the ONE verdict `_reconcile` (shared with the
+active walk, so the two cannot drift), and `_archived_match` maps the result. `upsert`'s return
+vocabulary is therefore SIX-member — `created`/`updated`/`merged`/`refused`, plus `merged_away` and
+`merged_away_unproven`. Both archive outcomes write NOTHING: not the note, not `leads_dir`, not the
+Syncthing marker. They differ only in evidence, and that difference is the load-bearing part:
+`merged_away` requires a url-PROVEN match (both urls non-empty and equal) and is the ONLY one the
+ingest sink records in `seen.db`; every weaker match — a location-token overlap, or an inconclusive
+comparison — is `merged_away_unproven` and must NEVER be recorded, because `seen.db` has no removal
+path and a same-company/title/location RE-POST carrying a brand-new url is a real job that would
+otherwise be suppressed forever with no note anywhere to reverse it. The Store contract states the
+obligation as bounded, not absolute: a merged-away loser must remain discoverable through the
+identity the store RECORDED at merge time, and a re-scrape whose identity has drifted past that
+(for the vault, past every name candidate) is outside the guarantee and is created — a visible
+duplicate, the direction to fail in. `_merged/` is load-bearing retention, not scratch: do not
+prune it. See `core/protocols.py`, `docs/ARCHITECTURE.md`, and
+`tests/conformance/test_store_contract.py::test_merged_away_lead_is_never_recreated`.
 
 **Never-regress (status).** One `status` frontmatter key, two lifecycles with separate owners
 (`core/status.py`). Triage owns `new/shortlist/research/needs_review/dismiss` and may rewrite them;
