@@ -391,9 +391,19 @@ Unit, against a real `Vault` on `tmp_path`:
   drifting scrapes of one job, `merge_cluster` them, re-upsert the loser's `Lead`, assert the outcome
   is `merged_away` and that `read_leads()` still returns exactly one note.
 - **`merged_away` writes nothing** — the `refuse` arm's own property
-  (`test_upsert_refuses_and_writes_nothing`), applied to the new arm: neither the note, nor
-  `leads_dir`, nor `.stfolder`. The acceptance test cannot cover this, because `leads_dir` already
-  exists in its scenario.
+  (`test_upsert_refuses_and_writes_nothing`), applied to the new arm: no note, and **no `.stfolder`**.
+  It must NOT also assert on `leads_dir`: `_merged/` lives INSIDE `leads_dir` (`vault.py:718`), so
+  `leads_dir` exists in every scenario that can reach the probe, and asserting its absence is
+  unsatisfiable rather than strict.
+
+  **The fixture must hand-seed the archive, not build it through `upsert` + `merge_cluster`.**
+  Measured: built the way every other recipe here is built, `.stfolder` already exists too, so the
+  whole-tree snapshot is identical **with and without** the branch-placement mutant — the test is
+  inert for the very property it exists to pin. Only a `_seed_note`-style archive, written into a
+  vault where `upsert` has never run, leaves the tree clean enough for the assertion to bite. This is
+  the one place in the plan where the realistic public-API fixture is the WRONG choice, and the
+  reason is worth keeping: the mutant moves the branch a few lines, and every side effect it would
+  newly cause has already been caused by the setup.
 - A loser archived under its **location-suffixed** name is found. **The fixture must leave candidate
   1 ALSO absent** — otherwise the "probe only the candidate the walk stopped at" mutant stays green,
   because the walk itself stops at candidate 2, which is exactly what that mutant probes. Recipe:
@@ -418,10 +428,16 @@ Unit, against a real `Vault` on `tmp_path`:
 - An archived note **proven DIFFERENT** does not suppress: a genuinely new job at a merged-away name
   is still created.
 - An archived note whose verdict is **UNKNOWN** suppresses, and is **NOT** recorded in `seen.db`.
-- **Two capped-title probe tests**, for the shared verdict helper: one where `title_lost` should fire
-  in the probe, one where `url_proven` overrides it. Without these, every probe scenario has
-  `capped` false, so `title_lost` and `url_proven` are dormant throughout and a probe that
-  re-implements the verdict without them is green.
+- **Capped-title probe tests**, for the shared verdict helper: one where `title_lost` should fire in
+  the probe, one where `url_proven` overrides it. Without these, every probe scenario has `capped`
+  false, so `title_lost` and `url_proven` are dormant throughout and a probe that re-implements the
+  verdict without them is green.
+
+  **The `title_lost` case needs a CONTROL ARM.** Asserting only that a capped-title mismatch yields
+  `created` is byte-identical to a probe that never matched anything at all (measured), so it passes
+  under a fully inert probe. Pair it with the same fixture carrying a MATCHING `role`, asserting
+  `merged_away`: the two together show the probe ran AND that `title_lost` is what decided it. The
+  `url_proven` test is sound as stated and needs no control.
 - The **active walk is unchanged**: update, merge and refuse behave exactly as before when `_merged/`
   is absent, and when `_merged/` holds a proven-different note.
 
@@ -453,6 +469,7 @@ catches the mutant.
 | treat `DIFFERENT` as a hit | the proven-different test |
 | treat an unparseable entry as UNKNOWN rather than skipping | the 0-byte test |
 | `except OSError: continue` on an unreadable entry | the unreadable-entry test |
+| **move the `upsert` branch below `os.makedirs`/`ensure_stfolder`** | the writes-nothing test (hand-seeded fixture only) |
 | drop the SAME arm from the sink allowlist | the seen.db test |
 | record the UNKNOWN arm in `seen.db` | the UNKNOWN-not-recorded test |
 
@@ -484,8 +501,11 @@ The `capped and` row is the load-bearing one: mutation-tested on the current tre
 2. `_resolve_path`'s update / merge / refuse arms are behaviourally unchanged — established by the
    extraction witnesses, NOT by "full suite green", which is provably non-falsifying here.
 3. The verdict logic exists in exactly ONE place — a `vault.py`-private helper, not `core/leads.py`.
-4. `merged_away` is plumbed through `upsert`, the sink allowlist (SAME arm only), the CLI report, and
-   the outcome-vocabulary conformance test.
+4. **Both** `merged_away` and `merged_away_unproven` are plumbed through `upsert`, the CLI report,
+   and the outcome-vocabulary conformance test; only `merged_away` joins the sink allowlist. The
+   vocabulary test is green against an under-widening that adds just one of the two, so membership of
+   BOTH is pinned inside the conformance non-resurrection test — which actually produces a
+   `merged_away` — rather than left to "widen it deliberately".
 5. The contract is stated in the conformance suite, BOTH `upsert`'s and `merge_cluster`'s docstrings
    in `core/protocols.py`, and `docs/ARCHITECTURE.md`.
 6. Every mutation in the tables above reddens **at least** its own witness, and **no row is inert**.
