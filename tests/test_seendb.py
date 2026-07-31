@@ -29,10 +29,12 @@ def test_a_corrupt_db_raises_rather_than_reading_as_empty(tmp_path):
     """A silent empty dedup set is the #81 harm by another route.
 
     `except Exception: return set()` turned an unreadable dedup store into a full,
-    silent dedup loss: every lead reads unseen, every human-merged duplicate is
-    re-created, and a lead whose twin was already `applied` can produce a second
-    application under the user's name -- reported as ordinary `created: N`. Refusing to
-    start over a RELOCATED store (#80) while shrugging at an unreadable one is
+    silent dedup loss: every lead reads unseen and is re-submitted to the write path.
+    A merged-away lead is usually recognised there and suppressed (#81's archive
+    probe), but one whose title has drifted past every name candidate is still
+    re-created, and if its twin was already `applied` that can produce a second
+    application under the user's name -- reported as ordinary `created: N`. Refusing
+    to start over a RELOCATED store (#80) while shrugging at an unreadable one is
     incoherent, so this is loud.
     """
     import sqlite3
@@ -63,9 +65,11 @@ def test_an_unreadable_db_raises_rather_than_reading_as_empty(tmp_path):
     user cannot traverse read as "absent" and the run proceeded with an EMPTY dedup set.
 
     `DeadLetterDb` was fixed for exactly this and this loader was missed, which is the
-    worse of the two places to miss it: an empty dedup set re-creates every lead a human
-    merged away and can mean a second application under their name (#81). Measured before
-    the fix: `load()` returned `set()` with nothing said.
+    worse of the two places to miss it: an empty dedup set re-submits every already-known
+    lead to the write path, and one merged away whose title has drifted past the archive
+    probe's name candidates (#81's residual) is re-created, which can mean a second
+    application under their name. Measured before the fix: `load()` returned `set()`
+    with nothing said.
     """
     locked = tmp_path / "locked"
     locked.mkdir()

@@ -506,9 +506,13 @@ class Sluice:
         # lied about what had already been seen would be useless. So the refusal
         # decision is made at construction, from the same two flags the sink choice
         # uses. A dry run and a --sink json run write no dedup state and have nothing
-        # to lose; a real run that silently starts from an EMPTY dedup set re-creates
-        # every lead a human merged away, which can mean a second application under
-        # their name (#81), reported as ordinary `created: N` activity.
+        # to lose; a real run that silently starts from an EMPTY dedup set re-submits
+        # every already-known lead to the write path. `Vault.upsert` now probes
+        # `_merged/` by name (#81) before creating, so a merged-away lead usually
+        # self-heals instead of being re-created -- but the probe is name-keyed, so one
+        # whose title has drifted past every candidate still slips through, and that
+        # can mean a second application under their name, reported as ordinary
+        # `created: N` activity.
         seen = SeenDb(_resolve_path(env_var="SEEN_DB", config_value="", kind="state",
                                     name="seen.db",
                                     fatal=not (dry_run or json_sink)))
