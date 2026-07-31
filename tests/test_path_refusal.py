@@ -5,11 +5,14 @@ warn-and-continue on a dedup store is not a lost file -- it is a duplicate job
 application sent under the user's name, reported as ordinary activity:
 
     resolved db absent -> `SeenDb.load` swallows the error and returns an empty set
-    -> every lead reads as unseen -> `Vault._resolve_path` builds candidates only
-    under `leads_dir` and never consults `leads_dir/_merged/` (#81, true today and
-    out of scope) -> every human-merged duplicate whose posting is still live is
-    CREATED afresh as `status: new` -> if its twin was already `applied`, a second
-    application goes out, counted as `created: N`.
+    -> every lead reads as unseen -> submitted to `Vault.upsert`, whose
+    `_resolve_path` DOES now probe `leads_dir/_merged/` by name before creating
+    (#81) -> a merged-away lead is usually recognised there and suppressed rather
+    than re-created -- but the probe is name-keyed, so a human-merged duplicate
+    whose re-scrape has drifted past every name candidate still slips past it (#81's
+    residual, #23 territory, out of scope here) and is CREATED afresh as
+    `status: new` -> if its twin was already `applied`, a second application goes
+    out, counted as `created: N`.
 
 The refusal is SCOPED, and the two stores are scoped differently. `ingest` refuses only
 when the run actually writes dedup state, so `--dry-run` and `--sink json` proceed. Every
@@ -91,7 +94,9 @@ def test_a_dry_run_leaves_the_refusal_armed_for_the_next_real_run(legacy):
     a 0-byte file merely by opening it. `paths.resolve` refuses only while the resolved
     path does not EXIST, so that empty file disarmed the refusal permanently -- and the
     sequence was the cautious one, dry run first and then the real run, which then
-    proceeded with an empty dedup set and re-created every merged-away lead (#81).
+    proceeded with an empty dedup set and re-submitted every already-known lead to the
+    write path -- resurrecting a merged-away one whose title had drifted past the
+    archive probe's name candidates (#81's residual).
 
     The state directory is pre-created here because that is the ordinary condition: every
     other state file (health, disabled sources, the triage audit, track's db, the OAuth

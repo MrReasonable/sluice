@@ -351,10 +351,15 @@ def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> s
                     f"exists, so there is nothing to copy: find the real file or remove "
                     f"the link: {', '.join(dangling)})")
         if fatal:
-            # Only the two dedup stores. Continuing with an empty dedup set re-creates
-            # every lead a human merged away (#81 -- `_resolve_path` never consults
-            # `_merged/`), which can mean a second application under their name. That
-            # is irreversible and reports as ordinary `created: N` activity, so refuse
+            # Only the two dedup stores. An empty dedup set makes every already-known
+            # lead read as unseen, so it is silently re-submitted to the write path.
+            # `Vault._resolve_path` DOES now consult `_merged/` (#81) and recognises a
+            # merged-away lead by name, so the common case self-heals rather than
+            # resurrecting -- but the probe is name-keyed, and a re-scrape whose title
+            # has drifted past every name candidate still slips past it (#23 territory,
+            # out of scope here) and is CREATED afresh. If its twin was already
+            # `applied`, that is a second application under the user's name. That is
+            # irreversible and reports as ordinary `created: N` activity, so refuse
             # rather than warn.
             raise RuntimeError(msg)
         _log.warning(msg)

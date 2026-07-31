@@ -328,14 +328,20 @@ class Vault:
         return names, capped
 
     def _resolve_path(self, lead: Lead) -> tuple[str | None, str]:
-        """Walk the nameable candidates and return (path, action), action one of
-        "create"/"update"/"merge"/"refuse". Candidate 1 is the clean `Company - Title` name
-        (always); a location suffix (only when location is non-empty) and -- when the title
-        is CAPPED -- a title-digest suffix add further candidates. Every verdict terminates in
-        place EXCEPT DIFFERENT, which advances -- so a note is split only on PROVEN difference,
-        never on the absence of evidence. Running out of candidates (every one a note proven
-        different) is REFUSE: no path can be written without clobbering a different job, so
-        path is None. See #5.
+        """Walk the nameable candidates and return (path, action). Against an ACTIVE note,
+        action is one of "create"/"update"/"merge"/"refuse". Candidate 1 is the clean
+        `Company - Title` name (always); a location suffix (only when location is non-empty)
+        and -- when the title is CAPPED -- a title-digest suffix add further candidates. Every
+        verdict terminates in place EXCEPT DIFFERENT, which advances -- so a note is split only
+        on PROVEN difference, never on the absence of evidence. Running out of candidates
+        (every one a note proven different) is REFUSE: no path can be written without
+        clobbering a different job, so path is None. See #5.
+
+        Running out of candidates with NONE proven different -- i.e. no active note exists at
+        any of them -- does not mean create, though: `_archived_match` (#81) then probes
+        `_merged/` by the same candidate names, and action can ALSO come back `_ARCHIVED` or
+        `_ARCHIVED_UNPROVEN` (path None, same as refuse) when a human already merged this lead
+        away. Only when that probe finds nothing either does the walk fall through to "create".
 
         `capped` closes #5's same-location residual: when the 120-char cap drops part of the
         title, cand1 (and the location candidate, which shares that truncated prefix) can seat
@@ -1066,10 +1072,14 @@ def _set_fm(inner: str, key: str, literal: str) -> str:
 
 def _archived_from(inner: str | None) -> str | None:
     """The note name `merge_cluster` recorded for an archived loser (#81), or None when the
-    entry carries no readable one -- a LEGACY archive from before the field shipped, or a
-    value a hand edit broke. The two collapse to None on purpose: the probe then falls back
-    to exact-filename matching, which fails toward creating a visible duplicate rather than
-    toward suppressing a real job.
+    entry carries no readable one -- a LEGACY archive from before the field shipped, a value
+    a hand edit broke, or a stamp that FAILED at merge time (`_stamp_archived_from` swallows
+    its own error by design; see there, and `_archived_match`'s docstring for why that third
+    source is a RUNTIME population on an otherwise fully upgraded install, not only a
+    pre-upgrade concern). Every one of those collapses to None on purpose, deliberately not
+    counted here since a fixed count is exactly what went stale once already: the probe then
+    falls back to exact-filename matching, which fails toward creating a visible duplicate
+    rather than toward suppressing a real job.
 
     Deliberately NOT read through `_fm_dict`/`_fm_value`: both end in
     `.strip('"').strip("'")`, which eats a real edge character. `_sanitize` maps `"` out of
