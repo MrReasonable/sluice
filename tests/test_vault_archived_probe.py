@@ -183,3 +183,24 @@ def test_capped_title_probe_url_match_overrides_a_lost_title(tmp_path):
     _merge_away(v, loser, survivor)
     drifted = _lead(title=_LONG + "B", url="https://ex.invalid/2", location=LOCATIONS[0])
     assert v.upsert(drifted) == "merged_away"
+
+
+def test_merged_away_writes_nothing(tmp_path):
+    """The refuse arm's own property, applied to the new arm. Note the assertion does NOT
+    cover leads_dir: `_merged/` lives INSIDE it, so leads_dir necessarily exists in any
+    scenario that can reach the probe -- asserting its absence would be unsatisfiable
+    rather than strict. The archive is hand-seeded precisely so `.stfolder` does NOT
+    already exist; built through upsert+merge_cluster, the setup itself creates it and the
+    branch-placement mutant becomes invisible."""
+    v = Vault(str(tmp_path))
+    merged_dir = os.path.join(v.leads_dir, "_merged")
+    os.makedirs(merged_dir, exist_ok=True)
+    with open(os.path.join(merged_dir, "X - Y.md"), "w", encoding="utf-8") as f:
+        f.write('---\ncompany: "X"\nrole: "Y"\nlocation: "%s"\nurl: ""\n---\n\nbody\n'
+                % LOCATIONS[0])
+    assert not os.path.exists(os.path.join(tmp_path, ".stfolder"))
+
+    assert v.upsert(_lead(title="Y", url="", location=LOCATIONS[0])) == "merged_away"
+
+    assert not os.path.exists(os.path.join(v.leads_dir, "X - Y.md"))
+    assert not os.path.exists(os.path.join(tmp_path, ".stfolder"))

@@ -658,6 +658,15 @@ class Vault:
                 _log.warning("vault refused lead %r: every name candidate is a note proven different",
                              lead.dedup_key)
                 return "refused"
+            if action in (_ARCHIVED, _ARCHIVED_UNPROVEN):
+                # #81. Beside `refuse`, NOT beside update/merge: those sit AFTER the makedirs
+                # below, and a lead that writes nothing must not create the leads dir or the
+                # Syncthing marker either. _archived_match has already logged which archive
+                # matched. Both strings need this branch -- either one without it falls
+                # through to _write(None, ...) and raises TypeError, which the sink's
+                # `except OSError` does NOT catch and engine.py calls sink.write outside its
+                # per-source try, so the whole ingest run would abort.
+                return action
             # Every remaining action WRITES, so make the dir + Syncthing marker now -- after the
             # refusal check, so a DIRECT refusal (the common case, pinned by
             # test_upsert_refuses_and_writes_nothing) leaves the filesystem untouched. (A refusal
