@@ -93,9 +93,13 @@ class Store(Protocol):
         Two more (#81), both MAY-return: "merged_away" and "merged_away_unproven" -- the
         lead was already merged away by merge_cluster, so nothing is written. They differ
         only in evidence strength, and the caller uses that: the ingest sink records the
-        SAME-verdict one -- same_opportunity's SAME, a url match or a location overlap when
-        the urls don't match, not proof of identity in every case -- in its dedup store and
-        must never record the UNKNOWN one. A store with no archive concept never returns
+        PROVEN one in its dedup store and must never record the other. "merged_away"
+        therefore requires the store to have PROVED identity -- for the vault, a matching
+        non-empty url on both sides. A match resting on anything weaker (the vault's
+        location-token overlap, or an inconclusive comparison) is "merged_away_unproven":
+        it still suppresses, but it re-surfaces every run until a human acts, because the
+        dedup store has no removal path and a same-company/title/location RE-POST carrying
+        a brand-new url is a real job. A store with no archive concept never returns
         either.
 
         On "updated" and "merged" ONLY `last_seen` may change -- never status, enrichment,
@@ -107,10 +111,21 @@ class Store(Protocol):
         keyed on synthetic ids never merges-on-uncertainty and never hits a naming
         collision, so it need only ever create or update. See #5.
 
-        MUST-honour for any store implementing merge_cluster: a lead merged away is NEVER
-        re-created. That is a safety property in the never-clobber family -- it protects a
-        human's decision from being silently undone, and re-creating the lead can mean a
-        second application under the user's name. See tests/conformance/test_store_contract.py."""
+        MUST-honour for any store implementing merge_cluster: a merged-away loser MUST
+        remain discoverable by `upsert` through THE IDENTITY THE STORE RECORDED AT MERGE
+        TIME, and MUST NOT be re-created when that identity is presented again. That is a
+        safety property in the never-clobber family -- it protects a human's decision from
+        being silently undone, and re-creating the lead can mean a second application
+        under the user's name.
+
+        Stated that way on purpose: the absolute form ("never re-created") is not what any
+        store can deliver, and claiming it would hide the residual instead of bounding it.
+        A re-scrape whose identity has DRIFTED beyond what the store recorded is OUTSIDE
+        the guarantee -- for the vault the recorded identity is the note NAME the loser was
+        seated at, so a re-scrape whose title has drifted past every name candidate is
+        created, a visible duplicate a human can merge again. The conformance suite
+        exercises only the location-split shape, so it does not police that residual; the
+        contract does, by naming it. See tests/conformance/test_store_contract.py."""
         ...
 
     def update_fields(self, ref, fields: dict, *, append_note=None, note_tag=None,
@@ -152,11 +167,14 @@ class Store(Protocol):
         isolated to that loser (it stays in the active view and is never counted as
         merged) rather than aborting the whole cluster.
 
-        A removed loser MUST remain discoverable by `upsert` and invisible to `read_leads`,
-        so a later re-scrape of that lead is not re-created (#81). The vault keeps the whole
-        note under `_merged/`; a natural-key tombstone satisfies it equally -- retention of
-        the note itself is this store's mechanism, not the requirement. The returned handles
-        are whatever identifies the removed records to this store; a tombstone id is a handle."""
+        A removed loser MUST remain invisible to `read_leads` and discoverable by `upsert`
+        through the identity recorded here, so a later re-scrape PRESENTING THAT IDENTITY is
+        not re-created (#81; see `upsert` for the bound on that obligation and what falls
+        outside it). The vault keeps the whole note under `_merged/` and stamps the name it
+        was seated at INTO it; a natural-key tombstone satisfies the contract equally --
+        retention of the note itself is this store's mechanism, not the requirement, but
+        recording SOME identity is. The returned handles are whatever identifies the removed
+        records to this store; a tombstone id is a handle."""
         ...
 
     def append_body_section(self, ref, tag: str, section_md: str) -> bool:

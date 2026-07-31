@@ -49,10 +49,11 @@ _CHAR_CAP = 120     # max chars of a note stem before the byte-clamp; identity-d
 _CREATE_RACE_RETRIES = 3  # #16: bounded re-reconciles when a create loses the TOCTOU race
 _RMW_RACE_RETRIES = 3  # #16: bounded re-derivations before a modify-write refuses loudly
 _MERGED_SUBDIR = "_merged"          # where merge_cluster archives losers (#23)
-# #81: same_opportunity's SAME verdict -- a url match, or a token-overlapping location when
-# the urls don't match (not "url-proven" in every case). The sink records it.
+# #81: a URL-PROVEN match against an archived note -- the incoming lead and the merged-away
+# one carry the same non-empty url. The sink records it in seen.db.
 _ARCHIVED = "merged_away"
-_ARCHIVED_UNPROVEN = "merged_away_unproven"   # #81: UNKNOWN verdict; NEVER recorded
+# #81: every weaker match -- a location-only SAME, or UNKNOWN. Suppressed, NEVER recorded.
+_ARCHIVED_UNPROVEN = "merged_away_unproven"
 # #81: the note name a loser was SEATED at, stamped INTO the note as merge_cluster archives
 # it and read back by the write path's probe. Spelled for a human opening the archived note
 # in Obsidian ("archived from note <name>"). Written only as a note is archived -- a note
@@ -174,11 +175,23 @@ class Vault:
             name = stem[:_CHAR_CAP]
         return _clamp_bytes(name, self._name_max() - len(b".md"))
 
-    def _reconcile(self, fm: dict, lead: Lead, capped: bool) -> str:
-        """The ONE verdict, shared by the active walk and #81's archive probe: "update",
-        "merge" or "advance". A second copy kept in sync by a comment is the #30 failure
-        mode -- a check that must match another check, with prose standing in for the
-        guarantee -- so both callers go through here.
+    def _reconcile(self, fm: dict, lead: Lead, capped: bool) -> tuple[str, bool]:
+        """The ONE verdict, shared by the active walk and #81's archive probe: ("update",
+        "merge" or "advance", url_proven). A second copy kept in sync by a comment is the
+        #30 failure mode -- a check that must match another check, with prose standing in
+        for the guarantee -- so both callers go through here.
+
+        The second element is the EVIDENCE behind the first: True only when a matching
+        non-empty url proved the two are the same posting, False when the action rests on
+        a location-token overlap or on the absence of evidence. `same_opportunity` folds
+        both into one SAME verdict, so the action alone cannot carry the distinction --
+        and the archive probe MUST have it, because only a url-proven suppression may be
+        recorded in seen.db, which has no removal path. It is RETURNED rather than
+        recomputed in the probe for the same reason this function exists at all: a second
+        copy of the url comparison is a second thing to keep in sync. The active walk has
+        no use for it -- against an ACTIVE note a SAME verdict terminates the walk the
+        same way however it was reached -- so `_resolve_path` discards it, and that walk
+        stays byte-identical to before this element existed.
 
         `capped` is the caller's, not re-derived: it measures the CHAR cap on the FULL
         `company - title` stem, which only the caller knows. Deleting the `capped and`
@@ -197,16 +210,18 @@ class Vault:
         title_lost = (capped and not url_proven
                       and _title_key(fm.get("role", "")) != _title_key(lead.title))
         if title_lost:
-            return "advance"
+            return "advance", url_proven
         if verdict == SAME:
-            return "update"
+            return "update", url_proven
         if verdict == UNKNOWN:
-            return "merge"
-        return "advance"
+            return "merge", url_proven
+        return "advance", url_proven
 
     def _archived_match(self, names, lead: Lead, capped: bool) -> str | None:
-        """#81: has a human already merged this lead away? Returns the outcome string, or
-        None to let the walk create.
+        """#81: has a human already merged this lead away? Returns the outcome string --
+        `_ARCHIVED` when a matching non-empty url PROVED it, `_ARCHIVED_UNPROVEN` on any
+        weaker match -- or None to let the walk create. Both suppress; only the first is
+        recorded in seen.db, so the split is the whole reason this returns a string.
 
         Probes EVERY name candidate, not just the one the walk stopped at: the walk returns
         at its first ABSENT candidate, but the loser may have been archived under its
@@ -220,9 +235,11 @@ class Vault:
         strips a leading/trailing quote, so any component whose edge character is a quote
         no longer re-derives to the name it was seated at; and a human correcting
         `company`/`role` in Obsidian after the merge (the #16 threat model) breaks the
-        re-derivation the same way. Both land on the SAME arm -- a url match, or a
-        location overlap when the urls don't match -- the irreversible direction, because
-        the sink records that arm in the dedup store.
+        re-derivation the same way. Both are witnessed on the url-PROVEN arm
+        (test_quote_edged_component_still_suppresses,
+        test_post_archive_edit_of_role_still_suppresses), so a re-derivation failure there
+        does not merely weaken the outcome -- the candidate matches no entry at all and
+        the lead is re-created, which is the resurrection this whole probe exists to stop.
 
         The filename pattern is a cheap PRE-FILTER, never the decision. It is a superset by
         construction: `merge_cluster` derives the archived filename AND the recorded value
@@ -244,9 +261,12 @@ class Vault:
           re-scrape of the lead it archives is CREATED. That is the direction to fail in --
           a visible duplicate note a human can merge again.
         - WRONG HIT: a candidate genuinely named `X - Y.1` still matches that same entry,
-          so a never-seen job whose title ends in `.` plus digits is suppressed -- on the
-          SAME arm (a url match, or a location overlap when the urls don't match), which
-          the sink records irreversibly.
+          so a never-seen job whose title ends in `.` plus digits is suppressed. It is
+          suppressed on the UNPROVEN arm, though, and that bounds the damage: the entry
+          archives a DIFFERENT job, so its url cannot match the never-seen one's, the
+          url-proof gate below is not satisfied, and the lead stays out of seen.db and
+          re-reports every run until a human acts
+          (test_legacy_wrong_hit_is_suppressed_only_on_the_unproven_arm).
 
         For a genuinely PRE-UPGRADE archive the wrong hit is unavoidable: its filename is
         the only evidence that ever existed for it. That rationale does NOT carry to a
@@ -276,9 +296,19 @@ class Vault:
                 # No `except OSError` here, deliberately. The nearest neighbour, read_leads,
                 # does `except OSError: continue` -- copying that shape would make an
                 # UNREADABLE archived loser stop suppressing, re-minting the lead as an
-                # ordinary `created: N`: resurrection by way of a permissions error. Letting
-                # it propagate makes the sink count the lead `skipped` and keep it out of
-                # seen.db for a retry next run.
+                # ordinary `created: N`: resurrection by way of a permissions error.
+                #
+                # What propagating costs, measured rather than assumed, differs by error:
+                # an OSError (a permissions failure, the case above) reaches the sink's
+                # `except OSError`, which counts the lead `skipped` and keeps it out of
+                # seen.db for a retry next run. A DECODE error does not -- a non-UTF-8
+                # archived note raises UnicodeDecodeError, a ValueError, which that clause
+                # does not catch, and engine.py calls sink.write OUTSIDE its per-source
+                # try, so the run aborts. That is not a new exposure: read_leads' own
+                # `_read` sits inside the same `except OSError` and aborts identically on
+                # an undecodable ACTIVE note, so every triage/cv/apply/track command
+                # already behaves this way. Widening to `except OSError: continue` here to
+                # soften it would reintroduce the resurrection above, which is worse.
                 inner, _ = _split_frontmatter(_read(path))
                 fm = _fm_dict(inner)
                 # Is this a NOTE at all? Keyed on company/role, never on url/location: a real
@@ -288,6 +318,17 @@ class Vault:
                 # and skip a legitimate loser. merge_cluster's own O_EXCL reservation leaves
                 # a 0-byte file here if the process dies before os.replace, and its cleanup
                 # is best-effort, so this arm is reachable in the field.
+                #
+                # NEITHER, not EITHER, and that asymmetry is the point. A reviewer proposed
+                # skipping when company OR role is missing; it moves the wrong way. Skipping
+                # more often means SUPPRESSING less often, so an archived loser whose `role`
+                # a hand edit blanked (the #16 threat model -- a human in Obsidian) would be
+                # skipped and the lead resurrected. "Neither" fails toward suppression, the
+                # recoverable direction, and the seated-name comparison below is what
+                # actually gates every downstream decision -- this predicate only has to
+                # reject a file with no note in it at all. Both half-blank shapes are pinned
+                # as notes (test_company_only_archived_entry_is_still_a_note and its role
+                # sibling) so the choice cannot be flipped silently.
                 if not fm.get("company") and not fm.get("role"):
                     _log.warning("vault: ignoring unreadable archived note %s", path)
                     continue
@@ -304,13 +345,26 @@ class Vault:
                     # entry whose counter cannot be told from a title that genuinely ends
                     # in `.` plus digits. Either way this archive is not this candidate.
                     continue
-                action = self._reconcile(fm, lead, capped)
-                if action == "update":
+                action, url_proven = self._reconcile(fm, lead, capped)
+                # The RECORDED arm is gated on url-proof, NOT on the bare SAME verdict.
+                # `same_opportunity` returns SAME from a matching url OR from a location
+                # token overlap, and the second is not identity: a genuinely new
+                # requisition at the same company, title and location -- a re-post, a
+                # second headcount -- carries a BRAND-NEW url and would otherwise land
+                # here, enter seen.db, and be suppressed permanently and invisibly, with
+                # no note anywhere and no removal path to undo it. Deleting `and
+                # url_proven` restores exactly that bug (witnessed:
+                # test_location_only_same_is_unproven_and_stays_out_of_seen_db).
+                if action == "update" and url_proven:
                     _log.warning("vault: %r was merged away (archived at %s); not re-created",
                                  lead.dedup_key, path)
                     return _ARCHIVED
-                if action == "merge":
-                    # UNKNOWN -- suppressed on weak evidence, so it must NEVER enter seen.db.
+                if action in ("update", "merge"):
+                    # Weaker than url-proof -- a location-only SAME, or UNKNOWN. Suppress
+                    # (the archived note may well BE this job, and minting a duplicate of a
+                    # lead a human merged away is the harm #81 exists to stop), but never
+                    # record: this arm re-surfaces and re-reports every run until a human
+                    # acts, which is the recoverable direction.
                     _log.warning("vault: %r may have been merged away (archived at %s, "
                                  "evidence inconclusive); not re-created", lead.dedup_key, path)
                     return _ARCHIVED_UNPROVEN
@@ -363,14 +417,19 @@ class Vault:
             path = os.path.join(self.leads_dir, f"{name}.md")
             if not os.path.exists(path):
                 # #81. Returns None, or one of the TWO outcome strings -- never a bool: the
-                # SAME/UNKNOWN distinction decides whether the lead enters seen.db, which is
-                # irreversible in one direction, so a bool cannot carry it.
+                # url-PROVEN/weaker distinction decides whether the lead enters seen.db,
+                # which is irreversible in one direction, so a bool cannot carry it.
                 archived = self._archived_match(names, lead, capped)
                 if archived:
                     return None, archived
                 return path, "create"
             inner, _ = _split_frontmatter(_read(path))
-            action = self._reconcile(_fm_dict(inner), lead, capped)
+            # The url-proof is DISCARDED here on purpose: against an ACTIVE note a SAME
+            # verdict terminates the walk identically however it was reached, so this
+            # walk's behaviour is byte-identical to before the second element existed.
+            # Only the archive probe splits on it (there the two outcomes differ in
+            # whether the lead may enter seen.db, which is irreversible).
+            action, _url_proven = self._reconcile(_fm_dict(inner), lead, capped)
             if action != "advance":
                 return path, action
             # DIFFERENT location, or a capped-title mismatch -> advance to the next candidate
@@ -703,10 +762,10 @@ class Vault:
         (see #5). The two "merged_away*" outcomes ALSO write nothing: a human already
         archived this lead as a duplicate (#81), so the incoming scrape is suppressed
         rather than re-created. The two are kept distinct rather than conflated into one
-        string -- `_ARCHIVED` is same_opportunity's SAME verdict (a url match, or a
-        location overlap when the urls don't match), `_ARCHIVED_UNPROVEN` is its UNKNOWN
-        verdict -- evidence-inconclusive -- and that distinction is what later decides
-        whether the lead may enter the dedup store.
+        string -- `_ARCHIVED` is a url-PROVEN match against the archived note,
+        `_ARCHIVED_UNPROVEN` is every weaker one (a location-only SAME, or UNKNOWN) --
+        and that distinction is what later decides whether the lead may enter the dedup
+        store.
 
         The create is EXCLUSIVE (`_write(..., exclusive=True)`): if a concurrent writer (another `ingest run`,
         or a human/Obsidian) creates the note in the window between _resolve_path's existence
