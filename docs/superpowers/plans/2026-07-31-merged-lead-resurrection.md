@@ -198,7 +198,9 @@ Expected: each reddens ≥1 test in `tests/test_vault.py`. Record which.
 - [ ] **Step 8: Full suite + lint**
 
 Run: `.venv/bin/python -m pytest -q && .venv/bin/python -m ruff check sluice tests scripts`
-Expected: **1781 passed** (1780 + the new witness), ruff clean.
+Expected: a FULLY GREEN run (0 failures) and ruff clean, with one more test collected than before
+this step. Do not pin an absolute count: a sentinel keyed to a number that has since moved stops
+sentinelling silently, and this plan's own later steps add tests.
 
 - [ ] **Step 9: Commit**
 
@@ -1032,7 +1034,10 @@ Refs #81"
 grep -rn "#81" sluice tests docs --include='*.py' --include='*.md' | grep -v superpowers/
 ```
 
-Expected: **12** hits across `core/paths.py` (×3), `core/seendb.py` (×2), `core/app.py`, `docs/ARCHITECTURE.md`, `tests/test_path_refusal.py` (×2), `tests/test_paths.py`, `tests/test_seendb.py` (×2). **Derive the list from this command; do not copy the one above** — a review of this work hand-listed five of them and missed seven.
+**Derive the list from this command. Do NOT copy a count from anywhere, including this line** — a
+review of this work hand-listed five sites and missed seven, and the count moved again during
+execution (the tasks before this one add `#81` references of their own). Read every hit and judge it;
+the grep is the enumeration, not a number to match.
 
 What changes is the SCOPE of the claim, not its truth. The refusals stay correct and must NOT be softened — an empty dedup set is still bad, and a merged-away lead can still be re-created when its re-scrape drifts past the name candidates. What goes stale is the unqualified form, *"an empty dedup set re-creates EVERY lead a human merged away"*. `tests/test_path_refusal.py:9` says `_resolve_path` "never consults `leads_dir/_merged/` (#81, true today and out of scope)" — that becomes flatly false.
 

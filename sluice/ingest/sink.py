@@ -5,9 +5,10 @@ VaultSink stamps first_seen/last_seen, upserts each lead into the Obsidian vault
 merged_away/merged_away_unproven; created, updated, merged, and merged_away all mean a
 note now EXISTS (merged_away's is archived under _merged/), so only those are recorded
 in seen.db. `refused` (a #5 name-collision decline), `merged_away_unproven` (a #81
-evidence-inconclusive suppression -- see the allowlist below for why it must never be
-recorded), and `skipped` (a #24 OSError write failure) stay OUT of seen.db so the next
-run retries or re-reports them, rather than aborting the run. JsonSink emits one JSON
+suppression on a match weaker than a url -- a location-token overlap, or an inconclusive
+comparison; see the allowlist below for why it must never be recorded), and `skipped` (a
+#24 OSError write failure) stay OUT of seen.db so the next run retries or re-reports them,
+rather than aborting the run. JsonSink emits one JSON
 object per line - for `--sink json` and the legacy-diff tool. Both return sparse count
 dicts (merged/refused/merged_away/merged_away_unproven keys appear only when non-zero).
 """

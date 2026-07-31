@@ -99,8 +99,13 @@ class Store(Protocol):
         location-token overlap, or an inconclusive comparison) is "merged_away_unproven":
         it still suppresses, but it re-surfaces every run until a human acts, because the
         dedup store has no removal path and a same-company/title/location RE-POST carrying
-        a brand-new url is a real job. A store with no archive concept never returns
-        either.
+        a brand-new url is a real job. "Until a human acts" is a real obligation on the
+        store, not a figure of speech: a store returning this outcome MUST leave the human
+        a route back to an identified state, or the lead re-reports forever with nothing
+        anyone can do about it. For the vault that route is moving the archived note back
+        out of `_merged/`, after which the next scrape reconciles against it as an ordinary
+        note and reports "updated" -- an outcome the sink DOES record, which is what makes
+        the re-reporting stop. A store with no archive concept never returns either.
 
         On "updated" and "merged" ONLY `last_seen` may change -- never status, enrichment,
         or body -- and it may only move FORWARD: a re-scrape carrying an older date leaves

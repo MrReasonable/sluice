@@ -161,8 +161,9 @@ dedup set makes every already-known lead read as unseen and silently re-submits 
 path. `Vault.upsert` now probes `_merged/` by name before creating (#81), so a lead a human merged
 away usually self-heals rather than being re-created -- but that probe is name-keyed, so a re-scrape
 whose title has drifted past every name candidate still slips past it and is created afresh, and if
-its twin was already `applied` that is a second application under the user's name. **That notice is keyed on the resolved path not EXISTING, so any code that
-touches it — even harmlessly — disarms it from then on.** `sqlite3.connect` creates a 0-byte file
+its twin was already `applied` that is a second application under the user's name. **That notice is
+keyed on the resolved path not EXISTING, so any code that touches it — even harmlessly — disarms it
+from then on.** `sqlite3.connect` creates a 0-byte file
 merely by opening one, which is how a `--dry-run` silently disabled the refusal for every later real
 run; a store therefore must not create anything on a read. For the same reason a store must not read
 an unreadable file as empty: the relocated case and the corrupt case cause the identical harm, so
@@ -234,11 +235,18 @@ active walk, so the two cannot drift), and `_archived_match` maps the result. `u
 vocabulary is therefore SIX-member — `created`/`updated`/`merged`/`refused`, plus `merged_away` and
 `merged_away_unproven`. Both archive outcomes write NOTHING: not the note, not `leads_dir`, not the
 Syncthing marker. They differ only in evidence, and that difference is the load-bearing part:
-`merged_away` requires a url-PROVEN match (both urls non-empty and equal) and is the ONLY one the
-ingest sink records in `seen.db`; every weaker match — a location-token overlap, or an inconclusive
+`merged_away` requires a url-PROVEN match (both urls non-empty and equal) and is the only one of the
+TWO the ingest sink records in `seen.db` — it joins `created`/`updated`/`merged` on the allowlist,
+which has four members, not one. Every weaker match — a location-token overlap, or an inconclusive
 comparison — is `merged_away_unproven` and must NEVER be recorded, because `seen.db` has no removal
 path and a same-company/title/location RE-POST carrying a brand-new url is a real job that would
-otherwise be suppressed forever with no note anywhere to reverse it. The Store contract states the
+otherwise be suppressed forever with no note anywhere to reverse it. That arm therefore re-reports
+on every run until a human acts, and there is exactly ONE action — the same hand-move
+`docs/ARCHITECTURE.md` documents as the recovery path: move the archived note back out of
+`_merged/`. It returns to the active view, the next scrape reconciles against it as an ordinary
+note, and the outcome becomes `updated` (a location-only SAME) or `merged` (an inconclusive
+comparison) -- measured on BOTH arms. Either is on the allowlist, so the count stops.
+The Store contract states the
 obligation as bounded, not absolute: a merged-away loser must remain discoverable through the
 identity the store RECORDED at merge time, and a re-scrape whose identity has drifted past that
 (for the vault, past every name candidate) is outside the guarantee and is created — a visible

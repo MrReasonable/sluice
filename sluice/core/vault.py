@@ -365,8 +365,13 @@ class Vault:
                     # lead a human merged away is the harm #81 exists to stop), but never
                     # record: this arm re-surfaces and re-reports every run until a human
                     # acts, which is the recoverable direction.
+                    # "not url-proven", not "evidence inconclusive": since the url-proof
+                    # gate this arm ALSO carries a location-only SAME, which is definite
+                    # evidence that merely is not identity. Naming the missing proof also
+                    # tells the reader what would settle it. The archived path is in the
+                    # message because acting on this means opening THAT note.
                     _log.warning("vault: %r may have been merged away (archived at %s, "
-                                 "evidence inconclusive); not re-created", lead.dedup_key, path)
+                                 "match not url-proven); not re-created", lead.dedup_key, path)
                     return _ARCHIVED_UNPROVEN
         return None
 
