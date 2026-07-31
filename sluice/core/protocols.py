@@ -88,15 +88,27 @@ class Store(Protocol):
         from), or "refused" (the store cannot write this lead WITHOUT clobbering a different
         one, so it writes nothing -- either because no identity distinguishes it from a note
         proven different, or because a concurrent writer keeps winning the create race; the
-        two causes are distinguished only in the log). On "updated" and "merged" ONLY `last_seen` may
-        change -- never status, enrichment, or body -- and it may only move FORWARD: a
-        re-scrape carrying an older date leaves the newer stored value untouched
-        (`last_seen` is monotonic). This is never-clobber, and it is the reason sluice
-        exists.
+        two causes are distinguished only in the log).
+
+        Two more (#81), both MAY-return: "merged_away" and "merged_away_unproven" -- the
+        lead was already merged away by merge_cluster, so nothing is written. They differ
+        only in evidence strength, and the caller uses that: the ingest sink records the
+        PROVEN one in its dedup store and must never record the unproven one. A store with
+        no archive concept never returns either.
+
+        On "updated" and "merged" ONLY `last_seen` may change -- never status, enrichment,
+        or body -- and it may only move FORWARD: a re-scrape carrying an older date leaves
+        the newer stored value untouched (`last_seen` is monotonic). This is never-clobber,
+        and it is the reason sluice exists.
 
         "created"/"updated" are MUST-support. "merged"/"refused" are MAY-return: a store
         keyed on synthetic ids never merges-on-uncertainty and never hits a naming
-        collision, so it need only ever create or update. See #5."""
+        collision, so it need only ever create or update. See #5.
+
+        MUST-honour for any store implementing merge_cluster: a lead merged away is NEVER
+        re-created. That is a safety property in the never-clobber family -- it protects a
+        human's decision from being silently undone, and re-creating the lead can mean a
+        second application under the user's name. See tests/conformance/test_store_contract.py."""
         ...
 
     def update_fields(self, ref, fields: dict, *, append_note=None, note_tag=None,
@@ -136,8 +148,13 @@ class Store(Protocol):
         so the whole merge is aborted with nothing written and no loser touched. Each
         loser is then removed/archived independently; a per-loser removal failure is
         isolated to that loser (it stays in the active view and is never counted as
-        merged) rather than aborting the whole cluster. Returns the removed/archived
-        loser handles -- only the ones that actually succeeded."""
+        merged) rather than aborting the whole cluster.
+
+        A removed loser MUST remain discoverable by `upsert` and invisible to `read_leads`,
+        so a later re-scrape of that lead is not re-created (#81). The vault keeps the whole
+        note under `_merged/`; a natural-key tombstone satisfies it equally -- retention of
+        the note itself is this store's mechanism, not the requirement. The returned handles
+        are whatever identifies the removed records to this store; a tombstone id is a handle."""
         ...
 
     def append_body_section(self, ref, tag: str, section_md: str) -> bool:
