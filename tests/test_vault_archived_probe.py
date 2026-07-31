@@ -533,6 +533,24 @@ def test_unreadable_archived_entry_raises_rather_than_silently_resurrecting(tmp_
         os.chmod(archived, 0o600)
 
 
+def test_blank_url_and_location_archive_is_still_recognized_as_a_note(tmp_path):
+    """The skip guard must key on company/role, never on url/location: same_opportunity's
+    own docstring records that a REAL note -- a google lead -- can carry url:"" AND a
+    blank location at once, which is exactly the UNKNOWN case this probe exists to
+    suppress. A guard keyed on url/location instead would test the same fields the
+    VERDICT consumes, collapsing "is this a note at all?" into "what does it say?", and
+    would skip this legitimate archived loser as if it were the 0-byte reservation --
+    resurrecting it. Built through the real upsert + merge_cluster flow: nothing in the
+    production write path requires a non-blank url or location, so this fixture needs no
+    hand-seeding."""
+    v = Vault(str(tmp_path))
+    survivor = _lead(title="Blank Evidence Survivor", url="https://ex.invalid/9")
+    loser = _lead(title="Blank Evidence Loser", url="", location="")
+    _merge_away(v, loser, survivor)
+    again = _lead(title="Blank Evidence Loser", url="", location="")
+    assert v.upsert(again) == "merged_away_unproven"
+
+
 def test_probe_is_a_no_op_when_nothing_was_ever_merged(tmp_path):
     """_merged/ is created lazily, so on any install that has never merged it does not
     exist. That is the common case and means 'no hit' -- FileNotFoundError specifically,
