@@ -85,10 +85,20 @@ def test_unknown_verdict_suppresses_as_unproven(tmp_path):
 
 
 def test_bare_prefix_would_over_match_a_different_job(tmp_path):
-    """The ANCHOR witness. Two genuinely different jobs whose names share a prefix; the
-    LONGER is merged away, then the SHORTER is scraped. A bare `startswith` match would
-    suppress it -- and its verdict is UNKNOWN, so the 'treat DIFFERENT as a hit' mutant
-    does not reach this case and it needs its own test."""
+    """Two genuinely different jobs whose names share a prefix; the LONGER is merged away,
+    then the SHORTER is scraped. It must be CREATED.
+
+    Read the name as a claim about the FILTER, not about the outcome: a bare `startswith`
+    would admit `X - Y II.md` for candidate `X - Y`, but the recorded-name comparison then
+    rejects it, so the over-match no longer reaches a suppression. This was written as the
+    ANCHOR witness and that reason is now false -- measured, loosening the anchor to
+    `startswith` leaves this test GREEN; only removing the anchor AND the recorded-name
+    comparison together reddens it. The anchor is retained as a cost filter (one read per
+    matching entry instead of per archived entry) and as defence in depth, never as the
+    guarantee -- see `_archived_match`'s docstring.
+
+    The case still earns its own test: its verdict is UNKNOWN, so the 'treat DIFFERENT as a
+    hit' mutant does not reach it, and no other test here pairs prefix-sharing names."""
     v = Vault(str(tmp_path))
     survivor = _lead(title="Anchor Survivor", url="https://ex.invalid/9")
     longer = _lead(title="Y II", url="https://ex.invalid/2", location="")
