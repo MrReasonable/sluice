@@ -30,9 +30,10 @@ def test_print_report_surfaces_merged_and_refused(capsys):
 
 
 def test_print_report_surfaces_merged_away(capsys):
-    # #81: merged_away (proven) and merged_away_unproven (evidence-inconclusive) are
-    # distinct outcomes with distinct wording -- a human reading the run summary must be
-    # able to tell "self-healed" from "still needs a decision" without opening the vault.
+    # #81: merged_away (url-proven) and merged_away_unproven (every weaker match -- a
+    # location-token overlap, or an inconclusive comparison) are distinct outcomes with
+    # distinct wording -- a human reading the run summary must be able to tell
+    # "self-healed" from "still needs a decision" without opening the vault.
     class _R:
         sources = []
         written = {"created": 1, "updated": 0, "merged_away": 2,
