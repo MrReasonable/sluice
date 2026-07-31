@@ -170,6 +170,36 @@ class Vault:
         name = self._note_name(f"{lead.company} - {lead.title}")
         return os.path.join(self.leads_dir, f"{name}.md")
 
+    def _reconcile(self, fm: dict, lead: Lead, capped: bool) -> str:
+        """The ONE verdict, shared by the active walk and #81's archive probe: "update",
+        "merge" or "advance". A second copy kept in sync by a comment is the #30 failure
+        mode -- a check that must match another check, with prose standing in for the
+        guarantee -- so both callers go through here.
+
+        `capped` is the caller's, not re-derived: it measures the CHAR cap on the FULL
+        `company - title` stem, which only the caller knows. Deleting the `capped and`
+        below leaves the whole suite green except
+        test_capped_gate_on_title_lost_is_load_bearing, and it is NOT an equivalent
+        mutant -- it makes title_lost fire for short titles, so a human correcting a
+        note's `role` in Obsidian turns every later re-scrape into an advance."""
+        verdict = same_opportunity(fm, lead, self._noise)
+        # A matching non-empty URL is same_opportunity's DEFINITIVE proof of the same
+        # posting, so a drifted title tail on a url-stable posting must still update in
+        # place rather than mint a digest note per drift.
+        url_proven = (bool(lead.url) and bool(fm.get("url"))
+                      and _norm_url(lead.url) == _norm_url(fm.get("url", "")))
+        # A capped filename can seat a note whose FULL title differs -- only the truncated
+        # prefix matched. Treat that as advance, exactly like a proven-different location.
+        title_lost = (capped and not url_proven
+                      and _title_key(fm.get("role", "")) != _title_key(lead.title))
+        if title_lost:
+            return "advance"
+        if verdict == SAME:
+            return "update"
+        if verdict == UNKNOWN:
+            return "merge"
+        return "advance"
+
     def _resolve_path(self, lead: Lead) -> tuple[str | None, str]:
         """Walk the nameable candidates and return (path, action), action one of
         "create"/"update"/"merge"/"refuse". Candidate 1 is the clean `Company - Title` name
@@ -203,23 +233,9 @@ class Vault:
             if not os.path.exists(path):
                 return path, "create"
             inner, _ = _split_frontmatter(_read(path))
-            fm = _fm_dict(inner)
-            verdict = same_opportunity(fm, lead, self._noise)
-            # A capped filename can seat a note whose FULL title differs -- only the truncated
-            # prefix matched. Treat that as advance, exactly like a proven-different location:
-            # never update/merge across a title the filename lost. BUT a matching non-empty URL
-            # is same_opportunity's DEFINITIVE proof of the same posting, so a drifted title tail
-            # on a url-stable posting must still update in place, not mint a digest note per
-            # drift -- `title_lost` never overrides a url match. Gated on `capped`, so a short
-            # title (whose filename carries its whole self) never triggers it.
-            url_proven = (bool(lead.url) and bool(fm.get("url"))
-                          and _norm_url(lead.url) == _norm_url(fm.get("url", "")))
-            title_lost = (capped and not url_proven
-                          and _title_key(fm.get("role", "")) != _title_key(lead.title))
-            if verdict == SAME and not title_lost:
-                return path, "update"
-            if verdict == UNKNOWN and not title_lost:
-                return path, "merge"
+            action = self._reconcile(_fm_dict(inner), lead, capped)
+            if action != "advance":
+                return path, action
             # DIFFERENT location, or a capped-title mismatch -> advance to the next candidate
         return None, "refuse"
 
