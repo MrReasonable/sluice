@@ -204,3 +204,21 @@ def test_merged_away_writes_nothing(tmp_path):
 
     assert not os.path.exists(os.path.join(v.leads_dir, "X - Y.md"))
     assert not os.path.exists(os.path.join(tmp_path, ".stfolder"))
+
+
+def test_dotted_title_is_not_confused_with_a_collision_suffix(tmp_path):
+    """_sanitize maps only `<>:"/\\|?*` and C0 controls -- it does NOT map '.'. So a job
+    genuinely titled "Y.1" produces the byte-identical filename SHAPE merge_cluster's own
+    numeric collision suffix would produce for a genuine "Y" (`X - Y.1.md` either way),
+    and the anchored pattern alone cannot tell them apart. The archived note's OWN
+    company/role must disambiguate: a merged-away "Y.1" must never suppress a never-seen
+    "Y" that merely shares its location, or a genuinely different job silently vanishes
+    into the PROVEN arm (same_opportunity's location match) and can never be created."""
+    v = Vault(str(tmp_path))
+    survivor = _lead(title="Dot Survivor", url="https://ex.invalid/9")
+    dotted = _lead(title="Y.1", url="https://ex.invalid/2")   # location defaults LOCATIONS[0]
+    _merge_away(v, dotted, survivor)
+    merged = sorted(os.listdir(os.path.join(v.leads_dir, "_merged")))
+    assert merged == ["X - Y.1.md"], merged
+    fresh = _lead(title="Y", url="")   # location defaults LOCATIONS[0] -- same as dotted's
+    assert v.upsert(fresh) == "created"
