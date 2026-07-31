@@ -123,7 +123,7 @@ def test_clamp_bytes_truncates_ascii_to_byte_budget():
 
 def test_clamp_bytes_never_splits_a_multibyte_codepoint():
     # "測" encodes to 3 UTF-8 bytes. A 4-byte budget must keep exactly one whole
-    # char, never one-and-a-fraction — the guarantee _path_for relies on.
+    # char, never one-and-a-fraction — the guarantee _note_name relies on.
     out = _clamp_bytes("測測", 4)
     assert out == "測"
     assert len(out.encode("utf-8")) <= 4
@@ -193,7 +193,7 @@ def test_name_max_falls_back_when_pathconf_unsupported(tmp_path, monkeypatch):
 
 def test_name_max_falls_back_when_pathconf_returns_negative_one(tmp_path, monkeypatch):
     # POSIX pathconf RETURNS -1 (a value, not an exception) when NAME_MAX is
-    # indeterminate. Uncaught, that -1 caches and drives _path_for's byte budget to -4,
+    # indeterminate. Uncaught, that -1 caches and drives _note_name's byte budget to -4,
     # so _clamp_bytes negative-slices EVERY name -> a vault-wide rename/duplicate. A
     # non-positive limit must take the 255 fallback, same as the exception path.
     v = Vault(str(tmp_path))

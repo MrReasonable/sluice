@@ -49,12 +49,14 @@ _CHAR_CAP = 120     # max chars of a note stem before the byte-clamp; identity-d
 _CREATE_RACE_RETRIES = 3  # #16: bounded re-reconciles when a create loses the TOCTOU race
 _RMW_RACE_RETRIES = 3  # #16: bounded re-derivations before a modify-write refuses loudly
 _MERGED_SUBDIR = "_merged"          # where merge_cluster archives losers (#23)
-_ARCHIVED = "merged_away"           # #81: proven -- SAME verdict; the sink records it
+# #81: same_opportunity's SAME verdict -- a url match, or a token-overlapping location when
+# the urls don't match (not "url-proven" in every case). The sink records it.
+_ARCHIVED = "merged_away"
 _ARCHIVED_UNPROVEN = "merged_away_unproven"   # #81: UNKNOWN verdict; NEVER recorded
 # #81: the note name a loser was SEATED at, stamped INTO the note as merge_cluster archives
 # it and read back by the write path's probe. Spelled for a human opening the archived note
-# in Obsidian ("archived from note <name>"), and present on archived notes ONLY -- an active
-# note was never archived from anywhere, so the key there would be a lie.
+# in Obsidian ("archived from note <name>"). Written only as a note is archived -- a note
+# restored out of `_merged/` by hand keeps the key, and nothing reads it there.
 _ARCHIVED_FROM = "archived_from_note"
 
 _log = get_logger("core.vault")
@@ -218,8 +220,9 @@ class Vault:
         strips a leading/trailing quote, so any component whose edge character is a quote
         no longer re-derives to the name it was seated at; and a human correcting
         `company`/`role` in Obsidian after the merge (the #16 threat model) breaks the
-        re-derivation the same way. Both land on the PROVEN arm -- the irreversible
-        direction, because the sink records that arm in the dedup store.
+        re-derivation the same way. Both land on the SAME arm -- a url match, or a
+        location overlap when the urls don't match -- the irreversible direction, because
+        the sink records that arm in the dedup store.
 
         The filename pattern is a cheap PRE-FILTER, never the decision. It is a superset by
         construction: `merge_cluster` derives the archived filename AND the recorded value
@@ -242,7 +245,8 @@ class Vault:
           a visible duplicate note a human can merge again.
         - WRONG HIT: a candidate genuinely named `X - Y.1` still matches that same entry,
           so a never-seen job whose title ends in `.` plus digits is suppressed -- on the
-          PROVEN arm, which the sink records irreversibly.
+          SAME arm (a url match, or a location overlap when the urls don't match), which
+          the sink records irreversibly.
 
         For a genuinely PRE-UPGRADE archive the wrong hit is unavoidable: its filename is
         the only evidence that ever existed for it. That rationale does NOT carry to a
@@ -699,9 +703,10 @@ class Vault:
         (see #5). The two "merged_away*" outcomes ALSO write nothing: a human already
         archived this lead as a duplicate (#81), so the incoming scrape is suppressed
         rather than re-created. The two are kept distinct rather than conflated into one
-        string -- `_ARCHIVED` is same_opportunity's PROVEN verdict, `_ARCHIVED_UNPROVEN` is
-        evidence-inconclusive, and that distinction is what later decides whether the lead
-        may enter the dedup store.
+        string -- `_ARCHIVED` is same_opportunity's SAME verdict (a url match, or a
+        location overlap when the urls don't match), `_ARCHIVED_UNPROVEN` is its UNKNOWN
+        verdict -- evidence-inconclusive -- and that distinction is what later decides
+        whether the lead may enter the dedup store.
 
         The create is EXCLUSIVE (`_write(..., exclusive=True)`): if a concurrent writer (another `ingest run`,
         or a human/Obsidian) creates the note in the window between _resolve_path's existence
@@ -1118,7 +1123,8 @@ def _stamp_archived_from(path: str, seated: str) -> None:
     LEGACY population `_archived_match` matches by exact filename, which is wrong in BOTH
     directions: a stamp-failed `X - Y.1.md` stops suppressing the lead it archives (a
     visible duplicate -- the safe direction), AND it starts matching a never-seen job
-    genuinely titled `Y.1`, on the PROVEN, irreversible arm. This is therefore a RUNTIME
+    genuinely titled `Y.1`, on the SAME arm (a url match, or a location overlap when the
+    urls don't match) -- irreversible. This is therefore a RUNTIME
     source of legacy entries on an otherwise fully upgraded install, not a pre-upgrade
     concern -- `_archived_match`'s docstring enumerates it as such."""
     def transform(text: str) -> str:

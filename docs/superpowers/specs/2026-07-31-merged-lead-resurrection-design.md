@@ -551,7 +551,7 @@ The `capped and` row is the load-bearing one: mutation-tested on the current tre
 
 ## The residual
 
-Three, all narrower than the defect being closed and all failing toward the safe direction:
+Four, all narrower than the defect being closed and all failing toward the safe direction:
 
 - **Name drift past the candidate set.** As above: a re-scrape whose title changes enough to produce
   a different `_note_name` than the archived loser's is not found, and is created. This is the same
@@ -566,3 +566,14 @@ Three, all narrower than the defect being closed and all failing toward the safe
   no worse than it is today (the loser's re-scrape already bumped nothing, since it was filtered by
   `seen.db`), but survivor-routing would have closed it. Recorded here so it is not rediscovered as
   a new bug.
+- **A location-only SAME on the recorded arm.** `same_opportunity` returns SAME from a matching
+  non-empty url *or* from a token-overlapping location when the urls don't match (`core/leads.py`);
+  only the former is proof of the same posting. A lead carrying a brand-new, never-seen url that
+  happens to share company, title, and an overlapping location with an archived loser is
+  `merged_away` on the location evidence alone, and the sink records that url in `seen.db`
+  permanently -- so a genuinely new requisition at the same company/title/location is suppressed
+  with nothing in the active view to flag it. This fails toward a missed job rather than a
+  duplicate application, which is the right direction for this repo's asymmetry, but it is a real
+  residual, not a hypothetical one. Gating the seen.db-recording arm on `url_proven` rather than on
+  SAME -- letting a location-only SAME fall to the never-recorded unproven arm instead -- was
+  considered and NOT taken on this branch.

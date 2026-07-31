@@ -93,8 +93,10 @@ class Store(Protocol):
         Two more (#81), both MAY-return: "merged_away" and "merged_away_unproven" -- the
         lead was already merged away by merge_cluster, so nothing is written. They differ
         only in evidence strength, and the caller uses that: the ingest sink records the
-        PROVEN one in its dedup store and must never record the unproven one. A store with
-        no archive concept never returns either.
+        SAME-verdict one -- same_opportunity's SAME, a url match or a location overlap when
+        the urls don't match, not proof of identity in every case -- in its dedup store and
+        must never record the UNKNOWN one. A store with no archive concept never returns
+        either.
 
         On "updated" and "merged" ONLY `last_seen` may change -- never status, enrichment,
         or body -- and it may only move FORWARD: a re-scrape carrying an older date leaves
