@@ -8,7 +8,9 @@ import os
 import pytest
 
 from sluice.core.leads import Lead
+from sluice.core.seendb import SeenDb
 from sluice.core.vault import Vault, _fm_dict, _split_frontmatter
+from sluice.ingest.sink import VaultSink
 from tests.conftest import LOCATIONS
 
 
@@ -100,13 +102,24 @@ def test_bare_prefix_would_over_match_a_different_job(tmp_path):
     guarantee -- see `_archived_match`'s docstring.
 
     The case still earns its own test: its verdict is UNKNOWN, so the 'treat DIFFERENT as a
-    hit' mutant does not reach it, and no other test here pairs prefix-sharing names."""
+    hit' mutant does not reach it, and no other test here pairs prefix-sharing names.
+
+    The second arm is the CONTROL, and it is what makes the first arm mean anything. On its
+    own, `created` is satisfied by a probe that matches NOTHING -- both the anchor and the
+    recorded-name comparison reject this fixture independently, so no SINGLE mutation to
+    either could redden it, which is the shape a guard test fails open in. Re-scraping the
+    archived lead ITSELF must be suppressed, so an inert probe (or a seated-name comparison
+    broken toward never matching) reddens this test even though the first arm cannot see
+    it."""
     v = Vault(str(tmp_path))
     survivor = _lead(title="Anchor Survivor", url="https://ex.invalid/9")
     longer = _lead(title="Y II", url="https://ex.invalid/2", location="")
     _merge_away(v, longer, survivor)
     shorter = _lead(title="Y", url="", location="")
     assert v.upsert(shorter) == "created"
+    # CONTROL: same vault, same archive -- the lead that WAS merged away. Its url matches
+    # the archived note's, so this is the url-proven arm.
+    assert v.upsert(longer) == "merged_away"
 
 
 def test_loser_archived_under_its_location_suffixed_name_is_found(tmp_path):
@@ -196,13 +209,17 @@ def test_capped_title_probe_advances_on_a_lost_title(tmp_path):
 def test_capped_title_probe_control_arm_suppresses_a_matching_title(tmp_path):
     """The CONTROL for the test above, and it is load-bearing: asserting only `created`
     there is byte-identical to a probe that never matched anything, so that test alone
-    passes under a FULLY INERT probe. Same fixture, matching role -> must hit."""
+    passes under a FULLY INERT probe. Same fixture, matching role -> must hit.
+
+    UNPROVEN, not proven: this lead carries url:"" against an archived note whose url is
+    non-empty, so the match rests on the location overlap alone. What it controls for is
+    that the probe MATCHED at all, which either outcome string witnesses equally."""
     v = Vault(str(tmp_path))
     survivor = _lead(title="Capped Survivor", url="https://ex.invalid/9")
     loser = _lead(title=_LONG + "A", url="https://ex.invalid/2", location=LOCATIONS[0])
     _merge_away(v, loser, survivor)
     same = _lead(title=_LONG + "A", url="", location=LOCATIONS[0])
-    assert v.upsert(same) == "merged_away"
+    assert v.upsert(same) == "merged_away_unproven"
 
 
 def test_capped_title_probe_url_match_overrides_a_lost_title(tmp_path):
@@ -222,7 +239,13 @@ def test_merged_away_writes_nothing(tmp_path):
     scenario that can reach the probe -- asserting its absence would be unsatisfiable
     rather than strict. The archive is hand-seeded precisely so `.stfolder` does NOT
     already exist; built through upsert+merge_cluster, the setup itself creates it and the
-    branch-placement mutant becomes invisible."""
+    branch-placement mutant becomes invisible.
+
+    Which arm this lands on is incidental to what it pins: both archive outcomes return
+    through the ONE shared branch in `upsert` (`if action in (_ARCHIVED,
+    _ARCHIVED_UNPROVEN)`), placed ABOVE the makedirs, so either arm witnesses the
+    placement. It is the UNPROVEN one here only because the hand-seeded entry -- required
+    so `.stfolder` does not already exist -- carries url:"" and so does the lead."""
     v = Vault(str(tmp_path))
     merged_dir = os.path.join(v.leads_dir, "_merged")
     os.makedirs(merged_dir, exist_ok=True)
@@ -231,7 +254,7 @@ def test_merged_away_writes_nothing(tmp_path):
                 % LOCATIONS[0])
     assert not os.path.exists(os.path.join(tmp_path, ".stfolder"))
 
-    assert v.upsert(_lead(title="Y", url="", location=LOCATIONS[0])) == "merged_away"
+    assert v.upsert(_lead(title="Y", url="", location=LOCATIONS[0])) == "merged_away_unproven"
 
     assert not os.path.exists(os.path.join(v.leads_dir, "X - Y.md"))
     assert not os.path.exists(os.path.join(tmp_path, ".stfolder"))
@@ -244,7 +267,9 @@ def test_dotted_title_is_not_confused_with_a_collision_suffix(tmp_path):
     and the anchored pattern alone cannot tell them apart. The archived note's OWN
     company/role must disambiguate: a merged-away "Y.1" must never suppress a never-seen
     "Y" that merely shares its location, or a genuinely different job silently vanishes
-    into the PROVEN arm (same_opportunity's location match) and can never be created."""
+    into a suppression it never earned. Since #81's review that vanishing is onto the
+    UNPROVEN arm (the two carry different urls), so it re-reports rather than entering
+    seen.db -- still wrong, still worth its own test, no longer irreversible."""
     v = Vault(str(tmp_path))
     survivor = _lead(title="Dot Survivor", url="https://ex.invalid/9")
     dotted = _lead(title="Y.1", url="https://ex.invalid/2")   # location defaults LOCATIONS[0]
@@ -380,9 +405,9 @@ def test_collision_file_does_not_suppress_a_job_genuinely_named_like_it(tmp_path
     job `Y` produces `_merged/X - Y.1.md`, which is byte-identical to what an archive of a
     job genuinely titled `Y.1` would be called. A never-seen `Y.1` therefore probes with
     candidate `X - Y.1` and matches that file EXACTLY -- no numeric suffix involved, so no
-    amount of `.N` grammar can catch it -- and its verdict is SAME (shared location), which
-    is the PROVEN arm the sink records irreversibly. The archived note records the name it
-    was SEATED at (`X - Y`), which does not equal the candidate, so it does not match."""
+    amount of `.N` grammar can catch it -- and its verdict is SAME (shared location), a
+    suppression the job never earned. The archived note records the name it was SEATED at
+    (`X - Y`), which does not equal the candidate, so it does not match."""
     v = Vault(str(tmp_path))
     assert v.upsert(_lead(title="Mirror Survivor", url="https://ex.invalid/9")) == "created"
     _collide(v)
@@ -433,10 +458,14 @@ def test_legacy_archive_without_the_field_suppresses_by_exact_name(tmp_path):
     Its filename still proves ONE thing unaided -- an exact name with no collision counter
     -- and that much must keep working, or shipping this would resurrect every lead a human
     merged away before the upgrade. Hand-seeded because the current code cannot produce an
-    entry without the field."""
+    entry without the field.
+
+    On the UNPROVEN arm: a legacy entry predates the stamp and this one carries url:"",
+    so nothing url-proves the match. Suppression is what the legacy arm owes; recording is
+    not, and a pre-upgrade archive is exactly where the evidence is thinnest."""
     v = Vault(str(tmp_path))
     _seed_legacy(v, "X - Y.md", company="X", role="Y", location=LOCATIONS[0])
-    assert v.upsert(_lead(title="Y", url="", location=LOCATIONS[0])) == "merged_away"
+    assert v.upsert(_lead(title="Y", url="", location=LOCATIONS[0])) == "merged_away_unproven"
 
 
 def test_legacy_numeric_suffix_archive_is_not_matched(tmp_path):
@@ -549,6 +578,94 @@ def test_blank_url_and_location_archive_is_still_recognized_as_a_note(tmp_path):
     _merge_away(v, loser, survivor)
     again = _lead(title="Blank Evidence Loser", url="", location="")
     assert v.upsert(again) == "merged_away_unproven"
+
+
+def test_company_only_archived_entry_is_still_a_note(tmp_path):
+    """The "is this a note at all" predicate skips on NEITHER company nor role, never on
+    EITHER. A reviewer proposed the either-form; it moves the wrong way, because skipping
+    more often means suppressing less often. Here `role` is blank -- what a hand edit in
+    Obsidian leaves behind (the #16 threat model) -- and the entry must still be treated as
+    a note and still suppress, rather than being mistaken for merge_cluster's 0-byte O_EXCL
+    reservation and skipped, which would resurrect the lead."""
+    v = Vault(str(tmp_path))
+    _seed_legacy(v, "X - Y.md", company="X", role="", location=LOCATIONS[0])
+    assert v.upsert(_lead(title="Y", url="", location=LOCATIONS[0])) == "merged_away_unproven"
+
+
+def test_role_only_archived_entry_is_still_a_note(tmp_path):
+    """The mirror of the sibling above: `company` blanked, `role` intact. Both halves are
+    pinned so the predicate cannot be flipped to the either-form without a test going red;
+    a single half would leave one direction of the flip invisible."""
+    v = Vault(str(tmp_path))
+    _seed_legacy(v, "X - Y.md", company="", role="Y", location=LOCATIONS[0])
+    assert v.upsert(_lead(title="Y", url="", location=LOCATIONS[0])) == "merged_away_unproven"
+
+
+def test_legacy_wrong_hit_is_suppressed_only_on_the_unproven_arm(tmp_path):
+    """The legacy arm's accepted WRONG HIT, and the bound the url-proof gate puts on it. A
+    legacy `X - Y.1.md` archiving a job whose title genuinely ends in `.1` is matched by a
+    candidate `X - Y.1` -- correct here -- but the SAME file shape also arises as a
+    collision counter on a plain `Y`, and a legacy entry carries nothing to tell them apart.
+    So a never-seen `Y.1` can be suppressed by an archive of a DIFFERENT job.
+
+    That is the cost `_archived_match`'s docstring accepts. What bounds it: the entry
+    archives a different job, so its url cannot be the never-seen lead's, the match is not
+    url-proven, and the outcome is the UNPROVEN arm -- out of seen.db, re-reported every run
+    until a human acts. Before the url-proof gate this same fixture returned `merged_away`
+    and entered the dedup store permanently."""
+    v = Vault(str(tmp_path))
+    _seed_legacy(v, "X - Y.1.md", company="X", role="Y",
+                 location=LOCATIONS[0], extra='url: "https://ex.invalid/archived"\n')
+    fresh = _lead(title="Y.1", url="https://ex.invalid/brand-new", location=LOCATIONS[0])
+    assert v.upsert(fresh) == "merged_away_unproven"
+
+
+def test_location_only_same_is_unproven_and_stays_out_of_seen_db(tmp_path):
+    """THE url-proof gate, end to end through the real sink and a real seen.db.
+
+    `same_opportunity` returns SAME from a matching url OR from a location-token overlap,
+    and only the first is identity. A genuinely new requisition -- same company, same title,
+    same location, BRAND-NEW url: a re-post, or a second headcount -- takes the second path.
+    Recording it would suppress a real job permanently and invisibly, since seen.db has
+    load/save only and no removal path, and no note exists anywhere to reverse it from. So
+    it must land on the UNPROVEN arm and stay OUT of the dedup store, re-reporting every run.
+
+    Deleting `and url_proven` from `_archived_match` reddens this test."""
+    v = Vault(str(tmp_path / "vault"))
+    seen = SeenDb(str(tmp_path / "seen.db"))
+    survivor = _lead(title="Repost Survivor", url="https://ex.invalid/9")
+    loser = _lead(title="Repost Target", url="https://ex.invalid/2", location=LOCATIONS[0])
+    _merge_away(v, loser, survivor)
+
+    repost = _lead(title="Repost Target", url="https://ex.invalid/3", location=LOCATIONS[0])
+    assert v.upsert(repost) == "merged_away_unproven"
+
+    counts = VaultSink(v, seen, today=lambda: "2026-07-31").write([repost])
+    assert counts.get("merged_away_unproven") == 1 and not counts.get("created")
+    assert repost.dedup_key not in seen.load()   # re-surfaces next run
+    assert len(v.read_leads()) == 1              # and nothing was written
+
+
+def test_url_proven_same_is_recorded_in_seen_db(tmp_path):
+    """The CONTROL for the gate above, and it is load-bearing: asserting only that the
+    re-post stays out of seen.db is satisfied by a probe that records NOTHING ever, so that
+    test alone passes under a gate stuck closed. Same vault, same archive, same everything
+    -- except the incoming lead carries the archived note's OWN url, which PROVES identity.
+    That one must be recorded, so the suppression self-heals the dedup set and happens once
+    rather than on every run."""
+    v = Vault(str(tmp_path / "vault"))
+    seen = SeenDb(str(tmp_path / "seen.db"))
+    survivor = _lead(title="Repost Survivor", url="https://ex.invalid/9")
+    loser = _lead(title="Repost Target", url="https://ex.invalid/2", location=LOCATIONS[0])
+    _merge_away(v, loser, survivor)
+
+    again = _lead(title="Repost Target", url="https://ex.invalid/2", location=LOCATIONS[0])
+    assert v.upsert(again) == "merged_away"
+
+    counts = VaultSink(v, seen, today=lambda: "2026-07-31").write([again])
+    assert counts.get("merged_away") == 1
+    assert again.dedup_key in seen.load()
+    assert len(v.read_leads()) == 1
 
 
 def test_probe_is_a_no_op_when_nothing_was_ever_merged(tmp_path):
