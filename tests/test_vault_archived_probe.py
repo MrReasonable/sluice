@@ -5,6 +5,8 @@ dedup set is empty. Fixtures are synthetic: LOCATIONS placeholders, abstract com
 `.invalid` urls -- no faker (see tests/test_leads_cluster.py's ruling)."""
 import os
 
+import pytest
+
 from sluice.core.leads import Lead
 from sluice.core.vault import Vault, _fm_dict, _split_frontmatter
 from tests.conftest import LOCATIONS
@@ -496,3 +498,46 @@ def test_a_failed_stamp_does_not_un_count_a_real_archive(tmp_path, monkeypatch):
     assert len(v.read_leads()) == 1               # ...and the loser really is out of view
     assert "archived_from_note" not in _read_fm(archived[0])   # the stamp genuinely failed
     assert v.upsert(loser) == "merged_away"       # legacy arm: exact filename still suppresses
+
+
+def test_zero_byte_reservation_is_skipped_not_treated_as_unknown(tmp_path):
+    """merge_cluster's O_EXCL reservation leaves a 0-byte file under a real lead's archived
+    name if the process dies before os.replace, and its cleanup is best-effort. Scored as
+    UNKNOWN it would suppress every future lead at that name."""
+    v = Vault(str(tmp_path))
+    assert v.upsert(_lead(title="Y", url="https://ex.invalid/1")) == "created"
+    merged_dir = os.path.join(v.leads_dir, "_merged")
+    os.makedirs(merged_dir, exist_ok=True)
+    open(os.path.join(merged_dir, "X - Y.md"), "w").close()   # the orphaned reservation
+    fresh = _lead(title="Y", url="https://ex.invalid/2", location=LOCATIONS[1])
+    assert v.upsert(fresh) in ("created", "updated", "merged")
+
+
+def test_unreadable_archived_entry_raises_rather_than_silently_resurrecting(tmp_path):
+    """`except OSError: continue` here -- read_leads' shape -- would turn a permissions
+    error into a resurrection. It must propagate so the sink counts the lead `skipped`
+    and keeps it OUT of seen.db for a retry."""
+    v = Vault(str(tmp_path))
+    survivor = _lead(title="Senior Widget Engineer", url="https://ex.invalid/1")
+    loser = _lead(title="Widget Engineer Senior", url="https://ex.invalid/2")
+    _merge_away(v, loser, survivor)
+    merged_dir = os.path.join(v.leads_dir, "_merged")
+    archived = os.path.join(merged_dir, os.listdir(merged_dir)[0])
+    os.chmod(archived, 0o000)
+    try:
+        if os.access(archived, os.R_OK):        # root ignores the mode bits
+            pytest.skip("running as root: cannot make a file unreadable")
+        with pytest.raises(OSError):
+            v.upsert(loser)
+    finally:
+        os.chmod(archived, 0o600)
+
+
+def test_probe_is_a_no_op_when_nothing_was_ever_merged(tmp_path):
+    """_merged/ is created lazily, so on any install that has never merged it does not
+    exist. That is the common case and means 'no hit' -- FileNotFoundError specifically,
+    never a bare `except OSError` that would also swallow an unreadable directory."""
+    v = Vault(str(tmp_path))
+    assert v.upsert(_lead()) == "created"
+    assert not os.path.exists(os.path.join(v.leads_dir, "_merged"))
+    assert v.upsert(_lead(url="https://ex.invalid/2", location=LOCATIONS[1])) == "created"
