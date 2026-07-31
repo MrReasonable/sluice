@@ -1,5 +1,17 @@
 # Merged-lead resurrection — the write path must honour a human's merge decision (#81)
 
+> **Superseded 2026-07-31 (pre-push review):** two rulings below moved during the review that
+> preceded this branch's push. (1) The residual titled *"A location-only SAME on the recorded arm"*
+> records that gating the `seen.db`-recording arm on `url_proven` "was considered and NOT taken on
+> this branch". It WAS taken: two independent reviewers reached the same finding, and `_archived_match`
+> now returns `merged_away` only on a url-PROVEN match, `merged_away_unproven` on every weaker one
+> (including a location-only SAME). The tables at "SAME | hit -> `merged_away`, recorded" and
+> "`merged_away` | SAME -- proven" read on the SAME/UNKNOWN axis and should be read on the
+> proven/weaker one. (2) The `Store` contract addition is NOT the absolute "a lead merged away is
+> never re-created": it is bounded to *the identity the store recorded at merge time*, with a
+> re-scrape whose identity has drifted beyond that stated as outside the guarantee. `core/protocols.py`
+> and `docs/ARCHITECTURE.md` carry the shipped wording. The design is left as approved.
+
 - **Date**: 2026-07-31
 - **Origin**: issue #81, filed during `/review-plan` on #80 and **before #80 landed**. Two of the
   three premises in the issue body were invalidated by #80 shipping (PR #82); see "What #80
