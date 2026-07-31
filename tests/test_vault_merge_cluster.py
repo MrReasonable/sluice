@@ -89,12 +89,24 @@ def test_loser_state_survives_the_archive_stamp(tmp_path):
     v = _mk(tmp_path)
     survivor = _by_url(v, "https://ex.invalid/1")
     loser = _by_url(v, "https://ex.invalid/2")
-    v.update_fields(loser.ref, {"status": "shortlist", "score": "7",
-                                "tailored_cv": "CV_zz99.pdf"})
-    v.append_body_section(loser.ref, "loser-body-tag", "## Seeded loser body\nkeep me too\n")
+    # Assert the SEEDING, not just the outcome. Both writers report whether they changed
+    # anything, and a silent False from either would leave `before_fm`/`before_body`
+    # holding the note's DEFAULT state -- at which point the stamp-preservation assertions
+    # below still pass while pinning nothing about status, score, tailored_cv or a body
+    # section, because none of them was ever there. The per-key assertions are the same
+    # guard one level down: `update_fields` returning True proves a write happened, not
+    # that it wrote THESE keys.
+    assert v.update_fields(loser.ref, {"status": "shortlist", "score": "7",
+                                       "tailored_cv": "CV_zz99.pdf"})
+    assert v.append_body_section(loser.ref, "loser-body-tag",
+                                 "## Seeded loser body\nkeep me too\n")
     loser = _by_url(v, "https://ex.invalid/2")
     before_fm = dict(loser.fm)
     before_body = loser.body
+    assert before_fm.get("status") == "shortlist"
+    assert before_fm.get("score") == "7"
+    assert before_fm.get("tailored_cv") == "CV_zz99.pdf"
+    assert "Seeded loser body" in before_body
 
     archived = v.merge_cluster(survivor.ref, [loser.ref],
                                alt_urls=["https://ex.invalid/2"],
