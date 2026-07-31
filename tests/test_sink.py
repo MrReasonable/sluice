@@ -93,3 +93,36 @@ def test_vaultsink_records_merged_but_not_refused(tmp_path, monkeypatch):
     loaded = seen.load()
     assert "https://example.invalid/1" in loaded and "https://example.invalid/2" in loaded   # recorded
     assert "https://example.invalid/3" not in loaded                            # refused -> retried
+
+
+def test_vaultsink_records_proven_merged_away(tmp_path, monkeypatch):
+    # merged_away (#81) is same_opportunity's PROVEN (SAME) verdict: the archived note
+    # under _merged/ already IS this job, so it means a note now exists exactly like
+    # `merged` does -- recorded in seen.db, which self-heals the dedup set so the
+    # suppression happens once rather than every run.
+    vault = Vault(str(tmp_path / "vault"))
+    seen = SeenDb(str(tmp_path / "seen.db"))
+    lead = _lead(url="https://example.invalid/1")
+    monkeypatch.setattr(vault, "upsert", lambda lead: "merged_away")
+
+    counts = VaultSink(vault, seen, today=lambda: "2026-07-07").write([lead])
+
+    assert counts.get("merged_away") == 1
+    assert lead.dedup_key in seen.load()
+
+
+def test_vaultsink_excludes_unproven_merged_away_from_seen_db(tmp_path, monkeypatch):
+    # merged_away_unproven (#81) is same_opportunity's UNKNOWN verdict: the evidence was
+    # inconclusive, not a proven match. seen.db has no removal path (load/save only) and
+    # engine.py filters on dedup_key BEFORE the sink on every later run, so recording a
+    # weak-evidence suppression would make this lead unreachable forever with no note
+    # anywhere. It must stay OUT of seen.db and re-surface every run until a human acts.
+    vault = Vault(str(tmp_path / "vault"))
+    seen = SeenDb(str(tmp_path / "seen.db"))
+    lead = _lead(url="https://example.invalid/1")
+    monkeypatch.setattr(vault, "upsert", lambda lead: "merged_away_unproven")
+
+    counts = VaultSink(vault, seen, today=lambda: "2026-07-07").write([lead])
+
+    assert counts.get("merged_away_unproven") == 1
+    assert lead.dedup_key not in seen.load()
