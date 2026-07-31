@@ -274,8 +274,17 @@ class Vault:
                 if m.group(1):
                     # The suffix group fired: disambiguate a real collision counter from a
                     # dot that was always part of the title (see the docstring above).
-                    own_name = self._note_name(f"{fm.get('company', '')} - {fm.get('role', '')}")
-                    if own_name != name:
+                    # Mirror _resolve_path's OWN candidate construction via the shared
+                    # _candidate_names helper -- not just the bare candidate 1 -- because a
+                    # genuine .N collision can land on ANY of the three candidate forms
+                    # (location- or digest-suffixed too, when the archived note itself was
+                    # seated there). Comparing only the bare form makes the disambiguation
+                    # unconditionally reject a real archive whenever the collision happened
+                    # on a suffixed name, reopening the resurrection this task exists to
+                    # close -- reproduced against this checkout in round 3.
+                    own_names, _ = self._candidate_names(
+                        fm.get("company", ""), fm.get("role", ""), fm.get("location", ""))
+                    if name not in own_names:
                         continue
                 action = self._reconcile(fm, lead, capped)
                 if action == "update":
@@ -288,6 +297,25 @@ class Vault:
                                  "evidence inconclusive); not re-created", lead.dedup_key, path)
                     return _ARCHIVED_UNPROVEN
         return None
+
+    def _candidate_names(self, company: str, title: str, location: str) -> tuple[list[str], bool]:
+        """The name candidates for ONE (company, title, location) triple, and whether that
+        triple is CAPPED -- bare, location-suffixed (if `location`), digest-suffixed (if
+        capped). This is the ONE construction both `_resolve_path` (an incoming lead) and
+        `_archived_match`'s `.N`-suffix disambiguation (an archived note's OWN identity)
+        build their candidate set through, so the two constructions cannot drift apart --
+        a hand-rolled second copy is exactly the failure mode #81's own docstring already
+        warns against for `_reconcile`. Round 3 found this the hard way: comparing an
+        archived note's identity against only the BARE form made the disambiguation reject
+        every genuine collision that landed on the location- or digest-suffixed name."""
+        stem = f"{company} - {title}"
+        capped = len(_sanitize(stem)) > _CHAR_CAP
+        names = [self._note_name(stem)]
+        if location:
+            names.append(self._note_name(stem, location))
+        if capped:
+            names.append(self._note_name(stem, _title_digest(title)))
+        return names, capped
 
     def _resolve_path(self, lead: Lead) -> tuple[str | None, str]:
         """Walk the nameable candidates and return (path, action), action one of
@@ -310,13 +338,7 @@ class Vault:
         short-title resolution is byte-identical to before. (`capped` measures the CHAR cap,
         not the byte-clamp, so a title under 120 chars but over NAME_MAX bytes still merges --
         a negligible ASCII-population sub-residual that fails toward merge, never a clobber.)"""
-        stem = f"{lead.company} - {lead.title}"
-        capped = len(_sanitize(stem)) > _CHAR_CAP
-        names = [self._note_name(stem)]
-        if lead.location:
-            names.append(self._note_name(stem, lead.location))
-        if capped:
-            names.append(self._note_name(stem, _title_digest(lead.title)))
+        names, capped = self._candidate_names(lead.company, lead.title, lead.location)
         for name in names:
             path = os.path.join(self.leads_dir, f"{name}.md")
             if not os.path.exists(path):

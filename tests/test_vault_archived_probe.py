@@ -222,3 +222,92 @@ def test_dotted_title_is_not_confused_with_a_collision_suffix(tmp_path):
     assert merged == ["X - Y.1.md"], merged
     fresh = _lead(title="Y", url="")   # location defaults LOCATIONS[0] -- same as dotted's
     assert v.upsert(fresh) == "created"
+
+
+def test_numeric_suffix_collision_on_digest_suffixed_name_is_found(tmp_path):
+    """Round 3: the disambiguation must compare against ALL of the archived note's OWN
+    candidate forms, not just the bare one -- a genuine `.N` collision can land on the
+    DIGEST-suffixed name too. Built the way the round-3 reviewer built it: through real
+    upsert + merge_cluster, no hand-authored frontmatter for the load-bearing entries.
+
+    `block1` occupies the shared bare name so L1/L2 advance past it (title_lost, since
+    all three share the same 120-char-capped prefix but diverge beyond it); `block2a`/
+    `block2b` occupy L1's and L2's own location-suffixed names for the same reason, so
+    both L1 and L2 fall all the way through to the DIGEST candidate. L1 and L2 carry the
+    EXACT same (long) title -- same digest, same candidate-3 name -- but different
+    locations, so each is PROVEN DIFFERENT from the other's archive and independently
+    creates at that shared name, producing a genuine O_EXCL collision when both are later
+    merged away."""
+    v = Vault(str(tmp_path))
+    survivor = _lead(title="Digest Collision Survivor", url="https://ex.invalid/9")
+    assert v.upsert(survivor) == "created"
+
+    block1 = _lead(title=_LONG + "BLOCK1", url="https://ex.invalid/91", location="")
+    assert v.upsert(block1) == "created"
+    block2a = _lead(title=_LONG + "BLOCK2A", url="https://ex.invalid/92", location=LOCATIONS[0])
+    assert v.upsert(block2a) == "created"
+    block2b = _lead(title=_LONG + "BLOCK2B", url="https://ex.invalid/93", location=LOCATIONS[1])
+    assert v.upsert(block2b) == "created"
+
+    l1 = _lead(title=_LONG + "TARGET", url="https://ex.invalid/94", location=LOCATIONS[0])
+    assert v.upsert(l1) == "created"
+    notes = {n.fm.get("url"): n for n in v.read_leads()}
+    v.merge_cluster(notes["https://ex.invalid/9"].ref, [notes["https://ex.invalid/94"].ref],
+                    alt_urls=["https://ex.invalid/94"], first_seen="2026-07-01",
+                    last_seen="2026-07-07")
+
+    l2 = _lead(title=_LONG + "TARGET", url="https://ex.invalid/95", location=LOCATIONS[1])
+    assert v.upsert(l2) == "created"
+    notes = {n.fm.get("url"): n for n in v.read_leads()}
+    v.merge_cluster(notes["https://ex.invalid/9"].ref, [notes["https://ex.invalid/95"].ref],
+                    alt_urls=["https://ex.invalid/95"], first_seen="2026-07-01",
+                    last_seen="2026-07-07")
+
+    merged = sorted(os.listdir(os.path.join(v.leads_dir, "_merged")))
+    plain = [e for e in merged if not e.endswith(".1.md")]
+    suffixed = [e for e in merged if e.endswith(".1.md")]
+    assert len(plain) == 1 and len(suffixed) == 1, merged
+    assert suffixed[0][:-len(".1.md")] == plain[0][:-len(".md")], merged   # genuine collision
+
+    # Re-upsert L2, NOT L1: L1 sits at the EXACT (unsuffixed) archive name, which an
+    # exact-name probe already catches with no disambiguation involved -- only L2's
+    # re-upsert exercises the suffix-disambiguation path at all (test_numeric_suffix_
+    # archive_is_found's own control, applied here).
+    again = _lead(title=_LONG + "TARGET", url="https://ex.invalid/95", location=LOCATIONS[1])
+    assert v.upsert(again) == "merged_away"
+
+
+def test_numeric_suffix_collision_on_location_suffixed_name_is_found(tmp_path):
+    """The location-suffixed sibling of the digest case above: a genuine `.N` collision on
+    candidate 2, not candidate 1 or 3. L1 and L2 share ONE location (so their candidate-2
+    name coincides) but different full titles beyond the capped prefix, so `title_lost` --
+    not location -- is what proves them different from each other and from the blocker."""
+    v = Vault(str(tmp_path))
+    survivor = _lead(title="Location Collision Survivor", url="https://ex.invalid/9")
+    assert v.upsert(survivor) == "created"
+
+    block1 = _lead(title=_LONG + "BLOCK", url="https://ex.invalid/91", location="")
+    assert v.upsert(block1) == "created"
+
+    l1 = _lead(title=_LONG + "P", url="https://ex.invalid/92", location=LOCATIONS[0])
+    assert v.upsert(l1) == "created"
+    notes = {n.fm.get("url"): n for n in v.read_leads()}
+    v.merge_cluster(notes["https://ex.invalid/9"].ref, [notes["https://ex.invalid/92"].ref],
+                    alt_urls=["https://ex.invalid/92"], first_seen="2026-07-01",
+                    last_seen="2026-07-07")
+
+    l2 = _lead(title=_LONG + "Q", url="https://ex.invalid/93", location=LOCATIONS[0])
+    assert v.upsert(l2) == "created"
+    notes = {n.fm.get("url"): n for n in v.read_leads()}
+    v.merge_cluster(notes["https://ex.invalid/9"].ref, [notes["https://ex.invalid/93"].ref],
+                    alt_urls=["https://ex.invalid/93"], first_seen="2026-07-01",
+                    last_seen="2026-07-07")
+
+    merged = sorted(os.listdir(os.path.join(v.leads_dir, "_merged")))
+    plain = [e for e in merged if not e.endswith(".1.md")]
+    suffixed = [e for e in merged if e.endswith(".1.md")]
+    assert len(plain) == 1 and len(suffixed) == 1, merged
+    assert suffixed[0][:-len(".1.md")] == plain[0][:-len(".md")], merged   # genuine collision
+
+    again = _lead(title=_LONG + "Q", url="https://ex.invalid/93", location=LOCATIONS[0])
+    assert v.upsert(again) == "merged_away"
