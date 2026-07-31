@@ -219,6 +219,19 @@ class Vault:
         (on the SAME arm) record it in seen.db, so the real job could never be created.
         `title_lost` is no backstop: it is gated on `capped`, dormant under 120 chars.
 
+        The `.N` suffix group is ITSELF ambiguous, and the anchor alone cannot resolve it:
+        `_sanitize` maps `<>:"/\\|?*` and C0 controls but NOT '.', so a job genuinely titled
+        "Y.1" produces the byte-identical filename shape (`X - Y.1.md`) merge_cluster's own
+        collision counter would produce for an archived "Y". When a match uses that group,
+        re-derive the archived note's OWN name from ITS OWN company/role via `_note_name` --
+        the same derivation the store used to name it in the first place -- and require it
+        to equal `name`: merge_cluster only ever appends `.N` to a full active filename, so
+        a real collision suffix derives back to `name` exactly, while a genuinely-dotted
+        title derives to something else and is rejected. Deriving by hand instead of
+        reusing `_note_name` would let this check drift from what the archiver actually
+        writes -- a second copy of a naming rule kept in sync by a comment is exactly the
+        failure mode #81's own docstring already warns against for `_reconcile`.
+
         A sequential `<stem>.1.md`, `<stem>.2.md` walk is NOT equivalent to the listdir: it
         stops at the first miss, and restoring a note out of `_merged/` -- the documented
         recovery -- punches exactly that hole, hiding every archive behind it."""
@@ -232,9 +245,12 @@ class Vault:
             # matters most.
             return None
         for name in names:
-            pattern = re.compile(re.escape(name) + r"(?:\.\d+)?\.md\Z")
+            # A CAPTURING group, not `(?:...)`: we need to know whether THIS entry matched
+            # via the suffix, not merely whether the pattern as a whole matched.
+            pattern = re.compile(re.escape(name) + r"(\.\d+)?\.md\Z")
             for entry in entries:
-                if not pattern.match(entry):
+                m = pattern.match(entry)
+                if not m:
                     continue
                 path = os.path.join(merged_dir, entry)
                 # No `except OSError` here, deliberately. The nearest neighbour, read_leads,
@@ -255,6 +271,12 @@ class Vault:
                 if not fm.get("company") and not fm.get("role"):
                     _log.warning("vault: ignoring unreadable archived note %s", path)
                     continue
+                if m.group(1):
+                    # The suffix group fired: disambiguate a real collision counter from a
+                    # dot that was always part of the title (see the docstring above).
+                    own_name = self._note_name(f"{fm.get('company', '')} - {fm.get('role', '')}")
+                    if own_name != name:
+                        continue
                 action = self._reconcile(fm, lead, capped)
                 if action == "update":
                     _log.warning("vault: %r was merged away (archived at %s); not re-created",
@@ -633,9 +655,15 @@ class Vault:
     # ── upsert ───────────────────────────────────────────────────────────────
     def upsert(self, lead: Lead) -> str:
         """Reconcile an incoming lead against the existing notes. Returns one of
-        "created" | "updated" | "merged" | "refused". UPDATE and MERGE bump ONLY last_seen
-        (never-clobber); REFUSE writes nothing -- every name candidate is a note proven
-        DIFFERENT, so writing would clobber a different job. See #5.
+        "created" | "updated" | "merged" | "refused" | "merged_away" | "merged_away_unproven".
+        UPDATE and MERGE bump ONLY last_seen (never-clobber); REFUSE writes nothing -- every
+        name candidate is a note proven DIFFERENT, so writing would clobber a different job
+        (see #5). The two "merged_away*" outcomes ALSO write nothing: a human already
+        archived this lead as a duplicate (#81), so the incoming scrape is suppressed
+        rather than re-created. The two are kept distinct rather than conflated into one
+        string -- `_ARCHIVED` is same_opportunity's PROVEN verdict, `_ARCHIVED_UNPROVEN` is
+        evidence-inconclusive, and that distinction is what later decides whether the lead
+        may enter the dedup store.
 
         The create is EXCLUSIVE (`_write(..., exclusive=True)`): if a concurrent writer (another `ingest run`,
         or a human/Obsidian) creates the note in the window between _resolve_path's existence
