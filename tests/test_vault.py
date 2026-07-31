@@ -161,15 +161,15 @@ def test_long_non_ascii_name_fits_the_byte_budget(tmp_path):
 
 def test_byte_clamp_is_a_noop_for_a_name_that_fits(tmp_path):
     # never-clobber guard: a name already within the byte budget MUST keep the exact
-    # char-capped path it has today, or a re-scrape would create a duplicate note.
+    # char-capped name it has today, or a re-scrape would create a duplicate note.
     # Inject the budget (255) explicitly so the assertion does NOT silently ride the
-    # pathconf-failure fallback: _path_for is called directly here, so leads_dir does
-    # not exist yet and a real os.pathconf would raise.
+    # pathconf-failure fallback: _candidate_names is called directly here, so leads_dir
+    # does not exist yet and a real os.pathconf would raise.
     v = Vault(str(tmp_path))
     v._name_max_cache = 255
     lead = _lead(company="X" * 200, title="Y")     # f-string -> 120 'X' after [:120]
-    expected = _leads_dir(tmp_path) / ("X" * 120 + ".md")
-    assert v._path_for(lead) == str(expected)
+    names, _capped = v._candidate_names(lead.company, lead.title, lead.location)
+    assert names[0] == "X" * 120
 
 
 def test_name_max_reads_pathconf(tmp_path, monkeypatch):
@@ -309,10 +309,15 @@ def test_upsert_refuses_when_the_create_races_repeatedly(tmp_path, monkeypatch):
     assert list(_leads_dir(tmp_path).glob("*.md")) == []   # nothing written
 
 
-def test_note_name_candidate1_matches_path_for(tmp_path):
+def test_candidate1_is_the_clean_company_title_name(tmp_path):
+    # The drift-pin the old `_path_for` used to hold: candidate 1 is exactly
+    # `Company - Title`, and a blank location adds no second candidate. Expressed as a
+    # LITERAL, not re-derived from _note_name, so the two cannot agree by construction.
     v = Vault(str(tmp_path))
     v._name_max_cache = 255
     assert v._note_name("Acme - Analyst") == "Acme - Analyst"
+    names, capped = v._candidate_names("Acme", "Analyst", "")
+    assert names == ["Acme - Analyst"] and not capped
 
 
 def test_note_name_suffix_appends_sanitized_location(tmp_path):

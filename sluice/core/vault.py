@@ -51,6 +51,11 @@ _RMW_RACE_RETRIES = 3  # #16: bounded re-derivations before a modify-write refus
 _MERGED_SUBDIR = "_merged"          # where merge_cluster archives losers (#23)
 _ARCHIVED = "merged_away"           # #81: proven -- SAME verdict; the sink records it
 _ARCHIVED_UNPROVEN = "merged_away_unproven"   # #81: UNKNOWN verdict; NEVER recorded
+# #81: the note name a loser was SEATED at, stamped INTO the note as merge_cluster archives
+# it and read back by the write path's probe. Spelled for a human opening the archived note
+# in Obsidian ("archived from note <name>"), and present on archived notes ONLY -- an active
+# note was never archived from anywhere, so the key there would be a lie.
+_ARCHIVED_FROM = "archived_from_note"
 
 _log = get_logger("core.vault")
 
@@ -129,12 +134,12 @@ class Vault:
     def _name_max(self) -> int:
         """The filesystem's max filename length in BYTES for the leads dir, cached.
         os.pathconf needs an existing path; in the normal flow upsert makes leads_dir
-        before _path_for runs. A direct _path_for call before the dir exists (e.g. a
-        unit test) just takes the 255 fallback below, which also covers filesystems
-        where pathconf is unsupported (some network/FUSE mounts).
+        before _candidate_names runs. A direct _note_name/_candidate_names call before
+        the dir exists (e.g. a unit test) just takes the 255 fallback below, which also
+        covers filesystems where pathconf is unsupported (some network/FUSE mounts).
 
         pathconf can also RETURN -1 (a value, not an exception) when NAME_MAX is
-        indeterminate. Uncaught, a non-positive limit would drive _path_for's byte
+        indeterminate. Uncaught, a non-positive limit would drive _note_name's byte
         budget negative and negative-slice every note's name -> a vault-wide rename.
         So anything too small to hold a name plus its extension takes the 255 fallback
         too, not just the exception path."""
@@ -154,7 +159,7 @@ class Vault:
         reintroduce a duplicate.
 
         `.replace` is a length-preserving per-char map, so `stem.replace()[:120]` equals the
-        old `[:120].replace()` char for char: candidate 1 stays byte-identical to the old
+        old `[:120].replace()` char for char: candidate 1 stays byte-identical to the pre-#5
         `_path_for`, so no existing note's identity moves (zero migration). The suffix is
         bounded to _SUFFIX_MAX BEFORE the stem arithmetic, so the stem budget can never go
         negative (a negative index silently keeps 'all but the last N chars'). The final
@@ -166,12 +171,6 @@ class Vault:
         else:
             name = stem[:_CHAR_CAP]
         return _clamp_bytes(name, self._name_max() - len(b".md"))
-
-    def _path_for(self, lead: Lead) -> str:
-        """The clean `Company - Title` note path (candidate 1 of #5's walk). Unchanged in
-        output from before #5, so an existing note is UPDATED in place, never duplicated."""
-        name = self._note_name(f"{lead.company} - {lead.title}")
-        return os.path.join(self.leads_dir, f"{name}.md")
 
     def _reconcile(self, fm: dict, lead: Lead, capped: bool) -> str:
         """The ONE verdict, shared by the active walk and #81's archive probe: "update",
@@ -211,26 +210,32 @@ class Vault:
         at its first ABSENT candidate, but the loser may have been archived under its
         location-suffixed or title-digest name, which the walk would never reach.
 
-        The match is ANCHORED -- exact name, or exact name plus merge_cluster's numeric
-        suffix. NOT a bare prefix: same_opportunity compares only url and location, never
-        company or title, so in the active walk the exact FILENAME is what carries title
-        identity. A bare prefix removes that anchor and cannot get it back -- a merged-away
-        `X - Y II` would swallow a genuinely different `X - Y` at the same location, and
-        (on the SAME arm) record it in seen.db, so the real job could never be created.
-        `title_lost` is no backstop: it is gated on `capped`, dormant under 120 chars.
+        The decision is made on a fact the ARCHIVER recorded, never on one reconstructed
+        here. `merge_cluster` stamps `archived_from_note` into each loser as it archives it
+        -- the note name that loser was actually seated at -- and this probe compares that
+        value with the candidate. Reconstructing the name from the archived note's own
+        company/role was tried and abandoned: `_sanitize` maps `"` to `-` while `_fm_dict`
+        strips a leading/trailing quote, so any component whose edge character is a quote
+        no longer re-derives to the name it was seated at; and a human correcting
+        `company`/`role` in Obsidian after the merge (the #16 threat model) breaks the
+        re-derivation the same way. Both land on the PROVEN arm -- the irreversible
+        direction, because the sink records that arm in the dedup store.
 
-        The `.N` suffix group is ITSELF ambiguous, and the anchor alone cannot resolve it:
-        `_sanitize` maps `<>:"/\\|?*` and C0 controls but NOT '.', so a job genuinely titled
-        "Y.1" produces the byte-identical filename shape (`X - Y.1.md`) merge_cluster's own
-        collision counter would produce for an archived "Y". When a match uses that group,
-        re-derive the archived note's OWN name from ITS OWN company/role via `_note_name` --
-        the same derivation the store used to name it in the first place -- and require it
-        to equal `name`: merge_cluster only ever appends `.N` to a full active filename, so
-        a real collision suffix derives back to `name` exactly, while a genuinely-dotted
-        title derives to something else and is rejected. Deriving by hand instead of
-        reusing `_note_name` would let this check drift from what the archiver actually
-        writes -- a second copy of a naming rule kept in sync by a comment is exactly the
-        failure mode #81's own docstring already warns against for `_reconcile`.
+        The filename pattern is a cheap PRE-FILTER, never the decision. It is a superset by
+        construction: `merge_cluster` derives the archived filename AND the recorded value
+        from the same `stem`, so an entry recording `<name>` is called `<name>.md` or
+        `<name>.<n>.md` and nothing else. Filtering first keeps the create path at one
+        `listdir` plus a read per matching entry instead of a read of the whole archive; it
+        is not what makes the match safe, so loosening it cannot resurrect a lead.
+
+        LEGACY entries -- archived before the field shipped, or whose field a hand edit made
+        unreadable -- carry no recorded name, and are matched by EXACT filename only:
+        `<name>.md`, never `<name>.<n>.md`. A pre-existing collision archive is therefore
+        missed. That direction is the whole point: a miss creates a visible duplicate note a
+        human can merge again, while a wrong hit suppresses a real job invisibly and
+        irreversibly. (The converse residual is equally narrow and equally deliberate: a
+        legacy `X - Y.1.md` still matches a candidate genuinely named `X - Y.1`, because for
+        a legacy entry that filename is the only evidence there is.)
 
         A sequential `<stem>.1.md`, `<stem>.2.md` walk is NOT equivalent to the listdir: it
         stops at the first miss, and restoring a note out of `_merged/` -- the documented
@@ -245,12 +250,9 @@ class Vault:
             # matters most.
             return None
         for name in names:
-            # A CAPTURING group, not `(?:...)`: we need to know whether THIS entry matched
-            # via the suffix, not merely whether the pattern as a whole matched.
-            pattern = re.compile(re.escape(name) + r"(\.\d+)?\.md\Z")
+            pattern = re.compile(re.escape(name) + r"(?:\.\d+)?\.md\Z")
             for entry in entries:
-                m = pattern.match(entry)
-                if not m:
+                if not pattern.match(entry):
                     continue
                 path = os.path.join(merged_dir, entry)
                 # No `except OSError` here, deliberately. The nearest neighbour, read_leads,
@@ -271,21 +273,18 @@ class Vault:
                 if not fm.get("company") and not fm.get("role"):
                     _log.warning("vault: ignoring unreadable archived note %s", path)
                     continue
-                if m.group(1):
-                    # The suffix group fired: disambiguate a real collision counter from a
-                    # dot that was always part of the title (see the docstring above).
-                    # Mirror _resolve_path's OWN candidate construction via the shared
-                    # _candidate_names helper -- not just the bare candidate 1 -- because a
-                    # genuine .N collision can land on ANY of the three candidate forms
-                    # (location- or digest-suffixed too, when the archived note itself was
-                    # seated there). Comparing only the bare form makes the disambiguation
-                    # unconditionally reject a real archive whenever the collision happened
-                    # on a suffixed name, reopening the resurrection this task exists to
-                    # close -- reproduced against this checkout in round 3.
-                    own_names, _ = self._candidate_names(
-                        fm.get("company", ""), fm.get("role", ""), fm.get("location", ""))
-                    if name not in own_names:
-                        continue
+                # The name this entry was SEATED at: the fact merge_cluster recorded, or --
+                # for a legacy entry that has none -- the one thing its own filename proves
+                # unaided, which is an exact name carrying no collision counter. The `.md`
+                # slice is safe because the pattern above required that suffix.
+                seated = _archived_from(inner)
+                if seated is None:
+                    seated = entry[:-len(".md")]
+                if seated != name:
+                    # A collision counter appended to a DIFFERENT note's name, or a legacy
+                    # entry whose counter cannot be told from a title that genuinely ends
+                    # in `.` plus digits. Either way this archive is not this candidate.
+                    continue
                 action = self._reconcile(fm, lead, capped)
                 if action == "update":
                     _log.warning("vault: %r was merged away (archived at %s); not re-created",
@@ -301,13 +300,9 @@ class Vault:
     def _candidate_names(self, company: str, title: str, location: str) -> tuple[list[str], bool]:
         """The name candidates for ONE (company, title, location) triple, and whether that
         triple is CAPPED -- bare, location-suffixed (if `location`), digest-suffixed (if
-        capped). This is the ONE construction both `_resolve_path` (an incoming lead) and
-        `_archived_match`'s `.N`-suffix disambiguation (an archived note's OWN identity)
-        build their candidate set through, so the two constructions cannot drift apart --
-        a hand-rolled second copy is exactly the failure mode #81's own docstring already
-        warns against for `_reconcile`. Round 3 found this the hard way: comparing an
-        archived note's identity against only the BARE form made the disambiguation reject
-        every genuine collision that landed on the location- or digest-suffixed name."""
+        capped). This is the ONLY place a lead's note names are constructed; the older
+        `_path_for` was a second, partial copy of the bare form and is gone, so the three
+        candidates can no longer drift out of step with each other or with candidate 1."""
         stem = f"{company} - {title}"
         capped = len(_sanitize(stem)) > _CHAR_CAP
         names = [self._note_name(stem)]
@@ -831,7 +826,13 @@ class Vault:
         archives nothing. A per-loser archive OSError is logged and skipped
         (isolated), so that loser stays in the active view and the next run
         re-merges it -- never counted as merged. Returns the archived loser paths.
-        See docs/.../read-path-dedup-design.md #3."""
+        See docs/.../read-path-dedup-design.md #3.
+
+        Each archived loser is then STAMPED with the note name it was seated at
+        (#81), so the write path can recognise a re-scrape of it without having to
+        reconstruct that name from frontmatter -- a reconstruction three rounds of
+        work could not make reliable. The stamp is surgical and comes AFTER the
+        loser is counted, so it cannot un-count an archive that really happened."""
         def transform(text: str) -> str:
             inner, body = _split_frontmatter(text)
             if inner is None:
@@ -892,16 +893,24 @@ class Vault:
                         n += 1
                 os.replace(ref, dest)   # atomic; overwrites only our own 0-byte reservation
                 reserved = None
-                archived.append(dest)
             except OSError as e:
                 # per-loser isolation: leave the loser active (it self-heals next run), and
-                # clean up an orphaned reservation if the move never happened.
+                # clean up an orphaned reservation if the move never happened. `continue`,
+                # so this loser is neither counted nor stamped.
                 if reserved:
                     try:
                         os.unlink(reserved)
                     except OSError:
                         pass
                 _log.warning("dedupe: could not archive loser %s: %s", ref, e)
+                continue
+            archived.append(dest)
+            # #81: record the name this loser was seated at, AFTER it is counted. `stem` is
+            # that name, and it is the same `stem` `dest` was built from, so the probe's
+            # filename pre-filter and the value it reads cannot disagree. Stamping the note
+            # BEFORE the move would put the key on an ACTIVE note -- a note that was never
+            # archived from anywhere -- and leave it there if the move then failed.
+            _stamp_archived_from(dest, stem)
         return archived
 
 
@@ -1038,6 +1047,57 @@ def _set_fm(inner: str, key: str, literal: str) -> str:
     if re.search(pat, inner):
         return re.sub(pat, f"{key}: {literal}", inner, count=1)
     return f"{inner}\n{key}: {literal}" if inner else f"{key}: {literal}"
+
+
+def _archived_from(inner: str | None) -> str | None:
+    """The note name `merge_cluster` recorded for an archived loser (#81), or None when the
+    entry carries no readable one -- a LEGACY archive from before the field shipped, or a
+    value a hand edit broke. The two collapse to None on purpose: the probe then falls back
+    to exact-filename matching, which fails toward creating a visible duplicate rather than
+    toward suppressing a real job.
+
+    Deliberately NOT read through `_fm_dict`/`_fm_value`: both end in
+    `.strip('"').strip("'")`, which eats a real edge character. `_sanitize` maps `"` out of
+    a note name but NOT `'`, so a company or title whose edge character is an apostrophe
+    would come back shortened -- and a shortened name compares unequal to the candidate it
+    was seated at, which is precisely the reconstruction failure this field exists to
+    remove. The value is written by `json.dumps`, so `json.loads` returns it exactly."""
+    if not inner:
+        return None
+    m = re.search(rf"(?m)^\s*{re.escape(_ARCHIVED_FROM)}\s*:\s*(.*)$", inner)
+    if not m:
+        return None
+    try:
+        value = json.loads(m.group(1).strip())
+    except ValueError:
+        return None
+    return value if isinstance(value, str) else None
+
+
+def _stamp_archived_from(path: str, seated: str) -> None:
+    """Record, inside a note just archived to `_merged/`, the name it was seated at (#81).
+
+    Surgical, through `_cas_write`/`_set_fm`: never-clobber binds here as much as anywhere
+    else, so the loser keeps its status, scores, enrichment and body byte-for-byte. Written
+    with `json.dumps` -- valid YAML for Obsidian, and an exact round trip back through
+    `_archived_from`, which a bare quoted literal is not.
+
+    Best effort by design. The move already happened and the loser is already counted
+    merged, so a failure here must not un-count it; an unstamped entry simply degrades to a
+    LEGACY archive, matched by exact filename only."""
+    def transform(text: str) -> str:
+        inner, body = _split_frontmatter(text)
+        if inner is None:
+            # No frontmatter block at all means no company/role either, and the probe skips
+            # such an entry whatever this field would say. Inventing a block would be a
+            # wholesale rewrite of a file we do not understand -- leave it exactly as it is.
+            return text
+        inner = _set_fm(inner, _ARCHIVED_FROM, json.dumps(seated, ensure_ascii=False))
+        return f"---\n{inner}\n---\n{body}"
+    try:
+        _cas_write(path, transform)
+    except (OSError, VaultConflict) as e:
+        _log.warning("dedupe: could not record the archived name for %s: %s", path, e)
 
 
 def _del_fm(inner: str, key: str) -> str:

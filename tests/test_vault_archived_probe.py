@@ -6,7 +6,7 @@ dedup set is empty. Fixtures are synthetic: LOCATIONS placeholders, abstract com
 import os
 
 from sluice.core.leads import Lead
-from sluice.core.vault import Vault
+from sluice.core.vault import Vault, _fm_dict, _split_frontmatter
 from tests.conftest import LOCATIONS
 
 
@@ -28,6 +28,25 @@ def _merge_away(v, loser_lead, survivor_lead):
     v.merge_cluster(survivor.ref, [loser.ref], alt_urls=[loser_lead.url],
                     first_seen="2026-07-01", last_seen="2026-07-07")
     return survivor, loser
+
+
+def _read_fm(path):
+    with open(path, encoding="utf-8") as f:
+        return _fm_dict(_split_frontmatter(f.read())[0])
+
+
+def _seed_legacy(v, filename, *, company, role, location, extra=""):
+    """Hand-author an archived note carrying NO record of its seated name. The one fixture
+    shape this file cannot build through the production flow -- merge_cluster now always
+    stamps that name -- so hand-authoring is what makes the pre-upgrade population testable
+    at all. Everything else in this file goes through upsert + merge_cluster."""
+    merged_dir = os.path.join(v.leads_dir, "_merged")
+    os.makedirs(merged_dir, exist_ok=True)
+    path = os.path.join(merged_dir, filename)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(f'---\ncompany: "{company}"\nrole: "{role}"\n'
+                f'location: "{location}"\nurl: ""\n{extra}---\n\nbody\n')
+    return path
 
 
 def test_merged_away_lead_is_not_recreated(tmp_path):
@@ -268,6 +287,13 @@ def test_numeric_suffix_collision_on_digest_suffixed_name_is_found(tmp_path):
     suffixed = [e for e in merged if e.endswith(".1.md")]
     assert len(plain) == 1 and len(suffixed) == 1, merged
     assert suffixed[0][:-len(".1.md")] == plain[0][:-len(".md")], merged   # genuine collision
+    # SCOPE, not just shape: pin that the collision landed on the DIGEST-suffixed
+    # candidate (index 2), not on candidate 1. Without this the test asserts only "a
+    # collision happened somewhere" and would stay green -- testing nothing this file
+    # does not already test -- if _CHAR_CAP or _note_name shifted and the fixture
+    # quietly stopped reaching candidate 3 at all (which also makes names[2] IndexError).
+    cands, capped = v._candidate_names("X", _LONG + "TARGET", LOCATIONS[1])
+    assert capped and plain[0][:-len(".md")] == cands[2] != cands[0], (merged, cands)
 
     # Re-upsert L2, NOT L1: L1 sits at the EXACT (unsuffixed) archive name, which an
     # exact-name probe already catches with no disambiguation involved -- only L2's
@@ -308,6 +334,155 @@ def test_numeric_suffix_collision_on_location_suffixed_name_is_found(tmp_path):
     suffixed = [e for e in merged if e.endswith(".1.md")]
     assert len(plain) == 1 and len(suffixed) == 1, merged
     assert suffixed[0][:-len(".1.md")] == plain[0][:-len(".md")], merged   # genuine collision
+    # SCOPE (see the digest sibling above): pin candidate 2, the LOCATION-suffixed name.
+    cands, capped = v._candidate_names("X", _LONG + "Q", LOCATIONS[0])
+    assert capped and plain[0][:-len(".md")] == cands[1] != cands[0], (merged, cands)
 
     again = _lead(title=_LONG + "Q", url="https://ex.invalid/93", location=LOCATIONS[0])
     assert v.upsert(again) == "merged_away"
+
+
+def _collide(v, survivor_url="https://ex.invalid/9", title="Y", locs=(0, 1)):
+    """Build a GENUINE `.N` collision in `_merged/` through the real production flow: two
+    proven-different jobs take the same active name in turn and are each merged away, so
+    the second archive lands on merge_cluster's own collision counter. Returns the second
+    job's Lead -- the only one whose re-upsert exercises the counter at all, since the
+    first sits at the exact, unsuffixed archive name."""
+    a = _lead(title=title, url="https://ex.invalid/1", location=LOCATIONS[locs[0]])
+    assert v.upsert(a) == "created"
+    notes = {n.fm.get("url"): n for n in v.read_leads()}
+    v.merge_cluster(notes[survivor_url].ref, [notes["https://ex.invalid/1"].ref],
+                    alt_urls=["https://ex.invalid/1"], first_seen="2026-07-01",
+                    last_seen="2026-07-07")
+    b = _lead(title=title, url="https://ex.invalid/2", location=LOCATIONS[locs[1]])
+    assert v.upsert(b) == "created"
+    notes = {n.fm.get("url"): n for n in v.read_leads()}
+    v.merge_cluster(notes[survivor_url].ref, [notes["https://ex.invalid/2"].ref],
+                    alt_urls=["https://ex.invalid/2"], first_seen="2026-07-01",
+                    last_seen="2026-07-07")
+    return b
+
+
+def test_collision_file_does_not_suppress_a_job_genuinely_named_like_it(tmp_path):
+    """The MIRROR of test_dotted_title_...: a collision counter merge_cluster appended to
+    job `Y` produces `_merged/X - Y.1.md`, which is byte-identical to what an archive of a
+    job genuinely titled `Y.1` would be called. A never-seen `Y.1` therefore probes with
+    candidate `X - Y.1` and matches that file EXACTLY -- no numeric suffix involved, so no
+    amount of `.N` grammar can catch it -- and its verdict is SAME (shared location), which
+    is the PROVEN arm the sink records irreversibly. The archived note records the name it
+    was SEATED at (`X - Y`), which does not equal the candidate, so it does not match."""
+    v = Vault(str(tmp_path))
+    assert v.upsert(_lead(title="Mirror Survivor", url="https://ex.invalid/9")) == "created"
+    _collide(v)
+    merged = sorted(os.listdir(os.path.join(v.leads_dir, "_merged")))
+    assert merged == ["X - Y.1.md", "X - Y.md"], merged   # the ambiguous filename, for real
+
+    dotted = _lead(title="Y.1", url="", location=LOCATIONS[1])   # LOCATIONS[1] -> SAME
+    assert v.upsert(dotted) == "created"
+    assert os.path.exists(os.path.join(v.leads_dir, "X - Y.1.md"))
+
+
+def test_quote_edged_component_still_suppresses(tmp_path):
+    """`_sanitize` maps `"` to `-` but leaves `'` alone, while `_fm_dict` ends in
+    `.strip('"').strip("'")` -- so a title whose edge character is an apostrophe round-trips
+    through frontmatter SHORTENED. Re-deriving the archived note's name from its own
+    company/role therefore produced a name it was never seated at, and the archive stopped
+    suppressing: a resurrection caused by punctuation. Reading the recorded name instead
+    has nothing to re-derive."""
+    v = Vault(str(tmp_path))
+    assert v.upsert(_lead(title="Quote Survivor", url="https://ex.invalid/9")) == "created"
+    b = _collide(v, title="Y'")
+    merged = sorted(os.listdir(os.path.join(v.leads_dir, "_merged")))
+    assert merged == ["X - Y'.1.md", "X - Y'.md"], merged
+    # The lossy round trip, asserted directly so the fixture cannot stop exercising it.
+    archived = _read_fm(os.path.join(v.leads_dir, "_merged", "X - Y'.1.md"))
+    assert archived["role"] == "Y" != "Y'"
+
+    assert v.upsert(b) == "merged_away"
+
+
+def test_post_archive_edit_of_role_still_suppresses(tmp_path):
+    """A human correcting an archived note's `role` in Obsidian is the #16 threat model, and
+    it silently invalidated every re-derivation of that note's filename -- the note keeps
+    the name it was archived under, but its frontmatter no longer produces that name. The
+    recorded field is a fact about the past, so an edit to `role` cannot move it."""
+    v = Vault(str(tmp_path))
+    assert v.upsert(_lead(title="Edit Survivor", url="https://ex.invalid/9")) == "created"
+    b = _collide(v)
+    archived = os.path.join(v.leads_dir, "_merged", "X - Y.1.md")
+    assert v.update_fields(archived, {"role": "Y, Revised By Hand"})
+    assert _read_fm(archived)["role"] == "Y, Revised By Hand"
+
+    assert v.upsert(b) == "merged_away"
+
+
+def test_legacy_archive_without_the_field_suppresses_by_exact_name(tmp_path):
+    """An archive written before the field shipped carries no record of its seated name.
+    Its filename still proves ONE thing unaided -- an exact name with no collision counter
+    -- and that much must keep working, or shipping this would resurrect every lead a human
+    merged away before the upgrade. Hand-seeded because the current code cannot produce an
+    entry without the field."""
+    v = Vault(str(tmp_path))
+    _seed_legacy(v, "X - Y.md", company="X", role="Y", location=LOCATIONS[0])
+    assert v.upsert(_lead(title="Y", url="", location=LOCATIONS[0])) == "merged_away"
+
+
+def test_legacy_numeric_suffix_archive_is_not_matched(tmp_path):
+    """The accepted cost of the legacy arm, pinned rather than left incidental. A legacy
+    `X - Y.1.md` is either a collision counter on `X - Y` or an archive of a job genuinely
+    titled `Y.1`, and nothing on disk distinguishes them -- so a candidate `X - Y` does NOT
+    match it. That MISSES a pre-existing collision and creates a duplicate note, which is
+    visible and a human can merge it again; the other direction would suppress a real job
+    invisibly, on the arm the sink records irreversibly."""
+    v = Vault(str(tmp_path))
+    _seed_legacy(v, "X - Y.1.md", company="X", role="Y", location=LOCATIONS[0])
+    assert v.upsert(_lead(title="Y", url="", location=LOCATIONS[0])) == "created"
+    assert os.path.exists(os.path.join(v.leads_dir, "X - Y.md"))          # the visible duplicate
+    assert os.path.exists(os.path.join(v.leads_dir, "_merged", "X - Y.1.md"))   # archive intact
+
+
+def test_unreadable_recorded_name_degrades_to_the_legacy_arm(tmp_path):
+    """A hand edit that breaks the recorded value must fall back to the legacy rule, not be
+    parsed leniently: a lenient read of `X - Y` would match candidate `X - Y` and suppress,
+    which is the direction that cannot be undone. Same entry, same everything, and the
+    answer must be the same as the no-field case above."""
+    v = Vault(str(tmp_path))
+    _seed_legacy(v, "X - Y.1.md", company="X", role="Y", location=LOCATIONS[0],
+                 extra="archived_from_note: X - Y\n")   # unquoted -> not the recorded form
+    assert v.upsert(_lead(title="Y", url="", location=LOCATIONS[0])) == "created"
+
+
+def test_a_failed_stamp_does_not_un_count_a_real_archive(tmp_path, monkeypatch):
+    """The stamp is best effort and runs AFTER the loser is counted, because the move has
+    already happened by then: reporting a genuinely archived loser as un-archived would
+    have the caller treat a note that is no longer in the active view as still needing a
+    merge. So a stamp failure must be swallowed, and the entry simply degrades to a LEGACY
+    archive -- no recorded name -- which still suppresses by exact filename."""
+    import sluice.core.vault as vault_mod
+    real_replace = vault_mod.os.replace
+
+    def flaky(src, dst):
+        # Fail ONLY the stamp: it replaces a `.sluice-*` temp sibling INTO _merged/. The
+        # archive move replaces the loser's own active note (not a temp), and the
+        # survivor's CAS write targets a path outside _merged/ -- both must run for real.
+        if "_merged" in dst and os.path.basename(src).startswith(".sluice-"):
+            raise OSError("simulated: could not record the archived name")
+        return real_replace(src, dst)
+
+    v = Vault(str(tmp_path))
+    survivor = _lead(title="Stamp Survivor", url="https://ex.invalid/1")
+    loser = _lead(title="Stamp Loser", url="https://ex.invalid/2")
+    assert v.upsert(survivor) == "created"
+    assert v.upsert(loser) == "created"
+    notes = {n.fm.get("url"): n for n in v.read_leads()}
+    monkeypatch.setattr(vault_mod.os, "replace", flaky)
+    archived = v.merge_cluster(notes["https://ex.invalid/1"].ref,
+                               [notes["https://ex.invalid/2"].ref],
+                               alt_urls=["https://ex.invalid/2"],
+                               first_seen="2026-07-01", last_seen="2026-07-07")
+    monkeypatch.undo()
+
+    assert len(archived) == 1                     # still counted: the move really happened
+    assert len(v.read_leads()) == 1               # ...and the loser really is out of view
+    assert "archived_from_note" not in _read_fm(archived[0])   # the stamp genuinely failed
+    assert v.upsert(loser) == "merged_away"       # legacy arm: exact filename still suppresses
