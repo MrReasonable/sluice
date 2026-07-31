@@ -228,14 +228,28 @@ class Vault:
         `listdir` plus a read per matching entry instead of a read of the whole archive; it
         is not what makes the match safe, so loosening it cannot resurrect a lead.
 
-        LEGACY entries -- archived before the field shipped, or whose field a hand edit made
-        unreadable -- carry no recorded name, and are matched by EXACT filename only:
-        `<name>.md`, never `<name>.<n>.md`. A pre-existing collision archive is therefore
-        missed. That direction is the whole point: a miss creates a visible duplicate note a
-        human can merge again, while a wrong hit suppresses a real job invisibly and
-        irreversibly. (The converse residual is equally narrow and equally deliberate: a
-        legacy `X - Y.1.md` still matches a candidate genuinely named `X - Y.1`, because for
-        a legacy entry that filename is the only evidence there is.)
+        LEGACY entries carry no recorded name and are matched by EXACT filename only:
+        `<name>.md`, never `<name>.<n>.md`. THREE populations reach that arm, and the third
+        is one this code MANUFACTURES at runtime -- an archive written before the field
+        shipped, one whose field a hand edit made unreadable, and one whose stamp FAILED
+        (`_stamp_archived_from` swallows its error, deliberately; see there). A fully
+        upgraded install is therefore not immune to any of what follows.
+
+        The legacy arm is wrong in BOTH directions, and only one of them is safe:
+
+        - MISS: a collision entry `X - Y.1.md` is not matched by candidate `X - Y`, so a
+          re-scrape of the lead it archives is CREATED. That is the direction to fail in --
+          a visible duplicate note a human can merge again.
+        - WRONG HIT: a candidate genuinely named `X - Y.1` still matches that same entry,
+          so a never-seen job whose title ends in `.` plus digits is suppressed -- on the
+          PROVEN arm, which the sink records irreversibly.
+
+        For a genuinely PRE-UPGRADE archive the wrong hit is unavoidable: its filename is
+        the only evidence that ever existed for it. That rationale does NOT carry to a
+        stamp-failed entry, where `stem` was in hand at the moment of the archive
+        (`merge_cluster`) and only the write of it failed. So this residual is bounded by
+        "archives whose name was never successfully recorded", NOT by "archives from before
+        the upgrade" -- do not read it as the narrower thing.
 
         A sequential `<stem>.1.md`, `<stem>.2.md` walk is NOT equivalent to the listdir: it
         stops at the first miss, and restoring a note out of `_merged/` -- the documented
@@ -274,9 +288,10 @@ class Vault:
                     _log.warning("vault: ignoring unreadable archived note %s", path)
                     continue
                 # The name this entry was SEATED at: the fact merge_cluster recorded, or --
-                # for a legacy entry that has none -- the one thing its own filename proves
-                # unaided, which is an exact name carrying no collision counter. The `.md`
-                # slice is safe because the pattern above required that suffix.
+                # for an entry carrying none (THREE populations, one of them a failed stamp
+                # on an up-to-date install; see the docstring) -- a fallback to its own
+                # filename, sound only where that filename carries no collision counter. The
+                # `.md` slice is safe because the pattern above required that suffix.
                 seated = _archived_from(inner)
                 if seated is None:
                     seated = entry[:-len(".md")]
@@ -1082,9 +1097,20 @@ def _stamp_archived_from(path: str, seated: str) -> None:
     with `json.dumps` -- valid YAML for Obsidian, and an exact round trip back through
     `_archived_from`, which a bare quoted literal is not.
 
-    Best effort by design. The move already happened and the loser is already counted
-    merged, so a failure here must not un-count it; an unstamped entry simply degrades to a
-    LEGACY archive, matched by exact filename only."""
+    Best effort by design, because both alternatives are worse at the caller. The move has
+    already happened and the loser is already counted merged: UN-COUNTING it reports a
+    COMPLETED merge as `partial` (`app.py`) and invites a re-merge of a note no longer in
+    the active view, while letting the error OUT escapes `dedupe_merge`'s
+    `except (VaultConflict, MalformedNoteField)` and discards the whole per-cluster results
+    list.
+
+    The cost is real, and it is not only a missed suppression. An unstamped entry joins the
+    LEGACY population `_archived_match` matches by exact filename, which is wrong in BOTH
+    directions: a stamp-failed `X - Y.1.md` stops suppressing the lead it archives (a
+    visible duplicate -- the safe direction), AND it starts matching a never-seen job
+    genuinely titled `Y.1`, on the PROVEN, irreversible arm. This is therefore a RUNTIME
+    source of legacy entries on an otherwise fully upgraded install, not a pre-upgrade
+    concern -- `_archived_match`'s docstring enumerates it as such."""
     def transform(text: str) -> str:
         inner, body = _split_frontmatter(text)
         if inner is None:
