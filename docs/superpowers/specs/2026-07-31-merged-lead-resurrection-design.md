@@ -209,7 +209,7 @@ Verdict handling in the probe:
 
 | archived entry | probe |
 | --- | --- |
-| read succeeded, `fm` carries no identity keys (no `url`, no `location`) | **skip** — not a note, never a hit; log it |
+| read succeeded, `fm` has neither `company` nor `role` | **skip** — not a note at all, never a hit; log it |
 | `DIFFERENT` (or `title_lost`) | keep probing — this lead is genuinely a different job |
 | `SAME` | hit → `merged_away`, recorded in `seen.db` |
 | `UNKNOWN` | hit → `merged_away_unproven`, **NOT** recorded, logged with the lead and the matched path |
@@ -218,7 +218,16 @@ Verdict handling in the probe:
 "Unparseable or 0-byte" names a symptom an implementer cannot test for: a 0-byte reservation yields
 `inner=None`, while a file carrying a `---` block whose lines do not parse yields a non-empty
 `inner` and the SAME `fm={}`. Both must skip, so the condition has to be written against the parsed
-result — no identity keys — not against the file's shape.
+result, not against the file's shape.
+
+**It must key on `company`/`role`, NOT on `url`/`location`.** An earlier draft said "no identity
+keys (no `url`, no `location`)" — which would skip a legitimate archived loser and resurrect it. A
+real note can carry `url: ""` (`same_opportunity`'s own docstring records that google leads do) and
+a blank `location`; that combination is exactly the UNKNOWN case this probe exists to suppress, and
+it is indistinguishable from an empty file if you test the same keys the verdict consumes. `company`
+and `role` are always non-empty on a note `_render_new` produced and are never read by
+`same_opportunity`, so they discriminate "is this a note at all" from "what does this note say"
+without the two questions collapsing into one.
 
 **It is not an edge case.** `merge_cluster`'s own `O_EXCL` reservation leaves a 0-byte file under a
 real lead's archived name if the process dies before `os.replace`, and its cleanup runs only inside
