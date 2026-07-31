@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from sluice.core.vault import Vault
+from sluice.core.vault import Vault, _fm_dict, _split_frontmatter
 from sluice.core.protocols import MalformedNoteField, VaultConflict
 from tests.conftest import LOCATIONS, racing_read
 
@@ -74,6 +74,41 @@ def test_survivor_state_survives_only_audit_trail_changes(tmp_path):
     assert after.fm["last_seen"] == "2026-07-20"       # max
     assert len(v.read_leads()) == 1                    # loser archived out of the active view
     assert archived and archived[0].endswith(".md")
+
+
+def test_loser_state_survives_the_archive_stamp(tmp_path):
+    # Final review, finding 1: before #81, merge_cluster only MOVED a loser -- it never
+    # wrote to one. `_stamp_archived_from` (called from inside merge_cluster, AFTER the
+    # move) is a NEW write site on never-clobber's own function, and nothing pinned that
+    # it is surgical. The sibling test above pins the SURVIVOR's state across a merge;
+    # this pins the LOSER's, read back from its ARCHIVED path (read_leads() never sees
+    # `_merged/`), since the loser's status/score/tailored_cv/body is the human's ONLY
+    # remaining record of a merged-away lead -- and the documented recovery (moving the
+    # note back out of `_merged/` by hand, docs/ARCHITECTURE.md) depends on all of it
+    # surviving the stamp intact.
+    v = _mk(tmp_path)
+    survivor = _by_url(v, "https://ex.invalid/1")
+    loser = _by_url(v, "https://ex.invalid/2")
+    v.update_fields(loser.ref, {"status": "shortlist", "score": "7",
+                                "tailored_cv": "CV_zz99.pdf"})
+    v.append_body_section(loser.ref, "loser-body-tag", "## Seeded loser body\nkeep me too\n")
+    loser = _by_url(v, "https://ex.invalid/2")
+    before_fm = dict(loser.fm)
+    before_body = loser.body
+
+    archived = v.merge_cluster(survivor.ref, [loser.ref],
+                               alt_urls=["https://ex.invalid/2"],
+                               first_seen="2026-07-05", last_seen="2026-07-20")
+    assert len(archived) == 1
+
+    with open(archived[0], encoding="utf-8") as f:
+        after_text = f.read()
+    inner, after_body = _split_frontmatter(after_text)
+    after_fm = _fm_dict(inner)
+
+    changed = {k for k in before_fm if before_fm.get(k) != after_fm.get(k)} | (set(after_fm) - set(before_fm))
+    assert changed == {"archived_from_note"}, changed   # the ONLY key the stamp may touch
+    assert after_body == before_body                    # body byte-for-byte, including the seeded section
 
 
 def test_timestamps_never_moved_the_wrong_way(tmp_path):
