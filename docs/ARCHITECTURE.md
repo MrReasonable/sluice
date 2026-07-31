@@ -72,8 +72,12 @@ Shared by every sub-app:
 
   Nothing is ever moved automatically. A path left at its old location warns
   and names the `mv`, except the two dedup stores, which refuse -- continuing
-  with an empty dedup set re-creates every lead a human merged away, which can
-  mean a second application under their name (see #81).
+  with an empty dedup set silently re-submits every already-known lead to the
+  write path. The write path now probes `_merged/` by name before creating
+  (#81), so a merged-away lead usually self-heals rather than being
+  re-created, but the probe is name-keyed and a re-scrape whose title has
+  drifted past every candidate still slips through, which can mean a second
+  application under their name (see #81, and the residual noted below).
 
   The two refusals are scoped differently, deliberately. `ingest` refuses only
   when the run actually writes dedup state, so `--dry-run` and `--sink json`
@@ -89,9 +93,10 @@ Shared by every sub-app:
 - `seendb.py`: a sqlite dedup store for already-seen leads. Reading it never
   CREATES it (`sqlite3.connect` would, and the resulting empty file disarms the
   relocation refusal above), and an unreadable database RAISES rather than
-  reading as empty -- a silent empty dedup set re-creates every lead a human
-  merged away. An existing database with no table is the one tolerated empty:
-  that is a real first-run state.
+  reading as empty -- a silent empty dedup set re-submits every already-known
+  lead to the write path, which can resurrect one merged away (#81's residual;
+  see the store-contract section below). An existing database with no table is
+  the one tolerated empty: that is a real first-run state.
 - `resilience.py`: retry-with-backoff, hard timeout, and rate-limit
   precheck helpers that wrap each source's I/O.
 - `health.py`, `dossier.py`, `leads.py`, `log.py`, `relevance.py`: health
@@ -312,6 +317,22 @@ Those guarantees used to live inside `core/vault.py`; a second store would have
 shipped without them. They are now properties of the contract, and a store passes
 that suite or it does not ship.
 
+Another property joins those: **non-resurrection** (#81). A lead a human has merged
+away via `merge_cluster` must never be silently re-created by a later re-scrape --
+`test_merged_away_lead_is_never_recreated` pins this at the contract, the same safety
+class as never-clobber: a synthetic-id store does not get it for free just by archiving
+losers, since creating freely on top of that still resurrects them. `upsert`'s return
+vocabulary is six-member: `created`/`updated`/`merged`/`refused` as before, plus
+`merged_away` (`same_opportunity`'s PROVEN verdict against an archived note) and
+`merged_away_unproven` (its UNKNOWN verdict) -- both write nothing, and only
+`merged_away` may enter the dedup store (`merged_away_unproven` never does: seen.db has
+no removal path, so recording an unproven suppression would make it permanent with no
+note anywhere to reverse it). The property is bounded, not absolute: the probe that
+recognises an archived lead is name-keyed -- the same `Company - Title` candidates
+`_resolve_path` already builds -- so a re-scrape whose title has drifted past every
+candidate is still created. A url index over the archive would close that gap; it is
+#23 territory and changes `upsert`'s cost model, so it is deliberately out of scope here.
+
 Another property joins those: **the conflict outcome**. A modify-write that
 keeps losing the race against a concurrent editor (a human in Obsidian, Syncthing, a
 second `sluice` process) must refuse loudly rather than clobber -- raising
@@ -386,6 +407,18 @@ by hand; the report flags a loser carrying a rendered CV (`tailored_cv`), an
 open sign-off hold (`pending_cv`/`needs_signoff`), or an application-owned
 status -- not merely a score or a notes field -- so the human sees what a
 merge would discard before naming it.
+
+`_merged/` is no longer write-only (#81). `Vault.upsert`'s create arm now reads it
+too: before minting a brand-new note, it lists the archive and, for each entry whose
+filename could belong to one of the incoming lead's name candidates, compares the name
+`merge_cluster` stamped onto that entry (or, for a legacy or stamp-failed one, its own
+filename) against the candidate, then runs the same verdict the active walk uses. A
+PROVEN match returns `merged_away` and creates nothing; an UNKNOWN match returns
+`merged_away_unproven`. This moves the create path's cost: it used to be a bare
+`not os.path.exists` check, ZERO reads. It now costs one `os.listdir(_merged/)` on
+every create -- cheap, and the overwhelmingly common case when nothing has ever been
+merged -- plus, only for an entry whose filename matches a candidate, one read and one
+frontmatter parse.
 
 The Store-contract surface changed to carry this: `merge_cluster` was ADDED to
 the `Store` protocol and its conformance suite, and the dead `existing_keys` --

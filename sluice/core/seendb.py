@@ -33,9 +33,12 @@ class SeenDb:
         # one -- `ingest run --dry-run` (which resolves non-fatally, but still loads the
         # dedup set, correctly, or a dry run would lie about what it had seen) leaves
         # the empty file behind, and the REAL run that follows then proceeds with an
-        # empty dedup set instead of refusing. That re-creates every lead a human merged
-        # away and can mean a second application under their name (#81), reported as
-        # ordinary `created: N`.
+        # empty dedup set instead of refusing. Every already-known lead then reads as
+        # unseen and is silently re-submitted to the write path. `Vault.upsert` now
+        # probes `_merged/` by name (#81) before creating, so a merged-away lead usually
+        # self-heals instead of being re-created -- but the probe is name-keyed, so one
+        # whose title has drifted past every candidate still slips through, and that can
+        # mean a second application under their name, reported as ordinary `created: N`.
         #
         # A CORRUPT db raises rather than reading as empty, which is the same harm by a
         # different route: `except Exception: return set()` turned an unreadable dedup
