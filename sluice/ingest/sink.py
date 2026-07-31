@@ -48,11 +48,13 @@ class VaultSink:
                     # of `recorded` -> never enter seen.db -> retried next run. See #5.
                     #
                     # `merged_away` (#81) qualifies: the note exists, ARCHIVED under
-                    # _merged/, so recording it self-heals the dedup set and the suppression
-                    # happens once rather than on every run. `merged_away_unproven` does NOT
-                    # and must never be added -- it is a suppression on UNKNOWN evidence, and
-                    # seen.db has no removal path (load/save only), so recording it would
-                    # make engine.py filter that key forever with no note anywhere.
+                    # _merged/, on same_opportunity's SAME verdict (a url match, or a
+                    # location overlap when the urls don't match) -- so recording it
+                    # self-heals the dedup set and the suppression happens once rather than
+                    # on every run. `merged_away_unproven` does NOT and must never be added
+                    # -- it is a suppression on UNKNOWN evidence, and seen.db has no removal
+                    # path (load/save only), so recording it would make engine.py filter
+                    # that key forever with no note anywhere.
                     recorded.append(lead)
             except OSError as e:
                 # A lead the store cannot write (name too long on an odd FS,

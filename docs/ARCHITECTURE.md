@@ -323,8 +323,9 @@ away via `merge_cluster` must never be silently re-created by a later re-scrape 
 class as never-clobber: a synthetic-id store does not get it for free just by archiving
 losers, since creating freely on top of that still resurrects them. `upsert`'s return
 vocabulary is six-member: `created`/`updated`/`merged`/`refused` as before, plus
-`merged_away` (`same_opportunity`'s PROVEN verdict against an archived note) and
-`merged_away_unproven` (its UNKNOWN verdict) -- both write nothing, and only
+`merged_away` (`same_opportunity`'s SAME verdict against an archived note -- a url match,
+or a location overlap when the urls don't match) and `merged_away_unproven` (its UNKNOWN
+verdict) -- both write nothing, and only
 `merged_away` may enter the dedup store (`merged_away_unproven` never does: seen.db has
 no removal path, so recording an unproven suppression would make it permanent with no
 note anywhere to reverse it). The property is bounded, not absolute: the probe that
@@ -412,9 +413,10 @@ merge would discard before naming it.
 too: before minting a brand-new note, it lists the archive and, for each entry whose
 filename could belong to one of the incoming lead's name candidates, compares the name
 `merge_cluster` stamped onto that entry (or, for a legacy or stamp-failed one, its own
-filename) against the candidate, then runs the same verdict the active walk uses. A
-PROVEN match returns `merged_away` and creates nothing; an UNKNOWN match returns
-`merged_away_unproven`. This moves the create path's cost: it used to be a bare
+filename) against the candidate, then runs the same verdict the active walk uses. A SAME
+match (a url match, or a location overlap when the urls don't match) returns
+`merged_away` and creates nothing; an UNKNOWN match returns `merged_away_unproven`. This
+moves the create path's cost: it used to be a bare
 `not os.path.exists` check, ZERO reads. It now costs one `os.listdir(_merged/)` on
 every create -- cheap, and the overwhelmingly common case when nothing has ever been
 merged -- plus, only for an entry whose filename matches a candidate, one read and one
