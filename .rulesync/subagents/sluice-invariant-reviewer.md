@@ -94,8 +94,11 @@ that touches them, and do not "tidy" them without a test:
   only on a PROVEN difference (`same_opportunity`) -- the same title at one firm in two cities now
   yields two notes, not one. Drifted company/title strings that still escape both are reconciled
   after the fact by the human-gated `sluice leads dedupe` (#23), which merges only what a human
-  names and archives losers reversibly. Any change near `_path_for`, `upsert`, `same_opportunity`,
-  or `merge_cluster` must reckon with never-clobber and never-regress.
+  names and archives losers reversibly -- and `_resolve_path` PROBES that archive before creating
+  (#81), so the create arm now reads `_merged/` too. Any change near `_resolve_path`,
+  `_archived_match`, `upsert`, `same_opportunity`, or `merge_cluster` must reckon with
+  never-clobber, never-regress and non-resurrection. (`_path_for` was deleted by #81's branch --
+  `_candidate_names` is the one place a lead's note names are built now.)
 
 ## How you work
 
