@@ -31,6 +31,11 @@ from tests.conftest import LOCATIONS
 
 _STORES = Sluice.available("store")
 
+# One definition, enforced in TWO places. test_upsert_return_is_always_within_the_vocabulary
+# checks membership on a scenario that produces neither #81 outcome, so it cannot police an
+# under-widening; test_merged_away_lead_is_never_recreated actually produces one and does.
+_VOCAB = ("created", "updated", "merged", "refused", "merged_away", "merged_away_unproven")
+
 # A parametrize over an EMPTY list skips every test and exits 0. The suite that is "the
 # reason the store seam is safe to open" would then report success having tested nothing,
 # and a new store that mis-registers (typo'd seam name) would never be tested at all.
@@ -493,13 +498,40 @@ def test_two_url_less_leads_differing_in_location_produce_two_notes(store_name, 
 
 
 def test_upsert_return_is_always_within_the_vocabulary(store_name, tmp_path, monkeypatch):
-    """EVERY upsert returns a MEMBER of the four-outcome vocabulary -- the assertion that stops
+    """EVERY upsert returns a MEMBER of the six-outcome vocabulary -- the assertion that stops
     an out-of-vocab outcome slipping past the sink's allowlist. Membership, not a fixed string;
     exercised across create AND the same-lead re-scrape (update/merge), not just the create path."""
-    vocab = ("created", "updated", "merged", "refused")
     store = _make_store(store_name, tmp_path, monkeypatch)
-    assert store.upsert(_lead()) in vocab                       # create
-    assert store.upsert(_lead(last_seen="2026-07-14")) in vocab  # re-scrape -> update/merge
+    assert store.upsert(_lead()) in _VOCAB                       # create
+    assert store.upsert(_lead(last_seen="2026-07-14")) in _VOCAB  # re-scrape -> update/merge
+
+
+# ── #81: a lead merged away must never be resurrected ─────────────────────────
+def test_merged_away_lead_is_never_recreated(store_name, tmp_path, monkeypatch):
+    """#81, a SAFETY property in the never-clobber family: a lead merged away via
+    merge_cluster is never re-created by upsert. A store that archives losers and then
+    creates freely resurrects them, so it must be stated -- a synthetic-id store does NOT
+    get this for free.
+
+    SCOPE assertions first: a test that merges nothing would satisfy the property
+    trivially. Same shape as test_merge_cluster_preserves_survivor_and_removes_losers --
+    two token-disjoint LOCATIONS, no filenames in the test's vocabulary."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    assert store.upsert(_lead(url="https://example.invalid/1", location=LOCATIONS[0])) == "created"
+    assert store.upsert(_lead(url="https://example.invalid/2", location=LOCATIONS[1])) == "created"
+    survivor = next(n for n in store.read_leads() if n.fm.get("url") == "https://example.invalid/1")
+    loser = next(n for n in store.read_leads() if n.fm.get("url") == "https://example.invalid/2")
+    store.merge_cluster(survivor.ref, [loser.ref], alt_urls=["https://example.invalid/2"],
+                        first_seen="2026-07-05", last_seen="2026-07-20")
+    # SCOPE: the merge actually happened and the loser actually left the active view.
+    assert len(store.read_leads()) == 1, "nothing was merged: the property below is vacuous"
+    assert all(n.fm.get("url") != "https://example.invalid/2" for n in store.read_leads())
+
+    # THE PROPERTY: the merged-away lead, re-scraped with the dedup set empty.
+    outcome = store.upsert(_lead(url="https://example.invalid/2", location=LOCATIONS[1]))
+    assert outcome != "created", f"{store_name} re-created a lead a human merged away"
+    assert outcome in _VOCAB
+    assert len(store.read_leads()) == 1
 
 
 # ── #60: profile-audit sign-off (outcome verdict + never-clobber) ─────────────
