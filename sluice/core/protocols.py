@@ -82,10 +82,10 @@ class Store(Protocol):
     def read_leads(self, statuses: set | None = None) -> list:
         """Every stored lead as a LeadNote, filtered to `statuses` when given.
 
-        A store decides for itself what counts as a lead, but it MUST NOT return records it
-        does not own. The filesystem store shares its directory with whatever else the user
-        keeps there, so it returns only files whose frontmatter carries a company or a role;
-        a store with its own table has this by construction.
+        A store decides for itself what counts as a lead. The filesystem store shares its
+        directory with whatever else the user keeps there, so it returns only files whose
+        frontmatter carries a company or a role; a store with its own table has this by
+        construction rather than by a filter it must apply.
 
         A merged-away loser is NOT returned (see upsert). For the vault that exclusion is by
         NAME -- the archive directory is pruned from the scan -- rather than a side effect of

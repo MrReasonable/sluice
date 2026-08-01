@@ -413,23 +413,41 @@ AND a complete-linkage-compatible location (`_location_cliques`) -- a component
 is only a cluster if every pair in it is compatible, so a chain of blank-location
 edges can never bridge two notes with two different, named cities.
 
-The lead scan is **recursive**. `Vault._walk` defines the scan set once — every directory under
-`Job Applications/Job Leads`, minus `_PRIVATE_SUBDIRS` (today just `_merged/`) — and `read_leads`,
-`normalize_all_statuses` and `_locate` all consume it, so the exclusion cannot be applied in one place
-and forgotten in another. Pruning `_merged/` by name is load-bearing: before the scan was recursive
-it was invisible only because `os.listdir` is flat, and a walk that reached it would return every
-loser `sluice leads dedupe --merge` archived, undoing #81.
+The lead scan is **recursive**. `Vault._walk` defines the scan set once — every
+directory under `Job Applications/Job Leads`, minus `_PRIVATE_SUBDIRS` at the **top
+level** (today just `_merged/`) — and `read_leads`, `normalize_all_statuses` and
+`_locate` all consume it, so the exclusion cannot be applied in one place and
+forgotten in another. The prune fires only at `leads_dir` itself, and that
+restriction is deliberate: `leads_dir/_merged` is the one directory `merge_cluster`
+writes and `_archived_match` reads, while pruning the name at every depth would
+instead hide a same-named folder the *user* made and mint duplicates of its notes.
+Excluding it by name is load-bearing regardless: before the scan was recursive it was
+invisible only because `os.listdir` is flat, and a walk that reached it would return
+every loser `sluice leads dedupe --merge` archived, undoing #81.
 
-Two rules follow from sharing a directory with the user's own notes. A file counts as a lead only
-if its frontmatter carries a `company` or a `role` (`_is_lead_note`) — *neither*, not *either*, so a
-hand edit that blanks one field does not make a lead invisible and therefore duplicated. And a
-lead's identity is its note NAME, not its path: `_locate` searches the whole scan set, so a note the
-user files in a subfolder is updated in place. A name resolving to two or more notes is ambiguous
-identity and `upsert` refuses.
+Two rules follow from sharing a directory with the user's own notes. A file counts as
+a lead only if its frontmatter carries a `company` or a `role` (`_is_lead_note`) —
+*neither*, not *either*, so a hand edit that blanks one field does not make a lead
+invisible and therefore duplicated. And a lead's identity is its note NAME, not its
+path: `_locate` searches the whole scan set, so a note the user files in a subfolder
+is updated in place. `_locate` deliberately does NOT apply `_is_lead_note`, though: a
+note un-findable there is re-created as a duplicate rather than merely dropped from a
+read, so the cost falls the other way — a non-lead file squatting a lead's exact
+candidate name is reconciled against as though it were a lead, unchanged from the
+flat store. A name resolving to two or more notes is ambiguous identity and `upsert`
+refuses.
 
-An unreadable directory in the scan set **raises** (`os.walk(..., onerror=)`). The default swallows
-it and yields nothing, which would make every lead beneath it invisible to the read path and to the
-write path — i.e. re-created — from one permissions bit.
+The directory list itself is cached per `Vault` instance — computed once, not
+re-walked per lead — except the "leads_dir is missing" answer, which is never cached,
+since `upsert` creates that directory mid-run and a cached miss would leave every
+later lookup in the same run blind to it. The cache's own staleness window is a human
+creating a subfolder while a run is in progress; the cost is one duplicate note on
+that run, the same recoverable direction the create-race already takes.
+
+An unreadable directory in the scan set **raises** (`os.walk(..., onerror=)`). The
+default swallows it and yields nothing, which would make every lead beneath it
+invisible to the read path and to the write path — i.e. re-created — from one
+permissions bit.
 
 A merge keeps the survivor inside never-clobber's usual rule: only `alt_urls`,
 `first_seen` (minimised) and `last_seen` (advanced) change, re-derived against
