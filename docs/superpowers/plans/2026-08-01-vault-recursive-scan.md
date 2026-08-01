@@ -406,11 +406,16 @@ def test_read_leads_returns_notes_from_subfolders(tmp_path):
 
 
 def test_read_leads_orders_by_full_path(tmp_path):
+    """The fixture makes full-path order and BASENAME order diverge, and they come out
+    exact reverses of each other (verified: "Active" < "Archive" since c < r, while
+    "Acme - Z" > "Acme - A"). Two notes in ONE directory cannot tell the two orders
+    apart, so such a fixture would pass under either rule and pin neither."""
     leads = _leads_dir(tmp_path)
-    _write_note(leads / "Active" / "Acme - B.md", role="B")
-    _write_note(leads / "Active" / "Acme - A.md", role="A")
+    _write_note(leads / "Active" / "Acme - Z.md", role="Z")
+    _write_note(leads / "Archive" / "Acme - A.md", role="A", status="dismiss")
     got = [n.slug for n in Vault(str(tmp_path)).read_leads()]
-    assert got == sorted(got)
+    assert got == ["Acme - Z", "Acme - A"]   # full-path order
+    assert got != sorted(got)                # which basename order would exactly reverse
 
 
 def test_read_leads_skips_a_note_that_is_not_a_lead(tmp_path):
