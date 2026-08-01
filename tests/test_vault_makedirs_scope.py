@@ -74,7 +74,7 @@ def test_the_sweep_actually_finds_the_makedirs_calls():
     assert len(found) >= 4, f"AST sweep found only {found!r}; the matcher is broken"
 
 
-def test_every_directory_vault_creates_is_classified():
+def test_every_makedirs_call_is_classified():
     unexpected = set(_makedirs_args()) - set(_EXPECTED)
     assert not unexpected, (
         f"vault.py creates {unexpected}, which this guard does not classify. If it is under "

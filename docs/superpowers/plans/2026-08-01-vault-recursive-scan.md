@@ -1103,7 +1103,7 @@ def test_the_sweep_actually_finds_the_makedirs_calls():
     assert len(found) >= 4, f"AST sweep found only {found!r}; the matcher is broken"
 
 
-def test_every_directory_vault_creates_is_classified():
+def test_every_makedirs_call_is_classified():
     unexpected = set(_makedirs_args()) - set(_EXPECTED)
     assert not unexpected, (
         f"vault.py creates {unexpected}, which this guard does not classify. If it is under "
@@ -1119,7 +1119,7 @@ same one-line assertion in two files is duplication a reviewer would rightly fla
 - [ ] **Step 2: Run it**
 
 Run: `.venv/bin/python -m pytest tests/test_vault_makedirs_scope.py -q`
-Expected: PASS, 2 tests. If `test_every_directory_vault_creates_is_classified` fails, the
+Expected: PASS, 2 tests. If `test_every_makedirs_call_is_classified` fails, the
 `_EXPECTED` keys do not match this checkout's `ast.unparse` output — print `_makedirs_args()`
 and correct the keys verbatim rather than loosening the assertion.
 
@@ -1132,7 +1132,7 @@ cp tests/test_vault_makedirs_scope.py /tmp/scope.bak
 Change `_makedirs_args`'s filter to a name that does not exist (`"os.makedirsX"`), so the sweep
 returns `[]`. Run: `.venv/bin/python -m pytest tests/test_vault_makedirs_scope.py -q`
 Expected: `test_the_sweep_actually_finds_the_makedirs_calls` **FAILS**, and
-`test_every_directory_vault_creates_is_classified` **passes** — which is exactly the vacuous
+`test_every_makedirs_call_is_classified` **passes** — which is exactly the vacuous
 pass the scope assertion exists to catch.
 
 ```bash
