@@ -447,9 +447,13 @@ keep whichever twin they see last — `track/engine.py`'s `note_by_slug` and
 `shortlist_by_slug`, and `core/app.py`'s `by_slug` in `expire`. Two costs follow.
 `shortlist_by_slug` is the set `match_receipt` searches, so the dropped twin is
 invisible to the receipt matcher and a receipt whose evidence fits it is weighed
-against the survivor instead — and where both twins carry the same url (the
-hand-copied case) that survivor can be auto-advanced to `applied`, an application
-recorded against the wrong note. And `leads expire --expire <slug>` acts on one
+against the survivor instead — and where the survivor's url HOST satisfies
+`_hosts_match` against the sender with neither side multi-tenant, that survivor can
+be auto-advanced to `applied`, an application recorded against the wrong note. Read
+that on the host, not the url: `match_receipt` never compares urls, and
+`_hosts_match` accepts a subdomain relation in either direction, so two twins on one
+employer's site whose urls differ only by subdomain or path BOTH satisfy it.
+Identical urls are sufficient, never necessary. And `leads expire --expire <slug>` acts on one
 twin while the other is neither expired nor reported `no-match`, so the human sees
 no sign the second exists. Nothing sluice writes produces this state — creates go
 to one directory and `_resolve_path` refuses an ambiguous candidate — so it takes a
