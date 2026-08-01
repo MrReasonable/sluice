@@ -189,3 +189,16 @@ def test_normalize_statuses_never_writes_into_an_archived_loser(tmp_path):
     loser.write_text(original)
     Vault(str(tmp_path)).normalize_all_statuses()
     assert loser.read_text() == original
+
+
+def test_normalize_statuses_counts_a_frontmatter_less_file_as_unchanged(tmp_path):
+    """The lead predicate must sit AFTER the `inner is None` arm, never before it.
+    _fm_dict(None) is {}, so a file with no frontmatter is not a lead -- a predicate
+    placed first would `continue` past the unchanged counter and silently change a
+    number this method reports. Witnessed by MOVING the predicate above that arm."""
+    leads = _leads_dir(tmp_path)
+    leads.mkdir(parents=True)
+    (leads / "Not a note.md").write_text("just a body, no frontmatter\n")
+    summary = Vault(str(tmp_path)).normalize_all_statuses()
+    assert summary["unchanged"] == 1
+    assert summary["changed"] == 0

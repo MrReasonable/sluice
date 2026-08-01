@@ -177,7 +177,7 @@ class Vault:
         `_PRIVATE_SUBDIRS` pruned. Unannotated deliberately: the return type needs
         `Iterator`, and a quoted annotation naming an unimported type is ruff F821.
 
-        THE one definition of the scan set: read_leads, normalize_statuses and
+        THE one definition of the scan set: read_leads, normalize_all_statuses and
         _scan_dirs all consume this, so the exclusion cannot be applied in one place and
         forgotten in another -- and forgetting it in read_leads resurrects every note a
         human merged away (#81).
