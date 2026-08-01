@@ -14,7 +14,7 @@
 ## Problem
 
 Every lead note lives in one flat directory and the scan is non-recursive: `read_leads`
-(`core/vault.py:457`) and `normalize_statuses` (`:712`) both `os.listdir` a single `leads_dir`, and
+(`core/vault.py:457`) and `normalize_all_statuses` (`:712`) both `os.listdir` a single `leads_dir`, and
 `_resolve_path` (`:422`) checks exactly one path per name candidate.
 
 Two consequences, both from the issue and both real:
@@ -110,7 +110,7 @@ dir — `Interview Prep/`, `Research/` — is in the scan set, and a rule of "ev
 lead" would return its notes as phantom leads. That would make the second motivation *worse*, not
 better: the user gains a place to put other notes and sluice immediately starts triaging them.
 
-So `read_leads` and `normalize_statuses` skip a file carrying **neither `company` nor `role`** in
+So `read_leads` and `normalize_all_statuses` skip a file carrying **neither `company` nor `role`** in
 frontmatter. This is not a new predicate — `_archived_match` already uses exactly it, and it is
 right in both places for the **same** reason, not a mirrored one:
 
@@ -191,10 +191,10 @@ exist yet, so `upsert`'s first-run `makedirs` needs no special case. `_locate(na
 `[p for d in self._scan_dirs() if os.path.exists(p := os.path.join(d, f"{name}.md"))]` — O(folders)
 per candidate against a cached list, which is what the measurement above pays for.
 
-**3. `read_leads` and `normalize_statuses` walk it**, sorted by full path, and apply the
+**3. `read_leads` and `normalize_all_statuses` walk it**, sorted by full path, and apply the
 neither-`company`-nor-`role` skip from *What makes a `.md` file a lead note*. Sorting by full path is
 byte-identical to today's `sorted(os.listdir(...))` for a flat vault, so existing ordering
-assumptions survive. `normalize_statuses` keeps excluding `_merged/` — today's exclusion is
+assumptions survive. `normalize_all_statuses` keeps excluding `_merged/` — today's exclusion is
 incidental and making it explicit is a no-op in behaviour; it must not write into archived losers.
 
 **4. `_resolve_path` resolves a candidate across the scan set.**
@@ -253,7 +253,7 @@ archived = s == "dismiss" or _status.is_terminal(s)   # dismiss, rejected, accep
 
 A **non-canonical status is never moved**: never-regress passes an unrecognized status through
 untouched, so reconcile leaves it exactly where it is and reports it in an `unknown` bucket,
-mirroring `normalize_statuses`' existing one.
+mirroring `normalize_all_statuses`' existing one.
 
 **`sluice leads reconcile`** reports by default; `--apply` moves. No `--dry-run` — the default *is*
 the dry run, and a flag that does nothing is drift. This matches `leads dedupe` and `leads expire`:

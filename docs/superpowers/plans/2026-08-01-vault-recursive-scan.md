@@ -8,7 +8,7 @@
 **Architecture:** `Vault.leads_dir` currently does two jobs — it is both "where leads are read from"
 and "where a new lead is written". This PR separates the first out into a *scan set*: every directory
 under `leads_dir`, minus a frozenset of directories sluice itself owns. One walk helper defines that
-set; `read_leads`, `normalize_statuses` and a new name-lookup all consume it, so the exclusion cannot
+set; `read_leads`, `normalize_all_statuses` and a new name-lookup all consume it, so the exclusion cannot
 be applied in one place and forgotten in another. A lead's identity stays its note NAME, so a note
 found in a subfolder is reconciled and updated in place rather than re-created.
 
@@ -32,7 +32,7 @@ found in a subfolder is reconciled and updated in place rather than re-created.
 
 | File | Responsibility |
 | --- | --- |
-| `sluice/core/vault.py` (modify) | All production changes. Adds `_PRIVATE_SUBDIRS`, `_reraise`, `_is_lead_note`, `Vault._walk`, `Vault._scan_dirs`, `Vault._locate`; changes `read_leads`, `normalize_statuses`, `_resolve_path`, `_archived_match`. |
+| `sluice/core/vault.py` (modify) | All production changes. Adds `_PRIVATE_SUBDIRS`, `_reraise`, `_is_lead_note`, `Vault._walk`, `Vault._scan_dirs`, `Vault._locate`; changes `read_leads`, `normalize_all_statuses`, `_resolve_path`, `_archived_match`. |
 | `tests/test_vault_recursive_scan.py` (create) | The scan set: pruning, caching, the lead predicate, the unreadable-directory refusal. |
 | `tests/test_vault_subfolder_resolution.py` (create) | The write path across folders: update-in-subfolder, ambiguity refusal, the merged-loser regression. |
 | `tests/test_vault_makedirs_scope.py` (create) | The AST scope guard over `os.makedirs` in `vault.py`. |
@@ -257,7 +257,7 @@ After `_slug_for` (~line 134):
         `_PRIVATE_SUBDIRS` pruned. Unannotated deliberately: the return type needs
         `Iterator`, and a quoted annotation naming an unimported type is ruff F821.
 
-        THE one definition of the scan set: read_leads, normalize_statuses and
+        THE one definition of the scan set: read_leads, normalize_all_statuses and
         _scan_dirs all consume this, so the exclusion cannot be applied in one place and
         forgotten in another -- and forgetting it in read_leads resurrects every note a
         human merged away (#81).
@@ -286,7 +286,7 @@ After `_slug_for` (~line 134):
 ```
 
 `_walk` is never called on a missing `leads_dir` — `_scan_dirs`, `read_leads` and
-`normalize_statuses` each guard with `os.path.isdir` first — so `onerror` only ever fires for a
+`normalize_all_statuses` each guard with `os.path.isdir` first — so `onerror` only ever fires for a
 directory that exists and cannot be read, which is the case it is for.
 
 - [ ] **Step 7: Share the predicate with `_archived_match`**
@@ -606,29 +606,29 @@ Refs #1"
 
 ---
 
-### Task 3: `normalize_statuses` walks the scan set
+### Task 3: `normalize_all_statuses` walks the scan set
 
 Separate from Task 2 because this one WRITES. Missing the predicate here does not hide a note,
 it rewrites a `status:` line inside a user's own note — a clobber.
 
 **Files:**
-- Modify: `sluice/core/vault.py:709-759` (`normalize_statuses`)
+- Modify: `sluice/core/vault.py:709-759` (`normalize_all_statuses`)
 - Test: `tests/test_vault_recursive_scan.py` (append)
 
 **Interfaces:**
 - Consumes: `Vault._walk`, `_is_lead_note` (Task 1).
-- Produces: no signature change — `normalize_statuses(dry_run=False) -> dict`.
+- Produces: no signature change — `normalize_all_statuses(dry_run=False) -> dict`.
 
 - [ ] **Step 1: Write the failing tests**
 
 Append to `tests/test_vault_recursive_scan.py`:
 
 ```python
-# ── normalize_statuses over the scan set ──────────────────────────────────────
+# ── normalize_all_statuses over the scan set ──────────────────────────────────────
 def test_normalize_statuses_reaches_a_note_in_a_subfolder(tmp_path):
     leads = _leads_dir(tmp_path)
     p = _write_note(leads / "Archive" / "Acme - Clerk.md", role="Clerk", status="Dismissed")
-    summary = Vault(str(tmp_path)).normalize_statuses()
+    summary = Vault(str(tmp_path)).normalize_all_statuses()
     assert summary["changed"] == 1
     assert "status: dismiss" in p.read_text()
 
@@ -641,7 +641,7 @@ def test_normalize_statuses_never_writes_into_a_users_own_note(tmp_path):
     prep.parent.mkdir(parents=True)
     original = "---\nstatus: Parked\ntags: prep\n---\n\nnotes\n"
     prep.write_text(original)
-    Vault(str(tmp_path)).normalize_statuses()
+    Vault(str(tmp_path)).normalize_all_statuses()
     assert prep.read_text() == original
 
 
@@ -651,7 +651,7 @@ def test_normalize_statuses_never_writes_into_an_archived_loser(tmp_path):
     loser.parent.mkdir(parents=True)
     original = '---\ncompany: "Acme"\nrole: "Clerk"\nstatus: Dismissed\n---\n\nbody\n'
     loser.write_text(original)
-    Vault(str(tmp_path)).normalize_statuses()
+    Vault(str(tmp_path)).normalize_all_statuses()
     assert loser.read_text() == original
 ```
 
@@ -663,7 +663,7 @@ The other two PASS vacuously — the flat walk cannot reach either file. Step 4 
 
 - [ ] **Step 3: Change the walk and add the predicate**
 
-In `normalize_statuses`, replace:
+In `normalize_all_statuses`, replace:
 
 ```python
         for name in sorted(os.listdir(self.leads_dir)):
@@ -724,7 +724,7 @@ cp sluice/core/vault.py /tmp/vault.py.bak
 ```
 
 **Mutant A** — delete the `if not _is_lead_note(_fm_dict(inner)): continue` lines from
-`normalize_statuses`. Run:
+`normalize_all_statuses`. Run:
 `.venv/bin/python -m pytest tests/test_vault_recursive_scan.py::test_normalize_statuses_never_writes_into_a_users_own_note -q`
 Expected: **FAIL** — the user's note is rewritten to `status: parked` or similar.
 
@@ -741,7 +741,7 @@ cp /tmp/vault.py.bak sluice/core/vault.py && rm /tmp/vault.py.bak
 ```bash
 .venv/bin/python -m pytest -q && .venv/bin/python -m ruff check sluice tests scripts
 git add sluice/core/vault.py tests/test_vault_recursive_scan.py
-git commit -m "feat(vault): normalize_statuses walks the scan set
+git commit -m "feat(vault): normalize_all_statuses walks the scan set
 
 Split from read_leads because this pass WRITES. Missing the lead predicate here
 does not hide a note, it rewrites a status: line inside a note sluice does not
@@ -1168,7 +1168,7 @@ and add, at the altitude of vault-implementation detail rather than Store contra
 ```markdown
 The lead scan is **recursive**. `Vault._walk` defines the scan set once — every directory under
 `Job Applications/Job Leads`, minus `_PRIVATE_SUBDIRS` (today just `_merged/`) — and `read_leads`,
-`normalize_statuses` and `_locate` all consume it, so the exclusion cannot be applied in one place
+`normalize_all_statuses` and `_locate` all consume it, so the exclusion cannot be applied in one place
 and forgotten in another. Pruning `_merged/` by name is load-bearing: before the scan was recursive
 it was invisible only because `os.listdir` is flat, and a walk that reached it would return every
 loser `sluice leads dedupe --merge` archived, undoing #81.
