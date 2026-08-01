@@ -229,7 +229,16 @@ class Vault:
         rediscover (a full walk per lead: ~1.4s vs ~4ms on a 5500-note vault) while a stale
         entry there costs at most one duplicate note. Measured, so the trade is not
         hypothetical: 500 leads x 3 candidates across 51 directories is 0.281s of stat calls
-        for the whole run -- a fifth of what one uncached walk costs."""
+        for the whole run -- a fifth of the ~1.4s that SAME RUN costs with the walk
+        re-derived per lead. Not a fifth of one walk: one walk is ~2.8ms, so 0.281s is about
+        a hundred of them. The comparison is whole-run against whole-run.
+
+        That 0.281s is warm-cache LOCAL disk, and it is the number most likely to mislead.
+        This lookup turns one stat per candidate into one per scanned DIRECTORY, so its cost
+        scales with the folder count: 500 x 3 x 51 is ~76k stats, i.e. ~4us each. On a
+        network or FUSE mount where a stat costs ~1ms instead, those same 76k stats are over
+        a minute of the run. (_name_max already acknowledges such mounts, for pathconf.) A
+        deep hierarchy on a slow mount is where this design is worst, and nothing adapts."""
         found = []
         for dirpath in self._scan_dirs():
             path = os.path.join(dirpath, f"{name}.md")

@@ -437,12 +437,38 @@ candidate name is reconciled against as though it were a lead, unchanged from th
 flat store. A name resolving to two or more notes is ambiguous identity and `upsert`
 refuses.
 
-The directory list itself is cached per `Vault` instance — computed once, not
-re-walked per lead — except the "leads_dir is missing" answer, which is never cached,
-since `upsert` creates that directory mid-run and a cached miss would leave every
-later lookup in the same run blind to it. The cache's own staleness window is a human
-creating a subfolder while a run is in progress; the cost is one duplicate note on
-that run, the same recoverable direction the create-race already takes.
+That refusal covers the WRITE path only, and the read path has no equivalent. On a
+flat store slug uniqueness held *by construction* — one directory cannot hold two
+files with the same basename, and `Vault._slug_for` derives the slug from the
+basename. A recursive scan removes that guarantee: with notes at
+`Active/Acme - Analyst.md` and `Archive/Acme - Analyst.md`, `read_leads` returns
+BOTH, at one slug. Three consumers key a dict on exact slug equality and silently
+keep whichever twin they see last — `track/engine.py`'s `note_by_slug` and
+`shortlist_by_slug`, and `core/app.py`'s `by_slug` in `expire`. Two costs follow.
+`shortlist_by_slug` is the set `match_receipt` searches, so the dropped twin is
+invisible to the receipt matcher and a receipt whose evidence fits it is weighed
+against the survivor instead — and where both twins carry the same url (the
+hand-copied case) that survivor can be auto-advanced to `applied`, an application
+recorded against the wrong note. And `leads expire --expire <slug>` acts on one
+twin while the other is neither expired nor reported `no-match`, so the human sees
+no sign the second exists. Nothing sluice writes produces this state — creates go
+to one directory and `_resolve_path` refuses an ambiguous candidate — so it takes a
+hand-made duplicate or a note restored out of `_merged/` into a subfolder beside a
+root twin. It is therefore a documented residual rather than a live bug; detecting
+it belongs with the `leads reconcile` pass #1 has still to ship, which walks the
+whole tree anyway. Widening `read_leads`' contract, or making those three consumers
+handle a duplicate slug, is a design decision that is not taken here.
+
+The directory list itself is cached per `Vault` instance, and `_scan_dirs` is the only
+thing that caches it — computed once there, not re-walked per lead. Of the scan set's
+three consumers it serves exactly one: `_locate` reads the set through `_scan_dirs`,
+while `read_leads` and `normalize_all_statuses` each call `_walk` fresh on every
+invocation, so a filesystem change made mid-run IS visible to those two. The one
+answer `_scan_dirs` never caches is "leads_dir is missing", since `upsert` creates
+that directory mid-run and a cached miss would leave every later lookup in the same
+run blind to it. The cache's own staleness window is a human creating a subfolder
+while a run is in progress; the cost is one duplicate note on that run, the same
+recoverable direction the create-race already takes.
 
 An unreadable directory in the scan set **raises** (`os.walk(..., onerror=)`). The
 default swallows it and yields nothing, which would make every lead beneath it
