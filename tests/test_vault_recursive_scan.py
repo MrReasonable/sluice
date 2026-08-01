@@ -110,3 +110,46 @@ def test_an_unreadable_subdirectory_raises_rather_than_reading_as_empty(tmp_path
             Vault(str(tmp_path))._scan_dirs()
     finally:
         os.chmod(leads / "Archive", 0o755)
+
+
+# ── read_leads over the scan set ──────────────────────────────────────────────
+def _write_note(path, company="Acme", role="Analyst", status="new"):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f'---\ncompany: "{company}"\nrole: "{role}"\nstatus: {status}\n---\n\nbody\n')
+    return path
+
+
+def test_read_leads_returns_notes_from_subfolders(tmp_path):
+    leads = _leads_dir(tmp_path)
+    _write_note(leads / "Acme - Analyst.md")
+    _write_note(leads / "Active" / "Acme - Engineer.md", role="Engineer")
+    _write_note(leads / "Archive" / "Acme - Clerk.md", role="Clerk", status="dismiss")
+    slugs = {n.slug for n in Vault(str(tmp_path)).read_leads()}
+    assert slugs == {"Acme - Analyst", "Acme - Engineer", "Acme - Clerk"}
+
+
+def test_read_leads_orders_by_full_path(tmp_path):
+    leads = _leads_dir(tmp_path)
+    _write_note(leads / "Active" / "Acme - B.md", role="B")
+    _write_note(leads / "Active" / "Acme - A.md", role="A")
+    got = [n.slug for n in Vault(str(tmp_path)).read_leads()]
+    assert got == sorted(got)
+
+
+def test_read_leads_skips_a_note_that_is_not_a_lead(tmp_path):
+    """The whole point of motivation 2: a user gets somewhere to put other notes, and
+    sluice must not start triaging them."""
+    leads = _leads_dir(tmp_path)
+    _write_note(leads / "Active" / "Acme - Analyst.md")
+    prep = leads / "Interview Prep" / "Questions to ask.md"
+    prep.parent.mkdir(parents=True)
+    prep.write_text("---\ntags: prep\n---\n\nWhat does success look like?\n")
+    assert [n.slug for n in Vault(str(tmp_path)).read_leads()] == ["Acme - Analyst"]
+
+
+def test_read_leads_keeps_a_lead_whose_role_was_blanked(tmp_path):
+    """`neither`, not `either`. Dropping this note would make the next scrape re-create it."""
+    leads = _leads_dir(tmp_path)
+    _write_note(leads / "Active" / "Acme - Analyst.md", role="")
+    assert [n.slug for n in Vault(str(tmp_path)).read_leads()] == ["Acme - Analyst"]
