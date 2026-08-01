@@ -86,9 +86,11 @@ class Store(Protocol):
         "created" (a genuinely new note), "updated" (an existing note identified as the
         same opportunity), "merged" (an existing note we could not prove same-or-different
         from), or "refused" (the store cannot write this lead WITHOUT clobbering a different
-        one, so it writes nothing -- either because no identity distinguishes it from a note
-        proven different, or because a concurrent writer keeps winning the create race; the
-        two causes are distinguished only in the log).
+        one, so it writes nothing -- because no identity distinguishes it from a note proven
+        different, because one identity resolves to SEVERAL stored notes so there is no way to
+        tell which lead this is, or because a concurrent writer keeps winning the create race.
+        The causes are distinguished only in the log, and that list is the vault's rather than
+        an exhaustive one: what the outcome PROMISES a caller is only that nothing was written).
 
         Two more (#81), both MAY-return: "merged_away" and "merged_away_unproven" -- the
         lead was already merged away by merge_cluster, so nothing is written. They differ

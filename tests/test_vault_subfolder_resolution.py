@@ -47,3 +47,66 @@ def test_a_merged_away_loser_stays_invisible_to_the_recursive_scan(tmp_path):
     fresh = Vault(str(tmp_path))
     assert [n.slug for n in fresh.read_leads()] == [survivor.slug]
     assert loser.slug not in {n.slug for n in fresh.read_leads()}
+
+
+def _seed_one(tmp_path):
+    v = Vault(str(tmp_path))
+    assert v.upsert(_lead()) == "created"
+    return _leads_dir(tmp_path) / "Acme - Analyst.md"
+
+
+def test_a_note_moved_to_a_subfolder_is_updated_not_recreated(tmp_path):
+    """Identity is the note NAME, not its path. This is what lets `leads reconcile` (PR B)
+    and #81's documented recovery move a note without the next scrape duplicating it."""
+    note = _seed_one(tmp_path)
+    archive = _leads_dir(tmp_path) / "Archive"
+    archive.mkdir()
+    moved = archive / note.name
+    note.rename(moved)
+
+    v = Vault(str(tmp_path))                      # fresh: the scan-set cache is per instance
+    assert v.upsert(_lead(last_seen="2026-07-08")) == "updated"
+    assert "last_seen: 2026-07-08" in moved.read_text()
+    assert not note.exists()                      # nothing re-created at the flat name
+
+
+def test_a_candidate_resolving_to_two_notes_refuses_and_writes_nothing(tmp_path):
+    """Two notes claim one identity, so the store cannot know which lead this is. Bumping
+    the wrong one leaves the other to rot silently, so it writes nothing and the sink keeps
+    the lead out of seen.db to re-report next run."""
+    note = _seed_one(tmp_path)
+    archive = _leads_dir(tmp_path) / "Archive"
+    archive.mkdir()
+    twin = archive / note.name
+    twin.write_text(note.read_text())             # a hand-made copy
+
+    v = Vault(str(tmp_path))
+    assert v.upsert(_lead(last_seen="2026-07-08")) == "refused"
+    assert "last_seen: 2026-07-07" in note.read_text()
+    assert "last_seen: 2026-07-07" in twin.read_text()
+
+
+def test_a_new_lead_is_still_created_at_the_leads_dir_root(tmp_path):
+    """PR A creates no folders and moves no notes: the write folder is unchanged. PR B is
+    what points creates at Active/."""
+    v = Vault(str(tmp_path))
+    assert v.upsert(_lead()) == "created"
+    assert (_leads_dir(tmp_path) / "Acme - Analyst.md").exists()
+
+
+def test_a_merged_away_lead_is_still_suppressed_when_a_subfolder_exists(tmp_path):
+    """#81 through the new lookup: the archive probe runs when the candidate resolves
+    NOWHERE in the scan set, which is the same condition as before, not a weaker one."""
+    v = _two_note_vault(tmp_path)
+    # Keyed on url, never on read_leads' ORDER. read_leads sorts by full path and the
+    # location-suffixed note sorts FIRST (" " < "."), so indexing merges away the note the
+    # re-scrape below rebuilds -- and the assertion then passes on the wrong lead.
+    by_url = {n.fm.get("url"): n for n in v.read_leads()}
+    survivor, loser = by_url["https://ex.invalid/1"], by_url["https://ex.invalid/2"]
+    v.merge_cluster(survivor.ref, [loser.ref], alt_urls=[],
+                    first_seen="2026-07-07", last_seen="2026-07-07")
+    (_leads_dir(tmp_path) / "Archive").mkdir()
+
+    fresh = Vault(str(tmp_path))
+    loser_lead = _lead(location=LOCATIONS[1], url="https://ex.invalid/2")
+    assert fresh.upsert(loser_lead) in ("merged_away", "merged_away_unproven")
