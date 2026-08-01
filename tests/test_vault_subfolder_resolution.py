@@ -109,4 +109,9 @@ def test_a_merged_away_lead_is_still_suppressed_when_a_subfolder_exists(tmp_path
 
     fresh = Vault(str(tmp_path))
     loser_lead = _lead(location=LOCATIONS[1], url="https://ex.invalid/2")
-    assert fresh.upsert(loser_lead) in ("merged_away", "merged_away_unproven")
+    # `== "merged_away"`, never a disjunction over both arms. The outcome here is
+    # DETERMINISTIC: both sides carry the same non-empty url, so the url-proof gate is
+    # satisfied. Accepting either arm would leave free the one distinction this whole
+    # test exists for -- `merged_away` enters seen.db, which has no removal path, and
+    # `merged_away_unproven` must never be recorded.
+    assert fresh.upsert(loser_lead) == "merged_away"
