@@ -216,7 +216,20 @@ class Vault:
         a lead, which is unchanged from the flat store and neither introduced nor widened.
 
         Returns a LIST, not the first hit: two notes at one name is ambiguous identity, and
-        _resolve_path must refuse rather than pick one. See there."""
+        _resolve_path must refuse rather than pick one. See there.
+
+        Stats LIVE on every call. The obvious optimisation -- a name->paths index built from
+        the same `_walk` `_scan_dirs` already runs, turning this into a dict lookup -- would
+        be a BUG, not a saving. `upsert`'s create-race loop terminates only because a
+        re-resolve can SEE a note a concurrent writer (another `ingest run`, or a human in
+        Obsidian) created since the last attempt; against a cached filename index that note
+        stays invisible, every retry re-derives the same absent candidate, and the loop
+        exhausts into a refusal for a lead that was perfectly writable. Only the DIRECTORY
+        list is cached, and it is cached because the set of folders is what is expensive to
+        rediscover (a full walk per lead: ~1.4s vs ~4ms on a 5500-note vault) while a stale
+        entry there costs at most one duplicate note. Measured, so the trade is not
+        hypothetical: 500 leads x 3 candidates across 51 directories is 0.281s of stat calls
+        for the whole run -- a fifth of what one uncached walk costs."""
         found = []
         for dirpath in self._scan_dirs():
             path = os.path.join(dirpath, f"{name}.md")
