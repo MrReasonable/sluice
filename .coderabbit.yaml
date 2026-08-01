@@ -41,6 +41,20 @@ reviews:
         Tests use synthetic fixtures only. Flag any real personal data, real
         company names, or real URLs. Every test must assert on behaviour, not
         merely run without error.
+    - path: docs/superpowers/**
+      instructions: >-
+        Design specs and implementation plans, dated in the filename and header.
+        These are POINT-IN-TIME records: a section that a later decision
+        superseded is corrected by adding a dated superseded note, never by
+        rewriting the original. Do not ask for historical or superseded content
+        to be edited, and do not raise prose style, heading structure, or
+        formatting. DO raise, and these are the whole reason these files are in
+        scope: real employer names, real personal data, real URLs or absolute
+        paths, since the neutrality rule binds these documents too and a web
+        check is the only way to tell an invented name from a real firm; a claim
+        about the code that the code does not support; and a stated measurement
+        or mechanism that the document's own evidence does not actually
+        establish.
   tools:
     gitleaks:
       enabled: true
