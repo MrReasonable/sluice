@@ -225,33 +225,32 @@ enumerated `LeadNote` is byte-identical to no guard at all, because the snapshot
 construction. It is a parameter on the existing writer rather than a second write function, because
 CodeQL flags a new write function as a new sink.
 
-**Non-resurrection (#81), in the never-clobber family.** A lead a human merged away via
-`sluice leads dedupe --merge` must not be silently re-created by a later re-scrape — a wrong create
-undoes a human's decision and, if its surviving twin was already `applied`, means a second
-application under the user's name. `merge_cluster` archives each loser under `leads_dir/_merged/`
-and stamps the note name it was seated at into it (`archived_from_note`); `Vault._resolve_path`
-probes that archive before returning `create`, via the ONE verdict `_reconcile` (shared with the
-active walk, so the two cannot drift), and `_archived_match` maps the result. `upsert`'s return
-vocabulary is therefore SIX-member — `created`/`updated`/`merged`/`refused`, plus `merged_away` and
-`merged_away_unproven`. Both archive outcomes write NOTHING: not the note, not `leads_dir`, not the
-Syncthing marker. They differ only in evidence, and that difference is the load-bearing part:
-`merged_away` requires a url-PROVEN match (both urls non-empty and equal) and is the only one of the
-TWO the ingest sink records in `seen.db` — it joins `created`/`updated`/`merged` on the allowlist,
-which has four members, not one. Every weaker match — a location-token overlap, or an inconclusive
-comparison — is `merged_away_unproven` and must NEVER be recorded, because `seen.db` has no removal
-path and a same-company/title/location RE-POST carrying a brand-new url is a real job that would
-otherwise be suppressed forever with no note anywhere to reverse it. That arm therefore re-reports
-on every run until a human acts, and there is exactly ONE action — the same hand-move
+**Non-resurrection (#81), in the never-clobber family.** A lead a human merged away via `sluice
+leads dedupe --merge` must not be silently re-created by a later re-scrape — a wrong create undoes a
+human's decision and, if its surviving twin was already `applied`, means a second application under
+the user's name. `merge_cluster` archives each loser under `leads_dir/_merged/` and stamps the note
+name it was seated at into it (`archived_from_note`); `Vault._resolve_path` probes that archive
+before returning `create`, via the ONE verdict `_reconcile` (shared with the active walk, so the two
+cannot drift), and `_archived_match` maps the result. `upsert`'s return vocabulary is therefore
+SIX-member — `created`/`updated`/`merged`/`refused`, plus `merged_away` and `merged_away_unproven`.
+Both archive outcomes write NOTHING: not the note, not `leads_dir`, not the Syncthing marker. They
+differ only in evidence, and that difference is the load-bearing part: `merged_away` requires a
+url-PROVEN match (both urls non-empty and equal) and is the only one of the TWO the ingest sink
+records in `seen.db`: it joins the allowlist, which reads
+`created`/`updated`/`merged`/`merged_away`. Every weaker match — a location-token overlap, or an
+inconclusive comparison — is `merged_away_unproven` and must NEVER be recorded, because `seen.db`
+has no removal path and a same-company/title/location RE-POST carrying a brand-new url is a real job
+that would otherwise be suppressed forever with no note anywhere to reverse it. That arm therefore
+re-reports on every run until a human acts, and there is exactly ONE action — the same hand-move
 `docs/ARCHITECTURE.md` documents as the recovery path: move the archived note back out of
 `_merged/`. It returns to the active view, the next scrape reconciles against it as an ordinary
 note, and the outcome becomes `updated` (a location-only SAME) or `merged` (an inconclusive
-comparison) -- measured on BOTH arms. Either is on the allowlist, so the count stops.
-The Store contract states the
-obligation as bounded, not absolute: a merged-away loser must remain discoverable through the
-identity the store RECORDED at merge time, and a re-scrape whose identity has drifted past that
-(for the vault, past every name candidate) is outside the guarantee and is created — a visible
-duplicate, the direction to fail in. `_merged/` is load-bearing retention, not scratch: do not
-prune it. See `core/protocols.py`, `docs/ARCHITECTURE.md`, and
+comparison) -- measured on BOTH arms. Either is on the allowlist, so the count stops. The Store
+contract states the obligation as bounded, not absolute: a merged-away loser must remain
+discoverable through the identity the store RECORDED at merge time, and a re-scrape whose identity
+has drifted past that (for the vault, past every name candidate) is outside the guarantee and is
+created — a visible duplicate, the direction to fail in. `_merged/` is load-bearing retention, not
+scratch: do not prune it. See `core/protocols.py`, `docs/ARCHITECTURE.md`, and
 `tests/conformance/test_store_contract.py::test_merged_away_lead_is_never_recreated`.
 
 **Never-regress (status).** One `status` frontmatter key, two lifecycles with separate owners
