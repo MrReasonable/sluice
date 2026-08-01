@@ -413,6 +413,24 @@ AND a complete-linkage-compatible location (`_location_cliques`) -- a component
 is only a cluster if every pair in it is compatible, so a chain of blank-location
 edges can never bridge two notes with two different, named cities.
 
+The lead scan is **recursive**. `Vault._walk` defines the scan set once — every directory under
+`Job Applications/Job Leads`, minus `_PRIVATE_SUBDIRS` (today just `_merged/`) — and `read_leads`,
+`normalize_all_statuses` and `_locate` all consume it, so the exclusion cannot be applied in one place
+and forgotten in another. Pruning `_merged/` by name is load-bearing: before the scan was recursive
+it was invisible only because `os.listdir` is flat, and a walk that reached it would return every
+loser `sluice leads dedupe --merge` archived, undoing #81.
+
+Two rules follow from sharing a directory with the user's own notes. A file counts as a lead only
+if its frontmatter carries a `company` or a `role` (`_is_lead_note`) — *neither*, not *either*, so a
+hand edit that blanks one field does not make a lead invisible and therefore duplicated. And a
+lead's identity is its note NAME, not its path: `_locate` searches the whole scan set, so a note the
+user files in a subfolder is updated in place. A name resolving to two or more notes is ambiguous
+identity and `upsert` refuses.
+
+An unreadable directory in the scan set **raises** (`os.walk(..., onerror=)`). The default swallows
+it and yields nothing, which would make every lead beneath it invisible to the read path and to the
+write path — i.e. re-created — from one permissions bit.
+
 A merge keeps the survivor inside never-clobber's usual rule: only `alt_urls`,
 `first_seen` (minimised) and `last_seen` (advanced) change, re-derived against
 the fresh note through the same CAS path every modify-write uses, so a caller's
@@ -425,9 +443,11 @@ terminal is never ranked against a live one -- a terminal beside a live
 re-application, like two different terminals, is a genuine ambiguity and a
 CONFLICT, and that cluster's merge is refused rather than guessed. Losers are
 moved, never deleted, to `Job Applications/Job Leads/_merged/` -- reversible,
-and invisible to `read_leads` for the same structural reason the Experience
-Library's `_inbox/` is invisible to its read: both are subdirectories the
-`.md`-file listing skips over. A loser's own downstream state (scores, notes,
+and excluded from `read_leads` by the prune above (`_PRIVATE_SUBDIRS`), not by
+the flat-listing accident that hides the Experience Library's `_inbox/` from
+its own read -- that listing is still `os.listdir`, so a subdirectory is never
+descended into at all; the lead scan used to work the same way, before #1 made
+it recursive. A loser's own downstream state (scores, notes,
 a rendered CV, a sign-off hold) is therefore INTENTIONALLY dropped from the
 active view on merge, recovered only by moving the note back out of `_merged/`
 by hand; the report flags a loser carrying a rendered CV (`tailored_cv`), an

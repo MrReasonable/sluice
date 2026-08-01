@@ -1,13 +1,21 @@
-"""Scope guard: every directory vault.py CREATES is accounted for.
+"""Scope guard: every os.makedirs/os.mkdir call in vault.py is accounted for.
 
 _PRIVATE_SUBDIRS names the directories pruned from the scan set. If a later change adds a
 directory under leads_dir without adding it there, the walk returns its notes as active
 leads -- which for an archive is #81's resurrection. This test cannot know a new call's
-intent, so it fails on ANY unrecognised makedirs and makes the author classify it.
+intent, so it fails on ANY unrecognised os.makedirs/os.mkdir call and makes the author
+classify it.
 
 It asserts on the SCOPE, not on violations: an AST sweep that matched nothing would satisfy
 every assertion over an empty set, and for a guard whose success case is 'found nothing
-wrong' that is indistinguishable from working."""
+wrong' that is indistinguishable from working.
+
+LIMIT: the sweep is keyed on names bound to os.makedirs/os.mkdir (see _local_dirmakers), so
+a directory made via pathlib.Path(...).mkdir() -- a method call, not one of those names --
+would evade it entirely. Today's risk is zero: vault.py creates directories only through the
+four os.makedirs sites classified below (verified by hand, not by this guard), and nothing
+in it calls os.mkdir or pathlib. But that is a fact about the code today, not a guarantee
+this test enforces -- a future pathlib-based makedirs call ships unclassified and silent."""
 import ast
 import pathlib
 

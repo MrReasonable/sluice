@@ -79,7 +79,19 @@ class Store(Protocol):
     """The lead/experience store. See tests/conformance/test_store_contract.py -- an
     implementation that does not pass that suite is not a Store, whatever it claims."""
 
-    def read_leads(self, statuses: set | None = None) -> list: ...
+    def read_leads(self, statuses: set | None = None) -> list:
+        """Every stored lead as a LeadNote, filtered to `statuses` when given.
+
+        A store decides for itself what counts as a lead, but it MUST NOT return records it
+        does not own. The filesystem store shares its directory with whatever else the user
+        keeps there, so it returns only files whose frontmatter carries a company or a role;
+        a store with its own table has this by construction.
+
+        A merged-away loser is NOT returned (see upsert). For the vault that exclusion is by
+        NAME -- the archive directory is pruned from the scan -- rather than a side effect of
+        a flat listing, because the scan is recursive.
+        """
+        ...
 
     def upsert(self, lead) -> str:
         """Reconcile an incoming lead against the stored notes. Returns one of:
