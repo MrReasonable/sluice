@@ -49,6 +49,14 @@ _CHAR_CAP = 120     # max chars of a note stem before the byte-clamp; identity-d
 _CREATE_RACE_RETRIES = 3  # #16: bounded re-reconciles when a create loses the TOCTOU race
 _RMW_RACE_RETRIES = 3  # #16: bounded re-derivations before a modify-write refuses loudly
 _MERGED_SUBDIR = "_merged"          # where merge_cluster archives losers (#23)
+# Directories under leads_dir that SLUICE owns, pruned from the scan set. Everything else
+# under leads_dir is the user's and is scanned -- a `_`-prefix rule instead would silently
+# swallow a user folder named `_archive`, and a lead invisible to read_leads is invisible to
+# the write path too, so every note in it is re-created as a duplicate on the next scrape.
+# Before this existed `_merged/` was invisible only INCIDENTALLY (os.listdir is
+# non-recursive and `_merged` is a directory, so it failed the `.endswith(".md")` test);
+# a recursive walk would have surfaced every archived loser and undone #81 outright.
+_PRIVATE_SUBDIRS = frozenset({_MERGED_SUBDIR})
 # #81: a URL-PROVEN match against an archived note -- the incoming lead and the merged-away
 # one carry the same non-empty url. The sink records it in seen.db.
 _ARCHIVED = "merged_away"
@@ -94,6 +102,28 @@ def _parse_fm_spaced(inner: str | None) -> dict:
     return out
 
 
+def _reraise(exc: OSError) -> None:
+    """os.walk's onerror hook. Its DEFAULT is to SWALLOW the error and yield nothing for a
+    directory it could not open, which turns one permissions bit into an invisible subtree:
+    every lead in it disappears from read_leads AND from the write path's lookup, so the
+    next scrape re-creates all of them. The store already refuses to read an unreadable
+    dedup file as empty for the same reason -- this is that rule at directory scale."""
+    raise exc
+
+
+def _is_lead_note(fm: dict) -> bool:
+    """Does this file's frontmatter make it a LEAD, as opposed to a note the user keeps
+    alongside their leads (interview prep, research)? Once the scan is recursive those
+    share the tree, and treating every `.md` as a lead would triage them.
+
+    NEITHER, not EITHER, and the asymmetry is the point -- it is the same predicate
+    _archived_match uses, pointed the other way. There, skipping more often means
+    SUPPRESSING more often. Here, skipping more often means DROPPING a lead: a hand edit
+    that blanks `role` would hide the note from read_leads and from _locate, and the next
+    scrape would mint a duplicate. So a single surviving field keeps it a lead."""
+    return bool(fm.get("company") or fm.get("role"))
+
+
 # The store contract's note type. `VaultNote` survives as an alias because this module
 # is the vault's own, but the type the SEAM speaks is LeadNote: `ref` is an opaque
 # handle (a path here, a row id in another store) and `slug` is issued by the store
@@ -125,6 +155,12 @@ class Vault:
         # Fed raw into same_opportunity -> _compare_locations, which tokenizes it. #5's
         # split policy knob; empty by default (abstain). See core/config.py.
         self._noise = frozenset(location_noise_words or ())
+        # The scan set, computed once per store instance. Re-deriving it per lead costs
+        # ~1.4s on a 5500-note vault across a 500-lead run against ~4ms cached (measured).
+        # The staleness window is a human creating a subfolder mid-run; the cost is one
+        # duplicate note, which is the recoverable direction and the same posture the
+        # existing create-race takes.
+        self._scan_dirs_cache: list[str] | None = None
 
     def _slug_for(self, path: str) -> str:
         """The lead's stable identity. For a markdown vault that is the filename without
@@ -132,6 +168,39 @@ class Vault:
         and track/engine.py each used to recompute for themselves."""
         name = os.path.basename(path)
         return name[:-3] if name.endswith(".md") else name
+
+    # ── the scan set ─────────────────────────────────────────────────────────
+    def _walk(self):
+        """Yield (dirpath, filenames) for every scanned directory under leads_dir, with
+        `_PRIVATE_SUBDIRS` pruned. Unannotated deliberately: the return type needs
+        `Iterator`, and a quoted annotation naming an unimported type is ruff F821.
+
+        THE one definition of the scan set: read_leads, normalize_statuses and
+        _scan_dirs all consume this, so the exclusion cannot be applied in one place and
+        forgotten in another -- and forgetting it in read_leads resurrects every note a
+        human merged away (#81).
+
+        The prune is applied only when dirpath IS leads_dir, because leads_dir/_merged is
+        the single directory merge_cluster writes and _archived_match reads. Pruning the
+        name at every depth would instead hide a same-named directory the USER made, whose
+        notes would then be re-created as duplicates.
+
+        onerror=_reraise, never the default: see there."""
+        for dirpath, dirnames, filenames in os.walk(self.leads_dir, onerror=_reraise):
+            if dirpath == self.leads_dir:
+                dirnames[:] = [d for d in dirnames if d not in _PRIVATE_SUBDIRS]
+            yield dirpath, filenames
+
+    def _scan_dirs(self) -> list[str]:
+        """The scan set as a directory list, cached. Falls back to [leads_dir] before that
+        directory exists, and does NOT cache that answer: upsert creates leads_dir mid-run,
+        so caching 'missing' would leave every later lookup in the same run blind to the
+        directory it had just written into."""
+        if not os.path.isdir(self.leads_dir):
+            return [self.leads_dir]
+        if self._scan_dirs_cache is None:
+            self._scan_dirs_cache = [dirpath for dirpath, _ in self._walk()]
+        return self._scan_dirs_cache
 
     # ── paths ────────────────────────────────────────────────────────────────
     def _name_max(self) -> int:
@@ -329,7 +398,7 @@ class Vault:
                 # reject a file with no note in it at all. Both half-blank shapes are pinned
                 # as notes (test_company_only_archived_entry_is_still_a_note and its role
                 # sibling) so the choice cannot be flipped silently.
-                if not fm.get("company") and not fm.get("role"):
+                if not _is_lead_note(fm):
                     _log.warning("vault: ignoring unreadable archived note %s", path)
                     continue
                 # The name this entry was SEATED at: the fact merge_cluster recorded, or --
