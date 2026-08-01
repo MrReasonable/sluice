@@ -250,7 +250,10 @@ contract states the obligation as bounded, not absolute: a merged-away loser mus
 discoverable through the identity the store RECORDED at merge time, and a re-scrape whose identity
 has drifted past that (for the vault, past every name candidate) is outside the guarantee and is
 created — a visible duplicate, the direction to fail in. `_merged/` is load-bearing retention, not
-scratch: do not prune it. See `core/protocols.py`, `docs/ARCHITECTURE.md`, and
+scratch: do not prune it. The lead scan is recursive (#1), so `_merged/` is excluded from it BY NAME
+(`_PRIVATE_SUBDIRS`) rather than by the accident that a flat `os.listdir` never descended into
+it -- deleting that prune resurfaces every archived loser and undoes this invariant outright.
+See `core/protocols.py`, `docs/ARCHITECTURE.md`, and
 `tests/conformance/test_store_contract.py::test_merged_away_lead_is_never_recreated`.
 
 **Never-regress (status).** One `status` frontmatter key, two lifecycles with separate owners
