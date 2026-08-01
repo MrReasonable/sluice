@@ -520,20 +520,31 @@ class Vault:
     def read_leads(self, statuses: set | None = None) -> list:
         """Every lead note as a VaultNote (frontmatter parsed, status normalized),
         filtered to `statuses` (compared against the normalized status) when
-        given. This is the read seam triage consumes; the sink still writes Leads."""
+        given. This is the read seam triage consumes; the sink still writes Leads.
+
+        Walks the SCAN SET (see _walk), not one flat directory, so a note the user filed in
+        a subfolder is still a lead. Two consequences worth stating because both are load-
+        bearing: `_merged/` is pruned by NAME there rather than surviving on the accident
+        that os.listdir is flat (#81), and a file carrying neither company nor role is
+        skipped, or a user's interview-prep notes would be triaged as leads.
+
+        Ordered by full path. For a flat store that is byte-identical to the previous
+        sorted(os.listdir(...)), so nothing downstream sees an ordering change."""
         out: list = []
         if not os.path.isdir(self.leads_dir):
             return out
         want = {_status.normalize(s) for s in statuses} if statuses else None
-        for name in sorted(os.listdir(self.leads_dir)):
-            if not name.endswith(".md"):
-                continue
-            path = os.path.join(self.leads_dir, name)
+        paths = []
+        for dirpath, filenames in self._walk():
+            paths.extend(os.path.join(dirpath, n) for n in filenames if n.endswith(".md"))
+        for path in sorted(paths):
             try:
                 inner, body = _split_frontmatter(_read(path))
             except OSError:
                 continue
             fm = _fm_dict(inner)
+            if not _is_lead_note(fm):
+                continue
             st = _status.normalize(fm.get("status", ""))
             if want is not None and st not in want:
                 continue
