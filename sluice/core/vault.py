@@ -116,11 +116,13 @@ def _is_lead_note(fm: dict) -> bool:
     alongside their leads (interview prep, research)? Once the scan is recursive those
     share the tree, and treating every `.md` as a lead would triage them.
 
-    NEITHER, not EITHER, and the asymmetry is the point -- it is the same predicate
-    _archived_match uses, pointed the other way. There, skipping more often means
-    SUPPRESSING more often. Here, skipping more often means DROPPING a lead: a hand edit
-    that blanks `role` would hide the note from read_leads and from _locate, and the next
-    scrape would mint a duplicate. So a single surviving field keeps it a lead."""
+    NEITHER, not EITHER. This is the predicate _archived_match already uses, and it is
+    right in both places for the SAME reason rather than a mirrored one: skipping too
+    eagerly loses a note that really exists. There, a skipped archive entry stops
+    suppressing, so a lead a human merged away is resurrected (#81). Here, a skipped file
+    drops a lead from read_leads and from _locate, so the next scrape mints a duplicate.
+    A hand edit that blanks `role` -- the #16 threat model, a human in Obsidian -- must
+    therefore leave the note a lead, so one surviving field is enough."""
     return bool(fm.get("company") or fm.get("role"))
 
 
