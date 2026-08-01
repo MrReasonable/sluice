@@ -111,13 +111,19 @@ lead" would return its notes as phantom leads. That would make the second motiva
 better: the user gains a place to put other notes and sluice immediately starts triaging them.
 
 So `read_leads` and `normalize_statuses` skip a file carrying **neither `company` nor `role`** in
-frontmatter. This is not a new predicate — `_archived_match` already uses exactly it, and the
-asymmetry it records applies here too, for the mirrored reason:
+frontmatter. This is not a new predicate — `_archived_match` already uses exactly it, and it is
+right in both places for the **same** reason, not a mirrored one:
 
-- **`neither`, not `either`.** A lead note whose `role` a hand edit blanked still has `company`, so
-  it stays visible. Requiring both would hide it, and a lead invisible to `read_leads` is invisible
-  to the write path, so the next scrape re-creates it as a duplicate.
-- A user's interview-prep note has neither, so it is skipped.
+> In both, skipping too eagerly loses a note that really exists.
+
+- In `_archived_match`, a skipped archive entry stops suppressing, so a lead a human merged away is
+  resurrected — #81's harm.
+- In `read_leads`/`_locate`, a skipped file drops a lead from the read path and from the write
+  path's lookup, so the next scrape mints a duplicate.
+
+Hence `neither`, not `either`: a hand edit that blanks `role` (the #16 threat model — a human
+editing in Obsidian) must leave the note a lead, so one surviving field is enough. A user's
+interview-prep note carries neither and is skipped.
 
 The direction of failure is therefore "keep an ambiguous file as a lead", which costs a junk row in
 a report, against "drop a real lead", which costs a duplicate note. The cheap error is the one taken.
