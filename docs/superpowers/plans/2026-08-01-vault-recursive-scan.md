@@ -1045,7 +1045,6 @@ wrong' that is indistinguishable from working."""
 import ast
 import pathlib
 
-from sluice.core.vault import _PRIVATE_SUBDIRS
 
 _VAULT = pathlib.Path(__file__).resolve().parents[1] / "sluice" / "core" / "vault.py"
 
@@ -1062,11 +1061,38 @@ _EXPECTED = {
 }
 
 
+_DIRMAKERS = {"makedirs", "mkdir"}
+
+
+def _local_dirmakers(tree):
+    """Every local name in vault.py that reaches os.makedirs/os.mkdir, DERIVED from that
+    module's own import nodes rather than hand-listed.
+
+    `import os as _o` and `from os import makedirs as _mk` are the same call under a
+    different spelling, and a sweep keyed on the literal "os.makedirs" sees neither --
+    while the existing calls keep the scope assertion satisfied, so BOTH tests stay green
+    and a new unguarded directory ships. Measured: a hard-listed matcher misses four of
+    five spellings; this one catches all five and returns the identical sites on the real
+    file. That is the documented "hand-listed names lose to an import alias" failure and
+    its documented fix."""
+    modules, direct = set(), set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Import):
+            for a in n.names:
+                if a.name == "os":
+                    modules.add(a.asname or a.name)
+        elif isinstance(n, ast.ImportFrom) and n.module == "os":
+            for a in n.names:
+                if a.name in _DIRMAKERS:
+                    direct.add(a.asname or a.name)
+    return {f"{m}.{f}" for m in modules for f in _DIRMAKERS} | direct
+
+
 def _makedirs_args():
     tree = ast.parse(_VAULT.read_text())
+    names = _local_dirmakers(tree)
     return [ast.unparse(n.args[0]) for n in ast.walk(tree)
-            if isinstance(n, ast.Call)
-            and ast.unparse(n.func) in ("os.makedirs", "os.mkdir")]
+            if isinstance(n, ast.Call) and ast.unparse(n.func) in names]
 
 
 def test_the_sweep_actually_finds_the_makedirs_calls():
@@ -1093,7 +1119,7 @@ same one-line assertion in two files is duplication a reviewer would rightly fla
 - [ ] **Step 2: Run it**
 
 Run: `.venv/bin/python -m pytest tests/test_vault_makedirs_scope.py -q`
-Expected: PASS, 3 tests. If `test_every_directory_vault_creates_is_classified` fails, the
+Expected: PASS, 2 tests. If `test_every_directory_vault_creates_is_classified` fails, the
 `_EXPECTED` keys do not match this checkout's `ast.unparse` output — print `_makedirs_args()`
 and correct the keys verbatim rather than loosening the assertion.
 
