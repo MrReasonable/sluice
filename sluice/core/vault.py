@@ -791,16 +791,23 @@ class Vault:
         summary = {"changed": 0, "unchanged": 0, "unknown": [], "conflicts": []}
         if not os.path.isdir(self.leads_dir):
             return summary
-        for name in sorted(os.listdir(self.leads_dir)):
-            if not name.endswith(".md"):
-                continue
-            path = os.path.join(self.leads_dir, name)
+        paths = []
+        for dirpath, filenames in self._walk():
+            paths.extend(os.path.join(dirpath, n) for n in filenames if n.endswith(".md"))
+        for path in sorted(paths):
+            name = os.path.relpath(path, self.leads_dir)
             try:
                 inner, _ = _split_frontmatter(_read(path))
             except OSError:
                 continue
             if inner is None:
                 summary["unchanged"] += 1
+                continue
+            # A file that is not a lead is the USER's -- an interview-prep or research note
+            # they filed alongside their leads, now that the scan is recursive. Rewriting a
+            # `status:` line inside one is a wholesale clobber of content sluice does not
+            # own. Unlike read_leads, skipping here costs nothing: there is no lead to lose.
+            if not _is_lead_note(_fm_dict(inner)):
                 continue
             raws = re.findall(r"(?m)^\s*status\s*:\s*(.*)$", inner)
             norms = [_status.normalize(r.strip()) for r in raws]
