@@ -1030,7 +1030,7 @@ wrong' that is indistinguishable from working."""
 import ast
 import pathlib
 
-from sluice.core.vault import _MERGED_SUBDIR, _PRIVATE_SUBDIRS
+from sluice.core.vault import _PRIVATE_SUBDIRS
 
 _VAULT = pathlib.Path(__file__).resolve().parents[1] / "sluice" / "core" / "vault.py"
 
@@ -1068,12 +1068,12 @@ def test_every_directory_vault_creates_is_classified():
         f"vault.py creates {unexpected}, which this guard does not classify. If it is under "
         f"leads_dir and holds notes sluice owns, add its name to _PRIVATE_SUBDIRS so the scan "
         f"skips it; otherwise add it to _EXPECTED with the reason it is not scanned.")
-
-
-def test_the_merge_archive_is_pruned_from_the_scan_set():
-    """The one created directory that IS under leads_dir and must not be scanned."""
-    assert _MERGED_SUBDIR in _PRIVATE_SUBDIRS
 ```
+
+`_MERGED_SUBDIR in _PRIVATE_SUBDIRS` is deliberately NOT re-asserted here —
+`tests/test_vault_recursive_scan.py::test_merged_subdir_is_a_private_subdir` owns that pin, and the
+same one-line assertion in two files is duplication a reviewer would rightly flag. Import
+`_MERGED_SUBDIR` here only if `_EXPECTED` ends up referencing it.
 
 - [ ] **Step 2: Run it**
 
