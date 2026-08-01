@@ -158,3 +158,34 @@ def test_read_leads_keeps_a_lead_whose_role_was_blanked(tmp_path):
     leads = _leads_dir(tmp_path)
     _write_note(leads / "Active" / "Acme - Analyst.md", role="")
     assert [n.slug for n in Vault(str(tmp_path)).read_leads()] == ["Acme - Analyst"]
+
+
+# ── normalize_all_statuses over the scan set ───────────────────────────────────
+def test_normalize_statuses_reaches_a_note_in_a_subfolder(tmp_path):
+    leads = _leads_dir(tmp_path)
+    p = _write_note(leads / "Archive" / "Acme - Clerk.md", role="Clerk", status="Dismissed")
+    summary = Vault(str(tmp_path)).normalize_all_statuses()
+    assert summary["changed"] == 1
+    assert "status: dismiss" in p.read_text()
+
+
+def test_normalize_statuses_never_writes_into_a_users_own_note(tmp_path):
+    """never-clobber. A note carrying a `status:` line that is not a lead's is the user's
+    business; rewriting it is exactly the wholesale-clobber sluice exists to remove."""
+    leads = _leads_dir(tmp_path)
+    prep = leads / "Interview Prep" / "Pipeline.md"
+    prep.parent.mkdir(parents=True)
+    original = "---\nstatus: Parked\ntags: prep\n---\n\nnotes\n"
+    prep.write_text(original)
+    Vault(str(tmp_path)).normalize_all_statuses()
+    assert prep.read_text() == original
+
+
+def test_normalize_statuses_never_writes_into_an_archived_loser(tmp_path):
+    leads = _leads_dir(tmp_path)
+    loser = leads / _MERGED_SUBDIR / "Acme - Clerk.md"
+    loser.parent.mkdir(parents=True)
+    original = '---\ncompany: "Acme"\nrole: "Clerk"\nstatus: Dismissed\n---\n\nbody\n'
+    loser.write_text(original)
+    Vault(str(tmp_path)).normalize_all_statuses()
+    assert loser.read_text() == original
