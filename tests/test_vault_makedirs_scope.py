@@ -26,11 +26,36 @@ _EXPECTED = {
 }
 
 
+_DIRMAKERS = {"makedirs", "mkdir"}
+
+
+def _local_dirmakers(tree):
+    """Every local name in vault.py that reaches os.makedirs/os.mkdir, derived from
+    that module's OWN import nodes rather than hand-listed.
+
+    `import os as _o` and `from os import makedirs as _mk` are the same call under
+    different spellings, and a sweep keyed on the literal "os.makedirs" sees neither --
+    while the four existing calls keep the scope assertion satisfied, so both tests stay
+    green and a new unguarded directory ships. That is the documented "hand-listed names
+    lose to an import alias" failure, and deriving the bindings is its documented fix."""
+    modules, direct = set(), set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Import):
+            for a in n.names:
+                if a.name == "os":
+                    modules.add(a.asname or a.name)
+        elif isinstance(n, ast.ImportFrom) and n.module == "os":
+            for a in n.names:
+                if a.name in _DIRMAKERS:
+                    direct.add(a.asname or a.name)
+    return {f"{m}.{f}" for m in modules for f in _DIRMAKERS} | direct
+
+
 def _makedirs_args():
     tree = ast.parse(_VAULT.read_text())
+    names = _local_dirmakers(tree)
     return [ast.unparse(n.args[0]) for n in ast.walk(tree)
-            if isinstance(n, ast.Call)
-            and ast.unparse(n.func) in ("os.makedirs", "os.mkdir")]
+            if isinstance(n, ast.Call) and ast.unparse(n.func) in names]
 
 
 def test_the_sweep_actually_finds_the_makedirs_calls():
