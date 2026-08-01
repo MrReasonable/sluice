@@ -72,7 +72,10 @@ def test_scan_dirs_is_cached_once_the_leads_dir_exists(tmp_path):
     leads = _leads_dir(tmp_path)
     leads.mkdir(parents=True)
     v = Vault(str(tmp_path))
-    first = v._scan_dirs()
+    # COPIED, never the live object: _scan_dirs returns its cache by reference, so a bare
+    # `first = v._scan_dirs()` aliases it and any future refactor that refreshed the cache
+    # IN PLACE would leave this comparing the list to itself -- vacuously green.
+    first = list(v._scan_dirs())
     (leads / "Added Later").mkdir()
     assert v._scan_dirs() == first      # same instance, same answer
 

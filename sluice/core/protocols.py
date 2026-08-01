@@ -90,6 +90,12 @@ class Store(Protocol):
         A merged-away loser is NOT returned (see upsert). For the vault that exclusion is by
         NAME -- the archive directory is pruned from the scan -- rather than a side effect of
         a flat listing, because the scan is recursive.
+
+        A store MAY raise rather than return a partial list: the filesystem one propagates
+        the OSError from an unreadable directory in its scan set, since a subtree silently
+        read as empty drops every lead in it from BOTH this read and the write path's
+        lookup, and the next scrape re-creates all of them. Permitted, not required -- no
+        obligation is placed on an implementation here.
         """
         ...
 

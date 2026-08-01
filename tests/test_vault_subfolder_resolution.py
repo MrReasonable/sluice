@@ -38,7 +38,13 @@ def test_a_merged_away_loser_stays_invisible_to_the_recursive_scan(tmp_path):
     v = _two_note_vault(tmp_path)
     notes = v.read_leads()
     assert len(notes) == 2
-    survivor, loser = notes[0], notes[1]
+    # Keyed on url, exactly as the `_still_suppressed` sibling below is and for the same
+    # reason: read_leads sorts by full path and the location-suffixed note sorts FIRST
+    # (" " is 0x20, "." is 0x2e), so `notes[0], notes[1]` names the two the wrong way round.
+    # Harmless in this test -- both assertions hold whichever note is merged away -- but a
+    # labelling the sibling documents as a trap must not read as safe practice here.
+    by_url = {n.fm.get("url"): n for n in notes}
+    survivor, loser = by_url["https://ex.invalid/1"], by_url["https://ex.invalid/2"]
     archived = v.merge_cluster(survivor.ref, [loser.ref], alt_urls=[],
                                first_seen="2026-07-07", last_seen="2026-07-07")
     assert len(archived) == 1
@@ -105,9 +111,21 @@ def test_a_merged_away_lead_is_still_suppressed_when_a_subfolder_exists(tmp_path
     survivor, loser = by_url["https://ex.invalid/1"], by_url["https://ex.invalid/2"]
     v.merge_cluster(survivor.ref, [loser.ref], alt_urls=[],
                     first_seen="2026-07-07", last_seen="2026-07-07")
-    (_leads_dir(tmp_path) / "Archive").mkdir()
+    archive = _leads_dir(tmp_path) / "Archive"
+    archive.mkdir()
+    # POPULATED, not merely created. An empty directory is inert here -- delete the mkdir
+    # and no outcome moves -- so "when a subfolder exists" would promise a condition the
+    # test never exercises. An unrelated lead note gives the scan set a genuinely second
+    # populated directory for the candidate walk to stat through before it concludes the
+    # candidate resolves NOWHERE and falls to the archive probe.
+    (archive / "Foo - Engineer.md").write_text(
+        "---\ncompany: Foo\nrole: Engineer\nstatus: new\nurl: https://ex.invalid/9\n---\n")
 
     fresh = Vault(str(tmp_path))
+    # SCOPE, not violations: pin that the subfolder note is really in the scan set. Without
+    # it the fixture above could stop being reached (a typo'd path, a pruned directory) and
+    # this test would quietly go back to asserting about an empty folder.
+    assert "Foo - Engineer" in {n.slug for n in fresh.read_leads()}
     loser_lead = _lead(location=LOCATIONS[1], url="https://ex.invalid/2")
     # `== "merged_away"`, never a disjunction over both arms. The outcome here is
     # DETERMINISTIC: both sides carry the same non-empty url, so the url-proof gate is
