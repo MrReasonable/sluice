@@ -204,6 +204,26 @@ class Vault:
             self._scan_dirs_cache = [dirpath for dirpath, _ in self._walk()]
         return self._scan_dirs_cache
 
+    def _locate(self, name: str) -> list[str]:
+        """Every path in the scan set holding a note called `name`. A lead's identity is its
+        note NAME; which directory it sits in is not part of it, which is what lets a note be
+        filed, archived or restored without the next scrape re-creating it.
+
+        Deliberately does NOT apply _is_lead_note. A hand edit that blanked `company` and
+        `role` would make the note un-findable here, and un-findable means re-created as a
+        duplicate -- the opposite of what the predicate is for on the read path. A non-lead
+        file squatting a lead's exact candidate name is reconciled against as though it were
+        a lead, which is unchanged from the flat store and neither introduced nor widened.
+
+        Returns a LIST, not the first hit: two notes at one name is ambiguous identity, and
+        _resolve_path must refuse rather than pick one. See there."""
+        found = []
+        for dirpath in self._scan_dirs():
+            path = os.path.join(dirpath, f"{name}.md")
+            if os.path.exists(path):
+                found.append(path)
+        return found
+
     # ── paths ────────────────────────────────────────────────────────────────
     def _name_max(self) -> int:
         """The filesystem's max filename length in BYTES for the leads dir, cached.
@@ -471,6 +491,10 @@ class Vault:
         (every one a note proven different) is REFUSE: no path can be written without
         clobbering a different job, so path is None. See #5.
 
+        A candidate is looked up across the SCAN SET (see _locate), not at one flat path, so
+        a note the user filed in a subfolder is found and updated in place. A candidate
+        resolving to TWO OR MORE notes is ambiguous identity and refuses -- see _locate.
+
         Running out of candidates with NONE proven different -- i.e. no active note exists at
         any of them -- does not mean create, though: `_archived_match` (#81) then probes
         `_merged/` by the same candidate names, and action can ALSO come back `_ARCHIVED` or
@@ -490,15 +514,28 @@ class Vault:
         a negligible ASCII-population sub-residual that fails toward merge, never a clobber.)"""
         names, capped = self._candidate_names(lead.company, lead.title, lead.location)
         for name in names:
-            path = os.path.join(self.leads_dir, f"{name}.md")
-            if not os.path.exists(path):
+            found = self._locate(name)
+            if len(found) > 1:
+                # Two notes claim one identity, so there is no safe write: bumping either
+                # one's last_seen leaves the other to rot unnoticed. Nothing sluice does
+                # produces this -- creates go to one directory and (PR B) reconcile refuses
+                # a colliding move -- so it arrives by hand, from a copied note or a
+                # part-way manual reorganisation. Refuse loudly and let the sink keep the
+                # lead out of seen.db so it re-reports until a human merges or renames.
+                _log.warning("vault refused lead %r: %r resolves to %d notes (%s)",
+                             lead.dedup_key, name, len(found), ", ".join(sorted(found)))
+                return None, "refuse"
+            if not found:
                 # #81. Returns None, or one of the TWO outcome strings -- never a bool: the
                 # url-PROVEN/weaker distinction decides whether the lead enters seen.db,
                 # which is irreversible in one direction, so a bool cannot carry it.
                 archived = self._archived_match(names, lead, capped)
                 if archived:
                     return None, archived
-                return path, "create"
+                # The write folder is still leads_dir itself. PR B is what points a create
+                # at Active/; PR A creates no directories and moves no notes.
+                return os.path.join(self.leads_dir, f"{name}.md"), "create"
+            path = found[0]
             inner, _ = _split_frontmatter(_read(path))
             # The url-proof is DISCARDED here on purpose: against an ACTIVE note a SAME
             # verdict terminates the walk identically however it was reached, so this
@@ -851,11 +888,12 @@ class Vault:
     def upsert(self, lead: Lead) -> str:
         """Reconcile an incoming lead against the existing notes. Returns one of
         "created" | "updated" | "merged" | "refused" | "merged_away" | "merged_away_unproven".
-        UPDATE and MERGE bump ONLY last_seen (never-clobber); REFUSE writes nothing -- every
-        name candidate is a note proven DIFFERENT, so writing would clobber a different job
-        (see #5). The two "merged_away*" outcomes ALSO write nothing: a human already
-        archived this lead as a duplicate (#81), so the incoming scrape is suppressed
-        rather than re-created. The two are kept distinct rather than conflated into one
+        UPDATE and MERGE bump ONLY last_seen (never-clobber); REFUSE writes nothing -- no name
+        candidate can be written without clobbering a different job, either because every one
+        is a note proven DIFFERENT (#5) or because one resolves to SEVERAL notes at once
+        (ambiguous identity; see _locate). The two "merged_away*" outcomes ALSO write nothing:
+        a human already archived this lead as a duplicate (#81), so the incoming scrape is
+        suppressed rather than re-created. The two are kept distinct rather than conflated into one
         string -- `_ARCHIVED` is a url-PROVEN match against the archived note,
         `_ARCHIVED_UNPROVEN` is every weaker one (a location-only SAME, or UNKNOWN) --
         and that distinction is what later decides whether the lead may enter the dedup
@@ -874,12 +912,16 @@ class Vault:
             path, action = self._resolve_path(lead)
             if action == "refuse":
                 # Loud, not silent, and writes NOTHING -- not the note, and not the leads dir
-                # or Syncthing marker (below): every name candidate is a note proven DIFFERENT,
-                # so any write would clobber a different job. The sink counts this and keeps the
+                # or Syncthing marker (below): no name candidate can be written without
+                # clobbering a different job. TWO causes reach here and the message names both,
+                # because it cannot tell them apart -- every candidate a note proven DIFFERENT
+                # (#5), or one candidate resolving to SEVERAL notes, which _resolve_path has
+                # already logged with the colliding paths. The sink counts this and keeps the
                 # lead out of seen.db, so it is retried (and re-reported) next run rather than
                 # lost. Reachable only pathologically (a note whose frontmatter contradicts its
-                # filename, or a byte-clamp collapse on a tiny NAME_MAX). See #5.
-                _log.warning("vault refused lead %r: every name candidate is a note proven different",
+                # filename, a byte-clamp collapse on a tiny NAME_MAX, or a hand-copied note).
+                _log.warning("vault refused lead %r: no name candidate is writable -- every one is "
+                             "a note proven different, or one resolves to several",
                              lead.dedup_key)
                 return "refused"
             if action in (_ARCHIVED, _ARCHIVED_UNPROVEN):
