@@ -8,24 +8,11 @@ import pytest
 from sluice.core.vault import (
     _MERGED_SUBDIR, _PRIVATE_SUBDIRS, Vault, _is_lead_note,
 )
+from tests.conftest import UNREADABLE_DIR as _UNREADABLE_DIR
 
 
 def _leads_dir(tmp_path):
     return tmp_path / "Job Applications" / "Job Leads"
-
-
-def _cannot_unread_a_dir():
-    # TWO platforms where chmod 000 does not do what these tests need, and they fail in
-    # OPPOSITE directions. As uid 0 the mode bits do not bind, so the directory stays
-    # readable and the test passes VACUOUSLY -- the dangerous direction. On Windows chmod
-    # cannot remove read access from a directory at all, so the walk succeeds and the test
-    # fails outright, which is noise rather than a finding. geteuid is absent on Windows;
-    # -1 never equals 0, so the order of these two terms does not matter.
-    return os.name == "nt" or getattr(os, "geteuid", lambda: -1)() == 0
-
-
-_UNREADABLE_DIR = pytest.mark.skipif(
-    _cannot_unread_a_dir(), reason="chmod 000 binds neither uid 0 nor Windows")
 
 
 # ── the exclusion set ─────────────────────────────────────────────────────────
@@ -136,6 +123,44 @@ def test_read_leads_propagates_an_unreadable_subdirectory(tmp_path):
     not even call -- so wrapping read_leads' own walk loop in `try/except OSError: pass`,
     leaving `_walk`'s onerror intact, left the whole suite green (mutant M12)."""
     _with_unreadable_subdir(tmp_path, lambda v: v.read_leads())
+
+
+def _with_unstatable_leads_dir(tmp_path, call):
+    """Take away permission on the PARENT, so `os.stat(leads_dir)` itself fails. Restores
+    the mode whatever happens (a leftover 000 directory breaks tmp_path cleanup)."""
+    parent = tmp_path / "Job Applications"
+    (parent / "Job Leads" / "Active").mkdir(parents=True)
+    (parent / "Job Leads" / "Active" / "Acme - Analyst.md").write_text(
+        '---\ncompany: "Acme"\n---\n')
+    os.chmod(parent, 0o000)
+    try:
+        with pytest.raises(PermissionError):
+            call(Vault(str(tmp_path)))
+    finally:
+        os.chmod(parent, 0o755)
+
+
+@_UNREADABLE_DIR
+def test_an_unstatable_leads_dir_raises_rather_than_reading_as_not_yet_created(tmp_path):
+    """`_is_dir` answers False ONLY to FileNotFoundError -- leads_dir before the first
+    upsert, which is not an error. os.path.isdir swallows EVERY OSError, so an unstatable
+    leads_dir reads as 'not created yet' and the scan set collapses to [leads_dir]: every
+    note in every subfolder invisible to read_leads AND to _locate, which re-creates all of
+    them. Measured with the parent at mode 000 -- shipped: PermissionError; the os.path.isdir
+    mutant: ['<leads_dir>'], silently.
+
+    Asserted on `_scan_dirs`, not on `upsert`, because upsert is NOT discriminating: it
+    raises under both, but the mutant's raise comes from an unrelated later os.makedirs, so
+    containment there is luck rather than the guard."""
+    _with_unstatable_leads_dir(tmp_path, lambda v: v._scan_dirs())
+
+
+@_UNREADABLE_DIR
+def test_read_leads_does_not_read_an_unstatable_leads_dir_as_empty(tmp_path):
+    """The same rung on the other side: read_leads' own early return used os.path.isdir, so
+    an unstatable leads_dir came back as an EMPTY vault -- no notes, no error, no log --
+    through the public seam every sub-app consumes."""
+    _with_unstatable_leads_dir(tmp_path, lambda v: v.read_leads())
 
 
 @_UNREADABLE_DIR
@@ -260,19 +285,24 @@ def test_read_leads_stays_quiet_when_every_slug_is_unique(tmp_path, caplog):
 
 
 # ── a symlinked subfolder is not followed, and says so ────────────────────────
-def _symlinked_folder(tmp_path, *, with_note):
+def _symlinked_folder(tmp_path, *, with_note, nested=False):
     """A subfolder of leads_dir that is a SYMLINK to a directory elsewhere -- ordinary
-    practice in an Obsidian vault, and invisible to the walk (followlinks=False)."""
+    practice in an Obsidian vault, and invisible to the walk (followlinks=False). Returns
+    the TARGET, which is what a caller taking permissions away has to chmod (the link
+    itself carries no useful mode).
+
+    `nested` puts the note one directory DOWN inside the target, the layout a recursive
+    scan invites and the one a flat listdir of the target could not see."""
     leads = _leads_dir(tmp_path)
     leads.mkdir(parents=True)
     target = tmp_path / "elsewhere"
     target.mkdir()
     if with_note:
-        _write_note(target / "Acme - Analyst.md")
+        _write_note((target / "2025" if nested else target) / "Acme - Analyst.md")
     else:
         (target / "notes.txt").write_text("not a note\n")
     (leads / "Applied").symlink_to(target, target_is_directory=True)
-    return leads
+    return target
 
 
 def test_a_symlinked_subfolder_holding_notes_is_warned_about(tmp_path, caplog):
@@ -304,6 +334,21 @@ def test_a_symlinked_subfolder_is_warned_about_once_per_store(tmp_path, caplog):
     assert len(said) == 1, said
 
 
+def test_a_symlinked_subfolder_whose_note_is_nested_is_warned_about(tmp_path, caplog):
+    """The probe is RECURSIVE. A flat listdir of the link target saw nothing when the notes
+    sat one directory down -- which is the layout a recursive scan invites, so it is the
+    layout the warning most needed to cover. Measured before this, with the note at
+    `<target>/2025/`: upsert returned `created`, a fresh note appeared at `new`, the
+    `applied` original stayed untouched behind the link, and ZERO records reached the
+    sluice.core.vault logger."""
+    _symlinked_folder(tmp_path, with_note=True, nested=True)
+    with caplog.at_level("WARNING"):
+        notes = Vault(str(tmp_path)).read_leads()
+    assert notes == [], "the nested note really is invisible; the warning is the remedy"
+    said = [r.getMessage() for r in caplog.records if r.name == "sluice.core.vault"]
+    assert any("Applied" in m and "symlink" in m for m in said), said
+
+
 def test_a_symlinked_subfolder_without_notes_stays_quiet(tmp_path, caplog):
     """A warning that fires on every walk for a harmless link is one users learn to ignore,
     which is how the real one gets missed. Only links HOLDING notes are reported."""
@@ -311,6 +356,29 @@ def test_a_symlinked_subfolder_without_notes_stays_quiet(tmp_path, caplog):
     with caplog.at_level("WARNING"):
         Vault(str(tmp_path)).read_leads()
     assert [r.getMessage() for r in caplog.records if r.name == "sluice.core.vault"] == []
+
+
+@_UNREADABLE_DIR
+def test_an_unreadable_symlink_target_is_reported_and_does_not_abort_the_read(tmp_path,
+                                                                             caplog):
+    """The warning path must never raise: it is best-effort, and the caller is the ONE
+    definition of the scan set, so a warning that aborts a read is worse than the thing it
+    warns about. And 'cannot tell' must not read as 'nothing there' -- the notes behind an
+    unreadable link are just as invisible as the ones behind a readable one.
+
+    Both halves were unwitnessed: every other symlink test uses a READABLE target, so
+    deleting the try/except (letting the OSError out of `_walk`) and deleting the
+    unreadable-target report each left the whole suite green."""
+    target = _symlinked_folder(tmp_path, with_note=True)
+    os.chmod(target, 0o000)
+    try:
+        with caplog.at_level("WARNING"):
+            notes = Vault(str(tmp_path)).read_leads()   # RETURNS -- must not raise
+    finally:
+        os.chmod(target, 0o755)
+    assert notes == []
+    said = [r.getMessage() for r in caplog.records if r.name == "sluice.core.vault"]
+    assert any("Applied" in m and "cannot read" in m for m in said), said
 
 
 def test_a_real_subfolder_holding_notes_stays_quiet(tmp_path, caplog):

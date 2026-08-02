@@ -125,11 +125,65 @@ def _is_dir(path: str) -> bool:
         return False
 
 
+def _is_note_file(path: str) -> bool:
+    """Does `path` name a REGULAR FILE? `_locate`'s probe, and the same rule `_is_dir`
+    states one rung up: NOT os.path.exists (nor os.path.isfile, which is the same trap in
+    the other direction), because both swallow EVERY OSError and so read an unstatable
+    path as an absent one.
+
+    Measured, and the reason this exists: a scanned directory at mode `r--` is LISTABLE
+    but not STATABLE, so os.walk succeeds, onerror=_reraise never fires, the directory is
+    in the scan set -- and every stat inside it raises PermissionError. Under os.path.exists
+    that made `_locate` return [], which is the `if not found:` branch: an `applied` note
+    with a url-identical archived twin resolved to `merged_away`, the RECORDED arm, so the
+    lead entered seen.db (no removal path), was suppressed permanently with its last_seen
+    frozen, and the only log line said it had been merged away. Propagating instead reaches
+    the ingest sink's `except OSError`, which counts the lead `skipped` and keeps it OUT of
+    seen.db for a retry -- the same route `_archived_match` documents for an unreadable
+    archive entry.
+
+    REGULAR, not merely present: a directory or a fifo named `<name>.md` is not a note, and
+    answering `found` for one sends `_read` at it (IsADirectoryError, mid-walk) instead of
+    letting the walk reach its create/archive arms. Absent is answered only for the two
+    errors that genuinely mean "no file there" -- FileNotFoundError, and NotADirectoryError
+    for a scanned directory replaced by a file under a concurrent writer."""
+    try:
+        return stat.S_ISREG(os.stat(path).st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+
+
+def _holds_a_note(path: str) -> bool:
+    """Does `path` hold a `.md` file at ANY depth? The symlink warning's probe.
+
+    RECURSIVE, and that is the whole point: a non-recursive listdir here missed exactly the
+    layout this change invites. Measured with `Job Leads/Linked -> <target>` and the note at
+    `<target>/2025/Acme - Analyst.md` at `status: applied` -- upsert returned `created`, a
+    fresh note appeared at `new`, the applied original stayed untouched behind the link, and
+    ZERO records reached the sluice.core.vault logger. The warning claimed to make that
+    invisible-subtree harm loud and did not.
+
+    Short-circuits on the FIRST hit rather than counting: the answer is a yes/no (only
+    symlinks holding notes are reported at all), and walking a large linked tree to
+    exhaustion on every scan -- several times per command -- to produce a number nothing
+    branches on would be paid on every run for nothing.
+
+    onerror=_reraise, never os.walk's default: the default SWALLOWS the error and yields
+    nothing, so an unreadable target would answer 'no notes here' -- fail-open, and the
+    caller reports an unreadable target precisely because it must not. The caller catches
+    the OSError and says so."""
+    for _, _, filenames in os.walk(path, onerror=_reraise):
+        if any(f.endswith(".md") for f in filenames):
+            return True
+    return False
+
+
 def _warn_undescended_symlinks(dirpath: str, dirnames: list, already: set) -> None:
     """Warn about a symlinked subfolder the walk will not descend into (followlinks=False;
     see _walk). Best effort and log-only: it must never raise, because the caller is the one
     definition of the scan set and a warning path that aborts a read would be worse than the
-    thing it warns about.
+    thing it warns about. `_holds_a_note` DOES raise on an unreadable target, deliberately,
+    and the except below is what turns that into the report.
 
     Only symlinks HOLDING notes are reported, so a user's symlink to a folder of anything
     else stays quiet -- a warning that fires on every walk for a harmless link is one users
@@ -146,17 +200,17 @@ def _warn_undescended_symlinks(dirpath: str, dirnames: list, already: set) -> No
         if path in already or not os.path.islink(path):
             continue
         try:
-            n = sum(1 for e in os.listdir(path) if e.endswith(".md"))
+            holds = _holds_a_note(path)
         except OSError as e:
             already.add(path)
             _log.warning("vault: %s is a symlink this scan cannot read (%s); any lead in it "
                          "is invisible and would be re-created", path, e)
             continue
-        if n:
+        if holds:
             already.add(path)
-            _log.warning("vault: %s is a symlink holding %d note(s); the scan does not follow "
+            _log.warning("vault: %s is a symlink holding note(s); the scan does not follow "
                          "symlinks, so those leads are invisible and would be re-created "
-                         "-- move the folder into the vault instead of linking it", path, n)
+                         "-- move the folder into the vault instead of linking it", path)
 
 
 def _is_lead_note(fm: dict) -> bool:
@@ -257,7 +311,10 @@ class Vault:
         came back `created`, the original untouched, with no log line). That is exactly the
         invisible-subtree harm _reraise exists to stop, arriving by a different route, so it
         is made loud here: os.walk still LISTS an undescended symlink in `dirnames`, which
-        is where it is visible even though it is not followed."""
+        is where it is visible even though it is not followed. `_warn_undescended_symlinks`
+        descends the TARGET to decide whether to speak (see `_holds_a_note`) -- a flat
+        listing of it left the nested layout, the one a recursive scan invites, as silent as
+        before the warning existed."""
         for dirpath, dirnames, filenames in os.walk(self.leads_dir, onerror=_reraise):
             if dirpath == self.leads_dir:
                 dirnames[:] = [d for d in dirnames if d not in _PRIVATE_SUBDIRS]
@@ -300,6 +357,10 @@ class Vault:
         Returns a LIST, not the first hit: two notes at one name is ambiguous identity, and
         _resolve_path must refuse rather than pick one. See there.
 
+        The per-candidate probe is `_is_note_file`, never os.path.exists: an unstatable path
+        must not read as an absent one here, because absent is the branch that creates and
+        that records a merged_away in seen.db. See there for the measured failure.
+
         Stats LIVE on every call. The obvious optimisation -- a name->paths index built from
         the same `_walk` `_scan_dirs` already runs, turning this into a dict lookup -- would
         be a BUG, not a saving. `upsert`'s create-race loop terminates only because a
@@ -321,7 +382,7 @@ class Vault:
         found = []
         for dirpath in self._scan_dirs():
             path = os.path.join(dirpath, f"{name}.md")
-            if os.path.exists(path):
+            if _is_note_file(path):
                 found.append(path)
         return found
 
@@ -722,7 +783,13 @@ class Vault:
         Ordered by full path. For a flat store that is byte-identical to the previous
         sorted(os.listdir(...)), so nothing downstream sees an ordering change."""
         out: list = []
-        if not os.path.isdir(self.leads_dir):
+        # `_is_dir`, not os.path.isdir. This early return exists for ONE case -- leads_dir
+        # before the first upsert, where _walk's onerror=_reraise would otherwise raise a
+        # FileNotFoundError at every caller on a fresh vault. os.path.isdir also answers
+        # False to a leads_dir it cannot STAT, and that answer is a silent empty read of a
+        # vault full of notes: every lead invisible to triage, cv, apply and track, with no
+        # error anywhere. Same rule, same reason as _scan_dirs; see _is_dir.
+        if not _is_dir(self.leads_dir):
             return out
         want = {_status.normalize(s) for s in statuses} if statuses else None
         paths = []
