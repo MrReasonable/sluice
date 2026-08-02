@@ -178,9 +178,9 @@ every one of these; `XDG_CONFIG_HOME` and `HOME` are consecutive rungs of one ch
 load-bearing and neither substitutes for the other.
 
 **The `leads` passes report by default; the pipeline commands write by default.** `leads dedupe`
-(`--merge ID [ID ...]`) and `leads expire` (`--expire [SLUG...]`) print and change nothing until
-told otherwise, and neither offers `--dry-run` — the default IS the dry run, and a flag that does
-nothing is drift. `triage run`/`ingest run`/`track run` invert both halves. The distinguishing
+(`--merge ID [ID ...]`), `leads expire` (`--expire [SLUG...]`) and `leads reconcile` (`--apply`, #1)
+print and change nothing until told otherwise, and none offers `--dry-run` — the default IS the dry
+run, and a flag that does nothing is drift. `triage run`/`ingest run`/`track run` invert both halves. The distinguishing
 property is whose judgement the write encodes: a pipeline command acts on a verdict the user
 configured, while a `leads` pass writes over a set the TOOL computed, so a mistyped one should print
 a list rather than change a hundred notes. (`docs/ARCHITECTURE.md` has the per-pass mechanics.)
@@ -224,6 +224,16 @@ mismatch. That check CANNOT be hoisted into the caller — probed against a real
 enumerated `LeadNote` is byte-identical to no guard at all, because the snapshot is stale by
 construction. It is a parameter on the existing writer rather than a second write function, because
 CodeQL flags a new write function as a new sink.
+
+`sluice leads reconcile` (#1) is the one pass that MOVES a note, and a move writes no note bytes —
+only a directory entry, via the `O_EXCL`-reserve + `os.replace` primitive `merge_cluster` shares. It
+never read-modify-writes a status, so never-regress is untouched. That is NOT the same as
+never-clobber holding "by construction", and the difference is measured: a move landing between
+`_cas_write`'s freshness re-read and `_atomic_write`'s `os.replace(tmp, path)` RE-CREATES the source
+path, leaving two notes at one basename and a lead `upsert` then refuses permanently. No portable
+stdlib atomic-conditional-rename exists, so it is the same accepted residual as `_cas_write`'s own
+micro-window — documented, warned about in the command's help, and REPORTED by the sweep that caused
+it rather than left for a later ingest to surface as an unexplained refusal.
 
 **Non-resurrection (#81), in the never-clobber family.** A lead a human merged away via `sluice
 leads dedupe --merge` must not be silently re-created by a later re-scrape — a wrong create undoes a
