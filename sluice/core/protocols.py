@@ -81,7 +81,11 @@ class LeadNote:
 
     The obligation that falls on the CALLER follows from that: never index a returned list by
     slug with a bare dict comprehension, which silently keeps the last twin. `core/leads.py:
-    index_by_slug` drops both and reports them, which is what `track` and `leads expire` use.
+    index_by_slug` drops both and RETURNS them for the caller to report, which is what
+    `track` and `leads expire` use. Stated obligations are only as good as what checks them,
+    and this one was violated at all four sites that existed when it was written, so
+    `tests/test_slug_indexing_discipline.py` sweeps `sluice/` for the hand-rolled shapes --
+    per-site regression tests say nothing about a FIFTH consumer.
     The obligation is not discharged by INDEXING carefully, though -- a caller that walks the
     list without keying on slug at all is bound just as hard, and is the shape a fix aimed at
     the dicts misses: `apply`'s batch path (`select_all`, whose one caller is `preview_all`
