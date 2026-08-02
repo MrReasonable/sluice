@@ -615,14 +615,16 @@ invisible to the read path and to the write path — i.e. re-created — from on
 permissions bit. The same rule binds every probe that decides whether a path in the
 LEAD TREE is there, because `os.path.exists`/`isdir`/`isfile` all swallow EVERY
 `OSError` and so read an unstatable path as an absent one. There are two, and between
-them they cover all four such decisions. `_is_dir` — which `_scan_dirs`, `read_leads`
-and `normalize_all_statuses` each ask whether `leads_dir` exists at all — answers False
-only to `FileNotFoundError` and lets a `PermissionError` out. `_is_note_file`,
-`_locate`'s per-candidate probe, answers FOUND only for a regular file and absent only
-for `FileNotFoundError`/`NotADirectoryError`.
+them they cover all four such decisions in that tree. `_is_dir` — which `_scan_dirs`,
+`read_leads` and `normalize_all_statuses` each ask whether `leads_dir` exists at all —
+answers False only to `FileNotFoundError` and lets a `PermissionError` out.
+`_is_note_file`, `_locate`'s per-candidate probe, answers FOUND only for a regular file
+and absent only for `FileNotFoundError`/`NotADirectoryError`. `_is_dir` has one more
+caller, outside that tree and bound by the same rule for a different reason:
+`read_experience_entries`, below.
 
-Each of the three `_is_dir` callers had to be converted separately, and
-`normalize_all_statuses` was converted last, after the other two had shipped —
+Each of the four `_is_dir` callers had to be converted separately, and
+`normalize_all_statuses` was the last of the three under `leads_dir` —
 worth stating because it is the one that WRITES, so its silent empty read was reported
 back to the CLI as a successful sweep that canonicalized nothing. Its `os.path.isdir`
 False also short-circuited *before* `_walk`, so `onerror=_reraise` never fired. Measured
@@ -637,12 +639,18 @@ gone. Measured against a live `applied` note with a url-identical archived twin:
 `merged_away`, recorded, `last_seen` frozen, and the only log line said the lead had
 been merged away.
 
-One probe in the module is deliberately NOT bound by this: `read_experience_entries`
-still uses `os.path.isdir` on the *Experience Library*, a different directory that is
-no part of the lead scan and has no write path keyed on it — nothing re-creates an
-experience entry the way an invisible lead is re-created. Converting it would change
-the failure semantics of a method on the Store contract, so it is left for whoever
-takes that decision on its own merits rather than folded in here.
+The fourth `_is_dir` caller sits outside the lead tree. `read_experience_entries`
+probes the *Experience Library*, which no scan walks and which no write path is keyed
+on, so its harm is not a re-created lead and it took the rule on its own merits: these
+entries are the ONLY citable evidence the hard fabrication gate recognises, so an empty
+read leaves a bundle with no ids and every WORK bullet violates it — measured,
+`BAD CITATION` for a bullet that cites and `UNCITED BULLET` for one that does not.
+The CV is therefore never rendered — it fails CLOSED — and what it costs is that a
+permissions problem reaches the user as `skipped-gate`, a fabrication verdict against
+their composer, after a dossier fetch and a full compose have been paid for. The silent
+case needs the VAULT ROOT to be unstatable, since with the library itself at mode 000
+`os.listdir` already raises: `os.stat(base)` is then the call that fails, and
+`os.path.isdir` turned that into `return []`.
 
 `os.walk` does **not** follow symlinks, and that default is kept: following would let
 a link loop spin the walk and let a link out of the vault pull arbitrary directories
