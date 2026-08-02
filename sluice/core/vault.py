@@ -22,7 +22,14 @@ import tempfile
 from datetime import date
 
 from sluice.core import status as _status
-from sluice.core.leads import SAME, UNKNOWN, Lead, _norm_url, same_opportunity
+from sluice.core.leads import (
+    SAME,
+    UNKNOWN,
+    Lead,
+    _norm_url,
+    layout_subfolder,
+    same_opportunity,
+)
 from sluice.core.log import get_logger
 from sluice.core.protocols import (
     CRITERIA_RELPATH,
@@ -263,7 +270,7 @@ VaultNote = LeadNote
 
 class Vault:
     def __init__(self, dir: str | None = None, *, baseline_rel: str = _MYCV_BASELINE,
-                 location_noise_words=()):
+                 location_noise_words=(), lead_layout: str = ""):
         # expanduser at CONSTRUCTION, so every route in agrees: the factory's env-or-config value,
         # a direct `Vault(dir)`, and the default below. A literal `~` is never what anyone means by
         # a vault path, and a shell that does not expand it (an env var set in a config file, a
@@ -285,6 +292,16 @@ class Vault:
         # Fed raw into same_opportunity -> _compare_locations, which tokenizes it. #5's
         # split policy knob; empty by default (abstain). See core/config.py.
         self._noise = frozenset(location_noise_words or ())
+        # #1. Validated HERE, at construction, and by CALLING the pure map rather than re-testing
+        # membership: a second copy of "is this a known layout" is a second thing to keep in sync,
+        # which is the #30 failure mode. `layout_subfolder` raises and lists the valid names for an
+        # unknown one, so a typo'd `lead_layout: activearchive` cannot degrade silently to flat and
+        # leave a user believing their vault is being filed when nothing is. The probe status is
+        # "new" because that is what a created note carries (see the rendered frontmatter in
+        # upsert), so this is the same call `_write_folder` makes -- if it raises there it raises
+        # here, at the earliest possible moment, on every command that builds a store.
+        layout_subfolder("new", lead_layout)
+        self.lead_layout = lead_layout
         # The scan set, computed once per store instance -- re-deriving it per lead is the
         # dominant cost of a run (figures in the design spec). The staleness window is a
         # human filing a note into a NEW subfolder mid-run, which _resolve_path closes on

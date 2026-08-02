@@ -20,6 +20,16 @@
 # own site, so this does not replace checking before you apply.
 # lead_ttl_days: 90   # <- uncomment and set YOUR OWN
 
+# How the lead store FILES your notes on disk (#1). "" (the shipped default) is flat: every note
+# in one directory, exactly as before this existed. "active_archive" splits them into Active/ and
+# Archive/ -- Archive holds dismissed leads and every finished application (rejected, accepted,
+# withdrawn) -- and NOTHING moves on its own: `sluice leads reconcile` reports the drift, and only
+# `--apply` files anything. The scan is recursive either way, so subfolders you make yourself are
+# read as leads and are never relocated. Commented out rather than set, for the same reason as
+# `lead_ttl_days` above: this file is COPIED, and an active value would hand every copier a filing
+# decision they never made.
+# lead_layout: active_archive   # <- uncomment to opt in
+
 # ── adapter seams ────────────────────────────────────────────────────────────
 # Which implementation fills each seam. Selection is by NAME; an unknown name raises at
 # construction and lists the valid ones rather than falling through to a default.

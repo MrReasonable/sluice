@@ -7,6 +7,7 @@ can override without editing files.
 import os
 from dataclasses import dataclass, field
 
+from sluice.core.leads import LEAD_LAYOUTS
 from sluice.core.paths import config_file
 from sluice.core.urlguard import parse_allow_hosts
 
@@ -95,6 +96,13 @@ class Config:
     # differed between them would be a bug. NB `ttl_days` (cv/config.py, triage/config.py)
     # is the unrelated DOSSIER CACHE ttl; this name is deliberately distinct from it.
     lead_ttl_days: int = 0
+    # Which named folder layout the lead store files notes into (#1). "" = flat, exactly as
+    # before this existed; "active_archive" = Active/ + Archive/. Lives on the ROOT Config for the
+    # same reason `location_noise_words` does: `Sluice.store()` resolves the store from
+    # `self.config`, so a key the STORE must honour cannot sit in a sub-app block. OFF by default
+    # -- sluice does not own the layout, it offers one, and an unconfigured install must be
+    # byte-identical to the flat store.
+    lead_layout: str = ""
 
     def source(self, id: str) -> SourceConfig:
         """Config for a source id; unlisted sources default to enabled + no tuning."""
@@ -222,6 +230,17 @@ def load_config(path: str | None = None) -> Config:
         raise ValueError(
             f"lead_ttl_days must be a non-negative integer (0 = off), got {raw_ttl!r}")
 
+    # #1. Validated HERE as well as in `Vault.__init__`, and the two are NOT redundant. A
+    # loader-only check is an equivalent mutant for every one of the ~150 direct `Vault(...)`
+    # constructions in the suite; a constructor-only check lets a typo in the YAML reach the user
+    # as an uncaught ValueError traceback out of `args.func`, where `lead_ttl_days` above renders
+    # a `sluice: ...` usage error and exits 2. Same knob shape, same failure surface.
+    raw_layout = data.get("lead_layout")
+    if raw_layout is not None and raw_layout not in LEAD_LAYOUTS:
+        raise ValueError(
+            f"lead_layout must be one of "
+            f"{', '.join(repr(n) for n in LEAD_LAYOUTS)}, got {raw_layout!r}")
+
     # NB this loader names every field EXPLICITLY -- no splat, no loop, unlike the four
     # sub-app loaders' hasattr+setattr loops. A dataclass field added without a line
     # here is therefore dead: it loads as its default whatever the YAML says, silently.
@@ -244,4 +263,5 @@ def load_config(path: str | None = None) -> Config:
                   dedupe_title_noise_words=_str_list(data.get("dedupe_title_noise_words"),
                                                      "dedupe_title_noise_words"),
                   lead_ttl_days=raw_ttl,
+                  lead_layout=raw_layout or "",
                   dossier_allow_hosts=allow)

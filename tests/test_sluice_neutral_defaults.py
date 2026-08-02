@@ -247,6 +247,42 @@ def test_sweep_keys_on_the_default_value_not_the_annotation():
     assert dict(_list_defaulting_fields(_Sample)) == {"bare": ["x"], "parametrized": ["y"]}
 
 
+# ── #1: the lead layout ──────────────────────────────────────────────────────
+# `lead_layout` needs its OWN guards for the same reason `lead_ttl_days` does, one type along.
+# The #26/#63 sweep below is value-keyed on LIST-defaulting fields
+# (`isinstance(getattr(cls(), f.name), list)`), so a `str` field is invisible to it, and
+# `test_path_keys_dataclass_defaults_are_blank` derives only fields ending `_dir`. Measured:
+# setting the default to "active_archive" leaves this entire file green.
+#
+# It belongs HERE and not in the feature's own test file because how a user organises their job
+# hunt is a PREFERENCE, and this is the file the docs and the review agents sweep for shipped
+# preferences. This file's own comments record what it cost when a preference was guarded
+# somewhere reviewers do not look.
+
+def test_lead_layout_dataclass_default_is_flat():
+    assert Config().lead_layout == ""
+
+
+def test_lead_layout_loader_default_is_flat(monkeypatch):
+    # load_config names every field explicitly (no splat, no loop), so the loader default is an
+    # INDEPENDENT literal that the dataclass assertion above does not constrain.
+    monkeypatch.delenv("SLUICE_CONFIG", raising=False)
+    assert load_config(None).lead_layout == ""
+
+
+def test_the_example_config_ships_lead_layout_commented():
+    """`sluice.yaml.example` is a CATALOGUE, and this file is COPIED. An ACTIVE
+    `lead_layout: active_archive` would hand every copier a filing decision they never made and
+    silently start relocating their notes -- the `lead_ttl_days`/`locations` precedent, stated in
+    the example file itself. Asserted through yaml.safe_load, which is blind to a comment: an
+    active key would appear in the parsed document."""
+    import yaml
+    text = Path("sluice.yaml.example").read_text(encoding="utf-8")
+    assert "lead_layout:" in text, "lead_layout must be documented at all"
+    assert "lead_layout" not in (yaml.safe_load(text) or {}), \
+        "lead_layout must ship COMMENTED, not active"
+
+
 # ── #9: lead staleness ───────────────────────────────────────────────────────
 # lead_ttl_days needs its OWN guard. The #26/#63 sweep below is value-keyed on
 # LIST-defaulting fields, because "empty list == abstain" is universal. `0 == abstain`
