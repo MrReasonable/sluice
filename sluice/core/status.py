@@ -73,6 +73,21 @@ def can_advance(current: str, target: str) -> bool:
     return _RANK.get(t, -1) > _RANK.get(c, -1)
 
 
+def is_terminal(status: str) -> bool:
+    """True iff `status` is an application TERMINAL -- a state never advanced out of.
+
+    Public because the #1 lead layout derives its Archive set from it (`dismiss` plus every
+    terminal) rather than hand-listing one: a terminal added to `_TERMINAL` later must archive
+    automatically instead of silently staying in Active, which is the quiet-wrong-default this
+    codebase engineers out. `can_advance` already reads `_TERMINAL` for the same vocabulary;
+    this exposes the membership test without exposing the tuple.
+
+    Normalizes first, like every other predicate here: a real note carries `status: "rejected"`
+    with the quotes, so a raw `in` test would answer False for the value on disk.
+    """
+    return normalize(status) in _TERMINAL
+
+
 def can_transition(current: str, target: str) -> bool:
     """Route a requested status change to the correct never-regress predicate.
     `applied` is reachable only via `can_apply` (shortlist -> applied); every other

@@ -5,6 +5,8 @@ import unicodedata
 from dataclasses import dataclass, field, fields
 from datetime import date
 
+from sluice.core import status as _status
+
 # The verdict vocabulary, shared with #5's `same_opportunity`. Strings, not an enum -- core/status.py
 # sets that convention. DIFFERENT is the ONLY verdict a caller may split on.
 SAME = "same"
@@ -454,3 +456,49 @@ def pick_survivor(members, winner_status):
     first, or `max([])` raises on an empty `holders`."""
     holders = [n for n in members if n.status == winner_status]
     return max(holders, key=lambda n: (n.fm.get("last_seen", ""), n.slug))
+
+
+# ── the lead layout (#1) ─────────────────────────────────────────────────────
+# Folder = a DERIVED VIEW of status, never a second source of truth. The note's frontmatter stays
+# authoritative; a folder that disagrees is drift `sluice leads reconcile` repairs, and drift
+# between runs is harmless because the scan is recursive -- a note in the "wrong" folder is still
+# read, still written to, still applied for. That is what makes the pass safe to be manual.
+ACTIVE_SUBDIR = "Active"
+ARCHIVE_SUBDIR = "Archive"
+# "" is the flat default and is FIRST, so an unconfigured install is byte-identical to the pre-#1
+# store. A name here is a promise: `Vault._write_folder` and `Vault.reconcile_layout` both resolve
+# through `layout_subfolder`, so adding an entry without teaching that function raises rather than
+# degrading to flat.
+LEAD_LAYOUTS = ("", "active_archive")
+
+
+def layout_subfolder(status: str, layout: str) -> str | None:
+    """Which subfolder of the leads dir a lead in `status` belongs in under `layout`.
+
+    Returns "" for the leads-dir root, a subfolder name, or None meaning NEVER MOVE THIS NOTE.
+
+    None is not "the root", and the distinction is load-bearing: never-regress passes an
+    unrecognized status through untouched everywhere else, so the layout must not decide a folder
+    for one either. Answering "" for a non-canonical status would make reconcile drag it out of
+    wherever a human deliberately put it. Callers must test `is None` before truthiness.
+
+    The Archive set is DERIVED -- `dismiss` plus `status.is_terminal` -- and that is the whole
+    reason this is a function rather than a dict literal. A terminal added to `core/status.py`
+    later archives automatically; a hand-listed set would leave it in Active with nothing red.
+    `dismiss` is named explicitly because it is TRIAGE-owned, so no application-lifecycle
+    predicate can reach it.
+
+    An unknown layout RAISES and lists the valid names rather than falling through to flat --
+    `_select_backend`'s rule. A typo'd `lead_layout: activearchive` that silently behaved as flat
+    would leave a user believing their vault was being filed when nothing was.
+    """
+    if layout not in LEAD_LAYOUTS:
+        raise ValueError(
+            f"unknown lead_layout {layout!r}; valid: "
+            + ", ".join(repr(n) for n in LEAD_LAYOUTS))
+    if not _status.is_canonical(status):
+        return None
+    if not layout:
+        return ""
+    s = _status.normalize(status)
+    return ARCHIVE_SUBDIR if (s == "dismiss" or _status.is_terminal(s)) else ACTIVE_SUBDIR
