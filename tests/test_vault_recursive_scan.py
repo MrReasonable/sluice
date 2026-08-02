@@ -210,6 +210,43 @@ def test_read_leads_warns_when_two_notes_claim_one_slug(tmp_path, caplog):
     assert any("Acme - Analyst" in m and "claimed by 2 notes" in m for m in said), said
 
 
+def test_a_duplicate_slug_is_warned_about_once_per_store(tmp_path, caplog):
+    """Same discipline as the symlink warning, for the same reason: one command reads the
+    same status set repeatedly. `apply run --all` is the measured case -- `preview_all`
+    reads once, then `select_one` reads again per lead -- where one duplicate produced 4
+    identical lines across 4 reads, scaling with the shortlist.
+
+    Witnessed by deleting the `if key in self._warned_dup_slugs: continue` arm: three lines.
+    """
+    leads = _leads_dir(tmp_path)
+    _write_note(leads / "Active" / "Acme - Analyst.md")
+    _write_note(leads / "Archive" / "Acme - Analyst.md")
+    v = Vault(str(tmp_path))
+    with caplog.at_level("WARNING"):
+        v.read_leads()
+        v.read_leads()
+        v.read_leads({"new"})          # the same twins reached through a FILTERED read
+    said = [r.getMessage() for r in caplog.records if "claimed by" in r.getMessage()]
+    assert len(said) == 1, said
+
+
+def test_a_second_twin_at_a_warned_slug_is_still_reported(tmp_path, caplog):
+    """The dedup key carries the REFS, never the slug alone. Keyed on the slug it would
+    suppress a genuinely NEW collision -- a third note filed at the same name after the
+    first warning -- which is the failure mode a dedup usually introduces."""
+    leads = _leads_dir(tmp_path)
+    _write_note(leads / "Active" / "Acme - Analyst.md")
+    _write_note(leads / "Archive" / "Acme - Analyst.md")
+    v = Vault(str(tmp_path))
+    with caplog.at_level("WARNING"):
+        v.read_leads()
+        _write_note(leads / "Backlog" / "Acme - Analyst.md")
+        v.read_leads()
+    said = [r.getMessage() for r in caplog.records if "claimed by" in r.getMessage()]
+    assert len(said) == 2, said
+    assert "claimed by 2 notes" in said[0] and "claimed by 3 notes" in said[1]
+
+
 def test_read_leads_stays_quiet_when_every_slug_is_unique(tmp_path, caplog):
     """Two notes in two subfolders is the ORDINARY case this feature exists for. A guard
     keyed on the folder count rather than on the slug would fire on all of them."""
