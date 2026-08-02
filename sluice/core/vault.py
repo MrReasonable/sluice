@@ -1250,8 +1250,9 @@ class Vault:
         "created" | "updated" | "merged" | "refused" | "merged_away" | "merged_away_unproven".
         UPDATE and MERGE bump ONLY last_seen (never-clobber); REFUSE writes nothing, on any of
         THREE causes -- every name candidate is a note proven DIFFERENT (#5), one candidate
-        resolves to SEVERAL notes at once (ambiguous identity; see _locate), or the lead
-        carries neither a company nor a title and so has no identity to seat (below). The two "merged_away*" outcomes ALSO write nothing:
+        resolves to SEVERAL notes at once (ambiguous identity; see _locate), or the note this
+        lead would be written into reads back with neither a company nor a role, so it has no
+        identity to seat and no read would ever return it (below). The two "merged_away*" outcomes ALSO write nothing:
         a human already archived this lead as a duplicate (#81), so the incoming scrape is
         suppressed rather than re-created. The two are kept distinct rather than conflated into one
         string -- `_ARCHIVED` is a url-PROVEN match against the archived note,
@@ -1269,17 +1270,36 @@ class Vault:
         create/delete flapping exhausts the retries, which refuses loudly (writing nothing)
         rather than clobbering or spinning.
 
-        A lead with NEITHER a company nor a title is refused before any of that. It has no
-        identity to reconcile on: every name candidate collapses to the bare separator, the
-        note is written as ` - .md`, and `read_leads` then skips it because `_is_lead_note`
-        asks for a non-empty `company` or `role` -- so the note exists, `created` is
-        reported, the ingest sink writes it into `seen.db` (which has no removal path), and
-        NO read in the tool can ever see it again. That is not a store's worst outcome, it is
-        the invisible one. Refusing writes nothing and keeps the lead out of `seen.db`, so a
-        source that starts emitting these re-reports every run instead of filling the vault
-        with unreadable stubs -- the same recoverable direction every other refusal here
-        takes. It is a REFUSAL rather than a warned skip for that reason: a warning on a
-        `created` still leaves the note and the seen.db row behind.
+        A lead whose note would read back with NEITHER a company nor a role is refused before
+        any of that, and the refusal is decided by the predicate the READ applies: the note is
+        rendered, its frontmatter split and parsed with `_fm_dict`, and `_is_lead_note` run on
+        the result -- the same chain `read_leads` runs, over the very bytes `_write` is about
+        to put on disk. Such a note has no identity to reconcile on: every name candidate
+        collapses to the bare separator or to punctuation, and `read_leads` then skips it
+        because `_is_lead_note` asks for a non-empty `company` or `role` -- so the note exists,
+        `created` is reported, the ingest sink writes it into `seen.db` (which has no removal
+        path), and NO read in the tool can ever see it again. That is not a store's worst
+        outcome, it is the invisible one. Refusing writes nothing and keeps the lead out of
+        `seen.db`, so a source that starts emitting these re-reports every run instead of
+        filling the vault with unreadable stubs -- the same recoverable direction every other
+        refusal here takes. It is a REFUSAL rather than a warned skip for that reason: a
+        warning on a `created` still leaves the note and the seen.db row behind.
+
+        Deciding it on the RAW fields is what this replaces, and the reason is not style.
+        `_fm_dict` ends in `.strip().strip('"').strip("'")`, so a company of `"` or of `'`
+        parses back EMPTY while any truthiness test over the raw field sees it as present.
+        Measured on the version this replaces: `company='"'`, `company="'"` and `title='"'`
+        were all `created`, `read_leads` returned none of them, and the notes sat on disk as
+        `- - .md`, `' - .md` and ` - -.md` with a permanent `seen.db` row apiece. Closing one
+        spelling by hand leaves the next one open, because the guard and the read were
+        normalising independently; running the read's own chain over the bytes about to be
+        written makes "if no read could ever return it, do not write it" hold by construction.
+        The rendered string is reused by the create below, so the thing checked and the thing
+        written cannot differ. Measured cost: a no-op `updated` upsert goes 92us -> 104us with
+        the check present, i.e. ~12us, or ~0.12s added across 10k leads. It is paid on EVERY
+        upsert, not only the creates, because a refusal must land before anything touches the
+        filesystem -- `test_upsert_refuses_a_lead_with_neither_company_nor_title` pins that,
+        snapshotting an untouched tree including the Syncthing marker.
 
         Visible on `main`, where read_leads returned every `.md` in one flat directory and
         the stub at least showed up. The recursive scan's `_is_lead_note` predicate is what
@@ -1288,28 +1308,39 @@ class Vault:
         ONE field is enough, and that half is as load-bearing as the refusal: a company-only
         lead is seated at `Acme - .md` and a title-only one at ` - Analyst.md`, and
         `read_leads` returns BOTH (measured), because `_is_lead_note` is satisfied by either
-        field alone. Flipping this `or` to an `and` refuses them instead -- out of the vault,
-        out of `seen.db`, re-reported every run under a warning that says the lead carries
-        neither field when it carries one. The mirror harm of a guard is the guard's own
-        business, so both directions are pinned by tests.
+        field alone. Flipping that `or` refuses them instead -- out of the vault, out of
+        `seen.db`, re-reported every run under a warning saying the note reads back blank when
+        it does not. The mirror harm of a guard is the guard's own business, so both
+        directions are pinned by tests.
 
-        The fields are STRIPPED first, which makes this gate deliberately stricter than the
-        read predicate it otherwise mirrors. An all-whitespace company is truthy, so the raw
-        test seats a note at `    - .md`: not invisible -- `_is_lead_note` is truthy on the
-        same whitespace, so `read_leads` does return it -- but carrying no identity to
-        reconcile on, which is the condition this refusal is actually about. Stricter on the
-        WRITE side is the safe asymmetry: a create is the one wholesale write, so declining
-        it costs a re-report, while seating an identity-less note costs a permanent `seen.db`
-        row. Nothing legitimate is caught -- only an ALL-whitespace field strips to empty,
-        so `" Acme "` still creates -- and `ingest/base.py` already strips both fields on the
-        way in, so this is defence for a store driven directly rather than a live scrape.
-        `or ""` keeps the None-tolerance the bare truthiness test had by construction: an
-        AttributeError here is not caught by the sink's `except OSError` and would abort the
-        whole ingest run."""
-        if not ((lead.company or "").strip() or (lead.title or "").strip()):
-            _log.warning("vault refused lead %r: it carries neither a company nor a title, "
-                         "so it has no name to be seated at and no read would ever return it",
-                         lead.dedup_key)
+        The PARSED values are stripped before `_is_lead_note` sees them, which makes this gate
+        deliberately stricter than the read predicate it otherwise mirrors -- and stricter in
+        one direction only, since stripping can empty a value but never fill one, so this
+        refuses a superset of what `_is_lead_note` rejects and never less. An all-whitespace
+        company survives `_fm_dict` as whitespace and is truthy, so without the strip a note is
+        seated at `    - .md`: not invisible -- `read_leads` does return it -- but carrying no
+        identity to reconcile on, which is the condition this refusal is about. Stricter on the
+        WRITE side is the safe asymmetry: a create is the one wholesale write, so declining it
+        costs a re-report, while seating an identity-less note costs a permanent `seen.db` row.
+        Nothing legitimate is caught -- only an ALL-whitespace value strips to empty, so
+        `" Acme "` still creates -- and `ingest/base.py` already coerces and strips both fields
+        on the way in (`(row.get(...) or "").strip()`, the only `Lead` construction anywhere in
+        `sluice/`), so this is defence for a store driven directly rather than a live scrape.
+        A field that is None rather than a string is exactly such a direct call: it is outside
+        the dataclass's own annotation, `_render_new` writes it as the literal string `None`,
+        and this gate therefore reads it back as PRESENT and creates a visible note -- the
+        honest answer to "would a read return this", and a note a human can see and delete,
+        where the raw test it replaces refused it. Nothing raises either way, which is the
+        None-tolerance that mattered: an AttributeError here is not caught by the sink's
+        `except OSError` and would abort the whole ingest run."""
+        rendered = self._render_new(lead)
+        # `_split_frontmatter` cannot return None for `_render_new`'s output, and if it ever
+        # did `_fm_dict(None)` is `{}` -- which refuses. Fails closed either way.
+        fm = _fm_dict(_split_frontmatter(rendered)[0])
+        if not _is_lead_note({k: v.strip() for k, v in fm.items()}):
+            _log.warning("vault refused lead %r: its company and role both read back blank "
+                         "from the note it would be written into, so it has no name to be "
+                         "seated at and no read would ever return it", lead.dedup_key)
             return "refused"
         for _ in range(_CREATE_RACE_RETRIES):
             path, action = self._resolve_path(lead)
@@ -1357,7 +1388,9 @@ class Vault:
                 return self._bump_last_seen_or_refuse(
                     path, lead.last_seen or _today(), "merged", lead.dedup_key)
             try:
-                _write(path, self._render_new(lead), exclusive=True)
+                # The SAME string the blank-note guard above ran the read's predicate over --
+                # re-rendering here would put a second, unchecked set of bytes on disk.
+                _write(path, rendered, exclusive=True)
                 return "created"
             except FileExistsError:
                 # #16 TOCTOU: a concurrent writer created this note between _resolve_path's

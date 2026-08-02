@@ -453,13 +453,52 @@ def test_upsert_refuses_a_lead_with_neither_company_nor_title(tmp_path, caplog):
     Refusing writes nothing and keeps it out of `seen.db`, so a source that starts emitting
     these re-reports every run rather than filling the vault with unreadable stubs. The
     filesystem snapshot is what pins 'nothing', including the Syncthing marker: a warned
-    `created` would still leave the note and the seen.db row behind."""
+    `created` would still leave the note and the seen.db row behind.
+
+    The message is asserted on the substring that DISCRIMINATES this refusal from the three
+    other "vault refused lead" warnings in the module (`resolves to N notes`, `no name
+    candidate is writable`, `last_seen bump raced repeatedly`): a looser match would pass on
+    any of them."""
     v = Vault(str(tmp_path))
     with caplog.at_level("WARNING"):
         assert v.upsert(_lead(company="", title="", url="https://ex.invalid/1")) == "refused"
     assert not list(tmp_path.rglob("*")), "a refusal must not touch the filesystem at all"
     said = [r.getMessage() for r in caplog.records if r.name == "sluice.core.vault"]
-    assert any("neither a company nor a title" in m for m in said), said
+    assert any("company and role both read back blank" in m for m in said), said
+
+
+@pytest.mark.parametrize("company,title", [('"', ""), ("'", ""), ("", '"'), ("", "'")])
+def test_upsert_refuses_a_lead_whose_only_field_parses_back_empty(tmp_path, company, title,
+                                                                  caplog):
+    """The defect the raw-field guard could not see, and the reason this gate now runs the
+    READ's own chain instead of a second normalisation of its own.
+
+    `_fm_dict` ends in `.strip().strip('"').strip("'")`, so a company of `"` or `'` is
+    present to any truthiness test over `lead.company` and EMPTY once the note it was written
+    into is parsed back. Measured before this fix: all four of these returned `created`,
+    `read_leads` returned none of them, and the notes sat on disk (`- - .md`, `' - .md`,
+    ` - -.md`, ` - '.md`) -- written, entered into `seen.db`, which has no removal path, and
+    invisible to every command in the tool forever.
+
+    Asserted through `read_leads` AND the filesystem, because `refused` alone would still pass
+    if the note were written and merely mis-reported."""
+    v = Vault(str(tmp_path))
+    with caplog.at_level("WARNING"):
+        assert v.upsert(_lead(company=company, title=title, url="https://ex.invalid/1")) \
+            == "refused"
+    assert not list(tmp_path.rglob("*")), "a refusal must not touch the filesystem at all"
+    assert v.read_leads() == []
+    said = [r.getMessage() for r in caplog.records if r.name == "sluice.core.vault"]
+    assert any("company and role both read back blank" in m for m in said), said
+
+
+def test_upsert_still_creates_a_lead_whose_field_merely_CONTAINS_quotes(tmp_path):
+    """The mirror harm of the quote refusal: only a value that parses back EMPTY may be
+    refused. `"Acme"` survives `_fm_dict` as `Acme`, so it is a real, readable lead and must
+    still be seated -- widening the gate from 'blank' to 'contains a quote' would bin it."""
+    v = Vault(str(tmp_path))
+    assert v.upsert(_lead(company='"Acme"', title="", url="https://ex.invalid/1")) == "created"
+    assert [n.slug for n in v.read_leads()] == ["-Acme- - "]
 
 
 @pytest.mark.parametrize("company,title,seated", [
@@ -469,16 +508,18 @@ def test_upsert_refuses_a_lead_with_neither_company_nor_title(tmp_path, caplog):
 def test_upsert_still_creates_a_lead_carrying_only_ONE_of_the_two(tmp_path, company, title,
                                                                  seated):
     """The MIRROR harm of the refusal above, and it needs its own witness: `or` -> `and` in
-    that guard survived the whole suite. One field is enough because `_is_lead_note` is
-    satisfied by either alone, so both of these notes are real, readable leads -- measured
-    shipped: `Acme - .md` and ` - Analyst.md`, both returned by `read_leads`. Under the
-    mutant both are refused instead: out of the vault, out of `seen.db`, re-reported every
-    run, under a warning saying the lead carries neither field when it carries one.
+    the raw-field guard this one replaces survived the whole suite. One field is enough because
+    `_is_lead_note` is satisfied by either alone, so both of these notes are real, readable
+    leads -- measured shipped: `Acme - .md` and ` - Analyst.md`, both returned by `read_leads`.
+    Tightening the guard to demand both refuses them instead: out of the vault, out of
+    `seen.db`, re-reported every run, under a warning saying the note reads back blank when it
+    does not.
 
     Asserted through `read_leads`, not just on the outcome string: the harm is that no read
-    surfaces the note, so the read is the thing to check. The same `or` in `_is_lead_note` is
-    already pinned in both directions (test_vault_recursive_scan.py); this is `upsert`'s own
-    copy of that predicate, which could otherwise drift from the one it claims to mirror."""
+    surfaces the note, so the read is the thing to check. `upsert` no longer carries its own
+    copy of the predicate -- it calls `_is_lead_note` over the frontmatter it is about to
+    write -- so this now pins that the gate AROUND that call cannot narrow what reaches the
+    vault; `_is_lead_note`'s own `or` is pinned separately (test_vault_recursive_scan.py)."""
     v = Vault(str(tmp_path))
     assert v.upsert(_lead(company=company, title=title, url="https://ex.invalid/1")) \
         == "created"
@@ -487,11 +528,13 @@ def test_upsert_still_creates_a_lead_carrying_only_ONE_of_the_two(tmp_path, comp
 
 @pytest.mark.parametrize("company,title", [("   ", ""), ("", " \t ")])
 def test_upsert_refuses_a_lead_whose_only_field_is_whitespace(tmp_path, company, title):
-    """Stripped before the truthiness test. An all-whitespace field is truthy, so the raw
-    test seated a note at `    - .md` -- a note with no identity to reconcile on, which is
-    the condition the refusal is about. Deliberately STRICTER than `_is_lead_note`, which is
-    truthy on the same whitespace and does return such a note: declining a create costs a
-    re-report, seating an identity-less note costs a permanent `seen.db` row."""
+    """The one place this gate is deliberately STRICTER than the read predicate it otherwise
+    mirrors. An all-whitespace field survives `_fm_dict` as whitespace and is truthy, so
+    `_is_lead_note` alone seats a note at `    - .md` and `read_leads` does return it -- not
+    invisible, but carrying no identity to reconcile on, which is the condition the refusal is
+    about. The strip is applied to the PARSED values, so it is one tightening on top of one
+    normalisation rather than a second normalisation running beside it. Declining a create
+    costs a re-report; seating an identity-less note costs a permanent `seen.db` row."""
     v = Vault(str(tmp_path))
     assert v.upsert(_lead(company=company, title=title, url="https://ex.invalid/1")) \
         == "refused"

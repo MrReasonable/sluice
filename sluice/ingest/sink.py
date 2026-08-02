@@ -6,8 +6,9 @@ merged_away/merged_away_unproven; created, updated, merged, and merged_away all 
 note now EXISTS (merged_away's is archived under _merged/), so only those are recorded
 in seen.db. `refused` (a decline with THREE causes: #5's name collision -- every candidate
 a note proven DIFFERENT -- #1's ambiguous identity, one candidate resolving to SEVERAL notes
-at once, and a lead carrying neither company nor title, which has no name to be seated at
-and which no read would ever return), `merged_away_unproven` (a #81
+at once, and a lead whose note would read back with neither company nor role -- decided by
+running the READ's own predicate over the frontmatter about to be written, so it catches a
+field that merely PARSES back blank (`"`, `'`) as well as an absent one), `merged_away_unproven` (a #81
 suppression on a match weaker than a url -- a location-token overlap, or an inconclusive
 comparison; see the allowlist below for why it must never be recorded), and `skipped` (a
 #24 OSError write failure) stay OUT of seen.db so the next run retries or re-reports them,
