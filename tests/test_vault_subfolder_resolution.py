@@ -76,6 +76,60 @@ def test_a_note_moved_to_a_subfolder_is_updated_not_recreated(tmp_path):
     assert not note.exists()                      # nothing re-created at the flat name
 
 
+def test_a_note_filed_into_a_new_subfolder_mid_run_is_not_duplicated(tmp_path):
+    """The scan-set cache's staleness window, closed on the CREATE arm.
+
+    Measured before the fix: run 1's first lead is `created`, the human moves that note into
+    a new subfolder, run 1's next scrape of the SAME lead is `created` again -- sluice's own
+    duplicate, at the root name. It does not self-heal the way the create-race does: from the
+    next run on both twins are visible, the candidate resolves to two notes and every later
+    upsert REFUSES, with last_seen frozen (which, with `lead_ttl_days` set, then ages the lead
+    into the stale set and offers a twin for dismissal).
+
+    Witnessed by DELETING the re-derive in `_resolve_path` -- without it this reports
+    `created` and leaves two notes on disk.
+    """
+    # The mkdir is load-bearing, not tidiness. _scan_dirs deliberately does NOT cache
+    # "leads_dir is missing", so a vault whose first upsert also creates the directory never
+    # has a stale cache to be wedged by, and this test would pass with the fix deleted.
+    _leads_dir(tmp_path).mkdir(parents=True)
+    v = Vault(str(tmp_path))
+    assert v.upsert(_lead()) == "created"          # warms the cache at [leads_dir]
+    note = _leads_dir(tmp_path) / "Acme - Analyst.md"
+    active = _leads_dir(tmp_path) / "Active"
+    active.mkdir()
+    moved = active / note.name
+    note.rename(moved)                             # the human, mid-run
+
+    # The SAME instance, never a fresh one: a fresh Vault re-walks on its first lookup, so
+    # the assertion below would hold with the fix deleted.
+    assert v.upsert(_lead(last_seen="2026-07-08")) == "updated"
+    assert not note.exists()                       # no twin minted at the root name
+    assert "last_seen: 2026-07-08" in moved.read_text()
+
+
+def test_the_create_arm_re_derives_the_scan_set_once_per_create_not_per_lead(tmp_path):
+    """The cost the cache exists to avoid must not come back by the side door. An UPDATE
+    already identified a real note, so a fresher directory list cannot change its answer --
+    and paying a walk per lead there is precisely the per-lead walk this cache replaces."""
+    _leads_dir(tmp_path).mkdir(parents=True)
+    v = Vault(str(tmp_path))
+    walks = [0]
+    inner = v._walk
+
+    def counting_walk():
+        walks[0] += 1
+        return inner()
+    v._walk = counting_walk
+
+    assert v.upsert(_lead()) == "created"
+    after_create = walks[0]
+    assert after_create == 2, "one walk to fill the cache, one to re-derive before the create"
+    for day in ("2026-07-08", "2026-07-09", "2026-07-10"):
+        assert v.upsert(_lead(last_seen=day)) == "updated"
+    assert walks[0] == after_create, "an update must not re-walk"
+
+
 def test_a_candidate_resolving_to_two_notes_refuses_and_writes_nothing(tmp_path):
     """Two notes claim one identity, so the store cannot know which lead this is. Bumping
     the wrong one leaves the other to rot silently, so it writes nothing and the sink keeps
