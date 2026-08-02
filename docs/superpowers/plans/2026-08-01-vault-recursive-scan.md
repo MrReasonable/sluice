@@ -81,10 +81,14 @@ def _leads_dir(tmp_path):
     return tmp_path / "Job Applications" / "Job Leads"
 
 
-def _skip_as_root():
-    # chmod 000 does not bind uid 0, so the unreadable-directory test would pass
-    # vacuously in a root container. geteuid is absent on Windows; -1 never equals 0.
-    return getattr(os, "geteuid", lambda: -1)() == 0
+def _cannot_unread_a_dir():
+    # TWO platforms where chmod 000 does not do what these tests need, and they fail in
+    # OPPOSITE directions. As uid 0 the mode bits do not bind, so the directory stays
+    # readable and the test passes VACUOUSLY -- the dangerous direction. On Windows chmod
+    # cannot remove read access from a directory at all, so the walk succeeds and the test
+    # fails outright, which is noise rather than a finding. geteuid is absent on Windows;
+    # -1 never equals 0, so the order of these two terms does not matter.
+    return os.name == "nt" or getattr(os, "geteuid", lambda: -1)() == 0
 
 
 # ── the exclusion set ─────────────────────────────────────────────────────────
@@ -162,7 +166,8 @@ def test_a_file_with_neither_company_nor_role_is_not_a_lead():
 
 
 # ── an unreadable directory is loud ───────────────────────────────────────────
-@pytest.mark.skipif(_skip_as_root(), reason="chmod 000 does not bind root")
+@pytest.mark.skipif(_cannot_unread_a_dir(),
+                    reason="chmod 000 binds neither uid 0 nor Windows")
 def test_an_unreadable_subdirectory_raises_rather_than_reading_as_empty(tmp_path):
     """os.walk's DEFAULT onerror=None silently yields nothing for a directory it cannot
     open. Measured: a 6-note vault reads as 3 notes, no error, no log. Every note in it
@@ -310,7 +315,8 @@ predicate is what stops the two call sites drifting apart later.
 - [ ] **Step 8: Run the tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_vault_recursive_scan.py -q`
-Expected: PASS, 9 tests.
+Expected: all selected tests pass. (No count: a total pinned in prose goes stale the moment
+the file gains a test, and a stale number reads as a real failure.)
 
 - [ ] **Step 9: Run the full suite and lint**
 
@@ -716,7 +722,7 @@ note in a subfolder unambiguously instead of reporting a bare filename that may 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_vault_recursive_scan.py -k normalize -q`
-Expected: PASS, 3 tests.
+Expected: all selected tests pass. (No count, for the reason given at Step 9 of task 1.)
 
 - [ ] **Step 5: Witness the two guards that were vacuous**
 
@@ -943,7 +949,7 @@ trailer) — they explain live behaviour that has not changed.
 
 Also extend `_resolve_path`'s docstring, after the sentence ending `...so path is None. See #5.`:
 
-```
+```python
         A candidate is looked up across the SCAN SET (see _locate), not at one flat path, so
         a note the user filed in a subfolder is found and updated in place. A candidate
         resolving to TWO OR MORE notes is ambiguous identity and refuses -- see _locate.
@@ -952,7 +958,7 @@ Also extend `_resolve_path`'s docstring, after the sentence ending `...so path i
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/test_vault_subfolder_resolution.py -q`
-Expected: PASS, 6 tests.
+Expected: all selected tests pass. (No count, for the reason given at Step 9 of task 1.)
 
 - [ ] **Step 6: Run the full suite and lint**
 
@@ -1128,7 +1134,7 @@ same one-line assertion in two files is duplication a reviewer would rightly fla
 - [ ] **Step 2: Run it**
 
 Run: `.venv/bin/python -m pytest tests/test_vault_makedirs_scope.py -q`
-Expected: PASS, 2 tests. If `test_every_makedirs_call_is_classified` fails, the
+Expected: all selected tests pass. If `test_every_makedirs_call_is_classified` fails, the
 `_EXPECTED` keys do not match this checkout's `ast.unparse` output — print `_makedirs_args()`
 and correct the keys verbatim rather than loosening the assertion.
 
@@ -1233,7 +1239,7 @@ write path — i.e. re-created — from one permissions bit.
 In the paragraph beginning "**Non-resurrection (#81), in the never-clobber family.**", after the
 sentence ending "`_merged/` is load-bearing retention, not scratch: do not prune it.", add:
 
-```
+```markdown
 The lead scan is recursive (#1), so `_merged/` is excluded from it BY NAME
 (`_PRIVATE_SUBDIRS`) rather than by the accident that a flat `os.listdir` never descended into
 it -- deleting that prune resurfaces every archived loser and undoes this invariant outright.
