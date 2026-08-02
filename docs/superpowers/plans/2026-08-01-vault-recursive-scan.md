@@ -233,10 +233,11 @@ def _is_lead_note(fm: dict) -> bool:
     return bool(fm.get("company") or fm.get("role"))
 ```
 
-**Do not annotate these with `NoReturn` or `Iterator`.** Measured: `ruff 0.15.21 check --select
-E4,E7,E9,F` reports `F821 Undefined name` for a **quoted** annotation naming an unimported type, so
-`-> "NoReturn"` is a build failure, not a safe hedge. Either import the name at module scope or use
-the plain annotations given here. The plain ones are used throughout this plan.
+**Do not annotate these with `NoReturn` or `Iterator`.** Measured with ruff 0.15.21, the CI pin:
+`.venv/bin/python -m ruff check --select E4,E7,E9,F` reports `F821 Undefined name` for a **quoted**
+annotation naming an unimported type, so `-> "NoReturn"` is a build failure, not a safe hedge.
+Either import the name at module scope or use the plain annotations given here. The plain ones are
+used throughout this plan.
 
 - [ ] **Step 5: Add the cache slot**
 
@@ -328,7 +329,7 @@ moment any other branch lands a test, and a stale number reads as a real failure
 - [ ] **Step 10: Mutation witnesses**
 
 ```bash
-python -m compileall -q -f --invalidation-mode checked-hash sluice tests scripts
+.venv/bin/python -m compileall -q -f --invalidation-mode checked-hash sluice tests scripts
 cp sluice/core/vault.py /tmp/vault.py.bak
 ```
 
@@ -562,7 +563,7 @@ the predicate.
 - [ ] **Step 6: Prove the prune is load-bearing (mutation witness)**
 
 ```bash
-python -m compileall -q -f --invalidation-mode checked-hash sluice tests scripts
+.venv/bin/python -m compileall -q -f --invalidation-mode checked-hash sluice tests scripts
 cp sluice/core/vault.py /tmp/vault.py.bak
 ```
 
