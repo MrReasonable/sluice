@@ -325,7 +325,11 @@ def cmd_leads_expire(args, config) -> int:
         # `unreadable` belong here for the same reason `no-match` does -- the user asked
         # for a write and did not get one. `skipped` too: it means the lead left the
         # triage lifecycle mid-sweep, which is precisely the case a caller must notice.
-        _FAILED = {"no-match", "conflict", "unreadable", "skipped"}
+        # `ambiguous` (#1) is the same class and was missed when `expire` gained it: two
+        # stale notes claim the named slug, so nothing was written and the user must act.
+        # This set is the whole reason a new outcome is not free -- adding one to `expire`
+        # without adding it here exits 0 on a lead nobody dismissed.
+        _FAILED = {"no-match", "conflict", "unreadable", "skipped", "ambiguous"}
         return 1 if any(o in _FAILED for _, o in outcomes) else 0
 
     report = app.expire_report()
