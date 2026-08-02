@@ -459,7 +459,24 @@ def cmd_cv_signoff(args, config) -> int:
         return 1
     msg = {"nothing": "has nothing pending", "aborted": "aborted"}.get(outcome, outcome)
     print(f"cv signoff: {slug} {msg}", file=sys.stderr)
-    return 0
+    # cmd_leads_expire's `_FAILED` rule, applied here: an outcome where the write did not
+    # happen exits non-zero, because the user named one lead and asked for one write.
+    # `conflict` is a sustained write race (#16) -- nothing was signed off and the #60 hold
+    # is still held. `nothing` is `no-match`'s shape one step further in: the named lead
+    # exists but carries no pending_cv, so exiting 0 would tell a script the CV is
+    # send-ready when the note may hold no tailored_cv at all.
+    # Deliberately NOT members, each for a reason the word alone does not give:
+    #   `collision` WROTE. Vault.sign_off's transform clears pending_cv + needs_signoff and
+    #     returns changed text, so _cas_write commits; what it kept is the tailored_cv that
+    #     appeared meanwhile. The hold is resolved and the lead IS send-ready -- the
+    #     postcondition a caller gates on holds, which is precisely what `nothing` lacks.
+    #   `aborted` wrote nothing, but the user declined the prompt themselves. The rule
+    #     targets a SILENT no-op; this one the user asked for and was shown.
+    # `ambiguous` is the same class and returns 1 above, separate only because its message
+    # names the candidate refs. As with expire's set, a new outcome is not free: add one to
+    # Store.sign_off without classifying it here and it exits 0 having signed nothing off.
+    _FAILED = {"nothing", "conflict"}
+    return 1 if outcome in _FAILED else 0
 
 
 # ── apply ────────────────────────────────────────────────────────────────────

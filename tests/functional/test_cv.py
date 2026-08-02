@@ -145,11 +145,71 @@ def test_cv_signoff_discard_clears_without_promoting(cli):
 
 
 def test_cv_signoff_nothing_pending(cli):
+    """`nothing` exits 1: the named lead exists but holds no pending_cv, so no write
+    happened -- `cmd_leads_expire`'s `_FAILED` rule, which is keyed on exactly that.
+
+    The exit code is the assertion that matters. `sign_off_cv` returning `nothing` while
+    `cmd_cv_signoff` printed it and exited 0 is the shape `leads expire` shipped with, and
+    the harm here is concrete: the seeded note carries NO `tailored_cv` either, so an exit 0
+    tells `sluice cv signoff --lead X && sluice apply prep --lead X` that a CV is send-ready
+    when none exists.
+    """
     h, run = cli(backend=ScriptedBackend())
     _seed_shortlist_lead(h.paths["vault"], "Example Foundry", "Staff Engineer")  # no pending_cv
     rc, _out, err = run(["cv", "signoff", "--lead", "example-foundry", "--yes"])
-    assert rc == 0 and "nothing" in err.lower()
+    assert rc == 1 and "nothing" in err.lower()
     assert "tailored_cv:" not in _lead_text(h.paths["vault"], "Example Foundry", "Staff Engineer")
+
+
+def test_cv_signoff_collision_exits_zero_because_the_write_happened(cli):
+    """`collision` exits 0: classified on whether a write happened, not on the word.
+
+    A `tailored_cv` appeared while the hold stood (a direct `set_tailored_cv`), so
+    `Vault.sign_off` keeps that pointer and clears the markers -- changed text, so
+    `_cas_write` commits. Post-state: hold gone, lead send-ready. That is the postcondition
+    a caller gates on, and `nothing` (rc 1 above) is the case that fails to establish it, so
+    the two exit codes differ for a reason a caller can act on rather than by vocabulary.
+    """
+    h, run = cli(backend=ScriptedBackend())
+    leads = os.path.join(h.paths["vault"], "Job Applications", "Job Leads")
+    os.makedirs(leads, exist_ok=True)
+    with open(os.path.join(leads, "Example Foundry - Staff Engineer.md"), "w",
+              encoding="utf-8") as f:
+        f.write('---\ncompany: "Example Foundry"\nrole: "Staff Engineer"\nstatus: shortlist\n'
+                'url: "https://example.invalid/1"\npending_cv: CV_pending.pdf (2026-07-24)\n'
+                'needs_signoff: ["unsupported\\tMotivated by placeholder\\tNONE"]\n'
+                'tailored_cv: CV_already.pdf (2026-07-25)\n---\n# body\n')
+    rc, _out, err = run(["cv", "signoff", "--lead", "example-foundry", "--yes"])
+    assert rc == 0 and "collision" in err
+    text = _lead_text(h.paths["vault"], "Example Foundry", "Staff Engineer")
+    assert "tailored_cv: CV_already.pdf (2026-07-25)" in text   # kept, never clobbered
+    assert "CV_pending.pdf" not in text                         # and not promoted over it
+    assert "pending_cv:" not in text and "needs_signoff:" not in text   # the write: hold gone
+
+
+def test_cv_signoff_conflict_returns_1(cli, monkeypatch):
+    """`conflict` exits 1: a sustained write race (#16) means the user asked for a write and
+    did not get one, and the #60 hold is still held.
+
+    Forced at the store method rather than by racing a real vault, so the test is
+    deterministic; `sign_off_cv`'s `except VaultConflict` arm and this classification are
+    what it exercises. The note is asserted UNCHANGED afterwards, which is what makes the
+    non-zero right: the lead is not send-ready and a script must not proceed to `apply`.
+    """
+    from sluice.core.protocols import VaultConflict
+    from sluice.core.vault import Vault
+
+    h, run = cli(backend=ScriptedBackend())
+    _seed_pending_lead(h.paths["vault"], "Example Foundry", "Staff Engineer")
+
+    def _always_conflicts(self, ref, *, accept=True):
+        raise VaultConflict(ref)
+
+    monkeypatch.setattr(Vault, "sign_off", _always_conflicts)
+    rc, _out, err = run(["cv", "signoff", "--lead", "example-foundry", "--yes"])
+    assert rc == 1 and "conflict" in err
+    text = _lead_text(h.paths["vault"], "Example Foundry", "Staff Engineer")
+    assert "pending_cv:" in text and "tailored_cv:" not in text   # hold intact, nothing sent
 
 
 def test_cv_signoff_no_match_returns_1(cli):
