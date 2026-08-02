@@ -5,14 +5,24 @@ import os
 
 import pytest
 
+import sluice.core.vault as _vault_module
+from sluice.core.leads import Lead
 from sluice.core.vault import (
     _MERGED_SUBDIR, _PRIVATE_SUBDIRS, Vault, _is_lead_note,
 )
-from tests.conftest import UNREADABLE_DIR as _UNREADABLE_DIR
+from tests.conftest import LOCATIONS, UNREADABLE_DIR as _UNREADABLE_DIR
 
 
 def _leads_dir(tmp_path):
     return tmp_path / "Job Applications" / "Job Leads"
+
+
+def _lead(**kw):
+    base = dict(source="cord", search="Analyst", title="Analyst", company="Acme",
+                url="https://ex.invalid/1", location=LOCATIONS[0], salary="",
+                job_type="permanent", first_seen="2026-07-07", last_seen="2026-07-07")
+    base.update(kw)
+    return Lead(**base)
 
 
 # ── the exclusion set ─────────────────────────────────────────────────────────
@@ -169,6 +179,18 @@ def test_normalize_all_statuses_propagates_an_unreadable_subdirectory(tmp_path):
     version of the failure: an unreadable subtree read as empty means its notes are never
     canonicalized AND the summary reports a clean sweep over a vault it only partly saw."""
     _with_unreadable_subdir(tmp_path, lambda v: v.normalize_all_statuses())
+
+
+@_UNREADABLE_DIR
+def test_normalize_all_statuses_does_not_read_an_unstatable_leads_dir_as_empty(tmp_path):
+    """The THIRD scan-set consumer, and the one that WRITES -- so its own early return was
+    the one that mattered most and the one the first two fixes missed. Measured before this,
+    with the parent at mode 000: read_leads raised PermissionError while this returned
+    {'changed': 0, 'unchanged': 0, 'unknown': [], 'conflicts': []} over a vault holding a
+    real note, and core/app.py hands that summary to the CLI as a clean sweep. The
+    os.path.isdir False also short-circuited BEFORE _walk, so onerror=_reraise -- the guard
+    that makes the sibling case above loud -- never got the chance to fire."""
+    _with_unstatable_leads_dir(tmp_path, lambda v: v.normalize_all_statuses())
 
 
 # ── read_leads over the scan set ──────────────────────────────────────────────
@@ -356,6 +378,30 @@ def test_a_symlinked_subfolder_without_notes_stays_quiet(tmp_path, caplog):
     with caplog.at_level("WARNING"):
         Vault(str(tmp_path)).read_leads()
     assert [r.getMessage() for r in caplog.records if r.name == "sluice.core.vault"] == []
+
+
+def test_a_symlinked_subfolder_is_probed_once_per_store_even_when_it_holds_no_note(
+        tmp_path, monkeypatch):
+    """The memo is keyed on the PROBE, not on the report -- and the quiet link is the case
+    that needs it most. `_holds_a_note` short-circuits on the first `.md`, which cannot help
+    when there is no `.md` to stop at: the harmless link is the one that pays a FULL
+    recursive walk of its target, and keyed on the report it was never memoised at all.
+
+    Counted at `_holds_a_note`, because one call there IS one walk of the linked tree, which
+    is the quantity in question. Measured before the fix with this exact fixture: 8 walks.
+    The sibling above pins that this link stays quiet; a memo that suppressed the WARNING
+    without suppressing the walk would satisfy that one and not this."""
+    _symlinked_folder(tmp_path, with_note=False)
+    walks = []
+    real = _vault_module._holds_a_note
+    monkeypatch.setattr(_vault_module, "_holds_a_note",
+                        lambda p: (walks.append(p), real(p))[1])
+    v = Vault(str(tmp_path))
+    for i in range(5):
+        v.upsert(_lead(title=f"Role {i}", url=f"https://example.invalid/{i}"))
+    v.read_leads()
+    v.read_leads()
+    assert len(walks) == 1, f"the linked tree was walked {len(walks)} times, not once"
 
 
 @_UNREADABLE_DIR

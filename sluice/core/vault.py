@@ -178,7 +178,7 @@ def _holds_a_note(path: str) -> bool:
     return False
 
 
-def _warn_undescended_symlinks(dirpath: str, dirnames: list, already: set) -> None:
+def _warn_undescended_symlinks(dirpath: str, dirnames: list, probed: set) -> None:
     """Warn about a symlinked subfolder the walk will not descend into (followlinks=False;
     see _walk). Best effort and log-only: it must never raise, because the caller is the one
     definition of the scan set and a warning path that aborts a read would be worse than the
@@ -187,27 +187,42 @@ def _warn_undescended_symlinks(dirpath: str, dirnames: list, already: set) -> No
 
     Only symlinks HOLDING notes are reported, so a user's symlink to a folder of anything
     else stays quiet -- a warning that fires on every walk for a harmless link is one users
-    learn to ignore, which is how the real one gets missed. `already` is the store's own set
-    of paths reported so far, and it is the same argument in a different form: one command
-    walks several times (a read, the scan set, one re-derive per create), so without it a
-    single link would say the same thing a dozen times in one run. It is per STORE, not
-    global -- a later run is a fresh report, and the condition may genuinely have gone away.
+    learn to ignore, which is how the real one gets missed.
+
+    `probed` is the store's own set of paths this has already ASKED about, and the
+    distinction from "already reported" is the whole point: it is added to before the probe
+    runs, so it memoises the expensive half rather than the cheap one. One command walks
+    several times (a read, the scan set, one re-derive per create), and the memo has two
+    jobs across those walks -- without it a link holding notes would say the same thing a
+    dozen times in one run, and, keyed on the REPORT instead, a link holding NO note would
+    never be memoised at all and `_holds_a_note` would re-walk its target to exhaustion
+    every time. That is the case the short-circuit-on-first-hit inside `_holds_a_note`
+    cannot help with: there is no hit to stop at, so the quiet link is the one that pays
+    the FULL walk, over and over. Measured on a linked tree holding no `.md`: 5 creates
+    plus 2 `read_leads` drove 8 complete walks of it, against 1 now.
+
+    The cost of memoising the probe is that a note appearing behind a quiet link MID-RUN
+    goes unreported until the next command. That is the same bound the report-keyed memo
+    already accepted in the other direction and the same one the per-STORE scope accepts
+    generally -- a later run is a fresh probe, and the condition may genuinely have changed
+    either way.
 
     An unreadable target is reported rather than skipped: the notes behind it are just as
     invisible, and 'cannot tell' must not read as 'nothing there'."""
     for name in dirnames:
         path = os.path.join(dirpath, name)
-        if path in already or not os.path.islink(path):
+        if path in probed or not os.path.islink(path):
             continue
+        # BEFORE the probe, and unconditionally: see above. Every `continue`/fall-through
+        # below has now already recorded it, so no outcome can leave the link unmemoised.
+        probed.add(path)
         try:
             holds = _holds_a_note(path)
         except OSError as e:
-            already.add(path)
             _log.warning("vault: %s is a symlink this scan cannot read (%s); any lead in it "
                          "is invisible and would be re-created", path, e)
             continue
         if holds:
-            already.add(path)
             _log.warning("vault: %s is a symlink holding note(s); the scan does not follow "
                          "symlinks, so those leads are invisible and would be re-created "
                          "-- move the folder into the vault instead of linking it", path)
@@ -218,13 +233,24 @@ def _is_lead_note(fm: dict) -> bool:
     alongside their leads (interview prep, research)? Once the scan is recursive those
     share the tree, and treating every `.md` as a lead would triage them.
 
-    NEITHER, not EITHER. This is the predicate _archived_match already uses, and it is
-    right in both places for the SAME reason rather than a mirrored one: skipping too
-    eagerly loses a note that really exists. There, a skipped archive entry stops
-    suppressing, so a lead a human merged away is resurrected (#81). Here, a skipped file
-    drops a lead from read_leads and from _locate, so the next scrape mints a duplicate.
-    A hand edit that blanks `role` -- the #16 threat model, a human in Obsidian -- must
-    therefore leave the note a lead, so one surviving field is enough."""
+    A file qualifies when EITHER field is present, and is excluded only when BOTH are
+    absent -- one surviving field is enough. The threshold sits there and not at "both
+    present" because a hand edit that blanks `role` (the #16 threat model, a human in
+    Obsidian) must not stop the note being a lead.
+
+    This is the predicate _archived_match already uses, and it is right in both places for
+    the SAME reason rather than a mirrored one: skipping too eagerly loses a note that
+    really exists. The two COSTS differ, though, and the difference is worth being exact
+    about, because the obvious guess is wrong. There, a skipped archive entry stops
+    suppressing, so a lead a human merged away is resurrected (#81) -- a duplicate. Here, a
+    skipped file is NOT duplicated: `_locate` deliberately does not apply this predicate
+    (see there), so the write path still finds the note by name, reconciles onto it and
+    bumps its last_seen. Measured with `company` and `role` both blanked at a lead's exact
+    candidate name: `read_leads` returned nothing, `_locate` found it, `upsert` returned
+    `merged`, and one note remained on disk. So the cost is a SILENT DROP rather than a
+    duplicate -- the note sits in the vault being refreshed by every scrape while triage,
+    cv, apply and track never see it, and nothing anywhere says so. A duplicate is at least
+    visible."""
     return bool(fm.get("company") or fm.get("role"))
 
 
@@ -265,10 +291,11 @@ class Vault:
         # the create arm by re-deriving this from disk before it mints a note; see there
         # for why that window could not be left open.
         self._scan_dirs_cache: list[str] | None = None
-        # Symlinked subfolders already reported (see _warn_undescended_symlinks). Per STORE,
-        # because one command walks several times and a link must not say the same thing a
-        # dozen times in one run.
-        self._warned_symlinks: set = set()
+        # Symlinked subfolders already PROBED (see _warn_undescended_symlinks) -- not
+        # merely the ones reported, which would leave a link holding no note re-walked to
+        # exhaustion on every scan. Per STORE, because one command walks several times and
+        # a link must not say the same thing a dozen times in one run.
+        self._probed_symlinks: set = set()
         # Duplicate slugs already reported by read_leads, on the same discipline as the
         # symlink set above -- but NOT for the same measured reason: no shipped command
         # reads one status set twice through a single store, so this suppresses nothing
@@ -321,7 +348,7 @@ class Vault:
                 dirnames[:] = [d for d in dirnames if d not in _PRIVATE_SUBDIRS]
             # After the prune, so a symlinked `_merged/` stays silent: it is pruned from the
             # scan on purpose, and _archived_match's own listdir follows it regardless.
-            _warn_undescended_symlinks(dirpath, dirnames, self._warned_symlinks)
+            _warn_undescended_symlinks(dirpath, dirnames, self._probed_symlinks)
             yield dirpath, filenames
 
     def _scan_dirs(self) -> list[str]:
@@ -672,8 +699,26 @@ class Vault:
         `updated`, the stale-cache verdict `merged_away`. That is the RECORDED arm, so a
         stale list would put into `seen.db` -- which has no removal path -- a lead the fresh
         answer says is sitting right there, suppressing it permanently with its last_seen
-        frozen. Update, merge and refuse are the arms that genuinely cannot move: each has
-        already IDENTIFIED a real note, so a fresher directory list cannot change its answer.
+        frozen.
+
+        The three arms that DID identify a note are not re-derived, and the honest reason is
+        cost, not impossibility. A stale list has two directions and `missed` reports only
+        one of them: found NOWHERE. The other is found ONCE where a fresh list finds TWICE,
+        and it moves an answer -- measured, cache warmed, a twin hand-filed at
+        `Active/<the same name>.md` mid-run: `('update', missed=False)` -> `updated` and
+        `('merge', missed=False)` -> `merged`, where the fresh answer is `refused` in both.
+        So this is a RESIDUAL, stated rather than closed: closing it means re-deriving on
+        the arms that carry a steady-state run, which is the per-lead walk the cache exists
+        to remove (247 ms against 2.1 s per 500 updates, in the design spec).
+
+        It is bounded in a way the create-arm wedge was not, which is why the trade goes
+        this way. The write is a `last_seen` bump on one of two twins -- never-clobber, no
+        note minted, nothing a later run cannot correct -- and the state is not silent:
+        `read_leads` warns on it, naming both paths, so every command that reads leads says
+        so. What it costs is that the twin enters `seen.db` (`updated` and `merged` are both
+        on the sink's allowlist), so INGEST stops re-reporting the ambiguity, and the other
+        twin's `last_seen` stays frozen. Sluice does not create this state: it arrives from
+        a human with a filesystem, and repairing it belongs to the `leads reconcile` pass.
 
         Re-deriving per LEAD is the per-lead walk the cache exists to avoid, which is why
         the three identified arms skip it. The arms that pay are rare in a steady-state run,
@@ -868,8 +913,13 @@ class Vault:
         # WHETHER it can be witnessed. receipt.py's guard could not be, by anything: reaching
         # it meant breaking the disjointness that made it inert, which is exactly why it had
         # become prose rather than a check, and prose is what that ruling is about. This one
-        # is exercised through the public read path by three tests that read twice on one
-        # store, so it is a live branch with a real witness, not a claim about one.
+        # is exercised through the public read path by TWO tests that read twice on one
+        # store, and one of those two WITNESSES the suppression: deleting the `if key in
+        # self._warned_dup_slugs: continue` arm reddens
+        # test_a_duplicate_slug_is_warned_about_once_per_store and nothing else in the suite
+        # (measured; the other reads twice but sees a THIRD twin on the second read, so its
+        # two lines are two distinct facts and it stays green either way). So this is a live
+        # branch with a real witness, not a claim about one.
         #
         # And the stakes run opposite ways. There the dead branch sat on the path to an
         # irreversible `applied`, wearing a comment that said it fired -- a false sense of
@@ -1126,7 +1176,17 @@ class Vault:
         summary must reflect ONE moment in time, with any race after that moment handled by
         _cas_write's own re-derivation, never by an extra read racing without CAS protection."""
         summary = {"changed": 0, "unchanged": 0, "unknown": [], "conflicts": []}
-        if not os.path.isdir(self.leads_dir):
+        # `_is_dir`, not os.path.isdir -- the THIRD consumer of the scan set, and the one
+        # that WRITES. Same early return and same single reason as read_leads': leads_dir
+        # before the first upsert, where _walk's onerror=_reraise would raise on a fresh
+        # vault. os.path.isdir also answers False to a leads_dir it cannot STAT, and here
+        # that lands worse than a silent empty read: this method rewrites status lines, so
+        # a vault full of notes is reported back to the CLI as {"changed": 0, "unchanged":
+        # 0} -- a clean sweep that canonicalized nothing. And the False short-circuits
+        # BEFORE _walk, so onerror=_reraise never gets the chance to fire. Measured with
+        # the parent directory at mode 600: read_leads raised PermissionError while this
+        # returned that summary over a vault holding a real note. See _is_dir.
+        if not _is_dir(self.leads_dir):
             return summary
         paths = []
         for dirpath, filenames in self._walk():
@@ -1212,19 +1272,41 @@ class Vault:
         A lead with NEITHER a company nor a title is refused before any of that. It has no
         identity to reconcile on: every name candidate collapses to the bare separator, the
         note is written as ` - .md`, and `read_leads` then skips it because `_is_lead_note`
-        is exactly `company or role` -- so the note exists, `created` is reported, the ingest
-        sink writes it into `seen.db` (which has no removal path), and NO read in the tool
-        can ever see it again. That is not a store's worst outcome, it is the invisible one.
-        Refusing writes nothing and keeps the lead out of `seen.db`, so a source that starts
-        emitting these re-reports every run instead of filling the vault with unreadable
-        stubs -- the same recoverable direction every other refusal here takes. It is a
-        REFUSAL rather than a warned skip for that reason: a warning on a `created` still
-        leaves the note and the seen.db row behind.
+        asks for a non-empty `company` or `role` -- so the note exists, `created` is
+        reported, the ingest sink writes it into `seen.db` (which has no removal path), and
+        NO read in the tool can ever see it again. That is not a store's worst outcome, it is
+        the invisible one. Refusing writes nothing and keeps the lead out of `seen.db`, so a
+        source that starts emitting these re-reports every run instead of filling the vault
+        with unreadable stubs -- the same recoverable direction every other refusal here
+        takes. It is a REFUSAL rather than a warned skip for that reason: a warning on a
+        `created` still leaves the note and the seen.db row behind.
 
         Visible on `main`, where read_leads returned every `.md` in one flat directory and
         the stub at least showed up. The recursive scan's `_is_lead_note` predicate is what
-        made it invisible, so this refusal ships with the change that hid it."""
-        if not (lead.company or lead.title):
+        made it invisible, so this refusal ships with the change that hid it.
+
+        ONE field is enough, and that half is as load-bearing as the refusal: a company-only
+        lead is seated at `Acme - .md` and a title-only one at ` - Analyst.md`, and
+        `read_leads` returns BOTH (measured), because `_is_lead_note` is satisfied by either
+        field alone. Flipping this `or` to an `and` refuses them instead -- out of the vault,
+        out of `seen.db`, re-reported every run under a warning that says the lead carries
+        neither field when it carries one. The mirror harm of a guard is the guard's own
+        business, so both directions are pinned by tests.
+
+        The fields are STRIPPED first, which makes this gate deliberately stricter than the
+        read predicate it otherwise mirrors. An all-whitespace company is truthy, so the raw
+        test seats a note at `    - .md`: not invisible -- `_is_lead_note` is truthy on the
+        same whitespace, so `read_leads` does return it -- but carrying no identity to
+        reconcile on, which is the condition this refusal is actually about. Stricter on the
+        WRITE side is the safe asymmetry: a create is the one wholesale write, so declining
+        it costs a re-report, while seating an identity-less note costs a permanent `seen.db`
+        row. Nothing legitimate is caught -- only an ALL-whitespace field strips to empty,
+        so `" Acme "` still creates -- and `ingest/base.py` already strips both fields on the
+        way in, so this is defence for a store driven directly rather than a live scrape.
+        `or ""` keeps the None-tolerance the bare truthiness test had by construction: an
+        AttributeError here is not caught by the sink's `except OSError` and would abort the
+        whole ingest run."""
+        if not ((lead.company or "").strip() or (lead.title or "").strip()):
             _log.warning("vault refused lead %r: it carries neither a company nor a title, "
                          "so it has no name to be seated at and no read would ever return it",
                          lead.dedup_key)
