@@ -632,7 +632,9 @@ def test_a_proof_tier_receipt_never_advances_a_slug_two_notes_claim(caplog):
     assert rep.auto == 0
     assert pathlib.Path(a).read_text() == before_a
     assert pathlib.Path(b).read_text() == before_b
-    said = [r.getMessage() for r in caplog.records if r.name == "sluice.core.leads"]
+    # `sluice.track.engine`, not `sluice.core.leads`: the verdict is pure and the CALLER
+    # logs, so the line carries the module that actually declined to act on the twins.
+    said = [r.getMessage() for r in caplog.records if r.name == "sluice.track.engine"]
     assert any("Example - Analyst" in m and "claimed by 2 notes" in m for m in said), said
 
 

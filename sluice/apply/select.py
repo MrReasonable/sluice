@@ -7,8 +7,13 @@ the slug two notes CLAIM."""
 import os
 
 from sluice.core import status as _status
-from sluice.core.leads import StalenessPolicy, index_by_slug, slug_matches
+from sluice.core.leads import (
+    StalenessPolicy, ambiguous_slug_warnings, index_by_slug, slug_matches,
+)
+from sluice.core.log import get_logger
 from sluice.apply.cvfile import parse_artifact, resolve_source
+
+_log = get_logger("apply.select")
 
 
 def eligibility(note, cfg, policy=StalenessPolicy()):
@@ -82,19 +87,18 @@ def select_all(vault, cfg, policy=StalenessPolicy()):
     # index_by_slug is the shared verdict (track and `leads expire` take the same one), so
     # the four call sites cannot drift into four different opinions about what ambiguous
     # means. Only the second element is wanted here: this pass walks notes, not slugs.
-    _, ambiguous = index_by_slug(notes, what="apply: shortlisted lead")
+    _, dropped = index_by_slug(notes)
+    for msg in ambiguous_slug_warnings("apply: shortlisted lead", dropped):
+        _log.warning("%s", msg)
     # The colliding REFS, for the reason string. `_label` would print one slug twice --
     # these notes collide BY slug -- naming nothing a human can act on, whereas the refs
-    # name the two files to rename or merge. index_by_slug's own warning says it that way
-    # for the same reason. Built only when something collided, which is the rare case.
-    colliding: dict = {}
-    if ambiguous:
-        for n in notes:
-            if n.slug in ambiguous:
-                colliding.setdefault(n.slug, []).append(str(n.ref))
+    # name the two files to rename or merge. The warning above says it that way for the
+    # same reason. Taken from the grouping index_by_slug RETURNS rather than rebuilt by a
+    # second pass over `notes`, which is what it used to be.
+    colliding = {slug: [str(n.ref) for n in members] for slug, members in dropped.items()}
     eligible, skipped = [], []
     for n in notes:
-        if n.slug in ambiguous:
+        if n.slug in dropped:
             # BEFORE eligibility, and its own reason: what is wrong here is the IDENTITY,
             # which no eligibility check inspects. Folding it into one of those reasons
             # would tell the user the lead has no CV when in fact two of it do.
