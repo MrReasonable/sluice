@@ -405,6 +405,29 @@ class Vault:
         self._scan_dirs_cache = None
         return self._scan_dirs()
 
+    def _write_folder(self) -> str:
+        """The ONE directory a NEW note is created in -- as opposed to `_scan_dirs`, every
+        directory a note may be READ from. One field used to be both; separating them is the whole
+        of the #1 layout design.
+
+        Resolved through `layout_subfolder` at the status a created note actually carries ("new" --
+        see the rendered frontmatter in `upsert`), never by naming Active/ here. Two things follow,
+        and both are the point. A created note is BY CONSTRUCTION already in the folder its status
+        implies, so `leads reconcile` has nothing to do with a note ingest just made. And there is
+        ONE definition of the status->folder map, so a change to it cannot leave the write folder
+        pointing somewhere reconcile immediately moves the note out of -- which would relocate
+        every freshly-ingested lead on the next pass.
+
+        Under the flat default this returns `self.leads_dir` unchanged, so an unconfigured store is
+        byte-identical to the pre-#1 one. A METHOD rather than a cached attribute because it is
+        called once per create, which is bounded by the run's lead count, and a cached path is one
+        more thing that can disagree with `self.lead_layout`."""
+        sub = layout_subfolder("new", self.lead_layout)
+        # `sub` is never None here: "new" is canonical, and the layout name was validated at
+        # construction. Guarding it anyway would be an unreachable branch wearing a comment
+        # claiming it fires -- the shape track/receipt.py deleted.
+        return os.path.join(self.leads_dir, sub) if sub else self.leads_dir
+
     def _locate(self, name: str) -> list[str]:
         """Every path in the scan set holding a note called `name`. A lead's identity is its
         note NAME; which directory it sits in is not part of it, which is what lets a note be
@@ -866,9 +889,13 @@ class Vault:
                 archived = self._archived_match(names, lead, capped)
                 if archived:
                     return None, archived, True
-                # The write folder is still leads_dir itself. PR B is what points a create
-                # at Active/; PR A creates no directories and moves no notes.
-                return os.path.join(self.leads_dir, f"{name}.md"), "create", True
+                # The WRITE FOLDER, not leads_dir: under `active_archive` a create lands
+                # in Active/, which is where a `status: new` note belongs, so the note is
+                # already reconciled the moment it exists. `_locate` searched the whole SCAN
+                # SET above, so a note the user (or a previous flat install) left at the root
+                # was already found and updated in place -- opting in never re-creates an
+                # existing lead.
+                return os.path.join(self._write_folder(), f"{name}.md"), "create", True
             path = found[0]
             inner, _ = _split_frontmatter(_read(path))
             # The url-proof is DISCARDED here on purpose: against an ACTIVE note a SAME
@@ -1482,6 +1509,15 @@ class Vault:
                 return self._bump_last_seen_or_refuse(
                     path, lead.last_seen or _today(), "merged", lead.dedup_key)
             try:
+                # The WRITE FOLDER, made HERE and not beside the leads_dir makedirs above, which
+                # sits ABOVE the update/merge/create fan-out and therefore runs on every
+                # non-refused outcome. Measured: a second upsert of the same lead reaches that
+                # line and returns "updated" -- so repointing it would mint an empty Active/ in
+                # the user's vault on a pure last_seen bump of a note that already exists at the
+                # root. Only a CREATE needs the write folder to exist. (The leads_dir makedirs
+                # stays where it is: update and merge legitimately need the directory, and the
+                # Syncthing marker beside it is idempotent.)
+                os.makedirs(self._write_folder(), exist_ok=True)
                 # The SAME string the blank-note guard above ran the read's predicate over --
                 # re-rendering here would put a second, unchecked set of bytes on disk.
                 _write(path, rendered, exclusive=True)

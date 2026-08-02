@@ -13,9 +13,12 @@ wrong' that is indistinguishable from working.
 LIMIT: the sweep is keyed on names bound to os.makedirs/os.mkdir (see _local_dirmakers), so
 a directory made via pathlib.Path(...).mkdir() -- a method call, not one of those names --
 would evade it entirely. Today's risk is zero: vault.py creates directories only through the
-four os.makedirs sites classified below (verified by hand, not by this guard), and nothing
-in it calls os.mkdir or pathlib. But that is a fact about the code today, not a guarantee
-this test enforces -- a future pathlib-based makedirs call ships unclassified and silent.
+os.makedirs sites classified in _EXPECTED below (verified by hand, not by this guard), and
+nothing in it calls os.mkdir or pathlib. But that is a fact about the code today, not a
+guarantee this test enforces -- a future pathlib-based makedirs call ships unclassified and
+silent. (Stated as "the set classified below" rather than a COUNT on purpose: the count was
+four, then five, then six as #1 landed, and a number in prose beside a list that grows is a
+claim that goes stale silently.)
 
 A SECOND limit used to sit beside it and is now closed: a name bound at RUNTIME rather than
 at import (`_d = os.makedirs`, then `_d(x)`) walked straight past a matcher that derived its
@@ -35,8 +38,16 @@ _EXPECTED = {
     "os.path.join(self.dir, '.stfolder')": "syncthing marker, vault root",
     # write_document's parent dir, derived from a document key under the vault root.
     "os.path.dirname(path)": "document parent, vault root",
-    # The lead write folder itself. Scanned, and it is the root of the scan set.
-    "self.leads_dir": "the write folder",
+    # The leads dir itself. Scanned, and it is the root of the scan set. Made on every
+    # non-refused upsert outcome (it sits above the update/merge/create fan-out), which is
+    # exactly why the layout's write folder below is a SEPARATE call rather than a repointing
+    # of this one -- repointing would mint an empty Active/ on a pure last_seen bump.
+    "self.leads_dir": "the leads dir, root of the scan set",
+    # The lead WRITE FOLDER (#1) -- leads_dir under the flat default, leads_dir/Active under
+    # `active_archive`. Made only on the CREATE arm. Scanned, being inside the scan set, so it
+    # must NOT be in _PRIVATE_SUBDIRS: pruning it would hide every lead sluice itself creates
+    # from read_leads AND from _locate, re-creating all of them on the next scrape.
+    "self._write_folder()": "the write folder (create arm only)",
     # leads_dir/_merged -- under leads_dir, and therefore MUST be in _PRIVATE_SUBDIRS.
     "merged_dir": "the merge archive, pruned from the scan set",
 }
