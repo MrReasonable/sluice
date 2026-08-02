@@ -77,12 +77,33 @@ def test_scan_dirs_is_cached_once_the_leads_dir_exists(tmp_path):
     leads = _leads_dir(tmp_path)
     leads.mkdir(parents=True)
     v = Vault(str(tmp_path))
-    # COPIED, never the live object: _scan_dirs returns its cache by reference, so a bare
-    # `first = v._scan_dirs()` aliases it and any future refactor that refreshed the cache
-    # IN PLACE would leave this comparing the list to itself -- vacuously green.
+    # `list(...)` even though _scan_dirs already returns a copy: this test must not rest on
+    # THAT being true, or it goes vacuous (comparing a list to itself) the moment the copy is
+    # removed -- which is a change the test below is what catches, not this one.
     first = list(v._scan_dirs())
     (leads / "Added Later").mkdir()
     assert v._scan_dirs() == first      # same instance, same answer
+
+
+def test_scan_dirs_never_hands_out_the_live_cache(tmp_path):
+    """A caller that mutates the returned list must not be able to poison the store.
+
+    The scan set is the store's own state: appending to it makes `_locate` stat directories
+    that do not exist, and REMOVING from it makes `_locate` miss the directory a note is
+    actually in -- which returns empty, and empty is the branch that CREATES (a duplicate)
+    or records `merged_away` in `seen.db` (which has no removal path). Nothing mutates it
+    today; this pins that nothing CAN.
+
+    Witnessed by restoring `return self._scan_dirs_cache`: `is` becomes True, and the
+    mutation below then reddens the second assertion too."""
+    leads = _leads_dir(tmp_path)
+    (leads / "Active").mkdir(parents=True)
+    v = Vault(str(tmp_path))
+    handed_out = v._scan_dirs()
+    assert handed_out is not v._scan_dirs_cache
+    handed_out.append("/nonexistent")
+    handed_out.remove(str(leads / "Active"))
+    assert sorted(v._scan_dirs()) == sorted([str(leads), str(leads / "Active")])
 
 
 # ── the lead predicate ────────────────────────────────────────────────────────

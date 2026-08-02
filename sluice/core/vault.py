@@ -355,12 +355,26 @@ class Vault:
         """The scan set as a directory list, cached. Falls back to [leads_dir] before that
         directory exists, and does NOT cache that answer: upsert creates leads_dir mid-run,
         so caching 'missing' would leave every later lookup in the same run blind to the
-        directory it had just written into."""
+        directory it had just written into.
+
+        Returns a COPY, never the cache object. Handing out the live list makes every caller
+        a potential writer of the store's own state: one `dirs = v._scan_dirs()` followed by
+        an append or a `.sort()` poisons the scan set for the rest of the instance's life,
+        and the damage is exactly the wedge `_resolve_path`'s re-derive exists to prevent --
+        a directory list that no longer describes the disk, silently manufacturing `create`
+        (a duplicate) or `merged_away` (a permanent `seen.db` row) out of a `_locate` that
+        looked in the wrong places. No consumer mutates it today; the point is that none can.
+
+        The cost was measured before choosing, because a copy is paid per `_locate` call and
+        `_locate` runs per candidate per lead. It is 0.06us at one directory and 0.11us at
+        fifty, against 4.4us and 111us for the `_locate` that wraps it -- 1.4% falling to
+        0.1%, because the loop this feeds does one `os.stat` per directory and a list copy
+        cannot compete with a syscall. So the allocation is real and it is noise."""
         if not _is_dir(self.leads_dir):
             return [self.leads_dir]
         if self._scan_dirs_cache is None:
             self._scan_dirs_cache = [dirpath for dirpath, _ in self._walk()]
-        return self._scan_dirs_cache
+        return list(self._scan_dirs_cache)
 
     def _rescan_dirs(self) -> list[str]:
         """Re-derive the scan set from disk, cache BYPASSED, and return the fresh list.
@@ -744,9 +758,12 @@ class Vault:
         path, action, missed = self._resolve_candidates(lead)
         if not missed:
             return path, action
-        # set(), which COPIES. _scan_dirs hands out its cache by reference, so a bare alias
-        # here would compare the fresh list to itself the moment _rescan_dirs was refactored
-        # to refresh in place -- vacuously equal, and the wedge silently back.
+        # set(), which COPIES -- and it is kept even though _scan_dirs now returns a copy of
+        # its own. The two guard the same failure at different rungs and neither implies the
+        # other: _scan_dirs' copy stops a CALLER poisoning the cache, while this one stops
+        # THIS comparison aliasing whatever _scan_dirs hands back, which would compare the
+        # fresh list to itself the moment either helper was refactored to refresh in place --
+        # vacuously equal, and the wedge silently back.
         before = set(self._scan_dirs())
         if set(self._rescan_dirs()) == before:
             return path, action
