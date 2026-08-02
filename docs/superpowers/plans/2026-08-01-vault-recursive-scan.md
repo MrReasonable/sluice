@@ -1286,16 +1286,16 @@ Refs #1"
       or weakened.
 - [ ] No `os.listdir` CALL remains on the lead scan. Checked through the parser, not by grep:
 
-      ```bash
-      .venv/bin/python -c "import ast; src=open('sluice/core/vault.py').read(); \
-      print(sorted((n.lineno, n.func.attr) for n in ast.walk(ast.parse(src)) \
-      if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr=='listdir'))"
-      ```
+  ```bash
+  .venv/bin/python -c "import ast; src=open('sluice/core/vault.py').read(); \
+  print(sorted((n.lineno, n.func.attr) for n in ast.walk(ast.parse(src)) \
+  if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr=='listdir'))"
+  ```
 
-      Every surviving call must be one of: the undescended-symlink warning, `_archived_match`'s
-      archive probe, `read_experience_entries`. A text grep cannot make this check — bare
-      `os.listdir` counts comments, and even `os\.listdir\(` matches `read_leads`' own docstring,
-      which quotes the call it replaced. Both would pass with the lead-scan calls still in place.
+  Every surviving call must be one of: the undescended-symlink warning, `_archived_match`'s
+  archive probe, `read_experience_entries`. A text grep cannot make this check — bare
+  `os.listdir` counts comments, and even `os\.listdir\(` matches `read_leads`' own docstring,
+  which quotes the call it replaced. Both would pass with the lead-scan calls still in place.
 - [ ] No config key, no CLI command, no directory created that did not exist before.
 - [ ] `git log --oneline main..HEAD` reads as six coherent commits, each `Refs #1`.
 - [ ] Run `/review-pr` BEFORE pushing.

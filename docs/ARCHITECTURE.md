@@ -430,9 +430,11 @@ invisible only because `os.listdir` is flat, and a walk that reached it would re
 every loser `sluice leads dedupe --merge` archived, undoing #81.
 
 Two rules follow from sharing a directory with the user's own notes. A file counts as
-a lead only if its frontmatter carries a `company` or a `role` (`_is_lead_note`) —
-*neither*, not *either*, so a hand edit that blanks one field does not make a lead
-invisible and therefore duplicated. And a lead's identity is its note NAME, not its
+a lead when EITHER `company` or `role` is present (`_is_lead_note`), and is excluded
+only when BOTH are absent — one surviving field is enough. The threshold sits there
+rather than at "both present" because a hand edit that blanks one field (the #16 threat
+model: a human in Obsidian) would otherwise make a real lead invisible to `read_leads`,
+and a lead nobody reads is a lead nobody triages. And a lead's identity is its note NAME, not its
 path: `_locate` searches the whole scan set, so a note the user files in a subfolder
 is updated in place. `_locate` deliberately does NOT apply `_is_lead_note`, though: a
 note un-findable there is re-created as a duplicate rather than merely dropped from a
@@ -517,9 +519,10 @@ unreachability is local and structural (the two tiers are disjoint by constructi
 within one function, so only editing that function can change it), while here it rests
 on a survey of external callers that any new command falsifies without touching the
 vault; and receipt.py's guard could not be witnessed at all, whereas this one is
-reached through the public read path by three tests. The refs are in the key so a
-genuinely NEW collision at that slug is still
-reported. Repairing the state, rather than declining to act on it, still belongs
+reached through the public read path by two tests that read twice on one store, one of
+which reddens when the suppression is deleted (measured: it is the only test in the
+suite that does). The refs are in the key so a genuinely NEW collision at that slug is
+still reported. Repairing the state, rather than declining to act on it, still belongs
 with the `leads reconcile` pass #1 has yet to ship, which walks the whole tree
 anyway.
 
@@ -566,27 +569,62 @@ guard keyed on `create` alone short-circuits before the archive pair, and measur
 with the cache warmed, an archived twin under `_merged/` and the active note filed
 into a new subfolder, the stale answer was `merged_away` against a fresh answer of
 `updated` — and `merged_away` is the RECORDED arm, so `seen.db`, which has no
-removal path, would suppress that lead permanently. Update, merge and refuse are the
-arms that cannot move: each has already IDENTIFIED a real note, so a fresher list
-cannot change its answer, and re-deriving per lead there is exactly the per-lead walk
-the cache replaces. Measured on the 5500-note vault: 500 updates cost 247 ms with no
+removal path, would suppress that lead permanently.
+
+The three arms that DID identify a note — update, merge and refuse — are not
+re-derived, and the reason is cost rather than impossibility. A stale list has two
+directions and `missed` reports only one: found NOWHERE. The other is found ONCE
+where a fresh list finds TWICE, and it does move an answer. Measured with the cache
+warmed and a twin hand-filed at `Active/<the same name>.md` mid-run:
+`('update', missed=False)` gives `updated` and `('merge', missed=False)` gives
+`merged`, where the fresh answer is `refused` in both. Closing that means re-deriving
+on the arms that carry a steady-state run, which is exactly the per-lead walk the
+cache replaces. Measured on the 5500-note vault: 500 updates cost 247 ms with no
 re-derive at all, against 2.1 s for a walk per lead.
+
+The residual is bounded in a way the create-arm wedge was not, which is why the trade
+goes this way. The write is a `last_seen` bump on one of two twins — never-clobber, no
+note minted — and the state is not silent: `read_leads` warns on it and names both
+paths, so every command that reads leads says so. What it costs is that the twin
+enters `seen.db` (`updated` and `merged` are both on the sink's allowlist), so
+*ingest* stops re-reporting the ambiguity, and the other twin's `last_seen` stays
+frozen. Sluice does not create this state — it arrives from a human with a filesystem
+— and repairing it belongs with the `leads reconcile` pass.
 
 An unreadable directory in the scan set **raises** (`os.walk(..., onerror=)`). The
 default swallows it and yields nothing, which would make every lead beneath it
 invisible to the read path and to the write path — i.e. re-created — from one
-permissions bit. The same rule binds every other probe in the module, because
-`os.path.exists`/`isdir`/`isfile` all swallow EVERY `OSError` and so read an
-unstatable path as an absent one. `_is_dir` — which `_scan_dirs` and `read_leads` both
-ask whether `leads_dir` exists at all — answers False only to `FileNotFoundError` and
-lets a `PermissionError` out. `_is_note_file`, `_locate`'s per-candidate probe, answers
-FOUND only for a regular file and absent only for `FileNotFoundError`/
-`NotADirectoryError`. That last one is the sharpest: absent is the branch that CREATES
+permissions bit. The same rule binds every probe that decides whether a path in the
+LEAD TREE is there, because `os.path.exists`/`isdir`/`isfile` all swallow EVERY
+`OSError` and so read an unstatable path as an absent one. There are two, and between
+them they cover all four such decisions. `_is_dir` — which `_scan_dirs`, `read_leads`
+and `normalize_all_statuses` each ask whether `leads_dir` exists at all — answers False
+only to `FileNotFoundError` and lets a `PermissionError` out. `_is_note_file`,
+`_locate`'s per-candidate probe, answers FOUND only for a regular file and absent only
+for `FileNotFoundError`/`NotADirectoryError`.
+
+Each of the three `_is_dir` callers had to be converted separately, and
+`normalize_all_statuses` was converted last, after the other two had shipped —
+worth stating because it is the one that WRITES, so its silent empty read was reported
+back to the CLI as a successful sweep that canonicalized nothing. Its `os.path.isdir`
+False also short-circuited *before* `_walk`, so `onerror=_reraise` never fired. Measured
+with the parent directory at mode 600: `read_leads` raised `PermissionError` while
+`normalize_all_statuses` returned `{'changed': 0, 'unchanged': 0, …}` over a vault
+holding a real note.
+
+`_is_note_file` is the sharpest of the two: absent is the branch that CREATES
 and that can record a `merged_away` in `seen.db`, so a directory at mode `r--` — which
 `os.walk` still lists, so `onerror` never fires — made every note inside it read as
 gone. Measured against a live `applied` note with a url-identical archived twin:
 `merged_away`, recorded, `last_seen` frozen, and the only log line said the lead had
 been merged away.
+
+One probe in the module is deliberately NOT bound by this: `read_experience_entries`
+still uses `os.path.isdir` on the *Experience Library*, a different directory that is
+no part of the lead scan and has no write path keyed on it — nothing re-creates an
+experience entry the way an invisible lead is re-created. Converting it would change
+the failure semantics of a method on the Store contract, so it is left for whoever
+takes that decision on its own merits rather than folded in here.
 
 `os.walk` does **not** follow symlinks, and that default is kept: following would let
 a link loop spin the walk and let a link out of the vault pull arbitrary directories
