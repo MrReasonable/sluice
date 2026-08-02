@@ -255,7 +255,9 @@ Append to `tests/conformance/test_store_contract.py`. **Match that file's actual
 ```python
 def test_write_document_only_if_absent_creates_then_abstains(store_name, tmp_path, monkeypatch):
     """On the CONTRACT, not on Vault. protocols.py's own docstring says never-clobber lives here
-    precisely because 'a second store would ship without them', and #1 (the store seam) is the
+    precisely because 'a second store would ship without them', and #1 (CORRECTION, 2026-08-02: #1 is
+the vault's folder LAYOUT, not the store seam -- it ships no second store, so this row still runs
+once) is the
     next backlog item -- so the second store is not hypothetical. `require_status`, the precedent
     this parameter follows, got three conformance rows.
 

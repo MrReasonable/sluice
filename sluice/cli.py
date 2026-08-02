@@ -735,7 +735,9 @@ def cmd_init(args, config, *, asker=None) -> int:
     # KEY, not a path -- nothing here may assume a filesystem"). The write was always safe (O_EXCL
     # makes never-clobber a property of the open), but a non-filesystem store would get
     # `profile_exists` wrong, mis-gate the interview, and then park the user's typed prose in a
-    # `.init-scaffold.md` they never needed. #1 is the next backlog item, so that store is close.
+    # `.init-scaffold.md` they never needed. (This used to say #1 would land that store; it does
+    # NOT -- #1 is the vault's folder LAYOUT and adds no store at all. Reading through the seam is
+    # right regardless of when a second implementation arrives.)
     # No mkdir here: `read_criteria` returns "" for a store that does not exist yet, so the
     # directory is still created inside the write block below, where an OSError is REPORTED rather
     # than raised uncaught -- and an abandoned interview leaves no empty vault behind.
@@ -747,9 +749,11 @@ def cmd_init(args, config, *, asker=None) -> int:
     # A second, non-filesystem store would render this wrong in those two lines.
     #
     # Not fixed by adding a `Store.display_location()`: that is API surface invented for one
-    # implementation, which is the premature abstraction this codebase keeps removing. When #1
-    # lands a real second store it will have a concrete opinion about what a user should be shown,
-    # and that is the moment to add the method.
+    # implementation, which is the premature abstraction this codebase keeps removing (#1's
+    # `reconcile_layout` declines the same thing, and `ensure_stfolder` was moved OUT of the
+    # protocol for it). The trigger is a SECOND STORE with a concrete opinion about what a user
+    # should be shown -- not any particular issue number. #1 was named here and was the wrong
+    # guess: it ships the vault's folder layout and no store at all.
     profile_dest = os.path.join(vault_dir, CRITERIA_RELPATH)
 
     profile_answers = {}
@@ -796,7 +800,9 @@ def cmd_init(args, config, *, asker=None) -> int:
 
     try:
         # Through the STORE SEAM, not Vault(...) directly: the profile is a store-managed document,
-        # and #1 makes the second store real rather than hypothetical. The returned HANDLE is what
+        # and the seam is the contract regardless of how many implementations exist today. (#1 was
+        # named here as the thing that would make a second store real; it does not -- it is the
+        # vault's folder layout.) The returned HANDLE is what
         # the report names, since that is what the contract says a caller may show a user.
         os.makedirs(vault_dir, exist_ok=True)
         handle = store.write_document(CRITERIA_RELPATH, plan.profile_text, only_if_absent=True)

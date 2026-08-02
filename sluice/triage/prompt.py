@@ -3,18 +3,22 @@
   1. A STABLE scaffold in this file (task framing, input/output schema, scoring
      mechanics, few-shot examples) that rarely changes.
   2. The candidate's CRITERIA (who they are, target/wrong role shape, win
-     pattern, anti-patterns, industry filter, comp/location) loaded from the
-     Obsidian vault at `Job Applications/Judging Profile.md`, so the candidate
-     edits their evolving requirements in Obsidian and the next nightly run
-     picks them up with no code change. A generic, unopinionated default
-     (below) is the fallback when the vault file is missing.
+     pattern, anti-patterns, industry filter, comp/location), supplied to
+     `build_system_prompt_from` as TEXT by the caller. The engine reads that
+     text through the STORE (`build_system_prompt_from(store.read_criteria())`,
+     triage/engine.py), so the candidate edits their evolving requirements in
+     Obsidian and the next nightly run picks them up with no code change. A
+     generic, unopinionated default (below) is the fallback when the store has
+     nothing. THIS MODULE NEVER REACHES A FILESYSTEM: the directory-taking
+     helpers it used to export put a store-implementation detail on the judge's
+     critical path, and a store without a `.dir` would have AttributeError'd
+     there.
 
 Nothing in this file expresses a preference: no target role, no culture opinion,
 no locations, no pay floor, no employer names. The scaffold supplies mechanics
 only, and the fallback criteria say so explicitly rather than substituting an
 opinion of their own. A candidate's real preferences live entirely in the vault
 Judging Profile, and are never committed here."""
-import os
 import re
 
 from sluice.core.criteria import DEFAULT_CRITERIA
@@ -110,19 +114,6 @@ def _strip_html_comments(text: str) -> str:
     return re.sub(r"%%.*?%%", "", text, flags=re.DOTALL)
 
 
-def load_criteria(vault_dir: str | None) -> str:
-    """The candidate's judging criteria from the vault (their editable source of
-    truth), or the baked-in default when the vault file is missing or empty."""
-    if not vault_dir:
-        return _DEFAULT_CRITERIA
-    try:
-        text = open(os.path.join(vault_dir, _CRITERIA_RELPATH), encoding="utf-8").read()
-    except OSError:
-        return _DEFAULT_CRITERIA
-    body = _strip_html_comments(_strip_frontmatter(text)).strip()
-    return body or _DEFAULT_CRITERIA
-
-
 def build_system_prompt_from(criteria: str) -> str:
     """Compose the judge system prompt around criteria the STORE supplied.
 
@@ -137,12 +128,10 @@ def build_system_prompt_from(criteria: str) -> str:
     return f"{_SCAFFOLD_INTRO}\n\n{body}\n\n{_SCAFFOLD_TAIL}"
 
 
-def build_system_prompt(vault_dir: str | None = None) -> str:
-    """Compose the full judge system prompt: stable scaffold wrapped around the
-    candidate's (vault-sourced) criteria."""
-    return f"{_SCAFFOLD_INTRO}\n\n{load_criteria(vault_dir)}\n\n{_SCAFFOLD_TAIL}"
-
-
-# Default prompt (baked-in criteria) used when no vault_dir is supplied - the
-# judge()'s default and any caller that imports the constant directly.
-SYSTEM_PROMPT = build_system_prompt(None)
+# The baked-in default prompt -- `judge()`'s default, and what any caller importing the constant
+# gets. Built from the shipped criteria DIRECTLY rather than through a vault_dir-taking helper: the
+# engine reads criteria through the STORE (`build_system_prompt_from(store.read_criteria())`,
+# triage/engine.py), and the directory-taking forms that used to live here had no non-test caller
+# left. Keeping them kept alive the exact reach-through-the-store-to-a-path shape the seam refactor
+# removed, on a module a second store must never make assumptions about.
+SYSTEM_PROMPT = build_system_prompt_from(_DEFAULT_CRITERIA)
