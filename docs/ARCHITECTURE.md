@@ -428,7 +428,8 @@ level** (today just `_merged/`) — and `read_leads`, `normalize_all_statuses` a
 `_locate` all consume it, so the exclusion cannot be applied in one place and
 forgotten in another. The prune fires only at `leads_dir` itself, and that
 restriction is deliberate: `leads_dir/_merged` is the one directory `merge_cluster`
-writes and `_archived_match` reads, while pruning the name at every depth would
+CREATES and `_archived_match` reads — it also CAS-writes the survivor note, which is not
+under `_merged/` at all — while pruning the name at every depth would
 instead hide a same-named folder the *user* made and mint duplicates of its notes.
 Excluding it by name is load-bearing regardless: before the scan was recursive it was
 invisible only because `os.listdir` is flat, and a walk that reached it would return

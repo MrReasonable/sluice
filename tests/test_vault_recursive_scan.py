@@ -47,7 +47,8 @@ def test_scan_dirs_includes_user_subfolders_and_excludes_merged(tmp_path):
 
 def test_scan_dirs_excludes_merged_but_not_a_nested_lookalike(tmp_path):
     """The prune is TOP-LEVEL only, because leads_dir/_merged is the one directory
-    merge_cluster writes and _archived_match reads. A same-named directory nested deeper
+    merge_cluster CREATES and _archived_match reads (the survivor note it also writes is
+    CAS-written in place, anywhere in the scan set). A same-named directory nested deeper
     is the user's and must stay visible, or its notes are re-created as duplicates."""
     leads = _leads_dir(tmp_path)
     (leads / "Active" / _MERGED_SUBDIR).mkdir(parents=True)

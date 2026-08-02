@@ -324,7 +324,10 @@ class Vault:
         human merged away (#81).
 
         The prune is applied only when dirpath IS leads_dir, because leads_dir/_merged is
-        the single directory merge_cluster writes and _archived_match reads. Pruning the
+        the single directory merge_cluster CREATES and _archived_match reads. (It is not the
+        only thing merge_cluster writes -- the survivor note is CAS-written wherever it
+        already sits, which is anywhere in the scan set. What matters here is that the
+        archive is the one DIRECTORY, and that it is always at the top level.) Pruning the
         name at every depth would instead hide a same-named directory the USER made, whose
         notes would then be re-created as duplicates.
 
@@ -821,6 +824,21 @@ class Vault:
                 # a colliding move -- so it arrives by hand, from a copied note or a
                 # part-way manual reorganisation. Refuse loudly and let the sink keep the
                 # lead out of seen.db so it re-reports until a human merges or renames.
+                #
+                # "Writes nothing" includes last_seen, and that reaches further than the
+                # incoming lead: BOTH notes on disk stop being refreshed -- the real one as
+                # much as the stray copy -- for as long as the duplicate sits there. Every
+                # later scrape of this identity reaches the same candidate and refuses again,
+                # so nothing else refreshes them either. With `lead_ttl_days` set they
+                # therefore age into the stale set, where `cv` and `apply` decline them
+                # (`skipped-stale`, `stale`) and `sluice leads expire` OFFERS them for
+                # dismissal -- so a hand-made duplicate can end up presenting a live job for
+                # expiry. The direction is still safe, which is why the refusal stands: the
+                # TTL is off by default (`lead_ttl_days: 0` abstains), `leads expire` reports
+                # before it writes and needs `--expire` to act at all, and the `dismiss` it
+                # would write is triage-owned and reversible -- never a terminal. But the
+                # staleness clock running on the SURVIVOR is a consequence of refusing, not
+                # of the duplicate, so it is stated here rather than left to be re-derived.
                 _log.warning("vault refused lead %r: %r resolves to %d notes (%s)",
                              lead.dedup_key, name, len(found), ", ".join(sorted(found)))
                 return None, "refuse", False
@@ -1285,10 +1303,24 @@ class Vault:
         """Reconcile an incoming lead against the existing notes. Returns one of
         "created" | "updated" | "merged" | "refused" | "merged_away" | "merged_away_unproven".
         UPDATE and MERGE bump ONLY last_seen (never-clobber); REFUSE writes nothing, on any of
-        THREE causes -- every name candidate is a note proven DIFFERENT (#5), one candidate
-        resolves to SEVERAL notes at once (ambiguous identity; see _locate), or the note this
-        lead would be written into reads back with neither a company nor a role, so it has no
-        identity to seat and no read would ever return it (below). The two "merged_away*" outcomes ALSO write nothing:
+        FIVE causes, across four `return "refused"` sites. Three are IDENTITY refusals, decided
+        before or during the candidate walk: every name candidate is a note proven DIFFERENT
+        (#5); one candidate resolves to SEVERAL notes at once (ambiguous identity; see
+        _locate); or the note this lead would be written into reads back with neither a company
+        nor a role, so it has no identity to seat and no read would ever return it (below).
+        The first two share one return site -- `_resolve_path` reports both as "refuse" and the
+        log line names both, because at that point they cannot be told apart.
+
+        The other TWO are CONCURRENCY-LOSS refusals, and they are `refused` for a reason worth
+        keeping in view: the outcome vocabulary a caller branches on has no separate "lost a
+        race" member, and inventing one would put a lead the sink has no rule for into the
+        allowlist decision. A sustained create/delete flap exhausts `_CREATE_RACE_RETRIES` (the
+        loop below), and a sustained last_seen CAS conflict exhausts `_cas_write`'s retries
+        (`_bump_last_seen_or_refuse`, which absorbs `VaultConflict` so no exception crosses the
+        ingest sink). Both write nothing and keep the lead OUT of `seen.db`, so it is retried
+        next run -- which is the whole reason mapping them here is safe.
+
+        The two "merged_away*" outcomes ALSO write nothing:
         a human already archived this lead as a duplicate (#81), so the incoming scrape is
         suppressed rather than re-created. The two are kept distinct rather than conflated into one
         string -- `_ARCHIVED` is a url-PROVEN match against the archived note,
