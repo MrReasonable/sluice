@@ -611,13 +611,8 @@ def test_a_proof_tier_receipt_never_advances_a_slug_two_notes_claim(caplog):
     """The identical message that advances a single lead (the guard below) must write
     NOTHING when two notes claim the slug. `can_apply` passes and the transition is legal --
     the wrong thing here is the IDENTITY, which no status check can catch. A wrong `applied`
-    silently suppresses a real application and cannot be undone, and `select_all` (which does
-    not dedup slugs) would then send a second application under the user's name.
-
-    The receipt then reads as an untracked job's receipt and stays quiet
-    (test_receipt_matching_nothing_stays_quiet's ruling), so the LOG is the whole report --
-    which is why it is asserted here rather than taken on trust. It re-appears on every run,
-    since read_leads warns on each read until a human renames or merges the twins.
+    silently suppresses a real application and cannot be undone, and `select_all` (before
+    #1's batch-path fix) would then send a second application under the user's name.
 
     Witnessed by restoring `shortlist_by_slug = {n.slug: n for n in ...}`: the receipt
     advances one twin and this goes red on `rep.auto` and on that twin's text."""
@@ -629,11 +624,65 @@ def test_a_proof_tier_receipt_never_advances_a_slug_two_notes_claim(caplog):
     with caplog.at_level("WARNING"):
         rep = E.run(v, TrackConfig(), OneReceiptClient(), be, seen=set(), deadletter=dl,
                     now_iso="2026-07-10T12:00:00+00:00")
-    assert rep.auto == 0 and rep.proposed == 0 and dl.open_entries() == []
+    assert rep.auto == 0
     assert pathlib.Path(a).read_text() == before_a
     assert pathlib.Path(b).read_text() == before_b
     said = [r.getMessage() for r in caplog.records if r.name == "sluice.core.leads"]
     assert any("Example - Analyst" in m and "claimed by 2 notes" in m for m in said), said
+
+
+def test_a_receipt_for_a_slug_two_notes_claim_proposes_for_review():
+    """Refusing to ACT on the twins is right; going QUIETER about them than about a receipt
+    that is merely ambiguous by DOMAIN is not. That receipt proposes a dead-letter row; this
+    one used to be filed as `skipped` with no row at all, on the ruling written for an
+    UNTRACKED job's receipt -- and the job here is tracked twice over. The message is then
+    `seen.add`ed and never re-queried, so the application evidence was lost outright and the
+    only surviving trace was a log line.
+
+    The row carries NO `--to applied`: `confirm` resolves a lead by slug, and this slug is
+    the one that resolves to two notes, so the command could only be refused or land on the
+    wrong twin. The remedy names the state instead -- rename or merge the notes -- and the
+    row re-surfaces every run until a human acts.
+
+    Witnessed by deleting the `twin_hit` probe: proposed comes back 0 and open_entries []."""
+    v, a, b = _vault_shortlist_twins("https://example.com/careers/1")
+    be = FakeBackend(json.dumps({"lead": None, "type": "receipt", "confidence": 0.9,
+                                 "when": None, "links": [], "materials": [], "summary": "received"}))
+    dl = _dl()
+    rep = E.run(v, TrackConfig(), OneReceiptClient(), be, seen=set(), deadletter=dl,
+                now_iso="2026-07-10T12:00:00+00:00")
+    assert rep.auto == 0 and rep.proposed == 1
+    rows = dl.open_entries()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.proposal == "receipt (lead slug claimed by two notes)"
+    assert "--to applied" not in row.hint, "an unrunnable command is worse than honest prose"
+    assert "Example - Analyst" in row.hint
+    # The hint NAMES both notes: the whole remedy is opening them, and the slug alone
+    # cannot say which two files to look at.
+    assert a in row.hint and b in row.hint
+    # No lead/candidates key, for the reason the hint gives -- both feed `confirm --lead`.
+    # `sluice track dismiss --id` is what clears such a row, the existing no-lead shape.
+    assert row.lead == "" and row.candidates == ""
+
+
+def test_an_unmatched_receipt_stays_quiet_even_beside_a_duplicate_slug():
+    """The mirror harm, and the reason the probe's RESULT is tested rather than the mere
+    existence of a dropped twin. A receipt about a genuinely untracked job must stay a quiet
+    skip; raising a row for it because the vault happens to hold an unrelated duplicate
+    would be a false signpost, and the ruling for an untracked job's receipt is unchanged.
+
+    Witnessed by moving the probe's `if probe.tier != "none"` test away (`twin_hit = probe`):
+    this receipt then proposes and the assertion goes red."""
+    # The twins are on example.invalid; OneReceiptClient sends from example.com, so the
+    # sender host matches NEITHER of them and no domain evidence exists either way.
+    v, _a, _b = _vault_shortlist_twins("https://example.invalid/careers/1")
+    be = FakeBackend(json.dumps({"lead": None, "type": "receipt", "confidence": 0.9,
+                                 "when": None, "links": [], "materials": [], "summary": "received"}))
+    dl = _dl()
+    rep = E.run(v, TrackConfig(), OneReceiptClient(), be, seen=set(), deadletter=dl,
+                now_iso="2026-07-10T12:00:00+00:00")
+    assert rep.proposed == 0 and dl.open_entries() == []
 
 
 def test_receipt_proof_advance_regression_guard():

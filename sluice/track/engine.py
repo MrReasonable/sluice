@@ -74,8 +74,13 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
     note_by_slug, _ = index_by_slug(leads, what="track: in-flight lead")
     # A receipt's lead lives in shortlist (pre-application), not note_by_slug (in-flight
     # application states) -- match_receipt matches against this snapshot by domain.
-    shortlist_by_slug, _ = index_by_slug(vault.read_leads({"shortlist"}),
-                                         what="track: shortlisted lead")
+    shortlist = vault.read_leads({"shortlist"})
+    shortlist_by_slug, ambiguous_shortlist = index_by_slug(
+        shortlist, what="track: shortlisted lead")
+    # The twins index_by_slug DROPPED, kept for the probe below. Refusing to act on them is
+    # right; going quieter about them than about a receipt that is merely ambiguous by
+    # DOMAIN is not, and that is what dropping them from the matcher's input did.
+    dropped_twins = [n for n in shortlist if n.slug in ambiguous_shortlist]
     try:
         ids = client.search_messages(_gmail_query(cfg, now_iso, since_iso))
     except GoogleAuthError:
@@ -128,8 +133,28 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                     note_by_slug[ev.lead_slug].status = res.status_to
                 elif ev.lead_slug in shortlist_by_slug:
                     shortlist_by_slug[ev.lead_slug].status = res.status_to
-            if ev.type == "receipt" and ev.receipt_tier == "none" and res.action == "skipped" \
-                    and (ev.llm_lead_slug or ev.llm_candidates):
+            # #1: a receipt for a lead whose slug TWO notes claim never reaches the matcher
+            # at all -- index_by_slug dropped both twins, so `match_receipt` searched a set
+            # that does not contain them, found nothing, and reconcile filed it as the quiet
+            # skip reserved for an UNTRACKED job's receipt. That is the wrong quiet: the job
+            # is tracked twice over, the message is `seen.add`ed and never re-queried, and
+            # the only surviving trace was a log line. A receipt merely ambiguous by DOMAIN
+            # proposes; this is the same class of evidence and now does too.
+            #
+            # Probed against the DROPPED set explicitly, never inferred from "there exists a
+            # duplicate somewhere": a row raised for every unmatched receipt in a vault that
+            # happens to hold one duplicate is a false signpost, and this branch's whole
+            # value is that it fires on the receipts that really are about those twins.
+            # Only after the deterministic pass came back empty, so it can never intercept a
+            # real match.
+            quiet_receipt = (ev.type == "receipt" and ev.receipt_tier == "none"
+                             and res.action == "skipped")
+            twin_hit = None
+            if quiet_receipt and dropped_twins:
+                probe = match_receipt(msg, dropped_twins, cfg.ats_relay_domains,
+                                      cfg.job_board_domains)
+                twin_hit = probe if probe.tier != "none" else None
+            if quiet_receipt and (twin_hit or ev.llm_lead_slug or ev.llm_candidates):
                 # match_receipt found NO domain evidence at all (never even a corroborated
                 # match) -- the common cause is a receipt about a lead that has already
                 # advanced PAST shortlist (applied/phone_screen/...), since match_receipt
@@ -156,7 +181,27 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                 # outright -- an unrunnable command is worse than an honest "look at this
                 # yourself".
                 rep.proposed += 1
-                if ev.llm_lead_slug:
+                proposal = "receipt (unverified lead match)"
+                if twin_hit:
+                    # Checked FIRST: a twin hit is DETERMINISTIC domain evidence, so it must
+                    # not be described by whatever lower-trust name the LLM also guessed.
+                    # The remedy names the state, not a status: `--to applied` is withheld on
+                    # the same ruling as the in-flight arm below -- confirm() resolves a lead
+                    # by slug and this slug resolves to two notes, so the command could only
+                    # be refused or, worse, land on the wrong twin. Renaming or merging the
+                    # notes is the whole of the fix, and the row re-surfaces until it happens.
+                    hit_slug = twin_hit.lead_slug or (twin_hit.candidates or [""])[0]
+                    refs = sorted(str(n.ref) for n in dropped_twins if n.slug == hit_slug)
+                    hint = (f'(receipt email for shortlisted lead "{hit_slug}" -- {len(refs)} '
+                            f"notes claim that slug ({'; '.join(refs)}), so which lead this "
+                            f"is cannot be known; rename or merge them, then re-run)")
+                    proposal = "receipt (lead slug claimed by two notes)"
+                    # `lead` and `candidates` stay EMPTY. Both feed the runnable `sluice track
+                    # confirm --lead <slug>` hints, and this slug is exactly the one that
+                    # resolves to two notes -- offering it would hand the user a command that
+                    # lands on whichever twin the resolver picks. The refs go in the prose.
+                    lead, candidates = "", []
+                elif ev.llm_lead_slug:
                     hint = (f'(receipt email for in-flight lead "{ev.llm_lead_slug}" -- the '
                             f"match could not be verified by sender/link domain; review "
                             f"manually)")
@@ -167,7 +212,7 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                             f"in-flight leads, review manually)")
                     lead, candidates = "", ev.llm_candidates
                 entry = Entry(message_id=mid, lead=lead, candidates=",".join(candidates),
-                              ev_type=ev.type, proposal="receipt (unverified lead match)",
+                              ev_type=ev.type, proposal=proposal,
                               hint=hint, first_seen=today, times_surfaced=1)
                 new_entries.append(entry)
                 if not dry_run:
