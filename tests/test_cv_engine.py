@@ -663,3 +663,58 @@ def test_run_batch_skips_a_stale_lead():
                     policy=_POLICY)
     assert [r.status for r in out] == ["skipped-stale"]
     assert cache.calls == 0
+
+
+# ── #1: two shortlist notes claiming one slug ─────────────────────────────────
+_TWIN_FM = {"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}
+_TWIN_DIR = "Job Applications/Job Leads"
+
+
+def _twins():
+    """Two notes at one basename in two subfolders -- the state a recursive scan (#1)
+    admits and a flat store could not. `Note.slug` is the basename, so both issue the
+    same slug while their refs differ, which is exactly what the store hands back."""
+    return [Note(dict(_TWIN_FM), path=f"{_TWIN_DIR}/Active/Example Foundry - Analyst.md"),
+            Note(dict(_TWIN_FM), path=f"{_TWIN_DIR}/Archive/Example Foundry - Analyst.md")]
+
+
+def test_run_batch_composes_for_neither_of_two_notes_claiming_one_slug():
+    """`run_batch` walked `read_leads` directly -- the same shape that let
+    `apply/select.py:select_all` keep both twins -- so a single job was composed TWICE.
+
+    Asserted on the SPEND, not only on the status strings: the statuses alone stay green if
+    the guard is moved below the compose, which is the placement that would make it useless.
+    """
+    v = FakeVault(ENTRIES, notes=_twins())
+    be, cache = FakeBackend(CLEAN_CV), RecordingCache()
+    out = run_batch(v, _cfg(), be, cache, renderer=FakeRenderer())
+    assert [r.status for r in out] == ["skipped-ambiguous", "skipped-ambiguous"]
+    assert be.calls == 0 and cache.calls == 0      # no LLM call, no dossier fetch
+    assert v.written == {} and v.fields == {}      # neither twin got a pointer or a hold
+
+
+def test_run_batch_names_the_colliding_refs(caplog):
+    """The refs, never the slug alone: these notes collide BY slug, so repeating it names
+    nothing a human can act on while the paths name the two files to rename or merge."""
+    with caplog.at_level("WARNING"):
+        run_batch(FakeVault(ENTRIES, notes=_twins()), _cfg(), FakeBackend(CLEAN_CV),
+                  RecordingCache(), renderer=FakeRenderer())
+    said = " ".join(r.getMessage() for r in caplog.records)
+    assert f"{_TWIN_DIR}/Active/Example Foundry - Analyst.md" in said
+    assert f"{_TWIN_DIR}/Archive/Example Foundry - Analyst.md" in said
+
+
+def test_run_batch_still_composes_an_unambiguous_lead_beside_a_twin_pair(monkeypatch):
+    """MIRROR HARM. The guard drops the two notes that collide and nothing else -- a blanket
+    refusal would pass the test above and silently stop every CV in a vault holding one
+    hand-made duplicate."""
+    import sluice.cv.render as _render_mod
+    monkeypatch.setattr(_render_mod, "serve", lambda *a, **k: "Jane_Roe_CV_deadbeef.pdf")
+    ordinary = Note({"status": "shortlist", "company": "Example Systems", "role": "Clerk"},
+                    path=f"{_TWIN_DIR}/Example Systems - Clerk.md")
+    v = FakeVault(ENTRIES, notes=[*_twins(), ordinary])
+    out = run_batch(v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(), renderer=FakeRenderer())
+    by_ref = {r.lead: r.status for r in out}
+    assert by_ref[ordinary.ref] == "rendered"
+    assert set(v.written) == {ordinary.ref}
+    assert [s for s in by_ref.values() if s == "skipped-ambiguous"] == ["skipped-ambiguous"] * 2
