@@ -14,10 +14,18 @@ def _leads_dir(tmp_path):
     return tmp_path / "Job Applications" / "Job Leads"
 
 
-def _skip_as_root():
-    # chmod 000 does not bind uid 0, so the unreadable-directory test would pass
-    # vacuously in a root container. geteuid is absent on Windows; -1 never equals 0.
-    return getattr(os, "geteuid", lambda: -1)() == 0
+def _cannot_unread_a_dir():
+    # TWO platforms where chmod 000 does not do what these tests need, and they fail in
+    # OPPOSITE directions. As uid 0 the mode bits do not bind, so the directory stays
+    # readable and the test passes VACUOUSLY -- the dangerous direction. On Windows chmod
+    # cannot remove read access from a directory at all, so the walk succeeds and the test
+    # fails outright, which is noise rather than a finding. geteuid is absent on Windows;
+    # -1 never equals 0, so the order of these two terms does not matter.
+    return os.name == "nt" or getattr(os, "geteuid", lambda: -1)() == 0
+
+
+_UNREADABLE_DIR = pytest.mark.skipif(
+    _cannot_unread_a_dir(), reason="chmod 000 binds neither uid 0 nor Windows")
 
 
 # ── the exclusion set ─────────────────────────────────────────────────────────
@@ -98,21 +106,44 @@ def test_a_file_with_neither_company_nor_role_is_not_a_lead():
 
 
 # ── an unreadable directory is loud ───────────────────────────────────────────
-@pytest.mark.skipif(_skip_as_root(), reason="chmod 000 does not bind root")
-def test_an_unreadable_subdirectory_raises_rather_than_reading_as_empty(tmp_path):
-    """os.walk's DEFAULT onerror=None silently yields nothing for a directory it cannot
-    open. Measured: a 6-note vault reads as 3 notes, no error, no log. Every note in it
-    would then be invisible to the write path and re-created -- mass re-ingest arriving
-    through a permissions bit."""
+def _with_unreadable_subdir(tmp_path, call):
+    """Seed a note under an unreadable subdirectory and assert `call(vault)` raises OSError,
+    restoring the mode whatever happens (a leftover 000 directory breaks tmp_path cleanup)."""
     leads = _leads_dir(tmp_path)
     (leads / "Archive").mkdir(parents=True)
     (leads / "Archive" / "Acme - Analyst.md").write_text('---\ncompany: "Acme"\n---\n')
     os.chmod(leads / "Archive", 0o000)
     try:
         with pytest.raises(OSError):
-            Vault(str(tmp_path))._scan_dirs()
+            call(Vault(str(tmp_path)))
     finally:
         os.chmod(leads / "Archive", 0o755)
+
+
+@_UNREADABLE_DIR
+def test_an_unreadable_subdirectory_raises_rather_than_reading_as_empty(tmp_path):
+    """os.walk's DEFAULT onerror=None silently yields nothing for a directory it cannot
+    open. Measured: a 6-note vault reads as 3 notes, no error, no log. Every note in it
+    would then be invisible to the write path and re-created -- mass re-ingest arriving
+    through a permissions bit."""
+    _with_unreadable_subdir(tmp_path, lambda v: v._scan_dirs())
+
+
+@_UNREADABLE_DIR
+def test_read_leads_propagates_an_unreadable_subdirectory(tmp_path):
+    """Through the PUBLIC method, which is what `core/protocols.py` promises and what every
+    caller reaches. Its sibling above drives `_scan_dirs`, a private helper `read_leads` does
+    not even call -- so wrapping read_leads' own walk loop in `try/except OSError: pass`,
+    leaving `_walk`'s onerror intact, left the whole suite green (mutant M12)."""
+    _with_unreadable_subdir(tmp_path, lambda v: v.read_leads())
+
+
+@_UNREADABLE_DIR
+def test_normalize_all_statuses_propagates_an_unreadable_subdirectory(tmp_path):
+    """The same exposure on the other public consumer of the scan set. It has the harsher
+    version of the failure: an unreadable subtree read as empty means its notes are never
+    canonicalized AND the summary reports a clean sweep over a vault it only partly saw."""
+    _with_unreadable_subdir(tmp_path, lambda v: v.normalize_all_statuses())
 
 
 # ── read_leads over the scan set ──────────────────────────────────────────────
@@ -161,6 +192,97 @@ def test_read_leads_keeps_a_lead_whose_role_was_blanked(tmp_path):
     leads = _leads_dir(tmp_path)
     _write_note(leads / "Active" / "Acme - Analyst.md", role="")
     assert [n.slug for n in Vault(str(tmp_path)).read_leads()] == ["Acme - Analyst"]
+
+
+def test_read_leads_warns_when_two_notes_claim_one_slug(tmp_path, caplog):
+    """On a flat store slug uniqueness held by CONSTRUCTION -- one directory cannot hold two
+    files at one basename, and the slug IS the basename. The recursive scan removes that. The
+    WRITE path refuses such a candidate and names both colliding paths; the read path has no
+    such option, since dropping a lead takes it out of the write path's lookup too and the
+    next scrape re-creates it. So it returns BOTH and is loud."""
+    leads = _leads_dir(tmp_path)
+    _write_note(leads / "Active" / "Acme - Analyst.md")
+    _write_note(leads / "Archive" / "Acme - Analyst.md")
+    with caplog.at_level("WARNING"):
+        notes = Vault(str(tmp_path)).read_leads()
+    assert [n.slug for n in notes] == ["Acme - Analyst", "Acme - Analyst"]
+    said = [r.getMessage() for r in caplog.records if r.name == "sluice.core.vault"]
+    assert any("Acme - Analyst" in m and "claimed by 2 notes" in m for m in said), said
+
+
+def test_read_leads_stays_quiet_when_every_slug_is_unique(tmp_path, caplog):
+    """Two notes in two subfolders is the ORDINARY case this feature exists for. A guard
+    keyed on the folder count rather than on the slug would fire on all of them."""
+    leads = _leads_dir(tmp_path)
+    _write_note(leads / "Active" / "Acme - Analyst.md")
+    _write_note(leads / "Archive" / "Acme - Engineer.md", role="Engineer")
+    with caplog.at_level("WARNING"):
+        assert len(Vault(str(tmp_path)).read_leads()) == 2
+    assert [r.getMessage() for r in caplog.records if r.name == "sluice.core.vault"] == []
+
+
+# ── a symlinked subfolder is not followed, and says so ────────────────────────
+def _symlinked_folder(tmp_path, *, with_note):
+    """A subfolder of leads_dir that is a SYMLINK to a directory elsewhere -- ordinary
+    practice in an Obsidian vault, and invisible to the walk (followlinks=False)."""
+    leads = _leads_dir(tmp_path)
+    leads.mkdir(parents=True)
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    if with_note:
+        _write_note(target / "Acme - Analyst.md")
+    else:
+        (target / "notes.txt").write_text("not a note\n")
+    (leads / "Applied").symlink_to(target, target_is_directory=True)
+    return leads
+
+
+def test_a_symlinked_subfolder_holding_notes_is_warned_about(tmp_path, caplog):
+    """followlinks=False is the RIGHT default (a symlink loop would spin the walk, and a
+    link out of the vault would drag arbitrary directories into the scan set) -- so this is
+    made loud rather than fixed by following. Measured before the warning: a note at
+    `status: applied` behind such a link came back `created` from upsert, the original
+    untouched, with no log line anywhere. os.walk still LISTS the link in `dirnames`, which
+    is where it is visible without being followed."""
+    _symlinked_folder(tmp_path, with_note=True)
+    with caplog.at_level("WARNING"):
+        notes = Vault(str(tmp_path)).read_leads()
+    assert notes == [], "the note really is invisible; the warning is the whole remedy"
+    said = [r.getMessage() for r in caplog.records if r.name == "sluice.core.vault"]
+    assert any("Applied" in m and "symlink" in m for m in said), said
+
+
+def test_a_symlinked_subfolder_is_warned_about_once_per_store(tmp_path, caplog):
+    """One command walks the tree several times -- a read, the scan set, one re-derive per
+    create -- so an un-deduped warning would say the same thing a dozen times in one run,
+    which is the noise the empty-symlink case above is deliberately kept out of."""
+    _symlinked_folder(tmp_path, with_note=True)
+    v = Vault(str(tmp_path))
+    with caplog.at_level("WARNING"):
+        v.read_leads()
+        v.read_leads()
+        v._scan_dirs()
+    said = [r.getMessage() for r in caplog.records if "symlink" in r.getMessage()]
+    assert len(said) == 1, said
+
+
+def test_a_symlinked_subfolder_without_notes_stays_quiet(tmp_path, caplog):
+    """A warning that fires on every walk for a harmless link is one users learn to ignore,
+    which is how the real one gets missed. Only links HOLDING notes are reported."""
+    _symlinked_folder(tmp_path, with_note=False)
+    with caplog.at_level("WARNING"):
+        Vault(str(tmp_path)).read_leads()
+    assert [r.getMessage() for r in caplog.records if r.name == "sluice.core.vault"] == []
+
+
+def test_a_real_subfolder_holding_notes_stays_quiet(tmp_path, caplog):
+    """The discriminator is the SYMLINK, not the notes. A guard keyed on the note count
+    alone would warn about every ordinary subfolder -- which is the feature."""
+    leads = _leads_dir(tmp_path)
+    _write_note(leads / "Applied" / "Acme - Analyst.md")
+    with caplog.at_level("WARNING"):
+        assert len(Vault(str(tmp_path)).read_leads()) == 1
+    assert [r.getMessage() for r in caplog.records if r.name == "sluice.core.vault"] == []
 
 
 # ── normalize_all_statuses over the scan set ───────────────────────────────────
