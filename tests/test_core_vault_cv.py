@@ -50,7 +50,8 @@ def test_read_experience_parses_block_list_category():
 def test_read_experience_does_not_read_an_unstatable_library_as_empty():
     """`_is_dir`, not os.path.isdir. These entries are the only citable evidence the hard
     fabrication gate recognises, so an empty read leaves a bundle with no ids, every WORK
-    bullet fails BAD CITATION, and a permissions problem is reported to the user as
+    bullet violates the gate (`BAD CITATION` when it cites, `UNCITED BULLET` when it does
+    not -- measured against `cv/validate.py`), and a permissions problem reaches the user as
     `skipped-gate` -- a fabrication verdict against their composer -- after a dossier fetch
     and a full compose have already been paid for.
 

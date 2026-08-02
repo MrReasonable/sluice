@@ -1043,10 +1043,12 @@ class Vault:
         # What that costs is not a clobber, and the honest version is narrower than "an
         # unreadable directory read as empty is a wrong answer": these entries are the ONLY
         # citable evidence the hard fabrication gate recognises, so an empty read leaves a
-        # bundle with no ids and every WORK bullet fails `BAD CITATION` (measured). The CV is
-        # therefore never rendered -- it fails CLOSED. The harm is that a permissions problem
-        # is reported to the user as `skipped-gate`, a fabrication verdict against their
-        # composer, and only after paying for a dossier fetch and a full compose.
+        # bundle with no ids and every WORK bullet violates it -- measured, `BAD CITATION`
+        # for a bullet that cites and `UNCITED BULLET` for one that does not, the two arms of
+        # cv/validate.py's WORK check. The CV is therefore never rendered -- it fails CLOSED.
+        # The harm is that a permissions problem is reported to the user as `skipped-gate`, a
+        # fabrication verdict against their composer, and only after paying for a dossier
+        # fetch and a full compose.
         if not _is_dir(base):
             return out
         for name in sorted(os.listdir(base)):
