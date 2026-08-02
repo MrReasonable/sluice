@@ -1,9 +1,10 @@
 """Eligibility + defensive slug resolution for apply. A lead is apply-eligible iff
 it is shortlist, has an apply URL, and its tailored_cv is a resolvable sluice-cv
 artifact. The live vault holds duplicate shortlist records, so a slug matching more
-than one shortlist lead is REFUSED (never silently picks the first, unlike cv) --
-on BOTH paths: `select_one` refuses the slug the user typed, `select_all` refuses
-the slug two notes CLAIM."""
+than one shortlist lead is REFUSED, never silently picking the first -- on BOTH
+paths: `select_one` refuses the slug the user typed, `select_all` refuses the slug
+two notes CLAIM. This used to read "unlike cv"; cv's two single-lead paths took
+`notes[0]` until #1 gave them the same refusal, so that contrast no longer holds."""
 import os
 
 from sluice.core import status as _status
