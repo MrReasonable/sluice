@@ -5,7 +5,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
 from sluice.core import status as _status
-from sluice.core.leads import index_by_slug, slug_matches
+from sluice.core.leads import ambiguous_slug_warnings, index_by_slug, slug_matches
+from sluice.core.log import get_logger
 from sluice.core.protocols import VaultConflict
 from sluice.track.classify import classify
 from sluice.track.reconcile import reconcile
@@ -13,6 +14,8 @@ from sluice.track.ics import parse_ics
 from sluice.track.google_client import GoogleAuthError
 from sluice.track.deadletter import Entry
 from sluice.track.receipt import match_receipt
+
+_log = get_logger("track.engine")
 
 _INFLIGHT = ("applied", "phone_screen", "interview", "offer")  # non-terminal application states
 
@@ -71,16 +74,21 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
     # irreversible and silently suppresses the real application. Dropping both instead sends
     # the receipt to the dead-letter for a human, which is where every weaker outcome already
     # goes. The ambiguous set is not needed here: not matching IS the report.
-    note_by_slug, _ = index_by_slug(leads, what="track: in-flight lead")
+    note_by_slug, inflight_dropped = index_by_slug(leads)
+    for msg in ambiguous_slug_warnings("track: in-flight lead", inflight_dropped):
+        _log.warning("%s", msg)
     # A receipt's lead lives in shortlist (pre-application), not note_by_slug (in-flight
     # application states) -- match_receipt matches against this snapshot by domain.
     shortlist = vault.read_leads({"shortlist"})
-    shortlist_by_slug, ambiguous_shortlist = index_by_slug(
-        shortlist, what="track: shortlisted lead")
+    shortlist_by_slug, dropped_shortlist = index_by_slug(shortlist)
+    for msg in ambiguous_slug_warnings("track: shortlisted lead", dropped_shortlist):
+        _log.warning("%s", msg)
     # The twins index_by_slug DROPPED, kept for the probe below. Refusing to act on them is
     # right; going quieter about them than about a receipt that is merely ambiguous by
-    # DOMAIN is not, and that is what dropping them from the matcher's input did.
-    dropped_twins = [n for n in shortlist if n.slug in ambiguous_shortlist]
+    # DOMAIN is not, and that is what dropping them from the matcher's input did. Read off
+    # the grouping the indexer RETURNS -- a second filter over `shortlist` re-derives what
+    # it already computed, and can drift from it.
+    dropped_twins = [n for members in dropped_shortlist.values() for n in members]
     try:
         ids = client.search_messages(_gmail_query(cfg, now_iso, since_iso))
     except GoogleAuthError:

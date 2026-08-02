@@ -613,7 +613,7 @@ class Sluice:
         is choosing the safer option under decision 3; it must not be the one that
         dismisses leads they did not name.
         """
-        from sluice.core.leads import index_by_slug
+        from sluice.core.leads import ambiguous_slug_warnings, index_by_slug
         from sluice.core.protocols import VaultConflict
         policy = self.staleness()
         report = self.expire_report(policy)
@@ -624,14 +624,16 @@ class Sluice:
             # would otherwise leave whichever came last, so `--expire <slug>` would dismiss
             # one twin while the other was neither dismissed nor reported -- the human sees
             # no sign the second exists. Both are dropped and named instead.
-            by_slug, ambiguous = index_by_slug(report, what="expire: stale lead")
+            by_slug, dropped = index_by_slug(report)
+            for msg in ambiguous_slug_warnings("expire: stale lead", dropped):
+                _log.warning("%s", msg)
             chosen = []
             for s in slugs:
                 r = by_slug.get(s)
                 if r is not None:
                     chosen.append(r)
                 else:
-                    results.append((s, "ambiguous" if s in ambiguous else "no-match"))
+                    results.append((s, "ambiguous" if s in dropped else "no-match"))
         else:
             # The unnarrowed sweep expires the whole stale set, so there is no slug to
             # resolve and nothing to be ambiguous ABOUT: each row is acted on through its own

@@ -5,10 +5,6 @@ import unicodedata
 from dataclasses import dataclass, field
 from datetime import date
 
-from sluice.core.log import get_logger
-
-_log = get_logger("core.leads")
-
 # The verdict vocabulary, shared with #5's `same_opportunity`. Strings, not an enum -- core/status.py
 # sets that convention. DIFFERENT is the ONLY verdict a caller may split on.
 SAME = "same"
@@ -199,9 +195,9 @@ def slug_matches(note, wanted: str) -> bool:
     return wanted.lower() in hay or wanted.lower() in note.slug.lower()
 
 
-def index_by_slug(notes, *, what: str) -> tuple[dict, frozenset]:
+def index_by_slug(notes) -> tuple[dict, dict]:
     """Index notes by their store-issued slug, DROPPING every slug two or more notes claim,
-    and return `(index, ambiguous_slugs)`.
+    and return `(index, dropped)` -- `dropped` mapping each dropped slug to its members.
 
     `{n.slug: n for n in notes}` silently keeps whichever twin came last. On a flat lead
     store that could not happen -- one directory cannot hold two files at one basename, and
@@ -220,20 +216,44 @@ def index_by_slug(notes, *, what: str) -> tuple[dict, frozenset]:
     ambiguity is logged, never resolved by an invented rule. Callers that must REPORT the
     ambiguity (rather than merely not act on it) take it from the second element; the store
     itself warns as well, on the read that produced the twins.
+
+    PURE: this decides, it does not report. The grouping it computed is RETURNED rather than
+    discarded, because every caller wanted it back and each was rebuilding it from the input
+    list -- `apply` to name the colliding refs in its skip reason, `track` to probe the twins
+    a receipt must not advance. Membership tests still read the same (`slug in dropped`), so
+    a caller that only wants the set is not made to pay for the groups. Callers log, through
+    their own logger and via `ambiguous_slug_warnings` for the wording; the `what` label that
+    used to be a parameter here existed only to decorate a log line, which is a side effect
+    this module -- the pure verdict module every sub-app imports -- should not have had.
     """
     grouped: dict = {}
     for n in notes:
         grouped.setdefault(n.slug, []).append(n)
-    index, ambiguous = {}, set()
+    index, dropped = {}, {}
     for slug, members in grouped.items():
         if len(members) == 1:
             index[slug] = members[0]
-            continue
-        ambiguous.add(slug)
-        _log.warning("%s: slug %r is claimed by %d notes (%s); leaving it alone until a "
-                     "human renames or merges them", what, slug, len(members),
-                     ", ".join(sorted(str(n.ref) for n in members)))
-    return index, frozenset(ambiguous)
+        else:
+            dropped[slug] = members
+    return index, dropped
+
+
+def ambiguous_slug_warnings(what: str, dropped: dict) -> list[str]:
+    """One warning line per slug `index_by_slug` dropped, ready for the CALLER's logger.
+
+    Pure: it formats, nothing writes. It lives beside `index_by_slug` so the four call sites
+    cannot drift into four different ways of saying the same thing -- which is the drift that
+    moving the logging out to them would otherwise have bought.
+
+    The refs, never the slug alone: these notes collide BY slug, so repeating it names
+    nothing a human can act on, whereas the paths name the two files to rename or merge.
+    """
+    return [
+        f"{what}: slug {slug!r} is claimed by {len(members)} notes "
+        f"({', '.join(sorted(str(n.ref) for n in members))}); "
+        f"leaving it alone until a human renames or merges them"
+        for slug, members in dropped.items()
+    ]
 
 
 def same_opportunity(note_fm: dict, lead: "Lead", noise=frozenset()) -> str:
