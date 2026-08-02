@@ -2,13 +2,13 @@
 
 > **Superseded 2026-08-02 (#1, vault subfolders):** the `refused` log line this plan's steps
 > quote (`"vault refused lead %r: all name candidates are notes proven different"`) named ONE
-> cause, which was true when written. The shipped line names two, because at that point
+> cause, which was true when written. The shipped line names two because at that point
 > `_resolve_path` cannot tell them apart -- every candidate proven different, OR one candidate
 > resolving to several notes (ambiguous identity, which a recursive scan made reachable). The
 > outcome itself now has FIVE causes in total: those two, a blank identity, create-race
 > exhaustion, and a sustained last_seen CAS conflict. The steps are left as executed; see
 > `core/vault.py:upsert`'s docstring for the shipped enumeration.
-
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Two genuinely different jobs sharing a company and title no longer collapse into one note — the vault splits them on a proven location `DIFFERENT`, and never silently loses the second.
