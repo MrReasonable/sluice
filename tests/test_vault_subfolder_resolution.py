@@ -183,6 +183,37 @@ def test_a_stale_scan_set_cannot_record_a_merged_away_arm(tmp_path):
               last_seen="2026-07-09")) == "updated"
 
 
+def test_a_novel_not_found_outcome_inherits_the_re_derive(tmp_path):
+    """The re-derive is gated on the CONDITION -- `_locate` came back empty -- never on a
+    hand-listed set of outcome strings. That form has already gone stale once ON THIS
+    BRANCH: it shipped naming `create` alone and the two archive arms were added afterwards,
+    with nothing red in between, because a stale scan set is invisible by construction.
+
+    So this drives a NOVEL outcome out of the same `if not found:` branch, which is exactly
+    what the next one to be added will be. Under the whitelist form it returns that string
+    untouched (the stale answer, standing); under the flag it re-derives and finds the note
+    the human filed mid-run. Asserted on `_resolve_path` rather than `upsert` because upsert
+    dispatches on the outcome STRING and would raise on one it does not know -- which would
+    redden for the wrong reason and read as proof."""
+    leads = _leads_dir(tmp_path)
+    leads.mkdir(parents=True)
+    v = Vault(str(tmp_path))
+    # SCOPE, not violations: the cache must be warm AND blind to Active/, or the walk below
+    # is fresh, the not-found branch unreachable, and this test green either way.
+    assert v._scan_dirs() == [str(leads)], "the cache must be warm and must not see Active/"
+
+    active = leads / "Active"
+    active.mkdir()
+    filed = active / "Acme - Analyst.md"
+    filed.write_text('---\ncompany: "Acme"\nrole: "Analyst"\nstatus: applied\n'
+                     'url: "https://ex.invalid/1"\n---\n\nbody\n')
+    v._archived_match = lambda names, lead, capped: "a_future_suppression_outcome"
+
+    path, action = v._resolve_path(_lead())
+    assert action == "update", "a novel not-found outcome must not stand on a stale scan set"
+    assert path == str(filed)
+
+
 def test_a_candidate_resolving_to_two_notes_refuses_and_writes_nothing(tmp_path):
     """Two notes claim one identity, so the store cannot know which lead this is. Bumping
     the wrong one leaves the other to rot silently, so it writes nothing and the sink keeps

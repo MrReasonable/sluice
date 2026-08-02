@@ -684,9 +684,19 @@ class Vault:
 
         The set is compared, never the list ORDER: `_locate` reads every entry, so an
         order-only difference from one scandir to the next changes no answer and must not
-        trigger a redundant second resolve (which would re-run _archived_match's listdir)."""
-        path, action = self._resolve_candidates(lead)
-        if action not in ("create", _ARCHIVED, _ARCHIVED_UNPROVEN):
+        trigger a redundant second resolve (which would re-run _archived_match's listdir).
+
+        Gated on `missed` -- the CONDITION, reported by `_resolve_candidates` itself -- and
+        never on a hand-listed set of outcome strings. That whitelist has already gone stale
+        once ON THIS BRANCH: it shipped as `("create",)` and the archive arms were added
+        afterwards, with nothing red in between, because a stale scan set is invisible by
+        construction -- both lists agree, both are wrong, and the wrong answer looks like a
+        real one. The two sets are identical today (every arm reached through `if not
+        found:` returns), which is exactly why only the flag can tell them apart tomorrow:
+        an outcome added to that branch inherits the re-derive instead of silently opting
+        out of it."""
+        path, action, missed = self._resolve_candidates(lead)
+        if not missed:
             return path, action
         # set(), which COPIES. _scan_dirs hands out its cache by reference, so a bare alias
         # here would compare the fresh list to itself the moment _rescan_dirs was refactored
@@ -694,10 +704,11 @@ class Vault:
         before = set(self._scan_dirs())
         if set(self._rescan_dirs()) == before:
             return path, action
-        return self._resolve_candidates(lead)
+        path, action, _ = self._resolve_candidates(lead)
+        return path, action
 
-    def _resolve_candidates(self, lead: Lead) -> tuple[str | None, str]:
-        """Walk the nameable candidates and return (path, action). Against an ACTIVE note,
+    def _resolve_candidates(self, lead: Lead) -> tuple[str | None, str, bool]:
+        """Walk the nameable candidates and return (path, action, missed). Against an ACTIVE note,
         action is one of "create"/"update"/"merge"/"refuse". Candidate 1 is the clean
         `Company - Title` name (always); a location suffix (only when location is non-empty)
         and -- when the title is CAPPED -- a title-digest suffix add further candidates. Every
@@ -715,6 +726,16 @@ class Vault:
         `_merged/` by the same candidate names, and action can ALSO come back `_ARCHIVED` or
         `_ARCHIVED_UNPROVEN` (path None, same as refuse) when a human already merged this lead
         away. Only when that probe finds nothing either does the walk fall through to "create".
+
+        `missed` is the third element and the reason it exists: did `_locate` come back EMPTY
+        for a candidate? That -- not the outcome string it produced -- is the condition under
+        which a stale directory list could have manufactured the answer, so it is what
+        `_resolve_path` gates its re-derive on. It is True on every return out of the `if not
+        found:` branch and False on every other, INCLUDING both refusals: the ambiguous one
+        saw the candidate twice and the exhausted one saw a real note at every candidate, so
+        neither was looking at a directory list that might be blind. Reported from here rather
+        than inferred by the caller precisely so a NEW outcome added to that branch cannot
+        opt out of the re-derive by not appearing in a list somewhere else.
 
         `capped` closes #5's same-location residual: when the 120-char cap drops part of the
         title, cand1 (and the location candidate, which shares that truncated prefix) can seat
@@ -739,17 +760,17 @@ class Vault:
                 # lead out of seen.db so it re-reports until a human merges or renames.
                 _log.warning("vault refused lead %r: %r resolves to %d notes (%s)",
                              lead.dedup_key, name, len(found), ", ".join(sorted(found)))
-                return None, "refuse"
+                return None, "refuse", False
             if not found:
                 # #81. Returns None, or one of the TWO outcome strings -- never a bool: the
                 # url-PROVEN/weaker distinction decides whether the lead enters seen.db,
                 # which is irreversible in one direction, so a bool cannot carry it.
                 archived = self._archived_match(names, lead, capped)
                 if archived:
-                    return None, archived
+                    return None, archived, True
                 # The write folder is still leads_dir itself. PR B is what points a create
                 # at Active/; PR A creates no directories and moves no notes.
-                return os.path.join(self.leads_dir, f"{name}.md"), "create"
+                return os.path.join(self.leads_dir, f"{name}.md"), "create", True
             path = found[0]
             inner, _ = _split_frontmatter(_read(path))
             # The url-proof is DISCARDED here on purpose: against an ACTIVE note a SAME
@@ -759,9 +780,9 @@ class Vault:
             # whether the lead may enter seen.db, which is irreversible).
             action, _url_proven = self._reconcile(_fm_dict(inner), lead, capped)
             if action != "advance":
-                return path, action
+                return path, action, False
             # DIFFERENT location, or a capped-title mismatch -> advance to the next candidate
-        return None, "refuse"
+        return None, "refuse", False
 
     def ensure_stfolder(self) -> None:
         """Syncthing silently refuses to sync a vault root missing its .stfolder
