@@ -82,6 +82,11 @@ class LeadNote:
     The obligation that falls on the CALLER follows from that: never index a returned list by
     slug with a bare dict comprehension, which silently keeps the last twin. `core/leads.py:
     index_by_slug` drops both and reports them, which is what `track` and `leads expire` use.
+    The obligation is not discharged by INDEXING carefully, though -- a caller that walks the
+    list without keying on slug at all is bound just as hard, and is the shape a fix aimed at
+    the dicts misses: `apply`'s batch path iterated the shortlist directly and acted on both
+    twins, which for that caller means two applications for one job. It takes the ambiguous
+    SET from the same helper and skips them.
     A store whose ids are synthetic (a row id) satisfies the bound trivially and needs no
     such care -- but the CONTRACT is what callers are written against, so the weaker
     guarantee is the one stated here.

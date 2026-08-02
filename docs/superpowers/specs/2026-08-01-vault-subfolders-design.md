@@ -163,10 +163,17 @@ equality and silently kept the last twin — `track/engine.py`'s `note_by_slug` 
 `shortlist_by_slug`, and `core/app.py`'s `by_slug` in `expire`. `shortlist_by_slug` feeds
 `match_receipt`, so an `applied` could land on the stale twin while the real lead stayed
 `shortlist`: `can_apply` passes and the transition is legal, the IDENTITY is wrong, and a wrong
-`applied` is irreversible. All three now index through `core/leads.py: index_by_slug`, which drops
-BOTH twins and logs — the shape `select_one` and `track confirm` use for ambiguity, applied where it
-was missing rather than assumed. `read_leads` returns both (dropping one takes the lead out of the
-write path's lookup too, which re-creates it) and warns on every read. `LeadNote`'s contract now
+`applied` is irreversible. A FOURTH consumer keyed on nothing at all: `apply/select.py:
+select_all` iterates `read_leads({"shortlist"})` directly, so hardening the three dicts left it
+untouched and `apply run --all` sent two applications for one job. All four now take their verdict
+from `core/leads.py: index_by_slug`, which drops BOTH twins and logs — the shape `select_one` and
+`track confirm` use for ambiguity, applied where it was missing rather than assumed. `select_all`
+takes only the ambiguous set and SKIPS those notes with a reported reason, since a silent drop is
+the mirror failure. A receipt whose lead's slug collapsed gets a dead-letter row for review rather
+than the untracked-job quiet, with no `--to applied` (that slug resolves to two notes). `read_leads`
+returns both (dropping one takes the lead out of the write path's lookup too, which re-creates it)
+and warns, deduped per store on `(slug, refs)` — `apply run --all` re-reads the shortlist per lead,
+so one duplicate produced four identical lines. `LeadNote`'s contract now
 states slug uniqueness as BOUNDED — a store must not itself create two notes at one slug — rather
 than as the absolute property the conformance suite was certifying from a fixture that could not
 collide.
@@ -182,21 +189,29 @@ Measured on the same 5500-note vault:
 | **cached directory list**, 500 leads × 3 dirs | **3.66 ms total** |
 
 So the list is computed once and cached. The staleness window is a human filing a note into a NEW
-subfolder mid-run, and it is **closed on the create arm**: `_resolve_path` re-derives the list from
-disk, cache bypassed, before it lets a create stand, and re-resolves when the folder set moved.
+subfolder mid-run, and it is **closed on every verdict `_locate` reaches by finding NOTHING**:
+`_resolve_path` re-derives the list from disk, cache bypassed, before such a verdict stands, and
+re-resolves when the folder set moved.
 
-Left open it did not degrade the way this table's first draft assumed. Every command reads before it
-writes, so the cache is already warm at the first create; the very next lead of the same identity
-was CREATED at the root name — *sluice's own* duplicate, not a hand-made one — and it did not
-converge. From the next run on both twins are visible, the candidate resolves to two notes, and
-`upsert` REFUSES the lead permanently with its `last_seen` frozen; with `lead_ttl_days` set, that
-frozen stamp then ages the lead into the stale set and offers a twin for dismissal. A create RACE
-converges instead — the re-resolve sees the raced note and updates it — so the two are not the same
-posture.
+Left open it did not degrade the way this table's first draft assumed. Nothing reads before it
+writes — the cache is filled by the FIRST `_locate` the store performs, which is that same walk on
+the run's first lead (`read_leads` and `normalize_all_statuses` call `_walk` directly and leave it
+`None`; the ingest sink never reads at all). So from the second lead on it is a snapshot: the very
+next lead of the same identity was CREATED at the root name — *sluice's own* duplicate, not a
+hand-made one — and it did not converge. From the next run on both twins are visible, the candidate
+resolves to two notes, and `upsert` REFUSES the lead permanently with its `last_seen` frozen; with
+`lead_ttl_days` set, that frozen stamp then ages the lead into the stale set and offers a twin for
+dismissal. A create RACE converges instead — the re-resolve sees the raced note and updates it — so
+the two are not the same posture.
 
-The re-derive is on the create arm only. Update, merge and refuse have each identified a real note,
-so a fresher directory list cannot change their answer; re-deriving per LEAD is exactly the per-lead
-walk this cache replaces. Measured on the same vault:
+The arms that pay are `create`, `merged_away` and `merged_away_unproven`: all three leave
+`_resolve_candidates` from the same `if not found:` branch, so a guard keyed on `create` alone
+short-circuits before the archive pair. Measured with the cache warmed, an archived twin under
+`_merged/` and the active note filed into a new subfolder, the stale verdict was `merged_away`
+against a fresh verdict of `updated` — and `merged_away` is the RECORDED arm, so `seen.db` (no
+removal path) would have suppressed that lead permanently. Update, merge and refuse have each
+identified a real note, so a fresher directory list cannot change their answer; re-deriving per LEAD
+is exactly the per-lead walk this cache replaces. Measured on the same vault:
 
 | shape | cost |
 | --- | --- |
@@ -402,10 +417,11 @@ it also holds with `lead_layout` enabled.
 ## Residuals, accepted
 
 1. **Scan-set cache staleness, on the READ arms only.** `_resolve_path` re-derives the list before a
-   create stands, so the write path no longer mints a duplicate against a stale set (see *Cost*).
-   What remains is narrower: within one `_locate` call the list is whatever the last re-derive saw,
-   so a subfolder created during that call is not seen until the next create or the next `Vault`.
-   Nothing is written against it — update, merge and refuse have all already identified a real note.
+   create or either archive verdict stands, so the write path no longer mints a duplicate — nor
+   records a `merged_away` — against a stale set (see *Cost*). What remains is narrower: within one
+   `_locate` call the list is whatever the last re-derive saw, so a subfolder created during that
+   call is not seen until the next such verdict or the next `Vault`. Nothing is written against it —
+   update, merge and refuse have all already identified a real note.
 2. **`_merged/` is pruned at the top level only.** A user who moves `_merged/` into a subfolder
    resurfaces its contents. That same move also breaks `_archived_match`, which reads exactly
    `leads_dir/_merged` — so the two stay consistent: the archive is simply gone and its notes are
