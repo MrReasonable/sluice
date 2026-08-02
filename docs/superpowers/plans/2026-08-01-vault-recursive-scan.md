@@ -315,8 +315,9 @@ Expected: PASS, 9 tests.
 - [ ] **Step 9: Run the full suite and lint**
 
 Run: `.venv/bin/python -m pytest -q && .venv/bin/python -m ruff check sluice tests scripts`
-Expected: 1816 + 10 passed, ruff clean. Nothing consumes `_walk`/`_scan_dirs` yet, so no
-pre-existing test may change.
+Expected: zero failures, ruff clean. Nothing consumes `_walk`/`_scan_dirs` yet, so no
+pre-existing test may change. (No absolute count: a total pinned in prose goes stale the
+moment any other branch lands a test, and a stale number reads as a real failure.)
 
 - [ ] **Step 10: Mutation witnesses**
 
@@ -1270,14 +1271,25 @@ Refs #1"
 
 ## Definition of Done
 
-- [ ] `.venv/bin/python -m pytest` green; the count has risen by ~26 (9 + 5 + 3 + 6 + 3).
+- [ ] `.venv/bin/python -m pytest` reports ZERO failures. Not a target count: a number pinned
+      here is stale as soon as any other branch lands a test, and it then reads as a failure.
 - [ ] `.venv/bin/python -m ruff check sluice tests scripts` clean.
 - [ ] Every mutation witness in Tasks 2, 3, 4 and 5 reddens its own named test, run BY NODE ID,
       with the neighbouring pre-existing vault tests confirmed still green under the same mutant.
 - [ ] `tests/conformance/test_store_contract.py` passes unchanged — no contract property was added
       or weakened.
-- [ ] `grep -rn "os.listdir" sluice/core/vault.py` returns exactly the two Experience-Library and
-      archive-probe sites (`read_experience_entries`, `_archived_match`); the two lead-scan sites are gone.
+- [ ] No `os.listdir` CALL remains on the lead scan. Checked through the parser, not by grep:
+
+      ```bash
+      .venv/bin/python -c "import ast; src=open('sluice/core/vault.py').read(); \
+      print(sorted((n.lineno, n.func.attr) for n in ast.walk(ast.parse(src)) \
+      if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr=='listdir'))"
+      ```
+
+      Every surviving call must be one of: the undescended-symlink warning, `_archived_match`'s
+      archive probe, `read_experience_entries`. A text grep cannot make this check — bare
+      `os.listdir` counts comments, and even `os\.listdir\(` matches `read_leads`' own docstring,
+      which quotes the call it replaced. Both would pass with the lead-scan calls still in place.
 - [ ] No config key, no CLI command, no directory created that did not exist before.
 - [ ] `git log --oneline main..HEAD` reads as six coherent commits, each `Refs #1`.
 - [ ] Run `/review-pr` BEFORE pushing.

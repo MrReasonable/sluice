@@ -299,21 +299,18 @@ class Vault:
         re-resolve can SEE a note a concurrent writer (another `ingest run`, or a human in
         Obsidian) created since the last attempt; against a cached filename index that note
         stays invisible, every retry re-derives the same absent candidate, and the loop
-        exhausts into a refusal for a lead that was perfectly writable. Only the DIRECTORY
-        list is cached, and it is cached because the set of folders is what is expensive to
-        rediscover (a full walk per lead: ~1.4s vs ~4ms on a 5500-note vault) while a stale
-        entry there costs at most one duplicate note. Measured, so the trade is not
-        hypothetical: 500 leads x 3 candidates across 51 directories is 0.281s of stat calls
-        for the whole run -- a fifth of the ~1.4s that SAME RUN costs with the walk
-        re-derived per lead. Not a fifth of one walk: one walk is ~2.8ms, so 0.281s is about
-        a hundred of them. The comparison is whole-run against whole-run.
+        exhausts into a refusal for a lead that was perfectly writable. So only the
+        DIRECTORY list is cached, because the set of FOLDERS is what is expensive to
+        rediscover while its staleness has one bounded consequence, which `_resolve_path`
+        then closes on the create arm.
 
-        That 0.281s is warm-cache LOCAL disk, and it is the number most likely to mislead.
-        This lookup turns one stat per candidate into one per scanned DIRECTORY, so its cost
-        scales with the folder count: 500 x 3 x 51 is ~76k stats, i.e. ~4us each. On a
-        network or FUSE mount where a stat costs ~1ms instead, those same 76k stats are over
-        a minute of the run. (_name_max already acknowledges such mounts, for pathconf.) A
-        deep hierarchy on a slow mount is where this design is worst, and nothing adapts."""
+        The cost of this lookup scales with the DIRECTORY count, not the note count: one
+        stat per candidate per scanned directory. Measured figures (local disk, and what
+        they become on a network or FUSE mount where a stat costs ~1ms) are in
+        `docs/superpowers/specs/2026-08-01-vault-subfolders-design.md`; they are a
+        single-machine measurement no test pins, so they live with the design rather than
+        beside the code. A deep hierarchy on a slow mount is where this design is worst, and
+        nothing adapts. (_name_max already acknowledges such mounts, for pathconf.)"""
         found = []
         for dirpath in self._scan_dirs():
             path = os.path.join(dirpath, f"{name}.md")
