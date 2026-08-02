@@ -55,8 +55,13 @@ Four decisions, each put to the user, each load-bearing below. The issue leaves 
 the fourth it does not raise.
 
 1. **Sluice does not own the layout, it offers one.** The recursive scan is unconditional. The
-   Active/Archive layout is config-gated and OFF by default, so an unconfigured install behaves
-   byte-identically to today. *Migration is not a separate mechanism*: a flat vault is simply maximal
+   Active/Archive layout is config-gated and OFF by default, so an unconfigured install behaves as
+   today with ONE exception, which the scan being unconditional makes unavoidable: the lead
+   predicate (`_is_lead_note`, below) now drops a `.md` file carrying neither `company` nor `role`.
+   The flat scan returned every `.md` in the leads directory, so a stray file there — a scratch
+   note, a template — used to come back as a lead with empty fields and be triaged. It no longer
+   does. Nothing else moves for a flat vault: ordering is byte-identical (see *Read path*), and no
+   directory is created. *Migration is not a separate mechanism*: a flat vault is simply maximal
    drift, and `leads reconcile` repairs it. One code path, not two.
 2. **Only `leads reconcile` moves a note.** No pipeline command relocates anything. Folder-vs-status
    drift between reconcile runs is normal and harmless, because the scan is recursive.
@@ -145,13 +150,26 @@ cannot know which is the lead; bumping `last_seen` on the wrong one leaves the o
 silently. This returns the existing **`refuse`** outcome — nothing written, both paths logged, the
 lead kept out of `seen.db` so it re-reports every run until a human merges or renames.
 
-Nothing sluice does produces it: new notes are created in exactly one folder, and reconcile refuses
-a colliding move (PR B). It arrives only by hand — a copied note, or a part-way manual reorganisation
-— but *reachable is enough to need a verdict rather than a guess*.
+Nothing sluice does produces it: new notes are created in exactly one folder, reconcile refuses a
+colliding move (PR B), and a create against a STALE scan set — which would otherwise mint a twin
+invisibly — is re-resolved against a freshly derived one first (see *Cost*). It arrives only by hand
+— a copied note, or a part-way manual reorganisation — but *reachable is enough to need a verdict
+rather than a guess*.
 
-On the read path the same collision surfaces as two `LeadNote`s sharing a slug. That already
-degrades safely: `apply/select.select_one` refuses `len(matches) > 1` with an `ambiguous:` reason.
-No new work.
+On the read path the same collision surfaces as two `LeadNote`s sharing a slug, and "`select_one`
+already refuses `len(matches) > 1`, so no new work" was wrong: `select_one` resolves a `--lead`
+argument, and it is not on the path any of these take. Three consumers keyed a dict on exact slug
+equality and silently kept the last twin — `track/engine.py`'s `note_by_slug` and
+`shortlist_by_slug`, and `core/app.py`'s `by_slug` in `expire`. `shortlist_by_slug` feeds
+`match_receipt`, so an `applied` could land on the stale twin while the real lead stayed
+`shortlist`: `can_apply` passes and the transition is legal, the IDENTITY is wrong, and a wrong
+`applied` is irreversible. All three now index through `core/leads.py: index_by_slug`, which drops
+BOTH twins and logs — the shape `select_one` and `track confirm` use for ambiguity, applied where it
+was missing rather than assumed. `read_leads` returns both (dropping one takes the lead out of the
+write path's lookup too, which re-creates it) and warns on every read. `LeadNote`'s contract now
+states slug uniqueness as BOUNDED — a store must not itself create two notes at one slug — rather
+than as the absolute property the conformance suite was certifying from a fixture that could not
+collide.
 
 ### Cost: the scan set is cached per `Vault` instance
 
@@ -163,12 +181,56 @@ Measured on the same 5500-note vault:
 | full note walk, per lead | 4.22 ms/call |
 | **cached directory list**, 500 leads × 3 dirs | **3.66 ms total** |
 
-So the list is computed once and cached. The staleness window is a human creating a subfolder
-mid-run; the cost is one duplicate note — the recoverable direction, and the same posture the
-existing create-race takes.
+So the list is computed once and cached. The staleness window is a human filing a note into a NEW
+subfolder mid-run, and it is **closed on the create arm**: `_resolve_path` re-derives the list from
+disk, cache bypassed, before it lets a create stand, and re-resolves when the folder set moved.
+
+Left open it did not degrade the way this table's first draft assumed. Every command reads before it
+writes, so the cache is already warm at the first create; the very next lead of the same identity
+was CREATED at the root name — *sluice's own* duplicate, not a hand-made one — and it did not
+converge. From the next run on both twins are visible, the candidate resolves to two notes, and
+`upsert` REFUSES the lead permanently with its `last_seen` frozen; with `lead_ttl_days` set, that
+frozen stamp then ages the lead into the stale set and offers a twin for dismissal. A create RACE
+converges instead — the re-resolve sees the raced note and updates it — so the two are not the same
+posture.
+
+The re-derive is on the create arm only. Update, merge and refuse have each identified a real note,
+so a fresher directory list cannot change their answer; re-deriving per LEAD is exactly the per-lead
+walk this cache replaces. Measured on the same vault:
+
+| shape | cost |
+| --- | --- |
+| 500 leads, all UPDATE (no re-derive at all) | **247 ms** |
+| 500 leads, walk re-derived per lead | 2.10 s |
+| 500 leads, all CREATE into that 5500-note vault (one re-derive each) | 2.47 s |
+| 500 leads, all CREATE into an EMPTY vault (one re-derive each) | 147 ms |
+
+The last two rows are the honest bound. A create-heavy run over a large vault does pay roughly what
+the per-lead walk cost, because the walk is the same walk — but that combination is self-limiting:
+the walk's cost scales with the vault, and a vault big enough for it to matter is one whose leads
+mostly already exist, so they UPDATE. The create-heavy case is a first run into a small vault, which
+is the last row.
+
+`_locate`'s own cost scales with the DIRECTORY count, not the note count: one stat per candidate per
+scanned directory. Measured on the same vault, 500 leads × 3 candidates across 51 directories is
+**0.281 s of stat calls for the whole run** — about a fifth of the 1.41 s that same run costs with
+the walk re-derived per lead. (Not a fifth of one walk: one walk is ~2.8 ms, so 0.281 s is about a
+hundred of them. The comparison is whole-run against whole-run.) That figure is warm-cache LOCAL
+disk and is the one most likely to mislead: 500 × 3 × 51 is ~76k stats at ~4 µs each, and on a
+network or FUSE mount where a stat costs ~1 ms those same 76k stats are over a minute of the run. A
+deep hierarchy on a slow mount is where this design is worst, and nothing adapts. These figures live
+here rather than in `_locate`'s docstring because they are a single-machine measurement no test pins.
 
 `os.walk` does not follow symlinks (`followlinks=False` by default); measured, a self-symlink inside
-the leads dir terminates the walk cleanly rather than looping.
+the leads dir terminates the walk cleanly rather than looping. That default is kept — following
+would let a link loop spin the walk and let a link out of the vault pull arbitrary directories into
+the scan set — so a symlinked subfolder is invisible to `read_leads` and `_locate` alike and every
+lead behind one is re-created (measured: a note at `status: applied` came back `created`, the
+original untouched, no log line). Symlinking a folder into an Obsidian vault is ordinary practice,
+and this change is what invites users to file leads into subfolders at all, so the scan WARNS:
+`os.walk` still lists an undescended symlink in `dirnames`, and one holding `.md` files is reported
+by name and count. Links holding no notes stay quiet — a warning that fires on every walk for a
+harmless one is a warning users learn to ignore.
 
 ## PR A — the recursive scan (`vault.py` only)
 
@@ -294,22 +356,38 @@ corrupt case cause the identical harm, so both are loud"); a directory is that r
 
 ## Testing
 
-Eight mutation witnesses. Every one is a **delete or a move, never an add** — a check added beside
-the original is an equivalent mutant and stays green.
+Every mutation is a **delete or a move, never an add** — a check added beside the original is an
+equivalent mutant and stays green. The ONE exception is marked below, where the property under test
+is that no swallow exists, so adding the swallow IS the mutation.
+
+**PR A**, sixteen witnesses. Named against the tests they redden, so this table and the plan's
+per-step commands (`docs/superpowers/plans/2026-08-01-vault-recursive-scan.md`) name the same things:
 
 | Mutation | Test that must redden |
 | --- | --- |
-| Delete the `dirnames[:]` prune | `test_archived_loser_is_invisible_to_the_recursive_scan` (measured: 500 losers surface) |
-| Revert `_locate` to a single-folder `os.path.exists` | a note in `Archive/` re-scrapes as `created` instead of `updated` |
-| Delete the `len(found) > 1` guard | the ambiguity test |
-| Change the lead predicate from `neither` to `either` | a note with `company` but no `role` disappears from `read_leads` |
-| Delete the lead predicate | a note in a user's `Interview Prep/` folder is returned as a lead |
-| Restore `os.walk`'s default `onerror` | the unreadable-subdirectory test |
-| Hand-list the archived statuses | the `status.CANONICAL` enumeration guard |
-| Drop reconcile's collision refusal | the collision test |
+| Delete the `dirnames[:]` prune | `test_a_merged_away_loser_stays_invisible_to_the_recursive_scan` |
+| Delete the prune (again, for the write sweep) | `test_normalize_statuses_never_writes_into_an_archived_loser` |
+| Delete `, onerror=_reraise` from `os.walk` | `test_an_unreadable_subdirectory_raises_rather_than_reading_as_empty` |
+| Change `_is_lead_note`'s `or` to `and` | `test_a_file_with_either_company_or_role_is_a_lead` |
+| Make `_is_lead_note` `return True` | `test_a_file_with_neither_company_nor_role_is_not_a_lead` |
+| Delete `read_leads`' `_is_lead_note` call | `test_read_leads_skips_a_note_that_is_not_a_lead` |
+| Delete `normalize_all_statuses`' `_is_lead_note` call | `test_normalize_statuses_never_writes_into_a_users_own_note` |
+| Move `normalize_all_statuses`' predicate above the `inner is None` arm | `test_normalize_statuses_counts_a_frontmatter_less_file_as_unchanged` |
+| Revert `_locate` to a single-folder `os.path.exists` | `test_a_note_moved_to_a_subfolder_is_updated_not_recreated` |
+| Delete the `len(found) > 1` guard | `test_a_candidate_resolving_to_two_notes_refuses_and_writes_nothing` |
+| Delete `_resolve_path`'s create-arm re-derive | `test_a_note_filed_into_a_new_subfolder_mid_run_is_not_duplicated` and `test_the_create_arm_re_derives_the_scan_set_once_per_create_not_per_lead` |
+| Delete the `_warn_undescended_symlinks` call | `test_a_symlinked_subfolder_holding_notes_is_warned_about` |
+| Delete `read_leads`' repeated-slug warning | `test_read_leads_warns_when_two_notes_claim_one_slug` |
+| Restore `{n.slug: n for n in ...}` in `track/engine.py` | `test_a_proof_tier_receipt_never_advances_a_slug_two_notes_claim` |
+| Restore `{r.slug: r for r in report}` in `core/app.py`'s `expire` | `test_a_named_slug_two_stale_notes_claim_is_ambiguous_and_writes_nothing` |
+| **ADD** `try/except OSError: pass` around `read_leads`' and `normalize_all_statuses`' own walk loops, leaving `_walk`'s `onerror` intact | `test_read_leads_propagates_an_unreadable_subdirectory`, `test_normalize_all_statuses_propagates_an_unreadable_subdirectory` |
 
-The unreadable-subdirectory test must skip when euid is 0 — `chmod 000` does not bind root, so the
-test would otherwise pass vacuously in a container that runs as root.
+**PR B** adds two more, against work that has not shipped: hand-listing the archived statuses (the
+`status.CANONICAL` enumeration guard) and dropping reconcile's collision refusal (the collision test).
+
+The unreadable-directory tests skip on two platforms, and they fail in OPPOSITE directions: as uid 0
+the mode bits do not bind, so the test passes VACUOUSLY (the dangerous one); on Windows `chmod`
+cannot remove read access from a directory at all, so the test fails outright, which is noise.
 
 Run `python -m compileall -q -f --invalidation-mode checked-hash sluice tests scripts` once before
 any mutation run: a size-preserving edit restored within the same second otherwise executes stale
@@ -323,8 +401,11 @@ it also holds with `lead_layout` enabled.
 
 ## Residuals, accepted
 
-1. **Scan-set cache staleness.** A human creating a subfolder mid-run is not seen until the next
-   `Vault`. Cost: one duplicate note — visible, mergeable, the recoverable direction.
+1. **Scan-set cache staleness, on the READ arms only.** `_resolve_path` re-derives the list before a
+   create stands, so the write path no longer mints a duplicate against a stale set (see *Cost*).
+   What remains is narrower: within one `_locate` call the list is whatever the last re-derive saw,
+   so a subfolder created during that call is not seen until the next create or the next `Vault`.
+   Nothing is written against it — update, merge and refuse have all already identified a real note.
 2. **`_merged/` is pruned at the top level only.** A user who moves `_merged/` into a subfolder
    resurfaces its contents. That same move also breaks `_archived_match`, which reads exactly
    `leads_dir/_merged` — so the two stay consistent: the archive is simply gone and its notes are

@@ -455,13 +455,26 @@ that on the host, not the url: `match_receipt` never compares urls, and
 employer's site whose urls differ only by subdomain or path BOTH satisfy it.
 Identical urls are sufficient, never necessary. And `leads expire --expire <slug>` acts on one
 twin while the other is neither expired nor reported `no-match`, so the human sees
-no sign the second exists. Nothing sluice writes produces this state — creates go
-to one directory and `_resolve_path` refuses an ambiguous candidate — so it takes a
-hand-made duplicate or a note restored out of `_merged/` into a subfolder beside a
-root twin. It is therefore a documented residual rather than a live bug; detecting
-it belongs with the `leads reconcile` pass #1 has still to ship, which walks the
-whole tree anyway. Widening `read_leads`' contract, or making those three consumers
-handle a duplicate slug, is a design decision that is not taken here.
+no sign the second exists.
+
+All three now index through `core/leads.py: index_by_slug`, which DROPS every slug
+two or more notes claim and logs it, rather than keeping the last twin — the shape
+`apply/select.py: select_one` and `track confirm` already use for an ambiguous
+`--lead`. A receipt then matches nothing and stays quiet (the ruling for an
+untracked job's receipt), and `leads expire --expire <slug>` reports `ambiguous`,
+its own outcome rather than `no-match`, which would say the lead is not stale when
+in fact two of it are. `read_leads` returns both twins — dropping one would take a
+lead out of the write path's lookup too, and the next scrape would re-create it —
+and warns, naming both paths, on every read until a human renames or merges them.
+Repairing the state, rather than declining to act on it, still belongs with the
+`leads reconcile` pass #1 has yet to ship, which walks the whole tree anyway.
+
+Sluice does not write this state. Creates go to one directory, `_resolve_path`
+refuses an ambiguous candidate, and — since a stale scan-set cache would otherwise
+let a create mint a twin invisibly (see below) — the cache is re-derived before a
+create stands. So it arrives by hand: a copied note, a note restored out of
+`_merged/` into a subfolder beside a root twin, or a part-way manual
+reorganisation.
 
 The directory list itself is cached per `Vault` instance, and `_scan_dirs` is the only
 thing that caches it — computed once there, not re-walked per lead. Of the scan set's
@@ -470,14 +483,38 @@ while `read_leads` and `normalize_all_statuses` each call `_walk` fresh on every
 invocation, so a filesystem change made mid-run IS visible to those two. The one
 answer `_scan_dirs` never caches is "leads_dir is missing", since `upsert` creates
 that directory mid-run and a cached miss would leave every later lookup in the same
-run blind to it. The cache's own staleness window is a human creating a subfolder
-while a run is in progress; the cost is one duplicate note on that run, the same
-recoverable direction the create-race already takes.
+run blind to it. The cache's own staleness window is a human filing a note into a
+NEW subfolder while a run is in progress, and that window is closed on the CREATE
+arm: `_resolve_path` re-derives the list from disk, cache bypassed, before a create
+is allowed to stand, and re-resolves if the folder set moved. Left open it did not
+degrade gracefully. Every command reads before it writes, so the cache is warm by
+the first create; the very next lead of the same identity was then CREATED at the
+root name — sluice's own duplicate — and from the next run on both twins were
+visible, the candidate resolved to two notes and `upsert` REFUSED the lead
+permanently with its `last_seen` frozen (which, with `lead_ttl_days` set, ages it
+into the stale set and offers a twin for dismissal). That is not the create-race's
+direction: a create race re-resolves, SEES the raced note and updates it. The
+re-derive is on the create arm only — update, merge and refuse have all identified a
+real note, so a fresher list cannot change their answer, and re-deriving per lead is
+exactly the per-lead walk the cache replaces. Measured on the 5500-note vault: 500
+updates cost 247 ms with no re-derive at all, against 2.1 s for a walk per lead.
 
 An unreadable directory in the scan set **raises** (`os.walk(..., onerror=)`). The
 default swallows it and yields nothing, which would make every lead beneath it
 invisible to the read path and to the write path — i.e. re-created — from one
-permissions bit.
+permissions bit. The same rule binds one rung up, where `_scan_dirs` asks whether
+`leads_dir` exists at all: `os.path.isdir` answers False for an unreadable path as
+readily as for an absent one, so that probe answers False only to
+`FileNotFoundError` and lets a `PermissionError` out.
+
+`os.walk` does **not** follow symlinks, and that default is kept: following would let
+a link loop spin the walk and let a link out of the vault pull arbitrary directories
+into the scan set. A symlinked subfolder is therefore invisible to `read_leads` and
+to `_locate` alike, so every lead behind one is re-created — and symlinking a folder
+into an Obsidian vault is ordinary practice. `os.walk` still LISTS an undescended
+symlink in `dirnames`, so the scan warns about any that holds `.md` files. Links
+holding no notes stay quiet, since a warning that fires on every walk for a harmless
+one is a warning users learn to ignore.
 
 A merge keeps the survivor inside never-clobber's usual rule: only `alt_urls`,
 `first_seen` (minimised) and `last_seen` (advanced) change, re-derived against
