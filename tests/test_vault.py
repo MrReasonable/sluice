@@ -443,6 +443,25 @@ def test_upsert_refuses_and_writes_nothing(tmp_path):
     assert not (tmp_path / ".stfolder").exists(), "refuse created the Syncthing marker"
 
 
+def test_upsert_refuses_a_lead_with_neither_company_nor_title(tmp_path, caplog):
+    """A lead carrying neither has no identity to be seated at. Before this it was CREATED:
+    every name candidate collapsed to the bare separator, the note went in as ` - .md`,
+    and `read_leads` then skipped it -- `_is_lead_note` is exactly `company or role` -- so
+    the note existed, `created` was reported, the ingest sink wrote the lead into `seen.db`
+    (which has no removal path), and no read in the tool could ever surface it again.
+
+    Refusing writes nothing and keeps it out of `seen.db`, so a source that starts emitting
+    these re-reports every run rather than filling the vault with unreadable stubs. The
+    filesystem snapshot is what pins 'nothing', including the Syncthing marker: a warned
+    `created` would still leave the note and the seen.db row behind."""
+    v = Vault(str(tmp_path))
+    with caplog.at_level("WARNING"):
+        assert v.upsert(_lead(company="", title="", url="https://ex.invalid/1")) == "refused"
+    assert not list(tmp_path.rglob("*")), "a refusal must not touch the filesystem at all"
+    said = [r.getMessage() for r in caplog.records if r.name == "sluice.core.vault"]
+    assert any("neither a company nor a title" in m for m in said), said
+
+
 def test_noise_word_makes_a_split_merge_end_to_end(tmp_path, monkeypatch):
     # Config -> _make -> Vault -> same_opportunity: proves the noise knob reaches a verdict.
     import sluice.stores.vault as store_mod

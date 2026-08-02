@@ -1188,10 +1188,10 @@ class Vault:
     def upsert(self, lead: Lead) -> str:
         """Reconcile an incoming lead against the existing notes. Returns one of
         "created" | "updated" | "merged" | "refused" | "merged_away" | "merged_away_unproven".
-        UPDATE and MERGE bump ONLY last_seen (never-clobber); REFUSE writes nothing -- no name
-        candidate can be written without clobbering a different job, either because every one
-        is a note proven DIFFERENT (#5) or because one resolves to SEVERAL notes at once
-        (ambiguous identity; see _locate). The two "merged_away*" outcomes ALSO write nothing:
+        UPDATE and MERGE bump ONLY last_seen (never-clobber); REFUSE writes nothing, on any of
+        THREE causes -- every name candidate is a note proven DIFFERENT (#5), one candidate
+        resolves to SEVERAL notes at once (ambiguous identity; see _locate), or the lead
+        carries neither a company nor a title and so has no identity to seat (below). The two "merged_away*" outcomes ALSO write nothing:
         a human already archived this lead as a duplicate (#81), so the incoming scrape is
         suppressed rather than re-created. The two are kept distinct rather than conflated into one
         string -- `_ARCHIVED` is a url-PROVEN match against the archived note,
@@ -1207,7 +1207,28 @@ class Vault:
         -- as update/merge, a fresh "created" at the NEXT name candidate (when the raced note
         is a DIFFERENT job, so _resolve_path advances past it), or refuse. Only sustained
         create/delete flapping exhausts the retries, which refuses loudly (writing nothing)
-        rather than clobbering or spinning."""
+        rather than clobbering or spinning.
+
+        A lead with NEITHER a company nor a title is refused before any of that. It has no
+        identity to reconcile on: every name candidate collapses to the bare separator, the
+        note is written as ` - .md`, and `read_leads` then skips it because `_is_lead_note`
+        is exactly `company or role` -- so the note exists, `created` is reported, the ingest
+        sink writes it into `seen.db` (which has no removal path), and NO read in the tool
+        can ever see it again. That is not a store's worst outcome, it is the invisible one.
+        Refusing writes nothing and keeps the lead out of `seen.db`, so a source that starts
+        emitting these re-reports every run instead of filling the vault with unreadable
+        stubs -- the same recoverable direction every other refusal here takes. It is a
+        REFUSAL rather than a warned skip for that reason: a warning on a `created` still
+        leaves the note and the seen.db row behind.
+
+        Visible on `main`, where read_leads returned every `.md` in one flat directory and
+        the stub at least showed up. The recursive scan's `_is_lead_note` predicate is what
+        made it invisible, so this refusal ships with the change that hid it."""
+        if not (lead.company or lead.title):
+            _log.warning("vault refused lead %r: it carries neither a company nor a title, "
+                         "so it has no name to be seated at and no read would ever return it",
+                         lead.dedup_key)
+            return "refused"
         for _ in range(_CREATE_RACE_RETRIES):
             path, action = self._resolve_path(lead)
             if action == "refuse":
