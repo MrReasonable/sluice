@@ -163,6 +163,70 @@ def cmd_disable(args, config) -> int:
     return 0
 
 
+def cmd_leads_reconcile(args, config) -> int:
+    from sluice.core.app import Sluice, StoreHasNoLayout
+    from sluice.core.vault import _EMPTY_RECONCILE
+
+    if not config.lead_layout:
+        # NOT "0 to move": that is indistinguishable from "nothing is out of place", and would let
+        # a user believe a knob they never configured is filing their vault. The `lead_ttl_days is
+        # unset` arm in cmd_leads_expire is the same sentence for the same reason.
+        print("reconcile: lead_layout is unset -- the flat layout is in use, nothing to reconcile "
+              "(set lead_layout: active_archive to opt in)", file=sys.stderr)
+        # Still emit a document on --json: a consumer parsing stdout must not have to distinguish
+        # "no output" from "empty result". From the store's own constant, never a second literal.
+        if args.json:
+            print(json.dumps(_EMPTY_RECONCILE))
+        # An --apply that wrote nothing is a failure, not a success -- the silent no-op this
+        # report-first command is shaped to avoid.
+        return 1 if args.apply else 0
+
+    try:
+        rep = Sluice(config).reconcile(apply=args.apply)
+    except StoreHasNoLayout as exc:
+        # A sentence and rc 2, not a traceback. `main` catches only ValueError (around
+        # load_config) and then calls args.func bare, so without this the RuntimeError reaches the
+        # user as a stack trace -- which is exactly what the capability check exists to avoid, so
+        # leaving it unhandled would make the guard's justification pure prose.
+        print(f"sluice: {exc}", file=sys.stderr)
+        return 2
+
+    if args.json:
+        print(json.dumps(rep))
+    else:
+        verb = "moved" if args.apply else "would move"
+        for _slug, src, dst in rep["moves"]:
+            print(f"reconcile: {verb} {src} -> {dst}", file=sys.stderr)
+        for slug, refs in sorted(rep["ambiguous"].items()):
+            print(f"reconcile: {slug}: NOT moved -- {len(refs)} notes claim this slug "
+                  f"({', '.join(refs)}); merge them (sluice leads dedupe) or rename one",
+                  file=sys.stderr)
+        for slug, raw in rep["unknown"]:
+            print(f"reconcile: {slug}: left in place -- status {raw!r} is not canonical",
+                  file=sys.stderr)
+        for slug, where in rep["user_filed"]:
+            print(f"reconcile: {slug}: left in place -- {where}/ is yours, not sluice's",
+                  file=sys.stderr)
+        for slug, dst in rep["collisions"]:
+            print(f"reconcile: {slug}: NOT moved -- {dst} is taken (a numeric suffix would "
+                  f"change the slug, which is the identity)", file=sys.stderr)
+        for slug, err in rep["skipped"]:
+            print(f"reconcile: {slug}: NOT moved -- {err}", file=sys.stderr)
+        print(f"reconcile: layout={rep['layout']} {verb}={len(rep['moves'])} "
+              f"in_place={rep['in_place']} ambiguous={len(rep['ambiguous'])} "
+              f"unknown={len(rep['unknown'])} user_filed={len(rep['user_filed'])} "
+              f"collisions={len(rep['collisions'])} skipped={len(rep['skipped'])}"
+              f"{'' if args.apply else ' (report only -- pass --apply to move)'}",
+              file=sys.stderr)
+    if not args.apply:
+        return 0
+    # Only the buckets where a MOVE was attempted-or-owed and did not happen. `unknown` and
+    # `user_filed` are states this pass is DESIGNED to leave alone, so counting them would make a
+    # correct run exit 1 forever. `ambiguous` DOES count: the user asked for a write over a set
+    # including a lead nothing was written for, which is precisely what they must notice.
+    return 1 if (rep["collisions"] or rep["skipped"] or rep["ambiguous"]) else 0
+
+
 def cmd_health(args, config) -> int:
     health = HealthStore()
     for src in sorted(registry.all_sources(), key=lambda s: s.id):
@@ -964,6 +1028,21 @@ def _build_parser() -> argparse.ArgumentParser:
                          '--expire "Example Ltd - Example Role"')
     ex.add_argument("--json", action="store_true", help="machine-readable report")
     ex.set_defaults(func=cmd_leads_expire)
+
+    rc = leads.add_parser(
+        "reconcile",
+        help="report/file lead notes into their status-implied folders",
+        description="Report, or with --apply move, each lead note into the folder its status "
+                    "implies. Do NOT run --apply concurrently with a pipeline command "
+                    "(ingest/triage/cv/apply/track): a move landing inside another writer's "
+                    "compare-and-set window re-creates the source path, leaving two notes at one "
+                    "name. That state is reported under `ambiguous` rather than prevented.")
+    # No --dry-run: the default IS the dry run (nothing moves without --apply), and a flag that
+    # does nothing is drift. Same shape as `leads dedupe --merge` and `leads expire --expire`.
+    rc.add_argument("--apply", action="store_true",
+                    help="actually move the notes this would otherwise only report")
+    rc.add_argument("--json", action="store_true", help="machine-readable report")
+    rc.set_defaults(func=cmd_leads_reconcile)
 
     health = top.add_parser("health")
     health.set_defaults(func=cmd_health)
