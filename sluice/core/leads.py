@@ -5,6 +5,10 @@ import unicodedata
 from dataclasses import dataclass, field
 from datetime import date
 
+from sluice.core.log import get_logger
+
+_log = get_logger("core.leads")
+
 # The verdict vocabulary, shared with #5's `same_opportunity`. Strings, not an enum -- core/status.py
 # sets that convention. DIFFERENT is the ONLY verdict a caller may split on.
 SAME = "same"
@@ -193,6 +197,41 @@ def slug_matches(note, wanted: str) -> bool:
     hay = re.sub(r"[^a-z0-9]+", "-",
                  f"{note.fm.get('company','')}-{note.fm.get('role','')}".lower()).strip("-")
     return wanted.lower() in hay or wanted.lower() in note.slug.lower()
+
+
+def index_by_slug(notes, *, what: str) -> tuple[dict, frozenset]:
+    """Index notes by their store-issued slug, DROPPING every slug two or more notes claim,
+    and return `(index, ambiguous_slugs)`.
+
+    `{n.slug: n for n in notes}` silently keeps whichever twin came last. On a flat lead
+    store that could not happen -- one directory cannot hold two files at one basename, and
+    the vault derives the slug from the basename -- so uniqueness held by CONSTRUCTION. A
+    recursive scan (#1) removes that guarantee, and the consequence is not a cosmetic one:
+    the surviving twin is the note a receipt match, or a named `leads expire`, then acts on,
+    so an `applied` can land on a stale twin while the real lead stays `shortlist`, track
+    stops tracking it, and `apply`'s batch path sends a SECOND application under the user's
+    name. A wrong `applied` is irreversible; a lead that goes quiet until a human renames a
+    note is not.
+
+    So this refuses rather than picks, which is the shape `apply/select.py:select_one` and
+    `track confirm` already use for an ambiguous `--lead`: both twins are dropped and the
+    ambiguity is logged, never resolved by an invented rule. Callers that must REPORT the
+    ambiguity (rather than merely not act on it) take it from the second element; the store
+    itself warns as well, on the read that produced the twins.
+    """
+    grouped: dict = {}
+    for n in notes:
+        grouped.setdefault(n.slug, []).append(n)
+    index, ambiguous = {}, set()
+    for slug, members in grouped.items():
+        if len(members) == 1:
+            index[slug] = members[0]
+            continue
+        ambiguous.add(slug)
+        _log.warning("%s: slug %r is claimed by %d notes (%s); leaving it alone until a "
+                     "human renames or merges them", what, slug, len(members),
+                     ", ".join(sorted(str(n.ref) for n in members)))
+    return index, frozenset(ambiguous)
 
 
 def same_opportunity(note_fm: dict, lead: "Lead", noise=frozenset()) -> str:
