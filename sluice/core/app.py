@@ -88,6 +88,14 @@ class DedupeCluster:
     flagged_losers: list   # losers carrying a CV/sign-off hold or an application-owned status
 
 
+class StoreHasNoLayout(RuntimeError):
+    """The configured store has no folder layout, so `leads reconcile` has nothing to do.
+
+    Raised rather than silently reporting an empty sweep: an empty report and "this store does not
+    have folders" look identical to a user, and the second is the one that needs saying. The CLI
+    turns it into a usage error (rc 2) rather than letting it reach the user as a traceback."""
+
+
 _STORE_SEAM = "store"
 _FETCHER_SEAM = "fetcher"
 _RENDERER_SEAM = "renderer"
@@ -726,6 +734,43 @@ class Sluice:
             except MalformedNoteField:
                 results.append((cid, "malformed"))
         return results
+
+    def _layout_store(self):
+        """The store, if it implements the vault-only layout pass.
+
+        `reconcile_layout` is deliberately NOT on the Store protocol. Folders are a vault
+        MECHANISM -- a store keyed on synthetic ids has none -- and putting it on the contract
+        would make every other implementation pretend to honour a concept it does not have. That
+        is the leak `ensure_stfolder` was moved out of the protocol to remove, and the surface
+        `cmd_init` declines to invent for `Store.display_location()`.
+
+        The contrast with `merge_cluster`, which IS on the protocol, is the useful one: #81
+        non-resurrection is a store-agnostic OBLIGATION -- any store can satisfy it, a SQL one with
+        a tombstone row -- whereas a folder layout is a mechanism carrying no obligation at all. So
+        the coupling here is concrete and CHECKED rather than hypothetical and abstracted: when a
+        second store lands and has an opinion about layout, that is the moment to reconsider.
+
+        `getattr` rather than `isinstance(store, Vault)`: importing the concrete Vault into the
+        facade to type-test it would put the store implementation back on the composition root's
+        import path, which cli.py's lazy-import discipline exists to keep off it."""
+        store = self.store()
+        fn = getattr(store, "reconcile_layout", None)
+        if not callable(fn):
+            raise StoreHasNoLayout(
+                f"the configured store ({type(store).__name__}) has no folder layout, so "
+                f"`leads reconcile` has nothing to reconcile")
+        return fn
+
+    def reconcile_report(self) -> dict:
+        """The #1 layout REPORT: which lead notes are not in the folder their status implies.
+        Changes nothing. See `Vault.reconcile_layout`."""
+        return self._layout_store()(apply=False)
+
+    def reconcile(self, apply: bool = False) -> dict:
+        """File lead notes into their status-implied folders. `apply=False` (the default) is the
+        report -- the same report-first shape as `dedupe_report`/`expire_report`, where a mistyped
+        invocation prints a list rather than moving a hundred notes."""
+        return self._layout_store()(apply=apply)
 
     def triage(self, *, statuses=("new", "research"), limit=None, dry_run=False,
                no_llm=False, backend_role="auto"):
