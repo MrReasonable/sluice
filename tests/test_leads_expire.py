@@ -188,6 +188,43 @@ def test_unmatched_named_slug_reports_no_match_and_writes_nothing(tmp_path):
     assert Vault(str(tmp_path)).read_leads()[0].status == "shortlist"
 
 
+def test_a_named_slug_two_stale_notes_claim_is_ambiguous_and_writes_nothing(tmp_path):
+    """A recursive scan (#1) admits two notes at one slug; the flat store could not, since
+    the slug IS the basename. `{r.slug: r for r in report}` kept whichever came last, so
+    `--expire <slug>` dismissed one twin while the other was neither dismissed nor reported
+    -- the user is told the job is done and no output mentions the survivor.
+
+    'ambiguous', not 'no-match': the second is what the command says about a lead that is
+    NOT stale, and saying it here would be the opposite of the truth (two of it are).
+
+    Witnessed by restoring `by_slug = {r.slug: r for r in report}`: one twin comes back
+    'dismissed' and the status assertion below goes red."""
+    slug = _seed(tmp_path)
+    leads = tmp_path / "Job Applications" / "Job Leads"
+    twin_dir = leads / "Archive"
+    twin_dir.mkdir()
+    (twin_dir / f"{slug}.md").write_text((leads / f"{slug}.md").read_text())
+
+    outcomes = _app(tmp_path).expire(slugs=[slug])
+    assert outcomes == [(slug, "ambiguous")]
+    assert [n.status for n in Vault(str(tmp_path)).read_leads()] == ["shortlist", "shortlist"]
+
+
+def test_the_unnarrowed_sweep_still_expires_both_twins(tmp_path):
+    """The slug index exists only to resolve a NAMED slug. An unnarrowed sweep acts through
+    each row's own `ref`, which is unique whatever the slugs collide on, so refusing there
+    would strand both twins forever -- staleness is exactly the state they are stuck in."""
+    slug = _seed(tmp_path)
+    leads = tmp_path / "Job Applications" / "Job Leads"
+    twin_dir = leads / "Archive"
+    twin_dir.mkdir()
+    (twin_dir / f"{slug}.md").write_text((leads / f"{slug}.md").read_text())
+
+    outcomes = _app(tmp_path).expire()
+    assert [o for _, o in outcomes] == ["dismissed", "dismissed"]
+    assert [n.status for n in Vault(str(tmp_path)).read_leads()] == ["dismiss", "dismiss"]
+
+
 def test_named_slug_that_is_not_stale_is_refused(tmp_path):
     # --expire narrows the reported set; it is not a licence to dismiss any lead by name.
     slug = _seed(tmp_path, last_seen=FRESH)

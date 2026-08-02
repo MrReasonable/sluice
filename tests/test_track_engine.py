@@ -589,6 +589,53 @@ class OneReceiptClient(FakeGoogleClient):
         }, events=[])
 
 
+def _vault_shortlist_twins(url):
+    """Two shortlist notes claiming ONE slug, in two subfolders. The recursive scan (#1)
+    admits this state; the flat store could not, since `_slug_for` is the basename and one
+    directory cannot hold two files at one name. Both carry the SAME url, so the receipt
+    matcher's host comparison is satisfied by either -- which is exactly the shape that used
+    to write `applied` to whichever twin `read_leads` happened to return last."""
+    root = tempfile.mkdtemp()
+    leads = pathlib.Path(root, "Job Applications", "Job Leads")
+    (leads / "Active").mkdir(parents=True)
+    (leads / "Archive").mkdir(parents=True)
+    fm = (f'---\ncompany: "Example"\nrole: "Analyst"\nurl: "{url}"\n'
+          'status: shortlist\n---\n\nBODY\n')
+    a, b = leads / "Active" / "Example - Analyst.md", leads / "Archive" / "Example - Analyst.md"
+    a.write_text(fm)
+    b.write_text(fm)
+    return Vault(root), str(a), str(b)
+
+
+def test_a_proof_tier_receipt_never_advances_a_slug_two_notes_claim(caplog):
+    """The identical message that advances a single lead (the guard below) must write
+    NOTHING when two notes claim the slug. `can_apply` passes and the transition is legal --
+    the wrong thing here is the IDENTITY, which no status check can catch. A wrong `applied`
+    silently suppresses a real application and cannot be undone, and `select_all` (which does
+    not dedup slugs) would then send a second application under the user's name.
+
+    The receipt then reads as an untracked job's receipt and stays quiet
+    (test_receipt_matching_nothing_stays_quiet's ruling), so the LOG is the whole report --
+    which is why it is asserted here rather than taken on trust. It re-appears on every run,
+    since read_leads warns on each read until a human renames or merges the twins.
+
+    Witnessed by restoring `shortlist_by_slug = {n.slug: n for n in ...}`: the receipt
+    advances one twin and this goes red on `rep.auto` and on that twin's text."""
+    v, a, b = _vault_shortlist_twins("https://example.com/careers/1")
+    before_a, before_b = pathlib.Path(a).read_text(), pathlib.Path(b).read_text()
+    be = FakeBackend(json.dumps({"lead": None, "type": "receipt", "confidence": 0.9,
+                                 "when": None, "links": [], "materials": [], "summary": "received"}))
+    dl = _dl()
+    with caplog.at_level("WARNING"):
+        rep = E.run(v, TrackConfig(), OneReceiptClient(), be, seen=set(), deadletter=dl,
+                    now_iso="2026-07-10T12:00:00+00:00")
+    assert rep.auto == 0 and rep.proposed == 0 and dl.open_entries() == []
+    assert pathlib.Path(a).read_text() == before_a
+    assert pathlib.Path(b).read_text() == before_b
+    said = [r.getMessage() for r in caplog.records if r.name == "sluice.core.leads"]
+    assert any("Example - Analyst" in m and "claimed by 2 notes" in m for m in said), said
+
+
 def test_receipt_proof_advance_regression_guard():
     # Finding 2's fix touches the same "receipt, tier X, action Y" dispatch this single-
     # message proof-grade advance already exercised -- pin that the new "tier none, LLM

@@ -602,29 +602,40 @@ class Sluice:
         Returns [(slug, outcome)] with outcome one of: 'dismissed'; 'refused-signoff'
         (a #60 hold, see expire_report); 'no-match' (a named slug that is not in the
         stale set -- narrowing is not a licence to dismiss an arbitrary lead by name);
-        'conflict' (a sustained write race, #16, isolated to that lead); 'skipped' (the
-        FRESH status left the triage lifecycle between the read and the write).
+        'ambiguous' (two or more stale notes claim that slug, so which lead was named is
+        unknowable -- see index_by_slug; reported as its OWN outcome rather than folded into
+        'no-match', which would tell the user the lead is not stale when in fact two of it
+        are); 'conflict' (a sustained write race, #16, isolated to that lead); 'skipped'
+        (the FRESH status left the triage lifecycle between the read and the write).
 
         Slugs match by EQUALITY, not `slug_matches`, which is a substring match whose two
         existing callers already disagree about ambiguity. A user typing the narrow form
         is choosing the safer option under decision 3; it must not be the one that
         dismisses leads they did not name.
         """
+        from sluice.core.leads import index_by_slug
         from sluice.core.protocols import VaultConflict
         policy = self.staleness()
         report = self.expire_report(policy)
         store = self.store()
         results = []
         if slugs:
-            by_slug = {r.slug: r for r in report}
+            # index_by_slug, never `{r.slug: r for r in report}`: two stale notes at one slug
+            # would otherwise leave whichever came last, so `--expire <slug>` would dismiss
+            # one twin while the other was neither dismissed nor reported -- the human sees
+            # no sign the second exists. Both are dropped and named instead.
+            by_slug, ambiguous = index_by_slug(report, what="expire: stale lead")
             chosen = []
             for s in slugs:
                 r = by_slug.get(s)
-                if r is None:
-                    results.append((s, "no-match"))
-                else:
+                if r is not None:
                     chosen.append(r)
+                else:
+                    results.append((s, "ambiguous" if s in ambiguous else "no-match"))
         else:
+            # The unnarrowed sweep expires the whole stale set, so there is no slug to
+            # resolve and nothing to be ambiguous ABOUT: each row is acted on through its own
+            # `ref`, which is unique whatever the slugs collide on.
             chosen = list(report)
 
         today = policy.today

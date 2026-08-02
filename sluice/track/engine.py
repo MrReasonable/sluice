@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
 from sluice.core import status as _status
-from sluice.core.leads import slug_matches
+from sluice.core.leads import index_by_slug, slug_matches
 from sluice.core.protocols import VaultConflict
 from sluice.track.classify import classify
 from sluice.track.reconcile import reconcile
@@ -65,10 +65,17 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
     today = datetime.fromisoformat(now_iso).date().isoformat()
     leads = [n for n in vault.read_leads(set(_status.APPLICATION_OWNED))
              if n.status in _INFLIGHT]
-    note_by_slug = {n.slug: n for n in leads}
+    # index_by_slug, never a dict comprehension: two notes at one slug would otherwise leave
+    # whichever came LAST, and for shortlist_by_slug that twin is what match_receipt then
+    # weighs a receipt against -- an `applied` written to the wrong note, which is
+    # irreversible and silently suppresses the real application. Dropping both instead sends
+    # the receipt to the dead-letter for a human, which is where every weaker outcome already
+    # goes. The ambiguous set is not needed here: not matching IS the report.
+    note_by_slug, _ = index_by_slug(leads, what="track: in-flight lead")
     # A receipt's lead lives in shortlist (pre-application), not note_by_slug (in-flight
     # application states) -- match_receipt matches against this snapshot by domain.
-    shortlist_by_slug = {n.slug: n for n in vault.read_leads({"shortlist"})}
+    shortlist_by_slug, _ = index_by_slug(vault.read_leads({"shortlist"}),
+                                         what="track: shortlisted lead")
     try:
         ids = client.search_messages(_gmail_query(cfg, now_iso, since_iso))
     except GoogleAuthError:
