@@ -4,6 +4,8 @@ Role preferences are personal. The suite must not encode any real person's targe
 or anti-target titles, so it generates its own fictional lists with a fixed seed:
 deterministic enough to assert on, and revealing nothing about whoever runs sluice.
 """
+import os
+
 import pytest
 from faker import Faker
 
@@ -113,6 +115,24 @@ LOCATIONS = ("Alfa", "Bravo", "Charlie")
 def locations():
     """Three synthetic, token-disjoint placeholder locations (the LOCATIONS constant)."""
     return list(LOCATIONS)
+
+
+def _cannot_unread_a_dir():
+    # TWO platforms where chmod does not do what a mode-bit test needs, and they fail in
+    # OPPOSITE directions. As uid 0 the mode bits do not bind, so the directory stays
+    # readable and the test passes VACUOUSLY -- the dangerous direction. On Windows chmod
+    # cannot remove read access from a directory at all, so the walk succeeds and the test
+    # fails outright, which is noise rather than a finding. geteuid is absent on Windows;
+    # -1 never equals 0, so the order of these two terms does not matter.
+    return os.name == "nt" or getattr(os, "geteuid", lambda: -1)() == 0
+
+
+# Shared by every vault test that takes read or traverse permission away from a directory.
+# Module-level here rather than copied into each test file: two copies of a platform
+# predicate kept in step by a comment is the shape that drifts, and a skipif that drifts
+# toward "run it" on uid 0 passes vacuously.
+UNREADABLE_DIR = pytest.mark.skipif(
+    _cannot_unread_a_dir(), reason="chmod binds neither uid 0 nor Windows")
 
 
 def racing_read(monkeypatch, target_path, on_race, *, once=True):

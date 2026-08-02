@@ -1,10 +1,13 @@
 """The write path across a subfoldered lead store. A lead's identity is its note NAME, so a
 note found in any scanned directory is reconciled in place -- never re-created."""
+import os
 import pathlib
+
+import pytest
 
 from sluice.core.leads import Lead
 from sluice.core.vault import _MERGED_SUBDIR, Vault
-from tests.conftest import LOCATIONS
+from tests.conftest import LOCATIONS, UNREADABLE_DIR
 
 
 def _leads_dir(tmp_path):
@@ -237,3 +240,99 @@ def test_a_merged_away_lead_is_still_suppressed_when_a_subfolder_exists(tmp_path
     # test exists for -- `merged_away` enters seen.db, which has no removal path, and
     # `merged_away_unproven` must never be recorded.
     assert fresh.upsert(loser_lead) == "merged_away"
+
+
+# ── the candidate probe fails CLOSED ──────────────────────────────────────────
+def _unstatable_subdir(tmp_path, name="Active"):
+    """A scanned subfolder that is LISTABLE but not TRAVERSABLE (mode r--). os.walk still
+    enumerates it -- it reads directory entries, and needs no stat to do so -- so
+    `onerror=_reraise` never fires and the directory IS in the scan set. Every stat of a
+    path INSIDE it then raises PermissionError, which is the exact gap `os.path.exists`
+    used to swallow. Distinct from the mode-000 case `test_vault_recursive_scan.py` covers,
+    where the walk itself fails and _reraise is what makes it loud."""
+    return _leads_dir(tmp_path) / name
+
+
+@UNREADABLE_DIR
+def test_an_unstatable_candidate_raises_rather_than_reading_as_absent(tmp_path):
+    """H1, at the root cause. `os.path.exists` swallows EVERY OSError, so a note in an
+    unstatable directory read as ABSENT -- and absent is the branch that creates and that
+    records a merged_away in seen.db, which has no removal path."""
+    v = Vault(str(tmp_path))
+    assert v.upsert(_lead()) == "created"
+    active = _unstatable_subdir(tmp_path)
+    active.mkdir()
+    (_leads_dir(tmp_path) / "Acme - Analyst.md").rename(active / "Acme - Analyst.md")
+    os.chmod(active, 0o444)
+    try:
+        with pytest.raises(OSError):
+            Vault(str(tmp_path))._locate("Acme - Analyst")
+    finally:
+        os.chmod(active, 0o755)
+
+
+@UNREADABLE_DIR
+def test_an_unstatable_directory_does_not_silently_duplicate_a_live_note(tmp_path):
+    """The same exposure through the PUBLIC seam, which is what the ingest sink reaches.
+    Measured before the fix: `created` -- a second note minted over a note that already
+    exists, which for an `applied` lead is a second application under the user's name.
+    Raising instead lands in the sink's `except OSError`, which counts the lead `skipped`
+    and keeps it OUT of seen.db, so the next run retries it."""
+    v = Vault(str(tmp_path))
+    assert v.upsert(_lead()) == "created"
+    active = _unstatable_subdir(tmp_path)
+    active.mkdir()
+    (_leads_dir(tmp_path) / "Acme - Analyst.md").rename(active / "Acme - Analyst.md")
+    os.chmod(active, 0o444)
+    try:
+        with pytest.raises(OSError):
+            Vault(str(tmp_path)).upsert(_lead())
+    finally:
+        os.chmod(active, 0o755)
+
+
+@UNREADABLE_DIR
+def test_an_unstatable_directory_cannot_manufacture_a_recorded_merged_away(tmp_path):
+    """The irreversible arm, and the one the measurement found. With an archived twin
+    carrying the same url, the absent-reading candidate fell straight through to
+    `_archived_match` and came back `merged_away` -- the RECORDED outcome, so the ingest
+    sink writes the lead into seen.db, suppressing it permanently with its last_seen frozen
+    and a log line saying it had been merged away. Measured on this fixture before the fix:
+    `locate: []`, `upsert: merged_away`."""
+    v = _two_note_vault(tmp_path)
+    by_url = {n.fm.get("url"): n for n in v.read_leads()}
+    survivor, loser = by_url["https://ex.invalid/1"], by_url["https://ex.invalid/2"]
+    archived = v.merge_cluster(survivor.ref, [loser.ref], alt_urls=[],
+                               first_seen="2026-07-07", last_seen="2026-07-07")
+    loser_lead = _lead(location=LOCATIONS[1], url="https://ex.invalid/2")
+    # An ACTIVE note seated at the archived loser's own name: what a hand-restore out of
+    # `_merged/` followed by a later re-merge of a re-created twin leaves behind. It is the
+    # state that makes the two answers differ -- readable, the active note wins and the
+    # lead is `updated`; unstatable, the archive answers instead.
+    active = _unstatable_subdir(tmp_path)
+    active.mkdir()
+    restored = active / pathlib.Path(archived[0]).name
+    restored.write_text(pathlib.Path(archived[0]).read_text())
+    # SCOPE first: while the directory is readable the active note really is what answers,
+    # so the assertion below is about the permissions bit and nothing else.
+    assert Vault(str(tmp_path)).upsert(loser_lead) == "updated"
+
+    os.chmod(active, 0o444)
+    try:
+        with pytest.raises(OSError):
+            Vault(str(tmp_path)).upsert(loser_lead)
+    finally:
+        os.chmod(active, 0o755)
+
+
+def test_a_directory_squatting_a_candidate_name_is_not_a_note(tmp_path):
+    """H2. `os.path.exists` (and `os.path.isfile`, which fails open the same way) answered
+    FOUND for a directory called `<candidate>.md`, so the walk read it as a note and
+    `_read` raised IsADirectoryError mid-run. It is not a note: the probe answers absent,
+    the create arm's exclusive open cannot take the name, and upsert refuses -- writing
+    nothing and keeping the lead out of seen.db, which is the recoverable direction."""
+    leads = _leads_dir(tmp_path)
+    (leads / "Acme - Analyst.md").mkdir(parents=True)
+    v = Vault(str(tmp_path))
+    assert v._locate("Acme - Analyst") == []
+    assert v.upsert(_lead()) == "refused"
