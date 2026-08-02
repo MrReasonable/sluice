@@ -392,6 +392,19 @@ def cmd_cv_run(args, config) -> int:
     if not results and not args.all_shortlist:
         print(f"cv: no shortlist lead matching '{args.lead}'", file=sys.stderr)
         return 1
+    # A named --lead that resolved to two notes composed for NEITHER, so it exits non-zero
+    # for the same reason the no-match branch above does: the user asked for a CV and did
+    # not get one. Falling through to the per-result loop would print a `skipped-ambiguous`
+    # row among the ordinary ones and still exit 0 -- the exact gap `leads expire` shipped
+    # with when it gained an `ambiguous` outcome cli.py's _FAILED set did not name (#1).
+    # Scoped to the single-lead path, mirroring the line above: --all-shortlist reports the
+    # twins it skipped and legitimately composed for every other lead, so its exit code is
+    # not this branch's business.
+    ambiguous = [str(r.lead) for r in results if r.status == "skipped-ambiguous"]
+    if ambiguous and not args.all_shortlist:
+        print(f"cv: ambiguous: {' | '.join(ambiguous)} -- retype a longer fragment "
+              f"than '{args.lead}'", file=sys.stderr)
+        return 1
 
     for r in results:
         print(f"cv: {r.status} {r.lead} served={r.served} "
@@ -435,6 +448,15 @@ def cmd_cv_signoff(args, config) -> int:
         print(f"cv signoff: no shortlist lead matching '{args.lead}'", file=sys.stderr)
         return 1
     slug, outcome = result
+    # Split on the colon rather than comparing whole strings: the outcome carries the
+    # candidate refs after it (`ambiguous: <ref> | <ref>`), and a test that had to spell
+    # those out would pin a vault layout instead of the refusal. Non-zero because nothing
+    # was signed off -- the #60 hold is still held, and an exit 0 here would tell a script
+    # the CV is send-ready.
+    if outcome.split(":", 1)[0] == "ambiguous":
+        print(f"cv signoff: {outcome} -- retype a longer fragment than '{args.lead}'",
+              file=sys.stderr)
+        return 1
     msg = {"nothing": "has nothing pending", "aborted": "aborted"}.get(outcome, outcome)
     print(f"cv signoff: {slug} {msg}", file=sys.stderr)
     return 0

@@ -467,9 +467,21 @@ a dict to harden. Three costs follow.
 builds packets with `cv_staged=False` and never calls `cvfile.stage`, and no sluice
 command submits an application at all — the packet's rules hand the form to the
 human. One job therefore appeared twice in the printed ready queue, under one
-label, and a human working down that queue works it twice. The single-lead paths
+label, and a human working down that queue works it twice. APPLY's single-lead paths
 were never exposed: `select_one` and `record_one` both already refused
-`len(matches) > 1`.
+`len(matches) > 1`. CV's two were. `Sluice.compose_cv` (`cv --lead`) and
+`Sluice.sign_off_cv` (`cv signoff --lead`) each filtered `read_leads` through
+`slug_matches` and then took `notes[0]` — and `slug_matches` is a SUBSTRING match, so
+two notes satisfy one typed fragment without any help from the recursive scan, which
+merely adds a second way in by letting two notes share one slug outright. Composing
+against the wrong twin seats the send-ready `tailored_cv` pointer that `apply prep`
+reads on a lead the user did not name, and signing off the wrong twin releases a #60
+hold on a CV no human reviewed. Both now refuse and NAME the candidates: `compose_cv`
+returns one `skipped-ambiguous` CvResult per candidate (`run_batch`'s existing
+vocabulary), `sign_off_cv` returns `select_one`'s `ambiguous: <ref> | <ref>` reason
+string, and `cli.py` exits non-zero on each rather than printing a skip row among the
+ordinary ones. Neither touches `slug_matches` itself: `expire` narrows by EQUALITY for
+its own stated reason, and tightening the shared matcher would silently change `apply`.
 
 `shortlist_by_slug` is the set `match_receipt` searches, so the dropped twin is
 invisible to the receipt matcher and a receipt whose evidence fits it is weighed

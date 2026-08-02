@@ -763,6 +763,10 @@ class Sluice:
         """Run the cv sub-app: compose (and, unless dry_run, render) a CV for one
         shortlisted lead or for every shortlisted lead. Returns the list of CvResult.
 
+        A `lead` fragment matching NO shortlist note returns `[]`; one matching TWO OR MORE
+        returns a `skipped-ambiguous` CvResult per candidate and composes for none of them
+        (see the guard below). Both are refusals the CLI must exit non-zero on.
+
         The renderer is resolved ONLY when not dry_run: a missing render script is a
         config error that must surface at construction, before any LLM spend -- but a
         dry run's whole point is to cost nothing and change nothing, so it must not
@@ -798,6 +802,25 @@ class Sluice:
         notes = [n for n in store.read_leads({"shortlist"}) if slug_matches(n, lead)]
         if not notes:
             return []
+        if len(notes) > 1:
+            # Refuse rather than compose against whichever twin the store listed first.
+            # `slug_matches` is a SUBSTRING match, so one typed fragment can name two
+            # genuinely different leads -- and once the scan is recursive two notes can
+            # claim one slug outright (#1), which widens it. `notes[0]` below would then
+            # tailor a CV to a job the user did not name and seat the send-ready
+            # `tailored_cv` pointer on that note, which `apply prep` reads: a wrong-identity
+            # write in the never-clobber family, and one that costs an LLM call and a render
+            # to make. Every sibling single-lead path already refuses instead of guessing --
+            # `apply/select.py:select_one`, `track confirm`, `Sluice.expire` -- so this is
+            # that policy reaching the last two paths that still picked one, not a new one.
+            #
+            # One result PER candidate, in run_batch's own `skipped-ambiguous` vocabulary,
+            # because the CLI must NAME the twins for the user to retype a longer fragment
+            # against; a single row could name only one of them. Nothing is written, and the
+            # refusal is upstream of every backend call. `slug_matches` itself is left alone:
+            # `expire` narrows by EQUALITY for its own stated reason (see its docstring), and
+            # tightening the shared matcher here would silently change `apply` too.
+            return [CvResult(n.ref, "skipped-ambiguous") for n in notes]
         # The direct single-lead path overwrites an existing tailored_cv (guard_existing_cv
         # defaults False, unlike run_batch) -- a user re-tailoring one lead by name means it.
         # A lead HELD for sign-off (pending_cv set) is the exception: run_one skips it before
@@ -835,7 +858,11 @@ class Sluice:
         Returns (slug, outcome) where outcome is the store's OWN verdict
         (promoted|discarded|collision|nothing), 'aborted' (confirm declined), or 'conflict'
         (a sustained write race, #16, never an unhandled traceback) -- or None if no lead
-        matched."""
+        matched. One further outcome comes from THIS method rather than the store:
+        'ambiguous: <ref> | <ref>', naming the candidates in `select_one`'s exact shape, when
+        the fragment resolved to two or more notes. Its first element is then the string the
+        USER typed, not a note's slug -- there is no single note to take one from, which is
+        also how `expire` reports the same refusal."""
         import json
 
         from sluice.core.leads import slug_matches
@@ -854,6 +881,16 @@ class Sluice:
                  if slug_matches(n, lead)]
         if not notes:
             return None
+        if len(notes) > 1:
+            # Same refusal as compose_cv's, for the same reason and one step further along:
+            # signing off the WRONG twin promotes a CV no human reviewed onto a lead they
+            # did not name, which is exactly the #60 latch's whole job. It does not weaken
+            # that latch -- an unambiguous fragment still promotes or discards as before,
+            # and this arm writes nothing, so the hold it refuses stays resolvable the
+            # moment the user names one note. Reported as a reason string carrying the
+            # candidate REFS (`apply/select.py:select_one`'s shape) rather than the bare
+            # word: the slugs may be equal, and the refs are what a human renames or merges.
+            return lead, "ambiguous: " + " | ".join(str(n.ref) for n in notes)
         note = notes[0]
         pending = note.fm.get("pending_cv") or ""
         if not pending:

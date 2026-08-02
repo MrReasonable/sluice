@@ -26,9 +26,13 @@ class CvResult:
     """status is one of: rendered, skipped-gate, skipped-selection, skipped-has-cv,
     skipped-stale (#9: last_seen older than lead_ttl_days, refused before any dossier
     fetch or compose -- see run_one),
-    skipped-ambiguous (#1: two shortlist notes claim this lead's slug, so the batch path
-    composes for neither -- see run_batch; batch-only, since run_one is handed one note
-    and has no list to find a twin in),
+    skipped-ambiguous (#1: the lead did not resolve to exactly ONE note, so nothing was
+    composed for it. TWO producers, neither of them run_one -- which is handed one note and
+    has no list to find a twin in: run_batch emits it for each of two shortlist notes
+    claiming one slug, and `Sluice.compose_cv`'s single-lead path emits it for each note a
+    `--lead` fragment matched, which -- `slug_matches` being a SUBSTRING match -- need not
+    share a slug at all. The CLI exits non-zero on the second, since a named lead composed
+    for neither twin),
     needs-signoff (an unsupported profile audit flag withheld the send-ready pointer,
     #60), skipped-needs-signoff (a re-run over a lead already held for sign-off),
     dry-run, error (a single lead's exception caught by run_batch -- see run_batch --
