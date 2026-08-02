@@ -408,9 +408,9 @@ The unreadable-directory tests skip on two platforms, and they fail in OPPOSITE 
 the mode bits do not bind, so the test passes VACUOUSLY (the dangerous one); on Windows `chmod`
 cannot remove read access from a directory at all, so the test fails outright, which is noise.
 
-Run `python -m compileall -q -f --invalidation-mode checked-hash sluice tests scripts` once before
-any mutation run: a size-preserving edit restored within the same second otherwise executes stale
-bytecode and reads as "this test is inert".
+Run `.venv/bin/python -m compileall -q -f --invalidation-mode checked-hash sluice tests scripts`
+once before any mutation run: a size-preserving edit restored within the same second otherwise
+executes stale bytecode and reads as "this test is inert".
 
 **No new Store-contract property.** Folders are a vault mechanism; a store keyed on synthetic ids has
 none. Per the #48 ruling — if only *this* store's mechanism provides it, it is implementation detail,
