@@ -2,7 +2,7 @@
 import hashlib
 import re
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import date
 
 # The verdict vocabulary, shared with #5's `same_opportunity`. Strings, not an enum -- core/status.py
@@ -152,6 +152,49 @@ class Lead:
     last_seen: str = ""          # ISO date; bumped on every re-scrape
     raw_meta: dict = field(default_factory=dict)
 
+    def __post_init__(self):
+        """Coerce a None in any `str`-annotated field to "", at the type boundary.
+
+        `None` is outside this dataclass's own annotation, but it arrives: a store driven
+        directly (a script, a test, a future source plugin) can pass one, and `_render_new`
+        then writes it into the note as the literal string `None`. Measured before this, on a
+        real vault: `Lead(company=None, title=None)` was `created` at `None - None.md`, and
+        `read_leads` RETURNED it -- the vault's blank-note refusal decides on the RENDERED
+        frontmatter, where `"None"` is a perfectly good identity, so the one guard positioned
+        to catch it cannot. `Acme - None.md` and `None - Analyst.md` were created too.
+
+        Closing it HERE rather than in the vault is the point. The alternative is a second
+        field-level normalisation inside the store, which would leave every other store
+        implementing the same rule for itself and the value object still able to hand out a
+        `Lead` whose `.company` is None -- `dedup_key` calls `.lower()` on it and would raise.
+        One coercion at construction makes `None - None.md` unreachable through the type
+        rather than merely rejected downstream, and the vault's refusal then fires on the
+        empty strings, which is the case it was written for.
+
+        COERCE, never raise, and that is deliberate rather than lax. `core/vault.py:upsert`
+        depends on this path not raising: an exception from a lead's own fields is not caught
+        by the ingest sink's `except OSError`, and `engine.py` calls `sink.write` outside its
+        per-source try, so a single malformed row would abort the whole ingest run. Empty is
+        also what `ingest/base.py` already produces for a missing field (`(row.get(...) or
+        "").strip()`), so this makes the direct-construction path agree with the live scrape
+        rather than inventing a third behaviour. `Ctx.__post_init__` in `ingest/base.py` takes
+        the same shape for the same reason.
+
+        Empty, never stripped: stripping here would move the identity of every lead carrying
+        a padded field, which is a change this coercion has no business making. The vault
+        strips independently when it decides the refusal.
+
+        The field list is DERIVED from the dataclass (see `_LEAD_STR_FIELDS`), never
+        hand-listed, so a field added above is covered without anyone remembering to. The
+        post-construction `setattr` loop in `ingest/base.py:_row_to_lead` is outside this --
+        `__post_init__` cannot intercept attribute writes -- but it applies a source's `extra`
+        and a search's `params`, which in every shipped source set `job_type` alone, and no
+        name candidate reads that field.
+        """
+        for name in _LEAD_STR_FIELDS:
+            if getattr(self, name) is None:
+                setattr(self, name, "")
+
     @property
     def dedup_key(self) -> str:
         """Stable identity. Prefer the normalized URL; fall back to a hash of
@@ -182,6 +225,18 @@ class Lead:
         base = f"{self.company}-{self.title}".strip("-")
         s = re.sub(r"[^a-z0-9]+", "-", base.lower()).strip("-")
         return s[:80] or "lead"
+
+
+# The `str`-annotated field names of `Lead`, for its None-coercion. DERIVED from the
+# dataclass, never hand-listed: a hand-listed set silently stops covering the next field
+# added, and the failure is invisible (a note seated at the literal `None`).
+#
+# Both spellings of the annotation are accepted because they are not interchangeable at
+# runtime: `f.type` is the `str` CLASS today, but adding `from __future__ import annotations`
+# to this module turns every annotation into the STRING "str" -- and a check written for only
+# one spelling would then match nothing, the coercion would silently become a no-op, and the
+# tuple would be empty. `test_leads_none_coercion.py` pins that it is not.
+_LEAD_STR_FIELDS = tuple(f.name for f in fields(Lead) if f.type in (str, "str"))
 
 
 def slug_matches(note, wanted: str) -> bool:
