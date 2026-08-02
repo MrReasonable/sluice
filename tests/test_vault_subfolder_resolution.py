@@ -1,5 +1,7 @@
 """The write path across a subfoldered lead store. A lead's identity is its note NAME, so a
 note found in any scanned directory is reconciled in place -- never re-created."""
+import pathlib
+
 from sluice.core.leads import Lead
 from sluice.core.vault import _MERGED_SUBDIR, Vault
 from tests.conftest import LOCATIONS
@@ -128,6 +130,54 @@ def test_the_create_arm_re_derives_the_scan_set_once_per_create_not_per_lead(tmp
     for day in ("2026-07-08", "2026-07-09", "2026-07-10"):
         assert v.upsert(_lead(last_seen=day)) == "updated"
     assert walks[0] == after_create, "an update must not re-walk"
+
+
+def test_a_stale_scan_set_cannot_record_a_merged_away_arm(tmp_path):
+    """The re-derive must cover the ARCHIVE arms, not just `create`.
+
+    `_ARCHIVED` and `_ARCHIVED_UNPROVEN` leave `_resolve_candidates` from the identical
+    `if not found:` branch as `create` -- reached exactly when `_locate` saw nothing, which
+    is the state a stale directory list manufactures. So a guard keyed on `create` alone
+    short-circuits before them.
+
+    `merged_away` is the RECORDED arm: the ingest sink writes it to `seen.db`, which has no
+    removal path. A stale list therefore suppressed a lead PERMANENTLY whose fresh-cache
+    verdict is `updated`, with `last_seen` frozen on a note sitting right there.
+
+    Witnessed by reverting the guard to `if action != "create": return path, action` --
+    this then reports `merged_away` and the restored note keeps last_seen 2026-07-07.
+    """
+    v = _two_note_vault(tmp_path)
+    by_url = {n.fm.get("url"): n for n in v.read_leads()}
+    survivor, loser = by_url["https://ex.invalid/1"], by_url["https://ex.invalid/2"]
+    loser_slug, loser_text = loser.slug, pathlib.Path(loser.ref).read_text()
+    v.merge_cluster(survivor.ref, [loser.ref], alt_urls=[],
+                    first_seen="2026-07-07", last_seen="2026-07-07")
+    # SCOPE, not violations. If the cache were still None the walk below would be fresh, the
+    # archive arm unreachable, and this test green with the guard reverted.
+    assert v._scan_dirs_cache is not None, "the cache must be warm for staleness to exist"
+    assert str(_leads_dir(tmp_path) / "Active") not in v._scan_dirs_cache
+
+    # The human, mid-run: a NEW subfolder holding an active note at the archived name. The
+    # archived entry STAYS under `_merged/` (a copy restored, not a move), which is what
+    # keeps the archive probe reachable -- move it and the stale answer would be `create`,
+    # a different bug from the one this pins.
+    active = _leads_dir(tmp_path) / "Active"
+    active.mkdir()
+    restored = active / f"{loser_slug}.md"
+    restored.write_text(loser_text)
+
+    loser_lead = _lead(location=LOCATIONS[1], url="https://ex.invalid/2",
+                       last_seen="2026-07-08")
+    # The SAME instance, never a fresh one: a fresh Vault re-walks on its first lookup, so
+    # this would hold with the guard reverted. The fresh-cache control is asserted below.
+    assert v.upsert(loser_lead) == "updated"
+    assert "last_seen: 2026-07-08" in restored.read_text()
+    # The control: the fresh-cache verdict is `updated` too, so the ONLY thing the guard
+    # changes is the stale-cache answer -- it invents no new outcome.
+    assert Vault(str(tmp_path)).upsert(
+        _lead(location=LOCATIONS[1], url="https://ex.invalid/2",
+              last_seen="2026-07-09")) == "updated"
 
 
 def test_a_candidate_resolving_to_two_notes_refuses_and_writes_nothing(tmp_path):
