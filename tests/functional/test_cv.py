@@ -53,6 +53,49 @@ def test_cv_run_no_matching_lead_returns_1(cli):
     assert "no shortlist lead matching" in err
 
 
+def test_cv_run_ambiguous_lead_composes_for_neither_and_returns_1(cli):
+    """A `--lead` fragment matching TWO shortlist notes must refuse, not compose for
+    whichever the store listed first (#1).
+
+    Asserted through the CLI's EXIT CODE, not just the returned list: `compose_cv` could
+    refuse correctly and `cmd_cv_run` still print the skip row among the ordinary ones and
+    exit 0, which is what `leads expire` shipped with when it gained its own `ambiguous`
+    outcome. Both halves have to hold, so both are asserted here.
+
+    The two notes carry DIFFERENT slugs -- `slug_matches` is a substring match, so the
+    typed fragment is what is ambiguous, not the slug. This is therefore reachable on a
+    flat store too; the recursive scan only widens it.
+
+    The second half is the mirror-harm check, and it is run against the SAME two-note
+    vault: naming one of the twins precisely still composes and renders. A guard that
+    refused whenever a vault held look-alike leads would silently block real work.
+    """
+    backend = ScriptedBackend(cv_by_company={"Example Foundry": PASSING_CV})
+    h, run = cli(backend=backend)
+    _seed_shortlist_lead(h.paths["vault"], "Example Foundry", "Staff Engineer")
+    _seed_shortlist_lead(h.paths["vault"], "Example Foundry", "Senior Engineer")
+
+    rc, _out, err = run(["cv", "run", "--lead", "example-foundry"])
+    assert rc == 1
+    assert "ambiguous" in err
+    # BOTH candidates named, so the user can retype a longer fragment -- one ref would
+    # name only the twin the tool happened to pick, which is the guess being refused.
+    assert "Staff Engineer" in err and "Senior Engineer" in err
+    assert h.recorder.rendered == []          # nothing composed, nothing rendered
+    assert backend.prompts == []              # and the refusal cost no LLM call
+    for role in ("Staff Engineer", "Senior Engineer"):
+        assert "tailored_cv:" not in _lead_text(h.paths["vault"], "Example Foundry", role)
+
+    # Mirror harm: an unambiguous fragment still composes, twins present or not.
+    rc, _out, err = run(["cv", "run", "--lead", "staff-engineer"])
+    assert rc == 0 and "rendered" in err
+    assert h.recorder.rendered == [PASSING_CV]
+    assert "tailored_cv:" in _lead_text(h.paths["vault"], "Example Foundry", "Staff Engineer")
+    # ...and only the named twin was touched.
+    assert "tailored_cv:" not in _lead_text(h.paths["vault"], "Example Foundry",
+                                            "Senior Engineer")
+
+
 # --- #60 `sluice cv signoff` -------------------------------------------------
 
 def _seed_pending_lead(vault_dir, company, role, *, pending="CV_ab12.pdf (2026-07-24)"):
@@ -113,6 +156,42 @@ def test_cv_signoff_no_match_returns_1(cli):
     h, run = cli(backend=ScriptedBackend())
     rc, _out, err = run(["cv", "signoff", "--lead", "no-such-lead", "--yes"])
     assert rc == 1 and "no shortlist lead matching" in err
+
+
+def test_cv_signoff_ambiguous_lead_refuses_and_returns_1(cli):
+    """A `--lead` fragment matching TWO held leads must refuse, not release the #60 hold on
+    whichever the store listed first -- that would promote a CV no human reviewed onto a
+    lead the user did not name, and `apply prep` reads that pointer.
+
+    Exit code asserted, not just the (slug, outcome) tuple: `sign_off_cv` returning
+    `ambiguous` while `cmd_cv_signoff` printed it and exited 0 would tell a script the CV
+    is send-ready. Asserting the tuple alone is exactly what let that gap through on
+    `leads expire`.
+
+    The second half is the load-bearing one for #60: the latch must stay RESOLVABLE.
+    `cv signoff` is the sanctioned way out of a `pending_cv` hold, so a refusal that
+    survived a longer fragment would strand both CVs with no route out but hand-editing
+    frontmatter.
+    """
+    h, run = cli(backend=ScriptedBackend())
+    _seed_pending_lead(h.paths["vault"], "Example Foundry", "Staff Engineer")
+    _seed_pending_lead(h.paths["vault"], "Example Foundry", "Senior Engineer")
+
+    rc, _out, err = run(["cv", "signoff", "--lead", "example-foundry", "--yes"])
+    assert rc == 1
+    assert "ambiguous" in err
+    assert "Staff Engineer" in err and "Senior Engineer" in err   # both candidates named
+    for role in ("Staff Engineer", "Senior Engineer"):
+        text = _lead_text(h.paths["vault"], "Example Foundry", role)
+        assert "pending_cv:" in text and "tailored_cv:" not in text   # both holds intact
+
+    # Mirror harm / #60 latch: naming one twin precisely still promotes it, and only it.
+    rc, _out, err = run(["cv", "signoff", "--lead", "staff-engineer", "--yes"])
+    assert rc == 0 and "promoted" in err
+    promoted = _lead_text(h.paths["vault"], "Example Foundry", "Staff Engineer")
+    assert "tailored_cv:" in promoted and "pending_cv:" not in promoted
+    held = _lead_text(h.paths["vault"], "Example Foundry", "Senior Engineer")
+    assert "pending_cv:" in held and "tailored_cv:" not in held
 
 
 def test_cv_signoff_shows_raw_claim_when_needs_signoff_is_not_json(cli, monkeypatch):
