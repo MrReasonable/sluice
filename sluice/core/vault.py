@@ -1362,13 +1362,20 @@ class Vault:
         `" Acme "` still creates -- and `ingest/base.py` already coerces and strips both fields
         on the way in (`(row.get(...) or "").strip()`, the only `Lead` construction anywhere in
         `sluice/`), so this is defence for a store driven directly rather than a live scrape.
-        A field that is None rather than a string is exactly such a direct call: it is outside
-        the dataclass's own annotation, `_render_new` writes it as the literal string `None`,
-        and this gate therefore reads it back as PRESENT and creates a visible note -- the
-        honest answer to "would a read return this", and a note a human can see and delete,
-        where the raw test it replaces refused it. Nothing raises either way, which is the
-        None-tolerance that mattered: an AttributeError here is not caught by the sink's
-        `except OSError` and would abort the whole ingest run."""
+        A field that is None rather than a string no longer reaches this gate as a None at
+        all: `Lead.__post_init__` coerces it to "" at construction, so a direct call passing
+        `company=None, title=None` arrives here as two empty strings and is REFUSED by the
+        ordinary blank-identity rule above. That coercion is what makes the refusal complete,
+        and it had to live there rather than here: this gate decides on the RENDERED
+        frontmatter, where `_render_new` writes None as the literal string `None` and
+        `_is_lead_note` then reads a perfectly good identity back -- measured, a visible
+        `None - None.md` that `read_leads` returned. A store cannot fix that by looking
+        harder at the bytes; only the type boundary can.
+
+        Nothing raises on either route, which is the None-tolerance that mattered and is
+        unchanged: an AttributeError here (or in `Lead`) is not caught by the sink's
+        `except OSError` and would abort the whole ingest run, so the coercion coerces
+        rather than rejecting. See `core/leads.py:Lead.__post_init__`."""
         rendered = self._render_new(lead)
         # `_split_frontmatter` cannot return None for `_render_new`'s output, and if it ever
         # did `_fm_dict(None)` is `{}` -- which refuses. Fails closed either way.
