@@ -272,7 +272,8 @@ class Vault:
         # Duplicate slugs already reported by read_leads, on the same discipline as the
         # symlink set above -- but NOT for the same measured reason: no shipped command
         # reads one status set twice through a single store, so this suppresses nothing
-        # today and is forward-looking (see read_leads for the enumeration). Keyed on
+        # today and is forward-looking (see read_leads for the enumeration, and for why
+        # this is kept where `track/receipt.py` deleted its own unreachable guard). Keyed on
         # (slug, refs), never the slug alone: a LATER read whose filter surfaces a different
         # set of twins at that slug is a different fact and must still be said.
         self._warned_dup_slugs: set = set()
@@ -851,6 +852,30 @@ class Vault:
         # out of. The key carries the REFS, so it suppresses only a repeat of the SAME fact:
         # a later read whose filter surfaces a third twin at that slug is new information
         # and is still said.
+        #
+        # `track/receipt.py` legislates the opposite move on an inert guard -- "a guard for a
+        # state the code cannot reach is an inert guard, so it is gone rather than kept with a
+        # comment claiming it fires" -- and this is KEPT, so the difference has to be stated
+        # rather than assumed. Two things separate them.
+        #
+        # WHERE the impossibility lives. There it is LOCAL and structural: the two tiers are
+        # keyed off the sender and disjoint by construction WITHIN that function, so nothing
+        # outside it can make the state reachable without editing it, and an author editing it
+        # is looking straight at the reason. Here it rests on a survey of EXTERNAL callers --
+        # the 11 sites above, in five modules -- so a new command that reads one set twice
+        # makes it reachable without touching this file and with nothing going red.
+        #
+        # WHETHER it can be witnessed. receipt.py's guard could not be, by anything: reaching
+        # it meant breaking the disjointness that made it inert, which is exactly why it had
+        # become prose rather than a check, and prose is what that ruling is about. This one
+        # is exercised through the public read path by three tests that read twice on one
+        # store, so it is a live branch with a real witness, not a claim about one.
+        #
+        # And the stakes run opposite ways. There the dead branch sat on the path to an
+        # irreversible `applied`, wearing a comment that said it fired -- a false sense of
+        # safety where being wrong cannot be undone. Here the guard suppresses log noise, its
+        # own comment says outright that it suppresses nothing today, and the cost of being
+        # wrong in either direction is a repeated line.
         by_slug: dict = {}
         for note in out:
             by_slug.setdefault(note.slug, []).append(note.ref)
