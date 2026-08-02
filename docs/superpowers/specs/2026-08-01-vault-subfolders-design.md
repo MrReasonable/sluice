@@ -4,7 +4,33 @@
 - **Origin**: issue #1. The issue proposes a design but settles neither the folder set, what moves a
   note between folders, nor migration, and does not raise the exclusion rule or the lead predicate at
   all. Those are decided here (see *Decisions*).
-- **Status**: designed, approved. Implementation follows in the plan.
+- **Status**: SHIPPED. PR A (the recursive scan) merged 2026-08-02 as PR #86; PR B (this
+  document's second half) implemented on `feat/lead-layout-reconcile`, plan at
+  `docs/superpowers/plans/2026-08-02-vault-lead-layout-reconcile.md`.
+
+> **Appended 2026-08-02 — three decisions this document left open, settled during PR B planning.**
+> They are recorded here rather than edited into the text above, so the original stays readable as
+> what was designed.
+>
+> 5. **A slug two notes claim is REFUSED, not filed** (user decision). Reconcile cannot repair it:
+>    the slug IS the filename, so a rename orphans the note from `_resolve_path`'s candidate walk,
+>    and choosing a survivor is `leads dedupe`'s job via `resolve_merge_status`. Both twins are
+>    reported under `ambiguous` and neither moves. **This reverses two passages in
+>    `docs/ARCHITECTURE.md` (`:543`, `:610`) that promised reconcile would repair the state**; both
+>    were corrected in PR B.
+> 6. **Reconcile relocates only notes in the MANAGED folders** (user decision): the leads-dir root,
+>    `Active/` and `Archive/`. A lead the user filed into their own subfolder is reported under
+>    `user_filed` and left alone, so decision 4 holds for writes as well as reads. The root must be
+>    seeded EXPLICITLY — under `active_archive` no canonical status maps to it, and deriving the
+>    managed set from the layout map alone left the root out, making migration inert.
+> 7. **`lead_layout` unset makes reconcile a no-op that says so**, in the STORE rather than the CLI,
+>    on the `lead_ttl_days: 0` precedent. Flattening instead would drag every lead out of the user's
+>    own subfolders — decision 4 pointed the wrong way.
+>
+> Also corrected while planning: this document's *"the write folder is `leads_dir/Active`"* sketch
+> omits that the write-folder `makedirs` must sit on the CREATE arm only — `upsert`'s existing
+> `leads_dir` makedirs runs on update and merge too, so repointing it mints an empty `Active/` on a
+> pure `last_seen` bump.
 - **Ships as**: two PRs, in order. PR A is the recursive scan; PR B is the layout and the command.
   Both `Refs #1`; PR B closes it. **The order is load-bearing**: shipping any part of the layout
   before the scan is recursive moves notes out of the scanned directory and re-ingests the entire
