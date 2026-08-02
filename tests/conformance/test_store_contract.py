@@ -273,6 +273,16 @@ def test_slug_is_issued_stable_and_unique_across_what_the_store_creates(store_na
     (test_vault_subfolder_resolution.py), `read_leads` warns on it, and
     `tests/test_slug_indexing_discipline.py` sweeps `sluice/` for the consumers that would
     silently keep one twin.
+
+    The COUNT and the per-seed OUTCOMES are what carry that, and neither is decoration.
+    Uniqueness alone cannot fail: a store that stopped reconciling seats the duplicate
+    identity at the NEXT name candidate, so it gets a DIFFERENT slug and every slug stays
+    unique. `assert upsert(...) in _VOCAB` cannot fail either -- `created` is in the
+    vocabulary. Measured on exactly that mutant (the reconcile short-circuit deleted from
+    `Vault._resolve_candidates`): the outcomes went created/updated/updated/created/created
+    to created/created/created/created/created and the note count 3 -> 5, with this node id
+    GREEN throughout. So the store's own count of notes is asserted, and each seed that
+    re-presents an identity the store already holds is pinned to a NON-create outcome.
     """
     store = _make_store(store_name, tmp_path, monkeypatch)
     seeds = [
@@ -283,14 +293,29 @@ def test_slug_is_issued_stable_and_unique_across_what_the_store_creates(store_na
         _lead(company="Example Foundry", title="Engineer", url="https://example.invalid/2"),
         _lead(company="Example Analytics", title="Engineer", url="https://example.invalid/3"),
     ]
-    for lead in seeds:
-        assert store.upsert(lead) in _VOCAB
+    outcomes = [store.upsert(lead) for lead in seeds]
+    assert all(o in _VOCAB for o in outcomes), outcomes
+
+    # Seeds 0, 3 and 4 are three DISTINCT identities, so each must create. Seeds 1 and 2
+    # re-present seed 0's identity (url-identical; seed 2 has merely moved location), so a
+    # store that creates for either has minted a second note at an identity it already
+    # holds -- the bounded promise, stated as the outcome rather than inferred from the
+    # slugs, which a next-candidate create leaves unique.
+    assert outcomes[0] == "created", f"a new identity must create, got {outcomes[0]}"
+    assert outcomes[3] == "created", f"a new identity must create, got {outcomes[3]}"
+    assert outcomes[4] == "created", f"a new identity must create, got {outcomes[4]}"
+    assert outcomes[1] != "created", \
+        "an identical re-scrape created a SECOND note at an identity the store already holds"
+    assert outcomes[2] != "created", \
+        "a re-scrape whose location moved created a SECOND note at a url-identical identity"
 
     slugs = [n.slug for n in store.read_leads()]
     # SCOPE first: a store that returned nothing would satisfy every assertion below, and
     # "no duplicates" is a negative property, so an empty result is its success case.
     assert len(slugs) >= 2, "the fixture must really have seated several notes"
     assert all(slugs), "every returned note must carry a slug"
+    assert len(slugs) == 3, \
+        f"five seeds carrying three identities must leave three notes, got {sorted(slugs)}"
     assert len(set(slugs)) == len(slugs), \
         f"the store created two notes at one slug: {sorted(slugs)}"
     assert sorted(slugs) == sorted(n.slug for n in store.read_leads()), "slug must be stable"
