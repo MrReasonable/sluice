@@ -84,9 +84,13 @@ class LeadNote:
     index_by_slug` drops both and reports them, which is what `track` and `leads expire` use.
     The obligation is not discharged by INDEXING carefully, though -- a caller that walks the
     list without keying on slug at all is bound just as hard, and is the shape a fix aimed at
-    the dicts misses: `apply`'s batch path iterated the shortlist directly and acted on both
-    twins, which for that caller means two applications for one job. It takes the ambiguous
-    SET from the same helper and skips them.
+    the dicts misses: `apply`'s batch path (`select_all`, whose one caller is `preview_all`
+    behind `apply prep --all-shortlist`) iterated the shortlist directly and carried both
+    twins through, which for that caller means one job listed TWICE in the ready queue it
+    prints -- a report defect, not a write: that path stages nothing and no sluice command
+    submits an application. It takes the ambiguous SET from the same helper and skips them.
+    The obligation does not scale with a caller's blast radius, though: `apply`'s cost is a
+    report defect, `track`'s is a wrong `applied` that no forward-only status move can undo.
     A store whose ids are synthetic (a row id) satisfies the bound trivially and needs no
     such care -- but the CONTRACT is what callers are written against, so the weaker
     guarantee is the one stated here.

@@ -446,10 +446,19 @@ BOTH, at one slug. Three consumers key a dict on exact slug equality and silentl
 keep whichever twin they see last — `track/engine.py`'s `note_by_slug` and
 `shortlist_by_slug`, and `core/app.py`'s `by_slug` in `expire`. A fourth,
 `apply/select.py: select_all`, keys on nothing at all: it iterates
-`read_leads({"shortlist"})` directly, so it kept BOTH twins and `apply run --all`
-sent two applications for one job under the user's name. That one is the reason a
-fix aimed at the slug-keyed dicts is not the whole fix — the batch path never had a
-dict to harden. Three costs follow.
+`read_leads({"shortlist"})` directly, so it kept BOTH twins. That one is the reason
+a fix aimed at the slug-keyed dicts is not the whole fix — the batch path never had
+a dict to harden. Three costs follow.
+
+`select_all`'s only caller is `apply/engine.py: preview_all`, behind `apply prep
+--all-shortlist`, so its cost is a REPORT defect rather than a write: preview_all
+builds packets with `cv_staged=False` and never calls `cvfile.stage`, and no sluice
+command submits an application at all — the packet's rules hand the form to the
+human. One job therefore appeared twice in the printed ready queue, under one
+label, and a human working down that queue works it twice. The single-lead paths
+were never exposed: `select_one` and `record_one` both already refused
+`len(matches) > 1`.
+
 `shortlist_by_slug` is the set `match_receipt` searches, so the dropped twin is
 invisible to the receipt matcher and a receipt whose evidence fits it is weighed
 against the survivor instead — and where the survivor's url HOST satisfies
@@ -458,9 +467,10 @@ be auto-advanced to `applied`, an application recorded against the wrong note. R
 that on the host, not the url: `match_receipt` never compares urls, and
 `_hosts_match` accepts a subdomain relation in either direction, so two twins on one
 employer's site whose urls differ only by subdomain or path BOTH satisfy it.
-Identical urls are sufficient, never necessary. And `leads expire --expire <slug>` acts on one
-twin while the other is neither expired nor reported `no-match`, so the human sees
-no sign the second exists.
+Identical urls are sufficient, never necessary.
+
+And `leads expire --expire <slug>` acts on one twin while the other is neither
+expired nor reported `no-match`, so the human sees no sign the second exists.
 
 All four now take their verdict from `core/leads.py: index_by_slug`, which DROPS
 every slug two or more notes claim and logs it, rather than keeping the last twin —
@@ -486,10 +496,14 @@ merge, and re-surfaces every run until that happens.
 
 `read_leads` returns both twins — dropping one would take a lead out of the write
 path's lookup too, and the next scrape would re-create it — and warns, naming both
-paths. That warning is deduped per store on `(slug, refs)`, exactly as the symlink
-warning is: `apply run --all` reads the shortlist once per lead on top of its batch
-read, so one duplicate produced four identical lines and scaled with the shortlist.
-The refs are in the key so a genuinely NEW collision at that slug is still
+paths. That warning is deduped per store on `(slug, refs)`, on the discipline the
+symlink warning uses — but with no measured case behind it. Enumerated across all
+eleven `read_leads` call sites, no shipped command reads one status set twice
+through a single store: every `apply`, `cv`, `triage`, `leads` and `track confirm`
+path reads once, and `track run`'s two reads take disjoint sets
+(`APPLICATION_OWNED` and `{"shortlist"}`), so a twin lands in exactly one. The
+suppression is kept as forward-looking, not as a fix for observed noise. The refs
+are in the key so a genuinely NEW collision at that slug is still
 reported. Repairing the state, rather than declining to act on it, still belongs
 with the `leads reconcile` pass #1 has yet to ship, which walks the whole tree
 anyway.

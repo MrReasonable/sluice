@@ -211,10 +211,11 @@ def test_read_leads_warns_when_two_notes_claim_one_slug(tmp_path, caplog):
 
 
 def test_a_duplicate_slug_is_warned_about_once_per_store(tmp_path, caplog):
-    """Same discipline as the symlink warning, for the same reason: one command reads the
-    same status set repeatedly. `apply run --all` is the measured case -- `preview_all`
-    reads once, then `select_one` reads again per lead -- where one duplicate produced 4
-    identical lines across 4 reads, scaling with the shortlist.
+    """Same discipline as the symlink warning, but forward-looking rather than measured: no
+    shipped command reads one status set twice through a single store (`apply prep` reads
+    once on both its forms; `track run`'s two reads take disjoint sets), so this pins the
+    property for the first command that does. The repeated reads below are the test's own
+    construction, not a production path.
 
     Witnessed by deleting the `if key in self._warned_dup_slugs: continue` arm: three lines.
     """
