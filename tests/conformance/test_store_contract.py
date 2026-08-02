@@ -255,11 +255,24 @@ def test_slug_is_issued_stable_and_unique_across_what_the_store_creates(store_na
     a filesystem can seat that name in two directories once the scan is recursive (#1). That
     residual is the read-path warning's business and `index_by_slug`'s; see LeadNote.
 
-    The previous version of this test asserted the ABSOLUTE property from a fixture of two
-    unrelated leads, which cannot collide whatever the store does -- so it certified an
-    invariant this branch broke, vacuously. The upserts below instead drive the store through
-    every arm that could mint a second note at an existing identity: a straight re-scrape, a
-    re-scrape whose location moved, and two genuinely different jobs at one company.
+    The previous version asserted the ABSOLUTE property from a fixture of two unrelated
+    leads, which cannot collide whatever the store does -- so it certified an invariant this
+    branch broke, vacuously. The seeds below drive the reconciliation arms instead: a
+    straight re-scrape and a re-scrape whose location moved must both land back on the
+    existing note (`created/updated/updated/created/created`, measured), and two further
+    identities create.
+
+    What this can and cannot falsify, stated because the honest bound is the point of the
+    rewrite. It reddens if the store stops reconciling and mints a second note at an
+    identity it already holds -- which is the bounded promise. It CANNOT redden on two notes
+    arriving at one slug from different DIRECTORIES: the Store API offers no way to seat
+    one (the vault's create arm writes to a single directory), that state comes from a human
+    with a filesystem, and the contract disclaims it on purpose. So this is not a claim
+    about "every arm that could mint a second note" -- there is no such arm reachable here.
+    The residual has its own coverage: `Vault._resolve_path` refuses an ambiguous candidate
+    (test_vault_subfolder_resolution.py), `read_leads` warns on it, and
+    `tests/test_slug_indexing_discipline.py` sweeps `sluice/` for the consumers that would
+    silently keep one twin.
     """
     store = _make_store(store_name, tmp_path, monkeypatch)
     seeds = [
