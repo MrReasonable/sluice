@@ -165,15 +165,19 @@ equality and silently kept the last twin — `track/engine.py`'s `note_by_slug` 
 `shortlist`: `can_apply` passes and the transition is legal, the IDENTITY is wrong, and a wrong
 `applied` is irreversible. A FOURTH consumer keyed on nothing at all: `apply/select.py:
 select_all` iterates `read_leads({"shortlist"})` directly, so hardening the three dicts left it
-untouched and `apply run --all` sent two applications for one job. All four now take their verdict
+untouched and one job appeared TWICE in the ready queue `apply prep --all-shortlist` prints, which
+a human then works twice. That path stages nothing (`preview_all` builds packets with
+`cv_staged=False`; only `prep_one` calls `cvfile.stage`) and no sluice command submits an
+application, so the cost is a report defect, not a duplicate send. All four now take their verdict
 from `core/leads.py: index_by_slug`, which drops BOTH twins and logs — the shape `select_one` and
 `track confirm` use for ambiguity, applied where it was missing rather than assumed. `select_all`
 takes only the ambiguous set and SKIPS those notes with a reported reason, since a silent drop is
 the mirror failure. A receipt whose lead's slug collapsed gets a dead-letter row for review rather
 than the untracked-job quiet, with no `--to applied` (that slug resolves to two notes). `read_leads`
 returns both (dropping one takes the lead out of the write path's lookup too, which re-creates it)
-and warns, deduped per store on `(slug, refs)` — `apply run --all` re-reads the shortlist per lead,
-so one duplicate produced four identical lines. `LeadNote`'s contract now
+and warns, deduped per store on `(slug, refs)` — forward-looking, not measured: enumerated across
+all eleven `read_leads` call sites, no shipped command reads one status set twice through a single
+store, and `track run`'s two reads take disjoint sets. `LeadNote`'s contract now
 states slug uniqueness as BOUNDED — a store must not itself create two notes at one slug — rather
 than as the absolute property the conformance suite was certifying from a fixture that could not
 collide.

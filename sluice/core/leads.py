@@ -208,10 +208,12 @@ def index_by_slug(notes, *, what: str) -> tuple[dict, frozenset]:
     the vault derives the slug from the basename -- so uniqueness held by CONSTRUCTION. A
     recursive scan (#1) removes that guarantee, and the consequence is not a cosmetic one:
     the surviving twin is the note a receipt match, or a named `leads expire`, then acts on,
-    so an `applied` can land on a stale twin while the real lead stays `shortlist`, track
-    stops tracking it, and `apply`'s batch path sends a SECOND application under the user's
-    name. A wrong `applied` is irreversible; a lead that goes quiet until a human renames a
-    note is not.
+    so an `applied` can land on a stale twin while the real lead stays `shortlist` and track
+    stops tracking it -- and `apply`'s batch path, which keys on nothing at all, lists that
+    one job TWICE in the ready queue `apply prep --all-shortlist` prints, so a human working
+    down it works the same job twice. (That path prints; it stages nothing and sends
+    nothing.) A wrong `applied` is irreversible; a lead that goes quiet until a human
+    renames a note is not.
 
     So this refuses rather than picks, which is the shape `apply/select.py:select_one` and
     `track confirm` already use for an ambiguous `--lead`: both twins are dropped and the
