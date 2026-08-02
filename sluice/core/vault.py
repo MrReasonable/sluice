@@ -215,6 +215,12 @@ class Vault:
         # because one command walks several times and a link must not say the same thing a
         # dozen times in one run.
         self._warned_symlinks: set = set()
+        # Duplicate slugs already reported by read_leads, on the same discipline and for the
+        # same reason -- `apply run --all` reads the shortlist once per lead on top of its
+        # batch read, and emitted one identical line per read. Keyed on (slug, refs), never
+        # the slug alone: a LATER read whose filter surfaces a different set of twins at that
+        # slug is a different fact and must still be said. See read_leads.
+        self._warned_dup_slugs: set = set()
 
     def _slug_for(self, path: str) -> str:
         """The lead's stable identity. For a markdown vault that is the filename without
@@ -739,14 +745,29 @@ class Vault:
         # returning it -- so it is loud instead. On a flat store slug uniqueness held by
         # CONSTRUCTION (one directory cannot hold two files at one basename, and _slug_for is
         # the basename); a recursive scan removes that, and consumers that key a dict on slug
-        # equality then keep whichever twin they saw last. Warned per RETURNED list, because
+        # equality then keep whichever twin they saw last. Computed per RETURNED list, because
         # that is the set a caller indexes: a twin filtered out by `statuses` is not one of
         # its keys.
+        #
+        # Deduped per store, exactly as the symlink warning is and for the reason stated
+        # there: one command reads the SAME status set repeatedly. `apply run --all` is the
+        # measured case -- `preview_all` reads once and then `prep_one`->`select_one`
+        # ->`resolve` reads again per lead -- so one duplicate produced 4 identical lines
+        # across 4 reads, and it scales with the shortlist. That is the noise the
+        # empty-symlink case is deliberately kept out of. (A `track run` is NOT that shape:
+        # its two reads take disjoint status sets, so a duplicate appears in one of them.)
+        # The key carries the REFS, so it suppresses only a repeat of the SAME fact: a later
+        # read whose filter surfaces a third twin at that slug is new information and is
+        # still said.
         by_slug: dict = {}
         for note in out:
             by_slug.setdefault(note.slug, []).append(note.ref)
         for slug, refs in by_slug.items():
             if len(refs) > 1:
+                key = (slug, tuple(sorted(refs)))
+                if key in self._warned_dup_slugs:
+                    continue
+                self._warned_dup_slugs.add(key)
                 _log.warning("vault: slug %r is claimed by %d notes (%s); consumers keyed on "
                              "it will see only one", slug, len(refs), ", ".join(sorted(refs)))
         return out
