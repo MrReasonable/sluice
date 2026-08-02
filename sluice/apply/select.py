@@ -63,10 +63,15 @@ def select_all(vault, cfg, policy=StalenessPolicy()):
 
     A slug two notes CLAIM is skipped with an `ambiguous:` reason, exactly as select_one
     refuses a slug two notes MATCH. The two are one policy reached by different keys, and
-    this half was the one that mattered: select_one keys on the string the user typed, so
+    this half was the one left open: select_one keys on the string the user typed, so
     hardening the slug-keyed dicts in `track` and `leads expire` never reached this loop --
-    it iterates notes directly. Both twins were therefore eligible and `apply run --all`
-    sent ONE job twice, under the user's name, with no way to unsend. (Measured before this
+    it iterates notes directly. Both twins were therefore eligible, and the single caller
+    (`engine.preview_all`, behind `apply prep --all-shortlist`) printed ONE job twice in the
+    ready queue, under one label, so a human working down that queue works the same job
+    twice. Nothing was staged or sent: preview_all builds packets with cv_staged=False and
+    only prep_one calls `cvfile.stage`, and no sluice command submits an application -- the
+    packet hands that to the human. The single-lead paths were never exposed either;
+    select_one and record_one both already refused len(matches) > 1. (Measured before this
     guard, with a resolvable artefact so eligibility was actually reached:
     eligible == ['Example - Analyst', 'Example - Analyst'], skipped == [].)
 

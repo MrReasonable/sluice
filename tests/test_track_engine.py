@@ -610,9 +610,14 @@ def _vault_shortlist_twins(url):
 def test_a_proof_tier_receipt_never_advances_a_slug_two_notes_claim(caplog):
     """The identical message that advances a single lead (the guard below) must write
     NOTHING when two notes claim the slug. `can_apply` passes and the transition is legal --
-    the wrong thing here is the IDENTITY, which no status check can catch. A wrong `applied`
-    silently suppresses a real application and cannot be undone, and `select_all` (before
-    #1's batch-path fix) would then send a second application under the user's name.
+    the wrong thing here is the IDENTITY, which no status check can catch. The write is
+    `status: applied` plus a receipt section (`track/reconcile.py`), never a send, and the
+    harm is that it lands on whichever twin a bare dict comprehension happened to keep. That
+    note then leaves the shortlist set every later `apply` and `cv` pass reads, so if it is
+    the twin the user did NOT apply to, a real application is suppressed with nothing said,
+    while the other twin stays `shortlist` and is re-offered as though nothing happened.
+    `can_advance` refuses every move back out of the application lifecycle, so nothing in
+    the tool can undo it.
 
     Witnessed by restoring `shortlist_by_slug = {n.slug: n for n in ...}`: the receipt
     advances one twin and this goes red on `rep.auto` and on that twin's text."""

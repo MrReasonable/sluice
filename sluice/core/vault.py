@@ -215,11 +215,12 @@ class Vault:
         # because one command walks several times and a link must not say the same thing a
         # dozen times in one run.
         self._warned_symlinks: set = set()
-        # Duplicate slugs already reported by read_leads, on the same discipline and for the
-        # same reason -- `apply run --all` reads the shortlist once per lead on top of its
-        # batch read, and emitted one identical line per read. Keyed on (slug, refs), never
-        # the slug alone: a LATER read whose filter surfaces a different set of twins at that
-        # slug is a different fact and must still be said. See read_leads.
+        # Duplicate slugs already reported by read_leads, on the same discipline as the
+        # symlink set above -- but NOT for the same measured reason: no shipped command
+        # reads one status set twice through a single store, so this suppresses nothing
+        # today and is forward-looking (see read_leads for the enumeration). Keyed on
+        # (slug, refs), never the slug alone: a LATER read whose filter surfaces a different
+        # set of twins at that slug is a different fact and must still be said.
         self._warned_dup_slugs: set = set()
 
     def _slug_for(self, path: str) -> str:
@@ -749,16 +750,19 @@ class Vault:
         # that is the set a caller indexes: a twin filtered out by `statuses` is not one of
         # its keys.
         #
-        # Deduped per store, exactly as the symlink warning is and for the reason stated
-        # there: one command reads the SAME status set repeatedly. `apply run --all` is the
-        # measured case -- `preview_all` reads once and then `prep_one`->`select_one`
-        # ->`resolve` reads again per lead -- so one duplicate produced 4 identical lines
-        # across 4 reads, and it scales with the shortlist. That is the noise the
-        # empty-symlink case is deliberately kept out of. (A `track run` is NOT that shape:
-        # its two reads take disjoint status sets, so a duplicate appears in one of them.)
-        # The key carries the REFS, so it suppresses only a repeat of the SAME fact: a later
-        # read whose filter surfaces a third twin at that slug is new information and is
-        # still said.
+        # Deduped per store, on the discipline the symlink warning uses -- but unlike that
+        # one this has no measured case, and stating it as though it did was the claim this
+        # comment is here to correct. Enumerated across all 11 `read_leads` call sites, no
+        # shipped command reads ONE status set twice through a single store: `apply prep
+        # --all-shortlist` reads once (select_all) and every `--lead` form reads once
+        # (select.resolve), cv/triage/expire/dedupe/confirm read once each, and `track run`'s
+        # two reads take DISJOINT sets (APPLICATION_OWNED and {"shortlist"}), so a twin lands
+        # in exactly one of them. So the suppression is forward-looking: it costs one set,
+        # and the moment a command does read a set twice an unchanged vault would otherwise
+        # say the same thing twice -- the noise the empty-symlink case is deliberately kept
+        # out of. The key carries the REFS, so it suppresses only a repeat of the SAME fact:
+        # a later read whose filter surfaces a third twin at that slug is new information
+        # and is still said.
         by_slug: dict = {}
         for note in out:
             by_slug.setdefault(note.slug, []).append(note.ref)

@@ -157,10 +157,12 @@ _TWIN = ('company: "Example"\nrole: "Analyst"\nstatus: shortlist\n'
 
 
 def test_select_all_refuses_a_slug_two_notes_claim():
-    """The batch path must not send twice for one job. select_one already refuses this
-    state; select_all iterates notes rather than keying on slug, so the slug-keyed fixes in
-    track and `leads expire` did not reach it -- both twins were eligible and `apply run
-    --all` sent two applications under the user's name, unsendable-back.
+    """The batch path must not list one job twice. select_one already refuses this state;
+    select_all iterates notes rather than keying on slug, so the slug-keyed fixes in track
+    and `leads expire` did not reach it -- both twins were eligible, and select_all's one
+    caller (`engine.preview_all`, behind `apply prep --all-shortlist`) printed the same job
+    twice in the ready queue a human works down. That path stages nothing, so this is a
+    report defect rather than a duplicate send.
 
     Witnessed by deleting the `if n.slug in ambiguous:` arm from select_all: eligible comes
     back with BOTH twins and this goes red on the eligible assertion."""
