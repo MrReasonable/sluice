@@ -112,6 +112,32 @@ def test_unmatched_named_slug_exits_NON_zero(tmp_path, monkeypatch):
     assert _run(tmp_path, monkeypatch, "--expire", "Nothing - Like This") == 1
 
 
+def test_a_slug_two_stale_notes_claim_exits_NON_zero(tmp_path, monkeypatch, capsys):
+    """#1: `expire` grew an `ambiguous` outcome and `_FAILED` did not grow with it, so
+    `--expire <slug>` on a collapsed slug wrote nothing and exited 0 -- the silent no-op
+    the comment above that set names as the exact failure this command is shaped to avoid.
+
+    Asserted on the EXIT CODE, not on the outcome tuple. The Sluice-level sibling
+    (test_a_named_slug_two_stale_notes_claim_is_ambiguous_and_writes_nothing) asserts the
+    tuple and was green throughout, which is precisely what let this through: a new outcome
+    is only half-shipped until every consumer classifies it.
+
+    Witnessed by removing "ambiguous" from cli.py's `_FAILED`: rc comes back 0."""
+    slug = _seed(tmp_path)
+    leads = tmp_path / "Job Applications" / "Job Leads"
+    twin_dir = leads / "Archive"
+    twin_dir.mkdir()
+    (twin_dir / f"{slug}.md").write_text((leads / f"{slug}.md").read_text())
+
+    rc = _run(tmp_path, monkeypatch, "--expire", slug)
+    err = capsys.readouterr().err
+    assert rc == 1
+    # The outcome is also NAMED on stderr, not merely counted: a non-zero exit whose reason
+    # appears nowhere is its own silent failure.
+    assert f"expire: {slug}: ambiguous" in err
+    assert [n.status for n in Vault(str(tmp_path)).read_leads()] == ["shortlist", "shortlist"]
+
+
 def test_a_sign_off_hold_is_refused_and_the_message_names_the_way_out(
         tmp_path, monkeypatch, capsys):
     slug = _seed(tmp_path, pending_cv="CV-2026.pdf")
