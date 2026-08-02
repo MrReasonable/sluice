@@ -1010,7 +1010,26 @@ class Vault:
         is never read. verified_only keeps entries carrying a truthy `verified:` field."""
         base = os.path.join(self.dir, _EXP_SUBDIR)
         out = []
-        if not os.path.isdir(base):
+        # `_is_dir`, not os.path.isdir -- the FOURTH consumer of that rule, and it is right
+        # here for the same reason as the three under leads_dir even though this is a
+        # different directory: os.path.isdir swallows EVERY OSError, so a library it cannot
+        # STAT reads as an absent one. Only FileNotFoundError is absent (an install before
+        # the user has written a single entry: the common case, and not an error).
+        #
+        # This probe was the ONLY fail-open left in this method, measured: with the library
+        # itself at mode 000 `os.listdir` below already raises PermissionError, so the loud
+        # answer was already there for that case. The silent one needs the VAULT ROOT to be
+        # unstatable, which makes `os.stat(base)` -- not `listdir` -- the call that fails,
+        # and os.path.isdir turned that into `return []`.
+        #
+        # What that costs is not a clobber, and the honest version is narrower than "an
+        # unreadable directory read as empty is a wrong answer": these entries are the ONLY
+        # citable evidence the hard fabrication gate recognises, so an empty read leaves a
+        # bundle with no ids and every WORK bullet fails `BAD CITATION` (measured). The CV is
+        # therefore never rendered -- it fails CLOSED. The harm is that a permissions problem
+        # is reported to the user as `skipped-gate`, a fabrication verdict against their
+        # composer, and only after paying for a dossier fetch and a full compose.
+        if not _is_dir(base):
             return out
         for name in sorted(os.listdir(base)):
             if not name.endswith(".md"):
