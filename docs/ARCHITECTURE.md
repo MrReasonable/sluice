@@ -336,9 +336,14 @@ changes `upsert`'s cost model, so it is deliberately out of scope here.
 `upsert`'s return vocabulary is six-member: `created`/`updated`/`merged`/`refused` as
 before, plus `merged_away` and `merged_away_unproven`. Both write nothing. `refused`
 now covers a third cause alongside #5's name collision and #1's ambiguous candidate: a
-lead carrying neither company nor title, which has no name to be seated at and which
-`_is_lead_note` then hides from every read — so creating it put an unreachable stub in
-the vault and its lead in `seen.db`, which has no removal path. `merged_away`
+lead whose note would read back with neither company nor role, which has no name to be
+seated at and which `_is_lead_note` then hides from every read — so creating it put an
+unreachable stub in the vault and its lead in `seen.db`, which has no removal path. That
+refusal is decided by running the read's own chain (`_split_frontmatter` → `_fm_dict` →
+`_is_lead_note`) over the frontmatter `upsert` is about to write, rather than by a second
+normalisation of the raw fields: `_fm_dict` ends in `.strip().strip('"').strip("'")`, so a
+company of `"` or `'` is present to any raw truthiness test and empty to every read, and
+each such spelling closed by hand leaves the next one open. `merged_away`
 requires the store to have PROVED identity -- for the vault, a matching non-empty url on
 both sides -- and only it may enter the dedup store. Every weaker match is
 `merged_away_unproven`: the vault's location-token overlap, or an inconclusive
