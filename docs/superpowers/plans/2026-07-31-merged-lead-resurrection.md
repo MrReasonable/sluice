@@ -8,6 +8,12 @@
 > accordingly returns `(action, url_proven)` rather than an action alone. The steps are left as
 > executed; see `docs/ARCHITECTURE.md` and `core/protocols.py` for the shipped contract.
 
+> **Superseded 2026-08-02 (#1, vault subfolders):** the `refused` log line this plan's steps
+> quote (`"vault refused lead %r: every name candidate is a note proven different"`) named ONE
+> cause. The shipped line names two -- every candidate proven different, or one candidate
+> resolving to several notes -- because `_resolve_path` reports both as `refuse` and cannot
+> distinguish them. See `core/vault.py:upsert` for all five causes the outcome now covers.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Stop a lead a human merged away via `sluice leads dedupe --merge` from being silently re-created when the dedup set is empty.
