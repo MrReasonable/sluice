@@ -1,6 +1,7 @@
 import os
+from sluice.core.vault import Vault
 from sluice.triage.prompt import (
-    SYSTEM_PROMPT, build_system_prompt, load_criteria, _CRITERIA_RELPATH,
+    SYSTEM_PROMPT, _CRITERIA_RELPATH, build_system_prompt_from,
 )
 
 
@@ -9,6 +10,13 @@ def _write_criteria(vault_dir, text):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write(text)
+
+
+def _criteria_from_vault(vault_dir):
+    """What the ENGINE does: read criteria through the STORE, then compose from text.
+    `load_criteria(vault_dir)` used to do both halves inside the judge module; deleting it is
+    what this rewrite is for, so the tests below go through the seam instead."""
+    return Vault(str(vault_dir)).read_criteria()
 
 
 def test_default_prompt_has_mechanics_but_no_opinion():
@@ -39,18 +47,18 @@ def test_shipped_prompt_expresses_no_role_or_culture_preference():
 
 
 def test_missing_vault_file_falls_back_to_default(tmp_path):
-    # empty vault dir -> no Judging Profile.md -> default criteria
-    assert load_criteria(str(tmp_path)) == load_criteria(None)
-    assert "Who this candidate is" in build_system_prompt(str(tmp_path))
+    # empty vault dir -> no Judging Profile.md -> the store reads "" -> default criteria.
+    # The store-side half of this is also pinned by
+    # tests/conformance/test_store_contract.py::test_read_criteria_abstains_when_unset.
+    assert _criteria_from_vault(tmp_path) == ""
+    assert "Who this candidate is" in build_system_prompt_from(_criteria_from_vault(tmp_path))
 
 
 def test_vault_criteria_overrides_default(tmp_path):
     _write_criteria(str(tmp_path),
                     "---\nnote: props\n---\n## Who Alex is\nWANTS ONLY RUST ROLES IN BERLIN.\n")
-    crit = load_criteria(str(tmp_path))
-    assert "WANTS ONLY RUST ROLES IN BERLIN." in crit
-    assert "note: props" not in crit                  # frontmatter stripped
-    full = build_system_prompt(str(tmp_path))
+    full = build_system_prompt_from(_criteria_from_vault(tmp_path))
+    assert "note: props" not in full                  # frontmatter stripped
     assert "WANTS ONLY RUST ROLES IN BERLIN." in full
     assert "You are the batched judgment stage" in full   # scaffold still wraps it
     assert "relevance_score" in full                       # tail still present
@@ -58,7 +66,8 @@ def test_vault_criteria_overrides_default(tmp_path):
 
 def test_empty_vault_file_falls_back(tmp_path):
     _write_criteria(str(tmp_path), "---\nonly: frontmatter\n---\n   \n")
-    assert load_criteria(str(tmp_path)) == load_criteria(None)
+    assert build_system_prompt_from(_criteria_from_vault(tmp_path)) == \
+        build_system_prompt_from("")
 
 
 # ── build_system_prompt_from: the form the ENGINE actually calls ──────────────
@@ -89,3 +98,19 @@ def test_build_system_prompt_from_strips_frontmatter():
     out = build_system_prompt_from("---\ntitle: Judging Profile\n---\nI want roles doing X.")
     assert "I want roles doing X" in out
     assert "title: Judging Profile" not in out
+
+
+def test_the_prompt_module_no_longer_reaches_a_filesystem():
+    """The store-seam refactor moved the judge off `build_system_prompt(vault.dir)` and onto
+    `build_system_prompt_from(store.read_criteria())`, because reaching THROUGH the store to a path
+    is what put a store-implementation detail on the judge's critical path. The directory-taking
+    forms survived as test-only surface, which kept that trap available to the next caller.
+
+    Asserted on the MODULE, so a re-introduction under any name is caught, and on the SOURCE, so a
+    re-introduction that still opens a file is caught even if it is named something else."""
+    import sluice.triage.prompt as prompt
+    assert not hasattr(prompt, "load_criteria")
+    assert not hasattr(prompt, "build_system_prompt")
+    assert prompt.SYSTEM_PROMPT, "the baked-in default prompt must survive"
+    src = open(prompt.__file__, encoding="utf-8").read()
+    assert "open(" not in src, "triage/prompt.py opened a file"
