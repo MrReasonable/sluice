@@ -1,6 +1,11 @@
 import json
+import os
 import pathlib, tempfile
+
+import pytest
+
 from sluice.core.vault import Vault, _fm_dict, _split_frontmatter
+from tests.conftest import UNREADABLE_DIR as _UNREADABLE_DIR
 
 
 def _lead_note(fm_lines, body="BODY TEXT\n"):
@@ -40,6 +45,39 @@ def test_read_experience_parses_block_list_category():
     ])
     e = v.read_experience_entries(verified_only=True)[0]
     assert e["category"] and "Process" in e["category"] and "Leadership" in e["category"]
+
+@_UNREADABLE_DIR
+def test_read_experience_does_not_read_an_unstatable_library_as_empty():
+    """`_is_dir`, not os.path.isdir. These entries are the only citable evidence the hard
+    fabrication gate recognises, so an empty read leaves a bundle with no ids, every WORK
+    bullet fails BAD CITATION, and a permissions problem is reported to the user as
+    `skipped-gate` -- a fabrication verdict against their composer -- after a dossier fetch
+    and a full compose have already been paid for.
+
+    The VAULT ROOT is what loses permission, not the library: `os.stat(<root>/Experience
+    Library)` is then the call that fails. With the library ITSELF at 000 `os.listdir` raises
+    already, so that case was never the silent one and asserting on it would witness nothing.
+
+    Witnessed by restoring `os.path.isdir`: this returns [] and goes green-to-red here."""
+    v, root = _vault_with([
+        ("good", 'Company: "Example Foundry"\nverified: 2026-07-01', "Grew team 3 to 8."),
+    ])
+    assert len(v.read_experience_entries()) == 1        # mirror harm: the readable case
+    os.chmod(pathlib.Path(root, "Job Applications"), 0o000)
+    try:
+        with pytest.raises(OSError):
+            v.read_experience_entries()
+    finally:
+        os.chmod(pathlib.Path(root, "Job Applications"), 0o755)
+
+
+def test_read_experience_reads_a_vault_with_no_library_as_empty():
+    """The mirror harm of the guard above, and the reason only FileNotFoundError may answer
+    absent: an install before the user has written a single entry is the common case, not an
+    error, and `cv run` must not raise on it."""
+    root = tempfile.mkdtemp()
+    assert Vault(root).read_experience_entries() == []
+
 
 def test_read_baseline():
     v, _ = _vault_with([], baseline="Phone number: +44\nJANE ROE")
