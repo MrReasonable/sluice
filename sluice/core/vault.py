@@ -27,6 +27,7 @@ from sluice.core.leads import (
     UNKNOWN,
     Lead,
     _norm_url,
+    index_by_slug,
     layout_subfolder,
     same_opportunity,
 )
@@ -64,6 +65,13 @@ _MERGED_SUBDIR = "_merged"          # where merge_cluster archives losers (#23)
 # non-recursive and `_merged` is a directory, so it failed the `.endswith(".md")` test);
 # a recursive walk would have surfaced every archived loser and undone #81 outright.
 _PRIVATE_SUBDIRS = frozenset({_MERGED_SUBDIR})
+# The reconcile report's key set, in ONE place (#1). `cmd_leads_reconcile`'s knob-unset arm emits a
+# document too -- a consumer parsing stdout must not have to tell "no output" from "empty result" --
+# and a second hand-written literal there is a shape nothing keeps in sync: add a bucket here and
+# that arm would silently stop carrying it while its test, which only checks ["layout"], stayed
+# green. Both sides build from this.
+_EMPTY_RECONCILE = {"layout": "", "moves": [], "in_place": 0, "ambiguous": {},
+                    "unknown": [], "user_filed": [], "collisions": [], "skipped": []}
 # #81: a URL-PROVEN match against an archived note -- the incoming lead and the merged-away
 # one carry the same non-empty url. The sink records it in seen.db.
 _ARCHIVED = "merged_away"
@@ -1342,6 +1350,169 @@ class Vault:
                 # this run, so this is unchanged, not changed-but-invisible; a
                 # surviving disagreement is caught by the next run's own scan.
                 summary["unchanged"] += 1
+        return summary
+
+    # ── reconcile (#1) ───────────────────────────────────────────────────────
+    def _managed_dirs(self) -> set:
+        """The directories reconcile may move a note OUT OF, as paths.
+
+        The leads-dir ROOT, plus every folder the configured layout can file into. Decision 6: a
+        lead the user deliberately filed into a folder of their own is REPORTED and left alone,
+        because decision 4 ("everything under leads_dir that sluice does not own is the user's")
+        has to hold for writes as well as for reads.
+
+        The root is its OWN term and is NOT derivable from the layout map -- that is the whole
+        point of spelling it separately, and getting it wrong made this feature inert in an earlier
+        draft. Under `active_archive` every canonical status maps to `Active` or `Archive`, so
+        `{layout_subfolder(s, layout) for s in CANONICAL}` can never contain `""`; the root was
+        silently excluded, every note in a flat vault reported `user_filed` at ".", and nothing
+        ever moved -- on the only vault shape a user opting in actually has. The root is managed
+        because it is where a PRE-layout vault's notes sit, not because any status implies it.
+
+        The SUBFOLDERS stay derived rather than hand-listed {Active, Archive}: a layout that later
+        files into a third folder becomes managed automatically, and a hand-list would leave notes
+        stranded there with nothing red.
+
+        `_merged/` is not here and cannot be: it is pruned from the scan set, so `read_leads` never
+        yields a note in it (#81)."""
+        subs = {layout_subfolder(s, self.lead_layout) for s in _status.CANONICAL}
+        return {self.leads_dir} | {os.path.join(self.leads_dir, s) for s in subs if s}
+
+    def reconcile_layout(self, *, apply: bool = False) -> dict:
+        """File lead notes into the folders their statuses imply. REPORTS by default; `apply` is
+        what moves anything -- the default IS the dry run, which is why there is no `dry_run`
+        parameter to be inert (`leads dedupe`/`leads expire` are the same shape).
+
+        The ONLY pass that moves a lead note (decision 2). No pipeline command relocates anything,
+        and folder-vs-status drift between runs is harmless because the scan is recursive: a note
+        in the "wrong" folder is still read, still written to, still applied for. That is what
+        makes this safe to be manual.
+
+        It never writes a note's BYTES -- only its directory entry, via `_reserve_and_move`. No
+        status is read-modify-written, no frontmatter key is set, no body is re-rendered.
+
+        That is NOT the same as "never-clobber holds by construction", which an earlier draft of
+        this docstring claimed and which is measurably false. `_cas_write` re-reads for freshness
+        and then `_atomic_write` calls `os.replace(tmp, path)`; a move landing in that window
+        RE-CREATES the source path. The result is two notes at one basename -- one slug, so
+        `_locate` returns two, `upsert` REFUSES that lead permanently, both notes' `last_seen`
+        freeze, and the status edit is stranded on the resurrected copy while the moved note keeps
+        the old one. A wider interleaving instead raises FileNotFoundError out of `_cas_write`,
+        i.e. a lost modify-write arriving as an OSError rather than a VaultConflict. This is the
+        same class of residual `_resolve_path` states for its cache and `_cas_write` states for its
+        compare->replace micro-window: no portable stdlib atomic-conditional-rename exists, so it
+        is DOCUMENTED and made LOUD rather than closed. `merge_cluster` shares the primitive but
+        not the exposure -- its destination is pruned from the scan set and its basename differs,
+        so the same race there yields a visible duplicate rather than a self-collision.
+
+        Made loud two ways: the CLI help says reconcile must not run concurrently with a pipeline
+        command, and after an applied sweep this re-reads and reports any basename now claimed by
+        two paths into `ambiguous` -- so the run that CAUSED it names it.
+
+        FOUR classes are reported and never moved, each for its own reason:
+
+        - `unknown`    -- a non-canonical status. never-regress passes an unrecognized value
+          through untouched everywhere else, so the layout must not decide a folder for one.
+        - `ambiguous`  -- a slug two or more notes claim. This cannot be REPAIRED here: the slug IS
+          the filename, so renaming orphans the note from `_resolve_path`'s candidate walk and the
+          next scrape mints a fresh one; and choosing which twin survives is `leads dedupe`'s job,
+          via `resolve_merge_status`. Moving one twin would PICK, which is precisely what
+          `index_by_slug`, `upsert` and `select_one` all decline to do.
+        - `user_filed` -- a lead outside the managed folders (see `_managed_dirs`).
+        - `collisions` -- the destination name is taken. Refused, NEVER suffixed: a suffix changes
+          the filename, which is the slug, which is the identity.
+
+        Per-note `OSError` isolation, like `merge_cluster`'s per-loser arm. Not atomic across
+        notes, deliberately -- an interrupted run leaves partial drift, which is this pass's normal
+        input, and re-running converges."""
+        summary = dict(_EMPTY_RECONCILE, layout=self.lead_layout, moves=[], ambiguous={},
+                       unknown=[], user_filed=[], collisions=[], skipped=[])
+        # Decision 7, and it lives HERE rather than in the CLI. Under the flat layout there is
+        # nothing to reconcile against, and FLATTENING would drag every lead out of the user's own
+        # subfolders -- decision 4 pointed the wrong way. Putting this only in
+        # `cmd_leads_reconcile` made the store and its own CLI disagree about what flat means: the
+        # store still bucketed every user-filed note while the CLI said "nothing to reconcile", and
+        # `Sluice.reconcile()` -- which every non-CLI caller goes through -- inherited the store's
+        # answer. A behavioural rule about the layout belongs to the thing that owns the layout.
+        if not self.lead_layout:
+            return summary
+        notes = self.read_leads()      # prunes _merged/ (#81) and skips non-lead files
+        managed = self._managed_dirs()
+        # `index_by_slug`, never a hand-rolled dict: it is the one sanctioned way in
+        # (core/leads.py), it DROPS both twins rather than keeping whichever came last, and the
+        # `dropped` mapping it returns IS this pass's ambiguous bucket by construction. The shipped
+        # guard tests/test_slug_indexing_discipline.py names `leads reconcile` as its anticipated
+        # FIFTH consumer -- it was written for exactly this code -- and it must stay GREEN.
+        index, dropped = index_by_slug(notes)
+        for slug, twins in dropped.items():
+            summary["ambiguous"][slug] = sorted(
+                os.path.relpath(t.ref, self.leads_dir) for t in twins)
+        moved_anything = False
+        for n in index.values():
+            # The RAW value, not n.status: read_leads normalizes, and reporting the normalized form
+            # for an unrecognized status would show the user a value their note does not contain --
+            # the thing they have to go and fix.
+            raw = n.fm.get("status", "")
+            sub = layout_subfolder(raw, self.lead_layout)
+            if sub is None:
+                summary["unknown"].append((n.slug, raw))
+                continue
+            src_dir = os.path.dirname(n.ref)
+            if src_dir not in managed:
+                summary["user_filed"].append(
+                    (n.slug, os.path.relpath(src_dir, self.leads_dir)))
+                continue
+            dest_dir = os.path.join(self.leads_dir, sub) if sub else self.leads_dir
+            if os.path.normpath(src_dir) == os.path.normpath(dest_dir):
+                summary["in_place"] += 1
+                continue
+            base = os.path.basename(n.ref)
+            dst_rel = os.path.join(sub, base) if sub else base
+            src_rel = os.path.relpath(n.ref, self.leads_dir)
+            if not apply:
+                summary["moves"].append((n.slug, src_rel, dst_rel))
+                continue
+            try:
+                os.makedirs(dest_dir, exist_ok=True)
+                # suffix_on_collision=False: see _reserve_and_move. A FileExistsError here is a
+                # REFUSAL, not a failure, so it is caught before the generic OSError arm --
+                # conflating the two would tell a human to check permissions when what they
+                # actually have is two notes at one name.
+                _reserve_and_move(n.ref, dest_dir, base, suffix_on_collision=False)
+            except FileExistsError:
+                summary["collisions"].append((n.slug, dst_rel))
+                _log.warning("reconcile: %s -> %s refused: destination is taken (merge or rename "
+                             "by hand; a numeric suffix would change the slug)", src_rel, dst_rel)
+                continue
+            except OSError as e:
+                summary["skipped"].append((n.slug, str(e)))
+                _log.warning("reconcile: could not move %s -> %s: %s", src_rel, dst_rel, e)
+                continue
+            summary["moves"].append((n.slug, src_rel, dst_rel))
+            moved_anything = True
+        if moved_anything:
+            # Re-derive the scan-set cache after a sweep that created directories and moved notes
+            # into them, so the store's own view matches the disk for any later call on this
+            # instance.
+            #
+            # This is HYGIENE, not the thing that prevents a duplicate, and an earlier draft of
+            # this comment claimed otherwise. Measured: deleting this line leaves the suite green,
+            # because `_resolve_path` already re-derives on its miss branch and reconcile can only
+            # ADD directories -- so a stale set is a strict SUBSET, `_locate` can only find FEWER
+            # notes, and finding fewer is exactly the `missed=True` branch that re-derives. The
+            # other direction (found ONCE where fresh finds TWICE) needs two notes at one name,
+            # which this pass refuses rather than creates. Kept because it costs one walk per
+            # applied sweep and leaves the instance truthful; NOT kept with a test asserting it
+            # prevents something it does not.
+            self._rescan_dirs()
+            # The never-clobber residual (see the docstring), reported by the run that caused it.
+            # A move racing a concurrent `_cas_write`'s `os.replace(tmp, path)` re-creates the
+            # source path, and the resulting same-basename pair would otherwise surface much later
+            # as an unexplained `upsert` refusal with no note anywhere saying why.
+            _, raced = index_by_slug(self.read_leads())
+            for slug, twins in raced.items():
+                summary["ambiguous"].setdefault(slug, sorted(
+                    os.path.relpath(t.ref, self.leads_dir) for t in twins))
         return summary
 
     # ── upsert ───────────────────────────────────────────────────────────────
