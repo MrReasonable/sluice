@@ -334,7 +334,11 @@ naming it. A url index over the archive would close the gap; it is `#23` territo
 changes `upsert`'s cost model, so it is deliberately out of scope here.
 
 `upsert`'s return vocabulary is six-member: `created`/`updated`/`merged`/`refused` as
-before, plus `merged_away` and `merged_away_unproven`. Both write nothing. `merged_away`
+before, plus `merged_away` and `merged_away_unproven`. Both write nothing. `refused`
+now covers a third cause alongside #5's name collision and #1's ambiguous candidate: a
+lead carrying neither company nor title, which has no name to be seated at and which
+`_is_lead_note` then hides from every read — so creating it put an unreachable stub in
+the vault and its lead in `seen.db`, which has no removal path. `merged_away`
 requires the store to have PROVED identity -- for the vault, a matching non-empty url on
 both sides -- and only it may enter the dedup store. Every weaker match is
 `merged_away_unproven`: the vault's location-token overlap, or an inconclusive
@@ -473,11 +477,14 @@ And `leads expire --expire <slug>` acts on one twin while the other is neither
 expired nor reported `no-match`, so the human sees no sign the second exists.
 
 All four now take their verdict from `core/leads.py: index_by_slug`, which DROPS
-every slug two or more notes claim and logs it, rather than keeping the last twin —
-the shape `apply/select.py: select_one` and `track confirm` already use for an
-ambiguous `--lead`. `select_all` takes only the ambiguous SET from it (it walks
-notes, not slugs) and SKIPS those notes with an `ambiguous:` reason naming both
-refs, which `preview_all` reports; dropping them silently would be the mirror
+every slug two or more notes claim rather than keeping the last twin — the shape
+`apply/select.py: select_one` and `track confirm` already use for an ambiguous
+`--lead`. It is PURE: it returns `(index, dropped)`, the second element mapping each
+dropped slug to its members, and the CALLER logs (through `ambiguous_slug_warnings`,
+so the four sites cannot drift into four wordings). Returning the grouping is what
+lets `select_all` and `track` stop rebuilding it. `select_all` walks notes rather
+than slugs, so it uses `dropped` only as a membership test, and SKIPS those notes
+with an `ambiguous:` reason naming both refs, which `preview_all` reports; dropping them silently would be the mirror
 failure, a real application suppressed with nothing said. `leads expire --expire
 <slug>` reports `ambiguous`, its own outcome rather than `no-match` — which would
 say the lead is not stale when in fact two of it are — and the CLI classifies it
@@ -502,8 +509,16 @@ eleven `read_leads` call sites, no shipped command reads one status set twice
 through a single store: every `apply`, `cv`, `triage`, `leads` and `track confirm`
 path reads once, and `track run`'s two reads take disjoint sets
 (`APPLICATION_OWNED` and `{"shortlist"}`), so a twin lands in exactly one. The
-suppression is kept as forward-looking, not as a fix for observed noise. The refs
-are in the key so a genuinely NEW collision at that slug is still
+suppression is kept as forward-looking, not as a fix for observed noise — a decision
+that has to be reconciled with `track/receipt.py`, which DELETED its own unreachable
+guard on the ruling that a guard for a state the code cannot reach is inert. Two
+things separate them, and `core/vault.py: read_leads` states both: there the
+unreachability is local and structural (the two tiers are disjoint by construction
+within one function, so only editing that function can change it), while here it rests
+on a survey of external callers that any new command falsifies without touching the
+vault; and receipt.py's guard could not be witnessed at all, whereas this one is
+reached through the public read path by three tests. The refs are in the key so a
+genuinely NEW collision at that slug is still
 reported. Repairing the state, rather than declining to act on it, still belongs
 with the `leads reconcile` pass #1 has yet to ship, which walks the whole tree
 anyway.
@@ -540,9 +555,13 @@ it into the stale set and offers a twin for dismissal). That is not the
 create-race's direction: a create race re-resolves, SEES the raced note and updates
 it.
 
-The arms that pay are `create`, `merged_away` and `merged_away_unproven` — the three
-that leave `_resolve_candidates` from the same `if not found:` branch, which is
-reached exactly when `_locate` saw nothing, the state a stale list manufactures. A
+The re-derive is gated on the CONDITION — `_resolve_candidates` reports whether any
+candidate came back EMPTY, and `_resolve_path` keys on that — never on a list of
+outcome strings. The arms that pay are therefore whatever leaves that `if not found:`
+branch, today `create`, `merged_away` and `merged_away_unproven`, and a fourth added
+later inherits the re-derive instead of silently opting out. The hand-listed form went
+stale once already, shipping as `create` alone with the archive pair added afterwards
+and nothing red in between, because a stale scan set is invisible by construction. A
 guard keyed on `create` alone short-circuits before the archive pair, and measured
 with the cache warmed, an archived twin under `_merged/` and the active note filed
 into a new subfolder, the stale answer was `merged_away` against a fresh answer of
@@ -556,19 +575,32 @@ re-derive at all, against 2.1 s for a walk per lead.
 An unreadable directory in the scan set **raises** (`os.walk(..., onerror=)`). The
 default swallows it and yields nothing, which would make every lead beneath it
 invisible to the read path and to the write path — i.e. re-created — from one
-permissions bit. The same rule binds one rung up, where `_scan_dirs` asks whether
-`leads_dir` exists at all: `os.path.isdir` answers False for an unreadable path as
-readily as for an absent one, so that probe answers False only to
-`FileNotFoundError` and lets a `PermissionError` out.
+permissions bit. The same rule binds every other probe in the module, because
+`os.path.exists`/`isdir`/`isfile` all swallow EVERY `OSError` and so read an
+unstatable path as an absent one. `_is_dir` — which `_scan_dirs` and `read_leads` both
+ask whether `leads_dir` exists at all — answers False only to `FileNotFoundError` and
+lets a `PermissionError` out. `_is_note_file`, `_locate`'s per-candidate probe, answers
+FOUND only for a regular file and absent only for `FileNotFoundError`/
+`NotADirectoryError`. That last one is the sharpest: absent is the branch that CREATES
+and that can record a `merged_away` in `seen.db`, so a directory at mode `r--` — which
+`os.walk` still lists, so `onerror` never fires — made every note inside it read as
+gone. Measured against a live `applied` note with a url-identical archived twin:
+`merged_away`, recorded, `last_seen` frozen, and the only log line said the lead had
+been merged away.
 
 `os.walk` does **not** follow symlinks, and that default is kept: following would let
 a link loop spin the walk and let a link out of the vault pull arbitrary directories
 into the scan set. A symlinked subfolder is therefore invisible to `read_leads` and
 to `_locate` alike, so every lead behind one is re-created — and symlinking a folder
 into an Obsidian vault is ordinary practice. `os.walk` still LISTS an undescended
-symlink in `dirnames`, so the scan warns about any that holds `.md` files. Links
-holding no notes stay quiet, since a warning that fires on every walk for a harmless
-one is a warning users learn to ignore.
+symlink in `dirnames`, so the scan warns about any that holds `.md` files at ANY
+depth — the probe walks the target and short-circuits on the first hit, because a flat
+listing missed exactly the nested layout a recursive scan invites (measured: a note at
+`<target>/2025/` came back `created`, the `applied` original untouched, with no log
+line at all). An unreadable target is reported rather than skipped; the warning itself
+never raises, since the caller is the one definition of the scan set. Links holding no
+notes stay quiet, since a warning that fires on every walk for a harmless one is a
+warning users learn to ignore.
 
 A merge keeps the survivor inside never-clobber's usual rule: only `alt_urls`,
 `first_seen` (minimised) and `last_seen` (advanced) change, re-derived against
