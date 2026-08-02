@@ -27,10 +27,13 @@ made by the thing that cannot check, is worse than an open limit honestly stated
 
 Both of those are the GROUPING form -- `setdefault(key, <empty container>)` followed by a
 mutation -- which keeps EVERY twin and is the shape `index_by_slug` itself is built from. So
-the exemption is keyed on the DEFAULT: an empty container is a grouping and is allowed;
-anything else is `setdefault(n.slug, n)`, which keeps the FIRST twin. That is the same defect
-as the dict comprehension's last-twin-wins, differing only in which twin survives -- and
-"which one" was never the point, since neither is the note a human chose.
+the exemption is keyed on the DEFAULT: an empty MUTABLE container is a grouping and is
+allowed. Anything else keeps the FIRST twin: `setdefault(n.slug, n)` plainly, and
+`setdefault(n.slug, ())` just as surely, because the mutation a grouping follows it with
+cannot happen -- measured, `d.setdefault(k, ()).append(n)` raises `AttributeError: 'tuple'
+object has no attribute 'append'`. That is the same defect as the dict comprehension's
+last-twin-wins, differing only in which twin survives -- and "which one" was never the point,
+since neither is the note a human chose.
 
 LIMITS, stated because a guard whose reach is assumed is a guard that fails open: only a
 plain-name binding is followed, so a slug used as a key through a container, a helper
@@ -71,20 +74,30 @@ def f(notes, d):
     return by_slug, gen, lst, ok, ok2, ok3
 """
 
-# The container constructors a GROUPING seeds with. `setdefault(key, <one of these>)` keeps
-# every twin (the caller then appends to it), which is what `index_by_slug` itself does and
-# the opposite of the defect this file is about.
-_EMPTY_CTORS = {"list", "dict", "set", "tuple"}
+# The MUTABLE container constructors a GROUPING seeds with. `setdefault(key, <one of these>)`
+# keeps every twin (the caller then mutates it in place), which is what `index_by_slug` itself
+# does and the opposite of the defect this file is about. `tuple` is deliberately absent: see
+# _is_empty_container.
+_EMPTY_CTORS = {"list", "dict", "set"}
 
 
 def _is_empty_container(node) -> bool:
-    """An empty `[]`/`{}`/`()`, or a no-arg `list()`/`dict()`/`set()`/`tuple()`.
+    """An empty `[]` or `{}`, or a no-arg `list()`/`dict()`/`set()`.
 
-    Emptiness is required, not just the type: `setdefault(n.slug, [n])` is not a grouping
-    seed -- nothing appends to it, and it keeps the FIRST twin exactly as `setdefault(k, n)`
-    does. `ast.Set` has no empty literal (`{}` parses as a Dict), so it is reachable only
-    through `set()`."""
-    if isinstance(node, (ast.List, ast.Set, ast.Tuple)):
+    Two properties are required, not just the type. EMPTY, because `setdefault(n.slug, [n])`
+    is not a grouping seed -- nothing appends to it, and it keeps the FIRST twin exactly as
+    `setdefault(k, n)` does. And MUTABLE, because a grouping seed exists to be grown in
+    place: measured, `d.setdefault(k, ()).append(n)` raises `AttributeError: 'tuple' object
+    has no attribute 'append'`, so no tuple default can be the grouping form this exemption
+    is for, and exempting one would wave through a `setdefault(n.slug, ())` that keeps the
+    first twin like any other non-grouping default. A set qualifies -- it is grown with
+    `.add` rather than `.append`, the seed `d.setdefault(k, set()).add(n)` in the control
+    above uses.
+
+    There is no `ast.Set` arm because no source can reach one: `{}` parses as a Dict and
+    `{*()}` as a Set holding a Starred, so there is no empty set LITERAL, and `set()` -- the
+    Call arm below -- is the only route to an empty set."""
+    if isinstance(node, ast.List):
         return not node.elts
     if isinstance(node, ast.Dict):
         return not node.keys
@@ -116,9 +129,9 @@ def _violations(tree):
             elt = n.args[0].elt
             if isinstance(elt, ast.Tuple) and elt.elts and _keyed_on_slug(elt.elts[0]):
                 out.append((n.lineno, "dict() call keyed on .slug"))
-        # `d.setdefault(n.slug, <not an empty container>)`, which keeps the FIRST twin.
-        # The grouping form -- an empty container the caller then mutates -- is exempt: it
-        # keeps every twin, and it is what index_by_slug is built from.
+        # `d.setdefault(n.slug, <not an empty mutable container>)`, which keeps the FIRST
+        # twin. The grouping form -- an empty MUTABLE container the caller then grows -- is
+        # exempt: it keeps every twin, and it is what index_by_slug is built from.
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) \
                 and n.func.attr == "setdefault" and n.args and _keyed_on_slug(n.args[0]):
             if len(n.args) < 2 or not _is_empty_container(n.args[1]):
@@ -156,13 +169,20 @@ def test_the_grouping_setdefault_is_not_flagged():
 
     The three seeded forms above (`[]`, `{}`, `set()`) must all be exempt, and `[n]` must
     NOT be: a non-empty default is not a grouping seed, and it keeps the first twin exactly
-    as `setdefault(k, n)` does."""
+    as `setdefault(k, n)` does.
+
+    `()` and `tuple()` are in the FORBIDDEN half for the second half of the rule. They are
+    empty, but an empty tuple cannot be grown, so a `setdefault` on one is never the grouping
+    form -- measured, `d.setdefault(k, ()).append(n)` raises `AttributeError: 'tuple' object
+    has no attribute 'append'` -- and it keeps the first twin like any other non-grouping
+    default. Both spellings are pinned because they reach the matcher by different arms: `()`
+    is an `ast.Tuple` node, `tuple()` an `ast.Call`."""
     exempt = "def f(notes, d):\n    d.setdefault(n.slug, []).append(n)\n"
     assert _violations(ast.parse(exempt)) == []
-    for seed in ("[]", "{}", "set()", "dict()", "list()", "tuple()", "()"):
+    for seed in ("[]", "{}", "set()", "dict()", "list()"):
         src = f"def f(notes, d):\n    d.setdefault(n.slug, {seed})\n"
         assert _violations(ast.parse(src)) == [], seed
-    for seed in ("[n]", "{n.ref: n}", "n", "None", "{n}"):
+    for seed in ("[n]", "{n.ref: n}", "n", "None", "{n}", "()", "tuple()"):
         src = f"def f(notes, d):\n    d.setdefault(n.slug, {seed})\n"
         assert [k for _, k in _violations(ast.parse(src))] == \
             ["setdefault keyed on .slug"], seed
