@@ -462,6 +462,51 @@ def test_upsert_refuses_a_lead_with_neither_company_nor_title(tmp_path, caplog):
     assert any("neither a company nor a title" in m for m in said), said
 
 
+@pytest.mark.parametrize("company,title,seated", [
+    ("Acme", "", "Acme - "),
+    ("", "Analyst", " - Analyst"),
+])
+def test_upsert_still_creates_a_lead_carrying_only_ONE_of_the_two(tmp_path, company, title,
+                                                                 seated):
+    """The MIRROR harm of the refusal above, and it needs its own witness: `or` -> `and` in
+    that guard survived the whole suite. One field is enough because `_is_lead_note` is
+    satisfied by either alone, so both of these notes are real, readable leads -- measured
+    shipped: `Acme - .md` and ` - Analyst.md`, both returned by `read_leads`. Under the
+    mutant both are refused instead: out of the vault, out of `seen.db`, re-reported every
+    run, under a warning saying the lead carries neither field when it carries one.
+
+    Asserted through `read_leads`, not just on the outcome string: the harm is that no read
+    surfaces the note, so the read is the thing to check. The same `or` in `_is_lead_note` is
+    already pinned in both directions (test_vault_recursive_scan.py); this is `upsert`'s own
+    copy of that predicate, which could otherwise drift from the one it claims to mirror."""
+    v = Vault(str(tmp_path))
+    assert v.upsert(_lead(company=company, title=title, url="https://ex.invalid/1")) \
+        == "created"
+    assert [n.slug for n in v.read_leads()] == [seated]
+
+
+@pytest.mark.parametrize("company,title", [("   ", ""), ("", " \t ")])
+def test_upsert_refuses_a_lead_whose_only_field_is_whitespace(tmp_path, company, title):
+    """Stripped before the truthiness test. An all-whitespace field is truthy, so the raw
+    test seated a note at `    - .md` -- a note with no identity to reconcile on, which is
+    the condition the refusal is about. Deliberately STRICTER than `_is_lead_note`, which is
+    truthy on the same whitespace and does return such a note: declining a create costs a
+    re-report, seating an identity-less note costs a permanent `seen.db` row."""
+    v = Vault(str(tmp_path))
+    assert v.upsert(_lead(company=company, title=title, url="https://ex.invalid/1")) \
+        == "refused"
+    assert not list(tmp_path.rglob("*")), "a refusal must not touch the filesystem at all"
+
+
+def test_upsert_still_creates_a_lead_whose_field_merely_has_surrounding_space(tmp_path):
+    """The mirror harm of the strip: only an ALL-whitespace field may be refused. A field
+    with surrounding space carries a real value and must still seat a note."""
+    v = Vault(str(tmp_path))
+    assert v.upsert(_lead(company=" Acme ", title="", url="https://ex.invalid/1")) \
+        == "created"
+    assert len(v.read_leads()) == 1
+
+
 def test_noise_word_makes_a_split_merge_end_to_end(tmp_path, monkeypatch):
     # Config -> _make -> Vault -> same_opportunity: proves the noise knob reaches a verdict.
     import sluice.stores.vault as store_mod
