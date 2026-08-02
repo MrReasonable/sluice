@@ -444,7 +444,12 @@ basename. A recursive scan removes that guarantee: with notes at
 `Active/Acme - Analyst.md` and `Archive/Acme - Analyst.md`, `read_leads` returns
 BOTH, at one slug. Three consumers key a dict on exact slug equality and silently
 keep whichever twin they see last — `track/engine.py`'s `note_by_slug` and
-`shortlist_by_slug`, and `core/app.py`'s `by_slug` in `expire`. Two costs follow.
+`shortlist_by_slug`, and `core/app.py`'s `by_slug` in `expire`. A fourth,
+`apply/select.py: select_all`, keys on nothing at all: it iterates
+`read_leads({"shortlist"})` directly, so it kept BOTH twins and `apply run --all`
+sent two applications for one job under the user's name. That one is the reason a
+fix aimed at the slug-keyed dicts is not the whole fix — the batch path never had a
+dict to harden. Three costs follow.
 `shortlist_by_slug` is the set `match_receipt` searches, so the dropped twin is
 invisible to the receipt matcher and a receipt whose evidence fits it is weighed
 against the survivor instead — and where the survivor's url HOST satisfies
@@ -457,17 +462,37 @@ Identical urls are sufficient, never necessary. And `leads expire --expire <slug
 twin while the other is neither expired nor reported `no-match`, so the human sees
 no sign the second exists.
 
-All three now index through `core/leads.py: index_by_slug`, which DROPS every slug
-two or more notes claim and logs it, rather than keeping the last twin — the shape
-`apply/select.py: select_one` and `track confirm` already use for an ambiguous
-`--lead`. A receipt then matches nothing and stays quiet (the ruling for an
-untracked job's receipt), and `leads expire --expire <slug>` reports `ambiguous`,
-its own outcome rather than `no-match`, which would say the lead is not stale when
-in fact two of it are. `read_leads` returns both twins — dropping one would take a
-lead out of the write path's lookup too, and the next scrape would re-create it —
-and warns, naming both paths, on every read until a human renames or merges them.
-Repairing the state, rather than declining to act on it, still belongs with the
-`leads reconcile` pass #1 has yet to ship, which walks the whole tree anyway.
+All four now take their verdict from `core/leads.py: index_by_slug`, which DROPS
+every slug two or more notes claim and logs it, rather than keeping the last twin —
+the shape `apply/select.py: select_one` and `track confirm` already use for an
+ambiguous `--lead`. `select_all` takes only the ambiguous SET from it (it walks
+notes, not slugs) and SKIPS those notes with an `ambiguous:` reason naming both
+refs, which `preview_all` reports; dropping them silently would be the mirror
+failure, a real application suppressed with nothing said. `leads expire --expire
+<slug>` reports `ambiguous`, its own outcome rather than `no-match` — which would
+say the lead is not stale when in fact two of it are — and the CLI classifies it
+with the other write-did-not-happen outcomes, so the command exits non-zero.
+
+A receipt is refused a write and gets a dead-letter row for review. Staying quiet
+would apply the untracked-job ruling to a job that is tracked twice over, and the
+message is `seen.add`ed and never re-queried, so the evidence would be lost
+outright. `track/engine.py` therefore probes the DROPPED twins explicitly — only
+after the deterministic pass came back empty, so it can never intercept a real
+match, and on that probe's RESULT rather than on the mere existence of a duplicate,
+which would make a false signpost of every unmatched receipt in a vault holding
+one. The row carries no `--to applied`: `confirm` resolves a lead by slug, and this
+slug is the one that resolves to two notes. It names the two notes to rename or
+merge, and re-surfaces every run until that happens.
+
+`read_leads` returns both twins — dropping one would take a lead out of the write
+path's lookup too, and the next scrape would re-create it — and warns, naming both
+paths. That warning is deduped per store on `(slug, refs)`, exactly as the symlink
+warning is: `apply run --all` reads the shortlist once per lead on top of its batch
+read, so one duplicate produced four identical lines and scaled with the shortlist.
+The refs are in the key so a genuinely NEW collision at that slug is still
+reported. Repairing the state, rather than declining to act on it, still belongs
+with the `leads reconcile` pass #1 has yet to ship, which walks the whole tree
+anyway.
 
 Sluice does not write this state. Creates go to one directory, `_resolve_path`
 refuses an ambiguous candidate, and — since a stale scan-set cache would otherwise
@@ -484,20 +509,35 @@ invocation, so a filesystem change made mid-run IS visible to those two. The one
 answer `_scan_dirs` never caches is "leads_dir is missing", since `upsert` creates
 that directory mid-run and a cached miss would leave every later lookup in the same
 run blind to it. The cache's own staleness window is a human filing a note into a
-NEW subfolder while a run is in progress, and that window is closed on the CREATE
-arm: `_resolve_path` re-derives the list from disk, cache bypassed, before a create
-is allowed to stand, and re-resolves if the folder set moved. Left open it did not
-degrade gracefully. Every command reads before it writes, so the cache is warm by
-the first create; the very next lead of the same identity was then CREATED at the
-root name — sluice's own duplicate — and from the next run on both twins were
-visible, the candidate resolved to two notes and `upsert` REFUSED the lead
-permanently with its `last_seen` frozen (which, with `lead_ttl_days` set, ages it
-into the stale set and offers a twin for dismissal). That is not the create-race's
-direction: a create race re-resolves, SEES the raced note and updates it. The
-re-derive is on the create arm only — update, merge and refuse have all identified a
-real note, so a fresher list cannot change their answer, and re-deriving per lead is
-exactly the per-lead walk the cache replaces. Measured on the 5500-note vault: 500
-updates cost 247 ms with no re-derive at all, against 2.1 s for a walk per lead.
+NEW subfolder while a run is in progress, and that window is closed on every verdict
+`_locate` reaches by finding NOTHING: `_resolve_path` re-derives the list from disk,
+cache bypassed, before such a verdict is allowed to stand, and re-resolves if the
+folder set moved.
+
+Left open it did not degrade gracefully. Nothing reads before it writes — the cache
+is filled by the FIRST `_locate` the store performs, which is that same walk on the
+run's first lead, since `read_leads` and `normalize_all_statuses` call `_walk`
+directly and leave it `None` and the ingest sink never reads at all. So from the
+second lead on it is a snapshot, and the very next lead of the same identity was
+CREATED at the root name — sluice's own duplicate — and from the next run on both
+twins were visible, the candidate resolved to two notes and `upsert` REFUSED the
+lead permanently with its `last_seen` frozen (which, with `lead_ttl_days` set, ages
+it into the stale set and offers a twin for dismissal). That is not the
+create-race's direction: a create race re-resolves, SEES the raced note and updates
+it.
+
+The arms that pay are `create`, `merged_away` and `merged_away_unproven` — the three
+that leave `_resolve_candidates` from the same `if not found:` branch, which is
+reached exactly when `_locate` saw nothing, the state a stale list manufactures. A
+guard keyed on `create` alone short-circuits before the archive pair, and measured
+with the cache warmed, an archived twin under `_merged/` and the active note filed
+into a new subfolder, the stale answer was `merged_away` against a fresh answer of
+`updated` — and `merged_away` is the RECORDED arm, so `seen.db`, which has no
+removal path, would suppress that lead permanently. Update, merge and refuse are the
+arms that cannot move: each has already IDENTIFIED a real note, so a fresher list
+cannot change its answer, and re-deriving per lead there is exactly the per-lead walk
+the cache replaces. Measured on the 5500-note vault: 500 updates cost 247 ms with no
+re-derive at all, against 2.1 s for a walk per lead.
 
 An unreadable directory in the scan set **raises** (`os.walk(..., onerror=)`). The
 default swallows it and yields nothing, which would make every lead beneath it
