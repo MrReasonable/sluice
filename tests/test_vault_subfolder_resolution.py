@@ -76,9 +76,15 @@ def test_a_note_moved_to_a_subfolder_is_updated_not_recreated(tmp_path):
     note.rename(moved)
 
     v = Vault(str(tmp_path))                      # fresh: the scan-set cache is per instance
-    assert v.upsert(_lead(last_seen="2026-07-08")) == "updated"
-    assert "last_seen: 2026-07-08" in moved.read_text()
+    # The DISK is asserted on first and the outcome string last, which is the whole ordering
+    # decision here. With `== "updated"` leading, the relevant mutant -- a `_locate` that
+    # probes only leads_dir -- fails on that line and the two assertions below never execute,
+    # so they could be anything at all and nothing would say so. Probed: reordered, each of
+    # the three fails on that mutant INDEPENDENTLY (checked by deleting the other two).
+    outcome = v.upsert(_lead(last_seen="2026-07-08"))
     assert not note.exists()                      # nothing re-created at the flat name
+    assert "last_seen: 2026-07-08" in moved.read_text()   # the moved note is what was bumped
+    assert outcome == "updated"
 
 
 def test_a_note_filed_into_a_new_subfolder_mid_run_is_not_duplicated(tmp_path):
