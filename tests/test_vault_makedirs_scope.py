@@ -15,7 +15,15 @@ a directory made via pathlib.Path(...).mkdir() -- a method call, not one of thos
 would evade it entirely. Today's risk is zero: vault.py creates directories only through the
 four os.makedirs sites classified below (verified by hand, not by this guard), and nothing
 in it calls os.mkdir or pathlib. But that is a fact about the code today, not a guarantee
-this test enforces -- a future pathlib-based makedirs call ships unclassified and silent."""
+this test enforces -- a future pathlib-based makedirs call ships unclassified and silent.
+
+A SECOND limit used to sit beside it and is now closed: a name bound at RUNTIME rather than
+at import (`_d = os.makedirs`, then `_d(x)`) walked straight past a matcher that derived its
+names from import nodes alone. _local_dirmakers now follows assignments to a fixpoint, so
+chains (`_a = os.makedirs; _b = _a`) are covered too. What is still NOT followed is a
+callable smuggled through anything other than a plain name binding -- stored in a dict or a
+list, passed as an argument, or reached as an attribute of an object -- and `_CONTROL_NEG`
+pins the other half, that binding something else entirely is not mistaken for a dir-maker."""
 import ast
 import pathlib
 
@@ -37,15 +45,64 @@ _EXPECTED = {
 _DIRMAKERS = {"makedirs", "mkdir"}
 
 
+# Every spelling that reaches os.makedirs/os.mkdir under a name the literal "os.makedirs"
+# does not match. The POSITIVE control: a matcher that silently stopped matching would leave
+# the classification assertion satisfied over an empty set, which for a guard whose success
+# case is "found nothing unclassified" is indistinguishable from working.
+_CONTROL_POS = """
+import os
+import os as _o
+from os import makedirs as _mk
+from os import mkdir as _mkd
+
+_module_alias = os.makedirs
+_chained = _module_alias
+
+def f(p):
+    _fn_alias = _o.mkdir
+    _annotated: object = _mk
+    _o.makedirs("module_alias_import")
+    _mk("direct_import")
+    _mkd("direct_mkdir_import")
+    _module_alias("module_level_binding")
+    _chained("chained_binding")
+    _fn_alias("function_level_binding")
+    _annotated("annotated_binding")
+"""
+
+# The NEGATIVE half. A matcher that treated EVERY assignment's target as a dir-maker, or that
+# flagged every call through a local name, would also pass the positive control -- and would
+# then demand that vault.py classify its `os.path.join` calls.
+_CONTROL_NEG = """
+import os
+
+_joiner = os.path.join
+_not_a_call = os.makedirs
+
+def g(p):
+    _joiner("joined")
+    os.path.dirname("dirname")
+    open("opened")
+"""
+
+
 def _local_dirmakers(tree):
-    """Every local name in vault.py that reaches os.makedirs/os.mkdir, derived from
-    that module's OWN import nodes rather than hand-listed.
+    """Every local name in `tree` that reaches os.makedirs/os.mkdir, derived from that
+    module's OWN import and assignment nodes rather than hand-listed.
 
     `import os as _o` and `from os import makedirs as _mk` are the same call under
     different spellings, and a sweep keyed on the literal "os.makedirs" sees neither --
     while the four existing calls keep the scope assertion satisfied, so both tests stay
     green and a new unguarded directory ships. That is the documented "hand-listed names
-    lose to an import alias" failure, and deriving the bindings is its documented fix."""
+    lose to an import alias" failure, and deriving the bindings is its documented fix.
+
+    A RUNTIME binding is the same failure one rung further along: `_d = os.makedirs` needs
+    no import alias at all, and `_d(x)` then evades a matcher built from import nodes only.
+    So assignments are followed too, to a FIXPOINT -- `_a = os.makedirs; _b = _a` rebinds
+    through an intermediate, and a single pass would see `_b = _a` before `_a` was known.
+    `ast.walk` reaches module-level and function-level bindings alike, so both are covered
+    by the same loop; AnnAssign is included because `_d: Callable = os.makedirs` is the same
+    binding wearing a type."""
     modules, direct = set(), set()
     for n in ast.walk(tree):
         if isinstance(n, ast.Import):
@@ -56,26 +113,66 @@ def _local_dirmakers(tree):
             for a in n.names:
                 if a.name in _DIRMAKERS:
                     direct.add(a.asname or a.name)
-    return {f"{m}.{f}" for m in modules for f in _DIRMAKERS} | direct
+    names = {f"{m}.{f}" for m in modules for f in _DIRMAKERS} | direct
+    # Propagate through plain name bindings until nothing new appears. Bounded: each pass
+    # either grows `names` (finite -- one entry per assignment target in the file) or stops.
+    while True:
+        grown = False
+        for n in ast.walk(tree):
+            if not isinstance(n, (ast.Assign, ast.AnnAssign)):
+                continue
+            # A bare `x: T` annotation has no value; and only a name/attribute VALUE can be
+            # an alias -- `_d = os.makedirs(p)` is a Call, which binds the RESULT, not the
+            # callable, and must not make `_d` a dir-maker.
+            if n.value is None or not isinstance(n.value, (ast.Name, ast.Attribute)):
+                continue
+            if ast.unparse(n.value) not in names:
+                continue
+            targets = n.targets if isinstance(n, ast.Assign) else [n.target]
+            for t in targets:
+                if isinstance(t, ast.Name) and t.id not in names:
+                    names.add(t.id)
+                    grown = True
+        if not grown:
+            return names
 
 
-def _makedirs_args():
-    tree = ast.parse(_VAULT.read_text())
+def _makedirs_args(tree):
     names = _local_dirmakers(tree)
     return [ast.unparse(n.args[0]) for n in ast.walk(tree)
-            if isinstance(n, ast.Call) and ast.unparse(n.func) in names]
+            if isinstance(n, ast.Call) and ast.unparse(n.func) in names and n.args]
+
+
+def _vault_makedirs_args():
+    return _makedirs_args(ast.parse(_VAULT.read_text()))
+
+
+def test_the_matcher_reaches_every_aliased_spelling():
+    """SCOPE, on the matcher itself. Every binding in the control must be found -- counted,
+    not set-compared, because the argument strings are distinct and a matcher that reached
+    only some spellings would otherwise satisfy a membership check."""
+    found = sorted(_makedirs_args(ast.parse(_CONTROL_POS)))
+    assert found == ["'annotated_binding'", "'chained_binding'", "'direct_import'",
+                     "'direct_mkdir_import'", "'function_level_binding'",
+                     "'module_alias_import'", "'module_level_binding'"], found
+
+
+def test_the_matcher_does_not_flag_an_unrelated_binding():
+    """The negative half: binding something that is NOT a dir-maker, and calling it, must
+    stay invisible -- otherwise this guard would demand vault.py classify os.path.join."""
+    assert _makedirs_args(ast.parse(_CONTROL_NEG)) == []
 
 
 def test_the_sweep_actually_finds_the_makedirs_calls():
     """The scope assertion. Without it a matcher that silently stopped matching -- an
     ast.unparse spelling change, a renamed import -- would leave every assertion below
     trivially true."""
-    found = _makedirs_args()
+    found = _vault_makedirs_args()
     assert len(found) >= 4, f"AST sweep found only {found!r}; the matcher is broken"
 
 
 def test_every_makedirs_call_is_classified():
-    unexpected = set(_makedirs_args()) - set(_EXPECTED)
+    unexpected = set(_vault_makedirs_args()) - set(_EXPECTED)
     assert not unexpected, (
         f"vault.py creates {unexpected}, which this guard does not classify. If it is under "
         f"leads_dir and holds notes sluice owns, add its name to _PRIVATE_SUBDIRS so the scan "
