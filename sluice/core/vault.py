@@ -111,6 +111,54 @@ def _reraise(exc: OSError) -> None:
     raise exc
 
 
+def _is_dir(path: str) -> bool:
+    """Does `path` name a directory? NOT os.path.isdir, which swallows EVERY OSError and
+    so reads an unreadable path as an absent one -- the same fail-open _reraise removes
+    from the walk itself, one rung further up. Only FileNotFoundError is answered False
+    (leads_dir before the first upsert: the overwhelmingly common case, and not an error);
+    a PermissionError propagates, because a scan set that silently reads as [leads_dir]
+    hides every note in every subfolder from read_leads AND from _locate, which re-creates
+    all of them."""
+    try:
+        return stat.S_ISDIR(os.stat(path).st_mode)
+    except FileNotFoundError:
+        return False
+
+
+def _warn_undescended_symlinks(dirpath: str, dirnames: list, already: set) -> None:
+    """Warn about a symlinked subfolder the walk will not descend into (followlinks=False;
+    see _walk). Best effort and log-only: it must never raise, because the caller is the one
+    definition of the scan set and a warning path that aborts a read would be worse than the
+    thing it warns about.
+
+    Only symlinks HOLDING notes are reported, so a user's symlink to a folder of anything
+    else stays quiet -- a warning that fires on every walk for a harmless link is one users
+    learn to ignore, which is how the real one gets missed. `already` is the store's own set
+    of paths reported so far, and it is the same argument in a different form: one command
+    walks several times (a read, the scan set, one re-derive per create), so without it a
+    single link would say the same thing a dozen times in one run. It is per STORE, not
+    global -- a later run is a fresh report, and the condition may genuinely have gone away.
+
+    An unreadable target is reported rather than skipped: the notes behind it are just as
+    invisible, and 'cannot tell' must not read as 'nothing there'."""
+    for name in dirnames:
+        path = os.path.join(dirpath, name)
+        if path in already or not os.path.islink(path):
+            continue
+        try:
+            n = sum(1 for e in os.listdir(path) if e.endswith(".md"))
+        except OSError as e:
+            already.add(path)
+            _log.warning("vault: %s is a symlink this scan cannot read (%s); any lead in it "
+                         "is invisible and would be re-created", path, e)
+            continue
+        if n:
+            already.add(path)
+            _log.warning("vault: %s is a symlink holding %d note(s); the scan does not follow "
+                         "symlinks, so those leads are invisible and would be re-created "
+                         "-- move the folder into the vault instead of linking it", path, n)
+
+
 def _is_lead_note(fm: dict) -> bool:
     """Does this file's frontmatter make it a LEAD, as opposed to a note the user keeps
     alongside their leads (interview prep, research)? Once the scan is recursive those
@@ -157,12 +205,16 @@ class Vault:
         # Fed raw into same_opportunity -> _compare_locations, which tokenizes it. #5's
         # split policy knob; empty by default (abstain). See core/config.py.
         self._noise = frozenset(location_noise_words or ())
-        # The scan set, computed once per store instance. Re-deriving it per lead costs
-        # ~1.4s on a 5500-note vault across a 500-lead run against ~4ms cached (measured).
-        # The staleness window is a human creating a subfolder mid-run; the cost is one
-        # duplicate note, which is the recoverable direction and the same posture the
-        # existing create-race takes.
+        # The scan set, computed once per store instance -- re-deriving it per lead is the
+        # dominant cost of a run (figures in the design spec). The staleness window is a
+        # human filing a note into a NEW subfolder mid-run, which _resolve_path closes on
+        # the create arm by re-deriving this from disk before it mints a note; see there
+        # for why that window could not be left open.
         self._scan_dirs_cache: list[str] | None = None
+        # Symlinked subfolders already reported (see _warn_undescended_symlinks). Per STORE,
+        # because one command walks several times and a link must not say the same thing a
+        # dozen times in one run.
+        self._warned_symlinks: set = set()
 
     def _slug_for(self, path: str) -> str:
         """The lead's stable identity. For a markdown vault that is the filename without
@@ -187,10 +239,24 @@ class Vault:
         name at every depth would instead hide a same-named directory the USER made, whose
         notes would then be re-created as duplicates.
 
-        onerror=_reraise, never the default: see there."""
+        onerror=_reraise, never the default: see there.
+
+        followlinks=False, os.walk's default and deliberately kept. Following would let a
+        symlink loop spin the walk forever and would let a link out of the vault pull
+        arbitrary directories into the scan set. The cost is that a SYMLINKED subfolder --
+        ordinary practice in an Obsidian vault, and this change is what invites users to
+        file leads into subfolders at all -- is invisible to read_leads AND to _locate, so
+        every lead behind it is silently re-created (measured: a note at `status: applied`
+        came back `created`, the original untouched, with no log line). That is exactly the
+        invisible-subtree harm _reraise exists to stop, arriving by a different route, so it
+        is made loud here: os.walk still LISTS an undescended symlink in `dirnames`, which
+        is where it is visible even though it is not followed."""
         for dirpath, dirnames, filenames in os.walk(self.leads_dir, onerror=_reraise):
             if dirpath == self.leads_dir:
                 dirnames[:] = [d for d in dirnames if d not in _PRIVATE_SUBDIRS]
+            # After the prune, so a symlinked `_merged/` stays silent: it is pruned from the
+            # scan on purpose, and _archived_match's own listdir follows it regardless.
+            _warn_undescended_symlinks(dirpath, dirnames, self._warned_symlinks)
             yield dirpath, filenames
 
     def _scan_dirs(self) -> list[str]:
@@ -198,11 +264,20 @@ class Vault:
         directory exists, and does NOT cache that answer: upsert creates leads_dir mid-run,
         so caching 'missing' would leave every later lookup in the same run blind to the
         directory it had just written into."""
-        if not os.path.isdir(self.leads_dir):
+        if not _is_dir(self.leads_dir):
             return [self.leads_dir]
         if self._scan_dirs_cache is None:
             self._scan_dirs_cache = [dirpath for dirpath, _ in self._walk()]
         return self._scan_dirs_cache
+
+    def _rescan_dirs(self) -> list[str]:
+        """Re-derive the scan set from disk, cache BYPASSED, and return the fresh list.
+
+        Assigning None rather than calling _walk directly keeps ONE definition of what the
+        cached value is (including the never-cache-a-missing-leads_dir rule); a second
+        expression that filled the cache itself is the shape that drifts."""
+        self._scan_dirs_cache = None
+        return self._scan_dirs()
 
     def _locate(self, name: str) -> list[str]:
         """Every path in the scan set holding a note called `name`. A lead's identity is its
@@ -504,6 +579,43 @@ class Vault:
         return names, capped
 
     def _resolve_path(self, lead: Lead) -> tuple[str | None, str]:
+        """The candidate walk (see _resolve_candidates), with the scan set re-derived from
+        disk before a CREATE is allowed to stand.
+
+        Without that re-derive the cached directory list wedges the store PERMANENTLY, which
+        is not the bounded cost the cache was justified by. Every command reads before it
+        writes, so the cache is already warm by the time the first note is created; a human
+        who then files that note into a NEW subfolder mid-run is invisible to _locate, and
+        the very next lead of the same identity is CREATED at the root name. Measured, that
+        is sluice's OWN duplicate rather than a hand-made one, and it does not converge: from
+        the next run on, both twins are visible, the candidate resolves to two notes, and
+        `upsert` REFUSES the lead for good while its last_seen stays frozen -- which, with
+        `lead_ttl_days` set, then ages it into the stale set and offers a twin for dismissal.
+        The create-race loop it was likened to converges instead: a re-resolve SEES the raced
+        note and updates it.
+
+        Deliberately only on the create arm. Update, merge and refuse have all identified a
+        real note, so a fresher directory list cannot change the answer; and re-deriving per
+        LEAD is the per-lead walk the cache exists to avoid. Creates are the rare outcome in
+        a steady-state run, so the cost is one extra walk each rather than one per lead
+        (measured in the design spec) -- and every create pays it, since a stale set is
+        exactly the state in which the walk cannot know it is stale.
+
+        The set is compared, never the list ORDER: `_locate` reads every entry, so an
+        order-only difference from one scandir to the next changes no answer and must not
+        trigger a redundant second resolve (which would re-run _archived_match's listdir)."""
+        path, action = self._resolve_candidates(lead)
+        if action != "create":
+            return path, action
+        # set(), which COPIES. _scan_dirs hands out its cache by reference, so a bare alias
+        # here would compare the fresh list to itself the moment _rescan_dirs was refactored
+        # to refresh in place -- vacuously equal, and the wedge silently back.
+        before = set(self._scan_dirs())
+        if set(self._rescan_dirs()) == before:
+            return path, action
+        return self._resolve_candidates(lead)
+
+    def _resolve_candidates(self, lead: Lead) -> tuple[str | None, str]:
         """Walk the nameable candidates and return (path, action). Against an ACTIVE note,
         action is one of "create"/"update"/"merge"/"refuse". Candidate 1 is the clean
         `Company - Title` name (always); a location suffix (only when location is non-empty)
@@ -609,6 +721,21 @@ class Vault:
                 continue
             out.append(LeadNote(ref=path, slug=self._slug_for(path),
                                 fm=fm, body=body, status=st))
+        # The WRITE path refuses an ambiguous candidate and names both colliding paths
+        # (_resolve_path); the read path has no such option -- dropping a lead is worse than
+        # returning it -- so it is loud instead. On a flat store slug uniqueness held by
+        # CONSTRUCTION (one directory cannot hold two files at one basename, and _slug_for is
+        # the basename); a recursive scan removes that, and consumers that key a dict on slug
+        # equality then keep whichever twin they saw last. Warned per RETURNED list, because
+        # that is the set a caller indexes: a twin filtered out by `statuses` is not one of
+        # its keys.
+        by_slug: dict = {}
+        for note in out:
+            by_slug.setdefault(note.slug, []).append(note.ref)
+        for slug, refs in by_slug.items():
+            if len(refs) > 1:
+                _log.warning("vault: slug %r is claimed by %d notes (%s); consumers keyed on "
+                             "it will see only one", slug, len(refs), ", ".join(sorted(refs)))
         return out
 
     def update_fields(self, ref, fields: dict, *,
