@@ -577,32 +577,48 @@ class Vault:
 
     def _resolve_path(self, lead: Lead) -> tuple[str | None, str]:
         """The candidate walk (see _resolve_candidates), with the scan set re-derived from
-        disk before a CREATE is allowed to stand.
+        disk before any verdict reached through `_locate` finding NOTHING is allowed to
+        stand -- create and both archive arms.
 
         Without that re-derive the cached directory list wedges the store PERMANENTLY, which
-        is not the bounded cost the cache was justified by. Every command reads before it
-        writes, so the cache is already warm by the time the first note is created; a human
-        who then files that note into a NEW subfolder mid-run is invisible to _locate, and
-        the very next lead of the same identity is CREATED at the root name. Measured, that
-        is sluice's OWN duplicate rather than a hand-made one, and it does not converge: from
+        is not the bounded cost the cache was justified by. The cache is filled by the FIRST
+        `_locate` this store performs -- which is this very walk, on the run's first lead --
+        and by nothing else: `read_leads` and `normalize_all_statuses` call `_walk` directly
+        and leave it None, and the ingest sink never reads before it writes at all. So from
+        the second lead on it is a snapshot, and a human who files a note into a NEW
+        subfolder while the run is in progress is invisible to _locate from then on: the
+        very next lead of the same identity is CREATED at the root name. Measured, that is
+        sluice's OWN duplicate rather than a hand-made one, and it does not converge: from
         the next run on, both twins are visible, the candidate resolves to two notes, and
         `upsert` REFUSES the lead for good while its last_seen stays frozen -- which, with
         `lead_ttl_days` set, then ages it into the stale set and offers a twin for dismissal.
         The create-race loop it was likened to converges instead: a re-resolve SEES the raced
         note and updates it.
 
-        Deliberately only on the create arm. Update, merge and refuse have all identified a
-        real note, so a fresher directory list cannot change the answer; and re-deriving per
-        LEAD is the per-lead walk the cache exists to avoid. Creates are the rare outcome in
-        a steady-state run, so the cost is one extra walk each rather than one per lead
-        (measured in the design spec) -- and every create pays it, since a stale set is
-        exactly the state in which the walk cannot know it is stale.
+        The archive arms need it for the SAME reason and were the arms it first missed:
+        `_ARCHIVED` and `_ARCHIVED_UNPROVEN` leave _resolve_candidates from the identical
+        `if not found:` branch -- reached precisely when _locate saw nothing, which is what a
+        stale list manufactures. Measured with the cache warmed, the note then filed into a
+        new subfolder and an archived twin under `_merged/`: the fresh-cache verdict is
+        `updated`, the stale-cache verdict `merged_away`. That is the RECORDED arm, so a
+        stale list would put into `seen.db` -- which has no removal path -- a lead the fresh
+        answer says is sitting right there, suppressing it permanently with its last_seen
+        frozen. Update, merge and refuse are the arms that genuinely cannot move: each has
+        already IDENTIFIED a real note, so a fresher directory list cannot change its answer.
+
+        Re-deriving per LEAD is the per-lead walk the cache exists to avoid, which is why
+        the three identified arms skip it. The arms that pay are rare in a steady-state run,
+        so the cost is one extra walk each rather than one per lead (measured in the design
+        spec) -- and every one of them pays it, since a stale set is exactly the state in
+        which the walk cannot know it is stale. `_ARCHIVED_UNPROVEN` re-reports every run
+        until a human acts, so its extra walk recurs; it is one walk per affected lead per
+        run, and it stops when the human acts.
 
         The set is compared, never the list ORDER: `_locate` reads every entry, so an
         order-only difference from one scandir to the next changes no answer and must not
         trigger a redundant second resolve (which would re-run _archived_match's listdir)."""
         path, action = self._resolve_candidates(lead)
-        if action != "create":
+        if action not in ("create", _ARCHIVED, _ARCHIVED_UNPROVEN):
             return path, action
         # set(), which COPIES. _scan_dirs hands out its cache by reference, so a bare alias
         # here would compare the fresh list to itself the moment _rescan_dirs was refactored
