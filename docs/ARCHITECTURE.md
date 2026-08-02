@@ -449,6 +449,57 @@ candidate name is reconciled against as though it were a lead, unchanged from th
 flat store. A name resolving to two or more notes is ambiguous identity and `upsert`
 refuses.
 
+**The scan set and the write folder are two different things** (#1). The scan set is
+every directory a lead may be READ from; the **write folder** is the ONE directory a
+new note is CREATED in. `Vault._write_folder()` resolves it through
+`layout_subfolder("new", lead_layout)` — the status a created note actually carries —
+so a created note is by construction already where its status implies, and `leads
+reconcile` has nothing to do with a note ingest just made. It is made on the CREATE arm
+only: `upsert`'s `leads_dir` makedirs sits above the update/merge/create fan-out, so
+repointing that one would mint an empty `Active/` on a pure `last_seen` bump.
+
+`lead_layout` (root config, `""` by default) selects the layout. `""` is flat and
+byte-identical to the pre-#1 store; `"active_archive"` files leads into `Active/` and
+`Archive/`. The Archive set is **derived** — `dismiss` plus every terminal read from
+`core/status.py` via `is_terminal` — never hand-listed, so a terminal added there later
+archives automatically. An unknown value raises and lists the valid names, at BOTH
+`load_config` (so a YAML typo is a usage error, not a traceback) and `Vault.__init__`
+(so the ~150 direct `Vault(...)` constructions are covered too).
+
+**`sluice leads reconcile`** is the only pass that MOVES a lead note. It reports by
+default and moves on `--apply`; there is no `--dry-run`, because the default *is* the
+dry run. It moves notes only within the **managed** folders — the leads-dir root, plus
+the layout's own folders. The root is seeded explicitly and is not derivable: under
+`active_archive` no canonical status maps to it, and deriving the set left the root out,
+so every note in a flat vault reported as user-filed and nothing ever moved. Four
+classes are reported and never moved: a non-canonical status (`unknown`, never-regress);
+a slug two notes claim (`ambiguous`, which this pass cannot repair — see above); a lead
+in the user's own subfolder (`user_filed`, decision 4 applied to writes); and a taken
+destination (`collisions`, refused rather than suffixed, because the filename is the
+slug is the identity).
+
+It writes no note BYTES, only directory entries — but that is not never-clobber "by
+construction". A move landing between `_cas_write`'s freshness re-read and
+`_atomic_write`'s `os.replace(tmp, path)` RE-CREATES the source path, leaving two notes
+at one basename and a lead `upsert` then refuses permanently. No portable stdlib
+atomic-conditional-rename exists, so this is the same accepted residual as `_cas_write`'s
+own micro-window: documented, warned about in the command's help, and REPORTED — an
+applied sweep re-reads and names any basename now claimed by twice, so the run that
+caused it says so rather than leaving a later ingest to surface it as an unexplained
+refusal.
+
+`reconcile_layout` is deliberately NOT on the Store protocol. The contrast with
+`merge_cluster`, which is, is the useful one: #81 non-resurrection is a store-agnostic
+OBLIGATION any store can satisfy (a SQL one with a tombstone row), whereas a folder
+layout is a MECHANISM carrying no obligation — putting it on the contract would make
+every other store pretend to honour a concept it does not have, which is what
+`ensure_stfolder` was moved out of the protocol to avoid. The facade checks the
+capability and the CLI renders a store without it as a usage error (rc 2).
+
+#81's documented recovery is unaffected: a note hand-moved back out of `_merged/` is
+found by NAME in whatever folder it lands in, so the next scrape reconciles against it
+as an ordinary note.
+
 That refusal covers the WRITE path only, and the read path has no equivalent. On a
 flat store slug uniqueness held *by construction* — one directory cannot hold two
 files with the same basename, and `Vault._slug_for` derives the slug from the
@@ -540,9 +591,12 @@ vault; and receipt.py's guard could not be witnessed at all, whereas this one is
 reached through the public read path by two tests that read twice on one store, one of
 which reddens when the suppression is deleted (measured: it is the only test in the
 suite that does). The refs are in the key so a genuinely NEW collision at that slug is
-still reported. Repairing the state, rather than declining to act on it, still belongs
-with the `leads reconcile` pass #1 has yet to ship, which walks the whole tree
-anyway.
+still reported. Repairing the state is NOT reconcile's job, and #1 settled that
+explicitly: the slug IS the note filename, so a rename orphans the note from
+`_resolve_path`'s candidate walk and the next scrape mints a fresh one, while
+choosing which twin survives is a merge decision `resolve_merge_status` owns.
+`sluice leads reconcile` REPORTS the pair under `ambiguous`, names both paths and
+moves neither; the repair is `sluice leads dedupe --merge`, or a hand rename.
 
 Sluice does not write this state. Creates go to one directory, `_resolve_path`
 refuses an ambiguous candidate, and — since a stale scan-set cache would otherwise
@@ -607,7 +661,9 @@ paths, so every command that reads leads says so. What it costs is that the twin
 enters `seen.db` (`updated` and `merged` are both on the sink's allowlist), so
 *ingest* stops re-reporting the ambiguity, and the other twin's `last_seen` stays
 frozen. Sluice does not create this state — it arrives from a human with a filesystem
-— and repairing it belongs with the `leads reconcile` pass.
+— and repairing it belongs with `sluice leads dedupe --merge` (or a hand
+rename). `leads reconcile` REPORTS such a pair and declines to move either note:
+the filename is the slug, so it cannot rename, and it must not pick a survivor.
 
 An unreadable directory in the scan set **raises** (`os.walk(..., onerror=)`). The
 default swallows it and yields nothing, which would make every lead beneath it
