@@ -10,7 +10,7 @@ from sluice.core.leads import Lead
 from sluice.core.vault import (
     _MERGED_SUBDIR, _PRIVATE_SUBDIRS, Vault, _is_lead_note,
 )
-from tests.conftest import LOCATIONS, UNREADABLE_DIR as _UNREADABLE_DIR
+from tests.conftest import LOCATIONS, UNREADABLE_DIR as _UNREADABLE_DIR, racing_read
 
 
 def _leads_dir(tmp_path):
@@ -488,6 +488,60 @@ def test_normalize_statuses_never_writes_into_an_archived_loser(tmp_path):
     loser.write_text(original)
     Vault(str(tmp_path)).normalize_all_statuses()
     assert loser.read_text() == original
+
+
+def _conflicted(path):
+    """A note whose DUPLICATE status lines disagree -- normalize_all_statuses reports it
+    under `conflicts` and never guesses which line is right."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('---\ncompany: "Acme"\nrole: "Analyst"\n'
+                    "status: dismiss\nstatus: shortlist\n---\n\nbody\n")
+    return path
+
+
+def test_conflicts_name_two_same_basename_notes_apart(tmp_path):
+    """`os.path.relpath(path, leads_dir)`, not the basename -- and this is the case it
+    exists for. Two notes can share a basename once the scan is recursive, and both buckets
+    hand a NAME to a human who has to go and fix the note. Under `os.path.basename` this
+    summary reads `[('Acme - Analyst.md', [...]), ('Acme - Analyst.md', [...])]`: two
+    identical strings naming two different files, and nothing to tell them apart.
+
+    Witnessed by MOVING the naming back to `os.path.basename(path)`."""
+    leads = _leads_dir(tmp_path)
+    _conflicted(leads / "Active" / "Acme - Analyst.md")
+    _conflicted(leads / "Archive" / "Acme - Analyst.md")
+    summary = Vault(str(tmp_path)).normalize_all_statuses()
+    names = sorted(name for name, _ in summary["conflicts"])
+    assert names == [os.path.join("Active", "Acme - Analyst.md"),
+                     os.path.join("Archive", "Acme - Analyst.md")]
+    assert summary["changed"] == 0        # a conflict is never auto-guessed
+
+
+def test_skipped_names_a_raced_note_by_its_relative_path(tmp_path, monkeypatch):
+    """The other bucket that names a note, reached by exhausting _cas_write's retries.
+
+    Only ONE of the two same-basename notes is raced, so the assertion distinguishes them:
+    under `os.path.basename` the skipped entry would be `Acme - Analyst.md`, which is also
+    the name of the note that normalized perfectly well."""
+    leads = _leads_dir(tmp_path)
+    quiet = _write_note(leads / "Active" / "Acme - Analyst.md", status="Dismissed")
+    raced = _write_note(leads / "Archive" / "Acme - Analyst.md", status="Dismissed")
+    counter = {"n": 0}
+
+    def churn():
+        # Unique content every read (once=False, for exhaustion), so no attempt ever sees a
+        # settled file and _cas_write raises VaultConflict rather than committing.
+        counter["n"] += 1
+        raced.write_text('---\ncompany: "Acme"\nrole: "Analyst"\n'
+                         f'status: Dismissed\nnote: {counter["n"]}\n---\n\nbody\n')
+
+    racing_read(monkeypatch, str(raced), churn, once=False)
+    summary = Vault(str(tmp_path)).normalize_all_statuses()
+    assert summary["skipped"] == [os.path.join("Archive", "Acme - Analyst.md")]
+    # The twin was NOT raced, so it still normalized -- which is what makes the name above
+    # load-bearing rather than the only string available.
+    assert summary["changed"] == 1
+    assert "status: dismiss" in quiet.read_text()
 
 
 def test_normalize_statuses_counts_a_frontmatter_less_file_as_unchanged(tmp_path):
