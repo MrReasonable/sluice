@@ -31,7 +31,8 @@ def _make(config):
     """
     return Vault(os.environ.get("VAULT_DIR") or config.vault_dir or None,
                  baseline_rel=config.baseline_rel,
-                 location_noise_words=config.location_noise_words)
+                 location_noise_words=config.location_noise_words,
+                 lead_layout=config.lead_layout)
 
 
 register("vault", _make)
