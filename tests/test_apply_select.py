@@ -129,3 +129,68 @@ def test_select_all_reports_stale():
     eligible, skipped = select.select_all(v, cfg, _POLICY)
     assert eligible == []
     assert [reason for _, reason in skipped] == ["stale"]
+
+
+# ── #1: the batch path and a slug two notes claim ────────────────────────────
+def _vault_subfolders(notes):
+    """Like _vault, but each entry is (subdir, filename, fm) so two notes can claim ONE
+    slug. The recursive scan (#1) admits that state; a flat store could not, since
+    `_slug_for` is the basename and one directory cannot hold two files at one name."""
+    root = tempfile.mkdtemp()
+    leads = pathlib.Path(root, "Job Applications", "Job Leads")
+    served = pathlib.Path(root, "documents"); served.mkdir(parents=True)
+    for sub, fname, fm in notes:
+        d = leads / sub if sub else leads
+        d.mkdir(parents=True, exist_ok=True)
+        (d / fname).write_text("---\n" + fm + "\n---\n\nBODY\n")
+    cfg = ApplyConfig(served_dir=str(served), camofox_upload_dir=str(pathlib.Path(root, "up")))
+    # A REAL served PDF. Without it both twins fail eligibility at `missing_file` and never
+    # reach the ambiguity check at all, so the test would pass with the guard deleted --
+    # the exact false negative this fixture exists to rule out.
+    (served / "CV_deadbeef.pdf").write_bytes(b"%PDF-1.4\nx")
+    return Vault(root), cfg
+
+
+_TWIN = ('company: "Example"\nrole: "Analyst"\nstatus: shortlist\n'
+         'url: "https://example.invalid/careers/1"\n'
+         'tailored_cv: CV_deadbeef.pdf (2026-07-09)')
+
+
+def test_select_all_refuses_a_slug_two_notes_claim():
+    """The batch path must not send twice for one job. select_one already refuses this
+    state; select_all iterates notes rather than keying on slug, so the slug-keyed fixes in
+    track and `leads expire` did not reach it -- both twins were eligible and `apply run
+    --all` sent two applications under the user's name, unsendable-back.
+
+    Witnessed by deleting the `if n.slug in ambiguous:` arm from select_all: eligible comes
+    back with BOTH twins and this goes red on the eligible assertion."""
+    v, cfg = _vault_subfolders([
+        ("Active", "Example - Analyst.md", _TWIN),
+        ("Archive", "Example - Analyst.md", _TWIN),
+    ])
+    # The state is real: both twins ARE eligible on every other axis, so nothing but the
+    # ambiguity guard is keeping them out.
+    assert [select.eligibility(n, cfg) for n in v.read_leads({"shortlist"})] \
+        == [(True, ""), (True, "")]
+    eligible, skipped = select.select_all(v, cfg)
+    assert eligible == []
+    assert len(skipped) == 2
+    assert all(r.startswith("ambiguous: ") for _, r in skipped)
+    # The reason NAMES both colliding notes, which is the only actionable content: the
+    # slug alone is already the lead label preview_all prints.
+    assert all("Active" in r and "Archive" in r for _, r in skipped)
+
+
+def test_select_all_still_sends_an_unambiguous_lead():
+    """The mirror harm. A guard that refuses too broadly silently suppresses a real
+    application, so pin that one unambiguous shortlist lead with a resolvable CV is still
+    eligible -- including alongside a colliding pair, which must not take it down with
+    them."""
+    v, cfg = _vault_subfolders([
+        ("Active", "Example - Analyst.md", _TWIN),
+        ("Archive", "Example - Analyst.md", _TWIN),
+        ("Active", "Example - Engineer.md", _TWIN.replace("Analyst", "Engineer")),
+    ])
+    eligible, skipped = select.select_all(v, cfg)
+    assert [n.slug for n in eligible] == ["Example - Engineer"]
+    assert sorted(n.slug for n, _ in skipped) == ["Example - Analyst", "Example - Analyst"]
