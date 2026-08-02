@@ -48,6 +48,16 @@ _EXPECTED = {
     # must NOT be in _PRIVATE_SUBDIRS: pruning it would hide every lead sluice itself creates
     # from read_leads AND from _locate, re-creating all of them on the next scrape.
     "self._write_folder()": "the write folder (create arm only)",
+    # reconcile's destination (#1) -- leads_dir/<Active|Archive>, derived from layout_subfolder.
+    # SCANNED, so it must NOT be in _PRIVATE_SUBDIRS: pruning it would hide every reconciled note
+    # from read_leads AND from _locate, re-creating all of them on the next scrape.
+    #
+    # NB this key is a BARE LOCAL NAME, so a second `os.makedirs(dest_dir)` anywhere in vault.py --
+    # however that local is derived -- would be absorbed by this classification silently.
+    # `merged_dir` above has the same shape, which is why this is RECORDED rather than fixed: the
+    # guard's job is to make an author classify each new call, and a bare name cannot tell two call
+    # sites apart. Stated so the limit is known rather than assumed.
+    "dest_dir": "a reconcile destination folder, scanned",
     # leads_dir/_merged -- under leads_dir, and therefore MUST be in _PRIVATE_SUBDIRS.
     "merged_dir": "the merge archive, pruned from the scan set",
 }
