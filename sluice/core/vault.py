@@ -1657,38 +1657,15 @@ class Vault:
         for ref in loser_refs:
             base = os.path.basename(ref)
             stem = base[:-3] if base.endswith(".md") else base
-            dest = os.path.join(merged_dir, base)
-            n = 1
-            reserved = None
             try:
-                # Reserve the destination atomically (O_EXCL fails if taken, so a concurrent
-                # archive never collides), then os.replace the loser into our reservation.
-                # os.replace is a single atomic move of whatever `ref` names at that instant,
-                # so a concurrent atomic save of the loser is ARCHIVED (moved), never deleted,
-                # and the reservation means we never overwrite another archived note. This
-                # replaces the old os.link + os.unlink pair, which had a window: a concurrent
-                # atomic save of the loser landing between the link and the unlink would be
-                # deleted by the unlink instead of archived.
-                while True:
-                    try:
-                        fd = os.open(dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-                        os.close(fd)
-                        reserved = dest
-                        break
-                    except FileExistsError:
-                        dest = os.path.join(merged_dir, f"{stem}.{n}.md")
-                        n += 1
-                os.replace(ref, dest)   # atomic; overwrites only our own 0-byte reservation
-                reserved = None
+                # suffix_on_collision=True: an archived loser's filename is not an identity the
+                # write path walks, so a numeric suffix costs nothing -- while failing to archive
+                # would leave the loser active and undo #81. See _reserve_and_move.
+                dest = _reserve_and_move(ref, merged_dir, base, suffix_on_collision=True)
             except OSError as e:
-                # per-loser isolation: leave the loser active (it self-heals next run), and
-                # clean up an orphaned reservation if the move never happened. `continue`,
-                # so this loser is neither counted nor stamped.
-                if reserved:
-                    try:
-                        os.unlink(reserved)
-                    except OSError:
-                        pass
+                # per-loser isolation: leave the loser active (it self-heals next run). The helper
+                # has already removed any reservation it created. `continue`, so this loser is
+                # neither counted nor stamped.
                 _log.warning("dedupe: could not archive loser %s: %s", ref, e)
                 continue
             archived.append(dest)
@@ -1732,6 +1709,68 @@ def _write(path: str, text: str, *, exclusive: bool = False) -> None:
                 # Even the cleanup can fail (e.g. the FS remounted read-only). Log rather than
                 # swallow: a lingering partial note is a landmine a re-scrape would adopt as real.
                 _log.warning("could not remove partial note %s: %s", path, e)
+        raise
+
+
+def _reserve_and_move(src: str, dest_dir: str, base: str, *,
+                      suffix_on_collision: bool) -> str:
+    """Atomically move the note at `src` into `dest_dir` under the name `base`. Returns the
+    destination path actually used.
+
+    The primitive, in ONE place, because two callers need it with different collision policies and
+    a second copy is a second thing to keep correct. `os.replace(src, dest)` alone is a single
+    atomic move but OVERWRITES `dest`; `os.link(src, dest) + os.unlink(src)` never overwrites but
+    has a window in which a concurrent atomic save of `src` -- a human hitting save in Obsidian --
+    lands between the two and is DELETED rather than moved. CodeRabbit flagged each in turn on #23.
+    The shape that satisfies both: reserve `dest` with O_CREAT|O_EXCL (atomic, so a concurrent
+    reserver loses rather than races), then `os.replace` whatever `src` names AT THAT INSTANT into
+    it -- so a concurrent save is carried, and the only thing overwritten is our own zero-byte
+    reservation.
+
+    COLLISION POLICY is the caller's, and the two are not interchangeable:
+
+    - `suffix_on_collision=True` (merge_cluster) takes `<stem>.<n>.md`. An archived loser's
+      filename is not an identity the write path walks, so a suffix costs nothing there, while
+      failing to archive would leave the loser active and undo #81.
+    - `suffix_on_collision=False` (leads reconcile) raises FileExistsError. A suffix changes the
+      FILENAME, which is the slug, which is the IDENTITY: the renamed note matches no candidate
+      `_resolve_path` walks, so the next scrape mints a fresh note and orphans the renamed one.
+      Refusing that note and reporting it is the only safe answer.
+
+    On any OSError the reservation THIS function created is removed before the error propagates,
+    so a failed move never seats a zero-byte file at a real lead's name -- which `_is_note_file`
+    would call a note and `_resolve_path` would reconcile against. Ownership is proved by OUR open
+    having returned a handle, never by `os.path.exists`: a concurrent writer landing a file in the
+    window makes the path exist without us owning it, and unlinking it then is a clobber inside a
+    clobber-fix (#16).
+
+    The REFUSAL path reserved nothing, so it cleans up nothing -- unlinking there would delete the
+    very note the refusal exists to protect.
+    """
+    stem = base[:-3] if base.endswith(".md") else base
+    dest = os.path.join(dest_dir, base)
+    n = 1
+    reserved = None
+    try:
+        while True:
+            try:
+                fd = os.open(dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                os.close(fd)
+                reserved = dest
+                break
+            except FileExistsError:
+                if not suffix_on_collision:
+                    raise            # nothing reserved -> nothing to clean up
+                dest = os.path.join(dest_dir, f"{stem}.{n}.md")
+                n += 1
+        os.replace(src, dest)        # atomic; overwrites only our own 0-byte reservation
+        return dest
+    except OSError:
+        if reserved:
+            try:
+                os.unlink(reserved)
+            except OSError:
+                pass
         raise
 
 
