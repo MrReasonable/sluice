@@ -247,13 +247,39 @@ def test_ref_round_trips_through_every_write_method(store_name, tmp_path, monkey
     assert note.fm.get("tailored_cv", "").startswith("CV_deadbeef.pdf")
 
 
-def test_slug_is_issued_stable_and_unique(store_name, tmp_path, monkeypatch):
+def test_slug_is_issued_stable_and_unique_across_what_the_store_creates(store_name, tmp_path,
+                                                                       monkeypatch):
+    """Uniqueness is BOUNDED, in the shape `upsert`/`merge_cluster` already use for
+    merged-away: a store must never itself CREATE two notes at one slug. It cannot promise
+    that no two ever ARRIVE at one -- the vault's slug is the note filename, and a human with
+    a filesystem can seat that name in two directories once the scan is recursive (#1). That
+    residual is the read-path warning's business and `index_by_slug`'s; see LeadNote.
+
+    The previous version of this test asserted the ABSOLUTE property from a fixture of two
+    unrelated leads, which cannot collide whatever the store does -- so it certified an
+    invariant this branch broke, vacuously. The upserts below instead drive the store through
+    every arm that could mint a second note at an existing identity: a straight re-scrape, a
+    re-scrape whose location moved, and two genuinely different jobs at one company.
+    """
     store = _make_store(store_name, tmp_path, monkeypatch)
-    store.upsert(_lead(company="Example Foundry", title="Analyst", url="https://example.invalid/1"))
-    store.upsert(_lead(company="Example Analytics", title="Engineer", url="https://example.invalid/2"))
+    seeds = [
+        _lead(company="Example Foundry", title="Analyst", url="https://example.invalid/1"),
+        _lead(company="Example Foundry", title="Analyst", url="https://example.invalid/1"),
+        _lead(company="Example Foundry", title="Analyst", url="https://example.invalid/1",
+              location=LOCATIONS[1]),
+        _lead(company="Example Foundry", title="Engineer", url="https://example.invalid/2"),
+        _lead(company="Example Analytics", title="Engineer", url="https://example.invalid/3"),
+    ]
+    for lead in seeds:
+        assert store.upsert(lead) in _VOCAB
 
     slugs = [n.slug for n in store.read_leads()]
-    assert len(set(slugs)) == 2 and all(slugs), "slugs must exist and be unique per lead"
+    # SCOPE first: a store that returned nothing would satisfy every assertion below, and
+    # "no duplicates" is a negative property, so an empty result is its success case.
+    assert len(slugs) >= 2, "the fixture must really have seated several notes"
+    assert all(slugs), "every returned note must carry a slug"
+    assert len(set(slugs)) == len(slugs), \
+        f"the store created two notes at one slug: {sorted(slugs)}"
     assert sorted(slugs) == sorted(n.slug for n in store.read_leads()), "slug must be stable"
 
 

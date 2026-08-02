@@ -67,6 +67,24 @@ class LeadNote:
     from the markdown filename in four separate modules
     (`os.path.basename(note.path)[:-3]` in apply/select, apply/engine, track/classify,
     track/engine), which is the same leak wearing a different hat.
+
+    A store must issue a NON-EMPTY slug for every note it returns, and must issue the SAME
+    slug for the same note across reads. Uniqueness across the returned list is bounded
+    rather than absolute, in the same shape `upsert`/`merge_cluster` state the merged-away
+    obligation: a store must not itself CREATE two notes at one slug, and the vault does not
+    -- `_resolve_path` refuses an ambiguous candidate rather than writing a second. What it
+    cannot promise is that no two notes ever arrive at one slug, because its slug is the note
+    FILENAME and a human with a filesystem can seat that name in two directories (the flat
+    store made this impossible by construction; a recursive scan, #1, does not). Two notes at
+    one slug are therefore returned BOTH, and loudly -- dropping one would take a lead out of
+    the read AND out of the write path's lookup, which re-creates it.
+
+    The obligation that falls on the CALLER follows from that: never index a returned list by
+    slug with a bare dict comprehension, which silently keeps the last twin. `core/leads.py:
+    index_by_slug` drops both and reports them, which is what `track` and `leads expire` use.
+    A store whose ids are synthetic (a row id) satisfies the bound trivially and needs no
+    such care -- but the CONTRACT is what callers are written against, so the weaker
+    guarantee is the one stated here.
     """
     ref: object
     slug: str
