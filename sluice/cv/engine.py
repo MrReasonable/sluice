@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from sluice.core import status as _status
-from sluice.core.leads import StalenessPolicy
+from sluice.core.leads import StalenessPolicy, ambiguous_slug_warnings, index_by_slug
 from sluice.core.log import get_logger
 from sluice.cv import bundle as _bundle
 from sluice.cv import compose as _compose
@@ -26,6 +26,9 @@ class CvResult:
     """status is one of: rendered, skipped-gate, skipped-selection, skipped-has-cv,
     skipped-stale (#9: last_seen older than lead_ttl_days, refused before any dossier
     fetch or compose -- see run_one),
+    skipped-ambiguous (#1: two shortlist notes claim this lead's slug, so the batch path
+    composes for neither -- see run_batch; batch-only, since run_one is handed one note
+    and has no list to find a twin in),
     needs-signoff (an unsupported profile audit flag withheld the send-ready pointer,
     #60), skipped-needs-signoff (a re-run over a lead already held for sign-off),
     dry-run, error (a single lead's exception caught by run_batch -- see run_batch --
@@ -207,8 +210,34 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
 def run_batch(vault, cvcfg, backend, dossier_cache, *, renderer, limit=None,
               dry_run=False, policy=StalenessPolicy()) -> list:
     notes = [n for n in vault.read_leads({"shortlist"})]
+    # The LAST consumer of a `read_leads` list that walked it without the slug guard (#1).
+    # `index_by_slug` is the shared verdict -- track, `leads expire` and `apply`'s batch path
+    # take the same one -- so the call sites cannot drift into different opinions about what
+    # ambiguous means. Only the second element is wanted: this pass walks notes, not slugs,
+    # which is exactly the shape that let `apply/select.py:select_all` keep both twins.
+    _, dropped = index_by_slug(notes)
+    for msg in ambiguous_slug_warnings("cv: shortlisted lead", dropped):
+        _log.warning("%s", msg)
     results = []
     for note in notes:
+        # BEFORE the has-cv check, on `select_all`'s reasoning: what is wrong here is the
+        # IDENTITY, and reporting `skipped-has-cv` for a twin that happens to carry a pointer
+        # would name a condition the user cannot act on while hiding the one they can.
+        #
+        # What this costs when it is missing is WASTE, not corruption, and the distinction is
+        # worth stating because the neighbouring guards are about irreversible writes and
+        # this one is not. Each twin's writes go through its OWN `ref`, `serve` names the
+        # served file by CONTENT digest so neither pointer can name the other's PDF, and the
+        # hard fabrication gate runs per compose and is untouched. So the harm is that a
+        # single job is composed TWICE -- two LLM calls, plus a render each -- and that both
+        # renders target one working directory (`output_dir/<slug(company, role)>`, derived
+        # from frontmatter the twins share), so only the later twin's intermediate PDF
+        # survives there. Downstream, `apply prep --all-shortlist` already refuses both twins
+        # as ambiguous, so the duplicate never reaches the ready queue; this spends money to
+        # produce artefacts nothing will use.
+        if note.slug in dropped:
+            results.append(CvResult(note.ref, "skipped-ambiguous"))
+            continue
         if note.fm.get("tailored_cv"):
             results.append(CvResult(note.ref, "skipped-has-cv"))
             continue
