@@ -247,12 +247,18 @@ def test_sweep_keys_on_the_default_value_not_the_annotation():
     assert dict(_list_defaulting_fields(_Sample)) == {"bare": ["x"], "parametrized": ["y"]}
 
 
+_EXAMPLE_PATH = Path(__file__).resolve().parent.parent / "sluice.yaml.example"
+
+
 # ── #1: the lead layout ──────────────────────────────────────────────────────
 # `lead_layout` needs its OWN guards for the same reason `lead_ttl_days` does, one type along.
 # The #26/#63 sweep below is value-keyed on LIST-defaulting fields
 # (`isinstance(getattr(cls(), f.name), list)`), so a `str` field is invisible to it, and
 # `test_path_keys_dataclass_defaults_are_blank` derives only fields ending `_dir`. Measured:
-# setting the default to "active_archive" leaves this entire file green.
+# setting the default to "active_archive" leaves the #26/#63 SWEEP -- and every other row in this
+# file -- green; the only thing that reddens is the guard immediately below. (An earlier draft of
+# this comment said "leaves this entire file green", which its own new guards falsify. The
+# blindness being recorded is the SWEEP's, not the file's.)
 #
 # It belongs HERE and not in the feature's own test file because how a user organises their job
 # hunt is a PREFERENCE, and this is the file the docs and the review agents sweep for shipped
@@ -277,7 +283,9 @@ def test_the_example_config_ships_lead_layout_commented():
     the example file itself. Asserted through yaml.safe_load, which is blind to a comment: an
     active key would appear in the parsed document."""
     import yaml
-    text = Path("sluice.yaml.example").read_text(encoding="utf-8")
+    # Through _EXAMPLE_PATH, never a cwd-relative Path(...): a neutrality guard must not be
+    # contingent on where you stand. Measured -- run from tests/, the bare form fails only here.
+    text = _EXAMPLE_PATH.read_text(encoding="utf-8")
     assert "lead_layout:" in text, "lead_layout must be documented at all"
     assert "lead_layout" not in (yaml.safe_load(text) or {}), \
         "lead_layout must ship COMMENTED, not active"
@@ -399,7 +407,6 @@ def test_example_config_ships_lead_ttl_days_off():
 # `Path("sluice.yaml.example")` makes every one of them FileNotFoundError when pytest is
 # invoked from a subdirectory -- loud rather than silent, but a neutrality guard should
 # not be contingent on where you happen to stand.
-_EXAMPLE_PATH = Path(__file__).resolve().parent.parent / "sluice.yaml.example"
 
 _EXAMPLE_SETTING = re.compile(r"^\s*#?\s*(?:([A-Za-z0-9_-]+):|-)(.*)$")
 

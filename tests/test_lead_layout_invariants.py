@@ -69,13 +69,27 @@ def test_a_rescrape_after_reconcile_touches_only_last_seen(tmp_path):
 
 def test_reconcile_never_writes_a_status(tmp_path):
     """never-regress. Reconcile moves directory entries and nothing else -- if it ever wrote a
-    status it would be a second owner of the key core/status.py governs."""
+    status it would be a second owner of the key core/status.py governs.
+
+    The note is seeded in ARCHIVE so the sweep actually MOVES it. An earlier draft seeded
+    `applied` where upsert had already put it (Active/), so the pass short-circuited on
+    `in_place` and `_reserve_and_move` was never called -- the fixture asserted byte-stability for
+    a note reconcile never touched, which is the cannot-produce-the-failing-case shape this
+    module's own docstring cites as PR A's lesson."""
     v = Vault(str(tmp_path), lead_layout="active_archive")
-    v.upsert(_lead())
-    ref = os.path.join(v.leads_dir, ACTIVE_SUBDIR, "Example Ltd - Example Role.md")
-    v.update_fields(ref, {"status": "applied"})
+    archive = os.path.join(v.leads_dir, ARCHIVE_SUBDIR)
+    os.makedirs(archive, exist_ok=True)
+    ref = os.path.join(archive, "Example Ltd - Example Role.md")
+    with open(ref, "w", encoding="utf-8") as fh:
+        fh.write("---\ncompany: Example Ltd\nrole: Example Role\nstatus: applied\n"
+                 "score: 7\nurl: \nlast_seen: 2026-01-01\n---\nbody\n")
     before = open(ref, encoding="utf-8").read()
-    v.reconcile_layout(apply=True)
-    # `applied` is live, not terminal, so it stays in Active/ -- and the bytes are untouched.
-    assert os.path.isfile(ref)
-    assert open(ref, encoding="utf-8").read() == before
+
+    rep = v.reconcile_layout(apply=True)
+    # `applied` is LIVE, not terminal, so it belongs in Active/ -- the pass must move it there.
+    assert len(rep["moves"]) == 1, f"the fixture did not reach the move path: {rep}"
+    moved = os.path.join(v.leads_dir, ACTIVE_SUBDIR, "Example Ltd - Example Role.md")
+    assert os.path.isfile(moved)
+    assert not os.path.exists(ref)
+    # ...and the bytes that arrived are the bytes that left. No status written, nothing re-rendered.
+    assert open(moved, encoding="utf-8").read() == before

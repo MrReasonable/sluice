@@ -44,19 +44,21 @@ _EXPECTED = {
     # of this one -- repointing would mint an empty Active/ on a pure last_seen bump.
     "self.leads_dir": "the leads dir, root of the scan set",
     # The lead WRITE FOLDER (#1) -- leads_dir under the flat default, leads_dir/Active under
-    # `active_archive`. Made only on the CREATE arm. Scanned, being inside the scan set, so it
-    # must NOT be in _PRIVATE_SUBDIRS: pruning it would hide every lead sluice itself creates
-    # from read_leads AND from _locate, re-creating all of them on the next scrape.
-    "self._write_folder()": "the write folder (create arm only)",
+    # `active_archive`. Made only on the CREATE arm, and OUTSIDE its try (makedirs raises
+    # FileExistsError for a non-directory, which that try reads as the #16 create race). Scanned,
+    # being inside the scan set, so it must NOT be in _PRIVATE_SUBDIRS: pruning it would hide
+    # every lead sluice itself creates from read_leads AND from _locate, re-creating all of them
+    # on the next scrape.
+    "write_dir": "the write folder (create arm only)",
     # reconcile's destination (#1) -- leads_dir/<Active|Archive>, derived from layout_subfolder.
     # SCANNED, so it must NOT be in _PRIVATE_SUBDIRS: pruning it would hide every reconciled note
     # from read_leads AND from _locate, re-creating all of them on the next scrape.
     #
     # NB this key is a BARE LOCAL NAME, so a second `os.makedirs(dest_dir)` anywhere in vault.py --
-    # however that local is derived -- would be absorbed by this classification silently.
-    # `merged_dir` above has the same shape, which is why this is RECORDED rather than fixed: the
-    # guard's job is to make an author classify each new call, and a bare name cannot tell two call
-    # sites apart. Stated so the limit is known rather than assumed.
+    # however that local is derived -- would be absorbed by this classification silently. Three of
+    # the six keys now have that shape (`write_dir`, `dest_dir`, `merged_dir`), which is why it is
+    # RECORDED rather than fixed: the guard's job is to make an author classify each new call, and
+    # a bare name cannot tell two call sites apart. Stated so the limit is known, not assumed.
     "dest_dir": "a reconcile destination folder, scanned",
     # leads_dir/_merged -- under leads_dir, and therefore MUST be in _PRIVATE_SUBDIRS.
     "merged_dir": "the merge archive, pruned from the scan set",
@@ -185,11 +187,20 @@ def test_the_matcher_does_not_flag_an_unrelated_binding():
 
 
 def test_the_sweep_actually_finds_the_makedirs_calls():
-    """The scope assertion. Without it a matcher that silently stopped matching -- an
-    ast.unparse spelling change, a renamed import -- would leave every assertion below
-    trivially true."""
-    found = _vault_makedirs_args()
-    assert len(found) >= 4, f"AST sweep found only {found!r}; the matcher is broken"
+    """The scope assertion. Without it a matcher that silently stopped matching -- an ast.unparse
+    spelling change, a renamed import -- would leave every assertion below trivially true.
+
+    Compared BOTH WAYS against the classification table rather than against a number. A `>= 4`
+    floor is the same stale-count problem the module docstring above avoids, one layer down: a
+    matcher that regressed to finding four of six would still pass it. And the reverse direction
+    is what catches a classification for a call site that no longer EXISTS -- measured, deleting
+    the write-folder makedirs outright left this file green while six other tests went red."""
+    found = set(_vault_makedirs_args())
+    assert found, "AST sweep found nothing; the matcher is broken"
+    stale = set(_EXPECTED) - found
+    assert not stale, (
+        f"_EXPECTED classifies {stale}, which vault.py no longer creates. Remove the entry, or "
+        f"restore the call if its deletion was accidental.")
 
 
 def test_every_makedirs_call_is_classified():

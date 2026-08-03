@@ -13,6 +13,7 @@ in), so sluice leads are indistinguishable from the current pipeline's output.
 The engine's Lead model is source-agnostic (title, job_type); the vault schema's
 `role`/`role_type` naming is a translation that lives here at the sink boundary.
 """
+import copy
 import hashlib
 import json
 import os
@@ -27,6 +28,7 @@ from sluice.core.leads import (
     UNKNOWN,
     Lead,
     _norm_url,
+    EMPTY_RECONCILE_REPORT,
     index_by_slug,
     layout_subfolder,
     same_opportunity,
@@ -65,13 +67,6 @@ _MERGED_SUBDIR = "_merged"          # where merge_cluster archives losers (#23)
 # non-recursive and `_merged` is a directory, so it failed the `.endswith(".md")` test);
 # a recursive walk would have surfaced every archived loser and undone #81 outright.
 _PRIVATE_SUBDIRS = frozenset({_MERGED_SUBDIR})
-# The reconcile report's key set, in ONE place (#1). `cmd_leads_reconcile`'s knob-unset arm emits a
-# document too -- a consumer parsing stdout must not have to tell "no output" from "empty result" --
-# and a second hand-written literal there is a shape nothing keeps in sync: add a bucket here and
-# that arm would silently stop carrying it while its test, which only checks ["layout"], stayed
-# green. Both sides build from this.
-_EMPTY_RECONCILE = {"layout": "", "moves": [], "in_place": 0, "ambiguous": {},
-                    "unknown": [], "user_filed": [], "collisions": [], "skipped": []}
 # #81: a URL-PROVEN match against an archived note -- the incoming lead and the merged-away
 # one carry the same non-empty url. The sink records it in seen.db.
 _ARCHIVED = "merged_away"
@@ -1406,8 +1401,11 @@ class Vault:
         so the same race there yields a visible duplicate rather than a self-collision.
 
         Made loud two ways: the CLI help says reconcile must not run concurrently with a pipeline
-        command, and after an applied sweep this re-reads and reports any basename now claimed by
-        two paths into `ambiguous` -- so the run that CAUSED it names it.
+        command, and after an applied sweep this re-reads and reports any basename then claimed by
+        two paths into `ambiguous`. That re-read is a single post-sweep SNAPSHOT and so is
+        best-effort, not a guarantee: a race landing after it is missed and surfaces on the next
+        run instead. It converts the common case from silent into named, which is the whole
+        claim.
 
         FOUR classes are reported and never moved, each for its own reason:
 
@@ -1425,8 +1423,12 @@ class Vault:
         Per-note `OSError` isolation, like `merge_cluster`'s per-loser arm. Not atomic across
         notes, deliberately -- an interrupted run leaves partial drift, which is this pass's normal
         input, and re-running converges."""
-        summary = dict(_EMPTY_RECONCILE, layout=self.lead_layout, moves=[], ambiguous={},
-                       unknown=[], user_filed=[], collisions=[], skipped=[])
+        # deepcopy, never `dict(CONST, ...)`: a shallow copy shares every mutable bucket, and is
+        # safe only while each one happens to be overridden here. The constant's own comment
+        # invites adding a bucket, which would then be aliased across every call in the process
+        # -- so the single-definition property it exists for would quietly defeat itself.
+        summary = copy.deepcopy(EMPTY_RECONCILE_REPORT)
+        summary["layout"] = self.lead_layout
         # Decision 7, and it lives HERE rather than in the CLI. Under the flat layout there is
         # nothing to reconcile against, and FLATTENING would drag every lead out of the user's own
         # subfolders -- decision 4 pointed the wrong way. Putting this only in
@@ -1472,8 +1474,34 @@ class Vault:
             if not apply:
                 summary["moves"].append((n.slug, src_rel, dst_rel))
                 continue
+            # A SYMLINKED destination silently destroys the lead. `_walk` keeps os.walk's
+            # followlinks=False, so a symlinked `Active/` is NOT in the scan set: the moved note
+            # leaves read_leads AND _locate, every later scrape resolves the same link and
+            # refuses, and the lead is invisible to triage/cv/apply/track for good. Measured on a
+            # vault with `Active` symlinked: moves=1, skipped=[], exit 0, ZERO log records, and
+            # the lead gone. `_warn_undescended_symlinks` does not cover it -- it recorded the
+            # link on the PRE-sweep read, when its target still held no note. This pass is what
+            # invites subfolders at all, so it must not be the thing that files a lead out of
+            # existence.
+            if os.path.islink(dest_dir):
+                summary["skipped"].append(
+                    (n.slug, f"{sub}/ is a symlink; the scan does not follow symlinks, so a note "
+                             f"moved there would be invisible and re-created every run"))
+                _log.warning("reconcile: %s NOT moved -- %s is a symlink; move the real folder "
+                             "into the vault instead of linking it", src_rel, dst_rel)
+                continue
+            # makedirs is OUTSIDE the try below on purpose. It raises FileExistsError when the
+            # path exists and is NOT a directory (a plain file or dangling symlink named
+            # `Archive`), and that try's first arm reads FileExistsError as a destination-name
+            # COLLISION -- so the user would be told to "merge or rename by hand" about a path
+            # that does not exist, with the real cause never stated and --apply exiting 1 forever.
             try:
                 os.makedirs(dest_dir, exist_ok=True)
+            except OSError as e:
+                summary["skipped"].append((n.slug, str(e)))
+                _log.warning("reconcile: could not create %s: %s", dst_rel, e)
+                continue
+            try:
                 # suffix_on_collision=False: see _reserve_and_move. A FileExistsError here is a
                 # REFUSAL, not a failure, so it is caught before the generic OSError arm --
                 # conflating the two would tell a human to check permissions when what they
@@ -1495,15 +1523,24 @@ class Vault:
             # into them, so the store's own view matches the disk for any later call on this
             # instance.
             #
-            # This is HYGIENE, not the thing that prevents a duplicate, and an earlier draft of
-            # this comment claimed otherwise. Measured: deleting this line leaves the suite green,
-            # because `_resolve_path` already re-derives on its miss branch and reconcile can only
-            # ADD directories -- so a stale set is a strict SUBSET, `_locate` can only find FEWER
-            # notes, and finding fewer is exactly the `missed=True` branch that re-derives. The
-            # other direction (found ONCE where fresh finds TWICE) needs two notes at one name,
-            # which this pass refuses rather than creates. Kept because it costs one walk per
-            # applied sweep and leaves the instance truthful; NOT kept with a test asserting it
-            # prevents something it does not.
+            # This is PREVENTION, and an earlier draft of this comment called it mere hygiene on
+            # reasoning its own neighbour falsifies. That draft argued a stale set is a strict
+            # SUBSET, so `_locate` can only find FEWER notes -- the `missed=True` branch, which
+            # `_resolve_path` already re-derives on -- and that the other direction (found ONCE
+            # where a fresh list finds TWICE) needs two notes at one name, "which this pass
+            # refuses rather than creates". It does create one: the RACE arm four lines below is
+            # exactly that state, and it is what `test_a_move_that_races_a_status_write...`
+            # constructs.
+            #
+            # Measured on one store instance in that state. Shipped: `_locate` returns 2 paths and
+            # `upsert` REFUSES, which is correct. With this line deleted: the stale set omits the
+            # destination folder, `_locate` returns 1, and `upsert` returns `updated` -- writing to
+            # the RESURRECTED source note while the real moved note is never touched and its
+            # `last_seen` freezes. That is a never-clobber outcome, not a tidiness one.
+            #
+            # `Sluice.store()` memoizes, so the `Sluice.reconcile()` facade followed by any other
+            # pass on the same instance reaches it; today's CLI builds a fresh Sluice per command
+            # and does not. Pinned by test_a_raced_move_leaves_the_store_refusing_not_updating.
             self._rescan_dirs()
             # The never-clobber residual (see the docstring), reported by the run that caused it.
             # A move racing a concurrent `_cas_write`'s `os.replace(tmp, path)` re-creates the
@@ -1679,16 +1716,33 @@ class Vault:
                 # is only that the count is reported separately so the merge is visible.
                 return self._bump_last_seen_or_refuse(
                     path, lead.last_seen or _today(), "merged", lead.dedup_key)
+            # The WRITE FOLDER, made HERE and not beside the leads_dir makedirs above, which sits
+            # ABOVE the update/merge/create fan-out and therefore runs on every non-refused
+            # outcome. Measured: a second upsert of the same lead reaches that line and returns
+            # "updated" -- so repointing it would mint an empty Active/ in the user's vault on a
+            # pure last_seen bump of a note that already exists at the root. Only a CREATE needs
+            # the write folder to exist. (The leads_dir makedirs stays where it is: update and
+            # merge legitimately need the directory, and the Syncthing marker beside it is
+            # idempotent.)
+            #
+            # And it sits OUTSIDE the try below, which is the part that is easy to get wrong:
+            # makedirs raises FileExistsError when the path exists and is NOT a directory (a
+            # plain file or dangling symlink named `Active`), and that try's arm reads
+            # FileExistsError as the #16 create RACE -- so every attempt would burn a retry and
+            # the lead would be refused with "create raced repeatedly", a mechanism that never
+            # fired. Out here it propagates as an ordinary OSError carrying the real errno and
+            # path, which the ingest sink counts `skipped` and keeps out of seen.db for a retry.
+            write_dir = self._write_folder()
+            if os.path.islink(write_dir):
+                # A symlinked write folder is NOT in the scan set (`_walk` keeps os.walk's
+                # followlinks=False), so a note created there is invisible to read_leads and to
+                # _locate -- and therefore re-created, as a fresh duplicate, on every single run.
+                # Refuse loudly rather than write into it; the sink counts this skipped.
+                raise OSError(f"lead write folder {write_dir!r} is a symlink; the scan does not "
+                              f"follow symlinks, so a note created there would be invisible and "
+                              f"re-created every run -- move the real folder into the vault")
+            os.makedirs(write_dir, exist_ok=True)
             try:
-                # The WRITE FOLDER, made HERE and not beside the leads_dir makedirs above, which
-                # sits ABOVE the update/merge/create fan-out and therefore runs on every
-                # non-refused outcome. Measured: a second upsert of the same lead reaches that
-                # line and returns "updated" -- so repointing it would mint an empty Active/ in
-                # the user's vault on a pure last_seen bump of a note that already exists at the
-                # root. Only a CREATE needs the write folder to exist. (The leads_dir makedirs
-                # stays where it is: update and merge legitimately need the directory, and the
-                # Syncthing marker beside it is idempotent.)
-                os.makedirs(self._write_folder(), exist_ok=True)
                 # The SAME string the blank-note guard above ran the read's predicate over --
                 # re-rendering here would put a second, unchecked set of bytes on disk.
                 _write(path, rendered, exclusive=True)
@@ -1922,27 +1976,61 @@ def _reserve_and_move(src: str, dest_dir: str, base: str, *,
     dest = os.path.join(dest_dir, base)
     n = 1
     reserved = None
+    reserved_id = None
     try:
         while True:
             try:
                 fd = os.open(dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-                os.close(fd)
-                reserved = dest
-                break
             except FileExistsError:
                 if not suffix_on_collision:
                     raise            # nothing reserved -> nothing to clean up
                 dest = os.path.join(dest_dir, f"{stem}.{n}.md")
                 n += 1
+                continue
+            # Ownership is recorded the INSTANT the open returns a handle, BEFORE anything that
+            # can itself fail. `os.close` can raise, and a close that fails still leaves the
+            # 0-byte file on disk -- assigning `reserved` after it leaked exactly that file: a
+            # zero-byte note seated at a real lead's name, which `_is_note_file` calls a note and
+            # `_resolve_path` then reconciles against.
+            reserved = dest
+            try:
+                st = os.fstat(fd)
+                reserved_id = (st.st_dev, st.st_ino)
+            finally:
+                os.close(fd)
+            break
         os.replace(src, dest)        # atomic; overwrites only our own 0-byte reservation
         return dest
     except OSError:
-        if reserved:
-            try:
-                os.unlink(reserved)
-            except OSError:
-                pass
+        _unlink_reservation(reserved, reserved_id)
         raise
+
+
+def _unlink_reservation(path: str | None, ident) -> None:
+    """Remove a reservation THIS call created -- and only while it is still the same file.
+
+    Ownership is proved by our own open having returned a handle (`path` is set nowhere else),
+    but ownership at RESERVE time is not ownership at CLEANUP time. Between the two a concurrent
+    writer can `os.replace` its own file onto that name, and unlinking then destroys a note we
+    never owned: a clobber inside a clobber-fix, which is the #16 lesson one rung along. So the
+    inode recorded from the open fd is compared with what the name resolves to NOW, and a
+    mismatch leaves it alone.
+
+    A residual remains between the stat and the unlink -- there is no portable
+    unlink-if-same-inode -- so this narrows the window rather than closing it, the same trade
+    `_cas_write` documents for its compare->replace gap. `ident` is None only when `fstat` itself
+    failed, a window of nanoseconds after the create; the reservation is removed in that case,
+    because a leaked zero-byte note at a real lead's name is the likelier harm."""
+    if not path:
+        return
+    try:
+        if ident is not None:
+            st = os.stat(path)
+            if (st.st_dev, st.st_ino) != ident:
+                return           # someone else's file now -- never ours to remove
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 def _atomic_write(path: str, text: str) -> None:

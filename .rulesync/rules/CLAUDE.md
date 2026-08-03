@@ -233,7 +233,15 @@ never-clobber holding "by construction", and the difference is measured: a move 
 path, leaving two notes at one basename and a lead `upsert` then refuses permanently. No portable
 stdlib atomic-conditional-rename exists, so it is the same accepted residual as `_cas_write`'s own
 micro-window — documented, warned about in the command's help, and REPORTED by the sweep that caused
-it rather than left for a later ingest to surface as an unexplained refusal.
+it rather than left for a later ingest to surface as an unexplained refusal. That report is a single
+post-sweep SNAPSHOT and so is best-effort: a race landing after it is missed and surfaces on the next
+run instead. It turns the common case from silent into named, which is the whole claim.
+
+A move must also never follow a SYMLINK. `_walk` keeps `os.walk`'s `followlinks=False`, so a
+symlinked `Active/` is outside the scan set: a note filed there leaves `read_leads` AND `_locate`,
+every later scrape refuses, and the lead is invisible for good — measured at exit 0 with zero log
+records emitted. Both the reconcile destination and the create-arm write folder refuse a symlink
+rather than writing into one.
 
 **Non-resurrection (#81), in the never-clobber family.** A lead a human merged away via `sluice
 leads dedupe --merge` must not be silently re-created by a later re-scrape — a wrong create undoes a
@@ -296,7 +304,12 @@ empty/zero, and an unconfigured gate passes every lead through. Getting this bac
 someone's entire job hunt — it has happened once already (`672ad2a`), and
 `tests/test_sluice_neutral_defaults.py` now fails the build if it recurs. `lead_ttl_days` (#9) is
 the same shape at the root config: `0` means staleness is OFF, so an unconfigured install expires
-nothing and refuses nothing. Its validator rejects `bool` *before* checking `int`, because `bool`
+nothing and refuses nothing. `lead_layout` (#1) is the THIRD root knob with that property: `""` is
+flat, so an unconfigured install files notes exactly where the pre-#1 store did, and it is what
+keeps the whole layout feature inert until someone opts in. Its failure mode is a NAME rather than
+a value, so it raises and lists the valid ones at BOTH `load_config` (a YAML typo is a usage error,
+not a traceback) and `Vault.__init__` (which is what covers the ~150 direct `Vault(...)`
+constructions a loader-only check would miss). Its validator rejects `bool` *before* checking `int`, because `bool`
 subclasses `int` and PyYAML resolves `yes`/`on`/`true` to `True` — so `lead_ttl_days: yes`, the
 natural thing to type to turn the feature ON, would otherwise load as a one-day TTL and mark every
 lead stale with no error anywhere. The list-keyed neutral-defaults sweep does NOT cover int fields
