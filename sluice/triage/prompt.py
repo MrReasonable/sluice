@@ -24,6 +24,10 @@ import re
 from sluice.core.criteria import DEFAULT_CRITERIA
 from sluice.core.protocols import CRITERIA_RELPATH
 
+# A deliberate DRIFT PIN, not leftover store surface: tests/test_vault_write_document.py asserts
+# this alias and core/vault.py's are the SAME object as core/protocols.py's constant, so the three
+# cannot silently disagree about where the Judging Profile lives. It names a path SHAPE and is
+# never joined to anything here -- this module reaches no filesystem (see the docstring).
 _CRITERIA_RELPATH = CRITERIA_RELPATH
 
 _SCAFFOLD_INTRO = """You are the batched judgment stage of a job-lead triage pipeline.

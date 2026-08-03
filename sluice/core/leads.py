@@ -471,6 +471,19 @@ ARCHIVE_SUBDIR = "Archive"
 # degrading to flat.
 LEAD_LAYOUTS = ("", "active_archive")
 
+# The reconcile report's key set, in ONE place. It lives HERE, beside the layout vocabulary,
+# rather than in the concrete vault store: `cmd_leads_reconcile`'s knob-unset arm emits an empty
+# document too, and importing it from `core/vault.py` put the concrete store on the import path of
+# the one command that explicitly handles a store WITHOUT a layout -- the coupling
+# `Sluice._layout_store`'s `getattr` exists to avoid. This module is pure and store-agnostic, so
+# both the store and the CLI can build from it.
+#
+# Consumers DEEP-COPY it. A shallow `dict(...)` shares every mutable bucket, which is safe only
+# while each one happens to be overridden -- and this comment invites adding a bucket, which would
+# then be aliased across every call in the process.
+EMPTY_RECONCILE_REPORT = {"layout": "", "moves": [], "in_place": 0, "ambiguous": {},
+                          "unknown": [], "user_filed": [], "collisions": [], "skipped": []}
+
 
 def layout_subfolder(status: str, layout: str) -> str | None:
     """Which subfolder of the leads dir a lead in `status` belongs in under `layout`.

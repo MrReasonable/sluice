@@ -471,12 +471,14 @@ default and moves on `--apply`; there is no `--dry-run`, because the default *is
 dry run. It moves notes only within the **managed** folders — the leads-dir root, plus
 the layout's own folders. The root is seeded explicitly and is not derivable: under
 `active_archive` no canonical status maps to it, and deriving the set left the root out,
-so every note in a flat vault reported as user-filed and nothing ever moved. Four
+so every note in a flat vault reported as user-filed and nothing ever moved. Five
 classes are reported and never moved: a non-canonical status (`unknown`, never-regress);
 a slug two notes claim (`ambiguous`, which this pass cannot repair — see above); a lead
-in the user's own subfolder (`user_filed`, decision 4 applied to writes); and a taken
+in the user's own subfolder (`user_filed`, decision 4 applied to writes); a taken
 destination (`collisions`, refused rather than suffixed, because the filename is the
-slug is the identity).
+slug is the identity); and a per-note failure (`skipped`) — an `OSError`, a destination
+that cannot be created, or a destination that is a SYMLINK, which would file the lead out
+of the scan set entirely and so is refused rather than followed.
 
 It writes no note BYTES, only directory entries — but that is not never-clobber "by
 construction". A move landing between `_cas_write`'s freshness re-read and

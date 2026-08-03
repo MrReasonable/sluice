@@ -237,3 +237,67 @@ def test_a_move_that_races_a_status_write_is_reported_by_the_run_that_caused_it(
     assert os.path.isfile(os.path.join(v.leads_dir, ACTIVE_SUBDIR, "A - Raced.md"))
     assert os.path.isfile(src), "the fixture did not reproduce the resurrected source path"
     assert "A - Raced" in rep["ambiguous"], "the post-sweep re-read did not report the race"
+
+
+def test_a_raced_move_leaves_the_store_refusing_not_updating(tmp_path, monkeypatch):
+    """Pins `self._rescan_dirs()` after an applied sweep, which nothing else does.
+
+    The comment above that line once called it hygiene, reasoning that "found ONCE where a fresh
+    list finds TWICE needs two notes at one name, which this pass refuses rather than creates".
+    The race arm CREATES exactly that -- so the reasoning was falsified by its own neighbour, and
+    deleting the line left all 1997 tests green.
+
+    Measured on ONE store instance in that state (`Sluice.store()` memoizes, so the facade plus a
+    later pass reaches it). Shipped: `_locate` sees both paths and `upsert` REFUSES. With the
+    re-derive deleted: the stale scan set omits the destination folder, `_locate` sees one, and
+    `upsert` returns `updated` -- writing to the RESURRECTED source note while the real moved note
+    is never touched and its `last_seen` freezes. That is a never-clobber outcome, so it gets a
+    test rather than a comment."""
+    from sluice.core.leads import Lead
+    from sluice.core import vault as vaultmod
+
+    v = _v(tmp_path)
+    _seed(v, "A - Raced.md", role="Raced", status="shortlist")
+    real = vaultmod._reserve_and_move
+
+    def racing_move(src, dest_dir, base, **kw):
+        dest = real(src, dest_dir, base, **kw)
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write("---\ncompany: A\nrole: Raced\nstatus: applied\nurl: \n---\nbody\n")
+        return dest
+
+    monkeypatch.setattr(vaultmod, "_reserve_and_move", racing_move)
+    rep = v.reconcile_layout(apply=True)
+    assert len(rep["moves"]) == 1, "the fixture did not reach the move path"
+
+    # SAME instance -- the whole point is the cache the sweep just invalidated.
+    raced = Lead(source="test", search="q", title="Raced", company="A", url="", location="")
+    assert v.upsert(raced) == "refused", (
+        "the store resolved a raced twin against a stale scan set: it wrote to the resurrected "
+        "note instead of refusing the ambiguous identity")
+
+
+def test_a_symlinked_destination_is_refused_not_silently_filed(tmp_path):
+    """A move into a SYMLINKED managed folder destroys the lead, silently and permanently.
+
+    `_walk` keeps os.walk's followlinks=False, so a symlinked `Archive/` is NOT in the scan set:
+    the moved note leaves read_leads AND _locate, every later scrape resolves the same link and
+    refuses, and the lead is invisible to triage/cv/apply/track for good. Measured before the
+    guard: moves=1, skipped=[], exit 0, ZERO log records, and the lead gone.
+
+    `_warn_undescended_symlinks` does not cover it -- it recorded the link on the PRE-sweep read,
+    when the target still held no note, so it never speaks again for that store. This pass is what
+    invites subfolders at all, so it must not be the thing that files a lead out of existence."""
+    v = _v(tmp_path)
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    os.symlink(target, os.path.join(v.leads_dir, ARCHIVE_SUBDIR))
+    src = _seed(v, "A - Doomed.md", role="Doomed", status="dismiss")
+
+    rep = v.reconcile_layout(apply=True)
+    assert rep["moves"] == [], "a lead was filed into a symlink, out of the scan set"
+    assert [slug for slug, _ in rep["skipped"]] == ["A - Doomed"]
+    assert os.path.isfile(src), "the note was moved despite the refusal"
+    assert os.listdir(target) == [], "the note landed behind the symlink"
+    # Still readable, which is the property the refusal protects.
+    assert [n.slug for n in v.read_leads()] == ["A - Doomed"]

@@ -165,24 +165,34 @@ def cmd_disable(args, config) -> int:
 
 def cmd_leads_reconcile(args, config) -> int:
     from sluice.core.app import Sluice, StoreHasNoLayout
-    from sluice.core.vault import _EMPTY_RECONCILE
+    # From the PURE leads module, never the concrete vault store: importing the store here would
+    # put it on the import path of the one command that explicitly handles a store WITHOUT a
+    # layout, which is the coupling `Sluice._layout_store`'s getattr exists to avoid.
+    from sluice.core.leads import EMPTY_RECONCILE_REPORT
 
     if not config.lead_layout:
         # NOT "0 to move": that is indistinguishable from "nothing is out of place", and would let
         # a user believe a knob they never configured is filing their vault. The `lead_ttl_days is
         # unset` arm in cmd_leads_expire is the same sentence for the same reason.
-        print("reconcile: lead_layout is unset -- the flat layout is in use, nothing to reconcile "
+        # Worded about the KNOB, not about "the flat layout is in use": the latter states a
+        # store's filing behaviour, and this arm runs before any store is resolved -- for a store
+        # with no layout at all it would be simply false.
+        print("reconcile: lead_layout is unset, so there is nothing to reconcile "
               "(set lead_layout: active_archive to opt in)", file=sys.stderr)
         # Still emit a document on --json: a consumer parsing stdout must not have to distinguish
         # "no output" from "empty result". From the store's own constant, never a second literal.
         if args.json:
-            print(json.dumps(_EMPTY_RECONCILE))
+            print(json.dumps(EMPTY_RECONCILE_REPORT))
         # An --apply that wrote nothing is a failure, not a success -- the silent no-op this
         # report-first command is shaped to avoid.
         return 1 if args.apply else 0
 
     try:
-        rep = Sluice(config).reconcile(apply=args.apply)
+        # `reconcile_report()` for the read path, matching `dedupe_report`/`expire_report`. Calling
+        # `reconcile(apply=False)` for both left the facade's report method with no production
+        # caller -- the same test-only surface this branch deletes from triage/prompt.py.
+        app = Sluice(config)
+        rep = app.reconcile(apply=True) if args.apply else app.reconcile_report()
     except StoreHasNoLayout as exc:
         # A sentence and rc 2, not a traceback. `main` catches only ValueError (around
         # load_config) and then calls args.func bare, so without this the RuntimeError reaches the
@@ -194,24 +204,26 @@ def cmd_leads_reconcile(args, config) -> int:
     if args.json:
         print(json.dumps(rep))
     else:
+        # The human REPORT goes to STDOUT, the trailing summary to stderr -- `leads dedupe`'s
+        # shape, which is the closest sibling (a report-first lister). That keeps
+        # `sluice leads reconcile | grep` useful, and matches --json, which already prints the
+        # document to stdout. (`leads expire` puts everything on stderr; the two precedents
+        # disagree, so this picks the one whose command shape matches.)
         verb = "moved" if args.apply else "would move"
         for _slug, src, dst in rep["moves"]:
-            print(f"reconcile: {verb} {src} -> {dst}", file=sys.stderr)
+            print(f"reconcile: {verb} {src} -> {dst}")
         for slug, refs in sorted(rep["ambiguous"].items()):
             print(f"reconcile: {slug}: NOT moved -- {len(refs)} notes claim this slug "
-                  f"({', '.join(refs)}); merge them (sluice leads dedupe) or rename one",
-                  file=sys.stderr)
+                  f"({', '.join(refs)}); merge them (sluice leads dedupe) or rename one")
         for slug, raw in rep["unknown"]:
-            print(f"reconcile: {slug}: left in place -- status {raw!r} is not canonical",
-                  file=sys.stderr)
+            print(f"reconcile: {slug}: left in place -- status {raw!r} is not canonical")
         for slug, where in rep["user_filed"]:
-            print(f"reconcile: {slug}: left in place -- {where}/ is yours, not sluice's",
-                  file=sys.stderr)
+            print(f"reconcile: {slug}: left in place -- {where}/ is yours, not sluice's")
         for slug, dst in rep["collisions"]:
             print(f"reconcile: {slug}: NOT moved -- {dst} is taken (a numeric suffix would "
-                  f"change the slug, which is the identity)", file=sys.stderr)
+                  f"change the slug, which is the identity)")
         for slug, err in rep["skipped"]:
-            print(f"reconcile: {slug}: NOT moved -- {err}", file=sys.stderr)
+            print(f"reconcile: {slug}: NOT moved -- {err}")
         print(f"reconcile: layout={rep['layout']} {verb}={len(rep['moves'])} "
               f"in_place={rep['in_place']} ambiguous={len(rep['ambiguous'])} "
               f"unknown={len(rep['unknown'])} user_filed={len(rep['user_filed'])} "
