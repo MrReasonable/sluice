@@ -57,9 +57,15 @@ jobs:
       # on one interpreter version becomes visible instead of being averaged away.
       - run: python -m pytest --cov
       # Re-render the SAME data as markdown so the per-file breakdown lands on the run's summary
-      # page rather than only in the log. `set -euo pipefail` because the default shell is
-      # `bash -e` WITHOUT pipefail or nounset: an unset $GITHUB_STEP_SUMMARY would otherwise
-      # redirect into a file named by the empty string and this step would still exit 0.
+      # page rather than only in the log.
+      #
+      # `-u` is the load-bearing flag, and NOT for the reason this comment first gave. An unset
+      # $GITHUB_STEP_SUMMARY does not pass silently: the redirect fails on a compound command and
+      # the step exits 1 under plain `bash`, no flags needed -- measured. What DOES pass silently
+      # is an unset $PYTHON_VERSION, which renders the heading `## Coverage (Python )` and exits
+      # 0. `-u` turns that into an unbound-variable error. `-e` is already GitHub's default
+      # (`bash -e {0}`); `pipefail` is inert here with no pipe in the block, and is kept only so
+      # that adding one later cannot silently swallow a failure the way it could in `rulesync`.
       #
       # No `if: always()` -- on a red suite the failing tests are the signal, and a coverage
       # table rendered from a partial run would understate coverage for reasons unrelated to it.

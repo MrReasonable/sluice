@@ -21,7 +21,7 @@ that drops the flag sends a human down an install path CI deliberately does not 
 ## Commands
 
 ```bash
-pip install -e ".[test]"        # pytest + faker + pytest-cov (all dev-time; see Neutrality)
+pip install -e ".[test]"        # pytest + pytest-cov + faker (the suite needs faker; see Neutrality)
 python -m pytest                # fast (well under a second), fully offline: no Camofox, no network
 python -m pytest tests/test_triage_engine.py            # one file
 python -m pytest tests/test_triage_engine.py -k judge   # one test
