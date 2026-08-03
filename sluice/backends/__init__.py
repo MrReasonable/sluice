@@ -17,14 +17,19 @@ and resolved credentials that `Sluice.backend()` computes. So a backend factory 
 `factory(config)` and does NOT go through `_resolve`; it takes the resolved construction
 params and returns a backend:
 
-    factory(model, *, api_key="", base_url="", http=None, runner=None, timeout=300,
+    factory(model, *, api_key="", base_url="", http=None, runner=None, timeout=None,
             max_tokens=None, claude_host="", claude_path="claude", effort="max") -> backend
 
 Every factory accepts this full signature (the union `make_backend` forwards) and reads
-only its own subset. `http`/`runner` are omitted when None so the backend class default
-applies -- the same forward-or-omit idiom `make_backend` uses for `max_tokens`. Role
-selection (auto/primary/fallback) and credential resolution stay above this seam, in
+only its own subset. `http`/`runner`/`timeout` are omitted when None so the backend class
+default applies -- the same forward-or-omit idiom `make_backend` uses for `max_tokens`.
+Role selection (auto/primary/fallback) and credential resolution stay above this seam, in
 `Sluice.backend()`; a factory only ever sees an already-resolved key.
+
+`timeout` defaults to None here rather than to a number, and that is load-bearing: a
+factory-local default is INERT on the seam path (`make_backend` coalesces None before any
+factory is called, so rebinding one changes nothing) while silently diverging from the
+class default on the direct path. The single value lives at `core.backends.DEFAULT_TIMEOUT`.
 """
 from sluice.core import plugins
 

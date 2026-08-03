@@ -39,6 +39,14 @@ DEFAULT_BASE_URLS = {
     "openai": "https://api.openai.com/v1",
 }
 
+# Seconds any one backend invocation may take. ONE spelling, deliberately: this value had
+# grown three independent copies (the seam, a factory-local constant, and cv's config
+# default), and a factory-local one was measurably INERT -- rebinding it changed nothing,
+# because the seam coalesced None before the factory ever saw it, so a maintainer raising
+# it for slow composes would have got a silent no-op. Every provider class default, the
+# seam, and `CvConfig.compose_timeout` now read this name.
+DEFAULT_TIMEOUT = 300
+
 
 class BackendError(Exception):
     pass
@@ -95,7 +103,7 @@ def _redact(text: str, secrets: dict[str, str]) -> str:
 class ClaudeMaxBackend:
     def __init__(self, model, *, host: str = "", claude_path: str = "claude",
                  cmd_template=None, runner=subprocess.run,
-                 timeout=300, effort="max"):
+                 timeout=DEFAULT_TIMEOUT, effort="max"):
         # cmd_template is the argv up to (but not including) the prompt on stdin.
         # host/claude_path are ignored once cmd_template is supplied explicitly.
         self.model = model
@@ -211,7 +219,7 @@ class OpenAiCompatibleBackend:
     only when set; an incomplete response (finish_reason other than stop, e.g.
     length or content_filter) or empty content is a hard error, not a partial."""
 
-    def __init__(self, model, *, api_key, base_url, http=_urlopen, timeout=300,
+    def __init__(self, model, *, api_key, base_url, http=_urlopen, timeout=DEFAULT_TIMEOUT,
                  max_tokens=None):
         self.model = model
         self.url = base_url.rstrip("/") + "/chat/completions"
@@ -259,7 +267,7 @@ class AnthropicBackend:
     _VERSION = "2023-06-01"
 
     def __init__(self, model, *, api_key, base_url=DEFAULT_BASE_URLS["anthropic"],
-                 http=_urlopen, timeout=300, max_tokens=8192):
+                 http=_urlopen, timeout=DEFAULT_TIMEOUT, max_tokens=8192):
         self.model = model
         self.url = base_url.rstrip("/") + "/v1/messages"
         self.api_key = api_key
@@ -316,7 +324,8 @@ class FallbackBackend:
             return out
 
 
-def make_backend(name, model="", *, http=_urlopen, runner=subprocess.run, timeout=300,
+def make_backend(name, model="", *, http=_urlopen, runner=subprocess.run,
+                 timeout=DEFAULT_TIMEOUT,
                  api_key="", base_url="", max_tokens=None,
                  claude_host="", claude_path="claude", effort="max"):
     """Build one backend by name, delegating provider construction to the `backend`
@@ -353,14 +362,18 @@ def make_backend(name, model="", *, http=_urlopen, runner=subprocess.run, timeou
         # rather than the KeyError-flavoured UnknownAdapter. The registry-completeness
         # test is what stops this reaching a user in the first place.
         raise BackendError(str(e)) from e
-    # Coalesce None HERE as well as in the claude-max factory, and the duplication is
-    # deliberate: this is the one choke point every provider passes through, and the hazard
-    # is not claude-max's alone. An explicit `timeout=None` reaching an HTTP provider ends
-    # at `urlopen(timeout=None)`, which blocks on the socket default -- the same
-    # wait-forever as `subprocess.run(timeout=None)`, just via a different call. The
-    # factories keep their own coalesce because each is independently constructible (the
-    # seam's guard suite builds them directly, bypassing this function).
-    timeout = 300 if timeout is None else timeout
+    # Coalesce None HERE, at the one choke point every provider crosses, so a future
+    # provider that forgets the factory-level idiom is still covered. An explicit
+    # `timeout=None` reaching an HTTP provider ends at `urlopen(timeout=None)`, which
+    # blocks on the socket default -- the same wait-forever as
+    # `subprocess.run(timeout=None)`, by a different call.
+    #
+    # Each factory ALSO omits the argument when it is None, so the class default applies
+    # on the DIRECT construction path this function never sees (the seam's guard suite
+    # resolves factories through `plugins.get`). An earlier version claimed that second
+    # line existed while only claude-max had it -- the three HTTP siblings returned
+    # `timeout=None` from a direct `_make`, the exact hazard this comment names.
+    timeout = DEFAULT_TIMEOUT if timeout is None else timeout
     return factory(model, api_key=api_key, base_url=base_url, http=http, runner=runner,
                    timeout=timeout, max_tokens=max_tokens, claude_host=claude_host,
                    claude_path=claude_path, effort=effort)

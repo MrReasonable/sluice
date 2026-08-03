@@ -1,36 +1,29 @@
 """The flat-rate `claude --print` CLI backend, registered as `claude-max`.
 
-Needs no API key: it shells the flat-rate CLI. `runner` is omitted when None so
-ClaudeMaxBackend's subprocess.run default applies -- make_backend always forwards a
-concrete runner, but keeping the factory independently constructible matters for the
-seam's own guard suite.
+Needs no API key: it shells the flat-rate CLI. `runner` and `timeout` are omitted when
+None so ClaudeMaxBackend's own defaults apply -- make_backend always forwards a concrete
+runner, but keeping the factory independently constructible matters for the seam's own
+guard suite, which resolves factories through `plugins.get` and bypasses make_backend.
 """
 from sluice.backends import register
 from sluice.core.backends import ClaudeMaxBackend
 
 
-# This provider shells an AGENT over a (possibly remote) CLI at `--effort max`, so it is
-# the slowest of the four by a wide margin -- measured 46-111s for a real composition
-# against a 24-entry bundle, locally. The number lives here rather than being spelled at
-# each call site so there is one thing to change when that stops being true.
-_DEFAULT_TIMEOUT = 300
-
-
-def _make(model, *, api_key="", base_url="", http=None, runner=None,
-          timeout=_DEFAULT_TIMEOUT, max_tokens=None, claude_host="",
-          claude_path="claude", effort="max"):
+def _make(model, *, api_key="", base_url="", http=None, runner=None, timeout=None,
+          max_tokens=None, claude_host="", claude_path="claude", effort="max"):
     extra = {} if runner is None else {"runner": runner}
-    # COALESCE None, do not lean on the signature default. A default only applies when the
-    # argument is OMITTED, and `make_backend` has a `timeout` parameter a caller can pass
-    # through as None -- which would reach `subprocess.run(timeout=None)` and wait FOREVER.
-    # A hung compose host then hangs the whole run with nothing to end it, which is worse
-    # than any wrong-but-finite value. `is None` rather than falsiness on purpose: 0 is a
-    # nonsensical timeout but it is an explicit one, and silently rewriting it to 300 would
-    # hide the config error instead of letting it surface.
+    # OMIT when None rather than coalescing to a number spelled here. An earlier version
+    # of this factory carried its own `_DEFAULT_TIMEOUT = 300` and claimed to be "one
+    # thing to change" -- it was INERT: make_backend coalesces None before the factory is
+    # ever called, so rebinding it changed nothing and a maintainer raising it for slow
+    # composes would have got a silent no-op. The value now has exactly one home
+    # (`core.backends.DEFAULT_TIMEOUT`, which is ClaudeMaxBackend's own default), and this
+    # branch exists for the DIRECT construction path, where an explicit None would
+    # otherwise reach `subprocess.run(timeout=None)` and wait forever.
+    if timeout is not None:
+        extra["timeout"] = timeout
     return ClaudeMaxBackend(model, host=claude_host, claude_path=claude_path,
-                            effort=effort,
-                            timeout=_DEFAULT_TIMEOUT if timeout is None else timeout,
-                            **extra)
+                            effort=effort, **extra)
 
 
 register("claude-max", _make)

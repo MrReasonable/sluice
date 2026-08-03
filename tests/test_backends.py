@@ -541,13 +541,29 @@ def test_claudemax_ssh_argv_is_pinned_exactly():
 def test_claude_max_factory_coalesces_an_explicit_none_timeout():
     """`timeout=None` reaches `subprocess.run(timeout=None)`, which waits FOREVER.
 
-    `_make`'s `timeout=300` is a SIGNATURE default, so it does not apply when a caller
-    passes None explicitly -- and `make_backend` has a `timeout` parameter any caller can
-    pass through. A hung compose host would then hang the whole run with no timeout to
-    end it, which is the one failure mode worse than a slow one.
+    The factory omits the argument when None so the class default applies. Written first
+    as a factory-local `_DEFAULT_TIMEOUT` constant, which was INERT: `make_backend`
+    coalesces None before any factory runs, so rebinding it changed nothing on the seam
+    path. This asserts the DIRECT path, which is the only one where the factory's
+    handling of None is observable at all.
     """
     from sluice.backends.claude_max import _make
     be = _make("m", timeout=None)
+    assert isinstance(be.timeout, (int, float)) and be.timeout > 0
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "openai", "deepseek"])
+def test_http_factories_also_omit_a_none_timeout(provider):
+    """The three siblings, on the DIRECT path make_backend never sees.
+
+    They had no such handling while a comment claimed they did: `_make(timeout=None)`
+    returned a backend with `timeout=None`, which reaches `urlopen(timeout=None)` and
+    blocks on the socket default. `tests/test_backend_registry.py` resolves factories
+    through `plugins.get`, so this path is exercised by the seam's own guard suite.
+    """
+    from sluice.core import plugins
+    import sluice.backends  # noqa: F401  -- triggers self-registration
+    be = plugins.get("backend", provider)("m", api_key="k", timeout=None)
     assert isinstance(be.timeout, (int, float)) and be.timeout > 0
 
 
@@ -604,3 +620,27 @@ def test_claudemax_nonzero_exit_still_surfaces_real_stderr():
     with pytest.raises(BackendError) as ei:
         be.complete("x")
     assert "quota exceeded for this account" in str(ei.value)
+
+
+def test_the_seam_coalesces_for_a_factory_that_does_not(monkeypatch):
+    """The seam-level coalesce's real job, and the only case that can witness it.
+
+    Every shipped factory now omits `timeout` when None, so deleting the seam line leaves
+    the whole suite green -- measured. That does not make it dead code: the backend seam
+    is a REGISTRY, and a provider added later whose factory forwards the argument blindly
+    would land at `subprocess.run(timeout=None)` / `urlopen(timeout=None)` again. This
+    stands in for that provider, so the seam's guarantee is asserted independently of
+    whether any current factory happens to also handle it.
+    """
+    from sluice.core.backends import DEFAULT_TIMEOUT
+
+    seen = {}
+
+    def naive_factory(model, **kw):     # forwards blindly: no omit-when-None idiom
+        seen["timeout"] = kw["timeout"]
+        return object()
+
+    monkeypatch.setattr("sluice.core.plugins.get", lambda seam, name: naive_factory)
+    make_backend("claude-max", "m", timeout=None)
+    assert seen["timeout"] == DEFAULT_TIMEOUT, (
+        "make_backend handed None straight to a factory that forwards it blindly")

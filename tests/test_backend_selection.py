@@ -191,3 +191,60 @@ def test_timeout_reaches_the_primary_backend():
 def test_timeout_defaults_without_the_caller_naming_one():
     """Every existing caller omits it, so the omitted path is the live one."""
     assert _b("primary").timeout == 300
+
+
+# ── #28: the knob must reach the ENGINE, not merely Sluice.backend() ─────────────
+def test_compose_cv_forwards_cv_compose_timeout_to_the_backend(monkeypatch, tmp_path):
+    """Deleting `timeout=cvcfg.compose_timeout` from compose_cv's Sluice.backend(...)
+    call left the WHOLE SUITE GREEN. `test_timeout_reaches_the_primary_backend` starts at
+    Sluice.backend(timeout=900) -- one frame PAST the wiring under test, so it could not
+    see the knob failing to arrive.
+
+    That is the same mistake twice: a guard placed one layer above the thing that breaks.
+    This one starts at `compose_cv`, so the wiring itself is what is asserted, and it
+    checks the value landed on the constructed object rather than merely that some
+    timeout was passed -- a sentinel distinct from the default is what makes a
+    cross-field misread visible.
+    """
+    import dataclasses
+    from sluice.core.app import Sluice
+    from sluice.cv.config import load_cv_config
+
+    cvc = dataclasses.replace(load_cv_config(), compose_timeout=1234,
+                              primary_backend="claude-max", compose_model="m")
+    monkeypatch.setattr("sluice.cv.config.load_cv_config", lambda: cvc)
+
+    seen = {}
+    real = Sluice.backend
+
+    def spy(self, role, **kw):
+        seen["timeout"] = kw.get("timeout")
+        return real(self, role, **kw)
+
+    monkeypatch.setattr(Sluice, "backend", spy)
+    # No try/except, for the reason CodeRabbit gave for its sibling in test_doctor.py:
+    # a bare `except Exception: pass` lets a later regression pass this test with `seen`
+    # already populated by the spy. Measured -- the dry run completes on an empty
+    # shortlist, so there was never an exception for the handler to catch.
+    Sluice().compose_cv(all_shortlist=True, dry_run=True)
+    assert seen.get("timeout") == 1234, (
+        "compose_cv did not forward cv.compose_timeout to Sluice.backend()")
+
+
+def test_the_timeout_reaches_the_fallback_leg_too(key):
+    """`auto` builds a FallbackBackend whose `complete` tries the primary and THEN the
+    fallback, so a knob that sizes only the primary leaves half a lead's worst case
+    pinned at the shipped default -- and `--backend fallback` ignoring it entirely.
+
+    Both legs are asserted because threading it into `_make_primary` alone passed every
+    test that existed when the knob was added.
+    """
+    be = _b("auto", timeout=900)
+    assert be.primary.timeout == 900
+    assert be.fallback.timeout == 900
+
+
+def test_the_timeout_reaches_a_strictly_selected_fallback(key):
+    """`--backend fallback` takes its own construction arm, which silently ignored the
+    knob: it never called the builder the timeout had been threaded into."""
+    assert _b("fallback", timeout=900).timeout == 900
