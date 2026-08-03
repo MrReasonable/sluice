@@ -591,6 +591,13 @@ def test_a_non_absolute_uri_still_cannot_create(monkeypatch, tmp_path, spelling)
     import sqlite3
     monkeypatch.chdir(tmp_path)
     spelling = spelling if spelling is not None else str(tmp_path / "abs-absent.db")
+    # The PARENT has to exist, or the row proves nothing. `relative/absent.db` with no
+    # `relative/` directory fails with `unable to open database file` whether the mode is
+    # `rw` or `rwc` -- the same message from a different cause -- so it looked like a kill
+    # and was not. Measured: with `mode=rwc` only the `./` row went red, and that single
+    # missing row is the whole difference between testing the no-create property and
+    # testing that sqlite cannot create a directory.
+    os.makedirs(os.path.dirname(os.path.join(os.getcwd(), spelling)), exist_ok=True)
     with pytest.raises(sqlite3.OperationalError):
         sqlite3.connect(paths.existing_db_uri(spelling), uri=True).close()
     assert not os.path.exists(os.path.join(os.getcwd(), spelling))
