@@ -392,7 +392,7 @@ def test_enumerate_matches_operation_backend_wiring(monkeypatch, tmp_path):
         rec = {}
 
         def spy(self, role, *, primary_name, primary_model, effort, host,
-                claude_path, fallback_name, fallback_model):
+                claude_path, fallback_name, fallback_model, timeout=None):
             rec["primary"] = (primary_name, primary_model, host, claude_path)
             rec["fallback"] = (fallback_name, fallback_model)
             raise _Stop()

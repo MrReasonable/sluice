@@ -177,3 +177,17 @@ def test_every_sub_app_parses_and_defaults_backend(argv, cmd):
     assert args.backend == "auto"
     args = _build_parser().parse_args([*argv, "--backend", "fallback"])
     assert args.backend == "fallback"
+
+
+# ── #28: the compose timeout reaches the constructed backend ─────────────────────
+def test_timeout_reaches_the_primary_backend():
+    """Same gap the effort tests above close, for the knob added by #28: a test that only
+    asserted `Sluice.backend()` was CALLED with a timeout would not see whether it landed
+    on the object that runs the subprocess.
+    """
+    assert _b("primary", timeout=900).timeout == 900
+
+
+def test_timeout_defaults_without_the_caller_naming_one():
+    """Every existing caller omits it, so the omitted path is the live one."""
+    assert _b("primary").timeout == 300

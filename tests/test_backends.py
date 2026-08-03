@@ -499,3 +499,90 @@ def test_claudemax_empty_response_redacts_before_truncating():
     msg = str(ei.value)
     assert "no text" in msg              # still the empty-response branch
     assert "HOST-SENTINEL" not in msg
+
+
+# ── #28: the default argv, the timeout, and an exit that says nothing ────────────
+#
+# All three come from issue #28. The composition bug it leads with did NOT reproduce
+# (six arms through the real build_prompt/render_bundle/validate returned gate-passing
+# CVs), but these three are code facts independent of how the agent behaves.
+
+
+def test_claudemax_default_argv_is_pinned_exactly():
+    """`--permission-mode bypassPermissions` grants the agent unrestricted tools, and
+    NOTHING pinned it: deleting the pair outright left all 2078 tests green (witnessed).
+    Every pre-existing argv assertion reads `--effort` and stops there.
+
+    Equality, not membership. The flags are positional pairs built from literals with no
+    legitimate variance, so a reorder is as much a change as a deletion -- and a
+    membership check would pass a template that had grown a second, contradictory
+    `--permission-mode`. Updating this literal is the deliberate edit; that is the point.
+    """
+    assert ClaudeMaxBackend("m").cmd_template == [
+        "claude", "--print", "--model", "m", "--effort", "max",
+        "--permission-mode", "bypassPermissions",
+    ]
+
+
+def test_claudemax_ssh_argv_is_pinned_exactly():
+    """The ssh form must keep the same flags after the host, in the same order.
+
+    `["ssh", host] + base` is one concatenation, so a base-only assertion cannot see a
+    regression that reorders around the host -- and this is the form that runs when
+    `cv.compose_host` is set, i.e. the one a user is most likely to have in production.
+    """
+    be = ClaudeMaxBackend("m", host="host.invalid", claude_path="/opt/bin/claude")
+    assert be.cmd_template == [
+        "ssh", "host.invalid", "/opt/bin/claude", "--print", "--model", "m",
+        "--effort", "max", "--permission-mode", "bypassPermissions",
+    ]
+
+
+def test_claude_max_factory_coalesces_an_explicit_none_timeout():
+    """`timeout=None` reaches `subprocess.run(timeout=None)`, which waits FOREVER.
+
+    `_make`'s `timeout=300` is a SIGNATURE default, so it does not apply when a caller
+    passes None explicitly -- and `make_backend` has a `timeout` parameter any caller can
+    pass through. A hung compose host would then hang the whole run with no timeout to
+    end it, which is the one failure mode worse than a slow one.
+    """
+    from sluice.backends.claude_max import _make
+    be = _make("m", timeout=None)
+    assert isinstance(be.timeout, (int, float)) and be.timeout > 0
+
+
+def test_make_backend_coalesces_an_explicit_none_timeout():
+    """Same guarantee at the seam the production path actually calls."""
+    be = make_backend("claude-max", "m", timeout=None)
+    assert isinstance(be.timeout, (int, float)) and be.timeout > 0
+
+
+def test_claudemax_nonzero_exit_with_empty_stderr_still_says_something():
+    """Observed in production: `BackendError: claude-max exit 1:` -- and nothing after
+    the colon, because the CLI exited non-zero writing nothing to stderr.
+
+    The operator learns only that something failed. Assert on the DISCRIMINATING content
+    (that the message carries guidance beyond the bare prefix), not merely that a
+    BackendError was raised: `test_claudemax_runner_nonzero_raises` above already covers
+    the type, so a type-only assertion here would be witnessed by a test that predates
+    this one and would pass with the guidance deleted.
+    """
+    class R:
+        returncode, stdout, stderr = 1, "", "   "   # whitespace-only: same harm as empty
+    be = ClaudeMaxBackend("m", cmd_template=["claude"], runner=lambda *a, **k: R())
+    with pytest.raises(BackendError) as ei:
+        be.complete("x")
+    msg = str(ei.value)
+    assert "exit 1" in msg
+    assert not msg.rstrip().endswith(":"), "message trails off after the colon"
+    assert "no stderr" in msg.lower(), "does not say the CLI reported nothing"
+
+
+def test_claudemax_nonzero_exit_still_surfaces_real_stderr():
+    """The empty-stderr guidance must not displace a real diagnostic when there is one."""
+    class R:
+        returncode, stdout, stderr = 2, "", "quota exceeded for this account"
+    be = ClaudeMaxBackend("m", cmd_template=["claude"], runner=lambda *a, **k: R())
+    with pytest.raises(BackendError) as ei:
+        be.complete("x")
+    assert "quota exceeded for this account" in str(ei.value)

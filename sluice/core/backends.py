@@ -160,8 +160,22 @@ class ClaudeMaxBackend:
             # exc_info" -- one does; the rendered chain is closed here at the source.
             raise BackendError(f"claude-max invocation failed: {self._scrub(str(e))}") from None
         if proc.returncode != 0:
+            # A non-zero exit carrying NO stderr is a real, observed state (seen while
+            # running three composes concurrently against one host, where a single call at
+            # the same moment succeeded). The bare message was `claude-max exit 1:` and
+            # stopped there, so the operator learned only that something failed -- no cause,
+            # no next step. Say what is known and what to try; an error that names its own
+            # emptiness beats one that trails off mid-sentence.
+            #
+            # `.strip()` before the test, not just truthiness: whitespace-only stderr renders
+            # identically to empty and must take the same branch.
+            detail = self._scrub(proc.stderr).strip()[:200]
             raise BackendError(
-                f"claude-max exit {proc.returncode}: {self._scrub(proc.stderr)[:200]}")
+                f"claude-max exit {proc.returncode}: " + (detail or
+                "the CLI exited non-zero and wrote no stderr, so there is no diagnostic to "
+                "report. Commonly contention (concurrent invocations against one host) or "
+                "an expired CLI session; retry the lead on its own, and if it persists run "
+                "the CLI by hand on that host to see it interactively."))
         text = proc.stdout.strip()
         # Exit 0 with no text is a FAILED call wearing a successful one's clothes. Both
         # siblings already refuse it (OpenAiCompatibleBackend, AnthropicBackend); claude-max
@@ -339,6 +353,14 @@ def make_backend(name, model="", *, http=_urlopen, runner=subprocess.run, timeou
         # rather than the KeyError-flavoured UnknownAdapter. The registry-completeness
         # test is what stops this reaching a user in the first place.
         raise BackendError(str(e)) from e
+    # Coalesce None HERE as well as in the claude-max factory, and the duplication is
+    # deliberate: this is the one choke point every provider passes through, and the hazard
+    # is not claude-max's alone. An explicit `timeout=None` reaching an HTTP provider ends
+    # at `urlopen(timeout=None)`, which blocks on the socket default -- the same
+    # wait-forever as `subprocess.run(timeout=None)`, just via a different call. The
+    # factories keep their own coalesce because each is independently constructible (the
+    # seam's guard suite builds them directly, bypassing this function).
+    timeout = 300 if timeout is None else timeout
     return factory(model, api_key=api_key, base_url=base_url, http=http, runner=runner,
                    timeout=timeout, max_tokens=max_tokens, claude_host=claude_host,
                    claude_path=claude_path, effort=effort)
