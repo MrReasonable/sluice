@@ -255,11 +255,13 @@ Append to `tests/conformance/test_store_contract.py`. **Match that file's actual
 ```python
 def test_write_document_only_if_absent_creates_then_abstains(store_name, tmp_path, monkeypatch):
     """On the CONTRACT, not on Vault. protocols.py's own docstring says never-clobber lives here
-    precisely because 'a second store would ship without them', and #1 (CORRECTION, 2026-08-02: #1 is
-the vault's folder LAYOUT, not the store seam -- it ships no second store, so this row still runs
-once) is the
-    next backlog item -- so the second store is not hypothetical. `require_status`, the precedent
+    precisely because 'a second store would ship without them'. `require_status`, the precedent
     this parameter follows, got three conformance rows.
+
+    (CORRECTION, 2026-08-02: this plan additionally argued that #1 was the next backlog item and
+    therefore that a second store was imminent rather than hypothetical. That was wrong -- #1 is
+    the vault's folder LAYOUT and ships no store at all. The contract is still the right home for
+    this row, on the docstring's own reasoning; only the second-store-is-coming argument falls.)
 
     Asserted through read_criteria(), never a path: a store need not have one."""
     from sluice.core.protocols import CRITERIA_RELPATH
@@ -269,7 +271,7 @@ once) is the
     assert store.read_criteria() == "first"
 ```
 
-`_STORES` has one entry today (`vault` is the only registered store — verified), so this row runs once now and multiplies for free when #1 lands. That is the point of putting it here rather than in the Vault test file.
+`_STORES` has one entry today (`vault` is the only registered store — verified), so this row runs once now and would multiply for free if a second store were ever registered. (CORRECTION, 2026-08-02: that will not be #1 — see above.) That is the point of putting it here rather than in the Vault test file.
 
 - [ ] **Step 2: Run to verify it fails**
 
