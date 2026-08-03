@@ -27,16 +27,23 @@ behaviour change smuggled into a path sweep.
 NORMALISATION, stated once here because it was four separate decisions with no shared
 home and two of them read as contradicting each other:
 
-    expanduser at INGRESS -- wherever a path first arrives from outside (this module's
-    explicit branch and its XDG fallback, `Vault.__init__`, `onboard/questions.py`).
-    abspath ONLY where the value outlives the cwd it was read in: `questions.py` writes
-    the answer into a config file, and `cli.py` compares two spellings of the vault for
-    equality. Neither is true of a path this module returns, so it does not abspath, and
-    a relative explicit value is handed back exactly as the caller wrote it.
+    expanduser at INGRESS -- wherever a path first arrives from outside. FIVE sites, and
+    `tests/test_path_tilde.py` enumerates them from the source rather than trusting this
+    list, because the first version of this paragraph said four and was wrong the day it
+    was written: this module's explicit branch and its XDG fallback, `Vault.__init__`,
+    `onboard/questions.py`, and `cli.py` (both its `--vault`-versus-`$VAULT_DIR`
+    comparison and the preset it hands `sluice init`).
+    abspath ONLY where the value outlives the cwd it was read in -- either written down
+    or compared. `questions.py` and `cli.py`'s preset write the answer into a config
+    file; `cli.py`'s comparison needs two spellings to be judged equal. Neither is true
+    of a path this module returns, so it does not abspath, and a relative explicit value
+    is handed back exactly as the caller wrote it.
     At CONSUMPTION, neither -- with one exception that is not really one: a path being
     turned into a `file://` URI must be absolute or its first segment becomes the URI
-    authority, so `existing_db_uri` absolutises there. That changes the URI, never the
-    path any caller sees, which is why it does not break the rule above.
+    authority, so `existing_db_uri` joins the cwd on there. That changes the URI, never
+    the path any caller sees, which is why it does not break the rule above. It JOINS
+    rather than `abspath`s, because tidying `..` lexically is how it would start naming a
+    different file from the writer.
 
 `vault.py`'s "No abspath -- a relative vault is legitimate" and `questions.py`'s
 "Absolute, always" look opposed and are not: the first is a path used in place, the
@@ -194,13 +201,24 @@ def existing_db_uri(path: str) -> str:
     must stay one here -- expanding only here would open a DIFFERENT file from the one the
     caller just checked, trading a loud failure for a silent disagreement.
 
-    `abspath` deliberately preserves a leading `//` (POSIX leaves it implementation-
-    defined and `normpath` keeps exactly two), so it cannot undo the empty-authority
-    property above; `tests/test_paths.py` pins that. It resolves against the cwd, which is
-    what `sqlite3.connect` would have done with the relative path anyway -- so this names
-    the same file, it does not choose a new one.
+    `join(getcwd(), ...)` and NOT `os.path.abspath`, which is `normpath(join(...))` and
+    collapses `..` LEXICALLY. Every other operation on this same value lets the OS resolve
+    it -- `absent()`'s `lstat`, `save()`'s `sqlite3.connect(self.path)` -- and after a
+    symlinked component the two answers differ. Measured with `abspath` here and a store
+    at `link/../real/seen.db`: the writer created `<tmp>/real/seen.db` while the URI
+    addressed `<tmp>/cwd/real/seen.db`, so the read either raised on a store `absent()`
+    had just called present or, with anything sitting at the lexical path, returned an
+    EMPTY dedup set -- the #81 harm, reintroduced by the fix for it. `core/vault.py` had
+    already chosen `realpath` over `abspath` for this reason. Joining leaves the `..` in
+    place for the kernel to resolve, which is the whole point: the job here is to make the
+    path ABSOLUTE, not to tidy it.
+
+    A leading `//` survives the join (POSIX leaves it implementation-defined), so the
+    empty-authority property above is untouched; `tests/test_paths.py` pins that, and pins
+    that the URI opens the same file the writer used.
     """
-    return "file://" + urllib.parse.quote(os.path.abspath(path)) + "?mode=rw"
+    return ("file://" + urllib.parse.quote(os.path.join(os.getcwd(), path))
+            + "?mode=rw")
 
 
 def _something_is_there(path: str) -> bool:
@@ -288,12 +306,25 @@ def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> s
         # message names. The `_LEGACY` machinery cannot cover it: its paths are
         # cwd-relative literals keyed on `name`, and the abandoned location here is
         # whatever the unexpanded value spelled.
+        # MOVE, never "remove". An earlier draft ended "check it and remove it by hand",
+        # and for `seen.db`/`track-seen.db` that abandoned file IS the dedup history --
+        # every run of the broken version wrote to it, and the expanded location is empty.
+        # A user who followed that advice would start the next run from an empty dedup set:
+        # the #81 harm, delivered as the tool's own instruction. `_LEGACY` twenty lines
+        # below hands out a `mv` chain for exactly this reason, so this says the same
+        # thing, `shlex.quote`d because these paths come from the environment and a home
+        # directory with a space in it otherwise produces a command that does something
+        # else. `[ ! -e ]` first, for the same reason it guards that chain: a destination
+        # that already exists must stop the command rather than be moved onto.
         if expanded != explicit and _something_is_there(explicit):
             _log.warning(
                 "%s resolves to %s, but %s also exists relative to the current directory. "
-                "An earlier sluice took that literally and may have written state there; "
-                "sluice never moves your data, so check it and remove it by hand.",
-                name, expanded, explicit)
+                "An earlier sluice took that literally and may have written state there -- "
+                "for a dedup database that file is your whole history, so do not delete "
+                "it. sluice never moves your data; if the new location is empty, run:  "
+                "[ ! -e %s ] && mv %s %s",
+                name, expanded, explicit,
+                shlex.quote(expanded), shlex.quote(explicit), shlex.quote(expanded))
         return expanded
 
     var, fallback = _ROOTS[kind]

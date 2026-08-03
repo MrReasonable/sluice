@@ -533,10 +533,51 @@ def test_a_non_absolute_store_still_opens(monkeypatch, tmp_path, spelling):
     os.makedirs(os.path.dirname(same_file_the_rest_of_the_store_uses), exist_ok=True)
     sqlite3.connect(same_file_the_rest_of_the_store_uses).close()
     db = sqlite3.connect(paths.existing_db_uri(spelling), uri=True)
-    db.close()
+    try:
+        # WHICH file, not merely that one opened. Planting at `abspath(spelling)` and then
+        # asserting the URI opens is circular -- it constructs the agreement it claims to
+        # test. `PRAGMA database_list` reports the path sqlite actually resolved.
+        opened = db.execute("PRAGMA database_list").fetchone()[2]
+        assert os.path.samefile(opened, same_file_the_rest_of_the_store_uses)
+    finally:
+        db.close()
 
 
-@pytest.mark.parametrize("spelling", ["relative/absent.db", "./absent.db", "/absent.db"])
+def test_the_uri_names_the_same_file_as_the_writer_through_a_symlinked_parent(
+        monkeypatch, tmp_path):
+    """`os.path.abspath` is `normpath(join(cwd, path))`, and `normpath` collapses `..`
+    LEXICALLY. Every other operation on the same value -- `absent()`'s `lstat`, `save()`'s
+    `sqlite3.connect(self.path)` -- lets the OS resolve it, and after a symlinked component
+    those two answers differ.
+
+    Measured with the first version of this fix: `save()` wrote `real2/seen.db` while the
+    URI addressed `cwd/real2/seen.db`, so `load()` either raised on a store `absent()` had
+    just called present, or -- with anything at the lexical path -- returned an EMPTY dedup
+    set. That is the #81 harm reintroduced by the fix for it. `core/vault.py` already chose
+    `realpath` over `abspath` for this reason.
+    """
+    import sqlite3
+    (tmp_path / "real").mkdir()
+    (tmp_path / "cwd").mkdir()
+    (tmp_path / "cwd" / "link").symlink_to(tmp_path / "elsewhere")
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path / "cwd")
+    spelling = "link/../real/seen.db"          # OS: <tmp>/real ; lexical: <tmp>/cwd/real
+    sqlite3.connect(spelling).close()          # what `save()` does: the raw path
+    db = sqlite3.connect(paths.existing_db_uri(spelling), uri=True)
+    try:
+        opened = db.execute("PRAGMA database_list").fetchone()[2]
+        assert os.path.samefile(opened, spelling), (
+            f"the URI opened {opened}, the writer used "
+            f"{os.path.realpath(spelling)}")
+    finally:
+        db.close()
+
+
+# The absolute row is built from `tmp_path`, not spelled `/absent.db`: on a non-root run
+# that fails with EACCES on `/` and so reads as a kill it is not, and on a root run it
+# would create a file at the filesystem root.
+@pytest.mark.parametrize("spelling", ["relative/absent.db", "./absent.db", None])
 def test_a_non_absolute_uri_still_cannot_create(monkeypatch, tmp_path, spelling):
     """The property `mode=rw` exists for, unchanged by making the path absolute: opening
     must never CREATE, because a 0-byte file disarms this module's relocation notice
@@ -544,9 +585,10 @@ def test_a_non_absolute_uri_still_cannot_create(monkeypatch, tmp_path, spelling)
     power to make one."""
     import sqlite3
     monkeypatch.chdir(tmp_path)
+    spelling = spelling if spelling is not None else str(tmp_path / "abs-absent.db")
     with pytest.raises(sqlite3.OperationalError):
         sqlite3.connect(paths.existing_db_uri(spelling), uri=True).close()
-    assert not os.path.exists(os.path.abspath(spelling))
+    assert not os.path.exists(os.path.join(os.getcwd(), spelling))
 
 
 def test_a_double_slash_path_keeps_an_empty_uri_authority(monkeypatch, tmp_path):
