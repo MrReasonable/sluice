@@ -304,17 +304,21 @@ empty/zero, and an unconfigured gate passes every lead through. Getting this bac
 someone's entire job hunt — it has happened once already (`672ad2a`), and
 `tests/test_sluice_neutral_defaults.py` now fails the build if it recurs. `lead_ttl_days` (#9) is
 the same shape at the root config: `0` means staleness is OFF, so an unconfigured install expires
-nothing and refuses nothing. `lead_layout` (#1) is the THIRD root knob with that property: `""` is
-flat, so an unconfigured install files notes exactly where the pre-#1 store did, and it is what
-keeps the whole layout feature inert until someone opts in. Its failure mode is a NAME rather than
-a value, so it raises and lists the valid ones at BOTH `load_config` (a YAML typo is a usage error,
-not a traceback) and `Vault.__init__` (which is what covers the ~150 direct `Vault(...)`
-constructions a loader-only check would miss). Its validator rejects `bool` *before* checking `int`, because `bool`
+nothing and refuses nothing. Its validator rejects `bool` *before* checking `int`, because `bool`
 subclasses `int` and PyYAML resolves `yes`/`on`/`true` to `True` — so `lead_ttl_days: yes`, the
 natural thing to type to turn the feature ON, would otherwise load as a one-day TTL and mark every
 lead stale with no error anywhere. The list-keyed neutral-defaults sweep does NOT cover int fields
 and must not be widened to: `0 == abstain` is not universal (the dossier-cache `ttl_days: int = 7`
 is a legitimate non-zero default), so this knob carries its own named guard.
+
+`lead_layout` (#1) is the THIRD root knob with that property: `""` is flat, so an unconfigured
+install files notes exactly where the pre-#1 store did, and it is what keeps the whole layout
+feature inert until someone opts in. Its failure mode is a NAME rather than a value — a plain
+membership check against `LEAD_LAYOUTS`, with none of `lead_ttl_days`' bool-subclasses-int hazard —
+so it raises and lists the valid ones at BOTH `load_config` (a YAML typo is a usage error, not a
+traceback) and `Vault.__init__` (which is what covers the ~150 direct `Vault(...)` constructions a
+loader-only check would miss). It carries its own named guard too, for the mirror-image reason:
+the sweep is keyed on LIST defaults, so a `str` field is invisible to it.
 
 **The CV fabrication gate is hard.** `cv/validate.py` is pure and deterministic: every WORK bullet
 must cite a real bundle `[id]` and every number in a bullet must appear in a cited entry; the PROFILE
