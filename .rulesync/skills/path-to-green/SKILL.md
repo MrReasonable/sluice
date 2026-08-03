@@ -27,7 +27,7 @@ A one-shot skill: invoke it on a PR, and it drives the PR to green and merges it
 `.github/workflows/ci.yml` defines four jobs:
 
 - **`lint`**: `ruff check sluice tests scripts` (ruff pinned to `0.15.21`), then `zizmor --offline --strict-collection .github/workflows/`.
-- **`test`**: `pip install -e ".[test]"` then `python -m pytest --cov`, across a matrix of Python 3.12, 3.13 and 3.14, each leg publishing its coverage report to the run summary. Coverage REPORTS and does not gate (#11), so it can never be the reason this job is red -- if `test` fails, a test failed.
+- **`test`**: `pip install -e ".[test]"` then `python -m pytest --cov`, across a matrix of Python 3.12, 3.13 and 3.14, each leg publishing its coverage report to the run summary. Coverage REPORTS and does not gate (#11): there is no `--cov-fail-under`, so this job can never be red for coverage being too LOW. It is NOT immune to coverage altogether -- `coverage report` exits 1 on "No data to report", under `set -euo pipefail` -- so read the failing step before assuming a test failed.
 - **`rulesync`**: `npm ci --ignore-scripts` then `npm run rulesync`, asserting the regeneration wrote every output it should (`scripts/guard_rulesync_drift.py`, a count-based check -- a clean `git status` alone cannot see a dropped hook command), that the emitted `.claude/settings.json` still carries the no-bypass hook, and that the tree is clean afterward. This is the drift gate: it fails whenever `.rulesync/` and its generated outputs (`CLAUDE.md`, `AGENTS.md`, `.claude/`, ...) have come apart.
 - **`ci-success`**: the aggregate gate. It requires all three of the above to succeed.
 
