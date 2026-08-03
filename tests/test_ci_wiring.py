@@ -215,16 +215,25 @@ def _step_containing(job: str, needle: str) -> str:
     unrelated step does not mean the coverage report is what reaches it. A step is the unit that
     shares a shell, so it is the unit these assertions belong to.
 
-    A step begins at the only six-space `- ` in a job; its keys sit at eight. Requires EXACTLY
-    one match: zero means the sweep found nothing and every assertion over it would be vacuous,
-    and two means the caller cannot say which step it is asserting about.
+    Sliced from `steps:` first, not from the whole job. A step begins at a six-space `- `, and
+    so does an item of a block-form job-level key -- `needs:\\n      - lint` splits into parts
+    that are not steps at all. Not live on the `test` job, which has no such key; scoping to
+    `steps:` is what stops it becoming live the first time this helper is pointed at a job that
+    does (`ci-success` has a `needs:`, today in flow form).
+
+    Requires EXACTLY one match: zero means the sweep found nothing and every assertion over it
+    would be vacuous, and two means the caller cannot say which step it is asserting about.
     """
-    parts = re.split(r"\n(?=      - )", _job_directives(job))
+    block = _job_directives(job)
+    marker = "\n    steps:\n"
+    assert marker in block, f"the {job!r} job has no `steps:` key; nothing here can be a step"
+    parts = re.split(r"\n(?=      - )", block[block.index(marker) + len(marker) :])
     matches = [part for part in parts if needle in part]
     assert len(matches) == 1, (
         f"expected exactly one step in the {job!r} job containing {needle!r}, found "
-        f"{len(matches)}. Zero makes every assertion over the result vacuous; two makes it "
-        "ambiguous which step is being pinned."
+        f"{len(matches)}. Zero means either the step is gone or the needle itself was removed "
+        f"from it -- check {needle!r} still appears where it should; two makes it ambiguous "
+        "which step is being pinned."
     )
     return matches[0]
 
@@ -428,14 +437,32 @@ def _coverage_config() -> dict:
     return _pyproject().get("tool", {}).get("coverage", {})
 
 
-# The config files coverage.py consults AHEAD of pyproject.toml, in its own precedence order.
-# Each maps to the section that would make it a coverage config; `.coveragerc` exists for
-# nothing else, so its mere presence counts.
-_SHADOWING_COVERAGE_CONFIGS = {
-    ".coveragerc": None,
-    "setup.cfg": "[coverage:",
-    "tox.ini": "[coverage:",
-}
+def _shadowing_coverage_configs() -> list[tuple[str, bool]]:
+    """`(filename, presence_alone_counts)` for every file coverage.py tries BEFORE pyproject.
+
+    DERIVED from coverage.py's own precedence list, never hand-listed -- and that is not a
+    stylistic preference. Hand-listed, this held three of the four slots and omitted
+    `.coveragerc.toml`, the one directly below `.coveragerc`; a file of that name carrying
+    `[report] fail_under = 99` was measured gating the build at 99%, silently replacing
+    `source` so the report measured `tests/`, and clearing `show_missing` and `relative_files`
+    -- with every test in this module green. A list that has to be kept in step with a library's
+    internals by hand is a list that will fall out of step with them.
+
+    `is_our_file` is coverage.py's own flag for "this file exists for nothing but coverage", so
+    it is exactly the presence-alone-counts distinction, taken from the library rather than
+    guessed. `coverage.config` is not a documented public API: if a future release moves it, the
+    import raises and this test goes RED, which is the correct direction for a guard whose whole
+    job is to notice that the config landscape moved.
+    """
+    from coverage.config import config_files_to_try
+
+    tries = [(name, is_ours) for name, is_ours, _ in config_files_to_try(True)]
+    names = [name for name, _ in tries]
+    assert "pyproject.toml" in names, (
+        f"coverage.py no longer consults pyproject.toml at all ({names}); every other coverage "
+        "guard in this module reads it, so they are now asserting on a file nothing opens"
+    )
+    return tries[: names.index("pyproject.toml")]
 
 
 def test_pyproject_is_the_effective_coverage_config():
@@ -452,12 +479,20 @@ def test_pyproject_is_the_effective_coverage_config():
     (`COVERAGE_RCFILE` can override from the environment too; nothing in a repo can guard an env
     var, and CI sets none -- the point here is that no file in the TREE silently takes over.)
     """
+    outranking = _shadowing_coverage_configs()
+    # Non-vacuity: with an empty list this sweep inspects nothing and passes unconditionally.
+    assert outranking, (
+        "coverage.py reports no config file ranking above pyproject.toml, so this guard would "
+        "pass without having looked at anything"
+    )
     shadowing = []
-    for name, section in _SHADOWING_COVERAGE_CONFIGS.items():
+    for name, presence_alone_counts in outranking:
         path = ROOT / name
         if not path.exists():
             continue
-        if section is None or section in path.read_text():
+        # A shared file (setup.cfg, tox.ini) only shadows if it actually declares coverage
+        # sections; `[coverage:` matches every one of them, `[coverage:paths]` included.
+        if presence_alone_counts or "[coverage:" in path.read_text():
             shadowing.append(name)
     assert not shadowing, (
         f"{shadowing} outrank pyproject.toml in coverage.py's config search, so the coverage "
@@ -583,6 +618,10 @@ def test_the_test_job_publishes_the_coverage_report_to_the_run_summary():
     both be present and connected to nothing.
     """
     block = _job_directives("test")
+    # KEPT DELIBERATELY, though `_step_containing`'s exactly-one check below would also catch a
+    # missing invocation -- two reviewers have now read this as dead. It is not: it fires FIRST,
+    # and its message is the one that carries the incident (the name-vs-invocation trap). The
+    # generic "found 0 steps" that would otherwise surface says nothing about why.
     assert "python -m coverage report" in block, (
         "the summary step no longer renders a coverage report. It may still be NAMED for one: "
         "assert the invocation, never the phrase."
@@ -613,11 +652,24 @@ def test_the_summary_step_refuses_an_unset_variable():
     (`-e` is already GitHub's default `bash -e {0}`, and `pipefail` is inert with no pipe in the
     block. Neither is load-bearing today; the full form is kept so a later pipe cannot silently
     swallow a failure, which is exactly what it guards in the rulesync job.)
+
+    So the assertion is on `-u` ALONE, not on the literal `set -euo pipefail`. Pinning the whole
+    string would fail a step that switched to `set -eu` -- identical behaviour here -- and would
+    claim to guard two flags this docstring has just finished calling default and inert. A guard
+    should assert exactly what it can justify.
     """
     step = _step_containing("test", "$PYTHON_VERSION")
-    assert "set -euo pipefail" in step, (
-        "the step interpolating $PYTHON_VERSION no longer sets `-u`: an unset variable would "
-        "render the heading `## Coverage (Python )` and the step would pass"
+    # Both spellings bash accepts: a short-flag cluster (`set -euo pipefail`, `set -eu`) and the
+    # long form (`set -o nounset`). Keyed on the `set` line itself so a `-u` elsewhere in the
+    # step body -- inside the coverage command, say -- cannot satisfy it.
+    set_lines = [ln.strip() for ln in step.splitlines() if ln.strip().startswith("set -")]
+    nounset = any(
+        "nounset" in ln or re.search(r"(?:^|\s)-[a-z]*u", ln.split(" -o ")[0]) for ln in set_lines
+    )
+    assert nounset, (
+        f"the step interpolating $PYTHON_VERSION no longer enables nounset (`set` lines: "
+        f"{set_lines}): an unset variable would render the heading `## Coverage (Python )`, the "
+        "step would exit 0, and a mislabelled report would be published"
     )
 
 
