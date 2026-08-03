@@ -32,6 +32,7 @@ Every row uses an ACTUAL `~` value. `expanduser` is a no-op on absolute and rela
 so a row built only from `tmp_path` would pass with the fix reverted and witness nothing.
 """
 import ast
+import os
 import pathlib
 import re
 
@@ -227,6 +228,23 @@ def test_each_path_family_expands_a_tilde_through_its_own_door(
     assert probe(cfg_path) == str(_home(tmp_path) / "planted" / name)
 
 
+def _dotted(node):
+    """`sluice.core.paths` from the nested Attribute chain the parser builds for it.
+
+    A dotted call is `Attribute(Attribute(Name))`, so a matcher testing
+    `isinstance(fn.value, ast.Name)` can only ever see the one-segment case -- which is
+    why the branch written for `import sluice.core.paths` never fired.
+    """
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return ""
+    parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
 def _resolve_call_site_doors(pkg):
     """Every `(name, 'env'|'key')` door `pkg` opens on `paths.resolve`, from the AST.
 
@@ -252,17 +270,38 @@ def _resolve_call_site_doors(pkg):
     doors, unreadable = set(), []
     for py in sorted(pathlib.Path(pkg).rglob("*.py")):
         tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
+        # `direct`: local names bound to the FUNCTION. `modules`: dotted prefixes bound to
+        # the MODULE, so `paths.resolve` and `sluice.core.paths.resolve` both match.
         direct, modules = set(), set()
         for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and (node.module or "").endswith(
-                    "core.paths"):
-                direct |= {a.asname or a.name for a in node.names if a.name == "resolve"}
-            elif isinstance(node, ast.ImportFrom) and (node.module or "") in (
-                    "sluice.core", "sluice"):
-                modules |= {a.asname or a.name for a in node.names if a.name == "paths"}
+            if isinstance(node, ast.ImportFrom):
+                mod = node.module or ""
+                # `node.level` covers `from .paths import resolve` -- a relative import
+                # inside `core/`, which an absolute-only match walks straight past.
+                is_paths = mod.endswith("core.paths") or (node.level and
+                                                          mod.endswith("paths"))
+                if any(a.name == "*" for a in node.names) and (
+                        is_paths or mod in ("sluice.core", "sluice")):
+                    # Bindings are undecidable from the AST alone. Reported, never ignored.
+                    unreadable.append(f"{py.name}:{node.lineno} (star import from {mod})")
+                elif is_paths:
+                    direct |= {a.asname or a.name for a in node.names
+                               if a.name == "resolve"}
+                elif mod in ("sluice.core", "sluice") or (node.level and mod == ""):
+                    modules |= {a.asname or a.name for a in node.names
+                                if a.name == "paths"}
             elif isinstance(node, ast.Import):
-                modules |= {(a.asname or a.name).split(".")[0] for a in node.names
-                            if a.name in ("sluice.core.paths", "sluice.core", "sluice")}
+                for a in node.names:
+                    if a.name in ("sluice.core.paths", "sluice.core", "sluice"):
+                        # `import sluice.core.paths` binds the ROOT name but is called back
+                        # through the full dotted CHAIN, so the chain is the usable key --
+                        # binding `"sluice"` alone can never match, which is exactly why
+                        # the branch written for this case was inert.
+                        modules.add(a.asname or a.name)
+            elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Name) \
+                    and node.value.id in direct:
+                # `_r = resolve` -- a rebinding is as good as an import alias.
+                direct |= {t.id for t in node.targets if isinstance(t, ast.Name)}
             elif isinstance(node, ast.FunctionDef) and node.name == "resolve" and \
                     py.name == "paths.py":
                 direct.add("resolve")      # the module's own internal call, in config_file
@@ -271,8 +310,8 @@ def _resolve_call_site_doors(pkg):
                 continue
             fn = node.func
             hit = ((isinstance(fn, ast.Name) and fn.id in direct)
-                   or (isinstance(fn, ast.Attribute) and fn.attr in ("resolve",)
-                       and isinstance(fn.value, ast.Name) and fn.value.id in modules))
+                   or (isinstance(fn, ast.Attribute) and fn.attr == "resolve"
+                       and _dotted(fn.value) in modules))
             if not hit:
                 continue
             kw = {k.arg: k.value for k in node.keywords}
@@ -344,6 +383,40 @@ def test_the_sweep_sees_the_module_attribute_import_style(tmp_path):
     doors, unreadable = _resolve_call_site_doors(pkg)
     assert doors == {("planted.db", "env")}, doors
     assert not unreadable
+
+
+@pytest.mark.parametrize("label,body", [
+    # Every one of these was MISSED before, with no `unreadable` entry either -- so a new
+    # call site written in any of them was invisible to discovery AND absent from the
+    # roster, leaving `doors == rows` true and the build green. That is the guard's stated
+    # job defeated in silence, which is why each is planted rather than argued about.
+    ("dotted import", "import sluice.core.paths\n"
+                      "sluice.core.paths.resolve(env_var='X', config_value='',\n"
+                      "                          kind='state', name='planted.db')\n"),
+    ("relative import", "from .paths import resolve\n"
+                        "resolve(env_var='X', config_value='', kind='state',\n"
+                        "        name='planted.db')\n"),
+    ("rebound local", "from sluice.core.paths import resolve\n"
+                      "_r = resolve\n"
+                      "_r(env_var='X', config_value='', kind='state',\n"
+                      "   name='planted.db')\n"),
+])
+def test_the_sweep_sees_the_less_obvious_import_styles(tmp_path, label, body):
+    pkg = _plant(tmp_path, body)
+    doors, unreadable = _resolve_call_site_doors(pkg)
+    assert doors == {("planted.db", "env")}, f"{label}: {doors}"
+    assert not unreadable, f"{label}: {unreadable}"
+
+
+def test_a_star_import_is_reported_rather_than_assumed_harmless(tmp_path):
+    """`from sluice.core.paths import *` makes the local bindings undecidable from the
+    AST. Undecidable is not "no call sites here" -- those are opposite answers, and
+    guessing the second is how a sweep certifies a file it could not read."""
+    pkg = _plant(tmp_path, "from sluice.core.paths import *\n"
+                           "resolve(env_var='X', config_value='', kind='state',\n"
+                           "        name='planted.db')\n")
+    _, unreadable = _resolve_call_site_doors(pkg)
+    assert unreadable, "a star import was treated as though it bound nothing"
 
 
 def test_the_sweep_sees_an_aliased_from_import(tmp_path):
@@ -486,6 +559,15 @@ def test_an_abandoned_literal_tilde_path_is_named(monkeypatch, tmp_path, caplog)
     assert (f"seen.db resolves to {out}, but ~/state/seen.db also exists relative to the "
             f"current directory.") in caplog.text, (
         f"the notice named the two paths in the wrong roles: {caplog.text!r}")
+    # It must say MOVE. An earlier draft ended "remove it by hand", and for a dedup
+    # database that abandoned file is the ENTIRE history the broken version accumulated --
+    # following that instruction starts the next run from an empty dedup set, which is the
+    # #81 harm handed to the user as advice. The DIRECTION of the `mv` is asserted too: a
+    # remedy naming both paths in the wrong order is worse than no remedy.
+    assert "do not delete" in caplog.text, caplog.text
+    assert f"mv '~/state/seen.db' {out}" in caplog.text, (
+        f"the remedy must move the abandoned file TO the resolved one: {caplog.text!r}")
+    assert "rm " not in caplog.text, caplog.text
 
 
 def test_no_notice_when_nothing_was_left_behind(monkeypatch, tmp_path, caplog):
@@ -534,6 +616,14 @@ def test_the_notice_speaks_when_it_cannot_tell(monkeypatch, tmp_path, caplog):
     (cwd / "~" / "state" / "seen.db").write_bytes(b"")
     (cwd / "~").chmod(0o000)
     try:
+        # The PRECONDITION, asserted rather than assumed. As root, or on a filesystem that
+        # ignores mode bits, `lstat` succeeds and `_something_is_there` returns True from
+        # its BOTTOM return -- the warning fires, this row passes, and the mutation it
+        # exists for (`except OSError: return True` -> `return False`) survives green. A
+        # guard that degrades into a tautology without saying so is the shape this whole
+        # file keeps finding.
+        with pytest.raises(PermissionError):
+            os.lstat(str(cwd / "~" / "state" / "seen.db"))
         monkeypatch.chdir(cwd)
         monkeypatch.setenv("SEEN_DB", "~/state/seen.db")
         with caplog.at_level("WARNING"):
@@ -557,3 +647,43 @@ def test_a_fatal_store_still_expands_and_still_does_not_refuse(monkeypatch, tmp_
     out = paths.resolve(env_var="SEEN_DB", config_value="", kind="state",
                         name="seen.db", fatal=True)
     assert out == str(_home(tmp_path) / "state" / "seen.db")
+
+
+# ── the normalisation convention, enumerated from the source ─────────────────
+
+_EXPANDUSER_SITES = {
+    # file -> why a path arriving there is expanded. The VALUE is the point: a new site
+    # with no reason is what this pins, because the convention was four unconnected
+    # decisions before it was written down, and the first attempt to write it down
+    # miscounted them.
+    "core/paths.py": "the explicit branch and the XDG fallback -- resolution's own ingress",
+    "core/vault.py": "$VAULT_DIR or a constructor argument, at construction",
+    "onboard/questions.py": "an answer typed at the wizard prompt",
+    "cli.py": "--vault against $VAULT_DIR, and the preset handed to `sluice init`",
+}
+
+
+def test_the_expanduser_roster_matches_the_source():
+    """`paths.py`'s module docstring states the normalisation convention, and prose goes
+    stale silently -- this branch shipped a version naming FOUR ingress sites when there
+    were five, and nothing went red.
+
+    Pinned by FILE rather than line, so ordinary edits do not churn it while a genuinely
+    new site still fails. Fails in BOTH directions: a site added with no reason recorded,
+    and a reason left behind after its site went away.
+    """
+    pkg = pathlib.Path(__file__).resolve().parent.parent / "sluice"
+    found = {}
+    for py in sorted(pkg.rglob("*.py")):
+        tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
+        n = sum(1 for node in ast.walk(tree)
+                if isinstance(node, ast.Call)
+                and _dotted(node.func).endswith("path.expanduser"))
+        if n:
+            found[str(py.relative_to(pkg))] = n
+    assert found, "the expanduser sweep matched nothing -- it stopped finding call sites"
+    assert set(found) == set(_EXPANDUSER_SITES), (
+        f"the normalisation convention in paths.py's docstring and ARCHITECTURE.md is "
+        f"stated over the wrong set of files; only-in-source="
+        f"{sorted(set(found) - set(_EXPANDUSER_SITES))} only-in-roster="
+        f"{sorted(set(_EXPANDUSER_SITES) - set(found))}")
