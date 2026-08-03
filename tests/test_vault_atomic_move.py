@@ -109,3 +109,56 @@ def test_merge_cluster_still_archives_through_the_shared_primitive(tmp_path):
     assert os.path.dirname(archived[0]).endswith("_merged")
     assert not os.path.exists(loser)
     assert "archived_from_note" in open(archived[0], encoding="utf-8").read()
+
+
+def test_a_close_failure_still_leaves_no_reservation_behind(tmp_path, monkeypatch):
+    """Ownership is recorded the INSTANT the open returns a handle, before anything that can
+    itself fail. `os.close` can raise, and a close that fails still leaves the 0-byte file on
+    disk -- recording ownership after it leaked exactly that: a zero-byte note seated at a real
+    lead's name, which `_is_note_file` calls a note and `_resolve_path` reconciles against."""
+    src = _note(str(tmp_path / "from" / "N.md"))
+    dest_dir = str(tmp_path / "to")
+    os.makedirs(dest_dir)
+    real_close = os.close
+
+    def flaky_close(fd):
+        real_close(fd)
+        raise OSError(5, "I/O error on close")
+
+    monkeypatch.setattr(os, "close", flaky_close)
+    with pytest.raises(OSError):
+        _reserve_and_move(src, dest_dir, "N.md", suffix_on_collision=False)
+    monkeypatch.undo()
+    assert os.listdir(dest_dir) == [], "the reservation leaked when close failed"
+
+
+def test_cleanup_never_unlinks_a_file_a_racer_put_at_the_destination(tmp_path, monkeypatch):
+    """Ownership at RESERVE time is not ownership at CLEANUP time. Between the two a concurrent
+    writer can `os.replace` its own file onto that name; unlinking then destroys a note we never
+    owned -- a clobber inside a clobber-fix, which is #16's `os.path.exists` lesson one rung
+    along. The inode recorded from the open fd is compared with what the name resolves to now."""
+    src = _note(str(tmp_path / "from" / "N.md"))
+    dest_dir = str(tmp_path / "to")
+    os.makedirs(dest_dir)
+    dest = os.path.join(dest_dir, "N.md")
+
+    real_replace = os.replace
+
+    def racer_then_fail(a, b):
+        # A real racer REPLACES, which swaps the inode. An earlier draft of this fixture used
+        # `open(dest, "w")`, which TRUNCATES IN PLACE and leaves the inode ours -- so the identity
+        # check correctly matched, the reservation was removed, and the test failed for the one
+        # reason that is not a defect. A probe that fails to construct its precondition looks
+        # exactly like a probe that disproves the claim.
+        theirs = os.path.join(dest_dir, ".theirs")
+        with open(theirs, "w", encoding="utf-8") as fh:
+            fh.write("THEIRS")
+        real_replace(theirs, dest)
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(os, "replace", racer_then_fail)
+    with pytest.raises(OSError):
+        _reserve_and_move(src, dest_dir, "N.md", suffix_on_collision=False)
+    monkeypatch.undo()
+    assert os.path.isfile(dest), "cleanup deleted the racer's file"
+    assert open(dest, encoding="utf-8").read() == "THEIRS"
