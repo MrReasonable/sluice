@@ -91,7 +91,10 @@ def test_the_cli_report_exits_zero_and_writes_nothing(tmp_path, capsys, monkeypa
     src = _seed(leads, "A - Live.md", role="Live", status="shortlist")
     assert cmd_leads_reconcile(_Args(), cfg) == 0
     assert os.path.isfile(src)
-    assert "A - Live" in capsys.readouterr().err
+    out = capsys.readouterr()
+    # The report goes to STDOUT (dedupe's shape, so `| grep` works); the summary to stderr.
+    assert "A - Live" in out.out
+    assert "report only" in out.err
 
 
 def test_the_cli_apply_moves_and_exits_zero(tmp_path, monkeypatch):

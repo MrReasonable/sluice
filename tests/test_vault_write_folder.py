@@ -104,3 +104,23 @@ def test_a_refused_lead_creates_no_write_folder(tmp_path):
     # created for some entirely different reason.
     assert outcome == "refused", f"fixture did not reach the refusal arm: {outcome}"
     assert not os.path.exists(os.path.join(v.leads_dir, ACTIVE_SUBDIR))
+
+
+def test_a_symlinked_write_folder_refuses_rather_than_creating_an_invisible_note(tmp_path):
+    """The create-arm half of the same harm. `_walk` does not follow symlinks, so a note created
+    inside a symlinked write folder is invisible to read_leads AND to _locate -- which means the
+    next scrape does not find it and creates it again, as a fresh duplicate, every single run.
+
+    Refused loudly (an OSError the ingest sink counts `skipped`, keeping the lead OUT of seen.db
+    for a retry) rather than written. `os.makedirs(..., exist_ok=True)` succeeds on a symlink to a
+    directory, so nothing else would have caught this."""
+    import pytest
+    v = Vault(str(tmp_path), lead_layout="active_archive")
+    os.makedirs(v.leads_dir, exist_ok=True)
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    os.symlink(target, os.path.join(v.leads_dir, ACTIVE_SUBDIR))
+
+    with pytest.raises(OSError, match="symlink"):
+        v.upsert(_lead())
+    assert os.listdir(target) == [], "a note was created behind the symlink"

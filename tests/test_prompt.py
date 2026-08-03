@@ -55,11 +55,14 @@ def test_missing_vault_file_falls_back_to_default(tmp_path):
 
 
 def test_vault_criteria_overrides_default(tmp_path):
+    # Synthetic throughout: a person name and a REAL city here would be personal data in tests/,
+    # which the neutrality rule forbids regardless of whose taste they encode.
     _write_criteria(str(tmp_path),
-                    "---\nnote: props\n---\n## Who Alex is\nWANTS ONLY RUST ROLES IN BERLIN.\n")
+                    "---\nnote: props\n---\n## Who Example Candidate is\n"
+                    "WANTS ONLY EXAMPLE ROLES IN EXAMPLE CITY.\n")
     full = build_system_prompt_from(_criteria_from_vault(tmp_path))
     assert "note: props" not in full                  # frontmatter stripped
-    assert "WANTS ONLY RUST ROLES IN BERLIN." in full
+    assert "WANTS ONLY EXAMPLE ROLES IN EXAMPLE CITY." in full
     assert "You are the batched judgment stage" in full   # scaffold still wraps it
     assert "relevance_score" in full                       # tail still present
 
@@ -106,11 +109,27 @@ def test_the_prompt_module_no_longer_reaches_a_filesystem():
     is what put a store-implementation detail on the judge's critical path. The directory-taking
     forms survived as test-only surface, which kept that trap available to the next caller.
 
-    Asserted on the MODULE, so a re-introduction under any name is caught, and on the SOURCE, so a
-    re-introduction that still opens a file is caught even if it is named something else."""
+    Asserted three ways. The two `hasattr` checks hold name-keyed ground. The IMPORT SET is the
+    mechanism check: a module that imports neither `os`, `io`, `pathlib` nor anything else with a
+    filesystem cannot reach one, whatever the reaching function is called -- an earlier draft
+    asserted `"open(" not in src` while its docstring claimed to catch a reach "named something
+    else", and a `pathlib.Path(...).read_text()` helper walked straight past it (witnessed).
+
+    LIMIT, stated because a guard whose reach is assumed is a guard that fails open: this pins
+    top-level imports only. A filesystem reach through a function imported from one of the
+    allowed modules, or through an import performed inside a function body, is not matched. That
+    is a fact about this check, not a claim about the module."""
+    import ast
     import sluice.triage.prompt as prompt
     assert not hasattr(prompt, "load_criteria")
     assert not hasattr(prompt, "build_system_prompt")
     assert prompt.SYSTEM_PROMPT, "the baked-in default prompt must survive"
     src = open(prompt.__file__, encoding="utf-8").read()
-    assert "open(" not in src, "triage/prompt.py opened a file"
+    imported = set()
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.Import):
+            imported.update(a.name for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+    assert imported == {"re", "sluice.core.criteria", "sluice.core.protocols"}, (
+        f"triage/prompt.py's imports changed to {sorted(imported)}; it must reach no filesystem")

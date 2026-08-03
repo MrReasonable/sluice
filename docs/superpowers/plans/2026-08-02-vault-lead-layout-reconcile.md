@@ -1784,7 +1784,7 @@ particular `tests/test_slug_indexing_discipline.py` must stay GREEN.
 
 | Mutation | Test that must redden |
 | --- | --- |
-| **DELETE the `{self.leads_dir} |` term from `_managed_dirs`** | `test_leads_reconcile.py::test_apply_files_a_live_lead_into_active` |
+| **DELETE the `{self.leads_dir} \|` term from `_managed_dirs`** | `test_leads_reconcile.py::test_apply_files_a_live_lead_into_active` |
 | Delete the `if not self.lead_layout: return summary` short-circuit | `test_leads_reconcile.py::test_a_flat_layout_reconciles_nothing` |
 | Replace `index_by_slug(notes)` with `{n.slug: n for n in notes}`, dropping the ambiguous bucket | `test_leads_reconcile.py::test_two_notes_claiming_one_slug_are_refused_and_neither_moves` |
 | Delete the `if src_dir not in managed:` arm | `test_leads_reconcile.py::test_a_user_filed_lead_is_reported_and_left_alone` |
