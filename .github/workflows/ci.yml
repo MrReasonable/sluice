@@ -40,10 +40,43 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
-      # ".[test]" pulls pytest AND faker: the suite generates its own synthetic
-      # job titles rather than hardcoding anyone's real role preferences.
+      # ".[test]" pulls pytest, faker AND pytest-cov: the suite generates its own synthetic
+      # job titles rather than hardcoding anyone's real role preferences, and #11 asks CI to
+      # report what the suite covers.
       - run: pip install -e ".[test]"
-      - run: python -m pytest
+      # Bare `--cov`: every knob (source, branch, show_missing) lives in pyproject.toml, so a
+      # local `python -m pytest --cov` renders the SAME report. It reports and does not gate --
+      # there is no `--cov-fail-under`, deliberately; see the note in pyproject.toml.
+      #
+      # Run on EVERY matrix leg rather than singling one out. A `if: matrix.python-version ==
+      # '3.12'` would be more machinery, not less, and it fails OPEN: bump the matrix past that
+      # literal and the condition matches no leg, coverage silently stops being measured, and
+      # nothing goes red. $GITHUB_STEP_SUMMARY is per-JOB, so three legs produce three separate
+      # summaries rather than three tables stacked on one page -- and a gap that exists only on
+      # one interpreter version becomes visible instead of being averaged away.
+      - run: python -m pytest --cov
+      # Re-render the SAME data as markdown so the per-file breakdown lands on the run's summary
+      # page rather than only in the log. `set -euo pipefail` because the default shell is
+      # `bash -e` WITHOUT pipefail or nounset: an unset $GITHUB_STEP_SUMMARY would otherwise
+      # redirect into a file named by the empty string and this step would still exit 0.
+      #
+      # No `if: always()` -- on a red suite the failing tests are the signal, and a coverage
+      # table rendered from a partial run would understate coverage for reasons unrelated to it.
+      - name: Publish the coverage report to the run summary
+        # Via env, never interpolated into the script body. `matrix.python-version` is authored
+        # here and not attacker-controlled, so this is hygiene rather than a live hole -- but a
+        # `${{ }}` inside `run:` is pasted as TEXT before bash ever sees it, and keeping the
+        # workflow free of that shape is what stops a later edit reaching for it with something
+        # that IS attacker-controlled. zizmor's template-injection audit gates on the same rule.
+        env:
+          PYTHON_VERSION: ${{ matrix.python-version }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Coverage (Python $PYTHON_VERSION)"
+            echo
+            python -m coverage report --format=markdown
+          } >> "$GITHUB_STEP_SUMMARY"
 
   rulesync:
     runs-on: ubuntu-latest

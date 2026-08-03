@@ -17,6 +17,11 @@ cannot see a hook rulesync wrote with no `command` key. `tests/test_hooks_wiring
 a missing assertion like that costs: "a correct guard that is not wired is inert, and this exact
 file has already shipped inert once".
 
+The third half pins the coverage reporting added for #11, whose failure modes are all QUIET.
+Coverage does not gate, so it can stop being measured, stop being published, or start measuring
+the wrong tree with the build still green -- and losing branch coverage makes the number go UP,
+which reads as an improvement. Each of those is asserted here rather than left to a reader.
+
 WHY TEXT, NOT A YAML PARSE: pyyaml is a guarded optional import in `sluice/` (CLAUDE.md's
 stdlib-only rule), so a test needing it is a test that can skip itself into uselessness on a bare
 install. What is being pinned is a command STRING, which text matching pins exactly.
@@ -31,6 +36,7 @@ as prose and silently pass. So a match with no targets is only tolerated when a 
 
 import json
 import re
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -38,11 +44,17 @@ import pytest
 ROOT = Path(__file__).parent.parent
 CI = ROOT / ".github" / "workflows" / "ci.yml"
 RULESYNC = ROOT / ".rulesync"
+PYPROJECT = ROOT / "pyproject.toml"
 
 # The lint targets CI enforces. `scripts/` is here because guard scripts are production code --
 # `.rulesync/rules/CLAUDE.md` puts `scripts/` under the mutation-testing bar -- and holding a
 # merge gate to a lower standard than the code it guards is the wrong way round.
 REQUIRED_TARGETS = ("sluice", "tests", "scripts")
+
+# What coverage must measure: the same production tree the lint bar covers, minus the tests
+# themselves. DERIVED from REQUIRED_TARGETS rather than re-listed, so a target added to the lint
+# bar cannot silently stay unmeasured -- a second hand-written tuple is a second thing to forget.
+COVERAGE_SOURCES = tuple(t for t in REQUIRED_TARGETS if t != "tests")
 
 # Stop at anything that ends a shell word list: markdown/code punctuation, or a shell operator.
 _RUFF_CHECK = re.compile(r"ruff check(?P<rest>[^\n`|&;\"')]*)")
@@ -178,6 +190,20 @@ def test_every_documented_quality_bar_matches_ci():
 
 def _ci_text() -> str:
     return CI.read_text()
+
+
+def _ci_directives() -> str:
+    """The whole of ci.yml with COMMENT LINES REMOVED -- `_job_directives` widened to the file.
+
+    For assertions about the ABSENCE of something anywhere in CI, where scoping to one job would
+    miss it. Comment-stripped for the reason `_job_directives` documents, and this one was not
+    hypothetical: `--cov-fail-under` appears in a comment stating that CI deliberately does not
+    pass it, so the first version of the check below found the prose warning against the thing
+    and failed on it.
+    """
+    return "\n".join(
+        ln for ln in _ci_text().splitlines() if not ln.lstrip().startswith("#")
+    )
 
 
 def _job_directives(name: str) -> str:
@@ -365,6 +391,136 @@ def test_the_documented_install_command_is_the_one_ci_runs():
     assert documented, (
         "no `npm ci` found in any canonical doc: either the regenerate command stopped being "
         "documented, or this sweep stopped finding it -- both leave the two ends unpinned"
+    )
+
+
+def _coverage_config() -> dict:
+    """pyproject's `[tool.coverage]` table. tomllib is stdlib on every version this repo
+    supports (requires-python >= 3.12), so unlike the yaml case in the module docstring there is
+    no optional import to skip a test into uselessness."""
+    return tomllib.loads(PYPROJECT.read_text()).get("tool", {}).get("coverage", {})
+
+
+def test_the_derived_coverage_source_list_is_neither_empty_nor_the_whole_lint_bar():
+    """Non-vacuity for the derivation itself, asserted before anything is compared against it.
+
+    `COVERAGE_SOURCES` filters `tests` out of `REQUIRED_TARGETS`. If that filter ever matched
+    everything the expectation would be the empty tuple, and `source == list(COVERAGE_SOURCES)`
+    would then be satisfied by a pyproject that measures NOTHING. If it matched nothing, the
+    expectation would demand coverage of the test suite itself. Pin both ends.
+    """
+    assert COVERAGE_SOURCES, "COVERAGE_SOURCES is empty: every guard below would assert nothing"
+    assert "tests" not in COVERAGE_SOURCES, "the test suite must not be a coverage source"
+    assert set(COVERAGE_SOURCES) < set(REQUIRED_TARGETS), (
+        "COVERAGE_SOURCES stopped being a strict subset of the lint bar: the derivation is no "
+        "longer dropping anything, so it is no longer derived from REQUIRED_TARGETS in any "
+        "meaningful sense"
+    )
+
+
+def test_coverage_measures_every_linted_production_target():
+    """Exact set equality against the lint bar, not containment.
+
+    Dropping `scripts` here would leave the merge gate's own guard scripts unmeasured while the
+    build stays green -- and `.rulesync/rules/CLAUDE.md` holds those scripts to the mutation-
+    testing bar precisely because an inert guard is this repo's most expensive bug shape.
+    Losing the whole key is worse still: `pytest --cov` with no configured source measures every
+    module that happens to get imported, site-packages included, which is a report nobody reads.
+    """
+    source = _coverage_config().get("run", {}).get("source")
+    assert source is not None, (
+        f"{PYPROJECT.name} no longer sets [tool.coverage.run] source. `--cov` with no source "
+        "measures whatever gets imported -- including site-packages -- so the report survives "
+        "and stops being about this project."
+    )
+    assert sorted(source) == sorted(COVERAGE_SOURCES), (
+        f"coverage measures {sorted(source)} but CI lints {sorted(REQUIRED_TARGETS)} as "
+        f"production code (expected {sorted(COVERAGE_SOURCES)}). A target linted but never "
+        "measured reads as covered and is not."
+    )
+
+
+def test_coverage_measures_branches_not_only_lines():
+    """Turning branch coverage off makes the number go UP, which is why it needs a guard.
+
+    A regression that silently IMPROVES the headline metric has nothing to alert on. And the
+    distinction is the whole point of #11: a fully-executed `if` with only one arm ever taken is
+    a path that merely executes rather than one that is asserted, and line coverage calls it 100%.
+    """
+    assert _coverage_config().get("run", {}).get("branch") is True, (
+        "[tool.coverage.run] branch is no longer true: partially-taken branches would be "
+        "reported as fully covered, and total coverage would RISE on the change that did it"
+    )
+
+
+def test_the_test_job_measures_coverage():
+    """Scoped to the job, and read from the directives so a COMMENT mentioning `--cov` cannot
+    satisfy it -- the same trap `_job_directives` was written for on the rulesync job, and one
+    this file's own workflow comments would spring, since they name the flag verbatim."""
+    block = _job_directives("test")
+    assert "python -m pytest --cov" in block, (
+        "the test job no longer runs pytest under coverage. Nothing goes red when it stops: "
+        "coverage reports and does not gate, so the only symptom is a summary that quietly "
+        "stops appearing."
+    )
+
+
+def test_the_test_job_publishes_the_coverage_report_to_the_run_summary():
+    """#11's acceptance is that the per-file breakdown is "visible enough to be worth acting
+    on". Buried in a job log it is not, so the render to $GITHUB_STEP_SUMMARY is the acceptance
+    criterion itself and not decoration.
+
+    Ordering asserted by index, not by presence: a presence-only check passes when EITHER half
+    is deleted, and `coverage report` run BEFORE pytest would render whatever stale `.coverage`
+    the checkout happened to carry -- or, on a clean checkout, fail for a reason that says
+    nothing about the change under test.
+    """
+    block = _job_directives("test")
+    assert "$GITHUB_STEP_SUMMARY" in block, (
+        "the coverage report is no longer published to the run summary; a per-file breakdown "
+        "that exists only in the job log is not what #11 asked for"
+    )
+    assert "coverage report" in block, "the summary step no longer renders a coverage report"
+    assert block.index("python -m pytest --cov") < block.index("coverage report"), (
+        "the report must be rendered AFTER the run that collects it: reversed, it renders a "
+        "stale or absent data file"
+    )
+
+
+def test_the_test_job_sets_pipefail_for_the_summary_redirect():
+    """`bash -e {0}` is the default: `-e`, but NOT `-u` and NOT pipefail.
+
+    Without `-u` an unset `$GITHUB_STEP_SUMMARY` expands to the empty string, `>> ""` redirects
+    into a file named by nothing, and the step still exits 0 -- a publish step that publishes
+    nowhere and says so nowhere. Same fail-open class, and same fix, as the rulesync job.
+    """
+    assert "set -euo pipefail" in _job_directives("test"), (
+        "the test job's summary step no longer sets `-euo pipefail`: an unset "
+        "$GITHUB_STEP_SUMMARY would be redirected into silently and the step would pass"
+    )
+
+
+def test_coverage_reports_and_does_not_gate():
+    """#11 asks for a number to LOOK at, deliberately not one to pass.
+
+    Its reasoning, verbatim: "A coverage threshold invites tests written to raise the number
+    rather than to catch bugs, which is the failure mode this project can least afford." Three
+    of this repo's worst bugs -- a CLI flag parsed and never forwarded, a fallback backend
+    believed in and non-functional, a default that binned every located lead -- were all
+    invisible to a green suite, and a floor rewards padding it rather than closing them.
+
+    This is a SPEED BUMP over a recorded decision, not a permanent law: #11 itself contemplates
+    failing on a DECREASE once a baseline exists, which is a different mechanism from a floor
+    and would arrive with its own reasoning. Deleting this test as part of that change is
+    correct; tripping over it by adding `--cov-fail-under` to a CI line is what it is for.
+    """
+    threshold = _coverage_config().get("report", {}).get("fail_under")
+    assert threshold is None, (
+        f"[tool.coverage.report] fail_under is set to {threshold!r}. #11 asks for a report, not "
+        "a gate: a floor invites tests written to raise the number rather than to catch bugs."
+    )
+    assert "--cov-fail-under" not in _ci_directives(), (
+        "CI passes --cov-fail-under. #11 asks for a report, not a gate; see this test's reason."
     )
 
 
