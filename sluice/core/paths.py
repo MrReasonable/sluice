@@ -188,7 +188,47 @@ def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> s
         # exported env var, a configured value, and an explicit constructor argument
         # all immune to the refusal -- without which relocating a store would refuse
         # to start for every caller that supplies its own path.
-        return explicit
+        #
+        # EXPANDED, like the fallback two paragraphs down. Returning this term verbatim
+        # while expanding the other made one resolver answer two ways, and the literal
+        # half was silent in every direction that matters. Measured with
+        # `SEEN_DB=~/state/seen.db` against a real two-row store: `SeenDb.load` read an
+        # EMPTY dedup set -- indistinguishable from a first run, and the #81 harm, since
+        # every already-known lead then reads as unseen and is re-submitted to the write
+        # path -- and `save` then created a literal `~` directory under the CWD, the
+        # exact class of path #80 exists to remove. Nothing was said at either step,
+        # because the short-circuit above skips the one check that speaks. `Vault` has
+        # expanded at construction all along, naming the same threat model (an env var
+        # set in a config file, a systemd unit, a Docker env line), so this makes the
+        # explicit door agree with the two places that already got it right.
+        #
+        # It also keeps a resolved path ABSOLUTE, which `existing_db_uri` depends on:
+        # `quote` leaves `~` unreserved, so `file://` + `~/state/seen.db` parses `~` as
+        # the URI authority and sqlite refuses it -- measured, `invalid uri authority: ~`,
+        # naming neither the store nor a remedy. The store written under the literal path
+        # was therefore one the tool could never read back.
+        #
+        # A path that is still not absolute afterwards is left exactly as it is:
+        # `expanduser` no-ops on a relative path and on `~unknownuser/...`, and an
+        # explicit relative value is the caller's own choice, where the XDG root below is
+        # spec-bound to be ignored. Rejecting it would be a behaviour change smuggled
+        # into a bug fix.
+        expanded = os.path.expanduser(explicit)
+        # Expanding is itself a relocation for anyone who ran the version that did not,
+        # so it cannot be done silently in the one module whose doctrine is that a store
+        # never moves without saying so. Warned, not refused: that location can hold at
+        # most one run's writes -- every read after the first died on the invalid URI
+        # authority above -- so refusing would hard-block a user over a stray directory
+        # whose only remedy is the change that just happened. The `_LEGACY` machinery
+        # cannot cover this: its paths are cwd-relative literals keyed on `name`, and the
+        # abandoned location here is whatever the unexpanded value spelled.
+        if expanded != explicit and os.path.lexists(explicit):
+            _log.warning(
+                "%s resolves to %s, but %s also exists relative to the current directory. "
+                "An earlier sluice took that literally and may have written state there; "
+                "sluice never moves your data, so check it and remove it by hand.",
+                name, expanded, explicit)
+        return expanded
 
     var, fallback = _ROOTS[kind]
     # A RELATIVE value is ignored, which the XDG base-directory spec requires and which
