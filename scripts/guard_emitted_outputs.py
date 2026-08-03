@@ -5,8 +5,10 @@ WHY THIS EXISTS ALONGSIDE `guard_rulesync_drift.py`. That guard counts FILES, an
 identical whether or not the hook it counted carries a command. This is not hypothetical, and it
 is the sharper half of the argument: measured on the pinned version, feeding rulesync Claude
 Code's native nested shape emits a settings.json at exactly the path Claude Code reads, carrying a
-well-formed hook with NO command -- twelve files, the `+ 1 hooks` summary term present, and the
-drift guard exiting 0. Nothing but the emitted artifact can tell that one apart from a good run.
+well-formed hook with NO command -- the full file set written, the `+ 1 hooks` summary term
+present, and the drift guard exiting 0. (No digits here on purpose: `EXPECTED` in the drift guard
+is the one place they belong, and its own docstring records them going stale on a bump.) Nothing
+but the emitted artifact can tell that one apart from a good run.
 The other mode (omitting the top-level `hooks` record) drops `settings.json` entirely, which the
 count guard DOES see. `.rulesync/hooks.json`'s comment records both, re-measured, and carries the
 version record; this docstring deliberately names no version so there is only one place to update.
