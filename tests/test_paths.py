@@ -500,3 +500,76 @@ def test_the_config_file_has_no_legacy_entry(monkeypatch, tmp_path, caplog):
     (tmp_path / "config.yaml").write_text("store: vault\n", encoding="utf-8")
     assert paths.config_file() == str(tmp_path / "cfg" / "sluice" / "config.yaml")
     assert caplog.text == ""
+
+
+# ── existing_db_uri: a NON-ABSOLUTE path cannot reach `file://` ──────────────
+# `file://` + a relative path parses the first segment as the URI AUTHORITY, and sqlite
+# refuses it. Found by two reviewers independently while checking a claim that expanding
+# `~` "keeps a resolved path absolute" -- it does not, and every non-absolute spelling
+# reproduced the same failure the tilde one did.
+
+@pytest.mark.parametrize("spelling", [
+    "relative/seen.db", "./state/seen.db", "../state/seen.db", "~/state/seen.db",
+])
+def test_a_non_absolute_store_still_opens(monkeypatch, tmp_path, spelling):
+    """Measured before the fix: `invalid uri authority: relative` / `: .` / `: ..` / `: ~`.
+
+    A store the tool had itself written one run earlier, made permanently unreadable by
+    the URI it builds to read it -- and the message names neither the file nor a remedy.
+    The write path (`sqlite3.connect(self.path)`) never had this problem, so read and
+    write disagreed about a file both could name.
+
+    The store is planted at `abspath(spelling)` and NOT at `expanduser(spelling)`, which
+    is the whole point of the `~` row: `absent()` and `save()` both take the path as
+    given, so a `~` they treat as a literal directory name must stay one here too.
+    Expanding it here instead would make the reader open a different file from the one
+    the caller just checked and the writer just wrote -- trading a loud failure for a
+    silent disagreement, which is the worse of the two.
+    """
+    import sqlite3
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    same_file_the_rest_of_the_store_uses = os.path.abspath(spelling)
+    os.makedirs(os.path.dirname(same_file_the_rest_of_the_store_uses), exist_ok=True)
+    sqlite3.connect(same_file_the_rest_of_the_store_uses).close()
+    db = sqlite3.connect(paths.existing_db_uri(spelling), uri=True)
+    db.close()
+
+
+@pytest.mark.parametrize("spelling", ["relative/absent.db", "./absent.db", "/absent.db"])
+def test_a_non_absolute_uri_still_cannot_create(monkeypatch, tmp_path, spelling):
+    """The property `mode=rw` exists for, unchanged by making the path absolute: opening
+    must never CREATE, because a 0-byte file disarms this module's relocation notice
+    permanently. Absolutising a path that does not exist must not quietly gain the
+    power to make one."""
+    import sqlite3
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(sqlite3.OperationalError):
+        sqlite3.connect(paths.existing_db_uri(spelling), uri=True).close()
+    assert not os.path.exists(os.path.abspath(spelling))
+
+
+def test_a_double_slash_path_keeps_an_empty_uri_authority(monkeypatch, tmp_path):
+    """The case the `file://`-with-empty-authority spelling already existed for. A
+    leading `//` is a legal POSIX path that `abspath` deliberately preserves, so this
+    pins that absolutising did not undo the earlier fix."""
+    import urllib.parse
+    monkeypatch.chdir(tmp_path)
+    assert urllib.parse.urlsplit(paths.existing_db_uri("//var/x/seen.db")).netloc == ""
+
+
+def test_a_relative_seen_db_round_trips(monkeypatch, tmp_path):
+    """The behaviour, end to end, not just the URI string.
+
+    `SEEN_DB=relative/state/seen.db` used to save on run 1 and then die on run 2's load,
+    so a user's dedup history was written to a file the next run could not open. Asserting
+    the URI alone would not have seen that: `save` and `load` reach the store by different
+    routes, and only a round trip proves they agree on which file it is.
+    """
+    from sluice.core.leads import Lead
+    from sluice.core.seendb import SeenDb
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SEEN_DB", "relative/state/seen.db")
+    SeenDb().save([Lead(title="t", company="c", url="https://example.invalid/1",
+                        source="s", search="q")])
+    assert SeenDb().load() == {"https://example.invalid/1"}

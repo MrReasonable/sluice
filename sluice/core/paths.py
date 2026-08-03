@@ -164,8 +164,49 @@ def existing_db_uri(path: str) -> str:
     `var` as a URI authority and raises `invalid uri authority` -- breaking a store that
     opened fine before a URI was involved. `quote` so a real `?`, `#`, `%` or space cannot
     silently address a different file.
+
+    ABSOLUTE before quoting, for the same reason from the other direction: an authority is
+    whatever follows `//`, so a RELATIVE path puts its first segment there. Measured, every
+    non-absolute spelling failed identically -- `relative/seen.db` -> `invalid uri
+    authority: relative`, `./x` -> `: .`, `../x` -> `: ..`, `~/x` -> `: ~`. The write path
+    is a plain `sqlite3.connect(self.path)` and never had the problem, so a `SEEN_DB` the
+    tool wrote happily on one run became unreadable on the next, with a message naming
+    neither the file nor a remedy. `abspath` and not `expanduser`: `absent()` above and
+    `save()` both take the path as given, so a `~` is a literal directory name to them and
+    must stay one here -- expanding only here would open a DIFFERENT file from the one the
+    caller just checked, trading a loud failure for a silent disagreement.
+
+    `abspath` deliberately preserves a leading `//` (POSIX leaves it implementation-
+    defined and `normpath` keeps exactly two), so it cannot undo the empty-authority
+    property above; `tests/test_paths.py` pins that. It resolves against the cwd, which is
+    what `sqlite3.connect` would have done with the relative path anyway -- so this names
+    the same file, it does not choose a new one.
     """
-    return "file://" + urllib.parse.quote(path) + "?mode=rw"
+    return "file://" + urllib.parse.quote(os.path.abspath(path)) + "?mode=rw"
+
+
+def _something_is_there(path: str) -> bool:
+    """True unless `path` is definitively absent. Ties break towards YES.
+
+    NOT `os.path.lexists`, for the reason `absent` above spells out at length: it returns
+    False on ANY OSError, so a file under a directory the user cannot traverse reads as
+    "nothing there". Measured with an abandoned store under a 0o000 parent -- `lexists`
+    said False and the notice below stayed silent, which is the same fail-open shape that
+    reached two dedup stores before `absent` was single-sited.
+
+    It does not RAISE the way `absent` does, though, and the difference is the caller's
+    stake. `absent` guards a read whose wrong answer is an empty dedup set, so it stops the
+    run; this guards a WARNING, where a wrong answer costs either a spurious line of output
+    or a missed one. Those are not equal, so the tie goes to speaking, and an unreadable
+    parent is reported rather than either swallowed or turned into a crash.
+    """
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True          # cannot tell -- say so rather than assume nothing is there
+    return True
 
 
 def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> str:
@@ -202,27 +243,34 @@ def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> s
         # set in a config file, a systemd unit, a Docker env line), so this makes the
         # explicit door agree with the two places that already got it right.
         #
-        # It also keeps a resolved path ABSOLUTE, which `existing_db_uri` depends on:
-        # `quote` leaves `~` unreserved, so `file://` + `~/state/seen.db` parses `~` as
-        # the URI authority and sqlite refuses it -- measured, `invalid uri authority: ~`,
-        # naming neither the store nor a remedy. The store written under the literal path
-        # was therefore one the tool could never read back.
-        #
-        # A path that is still not absolute afterwards is left exactly as it is:
-        # `expanduser` no-ops on a relative path and on `~unknownuser/...`, and an
-        # explicit relative value is the caller's own choice, where the XDG root below is
-        # spec-bound to be ignored. Rejecting it would be a behaviour change smuggled
-        # into a bug fix.
+        # Expansion does NOT make the result absolute, and an earlier draft of this
+        # comment claimed it did. `expanduser` no-ops on a relative path and on
+        # `~unknownuser/...`, so a relative explicit value stays relative and is returned
+        # as given -- honouring what the caller asked for. Normalising it into an absolute
+        # path would be a behaviour change smuggled into a bug fix, and it is not needed:
+        # the one place non-absoluteness actually broke something was the SQLite URI, and
+        # `existing_db_uri` absolutises there, at the point of use, where it can do so
+        # without changing what any caller sees. (Two reviewers caught the false claim
+        # independently; every non-absolute spelling reproduced the same failure the
+        # tilde one did, so the sentence had been certifying a live bug as a design.)
         expanded = os.path.expanduser(explicit)
         # Expanding is itself a relocation for anyone who ran the version that did not,
         # so it cannot be done silently in the one module whose doctrine is that a store
-        # never moves without saying so. Warned, not refused: that location can hold at
-        # most one run's writes -- every read after the first died on the invalid URI
-        # authority above -- so refusing would hard-block a user over a stray directory
-        # whose only remedy is the change that just happened. The `_LEGACY` machinery
-        # cannot cover this: its paths are cwd-relative literals keyed on `name`, and the
-        # abandoned location here is whatever the unexpanded value spelled.
-        if expanded != explicit and os.path.lexists(explicit):
+        # never moves without saying so.
+        #
+        # WARNED, not refused, and the reason is NOT that the abandoned location holds
+        # little -- an earlier draft said "at most one run's writes", which is a property
+        # of `existing_db_uri` and so true only of the two sqlite stores. Measured on
+        # `sluice_health.json`: a literal `./~/state/` file read and wrote across three
+        # consecutive runs and accumulated all three. The reason is that refusing is not
+        # available here and should not be: `fatal` is consulted only in the legacy branch,
+        # which naming a path deliberately short-circuits, so a refusal would have to
+        # re-open the door that keeps every caller supplying its own path immune. Nothing
+        # in this case is irreversible either -- the state is still on disk, at a path this
+        # message names. The `_LEGACY` machinery cannot cover it: its paths are
+        # cwd-relative literals keyed on `name`, and the abandoned location here is
+        # whatever the unexpanded value spelled.
+        if expanded != explicit and _something_is_there(explicit):
             _log.warning(
                 "%s resolves to %s, but %s also exists relative to the current directory. "
                 "An earlier sluice took that literally and may have written state there; "

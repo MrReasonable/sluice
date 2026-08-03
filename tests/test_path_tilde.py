@@ -17,7 +17,10 @@ and a real two-row store under `$HOME`:
      authority: ~` -- `existing_db_uri` quotes the path, `quote` leaves `~` unreserved, and
      `file://` + `~/state/...` parses `~` as the URI authority. So the store the tool wrote
      in step 4 is one it can never read back, and the message names neither the store nor a
-     remedy.
+     remedy. That step is NOT specific to `~`: every non-absolute spelling failed the same
+     way, so it is fixed where it belongs, in `existing_db_uri` -- see
+     `tests/test_paths.py`. Expanding `~` here does not make anything absolute and must not
+     be described as if it did.
 
 The absence of any tilde coverage on a `paths.py`-resolved path is why that survived: the
 hazard IS tested, but only for the vault, which expands in its own constructor. So this file
@@ -91,12 +94,16 @@ def test_the_env_var_door_still_outranks_the_config_key_after_expansion(
     "~nosuchuser9911/seen.db",       # an unknown user: expanduser's own no-op contract
 ])
 def test_a_path_without_a_leading_home_reference_is_untouched(value):
-    """A RELATIVE explicit path stays relative, and that is deliberately not fixed here.
+    """A RELATIVE explicit path stays relative -- returned as the caller gave it.
 
-    It is the same cwd-relative shape #80 removes, but it is pre-existing behaviour this
-    change does not touch: an explicit value is the caller's own choice, where the XDG root
-    is spec-bound to be ignored. Rejecting one here would be a behaviour change smuggled
-    into a bug fix. Pinned so the distinction is a decision rather than an oversight.
+    An earlier version of this docstring justified that by pointing at the XDG root being
+    "spec-bound to be ignored", which is a non-sequitur: that spec governs `XDG_*_HOME`,
+    not `SEEN_DB`. Worse, it read as certifying the relative case as fine, and it was not
+    -- every non-absolute spelling died in `existing_db_uri` with `invalid uri authority`,
+    exactly as the tilde one did. That is fixed at the point of use (see
+    `tests/test_paths.py::test_a_non_absolute_store_still_opens`), which is why the value
+    can be left alone HERE without leaving a bug behind: normalising it would change what
+    every caller sees, and absolutising at URI-construction time changes nothing.
     """
     assert paths.resolve(env_var=None, config_value=value, kind="state",
                          name="seen.db") == value
@@ -214,57 +221,87 @@ def test_each_path_family_expands_a_tilde_through_its_own_door(
     assert probe(cfg_path) == str(_home(tmp_path) / "planted" / name)
 
 
-def test_every_resolve_call_site_has_a_tilde_row():
-    """The roster above is hand-written, so this pins it against the source.
+def _resolve_call_site_doors():
+    """Every `(name, 'env'|'key')` door `sluice/` opens on `paths.resolve`, from the AST.
 
-    A negative sweep that discovers nothing passes every assertion over it, so the scope
-    has to be pinned -- and here the `stale` assertion at the bottom is what pins it,
-    measured rather than assumed. It reads the roster's env doors BACK against discovery,
-    so the moment the sweep stops finding a call site the roster names it goes red; an
-    additional "did we match enough files" assertion was tried and survived its own
-    deletion, because `stale` had already caught every way discovery can break.
+    Discovery reads each file's OWN bindings rather than matching the name `resolve`, in
+    BOTH import styles -- `from ... import resolve as _resolve_path` (which `core/app.py`
+    uses, and where two doors live) and `from sluice.core import paths` + `paths.resolve`
+    (which nothing in `sluice/` uses today, but which this very test file uses, so it is
+    one import-style edit away). Keyed on the original name alone, rewriting
+    `sluice/track/config.py` to the attribute form -- no behaviour change whatever --
+    silently dropped its two doors and left the whole file green.
 
-    Discovery reads each file's OWN import bindings rather than matching the name
-    `resolve`, because `core/app.py` imports it as `_resolve_path` and a hand-list keyed
-    on the original name walks straight past that call site -- which is where two of the
-    ten rows live. Witnessed: dropping the `asname` half turns this test red.
+    A call site it cannot READ is returned separately rather than skipped. Skipping is the
+    fail-open that makes a sweep certify what it never looked at: a `name=` built from a
+    module constant is not a call site without a door, it is a call site whose door is
+    unknown, and those are opposite answers.
     """
     pkg = pathlib.Path(__file__).resolve().parent.parent / "sluice"
-    found = set()
+    doors, unreadable = set(), []
     for py in sorted(pkg.rglob("*.py")):
         tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
-        local = set()
+        direct, modules = set(), set()
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and (node.module or "").endswith(
                     "core.paths"):
-                local |= {a.asname or a.name for a in node.names if a.name == "resolve"}
+                direct |= {a.asname or a.name for a in node.names if a.name == "resolve"}
+            elif isinstance(node, ast.ImportFrom) and (node.module or "") in (
+                    "sluice.core", "sluice"):
+                modules |= {a.asname or a.name for a in node.names if a.name == "paths"}
+            elif isinstance(node, ast.Import):
+                modules |= {(a.asname or a.name).split(".")[0] for a in node.names
+                            if a.name in ("sluice.core.paths", "sluice.core", "sluice")}
             elif isinstance(node, ast.FunctionDef) and node.name == "resolve" and \
                     py.name == "paths.py":
-                local.add("resolve")          # the definition site's own recursion-free defn
-        if not local:
-            continue
+                direct.add("resolve")      # the module's own internal call, in config_file
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
             fn = node.func
-            if not (isinstance(fn, ast.Name) and fn.id in local):
+            hit = ((isinstance(fn, ast.Name) and fn.id in direct)
+                   or (isinstance(fn, ast.Attribute) and fn.attr in ("resolve",)
+                       and isinstance(fn.value, ast.Name) and fn.value.id in modules))
+            if not hit:
                 continue
             kw = {k.arg: k.value for k in node.keywords}
-            if "name" not in kw or not isinstance(kw["name"], ast.Constant):
+            if not isinstance(kw.get("name"), ast.Constant):
+                unreadable.append(f"{py.name}:{node.lineno} (name= is not a literal)")
                 continue
+            nm = kw["name"].value
             env = kw.get("env_var")
-            env = env.value if isinstance(env, ast.Constant) else None
-            found.add((kw["name"].value, env))
-    assert found, "the sweep found no resolve() call sites at all"
-    # `config.yaml` is resolved inside `paths.config_file()`, whose own call site carries
-    # `env_var="SLUICE_CONFIG"`; every other name reaches resolution from outside.
-    rows = {(f[1], f[2]) for f in _FAMILIES}
-    missing = found - rows
-    assert not missing, (
-        f"resolve() call sites with no tilde row here, so a `~` in one is unproven: "
-        f"{sorted(missing)}")
-    stale = {r for r in rows if r[1] is not None} - found
-    assert not stale, f"tilde rows naming an env door no call site has: {sorted(stale)}"
+            if isinstance(env, ast.Constant) and env.value:
+                doors.add((nm, "env"))
+            elif not (isinstance(env, ast.Constant) and env.value is None):
+                unreadable.append(f"{py.name}:{node.lineno} (env_var= is not a literal)")
+            cv = kw.get("config_value")
+            if cv is None:
+                unreadable.append(f"{py.name}:{node.lineno} (no config_value=)")
+            elif not (isinstance(cv, ast.Constant) and cv.value == ""):
+                doors.add((nm, "key"))     # anything but a literal "" is a live config door
+    return doors, unreadable
+
+
+def test_every_resolve_call_site_has_a_tilde_row():
+    """The roster is hand-written, so this pins it against the source -- BOTH ways.
+
+    Equality, not two subset checks. An earlier version read the roster back against
+    discovery only for rows whose env door was non-None, which pinned six of the ten:
+    `dossiers/key` and `triage-audit.jsonl/key` share a call site with their env twin, so
+    they were checked by neither half and could have been deleted, or invented, in
+    silence. Deriving the door SET from each call site's `env_var=` and `config_value=`
+    and comparing it whole is what closes that -- and it is strictly stronger than the
+    "did we match enough files" count that was tried first and survived its own deletion.
+    """
+    doors, unreadable = _resolve_call_site_doors()
+    assert not unreadable, (
+        f"resolve() call sites this sweep could not read, so it certified nothing about "
+        f"them: {unreadable}")
+    assert doors, "the sweep found no resolve() call sites at all"
+    rows = {(name, "env" if env else "key") for _, name, env, _, _, _ in _FAMILIES}
+    assert doors == rows, (
+        f"the tilde roster and the real call-site doors disagree; only-in-source="
+        f"{sorted(doors - rows)} only-in-roster={sorted(rows - doors)}")
 
 
 # ── the invariant the fix protects ───────────────────────────────────────────
@@ -318,7 +355,12 @@ def test_a_tilde_store_is_readable_on_the_second_run(monkeypatch, tmp_path):
     so `file://~/state/...` parses `~` as the URI AUTHORITY and sqlite refuses it. Before
     the fix that made the store written on run 1 permanently unreadable -- measured:
     `sqlite3.OperationalError: invalid uri authority: ~`, naming neither the store nor a
-    remedy. Expansion is what keeps a resolved path absolute, so no `~` reaches `quote`."""
+    remedy.
+
+    Expansion is not what closes that -- `expanduser` returns a relative path unchanged,
+    and the identical failure had every non-absolute spelling. `existing_db_uri`
+    absolutising at the point of use is what closes it, for every spelling at once; this
+    row covers the tilde one end to end because that is the route a user reaches it by."""
     from sluice.core.leads import Lead
     from sluice.core.seendb import SeenDb
 
@@ -334,10 +376,14 @@ def test_a_tilde_store_is_readable_on_the_second_run(monkeypatch, tmp_path):
 def test_an_abandoned_literal_tilde_path_is_named(monkeypatch, tmp_path, caplog):
     """Expanding is itself a relocation for anyone who ran the broken version: their
     state sits at a literal `./~/...` and resolution now points elsewhere. This module's
-    doctrine is that a store never moves silently, so say so -- warn rather than refuse,
-    because that location holds at most one run's rows (every later read died on the
-    invalid-uri-authority above) and refusing would hard-block the user on a stray
-    directory whose only fix is the one already applied."""
+    doctrine is that a store never moves silently, so say so.
+
+    Warn rather than refuse -- and NOT because the abandoned location holds little. An
+    earlier version said "at most one run's rows", which is a property of the sqlite URI
+    and so true of two families out of nine; measured on `sluice_health.json`, a literal
+    `./~/` file accumulated three runs. Refusing is simply not available here: `fatal` is
+    read only in the legacy branch, which naming a path deliberately short-circuits, and
+    re-opening that door would make every caller that supplies its own path refusable."""
     cwd = tmp_path / "cwd"
     (cwd / "~" / "state").mkdir(parents=True)
     (cwd / "~" / "state" / "seen.db").write_bytes(b"")
@@ -347,9 +393,15 @@ def test_an_abandoned_literal_tilde_path_is_named(monkeypatch, tmp_path, caplog)
         out = paths.resolve(env_var="SEEN_DB", config_value="", kind="state",
                             name="seen.db")
     assert out == str(_home(tmp_path) / "state" / "seen.db")
-    msg = caplog.text
-    assert "~/state/seen.db" in msg and out in msg, (
-        f"the notice must name both the abandoned path and the new one: {msg!r}")
+    # The RENDERED sentence, not two membership checks. Membership is role-blind: swapping
+    # the two format arguments left the whole suite green while inverting the meaning, so
+    # the notice told the user their LIVE store "also exists relative to the current
+    # directory ... remove it by hand" -- advice that destroys the very state the resolver
+    # had just pointed at. A message whose halves can trade places is not pinned by
+    # asserting both halves are present.
+    assert (f"seen.db resolves to {out}, but ~/state/seen.db also exists relative to the "
+            f"current directory.") in caplog.text, (
+        f"the notice named the two paths in the wrong roles: {caplog.text!r}")
 
 
 def test_no_notice_when_nothing_was_left_behind(monkeypatch, tmp_path, caplog):
@@ -381,3 +433,29 @@ def test_no_notice_for_an_ordinary_absolute_path_that_exists(monkeypatch, tmp_pa
                             name="seen.db")
     assert out == str(store)
     assert not re.search(r"WARNING", caplog.text), caplog.text
+
+
+def test_the_notice_speaks_when_it_cannot_tell(monkeypatch, tmp_path, caplog):
+    """`os.path.lexists` is the fail-open primitive `paths.absent` exists to remove: it
+    returns False on ANY OSError, so abandoned state under a directory the user cannot
+    traverse read as "nothing there" and the notice stayed silent. Measured at 0o000: zero
+    warnings.
+
+    Unreadable and absent are the same answer to `lexists` and opposite answers to the
+    user, so the tie is broken towards speaking. This is a warning, not a refusal, so a
+    spurious one costs a line of output while a missed one costs the state it names.
+    """
+    cwd = tmp_path / "cwd"
+    (cwd / "~" / "state").mkdir(parents=True)
+    (cwd / "~" / "state" / "seen.db").write_bytes(b"")
+    (cwd / "~").chmod(0o000)
+    try:
+        monkeypatch.chdir(cwd)
+        monkeypatch.setenv("SEEN_DB", "~/state/seen.db")
+        with caplog.at_level("WARNING"):
+            paths.resolve(env_var="SEEN_DB", config_value="", kind="state",
+                          name="seen.db")
+        assert "~/state/seen.db" in caplog.text, (
+            "state under an untraversable parent went unmentioned")
+    finally:
+        (cwd / "~").chmod(0o755)
