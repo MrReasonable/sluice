@@ -206,6 +206,29 @@ def _ci_directives() -> str:
     )
 
 
+def _step_containing(job: str, needle: str) -> str:
+    """The ONE step of `job` whose body contains `needle`, comment lines already removed.
+
+    Whole-job substring assertions are satisfied by pieces sitting in DIFFERENT steps, which for
+    a shell block is the same bug `_job_directives` fixed one level up: `set -euo pipefail` in
+    step 3 does nothing for a redirect in step 5, and a redirect to $GITHUB_STEP_SUMMARY in some
+    unrelated step does not mean the coverage report is what reaches it. A step is the unit that
+    shares a shell, so it is the unit these assertions belong to.
+
+    A step begins at the only six-space `- ` in a job; its keys sit at eight. Requires EXACTLY
+    one match: zero means the sweep found nothing and every assertion over it would be vacuous,
+    and two means the caller cannot say which step it is asserting about.
+    """
+    parts = re.split(r"\n(?=      - )", _job_directives(job))
+    matches = [part for part in parts if needle in part]
+    assert len(matches) == 1, (
+        f"expected exactly one step in the {job!r} job containing {needle!r}, found "
+        f"{len(matches)}. Zero makes every assertion over the result vacuous; two makes it "
+        "ambiguous which step is being pinned."
+    )
+    return matches[0]
+
+
 def _job_directives(name: str) -> str:
     """One job's YAML, sliced out of ci.yml by indentation, with COMMENT LINES REMOVED.
 
@@ -553,15 +576,21 @@ def test_the_test_job_publishes_the_coverage_report_to_the_run_summary():
     test GREEN, because the step's own `name:` -- "Publish the coverage report to the run
     summary" -- contains it. A step named after the thing it no longer does is precisely the
     shape this assertion exists to catch, and it was satisfied by the name for its first draft.
+
+    And the redirect is asserted INSIDE the step that renders the report, not anywhere in the
+    job. Searching the job independently passes when an unrelated step writes to
+    $GITHUB_STEP_SUMMARY while the coverage report goes only to the log -- the two halves would
+    both be present and connected to nothing.
     """
     block = _job_directives("test")
-    assert "$GITHUB_STEP_SUMMARY" in block, (
-        "the coverage report is no longer published to the run summary; a per-file breakdown "
-        "that exists only in the job log is not what #11 asked for"
-    )
     assert "python -m coverage report" in block, (
         "the summary step no longer renders a coverage report. It may still be NAMED for one: "
         "assert the invocation, never the phrase."
+    )
+    step = _step_containing("test", "python -m coverage report")
+    assert "$GITHUB_STEP_SUMMARY" in step, (
+        "the step that renders the coverage report does not redirect it to the run summary; a "
+        "per-file breakdown that exists only in the job log is not what #11 asked for"
     )
     assert block.index("python -m pytest --cov") < block.index("python -m coverage report"), (
         "the report must be rendered AFTER the run that collects it: reversed, it renders a "
@@ -569,16 +598,26 @@ def test_the_test_job_publishes_the_coverage_report_to_the_run_summary():
     )
 
 
-def test_the_test_job_sets_pipefail_for_the_summary_redirect():
-    """`bash -e {0}` is the default: `-e`, but NOT `-u` and NOT pipefail.
+def test_the_summary_step_refuses_an_unset_variable():
+    """`-u` is the flag that matters here, and the first version of this test said why wrongly.
 
-    Without `-u` an unset `$GITHUB_STEP_SUMMARY` expands to the empty string, `>> ""` redirects
-    into a file named by nothing, and the step still exits 0 -- a publish step that publishes
-    nowhere and says so nowhere. Same fail-open class, and same fix, as the rulesync job.
+    It claimed an unset `$GITHUB_STEP_SUMMARY` would redirect into a file named by the empty
+    string and still exit 0. Measured, that is false: the redirect fails on a compound command
+    and the step exits 1 under plain `bash` with no flags at all. Two reviewers caught it.
+
+    What DOES pass silently is an unset `$PYTHON_VERSION` -- the heading renders as
+    `## Coverage (Python )` and the step exits 0. Measured both ways. `-u` is what turns that
+    into an unbound-variable error, so it is the real reason the flags are there, and this
+    assertion is scoped to the step that interpolates the variable rather than to the job.
+
+    (`-e` is already GitHub's default `bash -e {0}`, and `pipefail` is inert with no pipe in the
+    block. Neither is load-bearing today; the full form is kept so a later pipe cannot silently
+    swallow a failure, which is exactly what it guards in the rulesync job.)
     """
-    assert "set -euo pipefail" in _job_directives("test"), (
-        "the test job's summary step no longer sets `-euo pipefail`: an unset "
-        "$GITHUB_STEP_SUMMARY would be redirected into silently and the step would pass"
+    step = _step_containing("test", "$PYTHON_VERSION")
+    assert "set -euo pipefail" in step, (
+        "the step interpolating $PYTHON_VERSION no longer sets `-u`: an unset variable would "
+        "render the heading `## Coverage (Python )` and the step would pass"
     )
 
 
