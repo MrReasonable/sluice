@@ -551,10 +551,28 @@ def test_claude_max_factory_coalesces_an_explicit_none_timeout():
     assert isinstance(be.timeout, (int, float)) and be.timeout > 0
 
 
-def test_make_backend_coalesces_an_explicit_none_timeout():
-    """Same guarantee at the seam the production path actually calls."""
-    be = make_backend("claude-max", "m", timeout=None)
+@pytest.mark.parametrize("provider", ["anthropic", "openai", "deepseek"])
+def test_make_backend_coalesces_an_explicit_none_timeout(provider):
+    """The seam-level coalesce, witnessed on the providers that have no coalesce of
+    their own -- which is the only way to see it at all.
+
+    Written first against `claude-max` and it was INERT: that factory coalesces too, so
+    the assertion passed with the seam-level line deleted. Mutation caught it (the mutant
+    was killed by nothing), and the fix is a case that reaches PAST the first line of
+    defence. These three end at `urlopen(timeout=None)`, which blocks on the socket
+    default -- the same wait-forever as `subprocess.run(timeout=None)` by another route,
+    and the reason this coalesce is not claude-max's business alone.
+    """
+    be = make_backend(provider, "m", api_key="k", timeout=None)
     assert isinstance(be.timeout, (int, float)) and be.timeout > 0
+
+
+def test_claude_max_backend_from_the_seam_also_coalesces():
+    """The claude-max path through the seam, kept as its own case rather than folded into
+    the parametrize above: it passes for a DIFFERENT reason (its factory coalesces), so
+    merging them would hide which line of defence each case actually exercises.
+    """
+    assert make_backend("claude-max", "m", timeout=None).timeout > 0
 
 
 def test_claudemax_nonzero_exit_with_empty_stderr_still_says_something():
