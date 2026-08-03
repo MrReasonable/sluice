@@ -474,14 +474,23 @@ def test_the_test_job_publishes_the_coverage_report_to_the_run_summary():
     is deleted, and `coverage report` run BEFORE pytest would render whatever stale `.coverage`
     the checkout happened to carry -- or, on a clean checkout, fail for a reason that says
     nothing about the change under test.
+
+    Both halves key on the INVOCATION (`python -m coverage report`), never on the bare phrase
+    "coverage report". Witnessed: with the phrase, deleting the invocation outright left this
+    test GREEN, because the step's own `name:` -- "Publish the coverage report to the run
+    summary" -- contains it. A step named after the thing it no longer does is precisely the
+    shape this assertion exists to catch, and it was satisfied by the name for its first draft.
     """
     block = _job_directives("test")
     assert "$GITHUB_STEP_SUMMARY" in block, (
         "the coverage report is no longer published to the run summary; a per-file breakdown "
         "that exists only in the job log is not what #11 asked for"
     )
-    assert "coverage report" in block, "the summary step no longer renders a coverage report"
-    assert block.index("python -m pytest --cov") < block.index("coverage report"), (
+    assert "python -m coverage report" in block, (
+        "the summary step no longer renders a coverage report. It may still be NAMED for one: "
+        "assert the invocation, never the phrase."
+    )
+    assert block.index("python -m pytest --cov") < block.index("python -m coverage report"), (
         "the report must be rendered AFTER the run that collects it: reversed, it renders a "
         "stale or absent data file"
     )
