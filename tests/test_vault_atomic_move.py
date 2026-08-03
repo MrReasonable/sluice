@@ -162,3 +162,30 @@ def test_cleanup_never_unlinks_a_file_a_racer_put_at_the_destination(tmp_path, m
     monkeypatch.undo()
     assert os.path.isfile(dest), "cleanup deleted the racer's file"
     assert open(dest, encoding="utf-8").read() == "THEIRS"
+
+
+def test_a_reservation_whose_fstat_failed_is_still_removed(tmp_path, monkeypatch):
+    """The `ident is None` arm of `_unlink_reservation`, which had a stated rationale and no
+    witness -- inverting it to leak instead of unlink survived the whole suite.
+
+    `fstat` failing leaves `reserved` set (ownership is recorded the instant the open returns)
+    but `reserved_id` None, so identity cannot be compared. The documented trade is to remove it
+    anyway: the window is nanoseconds after our own create, and a leaked zero-byte note at a real
+    lead's name -- which `_is_note_file` calls a note and `_resolve_path` reconciles against -- is
+    the likelier harm. This pins that decision."""
+    src = _note(str(tmp_path / "from" / "N.md"))
+    dest_dir = str(tmp_path / "to")
+    os.makedirs(dest_dir)
+
+    def no_fstat(fd):
+        raise OSError(5, "I/O error")
+
+    def boom(a, b):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(os, "fstat", no_fstat)
+    monkeypatch.setattr(os, "replace", boom)
+    with pytest.raises(OSError):
+        _reserve_and_move(src, dest_dir, "N.md", suffix_on_collision=False)
+    monkeypatch.undo()
+    assert os.listdir(dest_dir) == [], "the reservation leaked when fstat failed"

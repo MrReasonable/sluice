@@ -35,21 +35,21 @@ _VAULT = pathlib.Path(__file__).resolve().parents[1] / "sluice" / "core" / "vaul
 # Every os.makedirs argument expression in vault.py, and why each is not a scan-set concern.
 _EXPECTED = {
     # The Syncthing marker, at the VAULT root -- not under leads_dir, never scanned.
-    "os.path.join(self.dir, '.stfolder')": "syncthing marker, vault root",
+    "ensure_stfolder:os.path.join(self.dir, '.stfolder')": "syncthing marker, vault root",
     # write_document's parent dir, derived from a document key under the vault root.
-    "os.path.dirname(path)": "document parent, vault root",
+    "write_document:os.path.dirname(path)": "document parent, vault root",
     # The leads dir itself. Scanned, and it is the root of the scan set. Made on every
     # non-refused upsert outcome (it sits above the update/merge/create fan-out), which is
     # exactly why the layout's write folder below is a SEPARATE call rather than a repointing
     # of this one -- repointing would mint an empty Active/ on a pure last_seen bump.
-    "self.leads_dir": "the leads dir, root of the scan set",
+    "upsert:self.leads_dir": "the leads dir, root of the scan set",
     # The lead WRITE FOLDER (#1) -- leads_dir under the flat default, leads_dir/Active under
     # `active_archive`. Made only on the CREATE arm, and OUTSIDE its try (makedirs raises
     # FileExistsError for a non-directory, which that try reads as the #16 create race). Scanned,
     # being inside the scan set, so it must NOT be in _PRIVATE_SUBDIRS: pruning it would hide
     # every lead sluice itself creates from read_leads AND from _locate, re-creating all of them
     # on the next scrape.
-    "write_dir": "the write folder (create arm only)",
+    "upsert:write_dir": "the write folder (create arm only)",
     # reconcile's destination (#1) -- leads_dir/<Active|Archive>, derived from layout_subfolder.
     # SCANNED, so it must NOT be in _PRIVATE_SUBDIRS: pruning it would hide every reconciled note
     # from read_leads AND from _locate, re-creating all of them on the next scrape.
@@ -59,9 +59,9 @@ _EXPECTED = {
     # the six keys now have that shape (`write_dir`, `dest_dir`, `merged_dir`), which is why it is
     # RECORDED rather than fixed: the guard's job is to make an author classify each new call, and
     # a bare name cannot tell two call sites apart. Stated so the limit is known, not assumed.
-    "dest_dir": "a reconcile destination folder, scanned",
+    "reconcile_layout:dest_dir": "a reconcile destination folder, scanned",
     # leads_dir/_merged -- under leads_dir, and therefore MUST be in _PRIVATE_SUBDIRS.
-    "merged_dir": "the merge archive, pruned from the scan set",
+    "merge_cluster:merged_dir": "the merge archive, pruned from the scan set",
 }
 
 
@@ -160,10 +160,34 @@ def _local_dirmakers(tree):
             return names
 
 
-def _makedirs_args(tree):
+def _makedirs_args(tree, qualify=True):
+    """Every dir-making call, keyed on (enclosing function, argument expression).
+
+    The FUNCTION half is load-bearing. Three of the six keys are bare LOCAL NAMES
+    (`write_dir`, `dest_dir`, `merged_dir`), and on a bare name alone a NEW
+    `os.makedirs(dest_dir, ...)` added to a DIFFERENT method inherits an existing
+    classification silently -- which is exactly the escape this guard exists to close. An
+    earlier revision weakened `self._write_folder()` to `write_dir` when the call was hoisted,
+    and that is what surfaced it.
+
+    `qualify=False` is for the synthetic controls below, whose point is the matcher's NAME
+    resolution rather than call-site identity."""
     names = _local_dirmakers(tree)
-    return [ast.unparse(n.args[0]) for n in ast.walk(tree)
-            if isinstance(n, ast.Call) and ast.unparse(n.func) in names and n.args]
+    out = []
+
+    def visit(node, fn):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                visit(child, child.name)
+                continue
+            if (isinstance(child, ast.Call) and ast.unparse(child.func) in names
+                    and child.args):
+                arg = ast.unparse(child.args[0])
+                out.append(f"{fn}:{arg}" if qualify and fn else arg)
+            visit(child, fn)
+
+    visit(tree, None)
+    return out
 
 
 def _vault_makedirs_args():
@@ -174,7 +198,7 @@ def test_the_matcher_reaches_every_aliased_spelling():
     """SCOPE, on the matcher itself. Every binding in the control must be found -- counted,
     not set-compared, because the argument strings are distinct and a matcher that reached
     only some spellings would otherwise satisfy a membership check."""
-    found = sorted(_makedirs_args(ast.parse(_CONTROL_POS)))
+    found = sorted(_makedirs_args(ast.parse(_CONTROL_POS), qualify=False))
     assert found == ["'annotated_binding'", "'chained_binding'", "'direct_import'",
                      "'direct_mkdir_import'", "'function_level_binding'",
                      "'module_alias_import'", "'module_level_binding'"], found
@@ -183,7 +207,7 @@ def test_the_matcher_reaches_every_aliased_spelling():
 def test_the_matcher_does_not_flag_an_unrelated_binding():
     """The negative half: binding something that is NOT a dir-maker, and calling it, must
     stay invisible -- otherwise this guard would demand vault.py classify os.path.join."""
-    assert _makedirs_args(ast.parse(_CONTROL_NEG)) == []
+    assert _makedirs_args(ast.parse(_CONTROL_NEG), qualify=False) == []
 
 
 def test_the_sweep_actually_finds_the_makedirs_calls():
