@@ -12,9 +12,14 @@ and -- re-measured on the pinned version -- writes every other output anyway, le
 .claude/settings.json missing under an ordinary "All done!" summary. An exit-code check
 would pass all of it, and so would a glance at the tree. So these assert the shape.
 
-That second mode CHANGED SHAPE across a version bump, in the dangerous direction: the
-previously pinned rulesync wrote nothing and printed "All files are up to date", which no
-one could miss. Do not carry this description across the next bump on trust -- re-run it.
+This docstring used to say that second mode CHANGED SHAPE across a version bump -- that the
+previously pinned rulesync wrote nothing and printed "All files are up to date". RE-MEASURED
+ON A FRESH TREE, IT DOES NOT REPRODUCE: every version tested behaves as described above.
+rulesync skips writing a file whose content already matches, so an ALREADY-GENERATED tree
+prints that line whatever the input says -- the likeliest origin of the original report, and
+the reason a measurement here is worthless unless the outputs are wiped first. Re-run this on
+the next bump regardless: both modes exit 0 under an ordinary summary, and that is what makes
+a change invisible -- not any history of having moved.
 `.rulesync/hooks.json`'s own comment records the same measurement, and the drift guard plus
 `scripts/guard_emitted_outputs.py` on the emitted settings.json are what actually catch it.
 That second one is a STRUCTURAL check, not a grep: it requires a command that runs the guard
@@ -43,8 +48,9 @@ def _definitions():
 
 def test_the_top_level_hooks_record_exists():
     """Zod-required. Omit it and generate drops ONLY `.claude/settings.json` -- silently,
-    exiting 0, with every other output written. See the module docstring: this failure mode
-    got QUIETER across a version bump, not louder."""
+    exiting 0, with every other output written. It has been that quiet on every version
+    measured; see the module docstring for the report of it once being louder, and why that
+    does not reproduce."""
     assert isinstance(_config().get("hooks"), dict)
 
 
