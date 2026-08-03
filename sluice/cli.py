@@ -204,11 +204,13 @@ def cmd_leads_reconcile(args, config) -> int:
     if args.json:
         print(json.dumps(rep))
     else:
-        # The human REPORT goes to STDOUT, the trailing summary to stderr -- `leads dedupe`'s
-        # shape, which is the closest sibling (a report-first lister). That keeps
-        # `sluice leads reconcile | grep` useful, and matches --json, which already prints the
-        # document to stdout. (`leads expire` puts everything on stderr; the two precedents
-        # disagree, so this picks the one whose command shape matches.)
+        # The human REPORT goes to STDOUT, the trailing summary to stderr. Both sibling passes
+        # already do exactly this -- `leads dedupe` prints its cluster lines to stdout and
+        # "no duplicate clusters" to stderr, and `leads expire` prints its `[kind] slug ...` rows
+        # to stdout and its count line to stderr. (An earlier draft of this comment claimed the
+        # two precedents DISAGREED and that this was a tie-break; measured, they agree. The
+        # behaviour was right and the stated reason was invented.) It keeps
+        # `sluice leads reconcile | grep` useful and matches --json, already on stdout.
         verb = "moved" if args.apply else "would move"
         for _slug, src, dst in rep["moves"]:
             print(f"reconcile: {verb} {src} -> {dst}")

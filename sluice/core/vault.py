@@ -1534,7 +1534,7 @@ class Vault:
             #
             # Measured on one store instance in that state. Shipped: `_locate` returns 2 paths and
             # `upsert` REFUSES, which is correct. With this line deleted: the stale set omits the
-            # destination folder, `_locate` returns 1, and `upsert` returns `updated` -- writing to
+            # destination folder, `_locate` returns 1, and `upsert` returns `merged` -- writing to
             # the RESURRECTED source note while the real moved note is never touched and its
             # `last_seen` freezes. That is a never-clobber outcome, not a tidiness one.
             #
@@ -1733,7 +1733,16 @@ class Vault:
             # fired. Out here it propagates as an ordinary OSError carrying the real errno and
             # path, which the ingest sink counts `skipped` and keeps out of seen.db for a retry.
             write_dir = self._write_folder()
-            if os.path.islink(write_dir):
+            # `write_dir != self.leads_dir` FIRST, and it is not a micro-optimisation. Under the
+            # flat default the write folder IS leads_dir, and a symlinked leads_dir is perfectly
+            # scannable: `os.walk` scandirs its TOP argument directly, and followlinks=False
+            # governs descent into the `dirnames` it discovers, not the root it was handed.
+            # Measured -- with `Job Applications/Job Leads` symlinked and no layout configured,
+            # read_leads returns the note, _locate finds it, and a re-scrape returns `updated`.
+            # An earlier draft of this guard omitted the comparison and hard-failed every lead on
+            # that working configuration ({'created': 0, 'skipped': 3} through the sink, no note
+            # written, every run) with a stated reason that was false for the flat case.
+            if write_dir != self.leads_dir and os.path.islink(write_dir):
                 # A symlinked write folder is NOT in the scan set (`_walk` keeps os.walk's
                 # followlinks=False), so a note created there is invisible to read_leads and to
                 # _locate -- and therefore re-created, as a fresh duplicate, on every single run.

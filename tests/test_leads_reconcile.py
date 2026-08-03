@@ -250,7 +250,7 @@ def test_a_raced_move_leaves_the_store_refusing_not_updating(tmp_path, monkeypat
     Measured on ONE store instance in that state (`Sluice.store()` memoizes, so the facade plus a
     later pass reaches it). Shipped: `_locate` sees both paths and `upsert` REFUSES. With the
     re-derive deleted: the stale scan set omits the destination folder, `_locate` sees one, and
-    `upsert` returns `updated` -- writing to the RESURRECTED source note while the real moved note
+    `upsert` returns `merged` -- writing to the RESURRECTED source note while the real moved note
     is never touched and its `last_seen` freezes. That is a never-clobber outcome, so it gets a
     test rather than a comment."""
     from sluice.core.leads import Lead

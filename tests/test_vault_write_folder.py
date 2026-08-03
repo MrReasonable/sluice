@@ -138,5 +138,35 @@ def test_a_file_named_like_the_write_folder_raises_rather_than_burning_the_race_
     os.makedirs(v.leads_dir, exist_ok=True)
     with open(os.path.join(v.leads_dir, ACTIVE_SUBDIR), "w", encoding="utf-8") as fh:
         fh.write("not a directory\n")
-    with pytest.raises(FileExistsError):
+    # Assert the SOURCE, not just the type. `_write(..., exclusive=True)` on the #16 create race
+    # raises FileExistsError too, so `pytest.raises(FileExistsError)` alone cannot tell the guard
+    # from the path it precedes -- this repo's own recorded lesson about a guard raising the same
+    # type as its neighbour. The filename pins it to the makedirs.
+    with pytest.raises(FileExistsError) as exc:
         v.upsert(_lead())
+    assert exc.value.filename and exc.value.filename.endswith(ACTIVE_SUBDIR), (
+        f"FileExistsError came from {exc.value.filename!r}, not the write-folder makedirs")
+
+
+def test_a_symlinked_leads_dir_still_works_under_the_flat_default(tmp_path):
+    """The flat half of the symlink guard, and the case an earlier draft BROKE.
+
+    Under `lead_layout: ""` the write folder IS leads_dir, and a symlinked leads_dir is perfectly
+    scannable: `os.walk` scandirs its TOP argument directly, and followlinks=False governs descent
+    into the `dirnames` it discovers, not the root it was handed. A guard that did not compare
+    against leads_dir hard-failed every lead on this working configuration -- {'created': 0,
+    'skipped': 3} through the sink, no note written, every run, with a reason that was false here.
+
+    The whole suite stayed GREEN under that regression, because every other symlink test builds
+    `active_archive`. This is the row that was missing."""
+    real = tmp_path / "real-leads"
+    real.mkdir()
+    v = Vault(str(tmp_path))
+    os.makedirs(os.path.dirname(v.leads_dir), exist_ok=True)
+    os.symlink(real, v.leads_dir)
+
+    assert v.upsert(_lead()) == "created"
+    assert os.path.isfile(os.path.join(str(real), "Example Ltd - Example Role.md"))
+    assert [n.slug for n in v.read_leads()] == ["Example Ltd - Example Role"]
+    # ...and a re-scrape reconciles against it rather than minting a twin.
+    assert v.upsert(_lead()) == "updated"
