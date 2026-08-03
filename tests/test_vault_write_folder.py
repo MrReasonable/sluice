@@ -124,3 +124,19 @@ def test_a_symlinked_write_folder_refuses_rather_than_creating_an_invisible_note
     with pytest.raises(OSError, match="symlink"):
         v.upsert(_lead())
     assert os.listdir(target) == [], "a note was created behind the symlink"
+
+
+def test_a_file_named_like_the_write_folder_raises_rather_than_burning_the_race_retries(tmp_path):
+    """`os.makedirs(..., exist_ok=True)` raises FileExistsError for a NON-directory. With the
+    makedirs inside the create arm's try -- whose arm reads FileExistsError as the #16 create RACE
+    -- a plain file named `Active` burned every retry and refused the lead with "create raced
+    repeatedly", a mechanism that never fired and a cause never stated. Outside the try it
+    propagates as an ordinary OSError carrying the real errno and path, which the ingest sink
+    counts `skipped` and keeps out of seen.db for a retry."""
+    import pytest
+    v = Vault(str(tmp_path), lead_layout="active_archive")
+    os.makedirs(v.leads_dir, exist_ok=True)
+    with open(os.path.join(v.leads_dir, ACTIVE_SUBDIR), "w", encoding="utf-8") as fh:
+        fh.write("not a directory\n")
+    with pytest.raises(FileExistsError):
+        v.upsert(_lead())

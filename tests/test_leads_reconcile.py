@@ -257,6 +257,18 @@ def test_a_raced_move_leaves_the_store_refusing_not_updating(tmp_path, monkeypat
     from sluice.core import vault as vaultmod
 
     v = _v(tmp_path)
+    # WARM the scan-set cache first, through the public path. Without this the cache is None
+    # before the sweep, so deleting `_rescan_dirs()` leaves it None and `_scan_dirs()` simply
+    # walks fresh -- both answers agree and the test passes for a reason that has nothing to do
+    # with the guard. (An earlier draft omitted it and SURVIVED the mutant, measured.) This
+    # create leaves the cache holding [leads_dir] while Active/ exists but is not in it, which
+    # is exactly the stale shape the sweep must repair.
+    warm = Lead(source="test", search="q", title="Warm", company="B", url="", location="")
+    assert v.upsert(warm) == "created"
+    assert v._scan_dirs_cache is not None, "the cache was not warmed"
+    assert not any(d.endswith(ACTIVE_SUBDIR) for d in v._scan_dirs_cache), \
+        "the cache already knows Active/; this fixture no longer reproduces the stale state"
+
     _seed(v, "A - Raced.md", role="Raced", status="shortlist")
     real = vaultmod._reserve_and_move
 
@@ -268,7 +280,8 @@ def test_a_raced_move_leaves_the_store_refusing_not_updating(tmp_path, monkeypat
 
     monkeypatch.setattr(vaultmod, "_reserve_and_move", racing_move)
     rep = v.reconcile_layout(apply=True)
-    assert len(rep["moves"]) == 1, "the fixture did not reach the move path"
+    assert any(slug == "A - Raced" for slug, _, _ in rep["moves"]), \
+        "the fixture did not reach the move path"
 
     # SAME instance -- the whole point is the cache the sweep just invalidated.
     raced = Lead(source="test", search="q", title="Raced", company="A", url="", location="")
@@ -301,3 +314,20 @@ def test_a_symlinked_destination_is_refused_not_silently_filed(tmp_path):
     assert os.listdir(target) == [], "the note landed behind the symlink"
     # Still readable, which is the property the refusal protects.
     assert [n.slug for n in v.read_leads()] == ["A - Doomed"]
+
+
+def test_a_file_named_like_a_managed_folder_is_skipped_not_reported_as_a_collision(tmp_path):
+    """`os.makedirs(..., exist_ok=True)` raises FileExistsError when the path exists and is NOT a
+    directory. With the makedirs inside the move's try -- whose first arm catches FileExistsError
+    as a destination-name COLLISION -- a plain file named `Archive` made every dismissed lead
+    report "Archive/<note> is taken -- merge or rename by hand", advice about a path that does not
+    exist, while --apply exited 1 forever with the real cause never stated."""
+    v = _v(tmp_path)
+    with open(os.path.join(v.leads_dir, ARCHIVE_SUBDIR), "w", encoding="utf-8") as fh:
+        fh.write("not a directory\n")
+    _seed(v, "A - Done.md", role="Done", status="dismiss")
+    rep = v.reconcile_layout(apply=True)
+    assert rep["collisions"] == [], "a makedirs failure was misreported as a name collision"
+    assert [slug for slug, _ in rep["skipped"]] == ["A - Done"]
+    # The real cause, not "merge or rename by hand".
+    assert "Archive" in rep["skipped"][0][1]
