@@ -51,8 +51,10 @@ baseline_rel: My CV/CV.md
 # splitting them makes cv re-fetch every job ad. Unset, it resolves per-system, under
 # $XDG_CACHE_HOME (or ~/.cache) -- $DOSSIER_DIR still wins over this key. Everything
 # under it is re-fetchable, so losing it costs a refetch, not data. A leading `~` in a
-# value you set here (or in the variable) is expanded, as it is everywhere else sluice
-# takes a path.
+# value you set here (or in the variable) is expanded -- as it is for every key that
+# resolves per-system, which is this one, the two `track` paths and `triage.audit_jsonl`.
+# The cv/apply working directories below do NOT expand one: they name a folder in the
+# directory you are standing in, so write those out in full.
 # dossier_dir:        # <- uncomment and set YOUR OWN
 
 # Hosts the dossier fetcher may reach even though they are not globally routable.
