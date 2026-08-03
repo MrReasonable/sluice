@@ -380,9 +380,13 @@ def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> s
         #
         # Warn, never refuse: `fatal` belongs to the legacy branch, and reaching for it
         # here would re-open the door that keeps explicit callers immune.
+        # No `stale != expanded` guard: a caller naming the XDG path exactly makes both
+        # probes ask about ONE file, so `not there(p) and there(p)` is already false. It
+        # was written, it survived its own deletion, and a term that cannot change the
+        # outcome reads as protection against something -- so it is gone rather than
+        # standing as a claim.
         stale = _xdg_path(kind, name, warn=False)
-        if (stale != expanded and not _something_is_there(expanded)
-                and _something_is_there(stale)):
+        if not _something_is_there(expanded) and _something_is_there(stale):
             _log.warning(
                 "%s is set to %s, which does not exist -- but %s does, which is where "
                 "sluice would otherwise keep it. That is probably state from before the "
