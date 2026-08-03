@@ -141,11 +141,18 @@ the sub-app loaders must not be "fixed" into naming theirs (`load_track_config`'
 branch lives in that loop).
 
 **Every RELOCATABLE path goes through `core/paths.py` (#80).** One `resolve()`, one order — env var,
-then config key, then the XDG base directory for that `kind`. It is not every path in the codebase,
+then config key, then the XDG base directory for that `kind`. An explicitly-named value — env var or
+config key — is taken as the caller gave it EXCEPT for a leading `~`, which is expanded. Returning it
+verbatim while the XDG fallback expanded made one resolver answer two ways: measured,
+`SEEN_DB=~/state/seen.db` loaded an EMPTY dedup set (the #81 harm) and then wrote a literal `~`
+directory under the CWD, saying nothing at either step, because naming a path short-circuits the
+relocation check that would have spoken. Nothing else is normalised — a relative explicit value stays
+relative (the caller's own choice), and a non-absolute XDG ROOT is ignored rather than expanded,
+which the base-directory spec requires. It is not every path in the codebase,
 and the exceptions are deliberate: seven artefact paths stay cwd-relative — the five CV working
 directories in `apply/config.py`, `cv/config.py` and `cv/render.py`, the render SCRIPT
 (`cv/config.py`'s `render_script`, an executable rather than a directory), and `core/vault.py`'s
-`_DEFAULT_VAULT` — because they name a workspace the user is standing in rather than per-system
+`DEFAULT_VAULT` — because they name a workspace the user is standing in rather than per-system
 state. `grep -rn '"\./' sluice --include='*.py' | grep -v core/paths.py` pins them at nine lines
 (`cv-served` and `cv-home` appear twice each). Two things follow that are easy to undo by
 accident. A path's config default must be `""`: a non-empty default is always truthy, so it

@@ -50,7 +50,9 @@ baseline_rel: My CV/CV.md
 # Where the dossier cache lives. ONE key for both triage and cv, which share the cache;
 # splitting them makes cv re-fetch every job ad. Unset, it resolves per-system, under
 # $XDG_CACHE_HOME (or ~/.cache) -- $DOSSIER_DIR still wins over this key. Everything
-# under it is re-fetchable, so losing it costs a refetch, not data.
+# under it is re-fetchable, so losing it costs a refetch, not data. A leading `~` in a
+# value you set here (or in the variable) is expanded, as it is everywhere else sluice
+# takes a path.
 # dossier_dir:        # <- uncomment and set YOUR OWN
 
 # Hosts the dossier fetcher may reach even though they are not globally routable.
@@ -105,6 +107,7 @@ triage:
   # Where the rejected-leads audit log is written. Unset, it resolves per-system under
   # $XDG_STATE_HOME (or ~/.local/state); $TRIAGE_AUDIT still wins over this key. This key
   # was declared but read by nothing before #80 -- setting it did nothing, silently.
+  # A leading `~` is expanded, in the key and in the variable alike.
   # audit_jsonl:        # <- uncomment and set YOUR OWN
   contract_floor_gbp_day: 450     # illustrative; set your own (0 = no floor)
   perm_floor_gbp: 90000          # illustrative; set your own (0 = no floor)
@@ -177,6 +180,8 @@ track:
   # most when it is wrong: the last-run watermark and the dead-letter store of
   # un-acted-on proposals are both derived from it, so a stray value silently hides the
   # whole backlog. sluice refuses to start rather than run against a relocated one.
+  # A leading `~` is expanded; these two keys are the likeliest place to write one,
+  # since neither has an environment variable to set instead.
   # seen_db:            # <- uncomment and set YOUR OWN
   # token_path:         # <- uncomment and set YOUR OWN (written 0600)
   # Minimum confidence (0..1) for the LLM's "this is an application receipt"
