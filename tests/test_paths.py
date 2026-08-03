@@ -550,9 +550,15 @@ def test_a_non_absolute_uri_still_cannot_create(monkeypatch, tmp_path, spelling)
 
 
 def test_a_double_slash_path_keeps_an_empty_uri_authority(monkeypatch, tmp_path):
-    """The case the `file://`-with-empty-authority spelling already existed for. A
-    leading `//` is a legal POSIX path that `abspath` deliberately preserves, so this
-    pins that absolutising did not undo the earlier fix."""
+    """The case the `file://`-with-empty-authority spelling already existed for.
+
+    Modest by design, and measured: the mutation it catches (`file://` -> `file:`) is
+    ALSO caught by the pre-existing behavioural row, so this adds no unique kill. What it
+    adds is locality -- the property is asserted on the URI the line builds, so a future
+    edit to the quoting/absolutising expression fails here rather than at a distance.
+    Note what it does NOT pin: collapsing `//var/x` to `/var/x` leaves the authority empty
+    and both name the same file on POSIX, so that mutation survives, correctly.
+    """
     import urllib.parse
     monkeypatch.chdir(tmp_path)
     assert urllib.parse.urlsplit(paths.existing_db_uri("//var/x/seen.db")).netloc == ""

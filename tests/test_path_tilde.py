@@ -91,7 +91,13 @@ def test_the_env_var_door_still_outranks_the_config_key_after_expansion(
     "../state/seen.db",
     "a~b/seen.db",                   # a tilde that does not LEAD is not a home reference
     "/x/~/seen.db",                  # ...including one mid-path
-    "~nosuchuser9911/seen.db",       # an unknown user: expanduser's own no-op contract
+    # An unknown user: expanduser's own no-op contract. `~user` is the ONE spelling that
+    # ignores `$HOME` entirely and reads the real account database, so the sandbox cannot
+    # contain it -- `~root` would resolve to a real `/var/root`. Safe here only because
+    # the assertion is that the value comes back UNCHANGED, which a real account fails
+    # rather than leaks; any future row in this family must keep that shape and must name
+    # an account that cannot exist.
+    "~nosuchuser9911/seen.db",
 ])
 def test_a_path_without_a_leading_home_reference_is_untouched(value):
     """A RELATIVE explicit path stays relative -- returned as the caller gave it.
@@ -537,3 +543,17 @@ def test_the_notice_speaks_when_it_cannot_tell(monkeypatch, tmp_path, caplog):
             "state under an untraversable parent went unmentioned")
     finally:
         (cwd / "~").chmod(0o755)
+
+
+def test_a_fatal_store_still_expands_and_still_does_not_refuse(monkeypatch, tmp_path):
+    """`fatal=True` is the two dedup stores' refusal, and it must be unchanged here.
+
+    The explicit branch returns before `fatal` is ever read, which is what keeps a caller
+    that names its own path immune to refusing to start. Expansion happens on that same
+    branch, so the pairing needs its own row: a fix that moved the expansion below the
+    short-circuit would make the loudest path in the module start refusing.
+    """
+    monkeypatch.setenv("SEEN_DB", "~/state/seen.db")
+    out = paths.resolve(env_var="SEEN_DB", config_value="", kind="state",
+                        name="seen.db", fatal=True)
+    assert out == str(_home(tmp_path) / "state" / "seen.db")
