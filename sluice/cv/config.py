@@ -71,6 +71,15 @@ class CvConfig:
     # Empty host runs claude_path locally; set a host to shell out over ssh.
     compose_host: str = ""
     compose_claude_path: str = "claude"
+    # Seconds one composition invocation may take before the backend gives up (#28).
+    # 300 is what was hardcoded, kept so making it reachable retunes nobody's runtime.
+    #
+    # It is PER INVOCATION, not per lead: the engine composes up to twice (the one
+    # gate-failure retry) and then runs the audit, so one lead's worst case is three
+    # times this. Raise it if compositions degrade to the fallback mid-run -- an agent
+    # shelling over ssh at `--effort max` against a large bundle is the slow case, and
+    # the fallback swap is logged at WARNING but easy to miss.
+    compose_timeout: int = 300
 
 
 def load_cv_config(path: str | None = None) -> CvConfig:
@@ -97,6 +106,28 @@ def load_cv_config(path: str | None = None) -> CvConfig:
             "location, and only the store can honour it). Move it out of the `cv:` block:\n"
             "    baseline_rel: " + str(data["baseline_rel"])
         )
+
+    # bool BEFORE int, and separately: `bool` subclasses `int`, and PyYAML resolves
+    # yes/on/true to True. `compose_timeout: yes` would otherwise pass an isinstance(int)
+    # check as the value 1, giving every composition a ONE SECOND budget -- every lead
+    # times out, silently degrades to the fallback, and nothing names the cause. Same
+    # trap as `lead_ttl_days` at the root, and the same ordering closes it.
+    #
+    # No abstain value here, unlike lead_ttl_days: 0 does not mean "off", it means every
+    # call dies instantly, so non-positive is refused rather than treated as a feature
+    # switch. Validated ahead of the setattr loop because that loop is `hasattr`-filtered
+    # and must not be taught to name its own fields.
+    # `is not None`, NOT `in data`: `compose_timeout:` with nothing after it parses as
+    # None, and a half-edited or commented-out value is an ordinary thing to leave in a
+    # config file. The setattr loop below already skips None, so validating membership
+    # instead would REJECT a file the loader is contractually required to accept --
+    # caught by test_a_valueless_key_never_becomes_None, which writes every field
+    # valueless and asserts the loader still returns defaults.
+    if data.get("compose_timeout") is not None:
+        raw = data["compose_timeout"]
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+            raise ValueError(
+                f"cv.compose_timeout must be a positive integer (seconds), got {raw!r}")
 
     for k, v in data.items():
         if hasattr(cfg, k) and v is not None:

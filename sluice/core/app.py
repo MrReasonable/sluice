@@ -187,11 +187,15 @@ def _provider_creds(name):
     return os.environ.get(key_var, ""), os.environ.get(url_var, "")
 
 
-def _make_primary(name, model, *, effort, host, claude_path):
+def _make_primary(name, model, *, effort, host, claude_path, timeout=None):
     from sluice.core.backends import make_backend
     api_key, base_url = _provider_creds(name)
+    # timeout=None means "the caller expressed no preference", and make_backend coalesces
+    # it to the shipped default -- so a sub-app that has no timeout knob keeps exactly the
+    # behaviour it had, while cv can pass cv.compose_timeout through (#28).
     return make_backend(name, model, api_key=api_key, base_url=base_url,
-                        effort=effort, claude_host=host, claude_path=claude_path)
+                        effort=effort, claude_host=host, claude_path=claude_path,
+                        timeout=timeout)
 
 
 def _make_fallback(name, model):
@@ -296,7 +300,7 @@ class Sluice:
         return self._resolve(_RENDERER_SEAM, getattr(cvcfg, "renderer", "script"), cvcfg)
 
     def backend(self, role, *, primary_name, primary_model, effort, host, claude_path,
-                fallback_name, fallback_model):
+                fallback_name, fallback_model, timeout=None):
         """cli.py's old _select_backend, moved verbatim in behaviour. auto degrades to
         bare primary (with a warning) when the fallback has no creds; fallback is strict.
         make_backend stays the provider factory -- an unknown provider name raises
@@ -327,7 +331,7 @@ class Sluice:
             # Explicitly asked for it, so a missing key is fatal, not degradable.
             return _make_fallback_strict(fallback_name, fallback_model)
         primary = _make_primary(primary_name, primary_model, effort=effort, host=host,
-                                claude_path=claude_path)
+                                claude_path=claude_path, timeout=timeout)
         if role == "primary":
             return primary
         fallback = _make_fallback(fallback_name, fallback_model)
@@ -834,7 +838,8 @@ class Sluice:
             backend_role, primary_name=cvcfg.primary_backend,
             primary_model=cvcfg.compose_model, effort=cvcfg.compose_effort,
             host=cvcfg.compose_host, claude_path=cvcfg.compose_claude_path,
-            fallback_name=cvcfg.fallback_backend, fallback_model=cvcfg.cheap_model)
+            fallback_name=cvcfg.fallback_backend, fallback_model=cvcfg.cheap_model,
+            timeout=cvcfg.compose_timeout)
         cache = self.dossier_cache(self._dossier_dir(), cvcfg.ttl_days)
         store = self.store()
         # Built ONCE here and passed to both branches, so the single-lead and batch paths
@@ -1149,6 +1154,11 @@ class Sluice:
             elapsed = None
             if not offline and known and (not needs_key or key_present):
                 try:
+                    # Deliberately does NOT inherit cv.compose_timeout (#28). That knob
+                    # sizes a full CV composition; this is PROBE_PROMPT, a two-token
+                    # round trip. Borrowing a raised compose timeout would make `doctor`
+                    # -- the command you run BECAUSE something is wrong -- sit on a dead
+                    # host for as long as the knob says, which is the opposite of its job.
                     backend = make_backend(
                         t.provider, t.model, api_key=api_key, base_url=base_url,
                         claude_host=t.host, claude_path=t.claude_path)

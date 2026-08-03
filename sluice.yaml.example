@@ -165,6 +165,13 @@ triage:
 #   served_prefix: CV
 #   compose_host: <your-claude-host>       # empty runs compose_claude_path locally
 #   compose_claude_path: claude
+#   compose_timeout: 300                   # seconds PER INVOCATION, not per lead: the
+#                                          # engine composes up to twice and then audits,
+#                                          # so one lead's worst case is three times this.
+#                                          # Raise it if compositions degrade to the
+#                                          # fallback mid-run (logged at WARNING). Must be
+#                                          # a positive integer -- there is no "off", and
+#                                          # `yes` is refused rather than read as 1 second.
 
 # Apply (sub-app #4): stage the rendered CV + a prep packet for a shortlisted
 # lead. served_prefix must stay in sync with cv.served_prefix above (both
