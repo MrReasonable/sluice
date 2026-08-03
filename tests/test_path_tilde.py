@@ -221,8 +221,14 @@ def test_each_path_family_expands_a_tilde_through_its_own_door(
     assert probe(cfg_path) == str(_home(tmp_path) / "planted" / name)
 
 
-def _resolve_call_site_doors():
-    """Every `(name, 'env'|'key')` door `sluice/` opens on `paths.resolve`, from the AST.
+def _resolve_call_site_doors(pkg):
+    """Every `(name, 'env'|'key')` door `pkg` opens on `paths.resolve`, from the AST.
+
+    Takes the root as an ARGUMENT so the sweep and its verdict can be driven over
+    synthetic source. Every assertion in `_check_roster` guards a regression the tree does
+    not currently contain, and such a guard cannot be witnessed by a suite in which the
+    regression does not occur -- all of them survived deletion while they could only run
+    against `sluice/`. Pointed at a planted file instead, each fails on demand.
 
     Discovery reads each file's OWN bindings rather than matching the name `resolve`, in
     BOTH import styles -- `from ... import resolve as _resolve_path` (which `core/app.py`
@@ -237,9 +243,8 @@ def _resolve_call_site_doors():
     module constant is not a call site without a door, it is a call site whose door is
     unknown, and those are opposite answers.
     """
-    pkg = pathlib.Path(__file__).resolve().parent.parent / "sluice"
     doors, unreadable = set(), []
-    for py in sorted(pkg.rglob("*.py")):
+    for py in sorted(pathlib.Path(pkg).rglob("*.py")):
         tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
         direct, modules = set(), set()
         for node in ast.walk(tree):
@@ -282,26 +287,99 @@ def _resolve_call_site_doors():
     return doors, unreadable
 
 
-def test_every_resolve_call_site_has_a_tilde_row():
-    """The roster is hand-written, so this pins it against the source -- BOTH ways.
+def _check_roster(doors, unreadable, rows):
+    """The verdict, extracted from the sweep so synthetic inputs can drive it.
 
     Equality, not two subset checks. An earlier version read the roster back against
     discovery only for rows whose env door was non-None, which pinned six of the ten:
     `dossiers/key` and `triage-audit.jsonl/key` share a call site with their env twin, so
     they were checked by neither half and could have been deleted, or invented, in
-    silence. Deriving the door SET from each call site's `env_var=` and `config_value=`
-    and comparing it whole is what closes that -- and it is strictly stronger than the
-    "did we match enough files" count that was tried first and survived its own deletion.
+    silence.
     """
-    doors, unreadable = _resolve_call_site_doors()
     assert not unreadable, (
         f"resolve() call sites this sweep could not read, so it certified nothing about "
         f"them: {unreadable}")
     assert doors, "the sweep found no resolve() call sites at all"
-    rows = {(name, "env" if env else "key") for _, name, env, _, _, _ in _FAMILIES}
     assert doors == rows, (
         f"the tilde roster and the real call-site doors disagree; only-in-source="
         f"{sorted(doors - rows)} only-in-roster={sorted(rows - doors)}")
+
+
+def _roster_doors():
+    return {(name, "env" if env else "key") for _, name, env, _, _, _ in _FAMILIES}
+
+
+def test_every_resolve_call_site_has_a_tilde_row():
+    """The roster is hand-written, so this pins it against the real source -- both ways."""
+    pkg = pathlib.Path(__file__).resolve().parent.parent / "sluice"
+    _check_roster(*_resolve_call_site_doors(pkg), _roster_doors())
+
+
+# ── the sweep's own guards, driven over PLANTED source ───────────────────────
+# Each of these was written first as an assertion over `sluice/` alone, and each survived
+# its own deletion there: the tree contains none of the shapes they exist to catch, so
+# there was nothing for them to fail on. Planting the shape is what turns a claim into a
+# check -- CLAUDE.md's "extract the logic so synthetic inputs drive it", applied.
+
+def _plant(tmp_path, body):
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "m.py").write_text(body, encoding="utf-8")
+    return pkg
+
+
+def test_the_sweep_sees_the_module_attribute_import_style(tmp_path):
+    """`from sluice.core import paths` + `paths.resolve(...)` -- the idiom THIS file uses,
+    and one import-style edit away in `sluice/`. Keyed on the bare name alone, rewriting
+    `sluice/track/config.py` to it dropped both its doors with the suite green."""
+    pkg = _plant(tmp_path, "from sluice.core import paths\n"
+                           "paths.resolve(env_var='X', config_value='', kind='state',\n"
+                           "              name='planted.db')\n")
+    doors, unreadable = _resolve_call_site_doors(pkg)
+    assert doors == {("planted.db", "env")}, doors
+    assert not unreadable
+
+
+def test_the_sweep_sees_an_aliased_from_import(tmp_path):
+    """The alias half, planted rather than inferred from `core/app.py`."""
+    pkg = _plant(tmp_path, "from sluice.core.paths import resolve as _rp\n"
+                           "_rp(env_var=None, config_value=cfg.x, kind='state',\n"
+                           "    name='planted.db')\n")
+    doors, unreadable = _resolve_call_site_doors(pkg)
+    assert doors == {("planted.db", "key")}, doors
+    assert not unreadable
+
+
+def test_a_call_site_the_sweep_cannot_read_is_reported_not_skipped(tmp_path):
+    """A `name=` it cannot evaluate is a call site whose door is UNKNOWN, not a call site
+    with no door -- opposite answers, and skipping silently gives the wrong one."""
+    pkg = _plant(tmp_path, "from sluice.core.paths import resolve\n"
+                           "NAME = 'planted.db'\n"
+                           "resolve(env_var='X', config_value='', kind='state', name=NAME)\n")
+    doors, unreadable = _resolve_call_site_doors(pkg)
+    assert unreadable, "an unreadable call site was silently skipped"
+    with pytest.raises(AssertionError, match="could not read"):
+        _check_roster(doors, unreadable, _roster_doors())
+
+
+def test_the_verdict_fails_on_a_roster_row_no_call_site_backs(tmp_path):
+    """The direction the old one-way check could not see: a row invented, or left behind
+    after its call site went away, with nothing in the source to match it."""
+    pkg = _plant(tmp_path, "from sluice.core.paths import resolve\n"
+                           "resolve(env_var='X', config_value='', kind='state',\n"
+                           "        name='planted.db')\n")
+    doors, unreadable = _resolve_call_site_doors(pkg)
+    with pytest.raises(AssertionError, match="only-in-roster"):
+        _check_roster(doors, unreadable, doors | {("never-resolved.db", "key")})
+
+
+def test_the_verdict_fails_when_the_sweep_finds_nothing(tmp_path):
+    """The vacuity case: every assertion over an empty set is satisfied, so finding
+    nothing must be the failure rather than the pass."""
+    pkg = _plant(tmp_path, "x = 1\n")
+    doors, unreadable = _resolve_call_site_doors(pkg)
+    with pytest.raises(AssertionError, match="no resolve\\(\\) call sites at all"):
+        _check_roster(doors, unreadable, set())
 
 
 # ── the invariant the fix protects ───────────────────────────────────────────
