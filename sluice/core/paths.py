@@ -399,13 +399,7 @@ def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> s
         return expanded
 
     resolved = _xdg_path(kind, name)
-        # SAID OUT LOUD, which is the whole point. Ignoring it silently relocates the
-        # user's store: measured, `XDG_STATE_HOME=relative/state` with a real two-row
-        # `seen.db` under `<cwd>/relative/state/sluice/` resolved to the XDG default,
-        # loaded an EMPTY dedup set, printed nothing and exited 0 -- the #81 harm, in the
-        # one module whose doctrine is that a store never moves silently. `_LEGACY` cannot
-        # cover it either, since the abandoned location is wherever the user last ran
-        # from, so neither the warn tier nor the refusal can see it.
+
     # The table supplies the legacy path; an explicit `legacy=` overrides it, which is
     # how the tests plant a file somewhere they control instead of the real cwd. A name
     # with no entry has nothing to migrate from and skips the check entirely.
