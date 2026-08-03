@@ -2,12 +2,16 @@
 """Assert the emitted tree still carries the no-bypass hook, and the same agents and skills.
 
 WHY THIS EXISTS ALONGSIDE `guard_rulesync_drift.py`. That guard counts FILES, and a count is
-identical whether or not the hook it counted carries a command. `.rulesync/hooks.json` records
-the failure precisely: feed rulesync the wrong schema and it "skips the event AND silently drops
-the command", printing `All done!` and exiting 0. Measured again on the 9.6.3 -> 15.1.0 bump,
-where the failure SHAPE moved: 9.6.3 wrote nothing, 15.1.0 writes the whole tree minus
-`settings.json`. Only the emitted artifact can tell, and the `rulesync` CI job is the first
-environment where node exists and the generator has actually run.
+identical whether or not the hook it counted carries a command. This is not hypothetical, and it
+is the sharper half of the argument: measured on the pinned version, feeding rulesync Claude
+Code's native nested shape emits a settings.json at exactly the path Claude Code reads, carrying a
+well-formed hook with NO command -- twelve files, the `+ 1 hooks` summary term present, and the
+drift guard exiting 0. Nothing but the emitted artifact can tell that one apart from a good run.
+The other mode (omitting the top-level `hooks` record) drops `settings.json` entirely, which the
+count guard DOES see. `.rulesync/hooks.json`'s comment records both, re-measured, and carries the
+version record; this docstring deliberately names no version so there is only one place to update.
+Either way the `rulesync` CI job is the first environment where node exists and the generator has
+actually run.
 
 WHY IT IS A SCRIPT AND NOT INLINE IN `ci.yml`. It began as a heredoc. Inline interpreter blocks
 are invisible to `ruff check`, cannot be unit-tested, and leave a `run:` step whose command name
@@ -133,9 +137,9 @@ def _hook_violations(root: Path) -> list[str]:
     """Every reason the emitted settings.json would leave the no-bypass guard inert."""
     settings_path = root / ".claude" / "settings.json"
     if not settings_path.is_file():
-        # Measured on 15.1.0: a malformed hooks.json emits CLAUDE.md, AGENTS.md and .claude/ but
-        # no settings.json at all -- a near-complete tree missing only the guard. Absence is the
-        # failure, not a reason to skip the check.
+        # Re-measured on the pinned version: a hooks.json missing its top-level `hooks` record
+        # emits CLAUDE.md, AGENTS.md and .claude/ but no settings.json at all -- a near-complete
+        # tree missing only the guard. Absence is the failure, not a reason to skip the check.
         return [
             f"{settings_path} was not emitted at all. rulesync wrote the rest of the tree, so "
             "this is a dropped hook rather than a failed run: the no-bypass guard would ship "
