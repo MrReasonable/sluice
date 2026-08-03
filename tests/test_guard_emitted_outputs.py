@@ -61,7 +61,8 @@ def test_a_faithful_tree_has_no_violations(tmp_path):
 
 
 def test_a_missing_settings_file_is_a_violation(tmp_path):
-    """Measured on 15.1.0: a malformed hooks.json emits the whole tree EXCEPT settings.json.
+    """Re-measured on the pinned version: a hooks.json missing its top-level `hooks` record
+    emits the whole tree EXCEPT settings.json.
 
     Absence is the failure. Treating a missing file as "nothing to check" is how the guard would
     ship inert while every count still matched.
