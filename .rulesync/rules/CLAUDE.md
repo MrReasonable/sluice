@@ -358,7 +358,12 @@ inside functions in `track/google_client.py`. HTTP goes through `urllib`, not `r
 a runtime dependency without a deliberate decision. The rule binds `sluice/` -- what ships to a
 user. The root `package.json` is not an exception to it: it pins the Node-based `rulesync` CLI
 that regenerates `.rulesync/`'s AI-tool outputs, a CI-only dev-time tool that never ships in the
-package and nothing a user installing `sluice` ever sees.
+package and nothing a user installing `sluice` ever sees. Neither is the `test` extra
+(`pytest`, `faker`, `pytest-cov`) -- installed to run the gate, never imported by `sluice/`. That
+one needs saying because it is the case the table itself disguises: `test` sits beside `render`
+and `google` in the same `optional-dependencies`, and those two ARE inside the rule, because a
+user who opts into them installs them and `sluice/` imports them at runtime. The line is not
+"optional", it is whether a user's install can end up executing it.
 
 **Fail loudly at construction.** An unknown backend/adapter name raises and lists the valid names
 rather than falling through to a default. A quiet wrong default is the bug class this codebase most

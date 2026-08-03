@@ -394,11 +394,84 @@ def test_the_documented_install_command_is_the_one_ci_runs():
     )
 
 
+def _pyproject() -> dict:
+    """pyproject.toml, parsed. tomllib is stdlib on every version this repo supports
+    (requires-python >= 3.12), so unlike the yaml case in the module docstring there is no
+    optional import to skip a test into uselessness."""
+    return tomllib.loads(PYPROJECT.read_text())
+
+
 def _coverage_config() -> dict:
-    """pyproject's `[tool.coverage]` table. tomllib is stdlib on every version this repo
-    supports (requires-python >= 3.12), so unlike the yaml case in the module docstring there is
-    no optional import to skip a test into uselessness."""
-    return tomllib.loads(PYPROJECT.read_text()).get("tool", {}).get("coverage", {})
+    return _pyproject().get("tool", {}).get("coverage", {})
+
+
+# The config files coverage.py consults AHEAD of pyproject.toml, in its own precedence order.
+# Each maps to the section that would make it a coverage config; `.coveragerc` exists for
+# nothing else, so its mere presence counts.
+_SHADOWING_COVERAGE_CONFIGS = {
+    ".coveragerc": None,
+    "setup.cfg": "[coverage:",
+    "tox.ini": "[coverage:",
+}
+
+
+def test_pyproject_is_the_effective_coverage_config():
+    """Every other coverage guard here reads pyproject. A higher-precedence file makes them all
+    assertions about a file coverage.py never opens.
+
+    Measured, not reasoned: a `.coveragerc` carrying `[report] fail_under = 99` gated the build
+    at 99% while pyproject said nothing of the kind -- and `test_coverage_measures_every_linted_
+    production_target` and `..._branches_not_only_lines` both stayed GREEN throughout, because
+    the values they assert on were still sitting in a file that had stopped being read. That is
+    the worst shape a guard can take: green, specific, and about the wrong thing.
+
+    So this is asserted at the level of WHICH FILE WINS, which is the only place it can be.
+    (`COVERAGE_RCFILE` can override from the environment too; nothing in a repo can guard an env
+    var, and CI sets none -- the point here is that no file in the TREE silently takes over.)
+    """
+    shadowing = []
+    for name, section in _SHADOWING_COVERAGE_CONFIGS.items():
+        path = ROOT / name
+        if not path.exists():
+            continue
+        if section is None or section in path.read_text():
+            shadowing.append(name)
+    assert not shadowing, (
+        f"{shadowing} outrank pyproject.toml in coverage.py's config search, so the coverage "
+        "settings this module asserts on are no longer the ones in effect. Move the settings, "
+        "or delete the shadowing file."
+    )
+
+
+def test_the_coverage_report_names_its_uncovered_lines():
+    """`show_missing` IS #11's acceptance criterion, not a formatting preference.
+
+    #11 asks that "the uncovered lines in `core/` and `triage/` are visible enough to be worth
+    acting on". Without this key the report still renders, still prints a percentage per file,
+    and simply drops the `Missing` column -- so it keeps saying WHICH files are thin and stops
+    saying WHERE, which is the half a human can act on. Witnessed: deleting it leaves the whole
+    suite green.
+    """
+    assert _coverage_config().get("report", {}).get("show_missing") is True, (
+        "[tool.coverage.report] show_missing is no longer true: the per-file breakdown still "
+        "renders, minus the line numbers that make it actionable -- and nothing else goes red"
+    )
+
+
+def test_coverage_stores_relative_paths():
+    """Without `relative_files`, coverage records the checkout's ABSOLUTE path -- in the report
+    it publishes and inside the `.coverage` data file itself.
+
+    That is a leak vector, not a cosmetic one: locally the prefix is a real home directory, and
+    `.coverage` is a binary SQLite file, so `.gitignore` protects it only until the day it is
+    already tracked -- which is exactly the route `.memsearch/` took into this public repo three
+    times (tests/test_no_leaked_files.py records it). Witnessed both ways: with the key, paths
+    read `sluice/core/app.py`; without it, the full checkout path.
+    """
+    assert _coverage_config().get("run", {}).get("relative_files") is True, (
+        "[tool.coverage.run] relative_files is no longer true: the published report and the "
+        "`.coverage` data file both start recording the checkout's absolute path"
+    )
 
 
 def test_the_derived_coverage_source_list_is_neither_empty_nor_the_whole_lint_bar():
@@ -522,11 +595,24 @@ def test_coverage_reports_and_does_not_gate():
     failing on a DECREASE once a baseline exists, which is a different mechanism from a floor
     and would arrive with its own reasoning. Deleting this test as part of that change is
     correct; tripping over it by adding `--cov-fail-under` to a CI line is what it is for.
+
+    ALL THREE routes to a threshold are checked, because two of them were found unguarded by
+    review after the first draft covered only the CI command line. The `addopts` one is not the
+    exotic case: this same diff hangs the coverage rationale off `[tool.pytest.ini_options]`,
+    which makes that table read like where coverage is configured. Witnessed there --
+    `addopts = "-q --cov-fail-under=99"` gated the build with every test in this file green.
     """
     threshold = _coverage_config().get("report", {}).get("fail_under")
     assert threshold is None, (
         f"[tool.coverage.report] fail_under is set to {threshold!r}. #11 asks for a report, not "
         "a gate: a floor invites tests written to raise the number rather than to catch bugs."
+    )
+    addopts = _pyproject().get("tool", {}).get("pytest", {}).get("ini_options", {}).get(
+        "addopts", ""
+    )
+    assert "--cov-fail-under" not in addopts, (
+        f"[tool.pytest.ini_options] addopts passes --cov-fail-under ({addopts!r}). addopts "
+        "applies to EVERY pytest invocation, so this gates CI and every local run at once."
     )
     assert "--cov-fail-under" not in _ci_directives(), (
         "CI passes --cov-fail-under. #11 asks for a report, not a gate; see this test's reason."

@@ -51,9 +51,10 @@ jobs:
       # Run on EVERY matrix leg rather than singling one out. A `if: matrix.python-version ==
       # '3.12'` would be more machinery, not less, and it fails OPEN: bump the matrix past that
       # literal and the condition matches no leg, coverage silently stops being measured, and
-      # nothing goes red. $GITHUB_STEP_SUMMARY is per-JOB, so three legs produce three separate
-      # summaries rather than three tables stacked on one page -- and a gap that exists only on
-      # one interpreter version becomes visible instead of being averaged away.
+      # nothing goes red. And three legs do NOT stack three tables on one page: the variable is
+      # per-STEP, and GitHub groups "the summaries for all steps in a job [...] into a single job
+      # summary", listing one per job -- so each leg renders its own, and a gap that exists only
+      # on one interpreter version becomes visible instead of being averaged away.
       - run: python -m pytest --cov
       # Re-render the SAME data as markdown so the per-file breakdown lands on the run's summary
       # page rather than only in the log. `set -euo pipefail` because the default shell is
