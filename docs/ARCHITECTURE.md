@@ -53,19 +53,24 @@ Shared by every sub-app:
   the cwd-relative literals survive in exactly one module.
 
   Normalisation is one rule with one apparent exception. `expanduser` at
-  INGRESS, wherever a path first arrives from outside -- `resolve`'s explicit
-  branch and its XDG fallback, `Vault.__init__`, `onboard/questions.py`.
-  `abspath` ONLY where the value outlives the cwd it was read in: `questions.py`
-  writes its answer into a config file, and `cli.py` compares two spellings of
-  the vault. Neither is true of what `resolve` returns, so it does not abspath,
-  and a relative explicit value comes back exactly as written. At CONSUMPTION,
-  neither -- except that a path becoming a `file://` URI must be absolute or its
-  first segment is read as the URI authority, so `existing_db_uri` absolutises
-  there. That is not a breach of the rule: it changes the URI, never the path a
-  caller sees. Measured before it did: `SEEN_DB=relative/state/seen.db` saved on
-  run 1 and died on run 2 with `invalid uri authority: relative`, and every
-  non-absolute spelling (`./`, `../`, `~/`) failed identically. `vault.py`'s
-  "No abspath -- a relative vault is legitimate" and `questions.py`'s "Absolute,
+  INGRESS, wherever a path first arrives from outside -- five sites, enumerated
+  from the source by `tests/test_path_tilde.py` rather than listed here, because
+  the first version of this paragraph miscounted them. `abspath` ONLY where the
+  value outlives the cwd it was read in, whether by being written down
+  (`questions.py`, and the preset `cli.py` hands `sluice init`) or compared
+  (`cli.py`'s `--vault` against `$VAULT_DIR`). Neither is true of what `resolve`
+  returns, so it does not abspath, and a relative explicit value comes back
+  exactly as written. At CONSUMPTION, neither -- except that a path becoming a
+  `file://` URI must be absolute or its first segment is read as the URI
+  authority, so `existing_db_uri` joins the cwd on. That is not a breach: it
+  changes the URI, never the path a caller sees. Measured before it did:
+  `SEEN_DB=relative/state/seen.db` saved on run 1 and died on run 2 with
+  `invalid uri authority: relative`, and every non-absolute spelling (`./`,
+  `../`, `~/`) failed identically. It JOINS rather than `abspath`s because
+  `normpath` collapses `..` lexically while every other operation on the same
+  value lets the OS resolve it -- measured through a symlinked parent, the
+  writer created one file and the reader opened another. `vault.py`'s "No
+  abspath -- a relative vault is legitimate" and `questions.py`'s "Absolute,
   always" look opposed and are not: a path used in place, versus a path written
   down for later.
 
