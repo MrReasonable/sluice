@@ -133,3 +133,16 @@ def test_the_prompt_module_no_longer_reaches_a_filesystem():
             imported.add(node.module)
     assert imported == {"re", "sluice.core.criteria", "sluice.core.protocols"}, (
         f"triage/prompt.py's imports changed to {sorted(imported)}; it must reach no filesystem")
+
+    # ...AND a sweep for `open`, because it is a BUILTIN and needs no import. The import set alone
+    # FAILS OPEN: appending `def load_criteria_from_disk(p): return open(p).read()` leaves it --
+    # and the whole suite -- green (witnessed). The two checks catch different things and neither
+    # subsumes the other: the import set catches `pathlib.Path(...).read_text()`, which the old
+    # substring check missed; this catches the builtin, which the import set misses. Round 1
+    # replaced one with the other and simply traded blind spots.
+    builtin_reads = [n for n in ast.walk(ast.parse(src))
+                     if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                     and n.func.id in {"open", "eval", "exec", "__import__"}]
+    assert not builtin_reads, (
+        f"triage/prompt.py calls {[n.func.id for n in builtin_reads]}; it must reach no "
+        f"filesystem, and those need no import to do so")
