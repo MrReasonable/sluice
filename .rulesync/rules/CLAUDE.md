@@ -353,20 +353,17 @@ generate synthetic job titles with seeded `faker` (`tests/conftest.py`) rather t
 anyone's taste. Personal values reach the code only through `sluice.local.yaml` and the vault.
 
 **`sluice/` is standard-library only.** The sole exceptions: `yaml`, imported under a guarded
-`try/except ImportError` in each config module; the Google client libraries, imported lazily
-inside functions in `track/google_client.py`; and `weasyprint`, imported lazily inside
-`renderers/weasyprint.py`. Those last two are what the `google` and `render` extras install, which
-is why an extra is not automatically outside this rule -- see the `test` extra below for the one
-that is. HTTP goes through `urllib`, not `requests`. Do not add
-a runtime dependency without a deliberate decision. The rule binds `sluice/` -- what ships to a
-user. The root `package.json` is not an exception to it: it pins the Node-based `rulesync` CLI
-that regenerates `.rulesync/`'s AI-tool outputs, a CI-only dev-time tool that never ships in the
-package and nothing a user installing `sluice` ever sees. Neither is the `test` extra
-(`pytest`, `faker`, `pytest-cov`) -- installed to run the gate, never imported by `sluice/`. That
-one needs saying because it is the case the table itself disguises: `test` sits beside `render`
-and `google` in the same `optional-dependencies`, and those two ARE inside the rule, because a
-user who opts into them installs them and `sluice/` imports them at runtime. The line is not
-"optional", it is whether a user's install can end up executing it.
+`try/except ImportError` in each config module; the Google client libraries, imported lazily inside
+functions in `track/google_client.py`; and `weasyprint`, imported lazily inside
+`renderers/weasyprint.py`. HTTP goes through `urllib`, not `requests`. Do not add a runtime
+dependency without a deliberate decision. The rule binds `sluice/` -- what ships to a user. The root
+`package.json` is not an exception to it: it pins the Node-based `rulesync` CLI that regenerates
+`.rulesync/`'s AI-tool outputs, a CI-only dev-time tool that never ships in the package and nothing
+a user installing `sluice` ever sees. Nor is the `test` extra (`pytest`, `faker`, `pytest-cov`),
+installed to run the gate and never imported by `sluice/`. Being an EXTRA is not what exempts it,
+which is the part the table disguises: `render` and `google` sit beside `test` in the same
+`optional-dependencies` and are firmly INSIDE the rule -- they install the very `weasyprint` and
+Google imports named above. The line is whether a user's install can end up executing it.
 
 **Fail loudly at construction.** An unknown backend/adapter name raises and lists the valid names
 rather than falling through to a default. A quiet wrong default is the bug class this codebase most
