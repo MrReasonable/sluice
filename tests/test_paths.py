@@ -537,6 +537,11 @@ def test_a_non_absolute_store_still_opens(monkeypatch, tmp_path, spelling):
         # WHICH file, not merely that one opened. Planting at `abspath(spelling)` and then
         # asserting the URI opens is circular -- it constructs the agreement it claims to
         # test. `PRAGMA database_list` reports the path sqlite actually resolved.
+        #
+        # Measured: this assertion is not uniquely load-bearing -- no mutation kills it
+        # that the connect above does not already kill, because for these spellings there
+        # is only one candidate file. It makes the row SAY which file it means; the
+        # symlinked-parent row below is the one that can actually fail on the property.
         opened = db.execute("PRAGMA database_list").fetchone()[2]
         assert os.path.samefile(opened, same_file_the_rest_of_the_store_uses)
     finally:
