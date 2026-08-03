@@ -23,6 +23,24 @@ the two dedup stores no longer create anything on a read (`SeenDb.load`). Health
 dry-run write is left as it is on purpose: whether a dry run should record run history
 is a drift-detection question, not a path question, and changing it here would be a
 behaviour change smuggled into a path sweep.
+
+NORMALISATION, stated once here because it was four separate decisions with no shared
+home and two of them read as contradicting each other:
+
+    expanduser at INGRESS -- wherever a path first arrives from outside (this module's
+    explicit branch and its XDG fallback, `Vault.__init__`, `onboard/questions.py`).
+    abspath ONLY where the value outlives the cwd it was read in: `questions.py` writes
+    the answer into a config file, and `cli.py` compares two spellings of the vault for
+    equality. Neither is true of a path this module returns, so it does not abspath, and
+    a relative explicit value is handed back exactly as the caller wrote it.
+    At CONSUMPTION, neither -- with one exception that is not really one: a path being
+    turned into a `file://` URI must be absolute or its first segment becomes the URI
+    authority, so `existing_db_uri` absolutises there. That changes the URI, never the
+    path any caller sees, which is why it does not break the rule above.
+
+`vault.py`'s "No abspath -- a relative vault is legitimate" and `questions.py`'s
+"Absolute, always" look opposed and are not: the first is a path used in place, the
+second a path written down for later. That is the whole distinction.
 """
 import os
 import shlex
@@ -469,6 +487,24 @@ def config_file() -> str:
     been a default config path to migrate from; an unset `SLUICE_CONFIG` meant no config
     file at all, and now means this one if it exists. That is the sweep's only behaviour
     change.
+
+    The `~` fix has a transition this path cannot warn about, and the reason is worth
+    stating rather than discovering. `SLUICE_CONFIG='~/sluice.yaml'` used to resolve to
+    the literal, `load_config` reads a missing file as NO CONFIG AT ALL, and so the whole
+    file was ignored in silence; it now resolves and takes effect. If that config names
+    explicit state paths, those keys take `resolve`'s explicit branch, which short-circuits
+    the relocation check by construction -- so state at the old XDG location is orphaned
+    with nothing said. Measured.
+
+    That is not a new rule: a config key naming a state path has ALWAYS short-circuited
+    the check, which is what keeps every caller supplying its own path immune to refusing
+    to start. What is new is one more config becoming active. `resolve`'s orphan notice
+    cannot cover it either -- that notice fires on state sluice WROTE at the literal path,
+    and this is a file sluice only ever READ, so there is nothing at `./~/sluice.yaml` to
+    find. Nor can a runtime check tell "a config that was being ignored just activated"
+    from "an ordinary run with a working config": the two look identical, so a warning
+    would fire forever for every user with a `~` in this variable, and a warning on every
+    run is one nobody reads. It belongs in the release note, and is in the PR.
     """
     return resolve(env_var="SLUICE_CONFIG", config_value="", kind="config",
                    name="config.yaml")
