@@ -353,8 +353,11 @@ generate synthetic job titles with seeded `faker` (`tests/conftest.py`) rather t
 anyone's taste. Personal values reach the code only through `sluice.local.yaml` and the vault.
 
 **`sluice/` is standard-library only.** The sole exceptions: `yaml`, imported under a guarded
-`try/except ImportError` in each config module, and the Google client libraries, imported lazily
-inside functions in `track/google_client.py`. HTTP goes through `urllib`, not `requests`. Do not add
+`try/except ImportError` in each config module; the Google client libraries, imported lazily
+inside functions in `track/google_client.py`; and `weasyprint`, imported lazily inside
+`renderers/weasyprint.py`. Those last two are what the `google` and `render` extras install, which
+is why an extra is not automatically outside this rule -- see the `test` extra below for the one
+that is. HTTP goes through `urllib`, not `requests`. Do not add
 a runtime dependency without a deliberate decision. The rule binds `sluice/` -- what ships to a
 user. The root `package.json` is not an exception to it: it pins the Node-based `rulesync` CLI
 that regenerates `.rulesync/`'s AI-tool outputs, a CI-only dev-time tool that never ships in the

@@ -8,17 +8,23 @@ __pycache__/
 # `*.db` rule further down does NOT cover it despite it being a SQLite database; `.coverage.*`
 # catches the per-process files coverage writes when run in parallel mode.
 #
-# All FOUR renderers are listed, not just the two a human reaches for first. CI renders only to
-# stdout and to the run summary, so every file here comes from someone running `coverage html`
-# (or json/lcov) by hand to act on the report -- which is the whole point of #11, and therefore
-# the likeliest route one of these has into a `git add -A`. An earlier version of this block
-# claimed "its rendered outputs" while ignoring two of them.
+# All FIVE file-writing report commands are listed, not just the two a human reaches for first.
+# CI renders only to stdout and to the run summary, so every file here comes from someone running
+# `coverage html` (or json/lcov/annotate) by hand to act on the report -- which is the whole point
+# of #11, and therefore the likeliest route one of these has into a `git add -A`. Two earlier
+# versions of this block undercounted, first at two and then at four.
+#
+# `*,cover` is the one that matters most and is deliberately UNANCHORED. `annotate` is the only
+# command that writes INTO the source tree rather than to a path of its own: measured, it emits
+# `pkg/m.py,cover` beside each module, so a real run drops one next to every file in `sluice/`
+# and `scripts/` at any depth. Root-anchoring it would catch none of them.
 .coverage
 .coverage.*
 coverage.xml
 coverage.json
 coverage.lcov
 htmlcov/
+*,cover
 
 # Subagent-driven-development scratch (ledger, task briefs/reports, review packages).
 # Local-only working state; may contain absolute paths, so never track it.
