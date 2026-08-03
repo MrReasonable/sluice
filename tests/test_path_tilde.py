@@ -218,15 +218,19 @@ def test_every_resolve_call_site_has_a_tilde_row():
     """The roster above is hand-written, so this pins it against the source.
 
     A negative sweep that discovers nothing passes every assertion over it, so the scope
-    is asserted first: this must find call sites at all, and it must find the module that
-    defines them. Discovery reads each file's OWN import bindings rather than matching the
-    name `resolve`, because `core/app.py` imports it as `_resolve_path` and a hand-list
-    keyed on the original name walks straight past that call site -- which is where two of
-    the ten rows live.
+    has to be pinned -- and here the `stale` assertion at the bottom is what pins it,
+    measured rather than assumed. It reads the roster's env doors BACK against discovery,
+    so the moment the sweep stops finding a call site the roster names it goes red; an
+    additional "did we match enough files" assertion was tried and survived its own
+    deletion, because `stale` had already caught every way discovery can break.
+
+    Discovery reads each file's OWN import bindings rather than matching the name
+    `resolve`, because `core/app.py` imports it as `_resolve_path` and a hand-list keyed
+    on the original name walks straight past that call site -- which is where two of the
+    ten rows live. Witnessed: dropping the `asname` half turns this test red.
     """
     pkg = pathlib.Path(__file__).resolve().parent.parent / "sluice"
     found = set()
-    seen_files = 0
     for py in sorted(pkg.rglob("*.py")):
         tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
         local = set()
@@ -239,7 +243,6 @@ def test_every_resolve_call_site_has_a_tilde_row():
                 local.add("resolve")          # the definition site's own recursion-free defn
         if not local:
             continue
-        seen_files += 1
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -252,9 +255,6 @@ def test_every_resolve_call_site_has_a_tilde_row():
             env = kw.get("env_var")
             env = env.value if isinstance(env, ast.Constant) else None
             found.add((kw["name"].value, env))
-    assert seen_files >= 2, (
-        f"the call-site sweep matched only {seen_files} file(s) -- it is not finding the "
-        f"imports it is keyed on, so every assertion below it is vacuous")
     assert found, "the sweep found no resolve() call sites at all"
     # `config.yaml` is resolved inside `paths.config_file()`, whose own call site carries
     # `env_var="SLUICE_CONFIG"`; every other name reaches resolution from outside.
@@ -359,4 +359,25 @@ def test_no_notice_when_nothing_was_left_behind(monkeypatch, tmp_path, caplog):
     monkeypatch.setenv("SEEN_DB", "~/state/seen.db")
     with caplog.at_level("WARNING"):
         paths.resolve(env_var="SEEN_DB", config_value="", kind="state", name="seen.db")
+    assert not re.search(r"WARNING", caplog.text), caplog.text
+
+
+def test_no_notice_for_an_ordinary_absolute_path_that_exists(monkeypatch, tmp_path,
+                                                             caplog):
+    """The commonest configuration of all, and the one a half-written gate punishes.
+
+    The notice needs BOTH terms: nothing was expanded here, so nothing was left behind.
+    Dropping the `expanded != explicit` half leaves a gate that fires whenever the named
+    path merely EXISTS -- which for a working install is every run, telling a user their
+    own store was abandoned. Measured: with that term removed the rest of this file stays
+    green, so this row is the only thing standing between the fix and that.
+    """
+    store = tmp_path / "state" / "seen.db"
+    store.parent.mkdir(parents=True)
+    store.write_bytes(b"")
+    monkeypatch.setenv("SEEN_DB", str(store))
+    with caplog.at_level("WARNING"):
+        out = paths.resolve(env_var="SEEN_DB", config_value="", kind="state",
+                            name="seen.db")
+    assert out == str(store)
     assert not re.search(r"WARNING", caplog.text), caplog.text
