@@ -395,6 +395,11 @@ def test_enumerate_matches_operation_backend_wiring(monkeypatch, tmp_path):
                 claude_path, fallback_name, fallback_model, timeout=None):
             rec["primary"] = (primary_name, primary_model, host, claude_path)
             rec["fallback"] = (fallback_name, fallback_model)
+            # RECORDED, not discarded. Widening this fake to merely ACCEPT the #28
+            # timeout would make the one test that inspects doctor-vs-cv wiring swallow
+            # the new value -- a guard quietly narrowed by the change it was meant to
+            # watch. test_doctor_probe_does_not_inherit_the_compose_timeout reads it.
+            rec["timeout"] = timeout
             raise _Stop()
 
         monkeypatch.setattr(Sluice, "backend", spy)
@@ -464,3 +469,41 @@ def test_print_doctor_shows_elapsed_for_a_live_probe(capsys):
     out = capsys.readouterr().out
     assert "(0.4s)" in out
     assert "1 ok, 0 degraded, 0 dead" in out
+
+
+def test_doctor_probe_does_not_inherit_the_compose_timeout(monkeypatch, tmp_path):
+    """The exclusion was claimed only in a comment: making the probe inherit a
+    compose-sized timeout left the whole suite green.
+
+    `doctor` builds its own backend for PROBE_PROMPT, a two-token round trip. Borrowing a
+    raised `cv.compose_timeout` would make the command you run BECAUSE something is wrong
+    sit on a dead host for as long as that knob says. Asserted on the value `make_backend`
+    actually receives, since that is where the borrowing would have to happen.
+    """
+    import dataclasses
+
+    from sluice.core.backends import BackendError
+    from sluice.cv.config import load_cv_config
+
+    cvc = dataclasses.replace(load_cv_config(), compose_timeout=4321,
+                              primary_backend="claude-max", compose_model="m")
+    monkeypatch.setattr("sluice.cv.config.load_cv_config", lambda: cvc)
+
+    seen = []
+
+    def spy_make(name, model="", **kw):
+        seen.append(kw.get("timeout"))
+        raise BackendError("stop here -- construction is all this test needs")
+
+    # `doctor` does `from sluice.core.backends import make_backend` at METHOD scope, so
+    # the import re-runs per call and patching the source module is what takes effect.
+    monkeypatch.setattr("sluice.core.backends.make_backend", spy_make)
+    # No try/except: `Sluice.doctor` already catches BackendError around the
+    # make_backend/probe pair, so a handler here is dead code that could only mask a
+    # later regression while `seen` stayed non-empty and this test stayed green.
+    Sluice().doctor(offline=False)
+    assert seen, "doctor never constructed a backend, so this asserts nothing"
+    assert all(t != 4321 for t in seen), (
+        f"doctor's probe inherited cv.compose_timeout: {seen}. Its probe is a two-token "
+        "round trip; a compose-sized budget makes doctor hang on the dead host it exists "
+        "to diagnose.")

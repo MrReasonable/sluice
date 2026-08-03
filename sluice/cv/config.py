@@ -3,6 +3,7 @@ Every field has a sane default so cv runs with no config file. Secrets via env."
 import os
 from dataclasses import dataclass, field
 
+from sluice.core.backends import DEFAULT_TIMEOUT
 from sluice.core.config import refuse_retired_dossier_dir
 from sluice.core.paths import config_file
 
@@ -71,15 +72,25 @@ class CvConfig:
     # Empty host runs claude_path locally; set a host to shell out over ssh.
     compose_host: str = ""
     compose_claude_path: str = "claude"
-    # Seconds one composition invocation may take before the backend gives up (#28).
-    # 300 is what was hardcoded, kept so making it reachable retunes nobody's runtime.
+    # Seconds one backend invocation may take before it gives up (#28). Defaults to the
+    # value that was hardcoded, so making it reachable retunes nobody's runtime.
     #
-    # It is PER INVOCATION, not per lead: the engine composes up to twice (the one
-    # gate-failure retry) and then runs the audit, so one lead's worst case is three
-    # times this. Raise it if compositions degrade to the fallback mid-run -- an agent
-    # shelling over ssh at `--effort max` against a large bundle is the slow case, and
-    # the fallback swap is logged at WARNING but easy to miss.
-    compose_timeout: int = 300
+    # PER INVOCATION PER LEG, and both multipliers are real. The engine composes up to
+    # twice (the one gate-failure retry) and then runs the audit through the SAME backend
+    # -- three invocations. Under the default `auto` role that backend is a
+    # FallbackBackend, whose `complete` tries the primary and THEN the fallback when the
+    # primary raises, and a timeout raises. So a lead's worst case is six times this, not
+    # three: an earlier version of this comment said three and was wrong, having counted
+    # the invocations but not the legs.
+    #
+    # It reaches both legs. Threading it into the primary alone (the first shape of this
+    # knob) left the fallback pinned at the shipped default and made `--backend fallback`
+    # ignore the knob entirely, with nothing logged to say so.
+    #
+    # Raise it if compositions degrade to the fallback mid-run -- an agent shelling over
+    # ssh at `--effort max` against a large bundle is the slow case, and the swap is
+    # logged at WARNING but easy to miss.
+    compose_timeout: int = DEFAULT_TIMEOUT
 
 
 def load_cv_config(path: str | None = None) -> CvConfig:
