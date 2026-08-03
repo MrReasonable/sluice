@@ -532,10 +532,20 @@ def config_file() -> str:
     to start. What is new is one more config becoming active. `resolve`'s orphan notice
     cannot cover it either -- that notice fires on state sluice WROTE at the literal path,
     and this is a file sluice only ever READ, so there is nothing at `./~/sluice.yaml` to
-    find. Nor can a runtime check tell "a config that was being ignored just activated"
-    from "an ordinary run with a working config": the two look identical, so a warning
-    would fire forever for every user with a `~` in this variable, and a warning on every
-    run is one nobody reads. It belongs in the release note, and is in the PR.
+    find.
+
+    Nothing can be said AT THIS PATH, then: a config that was being ignored and has just
+    activated is indistinguishable here from an ordinary run with a working config, so a
+    warning would fire forever for every user with a `~` in this variable. That is a claim
+    about the config FILE only, and deliberately not about the harm. The orphaned STATE is
+    detectable, one layer down and keyed differently -- an explicit path that does not
+    exist while the XDG default for the same `name` does. That pair is false for a working
+    install and false for a first run, so it does not fire forever, and it would catch
+    this transition through the state keys rather than through the config file. It is not
+    implemented here because it would warn for every explicitly-named path, not only the
+    ones this bug reaches, which is a change to what #80 promises callers who name their
+    own paths rather than part of fixing a tilde. Recorded so the next reader inherits the
+    open question and not a false impossibility.
     """
     return resolve(env_var="SLUICE_CONFIG", config_value="", kind="config",
                    name="config.yaml")
