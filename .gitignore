@@ -4,6 +4,13 @@ __pycache__/
 .pytest_cache/
 .venv/
 *.egg-info/
+# coverage.py's data file and its rendered outputs. `.coverage` carries no extension, so the
+# `*.db` rule further down does NOT cover it despite it being a SQLite database; `.coverage.*`
+# catches the per-process files coverage writes when run in parallel mode.
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
 
 # Subagent-driven-development scratch (ledger, task briefs/reports, review packages).
 # Local-only working state; may contain absolute paths, so never track it.

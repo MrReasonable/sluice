@@ -13,7 +13,11 @@ render = ["weasyprint"]
 google = ["google-api-python-client", "google-auth"]
 # The suite generates its own synthetic job titles rather than hardcoding anyone's
 # real role preferences, so faker is a test dependency (see tests/conftest.py).
-test = ["pytest", "faker"]
+#
+# pytest-cov is DEV-TIME ONLY and does not breach CLAUDE.md's stdlib-only rule, which binds
+# what SHIPS -- `dependencies` above, and the `render`/`google` extras a user opts into. This
+# extra is the same category as faker: installed to run the gate, never imported by `sluice/`.
+test = ["pytest", "faker", "pytest-cov"]
 
 [project.urls]
 Homepage = "https://github.com/MrReasonable/sluice"
@@ -27,7 +31,35 @@ include = ["sluice*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# `--cov` is deliberately NOT here. addopts applies to every invocation, so a coverage run
+# would be forced on `pytest -k one_test` and on the mutation-testing loop, where the report is
+# noise and the tracer is pure overhead. CI opts in explicitly; see .github/workflows/ci.yml.
 addopts = "-q"
+
+# Coverage REPORTS, it does not gate. There is deliberately no `fail_under` here: a threshold
+# invites tests written to raise the number rather than to catch bugs, which is the failure mode
+# this repo can least afford -- three of its worst bugs (a flag parsed and never forwarded, a
+# fallback backend believed in and non-functional, a default that binned every lead) were all
+# invisible to a fully green suite. See issue #11.
+[tool.coverage.run]
+# `scripts/` sits beside `sluice/` because guard scripts ARE the merge gate:
+# `.rulesync/rules/CLAUDE.md` puts them under the mutation-testing bar and CI lints them, and an
+# unexercised guard is the exact fail-open class this repo spends its life engineering out.
+# tests/test_ci_wiring.py derives this list from that same lint bar rather than re-listing it.
+source = ["sluice", "scripts"]
+# Branch coverage, not just line coverage. #11's stated purpose is to show "which paths are
+# asserted and which merely execute", and a fully-executed `if` with only one arm taken is
+# exactly that distinction -- line coverage calls it 100% and says nothing.
+branch = true
+# Store paths relative to the project root. Without this a report rendered from any other
+# working directory prints the checkout's absolute path -- the runner's under CI, and a real
+# home directory locally, which is the shape of leak tests/test_no_leaked_files.py exists to
+# catch. (It caught this comment, too, when it first spelled the runner path out.)
+relative_files = true
+
+[tool.coverage.report]
+# The per-file breakdown #11 asks for is only actionable if it names the uncovered lines.
+show_missing = true
 
 [tool.ruff]
 line-length = 100
