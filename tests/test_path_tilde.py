@@ -687,3 +687,99 @@ def test_the_expanduser_roster_matches_the_source():
         f"stated over the wrong set of files; only-in-source="
         f"{sorted(set(found) - set(_EXPANDUSER_SITES))} only-in-roster="
         f"{sorted(set(_EXPANDUSER_SITES) - set(found))}")
+
+
+# ── the orphan notice: named path absent, old location still populated ───────
+# The reviewer falsified the reason this was left out. The cell IS computable -- an
+# explicit path that does not exist while the XDG default for the same `name` does -- and
+# that pair is false for a working install and false for a first run, so it does not
+# become the warning nobody reads. It is the only thing that speaks for the transition
+# where a `~`-carrying SLUICE_CONFIG activates and its state keys silently relocate.
+
+def _xdg(tmp_path, kind, name):
+    return tmp_path / "xdg" / kind / "sluice" / name
+
+
+def test_state_left_at_the_old_location_is_named(monkeypatch, tmp_path, caplog):
+    stale = _xdg(tmp_path, "state", "seen.db")
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"")
+    named = tmp_path / "elsewhere" / "seen.db"
+    monkeypatch.setenv("SEEN_DB", str(named))
+    with caplog.at_level("WARNING"):
+        out = paths.resolve(env_var="SEEN_DB", config_value="", kind="state",
+                            name="seen.db")
+    assert out == str(named)
+    assert str(stale) in caplog.text and str(named) in caplog.text, caplog.text
+    # A remedy that MOVES, for the same reason the literal-path notice does: the old
+    # location is the whole history, and the named one is empty.
+    assert f"mv {stale} {named}" in caplog.text, caplog.text
+    assert "rm " not in caplog.text, caplog.text
+
+
+def test_a_working_install_says_nothing(monkeypatch, tmp_path, caplog):
+    """Both populated is the ordinary state of anyone who moved their store deliberately
+    and left something behind, and of anyone whose named path simply works. Firing here
+    would make this the warning that appears on every run."""
+    stale = _xdg(tmp_path, "state", "seen.db")
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"")
+    named = tmp_path / "elsewhere" / "seen.db"
+    named.parent.mkdir(parents=True)
+    named.write_bytes(b"")
+    monkeypatch.setenv("SEEN_DB", str(named))
+    with caplog.at_level("WARNING"):
+        paths.resolve(env_var="SEEN_DB", config_value="", kind="state", name="seen.db")
+    assert not caplog.text, caplog.text
+
+
+def test_a_first_run_says_nothing(monkeypatch, tmp_path, caplog):
+    """Neither exists -- a fresh install that named its own path. The notice must not
+    greet a new user with a warning about state they have never had."""
+    monkeypatch.setenv("SEEN_DB", str(tmp_path / "elsewhere" / "seen.db"))
+    with caplog.at_level("WARNING"):
+        paths.resolve(env_var="SEEN_DB", config_value="", kind="state", name="seen.db")
+    assert not caplog.text, caplog.text
+
+
+def test_naming_a_path_does_not_warn_about_an_unrelated_xdg_root(monkeypatch, tmp_path,
+                                                                 caplog):
+    """Probing the old location must not drag the relative-XDG-root warning along.
+
+    A user who names `SEEN_DB` explicitly has told sluice where the file is; `XDG_STATE_HOME`
+    is not consulted for their answer, so complaining about its value is noise on every
+    run about a variable that changes nothing for them.
+    """
+    monkeypatch.setenv("XDG_STATE_HOME", "relative/state")
+    monkeypatch.setenv("SEEN_DB", str(tmp_path / "elsewhere" / "seen.db"))
+    with caplog.at_level("WARNING"):
+        paths.resolve(env_var="SEEN_DB", config_value="", kind="state", name="seen.db")
+    assert "XDG_STATE_HOME" not in caplog.text, caplog.text
+
+
+def test_the_orphan_notice_reaches_the_config_key_door(monkeypatch, tmp_path, caplog):
+    """The door the SLUICE_CONFIG transition actually arrives through: `track.seen_db`
+    has no environment variable, so a config that has just started being read relocates
+    it by config key alone."""
+    stale = _xdg(tmp_path, "state", "track-seen.db")
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"")
+    named = tmp_path / "elsewhere" / "track-seen.db"
+    with caplog.at_level("WARNING"):
+        paths.resolve(env_var=None, config_value=str(named), kind="state",
+                      name="track-seen.db")
+    assert str(stale) in caplog.text, caplog.text
+
+
+def test_the_orphan_notice_warns_and_never_refuses(monkeypatch, tmp_path, caplog):
+    """`fatal=True` still must not raise on this branch. The short-circuit that keeps a
+    caller naming its own path immune to refusing to start is untouched by adding a
+    second thing to say."""
+    stale = _xdg(tmp_path, "state", "seen.db")
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"")
+    monkeypatch.setenv("SEEN_DB", str(tmp_path / "elsewhere" / "seen.db"))
+    with caplog.at_level("WARNING"):
+        paths.resolve(env_var="SEEN_DB", config_value="", kind="state", name="seen.db",
+                      fatal=True)
+    assert caplog.text

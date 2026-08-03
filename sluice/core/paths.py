@@ -245,6 +245,41 @@ def _something_is_there(path: str) -> bool:
     return True
 
 
+def _xdg_path(kind: str, name: str, *, warn: bool = True) -> str:
+    """Where `name` lives under the XDG base directory for `kind`.
+
+    `warn=False` exists for ONE caller: the orphan probe in `resolve`'s explicit branch,
+    which asks where the file WOULD have been in order to notice state left there. A user
+    who named their own path is not using this variable, so complaining about its value
+    would be noise on every run about a setting that changes nothing for them -- and it
+    would arrive attached to a message about a completely different file.
+    """
+    var, fallback = _ROOTS[kind]
+    # A RELATIVE value is ignored, which the XDG base-directory spec requires and which
+    # this feature exists to enforce: `XDG_STATE_HOME=relative/state` otherwise resolved
+    # to `relative/state/sluice/seen.db`, a cwd-relative store -- the exact class of path
+    # #80 removes, reintroduced through the very variable meant to remove it. Measured.
+    # It is ignored rather than rejected because a bad value in the environment must not
+    # stop a user running sluice at all, and the fallback is always correct.
+    root = os.environ.get(var) or ""
+    if root and not os.path.isabs(root) and warn:
+        # SAID OUT LOUD, which is the whole point. Ignoring it silently relocates the
+        # user's store: measured, `XDG_STATE_HOME=relative/state` with a real two-row
+        # `seen.db` under `<cwd>/relative/state/sluice/` resolved to the XDG default,
+        # loaded an EMPTY dedup set, printed nothing and exited 0 -- the #81 harm, in the
+        # one module whose doctrine is that a store never moves silently. `_LEGACY` cannot
+        # cover it either, since the abandoned location is wherever the user last ran
+        # from, so neither the warn tier nor the refusal can see it.
+        _log.warning(
+            "%s is %r, a relative path. The XDG base-directory spec requires a relative "
+            "base to be ignored, so sluice is using %s instead -- if you have state under "
+            "the relative location, move it or set %s to an absolute path.",
+            var, root, os.path.expanduser(fallback), var)
+    if not os.path.isabs(root):
+        root = os.path.expanduser(fallback)
+    return os.path.join(root, "sluice", name)
+
+
 def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> str:
     """Where `name` lives. `kind` is one of `_ROOTS`; an unknown one raises and lists
     the valid names rather than falling through to a default.
@@ -325,17 +360,41 @@ def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> s
                 "[ ! -e %s ] && mv %s %s",
                 name, expanded, explicit,
                 shlex.quote(expanded), shlex.quote(explicit), shlex.quote(expanded))
+        # The OTHER way an explicit path abandons state: the file named does not exist,
+        # while the XDG location this name would otherwise have resolved to still holds
+        # something. Naming a path short-circuits the relocation check by construction --
+        # that immunity is what keeps a caller supplying its own path from ever refusing
+        # to start -- so before this, relocating by config key or env var said NOTHING.
+        #
+        # It is what speaks for the transition this fix creates. A `~`-carrying
+        # SLUICE_CONFIG used to resolve to a literal and be ignored whole; now it loads,
+        # and every state path it names takes this branch. The config FILE cannot warn
+        # about that (see `config_file`), but each relocated state key can, and does.
+        #
+        # The two terms fail in OPPOSITE directions, deliberately, and both towards
+        # mentioning the old state. "Does not exist" is claimed only on a DEFINITIVE
+        # absence -- `_something_is_there` answers True when it cannot tell, so an
+        # unreadable named path keeps this quiet rather than asserting something unfounded
+        # about it. The old location accepts that same uncertainty as a yes, because
+        # failing to mention state that may be there is the loss this exists to prevent.
+        #
+        # Warn, never refuse: `fatal` belongs to the legacy branch, and reaching for it
+        # here would re-open the door that keeps explicit callers immune.
+        stale = _xdg_path(kind, name, warn=False)
+        if (stale != expanded and not _something_is_there(expanded)
+                and _something_is_there(stale)):
+            _log.warning(
+                "%s is set to %s, which does not exist -- but %s does, which is where "
+                "sluice would otherwise keep it. That is probably state from before the "
+                "path was set; for a dedup database it is the whole history, so do not "
+                "delete it. sluice never moves your data; to adopt it, run:  "
+                "[ ! -e %s ] && mkdir -p %s && mv %s %s",
+                name, expanded, stale,
+                shlex.quote(expanded), shlex.quote(os.path.dirname(expanded) or "."),
+                shlex.quote(stale), shlex.quote(expanded))
         return expanded
 
-    var, fallback = _ROOTS[kind]
-    # A RELATIVE value is ignored, which the XDG base-directory spec requires and which
-    # this feature exists to enforce: `XDG_STATE_HOME=relative/state` otherwise resolved
-    # to `relative/state/sluice/seen.db`, a cwd-relative store -- the exact class of path
-    # #80 removes, reintroduced through the very variable meant to remove it. Measured.
-    # It is ignored rather than rejected because a bad value in the environment must not
-    # stop a user running sluice at all, and the fallback is always correct.
-    root = os.environ.get(var) or ""
-    if root and not os.path.isabs(root):
+    resolved = _xdg_path(kind, name)
         # SAID OUT LOUD, which is the whole point. Ignoring it silently relocates the
         # user's store: measured, `XDG_STATE_HOME=relative/state` with a real two-row
         # `seen.db` under `<cwd>/relative/state/sluice/` resolved to the XDG default,
@@ -343,15 +402,6 @@ def resolve(*, env_var, config_value, kind, name, legacy=None, fatal=False) -> s
         # one module whose doctrine is that a store never moves silently. `_LEGACY` cannot
         # cover it either, since the abandoned location is wherever the user last ran
         # from, so neither the warn tier nor the refusal can see it.
-        _log.warning(
-            "%s is %r, a relative path. The XDG base-directory spec requires a relative "
-            "base to be ignored, so sluice is using %s instead -- if you have state under "
-            "the relative location, move it or set %s to an absolute path.",
-            var, root, os.path.expanduser(fallback), var)
-    if not os.path.isabs(root):
-        root = os.path.expanduser(fallback)
-    resolved = os.path.join(root, "sluice", name)
-
     # The table supplies the legacy path; an explicit `legacy=` overrides it, which is
     # how the tests plant a file somewhere they control instead of the real cwd. A name
     # with no entry has nothing to migrate from and skips the check entirely.
