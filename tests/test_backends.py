@@ -520,6 +520,7 @@ def test_claudemax_default_argv_is_pinned_exactly():
     """
     assert ClaudeMaxBackend("m").cmd_template == [
         "claude", "--print", "--model", "m", "--effort", "max",
+        "--disallowedTools", "Write", "Edit", "NotebookEdit", "Bash",
         "--permission-mode", "bypassPermissions",
     ]
 
@@ -534,7 +535,9 @@ def test_claudemax_ssh_argv_is_pinned_exactly():
     be = ClaudeMaxBackend("m", host="host.invalid", claude_path="/opt/bin/claude")
     assert be.cmd_template == [
         "ssh", "host.invalid", "/opt/bin/claude", "--print", "--model", "m",
-        "--effort", "max", "--permission-mode", "bypassPermissions",
+        "--effort", "max",
+        "--disallowedTools", "Write", "Edit", "NotebookEdit", "Bash",
+        "--permission-mode", "bypassPermissions",
     ]
 
 
