@@ -115,6 +115,23 @@ class ClaudeMaxBackend:
             base = [
                 claude_path, "--print",
                 "--model", model, "--effort", effort,
+                # CWE-250. `bypassPermissions` otherwise hands this agent unrestricted
+                # Write/Edit/Bash on whatever host runs it -- a real privilege surface
+                # whether or not it ever misbehaves. Deny rules are evaluated BEFORE the
+                # permission mode, so they still bind under bypassPermissions (whereas
+                # --allowedTools is ignored in that mode, which is why this is the
+                # deny-list and not an allow-list).
+                #
+                # It NARROWS the escape routes rather than closing them: `Task` and MCP
+                # write tools are not covered, and Bash is a write *vector* rather than a
+                # write tool. These four are what an agent reaches for first.
+                #
+                # Placed BEFORE `--permission-mode` deliberately. The flag is variadic
+                # (`<tools...>`), so the following flag is what terminates it; leaving it
+                # last would make any argv appended later get swallowed as a tool name.
+                # Measured: composition still passes the gate with violations=0 in this
+                # position, and the prompt arrives on stdin so nothing positional follows.
+                "--disallowedTools", "Write", "Edit", "NotebookEdit", "Bash",
                 "--permission-mode", "bypassPermissions",
             ]
             # Empty host runs claude_path locally; a configured host (e.g.
