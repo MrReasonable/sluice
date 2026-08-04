@@ -647,3 +647,75 @@ def test_the_seam_coalesces_for_a_factory_that_does_not(monkeypatch):
     make_backend("claude-max", "m", timeout=None)
     assert seen["timeout"] == DEFAULT_TIMEOUT, (
         "make_backend handed None straight to a factory that forwards it blindly")
+
+
+# ── argument injection via config-controlled argv values (CWE-88) ────────────────
+
+
+@pytest.mark.parametrize("host", [
+    "-oProxyCommand=id",        # the live one: ssh runs it LOCALLY, before connecting
+    "-obatchmode=yes",
+    "--",
+    "-",
+], ids=["proxycommand", "option", "ddash", "dash"])
+def test_a_host_that_ssh_would_read_as_an_option_is_refused(host):
+    """`["ssh", host]` puts a config value where ssh expects a DESTINATION, and ssh reads
+    any `-`-prefixed argument as an OPTION instead. `-oProxyCommand=<cmd>` then executes
+    <cmd> on THIS machine before any connection is attempted.
+
+    That is the semantic escape: the field means "a machine to reach" and the value means
+    "a command to run", and nothing in between says so. It also sits UNDER the
+    `--disallowedTools` deny-list rather than behind it -- ssh runs before claude exists,
+    so a claude-level control cannot constrain it.
+    """
+    with pytest.raises(BackendError) as ei:
+        ClaudeMaxBackend("m", host=host)
+    assert "host" in str(ei.value)
+
+
+@pytest.mark.parametrize("path", ["-c", "-cimport os", "--version"])
+def test_a_claude_path_that_would_be_read_as_an_option_is_refused(path):
+    """Same escape one position along. Locally it lands at argv[0]; over ssh it becomes
+    the remote command, where a leading `-` is read as an option by whatever runs it."""
+    with pytest.raises(BackendError) as ei:
+        ClaudeMaxBackend("m", claude_path=path)
+    assert "claude_path" in str(ei.value)
+
+
+def test_ordinary_hosts_and_paths_still_construct():
+    """The guard must not reject the values people actually configure -- including a
+    hyphen INSIDE the value, which is ordinary in hostnames."""
+    be = ClaudeMaxBackend("m", host="build-box-01.invalid", claude_path="/opt/bin/claude")
+    assert be.cmd_template[0:3] == ["ssh", "build-box-01.invalid", "/opt/bin/claude"]
+    assert ClaudeMaxBackend("m").cmd_template[0] == "claude"
+
+
+def test_the_refusal_is_a_BackendError_so_doctor_reports_dead_rather_than_crashing():
+    """Type matters here, not just that it raises.
+
+    `Sluice.doctor` wraps construction in `except BackendError` and turns it into a `dead`
+    check. A ValueError would escape that handler and take down the whole command -- and
+    `doctor` is precisely what someone runs to find out that their host is misconfigured.
+    Asserting the type is what pins this; a bare `pytest.raises(Exception)` would not.
+    """
+    # No `issubclass(BackendError, Exception)` assertion: that is trivially true of every
+    # exception class and cannot fail. The `raises` below is what carries the claim --
+    # swapping the raise to ValueError reds this node, because ValueError is not caught by
+    # `pytest.raises(BackendError)` any more than it is by doctor's handler.
+    with pytest.raises(BackendError):
+        ClaudeMaxBackend("m", host="-oProxyCommand=id")
+
+
+@pytest.mark.parametrize("kw", [{"host": "-oProxyCommand=id"}, {"claude_path": "-c"}],
+                         ids=["host", "claude_path"])
+def test_the_guard_is_not_bypassed_by_an_explicit_cmd_template(kw):
+    """The comment claims the check is UNCONDITIONAL. Nothing falsified that.
+
+    Every other case here omits `cmd_template`, so moving the guard into the branch that
+    builds the argv left the whole suite green -- a surviving mutant, and the claim was
+    prose with no row behind it. An explicit template makes these fields unused for the
+    argv, but the contract is that they are never option-like, and a contract with a
+    reachable bypass is not one.
+    """
+    with pytest.raises(BackendError):
+        ClaudeMaxBackend("m", cmd_template=["echo"], **kw)

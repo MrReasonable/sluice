@@ -52,6 +52,22 @@ class BackendError(Exception):
     pass
 
 
+def option_like(value) -> bool:
+    """Would `value` be read as an OPTION rather than the positional it is meant to be?
+
+    Pure, and SHARED with `core/doctor.py`'s rules table on purpose. `doctor --offline`
+    never constructs a backend (it classifies from config alone), so the construction
+    guard below is unreachable there -- and an offline run reporting `ok` for a config the
+    constructor would refuse is exactly the quiet-wrong-answer this codebase engineers out.
+    One predicate means the two cannot drift into disagreeing about what counts.
+
+    A LEADING `-` only. Hyphens inside a value are ordinary in hostnames
+    (`build-box-01.invalid` is fine); it is the leading one that flips the argument's
+    meaning from a value into a flag.
+    """
+    return isinstance(value, str) and value.startswith("-")
+
+
 def _urlopen(url, data, headers, timeout):
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
@@ -93,6 +109,13 @@ def _redact(text: str, secrets: dict[str, str]) -> str:
     host can appear inside the absolute claude_path) the longer is caught whole before the
     shorter can fragment it -- otherwise the shorter replace would alter the longer's text
     and its remaining, possibly username-bearing, fragment would survive.
+
+    ONE EXCEPTION, named here so this docstring is not quietly false: the option-like
+    argv refusal in ClaudeMaxBackend.__init__ prints its offending value VERBATIM. It
+    fires before self.host is assigned, so _scrub cannot reach it, and the refusal would
+    be unactionable without naming what was rejected -- the operator has to see which of
+    their two fields carries the leading '-'. The value is by construction not a working
+    host: it is a flag the config author typed by mistake.
     """
     for value, label in sorted(secrets.items(), key=lambda kv: len(kv[0]), reverse=True):
         if value:
@@ -106,6 +129,39 @@ class ClaudeMaxBackend:
                  timeout=DEFAULT_TIMEOUT, effort="max"):
         # cmd_template is the argv up to (but not including) the prompt on stdin.
         # host/claude_path are ignored once cmd_template is supplied explicitly.
+        #
+        # ARGUMENT INJECTION (CWE-88). `host` lands where ssh expects a DESTINATION and
+        # `claude_path` where it expects the remote command, but both are read as OPTIONS
+        # the moment they begin with `-`. `host="-oProxyCommand=<cmd>"` runs <cmd> on THIS
+        # machine, before any connection is attempted -- so it sits UNDER the
+        # `--disallowedTools` deny-list below rather than behind it: ssh runs before claude
+        # exists, and no claude-level control can constrain it. Refused at construction,
+        # which is this codebase's rule for a value that cannot be made safe later.
+        #
+        # Checked UNCONDITIONALLY, not only when this constructor builds the argv. An
+        # explicit cmd_template makes these two unused for the argv, but validating anyway
+        # keeps the contract "these fields are never option-like" with no path around it,
+        # and a caller supplying both a template and a nonsense host has a config bug worth
+        # hearing about either way.
+        #
+        # BackendError, not ValueError: `Sluice.doctor` wraps construction in
+        # `except BackendError` and renders it as a `dead` backend. A ValueError would
+        # escape that and crash the command someone runs precisely to be told their host is
+        # wrong.
+        #
+        # A leading `-` only. Hyphens INSIDE a value are ordinary in hostnames, and this
+        # deliberately does NOT try to police shell metacharacters in `claude_path`: over
+        # ssh the remote args are joined and run by the remote shell, but that field's whole
+        # purpose is to name an executable, so a user putting a command there is choosing
+        # what runs, not escaping a boundary they thought they had.
+        for field, value in (("host", host), ("claude_path", claude_path)):
+            if option_like(value):
+                raise BackendError(
+                    f"claude-max {field} must not begin with '-': {value!r}. ssh and the "
+                    f"shelled binary both read a leading '-' as an OPTION rather than a "
+                    f"{'destination' if field == 'host' else 'command'}, which turns this "
+                    f"config value into argument injection (e.g. -oProxyCommand=...)."
+                )
         self.model = model
         self.host = host
         self.claude_path = claude_path
