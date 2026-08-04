@@ -507,3 +507,60 @@ def test_doctor_probe_does_not_inherit_the_compose_timeout(monkeypatch, tmp_path
         f"doctor's probe inherited cv.compose_timeout: {seen}. Its probe is a two-token "
         "round trip; a compose-sized budget makes doctor hang on the dead host it exists "
         "to diagnose.")
+
+
+def test_an_option_like_host_is_reported_dead_not_raised(monkeypatch):
+    """The reason the argv guard raises BackendError rather than ValueError.
+
+    `Sluice.doctor` catches BackendError around construction and renders it as a `dead`
+    check. Any other type escapes that handler and takes down the whole command -- and
+    doctor is exactly what someone runs to be TOLD their host is misconfigured. Asserting
+    the type at the constructor cannot see this; only running doctor can.
+
+    `probe` is injected so no real round-trip happens: the refusal is at construction, so
+    the probe must never be reached for the claude-max target anyway.
+    """
+    import dataclasses
+
+    from sluice.cv.config import CvConfig
+
+    cvc = dataclasses.replace(CvConfig(), compose_host="-oProxyCommand=id",
+                              primary_backend="claude-max", compose_model="m")
+    monkeypatch.setattr("sluice.cv.config.load_cv_config", lambda *a, **k: cvc)
+
+    report = Sluice().doctor(offline=False, probe=lambda b: None)
+    bad = [c for c in report.checks if c.target.host == "-oProxyCommand=id"]
+    assert bad, "the option-like host produced no check at all"
+    assert bad[0].state == DEAD
+    assert "host begins with '-'" in bad[0].detail
+    assert report.exit_code() == 1
+    # Construction is still ATTEMPTED on this live path (app.py builds and probes before
+    # calling classify), so a raise of the wrong type still escapes `except BackendError`
+    # and crashes the command rather than being reported. classify's rule short-circuits
+    # the MESSAGE, not the construction, which is why this stays the test that pins the
+    # type -- witnessed: swapping the raise to ValueError reds this node.
+
+
+def test_offline_doctor_also_reports_an_option_like_host_dead(monkeypatch):
+    """`--offline` never constructs a backend, so the constructor guard is unreachable
+    there and this was measured reporting `ok` / exit 0 -- an offline run blessing a
+    config the live run refuses.
+
+    Offline is precisely the mode for checking a config without touching the network, and
+    it already decides the other config-only faults (unknown provider, key unset, CLI not
+    on PATH). A leading `-` is config-only too.
+    """
+    import dataclasses
+
+    from sluice.cv.config import CvConfig
+
+    cvc = dataclasses.replace(CvConfig(), compose_host="-oProxyCommand=id",
+                              primary_backend="claude-max", compose_model="m")
+    monkeypatch.setattr("sluice.cv.config.load_cv_config", lambda *a, **k: cvc)
+
+    report = Sluice().doctor(offline=True)
+    bad = [c for c in report.checks if c.target.host == "-oProxyCommand=id"]
+    assert bad, "the option-like host produced no check at all"
+    assert bad[0].state == DEAD, f"offline blessed it: {bad[0].state} / {bad[0].detail}"
+    assert "argument injection" in bad[0].detail
+    assert report.exit_code() == 1

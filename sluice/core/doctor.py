@@ -17,6 +17,8 @@ dies.
 """
 from dataclasses import dataclass, field
 
+from sluice.core.backends import option_like
+
 # The three states, as bare strings so callers (cli formatter, exit_code) and
 # tests share one vocabulary without importing an enum.
 OK = "ok"
@@ -141,6 +143,20 @@ def classify(target, *, known, needs_key, key_present, key_var, cli_present,
     """
     if not known:
         return BackendCheck(target, DEAD, f"unknown backend '{target.provider}'")
+    # Config-only, like the unknown-provider case above and unlike the probe below, so it
+    # is decided HERE rather than left to construction. `doctor --offline` never builds a
+    # backend, so ClaudeMaxBackend's identical refusal is unreachable on that path -- and
+    # an offline run is exactly what someone uses to check a config without touching the
+    # network. Reported `ok` before this rule existed, measured.
+    #
+    # Ahead of the offline branch on purpose: this is true of the CONFIG, so whether a
+    # round-trip was attempted has no bearing on it.
+    for _field, _value in (("host", target.host), ("claude_path", target.claude_path)):
+        if option_like(_value):
+            return BackendCheck(
+                target, DEAD,
+                f"{_field} begins with '-', which ssh and the shelled binary read as an "
+                f"OPTION rather than a value (argument injection; e.g. -oProxyCommand=...)")
     if needs_key and not key_present:
         if target.is_primary:
             return BackendCheck(target, DEAD, f"{key_var} unset")
