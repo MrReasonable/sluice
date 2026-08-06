@@ -938,7 +938,14 @@ def test_selecting_the_retired_weasyprint_name_names_template():
     cfg.renderer = "weasyprint"
     with pytest.raises(plugins.UnknownAdapter) as e:
         Sluice(None).renderer(cfg)
-    assert "template" in str(e.value), "the migration message does not name the replacement"
+    # Assert wording UNIQUE TO THE HINT, not the bare word "template". Measured during
+    # implementation: `template` is itself a registered renderer, so it appears in
+    # UnknownAdapter's own "(registered: ...)" list and `"template" in str(e.value)`
+    # passes with register_retired deleted outright -- an inert assertion. Same shape as
+    # CLAUDE.md's rule that a guard raising the SAME exception type as the path it
+    # precedes must be witnessed on the discriminating MESSAGE, never the type.
+    assert "renders your own Jinja2 template" in str(e.value), (
+        "the migration message does not name the replacement")
 
 
 def test_a_retired_name_is_not_offered_as_a_choice():
