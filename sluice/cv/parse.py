@@ -69,10 +69,14 @@ _TRAILING_SECTIONS = frozenset({"CERTIFICATES", "EDUCATION"})
 # be citation-checked here too" -- so a CV using either of those markers has ALREADY
 # passed the gate this parser sits downstream of. Recognising only a hyphen would make
 # this parser STRICTER than the gate -- the exact shape of the en-dash bug above: a CV
-# the gate passed gets refused and binned here instead. Scoped to WORK bullets only,
-# matching where the cited gate check itself applies (`in_work`) -- CERTIFICATES and
-# EDUCATION entries are composed with a hyphen only, per compose.py's own format
-# contract, so widening this to those sections would not be modelling anything real.
+# the gate passed gets refused and binned here instead. The gate's OWN citation check is
+# scoped to WORK bullets only (`in_work`) -- CERTIFICATES and EDUCATION carry no
+# citations, and compose.py's format contract asks for a hyphen only there -- but this
+# PARSER's marker recognition is intentionally not scoped the same way: the
+# CERTIFICATES/EDUCATION reader below reuses this exact tuple too, because a malformed
+# marker in either of THOSE sections is the identical silent-drop harm even though the
+# gate never inspects their markers at all (never citation-checked, so never gate-tested
+# either way -- see the finding this fixes for the measured before/after).
 _BULLET_MARKERS = ("-", "•", "*")
 
 # The gate at cv/validate.py:89 matches `\d{2}/(\d{4})\s*[–-]` -- EN DASH (U+2013) or
@@ -86,7 +90,25 @@ _BULLET_MARKERS = ("-", "•", "*")
 # behavioural pin (see tests/test_cv_parse.py's CLEAN_CV import) is stronger than a shared
 # literal would be anyway.
 _DASH = r"\s*[-–]\s*"
-_DATE_RANGE_RE = re.compile(rf"^\d{{2}}/\d{{4}}{_DASH}(?:\d{{2}}/\d{{4}}|present)$")
+
+# `present` is the only open-ended terminal the spec's literal grammar names, but
+# compose.py's own `_RULES` format block (`MM/YYYY-MM/YYYY`) gives the model NO slot for
+# an open-ended range at all -- it must improvise one for whichever role is current, and
+# every real CV has a current role, so this branch fires on every lead. validate.py never
+# inspects the terminal token itself (its date check is a plain `re.findall` over start
+# years, blind to what follows the dash), so nothing upstream pins its casing or its
+# spelling -- an LLM asked to improvise reaches for "Present", "Current" or "now" as
+# readily as "present" (measured: all compose and pass the gate). Matching only the
+# lowercase literal made THIS the one strict link in the chain for a date every CV is
+# guaranteed to carry -- the same shape as the en-dash fix just above, on the terminal
+# token instead of the separator. `re.IGNORECASE` plus the `current`/`now` synonyms closes
+# it. This check's real job is catching a MIS-SPLIT line (e.g. one missing a pipe): that
+# is fully carried by the `\d{2}/\d{4}<dash>` prefix regardless of which terminal token
+# follows, and `parts[1]`/`parts[2]` below are already accepted as arbitrary non-empty
+# free text -- so strictness concentrated on `parts[0]`'s terminal word alone was never
+# buying anything the prefix does not already buy.
+_DATE_RANGE_RE = re.compile(
+    rf"^\d{{2}}/\d{{4}}{_DASH}(?:\d{{2}}/\d{{4}}|present|current|now)$", re.IGNORECASE)
 
 # A citation the composer wrapped onto its own line (rather than trailing the bullet it
 # belongs to) still needs to disappear -- see the "wrapped" case in
@@ -100,11 +122,31 @@ _DATE_RANGE_RE = re.compile(rf"^\d{{2}}/\d{{4}}{_DASH}(?:\d{{2}}/\d{{4}}|present
 _CITE_ONLY_RE = re.compile(r"^(?:\[[A-Za-z]{2}[0-9]+\]\s*)+$")
 
 
+def _is_section(line: str, name: str) -> bool:
+    """True if `line` is exactly the section header `name`, compared the way the gate
+    compares it: validate.py:99-108 upper-cases before comparing, and engine.py's own two
+    structural guards (~140, ~147) deliberately mirror that so they fire in exactly the
+    cases validate() silently skips. `casefold()` rather than `.upper()` is the more
+    correct general tool for case-insensitive comparison (it folds more of Unicode than
+    `.upper()` does) and is behaviourally identical to `.upper()` for the fixed ASCII
+    header set this grammar defines (PROFILE, WORK EXPERIENCE, CERTIFICATES, EDUCATION).
+
+    Comparing any more strictly than the gate does is the same shape of bug as the
+    en-dash and bullet-marker fixes: nothing in compose.py's `_RULES` pins the exact
+    casing the model must reproduce, so a CV titled "Work Experience" (title case)
+    passes the gate and -- before this fix -- was refused right here.
+    """
+    return line.strip().casefold() == name.casefold()
+
+
 def _is_header_shaped(line: str) -> bool:
     """True for a line that LOOKS LIKE a section heading: exact, shipped uppercase, the
     same way every heading this grammar defines (PROFILE, WORK EXPERIENCE, CERTIFICATES,
-    EDUCATION) is -- the fabrication gate itself matches section names case-sensitively
-    in exact uppercase.
+    EDUCATION) is normally emitted. This is a narrower, purely-visual check than
+    `_is_section` above: it is never used to decide whether a line IS a recognised
+    header (that comparison must stay case-insensitive, tracking the gate -- see
+    `_is_section`), only to pick an ERROR MESSAGE once a candidate company has ALREADY
+    failed to be followed by a valid meta line.
 
     This is NOT used to reject a candidate company outright: a real acronym employer
     (IBM, NASA, HSBC, BBC) is all-caps too, and refusing it on casing alone would waste
@@ -139,7 +181,7 @@ def parse_cv(text: str) -> CvDocument:
     # first line is the name heading with nothing above it): whatever non-blank lines
     # precede PROFILE, the LAST one is the name and everything before that is contact.
     header_lines = []
-    while idx < len(lines) and lines[idx].strip() != "PROFILE":
+    while idx < len(lines) and not _is_section(lines[idx], "PROFILE"):
         if lines[idx].strip():
             header_lines.append(lines[idx].strip())
         idx += 1
@@ -148,12 +190,21 @@ def parse_cv(text: str) -> CvDocument:
     if not header_lines:
         raise CvParseError("no name heading found before PROFILE")
     idx += 1  # consume the "PROFILE" line itself
+    # MINOR, accepted trade-off: this takes the LAST pre-PROFILE line as the name and
+    # everything before it as contact, matching `_RULES`' documented order (contact,
+    # then name heading, then PROFILE). A model that emits the conventional CV order
+    # instead -- name first, contact details after -- yields `name="Email: ..."` and a
+    # contact block containing the real name, with nothing to catch it: both fields are
+    # free text with no shape to validate against. Not fixed here because there is no
+    # reliable SHAPE test to tell the two orderings apart (a name can look like
+    # anything, contact details are not universally regex-shaped), and guessing wrong
+    # would trade one silent misassignment for another rather than removing it.
     name = _strip_cite(header_lines[-1])
     contact = _strip_cite("\n".join(header_lines[:-1]))
 
     # ---- PROFILE prose, up to WORK EXPERIENCE ----
     profile_lines = []
-    while idx < len(lines) and lines[idx].strip() != "WORK EXPERIENCE":
+    while idx < len(lines) and not _is_section(lines[idx], "WORK EXPERIENCE"):
         if lines[idx].strip():
             profile_lines.append(lines[idx].strip())
         idx += 1
@@ -169,9 +220,10 @@ def parse_cv(text: str) -> CvDocument:
         if not stripped:
             idx += 1
             continue
-        if stripped in _TRAILING_SECTIONS:
-            # CERTIFICATES or EDUCATION -- stop here WITHOUT consuming the line, so the
-            # section readers below start from it.
+        if any(_is_section(stripped, h) for h in _TRAILING_SECTIONS):
+            # CERTIFICATES or EDUCATION, compared case-insensitively like every other
+            # header (see `_is_section`) -- stop here WITHOUT consuming the line, so the
+            # section reader below starts from it.
             break
 
         # A line that is not blank and not a known trailing section is a CANDIDATE
@@ -226,23 +278,55 @@ def parse_cv(text: str) -> CvDocument:
             location=_strip_cite(location), title=_strip_cite(title), bullets=bullets,
         ))
 
-    # ---- CERTIFICATES (optional) ----
-    certificates: list[str] = []
-    if idx < len(lines) and lines[idx].strip() == "CERTIFICATES":
+    # ---- CERTIFICATES / EDUCATION (both optional, in EITHER order) ----
+    # validate.py:107 turns `in_work`/`in_profile` off on seeing EITHER header and never
+    # records which one it saw or in what order -- the gate is completely order-agnostic
+    # between these two sections. A parser that hard-coded CERTIFICATES-then-EDUCATION
+    # would be stricter than the gate on an axis the gate never checks at all: composing
+    # them in the other order is exactly as gate-clean as the canonical order. Read
+    # whichever recognised header comes next, in a loop, rather than two fixed
+    # if-blocks -- see the reversed-order case in tests/test_cv_parse.py.
+    sections: dict[str, list[str]] = {}
+    while idx < len(lines) and lines[idx].strip():
+        header = next((h for h in _TRAILING_SECTIONS if _is_section(lines[idx], h)), None)
+        if header is None or header in sections:
+            # Neither a recognised header nor a repeat of one already read. MINOR,
+            # accepted asymmetry: a line shaped this way BETWEEN two WORK roles raises
+            # ("unmodelled section header") because `_is_header_shaped` catches it, but
+            # here it is silently left unconsumed -- `parse_cv` simply returns without
+            # looking at it. Not fixed: unlike the WORK loop (which must decide whether
+            # a line is a new role or an error to keep parsing at all), nothing past
+            # this point ever gets parsed either way, so raising would only change WHEN
+            # the same "unmodelled trailing content" case is reported, not whether it
+            # silently drops content that was never captured as a field.
+            break
         idx += 1
-        while idx < len(lines) and lines[idx].strip().startswith("- "):
-            certificates.append(_strip_cite(lines[idx].strip()[2:]))
+        # Reuse _BULLET_MARKERS (hyphen/bullet-glyph/asterisk) and the identical
+        # optional-space handling WORK bullets use (`[1:].lstrip()`), rather than the
+        # narrower `startswith("- ")` this used to be. Measured pre-fix: a missing space
+        # ("-Example Cloud Practitioner"), a bullet glyph, an asterisk, or an en dash
+        # marker each yielded ZERO entries here while passing the fabrication gate
+        # untouched (this content is never citation-checked) -- so a CV with a malformed
+        # marker in either section shipped a PDF silently missing it.
+        entries: list[str] = []
+        while idx < len(lines) and lines[idx].strip().startswith(_BULLET_MARKERS):
+            entries.append(_strip_cite(lines[idx].strip()[1:].lstrip()))
             idx += 1
+        if not entries:
+            # A header present with zero recognised entries is the SAME harm as a
+            # missing WORK meta line: content silently absent from a PDF sent under the
+            # user's name -- and the template's `{% if document.certificates %}` guard
+            # then hides even the HEADING, so nothing in the rendered PDF hints anything
+            # was dropped. Refuse, consistent with how a malformed WORK entry is refused
+            # rather than silently skipped, instead of emitting an empty section.
+            raise CvParseError(
+                f"{header} header present but no entries recognised -- expected each "
+                f"entry to start with one of {_BULLET_MARKERS!r}")
         while idx < len(lines) and not lines[idx].strip():
             idx += 1
-
-    # ---- EDUCATION (optional) ----
-    education: list[str] = []
-    if idx < len(lines) and lines[idx].strip() == "EDUCATION":
-        idx += 1
-        while idx < len(lines) and lines[idx].strip().startswith("- "):
-            education.append(_strip_cite(lines[idx].strip()[2:]))
-            idx += 1
+        sections[header] = entries
+    certificates = sections.get("CERTIFICATES", [])
+    education = sections.get("EDUCATION", [])
 
     return CvDocument(name=name, contact=contact, profile=profile, work=work,
                        certificates=certificates, education=education)
