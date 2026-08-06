@@ -29,7 +29,7 @@ class ScriptRenderer:
             raise RenderError(
                 f"renderer 'script': render_script is not a file: '{script}'. "
                 f"Set cv.render_script to your WeasyPrint script, or switch to the "
-                f"bundled renderer with cv.renderer: weasyprint "
+                f"bundled renderer with cv.renderer: template "
                 f"(pip install 'sluice[render]')."
             )
         self.script, self.python_bin, self.home = script, python_bin, home

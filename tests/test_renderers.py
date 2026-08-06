@@ -30,7 +30,7 @@ def test_script_renderer_error_names_both_ways_out(tmp_path):
         ScriptRenderer(str(tmp_path / "nope.py"), python_bin="x", home="y")
     msg = str(e.value)
     assert "cv.render_script" in msg          # supply your own script...
-    assert "cv.renderer: weasyprint" in msg   # ...or switch to the bundled one
+    assert "cv.renderer: template" in msg     # ...or switch to the bundled one
 
 
 def test_script_renderer_constructs_when_the_script_exists(tmp_path):
@@ -41,11 +41,10 @@ def test_script_renderer_constructs_when_the_script_exists(tmp_path):
 
 
 def test_the_renderer_seam_is_selected_by_name():
-    assert {"script", "weasyprint"} <= set(Sluice.available("renderer"))
-
-    cfg = CvConfig()
-    assert cfg.renderer == "script", "the default must stay `script`: switching it would " \
-                                     "silently change the layout of an operator's CV"
+    # Membership, not equality -- `template` replaces `weasyprint` here, but this line
+    # stays (spec's Testing section) rather than being deleted, so a future removal of
+    # `script` or `template` from the seam still fails a test at this exact spot.
+    assert {"script", "template"} <= set(Sluice.available("renderer"))
 
 
 def test_unknown_renderer_raises_rather_than_defaulting():
@@ -55,37 +54,6 @@ def test_unknown_renderer_raises_rather_than_defaulting():
     with pytest.raises(plugins.UnknownAdapter) as e:
         Sluice(None).renderer(cfg)
     assert "latex" in str(e.value) and "script" in str(e.value)
-
-
-def test_weasyprint_renderer_strips_citations_before_writing():
-    """The [id] citation tokens are an INTERNAL artefact of the fabrication gate. They must
-    never reach an employer.
-
-    This test needs NO weasyprint: it injects the HTML/CSS classes. It used to open with
-    `pytest.importorskip("weasyprint")`, which meant CI (which installs only the `test`
-    extra) SKIPPED it -- the one test pinning that the bundled renderer strips citations
-    never ran. strip_citations is duplicated per-renderer, so removing it from
-    weasyprint.py would have shipped green and put [SF1] tokens in the PDF a user attaches
-    to an application.
-    """
-    captured = {}
-
-    class FakeHTML:
-        def __init__(self, string=""):
-            captured["html"] = string
-
-        def write_pdf(self, path, stylesheets=None):
-            with open(path, "wb") as f:
-                f.write(b"%PDF-1.4 fake")
-
-    from sluice.renderers.weasyprint import WeasyPrintRenderer
-    r = WeasyPrintRenderer(FakeHTML, lambda string="": object())
-    import tempfile
-    with tempfile.TemporaryDirectory() as d:
-        out = r.render("WORK EXPERIENCE\n- Grew team from 3 to 8 [SF1]", d)
-        assert out.endswith("CV.pdf")
-    assert "[SF1]" not in captured["html"], "a citation token reached the rendered CV"
-    assert "Grew team from 3 to 8" in captured["html"]
 
 
 def test_script_renderer_rejects_a_directory(tmp_path):

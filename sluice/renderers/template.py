@@ -13,6 +13,7 @@ without going through `_make` at all.
 """
 import os
 
+from sluice.core import plugins
 from sluice.cv.parse import parse_cv
 from sluice.renderers import register
 from sluice.renderers.script import RenderError  # one error type for the whole seam
@@ -110,12 +111,20 @@ def _make(cvcfg):
         from weasyprint import CSS, HTML
     except ImportError as e:
         raise RenderError(_MISSING_EXTRA) from e
-    # getattr, not cvcfg.template: CvConfig.template does not exist yet -- a later task
-    # adds the config field. Reading it defensively keeps this seam self-registering and
-    # working today without depending on config work that has not landed, and an absent
-    # attribute behaves exactly like an unset one: the packaged default.
-    template_path = getattr(cvcfg, "template", "") or None
+    # CvConfig.template now exists (blank means "use the packaged default", per
+    # TemplateRenderer's own constructor check), so read it directly -- the earlier
+    # `getattr` defence only existed because the config field had not landed yet.
+    template_path = cvcfg.template or None
     return TemplateRenderer(template_path, html_module=HTML, css_module=CSS)
 
 
 register("template", _make)
+# `weasyprint` was a <pre>-dumping renderer that ignored the CV's structure entirely.
+# `template` supersedes it: same WeasyPrint backend, but the composed CV is parsed and
+# laid out by the user's own Jinja2 template. Retired rather than silently dropped so a
+# config naming it says what to do instead.
+plugins.register_retired(
+    "renderer", "weasyprint",
+    "The bundled `weasyprint` renderer has been replaced by `template`, which renders "
+    "your own Jinja2 template. Set cv.renderer: template (and optionally cv.template: "
+    "/path/to/your.html.j2; blank uses the packaged default).")

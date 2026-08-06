@@ -51,10 +51,27 @@ class CvConfig:
     # NB no `dossier_dir` here: #80 retired it in favour of one root `dossier_dir`,
     # because triage and cv share this cache and two keys could split it.
     # load_cv_config RAISES on it rather than letting `hasattr` drop it in silence.
-    # Which renderer fills the seam. "script" is today's external WeasyPrint shell-out
-    # and stays the default so an operator with a working script is unaffected;
-    # "weasyprint" is the bundled in-process renderer (pip install 'sluice[render]').
-    renderer: str = "script"
+    # Which renderer fills the seam. "template" is the default: it fills the user's own
+    # Jinja2 template (or the packaged one) with the parsed CV and writes the PDF via
+    # WeasyPrint (pip install 'sluice[render]'). "script" is the external shell-out to a
+    # user-supplied WeasyPrint script, for full control over rendering. There is no
+    # "weasyprint" renderer any more -- selecting it raises naming `template` as the
+    # replacement (sluice/renderers/template.py's retired-name registration), because it
+    # was a <pre>-dumping renderer that ignored the CV's structure and `template`
+    # strictly supersedes it. "script"'s default render_script has never existed in this
+    # repository, so no operator can be relying on it as the default -- that is why
+    # `template`, not `script`, gets to be the default here.
+    renderer: str = "template"
+    # Not routed through paths.resolve(): like render_script below, this names a
+    # workspace artefact the user is standing in (one of the deliberate cwd-relative
+    # exceptions), not per-system state. Blank is load-bearing, the same shape as
+    # paths.py's blank-means-derive -- a non-empty default would be truthy, short-circuit
+    # TemplateRenderer's own "unset -> packaged default" check, and make the packaged
+    # template unreachable while nothing goes red. A `str`, so it is invisible to
+    # tests/test_sluice_neutral_defaults.py's list-keyed sweep and needs its own named
+    # guard (tests/test_cv_template_config.py), exactly as `lead_layout` does for the
+    # same reason.
+    template: str = ""
     render_script: str = "./scripts/cv_render_v2.py"
     render_python: str = "/usr/bin/python3"
     render_home: str = "./cv-home"
@@ -117,6 +134,17 @@ def load_cv_config(path: str | None = None) -> CvConfig:
             "location, and only the store can honour it). Move it out of the `cv:` block:\n"
             "    baseline_rel: " + str(data["baseline_rel"])
         )
+
+    # A user who set render_script and NOTHING else was relying on the `script` default,
+    # which this release changes to `template`. That is the one case where the new
+    # default could silently change an operator's output, so refuse rather than guess --
+    # inferring `renderer: script` from the presence of render_script would be an
+    # implicit coupling between two keys, which is its own quiet wrong default.
+    if "render_script" in data and "renderer" not in data:
+        raise ValueError(
+            "cv.render_script is set but cv.renderer is not, and the default renderer is "
+            "now `template` (it was `script`). Add `cv.renderer: script` to keep using "
+            "your render script, or drop cv.render_script to use a Jinja2 template.")
 
     # bool BEFORE int, and separately: `bool` subclasses `int`, and PyYAML resolves
     # yes/on/true to True. `compose_timeout: yes` would otherwise pass an isinstance(int)

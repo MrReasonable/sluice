@@ -204,5 +204,5 @@ def catalogue(*, default_vault: str = "") -> tuple:
                  "Providers"),
         Question("renderer", f"CV renderer -- {', '.join(renderers)}?", parse_choice(*renderers),
                  ("cv.renderer",), "Providers",
-                 hint="weasyprint is bundled: pip install 'sluice[render]'."),
+                 hint="template renders your own Jinja2 template: pip install 'sluice[render]'."),
     )
