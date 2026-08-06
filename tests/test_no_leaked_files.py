@@ -702,9 +702,15 @@ def test_a_vault_written_into_the_checkout_is_refused():
 # The check reused below is that same "no content" property, applied to every `.j2`
 # file docs/ actually ships rather than one named path: the heading vocabulary is
 # DERIVED from cv/compose.py's own `_RULES` (never hand-listed, so it cannot drift from
-# what the composer emits), and anything left over after stripping CSS, Jinja syntax and
-# HTML tags must be one of those headings -- exactly the bar a template limited to
-# "expressions and CSS only" is designed to clear.
+# what the composer emits), and anything left over after stripping Jinja syntax and HTML
+# tags -- with CSS `content:` literals HARVESTED rather than discarded, since those are
+# rendered as visible text -- must be one of those headings.
+#
+# The strip itself lives in `tests/template_content.py`, shared with the shipped-template
+# guard in tests/test_renderer_template.py. It was duplicated here, and a review found
+# the identical bug in both copies: deleting `<style>...</style>` wholesale hid a planted
+# `::after { content: " -- seeking a remote-first role" }` from twelve green assertions.
+# One copy, so the next such fix cannot land in one place only.
 def test_docs_template_examples_contribute_no_static_content():
     """Extends the neutrality sweep to docs/**/*.j2, asserting on SCOPE first.
 
@@ -716,11 +722,9 @@ def test_docs_template_examples_contribute_no_static_content():
     this one, an empty sweep and a clean sweep produce the identical "no violations"
     result, so the scope has to be pinned independently of the content check it gates.
     """
-    from sluice.cv.compose import _RULES
+    from tests.template_content import composer_headings, leftover_content
 
-    headings = {ln.strip() for ln in _RULES.splitlines()
-                if ln.strip() and ln.strip() == ln.strip().upper()
-                and all(c.isalpha() or c.isspace() for c in ln.strip())}
+    headings = composer_headings()
     assert headings, "derived no headings, so this guard would pass vacuously"
 
     templates = sorted((REPO / "docs").rglob("*.j2"))
@@ -729,16 +733,7 @@ def test_docs_template_examples_contribute_no_static_content():
         "for a negative guard that reads identically to a clean sweep")
 
     for path in templates:
-        text = path.read_text(encoding="utf-8")
-        # Same three-step strip as test_the_shipped_template_contributes_no_content:
-        # CSS, then every Jinja delimiter (expressions, statements, AND comments -- the
-        # leading `{# ... #}` block this file is required to carry), then HTML tags
-        # (which also disposes of attribute text, e.g. `class="role"`).
-        stripped = re.sub(r"<style\b.*?</style>", " ", text, flags=re.S | re.I)
-        stripped = re.sub(r"\{\{.*?\}\}|\{%.*?%\}|\{#.*?#\}", " ", stripped, flags=re.S)
-        stripped = re.sub(r"<[^>]*>", " ", stripped, flags=re.S)
-        leftover = {tok for tok in (t.strip() for t in stripped.splitlines())
-                    if tok and any(c.isalnum() for c in tok)}
+        leftover = leftover_content(path.read_text(encoding="utf-8"))
         assert leftover <= headings, (
             f"{path.relative_to(REPO)} contributes content beyond the CvDocument fields "
             f"and structural headings a worked example is limited to: "
