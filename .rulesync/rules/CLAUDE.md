@@ -353,18 +353,32 @@ calls the Renderer seam's optional `precheck(cv_text) -> list[str]` (`core/proto
 its strings in with the gate's violations, so a renderer's own grammar reaches the model's one retry
 rather than arriving after the LLM spend. That makes it the one place a formatting rule can bin a
 lead the gate certified clean: gate passes → precheck refuses → compose, gate green, retry, fail,
-lead binned. SIX such instances shipped on the `template` renderer's parser and were found one at a
-time — the en dash, the terminal token's casing, a single-digit month, a case-drifted header, a
-blank line under a trailing header, a LOCATION field nothing upstream can supply. The last is the
-worst shape: the only actionable reading of "add the missing field" is *invent a city*, so a parser
-refusal became fabrication pressure aimed at the feature that exists to prevent fabrication. Do not
-fix instance seven — `tests/test_cv_parse.py`'s implication sweep asserts
-`validate(cv, bundle) == [] ⇒ parse_cv(cv) does not raise` over an alphabet, with the antecedent
-COMPUTED from the real gate per row. Widen the parser, never `cv/validate.py`. The one place a
-parser may legitimately be stricter is a WORK bullet marker: a marker `validate.py` does not also
-citation-check would render an UNCITED bullet into the PDF ungated, which is why
-`_TRAILING_MARKERS` (CERTIFICATES/EDUCATION, never citation-checked) is a separate, wider tuple
-from `_BULLET_MARKERS` rather than one widened one.
+lead binned. Instances of it shipped on the `template` renderer's parser REPEATEDLY, each found by
+someone happening to think of a case and adding a row: the en dash, the em dash, the word `to`, the
+terminal token's casing and spelling, a single-digit month, a case-drifted section header, a blank
+line under a trailing header, an en-dash CERTIFICATES marker, a LOCATION field nothing upstream can
+supply. Deliberately no total — the count is not derivable from anything executable, two files
+carried different numbers, and this repo has already been bitten by a stale count in prose twice
+(`core/paths.py`'s ingress sites). The LOCATION one is the worst shape: the only actionable reading
+of "add the missing field" is *invent a city*, so a parser refusal became fabrication pressure aimed
+at the feature that exists to prevent fabrication. Widen the parser, never `cv/validate.py`.
+
+`tests/test_cv_parse.py`'s implication sweep is the standing check, and **its coverage is narrower
+than the rule** — read this before concluding a case is already swept. It asserts
+`validate(cv, bundle) == [] ⇒ parse_cv(cv) does not raise` with the antecedent COMPUTED from the
+real gate per row, over one alphabet: separator × terminal token × start-month width, applied to the
+FIRST role's date range in one fixture. So it covers `parts[0]` of one meta line and nothing else.
+Known un-swept axis, measured: a FOUR-field meta line
+(`02/2023–present | Alfa | Staff Engineer | Platform`) is gate-CLEAN and refused. That one is left
+refusing on purpose — four fields is genuinely malformed and the message names the expected shape,
+so the retry can act on it — but it is a gap in the sweep, not a case the sweep passed.
+
+The one place a parser may legitimately be stricter is a WORK bullet marker, and there the
+requirement is EQUALITY with the gate, not merely "no wider": a marker `validate.py` does not also
+citation-check would render an UNCITED bullet into the PDF ungated, while one it checks and the
+parser rejects is the governing bug class again. `_TRAILING_MARKERS` (CERTIFICATES/EDUCATION, which
+the gate never citation-checks, so the bypass argument has no force there) is a separate, wider
+tuple from `_BULLET_MARKERS` for exactly that reason — never widen the shared one.
 
 **Neutrality: no personal data in this repo.** No employer names, role preferences, locations,
 contact details, hostnames, or absolute paths in `sluice/` or `tests/`. The judge's criteria are read
