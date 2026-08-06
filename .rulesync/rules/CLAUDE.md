@@ -348,6 +348,24 @@ deterministic gate cannot, and an `unsupported` flag WITHHOLDS the send-ready `t
 `Store.sign_off`/`hold_for_signoff`, cleared by `sluice cv signoff`) rather than blocking rendering —
 it never touches the pure hard gate.
 
+**A renderer's `precheck` must never be STRICTER than that gate.** `cv/engine.py`'s retry loop also
+calls the Renderer seam's optional `precheck(cv_text) -> list[str]` (`core/protocols.py`) and folds
+its strings in with the gate's violations, so a renderer's own grammar reaches the model's one retry
+rather than arriving after the LLM spend. That makes it the one place a formatting rule can bin a
+lead the gate certified clean: gate passes → precheck refuses → compose, gate green, retry, fail,
+lead binned. SIX such instances shipped on the `template` renderer's parser and were found one at a
+time — the en dash, the terminal token's casing, a single-digit month, a case-drifted header, a
+blank line under a trailing header, a LOCATION field nothing upstream can supply. The last is the
+worst shape: the only actionable reading of "add the missing field" is *invent a city*, so a parser
+refusal became fabrication pressure aimed at the feature that exists to prevent fabrication. Do not
+fix instance seven — `tests/test_cv_parse.py`'s implication sweep asserts
+`validate(cv, bundle) == [] ⇒ parse_cv(cv) does not raise` over an alphabet, with the antecedent
+COMPUTED from the real gate per row. Widen the parser, never `cv/validate.py`. The one place a
+parser may legitimately be stricter is a WORK bullet marker: a marker `validate.py` does not also
+citation-check would render an UNCITED bullet into the PDF ungated, which is why
+`_TRAILING_MARKERS` (CERTIFICATES/EDUCATION, never citation-checked) is a separate, wider tuple
+from `_BULLET_MARKERS` rather than one widened one.
+
 **Neutrality: no personal data in this repo.** No employer names, role preferences, locations,
 contact details, hostnames, or absolute paths in `sluice/` or `tests/`. The judge's criteria are read
 at runtime from the user's vault (`Job Applications/Judging Profile.md`), never from source. Tests
@@ -413,7 +431,12 @@ consistently engineers out; see `_select_backend`'s guard in `cli.py`.
   production impls — `template` (the default: fills a user's Jinja2 template, or the packaged
   default, via WeasyPrint; `pip install 'sluice[render]'`) and `script` (the external shell-out
   escape hatch) — selected by `cv.renderer`, so by-name selection between real implementations is
-  already LIVE there; store and fetcher have one production impl each (`vault`,
+  already LIVE there. That seam alone has a second, OPTIONAL member, `precheck(cv_text) ->
+  list[str]`: a renderer implements it only when the composed CV must satisfy a grammar of its own
+  (`template` does, `script` does not, and the engine reaches it through `getattr` so an absent one
+  gates nothing). Keeping it on the renderer is what stops one implementation's requirements binding
+  the whole seam — measured, the engine imposing `template`'s grammar unconditionally reported
+  `skipped-gate` under `cv.renderer: script` for a gate-clean CV. Store and fetcher have one production impl each (`vault`,
   `camofox`). The selection is also exercised in tests — `tests/harness/` registers a fake fetcher
   (`browser.py`) and renderer (`renderer.py`) and resolves them through the same seam. The backend seam
   differs in shape, though: a role layer (auto/primary/fallback, in

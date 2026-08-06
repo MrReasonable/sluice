@@ -115,3 +115,42 @@ def test_a_broken_plugin_is_skipped_but_never_silently_substituted(tmp_path, cap
     finally:
         sys.modules.pop("_probe_pkg", None)
         plugins._REGISTRY.pop("probe", None)
+
+
+def test_a_broken_plugins_RETIREMENT_is_rolled_back_too(tmp_path, caplog):
+    """`autoload` snapshotted `_REGISTRY` and not `_RETIRED`, and the leftover is worse
+    than a stale entry: it makes `get`'s message actively misleading.
+
+    `renderers/template.py` is exactly this shape -- it registers a name and THEN retires
+    `weasyprint` -- so a plugin raising between the two rolls the registration back and
+    leaves the retirement behind. Reproduced here on a synthetic seam: asking for the
+    registered name afterwards answered "unknown ... (registered: (none registered))"
+    with a hint recommending a replacement, from a table written by a module that never
+    finished importing. Both halves are written by one import and must unwind with it.
+
+    Asserts on the MESSAGE, not merely that UnknownAdapter is raised: the pre-fix code
+    raised UnknownAdapter too, so a type assertion alone cannot see this at all.
+    """
+    import sys
+    import types
+    pkg = types.ModuleType("_probe_retire_pkg")
+    pkg.__path__ = [str(tmp_path)]
+    sys.modules["_probe_retire_pkg"] = pkg
+    (tmp_path / "halfway.py").write_text(
+        "from sluice.core import plugins\n"
+        "plugins.register('probe2', 'newname', lambda cfg: 'ok')\n"
+        "plugins.register_retired('probe2', 'oldname', 'Use newname instead.')\n"
+        "raise RuntimeError('this plugin is broken')\n")
+    try:
+        with caplog.at_level("WARNING"):
+            plugins.autoload(pkg)
+        assert plugins.available("probe2") == [], "the registration was not rolled back"
+        with pytest.raises(plugins.UnknownAdapter) as ei:
+            plugins.get("probe2", "oldname")
+        assert "Use newname instead." not in str(ei.value), (
+            "a retirement written by a module that never finished importing survived, so "
+            f"the error recommends a name nothing registered: {ei.value}")
+    finally:
+        sys.modules.pop("_probe_retire_pkg", None)
+        plugins._REGISTRY.pop("probe2", None)
+        plugins._RETIRED.pop("probe2", None)
