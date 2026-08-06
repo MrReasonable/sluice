@@ -85,6 +85,35 @@ def test_template_renderer_escapes_html_in_a_bullet(tmp_path):
     assert "<200ms" not in html
 
 
+def test_a_misspelled_field_raises_instead_of_rendering_blank(tmp_path):
+    """StrictUndefined (see TemplateRenderer.__init__): Jinja2's default Undefined
+    renders `{{ document.nmae }}` as an EMPTY STRING and raises only for a wholly
+    undefined ROOT name. Measured pre-fix: this exact template constructed and
+    rendered with no error at all, silently producing a PDF missing the candidate's
+    name -- the same "silently differs from what validate() approved" harm the
+    autoescape test above already exists to catch, just via a typo instead of an
+    unescaped character. Match on the misspelled field name: Jinja2's own error text
+    names it, and RenderError must carry that through, not swallow it.
+    """
+    r = _renderer(tmp_path, "{{ document.nmae }}")
+    with pytest.raises(RenderError, match="nmae"):
+        r.render(CV, str(tmp_path / "out"))
+
+
+def test_a_misspelled_nested_field_raises_naming_the_template(tmp_path):
+    """Same axis, one level deeper (`document.work[0].titel`) -- a template's field
+    typos are not only at the top level -- and asserts the error names THIS renderer
+    and the template path, not a bare jinja2 traceback with no renderer context.
+    """
+    path = tmp_path / "user.html.j2"
+    path.write_text("{{ document.work[0].titel }}", encoding="utf-8")
+    r = TemplateRenderer(str(path), html_module=FakeHTML,
+                         css_module=lambda string="": object())
+    with pytest.raises(RenderError, match=r"template.*titel") as ei:
+        r.render(CV, str(tmp_path / "out"))
+    assert str(path) in str(ei.value)
+
+
 def test_template_renderer_strips_citations_before_writing(tmp_path):
     """The [id] tokens must never reach an employer. parse_cv strips them, so no
     template can reintroduce them however it is written."""

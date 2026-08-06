@@ -67,7 +67,13 @@ class TemplateRenderer:
         # jinja2 imported here, not at module scope, and not only in `_make`: this class
         # must stay constructible directly (as every test in this module does) without
         # requiring a caller to go through the seam factory first.
-        from jinja2 import Environment
+        from jinja2 import Environment, StrictUndefined
+
+        # Named for the RenderError below: a StrictUndefined failure must say WHICH
+        # template broke, and the packaged default has no filesystem path a user can
+        # act on -- name it explicitly rather than letting an error print None/"".
+        self._template_name = (
+            template_path or "sluice.templates:cv_plain.html.j2 (packaged default)")
 
         # autoescape=True, UNCONDITIONALLY -- never select_autoescape(). Measured (see
         # the task report): select_autoescape()('cv_plain.html.j2') is False, because it
@@ -76,7 +82,20 @@ class TemplateRenderer:
         # renders as an unknown HTML element and WeasyPrint DROPS the text -- the PDF
         # then silently differs from what validate() approved, and nobody sees it until
         # after the CV has been sent under the user's name.
-        self._template = Environment(autoescape=True).from_string(text)
+        #
+        # undefined=StrictUndefined, for the identical reason: Jinja2's DEFAULT
+        # Undefined renders a typo'd field ({{ document.nmae }}, {{ document.work[0]
+        # .titel }}) as an EMPTY STRING rather than raising -- measured 2026-08-06, only
+        # a wholly undefined ROOT name raises by default, so `document.nmae` constructs,
+        # renders, and produces a PDF silently missing the candidate's name with nothing
+        # anywhere to say so. A user's template is free text sluice does not control, and
+        # this is the SAME "silently differs from what validate() approved" harm the
+        # autoescape choice above already exists to prevent, just on a typo instead of an
+        # unescaped character. `CvDocument` (sluice/cv/parse.py) always populates every
+        # field its dataclasses declare, so StrictUndefined has nothing legitimate left
+        # to break: every attribute a template can reach is guaranteed present.
+        self._template = Environment(
+            autoescape=True, undefined=StrictUndefined).from_string(text)
 
     def render(self, cv_text: str, out_dir: str, *, neutral_name: str = "CV.pdf") -> str:
         # parse_cv, not a second gate: the fabrication gate has already run on cv_text by
@@ -87,7 +106,20 @@ class TemplateRenderer:
         document = parse_cv(cv_text)
         os.makedirs(out_dir, exist_ok=True)
         pdf_path = os.path.join(out_dir, neutral_name)
-        html = self._template.render(document=document)
+        # StrictUndefined (see __init__) turns a typo'd field reference into an
+        # exception instead of a silently blank PDF. Imported here, not at module
+        # scope, for the same lazy-import reason as jinja2 itself (see the module
+        # docstring): re-raised as RenderError so the message names THIS renderer and
+        # the offending template rather than surfacing a bare jinja2 traceback with no
+        # renderer context -- Jinja2's own UndefinedError text already names the
+        # missing attribute (e.g. "... object has no attribute 'nmae'").
+        from jinja2.exceptions import UndefinedError
+        try:
+            html = self._template.render(document=document)
+        except UndefinedError as e:
+            raise RenderError(
+                f"renderer 'template': {self._template_name} references a field "
+                f"CvDocument does not have: {e}") from e
         self._HTML(string=html).write_pdf(pdf_path)
         # This renderer's OWN "wrote no file" check. cv/render.py has an equivalent, but
         # that one belongs to the `script` renderer's subprocess path and does not apply
