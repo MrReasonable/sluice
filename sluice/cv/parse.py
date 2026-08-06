@@ -174,8 +174,24 @@ _DASH = r"(?:\s*[-–—]\s*|\s+to\s+)"
 # therefore stricter than a gate that does not even notice the entry exists -- the
 # governing bug class again, one field over. `\d{1,2}` closes it for both months in
 # the range (start and end), since nothing pins the end month's width either.
+#
+# ONE spelling of "a month/year token", shared by the full range pattern below and by
+# `_ATTEMPTED_DATE_RE` after it. Factored out rather than written twice because the two
+# must agree BY CONSTRUCTION -- the second one's entire job is to recognise the FRONT of
+# the first inside a line that failed to match the first whole -- and because this file's
+# opening comment records what a restated-instead-of-shared pattern has already cost this
+# repo once.
+_DATE_TOKEN = r"\d{1,2}/\d{4}"
+
 _DATE_RANGE_RE = re.compile(
-    rf"^\d{{1,2}}/\d{{4}}{_DASH}(?:\d{{1,2}}/\d{{4}}|present|current|now)$", re.IGNORECASE)
+    rf"^{_DATE_TOKEN}{_DASH}(?:{_DATE_TOKEN}|present|current|now)$", re.IGNORECASE)
+
+# `_DATE_TOKEN` alone, UNANCHORED: "somewhere in this line there is something
+# month/year-shaped". Deliberately weak, and deliberately not a second grammar -- it never
+# decides whether a line PARSES (only `_DATE_RANGE_RE` does that, and this pattern is a
+# strict prefix of it, so anything the range accepts this accepts too). It exists solely to
+# pick between two error messages; see `_looks_like_an_attempted_date`.
+_ATTEMPTED_DATE_RE = re.compile(_DATE_TOKEN)
 
 # A citation the composer wrapped onto its own line (rather than trailing the bullet it
 # belongs to) still needs to disappear -- see the "wrapped" case in
@@ -212,22 +228,64 @@ def _is_header_shaped(line: str) -> bool:
     EDUCATION) is normally emitted. This is a narrower, purely-visual check than
     `_is_section` above: it is never used to decide whether a line IS a recognised
     header (that comparison must stay case-insensitive, tracking the gate -- see
-    `_is_section`), only to pick an ERROR MESSAGE once a candidate company has ALREADY
-    failed to be followed by a valid meta line.
+    `_is_section`), only to help pick an ERROR MESSAGE once a candidate company has
+    ALREADY failed to be followed by a valid meta line.
 
     This is NOT used to reject a candidate company outright: an acronym-shaped employer
     -- an all-caps initialism, the ordinary written form for a broadcaster, a bank or a
     public agency -- looks identical to a heading, and refusing it on casing alone would
     waste the engine's one retry on a CV that was never malformed: there is nothing for a
-    re-composition to fix. It is used only to choose an ERROR MESSAGE once a candidate
-    company has ALREADY failed to be followed by a valid meta line: at that point, an
-    all-caps candidate is very likely a section header the composer emitted that this
-    parser does not model (e.g. PUBLICATIONS) rather than a company whose meta line
-    merely went wrong, so naming it "unmodelled" beats a generic "bad meta line" message
-    that hides the real problem. See the `if not valid_meta:` branch below.
+    re-composition to fix.
+
+    IT NO LONGER DECIDES THE MESSAGE ALONE, and the narrowing is the point. Casing is
+    ONE HALF of the condition at the `if not valid_meta:` branch below; the other half is
+    `_looks_like_an_attempted_date` over the OFFENDING line. Casing by itself answers
+    "does the candidate look like a heading?", which is not the question -- an all-caps
+    EMPLOYER answers it identically to PUBLICATIONS. What separates them is what comes
+    NEXT, and this function cannot see it: it is handed one line and has no idea whether
+    the composer tried to write a meta line under it. Reading it alone made every
+    all-caps company whose meta line went wrong FOR ANY REASON -- a comma typed where a
+    pipe belongs, a dropped separator -- report as an "unmodelled section header", which
+    points the retry at the employer's name when the defect is one line lower.
     """
     stripped = line.strip()
     return bool(stripped) and stripped == stripped.upper() and any(c.isalpha() for c in stripped)
+
+
+def _looks_like_an_attempted_date(text: str) -> bool:
+    """True when `text` contains something month/year-shaped anywhere in it.
+
+    The OTHER half of the message choice at the `if not valid_meta:` branch, and the half
+    that carries the actual discrimination. Deliberately a WEAK signal used for a weak
+    purpose: it never decides whether a line is refused (that is `_DATE_RANGE_RE`'s job,
+    unchanged), only WHICH of two refusals already being raised gets raised.
+
+    The two cases it separates, both of which reach that branch identically today:
+
+        a genuine unmodelled section header -- PUBLICATIONS, SKILLS, AWARDS -- is
+            followed by ordinary section content: a bullet, or prose. Neither carries a
+            `MM/YYYY` token, so this returns False and the "unmodelled section header"
+            message is correct and actionable ("this section isn't modelled").
+        an all-caps EMPLOYER whose meta line is malformed is followed by a line the
+            composer plainly INTENDED as a meta line -- it has the dates, the place and
+            the role, just with a comma where a pipe belongs. It carries a `MM/YYYY`
+            token, so this returns True, and the refusal says "unparseable meta line"
+            and names the company, which is the thing the model can actually fix.
+
+    Before this, only the casing was consulted, so the second case was reported as the
+    first: the model was told its own employer name was an unmodelled section header and
+    had no way to reach the real defect one line below. A retry can only act on a message
+    that points at the right line -- the same argument as the "name the offending line"
+    fix in the generic arm below.
+
+    ASYMMETRY IS WHY A WEAK SIGNAL IS SAFE HERE. A false positive (ordinary section prose
+    that happens to contain `03/2021`) downgrades a precise message to a slightly less
+    precise one that still names the line. A false negative leaves today's behaviour
+    exactly as it is. Neither changes WHICH CVs are refused -- both arms raise
+    `CvParseError` and both feed the same single retry -- so this cannot widen or narrow
+    the parser, only re-aim its prose.
+    """
+    return bool(_ATTEMPTED_DATE_RE.search(text))
 
 
 def _blank_run_past(lines: list[str], idx: int, is_entry) -> int | None:
@@ -421,10 +479,26 @@ def parse_cv(text: str) -> CvDocument:
                       and _DATE_RANGE_RE.match(parts[0])
                       and all(parts[2:] if len(parts) == 3 else parts[1:]))
         if not valid_meta:
-            if _is_header_shaped(company):
-                # All-caps, and what follows it doesn't look like a meta line either --
-                # almost certainly a section header this parser does not model (e.g.
-                # PUBLICATIONS) rather than a company whose meta line merely went wrong.
+            if _is_header_shaped(company) and not _looks_like_an_attempted_date(meta_raw or ""):
+                # All-caps AND followed by something with no date in it at all -- ordinary
+                # section content (a bullet, prose, nothing), so almost certainly a section
+                # header this parser does not model (e.g. PUBLICATIONS) rather than a
+                # company whose meta line merely went wrong.
+                #
+                # BOTH TERMS ARE LOAD-BEARING; casing alone was a misdiagnosis. An
+                # acronym-shaped employer is indistinguishable from a heading by casing,
+                # so the first term fired for EVERY all-caps company whose meta line broke
+                # for ANY reason, and the message then told the model its employer's name
+                # was an unmodelled section -- pointing the one retry at the wrong line,
+                # with the real defect (a comma where a pipe belongs) one line lower and
+                # unmentioned. `_looks_like_an_attempted_date` reads the OFFENDING line
+                # instead of the candidate: a date-shaped token there means the composer
+                # was attempting a meta line, so this falls through to the "unparseable
+                # meta line" arm below, which names the company AND quotes the line.
+                #
+                # This changes NO refusal into an acceptance and no acceptance into a
+                # refusal -- `valid_meta` above already decided that, and both arms here
+                # raise `CvParseError` into the same single retry. Only the prose moves.
                 raise CvParseError(f"unmodelled section header {company!r}")
             # NAME THE CANDIDATE LINE. `meta_raw` alone is very often the blank separator
             # AFTER the offending line (an en-dash bullet, a `1.` numbered bullet, or
