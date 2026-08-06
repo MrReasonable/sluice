@@ -296,8 +296,15 @@ class Sluice:
 
     def renderer(self, cvcfg):
         """The configured Renderer. Takes the cv config because that is where its knobs
-        live (`cv.renderer`, `cv.render_script`, ...)."""
-        return self._resolve(_RENDERER_SEAM, getattr(cvcfg, "renderer", "script"), cvcfg)
+        live (`cv.renderer`, `cv.render_script`, `cv.template`, ...)."""
+        # The getattr default is unreachable for a real CvConfig (the field always has a
+        # value), but it is still the name a caller sees if that ever changes -- and a
+        # quiet WRONG default is precisely the bug class this codebase engineers out
+        # (see CLAUDE.md's "Fail loudly at construction"). `cv.renderer` defaults to
+        # `template` now, not `script`; this fallback must track that or a future
+        # regression here would fail silently into the retired norm instead of the
+        # current one.
+        return self._resolve(_RENDERER_SEAM, getattr(cvcfg, "renderer", "template"), cvcfg)
 
     def backend(self, role, *, primary_name, primary_model, effort, host, claude_path,
                 fallback_name, fallback_model, timeout=None):

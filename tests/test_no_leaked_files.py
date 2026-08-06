@@ -683,3 +683,63 @@ def test_a_vault_written_into_the_checkout_is_refused():
     # ...at ANY depth, because DEFAULT_VAULT is cwd-relative: `sluice init` from a subdirectory
     # creates one there, and a root-anchored rule would leave it tracked.
     assert _is_forbidden("some/subdir/vault/Job Applications/Judging Profile.md")
+
+
+# ── the neutrality sweep, extended to docs/**/*.j2 ──────────────────────────
+#
+# Everything above this point catches an absolute home path or a tracked artefact BY
+# PATH. A worked-example CV template (docs/cv-template-example.html.j2) is a different
+# risk shape entirely: its whole point is to show "real CSS" against real markup, which
+# is exactly the pressure that produces a filled-in specimen -- a plausible candidate
+# name, a real-sounding employer, a city -- none of which is an absolute path and none
+# of which the sweep above would ever see. `docs/` also sits outside CLAUDE.md's stated
+# neutrality scope ("no employer names, role preferences, locations, contact details,
+# hostnames, or absolute paths in `sluice/` or `tests/`") and outside
+# test_the_shipped_template_contributes_no_content in tests/test_renderer_template.py,
+# which reads exactly ONE hardcoded path (the packaged default) via importlib.resources
+# and would never see a file under docs/ however many are added there.
+#
+# The check reused below is that same "no content" property, applied to every `.j2`
+# file docs/ actually ships rather than one named path: the heading vocabulary is
+# DERIVED from cv/compose.py's own `_RULES` (never hand-listed, so it cannot drift from
+# what the composer emits), and anything left over after stripping CSS, Jinja syntax and
+# HTML tags must be one of those headings -- exactly the bar a template limited to
+# "expressions and CSS only" is designed to clear.
+def test_docs_template_examples_contribute_no_static_content():
+    """Extends the neutrality sweep to docs/**/*.j2, asserting on SCOPE first.
+
+    Two separate ways this guard could pass having checked nothing: `_RULES` yielding no
+    headings (the sibling guard's own failure mode, so the same assertion is repeated
+    here rather than assumed), and the docs/ glob finding no `.j2` file at all -- which
+    would happen if the file were ever renamed, moved out of docs/, or given a different
+    extension, and `all(... for _ in [])` is `True` regardless. For a NEGATIVE guard like
+    this one, an empty sweep and a clean sweep produce the identical "no violations"
+    result, so the scope has to be pinned independently of the content check it gates.
+    """
+    from sluice.cv.compose import _RULES
+
+    headings = {ln.strip() for ln in _RULES.splitlines()
+                if ln.strip() and ln.strip() == ln.strip().upper()
+                and all(c.isalpha() or c.isspace() for c in ln.strip())}
+    assert headings, "derived no headings, so this guard would pass vacuously"
+
+    templates = sorted((REPO / "docs").rglob("*.j2"))
+    assert templates, (
+        "no docs/**/*.j2 file found -- this guard would pass having swept nothing, and "
+        "for a negative guard that reads identically to a clean sweep")
+
+    for path in templates:
+        text = path.read_text(encoding="utf-8")
+        # Same three-step strip as test_the_shipped_template_contributes_no_content:
+        # CSS, then every Jinja delimiter (expressions, statements, AND comments -- the
+        # leading `{# ... #}` block this file is required to carry), then HTML tags
+        # (which also disposes of attribute text, e.g. `class="role"`).
+        stripped = re.sub(r"<style\b.*?</style>", " ", text, flags=re.S | re.I)
+        stripped = re.sub(r"\{\{.*?\}\}|\{%.*?%\}|\{#.*?#\}", " ", stripped, flags=re.S)
+        stripped = re.sub(r"<[^>]*>", " ", stripped, flags=re.S)
+        leftover = {tok for tok in (t.strip() for t in stripped.splitlines())
+                    if tok and any(c.isalnum() for c in tok)}
+        assert leftover <= headings, (
+            f"{path.relative_to(REPO)} contributes content beyond the CvDocument fields "
+            f"and structural headings a worked example is limited to: "
+            f"{sorted(leftover - headings)}")

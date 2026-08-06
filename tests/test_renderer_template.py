@@ -244,6 +244,19 @@ def test_this_module_never_uses_importorskip():
                     if alias.name == "importorskip":
                         bare_importorskip_names.add(alias.asname or alias.name)
 
+    # SCOPE assertion, same shape as test_the_shipped_template_contributes_no_content's
+    # "derived no headings" check just above. This file DOES `import pytest` (see the
+    # top of the module), so an empty `pytest_module_names` means the binding-resolution
+    # loop above is broken, not that the file is clean -- and a broken resolver makes
+    # `is_qualified` structurally unable to match ANY `pytest.importorskip(...)` call,
+    # however many exist below, leaving `violations` empty and this guard passing
+    # vacuously. `all([])` is `True`; a guard that finds nothing is not the same as a
+    # guard that looked.
+    assert pytest_module_names, (
+        "resolved no local binding for the `pytest` module import, so a qualified "
+        "pytest.importorskip(...) call could never match and this guard would pass "
+        "having checked nothing")
+
     violations = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
