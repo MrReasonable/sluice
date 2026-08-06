@@ -19,9 +19,11 @@ is deliberately not gated by it.
 import os
 
 from sluice.core import plugins
+# The seam's error type, taken from the seam rather than from the sibling implementation
+# that happened to define it first (see `core/protocols.py`).
+from sluice.core.protocols import RenderError
 from sluice.cv.parse import CvParseError, parse_cv
 from sluice.renderers import register
-from sluice.renderers.script import RenderError  # one error type for the whole seam
 
 _PACKAGED_DEFAULT = "cv_plain.html.j2"
 

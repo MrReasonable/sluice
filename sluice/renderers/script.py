@@ -13,11 +13,17 @@ one, and tells the user their two real options.
 """
 import os
 
+# RE-EXPORTED, not defined here. `RenderError` is the Renderer seam's error type and now
+# lives beside the protocol that documents it (`core/protocols.py`), the same way
+# `VaultConflict` lives beside `Store`. It was defined in this module only because this
+# was the first renderer; `renderers/template.py` and `core/app.py` then imported it from
+# here, which made an implementation module the home of a contract type and gave `core/`
+# its one and only import from an implementation package. Kept importable under the old
+# name so no existing call site had to move for a pure relocation.
+from sluice.core.protocols import RenderError
 from sluice.renderers import register
 
-
-class RenderError(RuntimeError):
-    pass
+__all__ = ["RenderError", "ScriptRenderer"]
 
 
 class ScriptRenderer:
