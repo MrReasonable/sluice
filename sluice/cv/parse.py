@@ -4,7 +4,8 @@ Pure and deterministic: no I/O, no rendering, and deliberately NO validation of 
 the fabrication gate (`cv/validate.py`) has already run on this text by the time
 `parse_cv` sees it, and re-checking facts here would be a second, weaker gate and a way
 around the real one (spec section 1). What this module refuses is SHAPE, not content: an
-unmodelled section, or a role line that does not match the meta grammar. Refusing here
+unmodelled section, a trailing section emitted twice, or a role line that does not match
+the meta grammar. Refusing here
 feeds the engine's existing single retry (the model is asked to fix its own formatting,
 which an LLM is reliably good at); it does not kill the lead.
 
@@ -27,8 +28,10 @@ class CvParseError(ValueError):
     """The composed CV does not match the grammar's SHAPE.
 
     Never raised for a fact the gate could have caught -- only for structure the gate does
-    not model: an unmodelled section header, or a role line that cannot be split into the
-    three meta-grammar fields. `cv/engine.py` feeds this into the SAME retry loop it feeds
+    not model: an unmodelled section header, a trailing section header emitted twice (whose
+    second block would otherwise be dropped in silence), or a role line that cannot be split
+    into the meta-grammar's two or three fields.
+    `cv/engine.py` feeds this into the SAME retry loop it feeds
     a gate violation into, in the same shape, so the model gets one chance to fix its own
     formatting before the lead is skipped like any other gate failure.
     """
@@ -100,8 +103,10 @@ _BULLET_MARKERS = ("-", "•", "*")
 # throughout) -- there is no check here for a wider marker to slip past, so the only
 # effect of accepting one is that a gate-clean CV stops being refused.
 #
-# The en dash earns its place by measurement: `– CSM` under CERTIFICATES passes the gate
-# untouched and, before this, was refused by the loop below. That is the governing bug
+# The en dash earns its place by measurement: `– Example Scrum Master` under CERTIFICATES
+# passes the gate untouched and, before this, was refused by the loop below. (A synthetic
+# placeholder, not a real certification's acronym: `sluice/` is bound by the
+# no-personal-data rule the same way `tests/` is.) That is the governing bug
 # class -- stricter here than upstream -- and it cost a retry the model could only spend
 # re-emitting what it had already sent. The em dash is here for the same reason as in
 # `_DASH`: the two are equally plausible outputs and equally invisible to the gate.
@@ -308,9 +313,18 @@ def parse_cv(text: str) -> CvDocument:
         # feature whose whole job is preventing fabrication is worse than the strictness
         # itself. Mis-split detection of the DATES field does not depend on the field
         # count: it is carried entirely by `parts[0]`'s `\d{1,2}/\d{4}<dash>` prefix,
-        # which a line missing its first pipe cannot satisfy. `parts[1:]` must all be
-        # non-empty either way -- an explicitly BLANK field is a composer slip, not a
-        # field that was never emitted.
+        # which a line missing its first pipe cannot satisfy.
+        #
+        # A three-field line whose MIDDLE field is blank (`dates |  | Role`) is the same
+        # "no location" case, spelled with the pipes left in. An earlier version demanded
+        # every field after the dates be non-empty and so refused it while accepting the
+        # two-field spelling of the identical fact -- measured 2026-08-06 against this
+        # repo's own gate-clean fixture, `02/2023-present |  | Staff Engineer` is
+        # validate()-CLEAN and raised here. Nothing in compose.py's `_RULES` steers the
+        # model to one spelling over the other, so refusing one of them is strictness the
+        # gate does not share, and its only actionable reading is again "invent a city".
+        # The DATES and the TITLE are still required non-empty: a blank there is a field
+        # the composer dropped, not one it had no source for.
         #
         # THE ACCEPTED COST, stated here because this is where the trade-off is made.
         # Two fields is now AMBIGUOUS: `dates | X` is read as `dates | title`, and there
@@ -332,8 +346,14 @@ def parse_cv(text: str) -> CvDocument:
         # lead, versus a wrong field on the subset of CVs whose role went missing. The
         # same reasoning, and the same "no reliable SHAPE test tells the two apart",
         # already governs the name/contact ordering residual at the top of this function.
+        #
+        # `parts[2:]` for a three-field line skips the middle (LOCATION) field on purpose
+        # -- see the blank-middle paragraph above; `parts[1:]` for a two-field line is the
+        # TITLE. Guarded by the `len(parts) in (2, 3)` term to its left, which
+        # short-circuits before either slice is taken.
         valid_meta = (meta_raw is not None and len(parts) in (2, 3)
-                      and _DATE_RANGE_RE.match(parts[0]) and all(parts[1:]))
+                      and _DATE_RANGE_RE.match(parts[0])
+                      and all(parts[2:] if len(parts) == 3 else parts[1:]))
         if not valid_meta:
             if _is_header_shaped(company):
                 # All-caps, and what follows it doesn't look like a meta line either --
@@ -415,16 +435,48 @@ def parse_cv(text: str) -> CvDocument:
             break
 
         header = next((h for h in _TRAILING_SECTIONS if _is_section(lines[idx], h)), None)
-        if header is None or header in sections:
-            # Neither a recognised header nor a repeat of one already read. MINOR,
-            # accepted asymmetry: a line shaped this way BETWEEN two WORK roles raises
-            # ("unmodelled section header") because `_is_header_shaped` catches it, but
-            # here it is silently left unconsumed -- `parse_cv` simply returns without
-            # looking at it. Not fixed: unlike the WORK loop (which must decide whether
-            # a line is a new role or an error to keep parsing at all), nothing past
-            # this point ever gets parsed either way, so raising would only change WHEN
-            # the same "unmodelled trailing content" case is reported, not whether it
-            # silently drops content that was never captured as a field.
+        if header in sections:
+            # A header seen a SECOND time. Refused, because letting the loop stop here
+            # drops everything under the repeat with no signal anywhere: measured
+            # 2026-08-06 against this repo's own gate-clean fixture, an empty
+            # `CERTIFICATES`, then `EDUCATION`, then a second `CERTIFICATES` carrying two
+            # entries was validate()-clean, slop-clean, parsed WITHOUT raising, and
+            # returned `certificates == []`. The shipped template guards every trailing
+            # section with `{% if document.certificates %}`, so the heading vanished too
+            # and the PDF was indistinguishable from a candidate who holds none -- exactly
+            # the harm `test_parse_refuses_unrecognised_content_under_a_trailing_header`
+            # already refuses one line lower down for unmarked content.
+            #
+            # Refused UNCONDITIONALLY, including when the repeat turns out to be empty and
+            # so drops nothing. Stated rather than hidden: telling the two apart means
+            # running the entry reader over the repeat and then discarding the result
+            # anyway, and the over-refusal costs at most one retry against a message the
+            # model can act on WITHOUT inventing anything (merge the two headings) -- which
+            # is the test the two-field meta line above is held to, and the reason that one
+            # went the other way.
+            raise CvParseError(
+                f"{header} appears twice: entries under the second one would be dropped "
+                f"from the PDF. Emit CERTIFICATES and EDUCATION at most once each, with "
+                f"every entry under a single header.")
+        if header is None:
+            # UNREACHABLE as this function stands, and named as such rather than described
+            # as a behaviour: the refusal at the END of this loop body already rejects any
+            # non-blank line that is not a recognised trailing header, and the WORK loop
+            # above only breaks INTO this loop on a line that is one. So every arrival here
+            # carries a recognised header. Measured 2026-08-06: this repo's gate-clean
+            # fixture with a trailing `SKILLS` section appended is gate-clean and RAISES at
+            # that refusal ("EDUCATION: unrecognised line 'SKILLS'") -- an earlier revision
+            # of this comment claimed such a section was "silently left unconsumed" HERE,
+            # which was false, and `test_unmodelled_trailing_content_is_refused_rather_
+            # than_left_unconsumed` is what now holds the corrected claim.
+            #
+            # Kept as a loop terminator so `next(...)`'s None default has a defined
+            # outcome, not as a live branch. Corroborated by mutation, and note which way
+            # the evidence points here: swapping this `break` for a raise leaves the whole
+            # suite GREEN, which for a LIVE branch would mean "no test covers it" and for
+            # this one means "nothing reaches it" -- the structural argument above is what
+            # distinguishes the two, so do not read the green suite as licence to widen
+            # this arm into behaviour.
             break
         idx += 1  # consume the header line
 
