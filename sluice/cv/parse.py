@@ -228,6 +228,68 @@ def _is_header_shaped(line: str) -> bool:
     return bool(stripped) and stripped == stripped.upper() and any(c.isalpha() for c in stripped)
 
 
+def _blank_run_past(lines: list[str], idx: int, is_entry) -> int | None:
+    """Index of the next ENTRY line past a blank run starting at `idx`, or None.
+
+    ONE definition, called from BOTH repeated-entry loops below (WORK bullets, and the
+    CERTIFICATES/EDUCATION reader), because the bug it fixes has now been shipped twice
+    in exactly that shape: two earlier rounds added blank-run skipping at other points in
+    the trailing loop -- after the header, and before the next header -- and each time the
+    sibling gap went unfixed. A blank line BETWEEN two entries was the gap both missed, in
+    both loops. A shared helper is what stops the next such fix landing in one copy only.
+
+    Measured 2026-08-06 against this repo's own gate-clean fixture, both pre-fix:
+
+        CERTIFICATES / '- Example Cert One' / '' / '- Example Cert Two'
+            -> validate() == [], and CvParseError "CERTIFICATES: unrecognised line
+               '- Example Cert Two' -- expected each entry to start with one of
+               ('-', '•', '*', '–', '—')". The message was FALSE on its face: the line
+               it named starts with the very marker it demanded. The blank line was the
+               real cause and the message never mentioned it.
+        a blank line between two bullets of one WORK role
+            -> validate() == [], and CvParseError "unparseable meta line under WORK
+               EXPERIENCE entry '- Coached the team [EF1]'" -- the bullet after the blank
+               was read as a candidate COMPANY, and the blank separator after IT became
+               the meta line.
+
+    Both are the governing bug class: gate-clean input the parser refuses, costing a
+    composition, a retry whose message the model cannot act on, then the lead.
+
+    CONSERVATIVE BY LOOKAHEAD -- the run is consumed only when a real entry follows it.
+    A blank run that ends at the next COMPANY, at a trailing header, or at EOF is left
+    exactly where it was, so the two blank-skips already in the trailing loop still fire
+    on the cases they were written for and the refusal below still reports the same
+    position for genuinely unrecognised content.
+
+    WIDENING THE WORK LOOP IS NOT A GATE BYPASS, and that is measured rather than
+    reasoned about: validate.py's `in_work` flag is turned off only by a section header,
+    never by a blank line, so a bullet after a blank line is still citation- and
+    metric-checked. Measured 2026-08-06 -- an uncited bullet after a blank line yields
+    `UNCITED BULLET`, and one carrying a figure absent from the bundle yields
+    `INVENTED METRIC`. Accepting the blank line here only stops the parser refusing
+    what the gate has already inspected and passed.
+    """
+    if idx >= len(lines) or lines[idx].strip():
+        return None
+    j = idx
+    while j < len(lines) and not lines[j].strip():
+        j += 1
+    return j if j < len(lines) and is_entry(lines[j].strip()) else None
+
+
+def _is_work_bullet(stripped: str) -> bool:
+    """Exactly what the WORK bullet loop below consumes -- a marked bullet, or a wrapped
+    citation-only continuation. Shared with `_blank_run_past`'s lookahead so the two
+    cannot disagree about what counts as "another entry follows"."""
+    return stripped.startswith(_BULLET_MARKERS) or bool(_CITE_ONLY_RE.match(stripped))
+
+
+def _is_trailing_entry(stripped: str) -> bool:
+    """Exactly what the CERTIFICATES/EDUCATION entry loop below consumes. Same
+    lookahead-matches-the-loop rule as `_is_work_bullet`."""
+    return stripped.startswith(_TRAILING_MARKERS)
+
+
 def _strip_cite(field: str) -> str:
     """Strip a citation from ONE already-extracted field. Never call `_CITE_RE` on the
     whole text: its leading `\\s*` eats newlines, so a stand-alone citation line would
@@ -406,6 +468,15 @@ def parse_cv(text: str) -> CvDocument:
                 # bogus company/header.
                 idx += 1
                 continue
+            # A blank line BETWEEN two bullets of this same role. See `_blank_run_past`:
+            # gate-clean and, before this, refused with a message naming the wrong line.
+            # Only consumed when another bullet really follows, so a blank run ending at
+            # the next company, a trailing header, or EOF still breaks out here exactly
+            # as it did.
+            next_bullet = _blank_run_past(lines, idx, _is_work_bullet)
+            if next_bullet is not None:
+                idx = next_bullet
+                continue
             break
 
         work.append(Role(
@@ -505,15 +576,27 @@ def parse_cv(text: str) -> CvDocument:
         # the sentence was reworded, and
         # `test_parse_accepts_a_dash_marker_the_gate_never_inspects` is what holds it.
         entries: list[str] = []
-        while idx < len(lines) and lines[idx].strip().startswith(_TRAILING_MARKERS):
-            entry = _strip_cite(lines[idx].strip()[1:].lstrip())
-            if entry:
-                # A lone marker with nothing after it ("-" alone) strips to "", which
-                # would otherwise render as an empty `<li>` in the PDF -- dropped rather
-                # than appended, since an empty entry is not content to protect, just
-                # noise the model emitted.
-                entries.append(entry)
-            idx += 1
+        while idx < len(lines):
+            entry_line = lines[idx].strip()
+            if _is_trailing_entry(entry_line):
+                entry = _strip_cite(entry_line[1:].lstrip())
+                if entry:
+                    # A lone marker with nothing after it ("-" alone) strips to "", which
+                    # would otherwise render as an empty `<li>` in the PDF -- dropped
+                    # rather than appended, since an empty entry is not content to
+                    # protect, just noise the model emitted.
+                    entries.append(entry)
+                idx += 1
+                continue
+            # A blank line BETWEEN two entries of this section -- the third gap in this
+            # one loop, after the header gap and the next-header gap already handled
+            # above and below. See `_blank_run_past` for the measurement and for why all
+            # three now share one definition with the WORK loop's identical case.
+            next_entry = _blank_run_past(lines, idx, _is_trailing_entry)
+            if next_entry is not None:
+                idx = next_entry
+                continue
+            break
 
         # Skip a trailing blank run before deciding what is next (another header, or
         # nothing left).
