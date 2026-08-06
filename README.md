@@ -144,8 +144,12 @@ and no refusal, because there is nothing to migrate from.
 
 `cv.renderer` defaults to `template`: sluice fills a Jinja2 template -- the packaged
 default, or your own via `cv.template`, e.g. `docs/cv-template-example.html.j2` -- with
-the parsed, fabrication-gated CV, then hands the result to WeasyPrint to produce a PDF.
-That needs an extra `pip install` cannot skip:
+the parsed CV, then hands the result to WeasyPrint to produce a PDF. The fabrication
+gate runs on the composed text *before* any template exists, so the PDF is derived
+from gate-approved content rather than identical to it: your own template is free text
+sluice does not audit, so it can add prose the gate never saw or a conditional that
+drops a gated section, either of which the gate cannot catch after the fact. That
+needs an extra `pip install` cannot skip:
 
 ```bash
 pip install 'sluice[render]'
