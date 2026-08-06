@@ -125,7 +125,18 @@ def _files_carrying_the_marker():
     for path in root.rglob("*"):
         if not path.is_file() or path in skip:
             continue
-        if any(part in {".git", ".venv", "node_modules", "__pycache__"} for part in path.parts):
+        # "build" and "dist" are the DoD's own trap: a repo-root `python -m build` drops
+        # `build/lib/sluice/__init__.py` (a copy of the real file, marker and all) into
+        # a directory `.gitignore` already excludes -- so `git status` stays clean while
+        # this sweep, walking the real filesystem rather than git's index, finds a SECOND
+        # marker-carrying file `extra-files` never lists and fails permanently with an
+        # error about release-please that says nothing about wheels. Measured 2026-08-06:
+        # running the DoD's required `python -m build` from repo root reproduces this
+        # exactly, and cleaning the stray `build/` afterwards is what makes the suite
+        # green again -- skip both so a routine, DoD-instructed build cannot arm a
+        # permanent trap for whoever runs it next.
+        if any(part in {".git", ".venv", "node_modules", "__pycache__", "build", "dist"}
+               for part in path.parts):
             continue
         try:
             text = path.read_text(encoding="utf-8")
