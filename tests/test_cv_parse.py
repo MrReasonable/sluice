@@ -360,6 +360,35 @@ def test_parse_raises_on_an_empty_meta_field():
         parse_cv(text)
 
 
+def test_a_four_field_meta_line_is_gate_clean_and_refused_on_purpose():
+    """The implication sweep's KNOWN UN-SWEPT AXIS, pinned so the gap is a decision
+    rather than an oversight.
+
+    The sweep varies separator, terminal token and month width on `parts[0]`; FIELD COUNT
+    is not an axis it has, and a four-field meta line slips through it. Measured
+    2026-08-06: gate-CLEAN (validate() does not model the meta line at all) and refused
+    here -- technically the same shape as every instance this branch fixed.
+
+    Left REFUSING deliberately, which is the part worth pinning. Four pipe-separated
+    fields is genuinely malformed rather than a formatting variant the gate tolerates,
+    and unlike the LOCATION case the refusal is answerable: the message names the exact
+    shape expected, so the retry has something to act on and nothing has to be invented
+    to satisfy it. Accepting it would mean guessing which of the four fields to discard.
+
+    If someone later widens the parser here, this test reds and they must update
+    `.rulesync/rules/CLAUDE.md`'s coverage paragraph, which names this as the gap.
+    """
+    from tests.test_cv_engine import CLEAN_CV
+    meta = "02/2023–present | Alfa | Staff Engineer | Platform"
+    text = CLEAN_CV.replace("02/2023–present | Alfa | Staff Engineer", meta)
+    assert meta in text, "the replace no-opped"
+    assert _gate_verdict(text) == [], (
+        "the four-field line is no longer gate-clean, so it is an ordinary gate failure "
+        "and this test no longer documents a parser/gate disagreement at all")
+    with pytest.raises(CvParseError, match="MM/YYYY-MM/YYYY"):
+        parse_cv(text)
+
+
 @pytest.mark.parametrize("marker", ["•", "*"])
 def test_parse_accepts_certificates_and_education_with_every_bullet_marker(marker):
     """cv/validate.py never citation-checks CERTIFICATES/EDUCATION at all (see
@@ -424,15 +453,23 @@ def test_parse_accepts_a_dash_marker_the_gate_never_inspects():
     assert doc.education == ["Example University, 2010-2013 | BSc Computer Science"]
 
 
-def test_the_work_bullet_markers_never_exceed_what_the_gate_citation_checks():
+def test_the_work_bullet_markers_are_exactly_what_the_gate_citation_checks():
     """The other half of the two-tuple split, asserted STRUCTURALLY rather than by
     reading the comment that claims it.
 
-    A WORK marker this parser accepts but validate.py does not is an uncited bullet
-    rendered into a PDF the citation gate never checked -- a fabrication-gate BYPASS,
-    which is a strictly worse failure than the over-strictness the trailing-section
-    widening fixes. Derived from validate.py's own source (the tuple it passes to
-    `startswith`), never hand-listed, so widening either side without the other reds.
+    EQUALITY, not a subset, because both directions are load-bearing and this test
+    previously asserted only one of them:
+
+      too WIDE  -> a fabrication-gate BYPASS. A WORK marker this parser accepts and
+                   validate.py does not is never citation-checked, so it reaches the PDF
+                   uncited with the gate never having looked at it.
+      too NARROW-> the governing bug class. A `*` bullet carrying a citation is
+                   gate-CLEAN; a parser recognising only `-` would take it for a
+                   candidate company and refuse a CV the gate had certified.
+
+    Derived from validate.py's own source (the tuple it passes to `startswith`), never
+    hand-listed, so a change to EITHER side reds. `parse.py`'s `_BULLET_MARKERS` comment
+    states this equality in prose; this is what stops that prose going stale.
     """
     import ast
     import inspect
@@ -455,11 +492,13 @@ def test_the_work_bullet_markers_never_exceed_what_the_gate_citation_checks():
         f"{gate_markers} -- this guard can no longer say which tuple gates the citation "
         "check, so it must not pass having guessed")
 
-    assert set(_BULLET_MARKERS) <= set(gate_markers[0]), (
-        f"parse.py accepts WORK bullet markers the gate does not citation-check: "
-        f"{sorted(set(_BULLET_MARKERS) - set(gate_markers[0]))}. Such a bullet is "
-        "rendered into the PDF UNCITED with the fabrication gate never having looked "
-        "at it.")
+    assert set(_BULLET_MARKERS) == set(gate_markers[0]), (
+        f"parse.py's WORK bullet markers and the gate's citation-check markers have "
+        f"drifted. Accepted here but NOT citation-checked: "
+        f"{sorted(set(_BULLET_MARKERS) - set(gate_markers[0]))} -- such a bullet reaches "
+        f"the PDF UNCITED, a fabrication-gate bypass. Citation-checked but NOT accepted "
+        f"here: {sorted(set(gate_markers[0]) - set(_BULLET_MARKERS))} -- such a bullet is "
+        "gate-clean and refused, the governing bug class.")
     assert set(_TRAILING_MARKERS) > set(_BULLET_MARKERS), (
         "the trailing-section tuple is no longer wider than the WORK tuple, so the "
         "en-dash certificate case is back to being refused while gate-clean")
@@ -610,10 +649,16 @@ def test_parse_accepts_education_before_certificates():
 # ── the IMPLICATION sweep: gate-clean  =>  the parser does not refuse ────────────
 #
 # Every table above enumerates strings SOMEONE CHOSE, and a table whose cases you chose
-# certifies nothing. Six separate instances of one bug -- the parser stricter than the
-# gate upstream of it -- have now been found on this branch, five of them by adding a row
-# to a hand-written table AFTER someone happened to think of the case. Two more (the EM
-# DASH and the word "to") survived a table whose own docstring claimed to "test the AXIS".
+# certifies nothing. One bug -- the parser stricter than the gate upstream of it -- has
+# been found on this branch again and again, nearly always by someone happening to think
+# of a case and adding a row to a hand-written table. The EM DASH and the word "to"
+# survived a table whose own docstring already claimed to "test the AXIS", which is what
+# prompted this sweep.
+#
+# No count. An earlier version of this comment said "six ... have now been found" and
+# then named two more in its next sentence, while .rulesync/rules/CLAUDE.md said six and
+# listed a different six. Neither number was derivable from anything executable, which is
+# precisely the stale-prose defect this file spends its length guarding against.
 #
 # The property those tables are groping at is a single implication:
 #

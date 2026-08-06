@@ -64,19 +64,31 @@ class CvDocument:
 # problem behind a misleading one.
 _TRAILING_SECTIONS = frozenset({"CERTIFICATES", "EDUCATION"})
 
-# cv/validate.py:120-123: "the renderer treats '-', '•', and '*' all as bullets, so
-# a WORK bullet composed with '•' or '*' is delivered in the rendered PDF and MUST
-# be citation-checked here too" -- so a CV using either of those markers has ALREADY
-# passed the gate this parser sits downstream of. Recognising only a hyphen would make
-# this parser STRICTER than the gate -- the exact shape of the en-dash bug above: a CV
-# the gate passed gets refused and binned here instead. The gate's OWN citation check is
-# scoped to WORK bullets only (`in_work`) -- CERTIFICATES and EDUCATION carry no
-# citations, and compose.py's format contract asks for a hyphen only there -- but this
-# PARSER's marker recognition is intentionally not scoped the same way: the
-# CERTIFICATES/EDUCATION reader below reuses this exact tuple too, because a malformed
-# marker in either of THOSE sections is the identical silent-drop harm even though the
-# gate never inspects their markers at all (never citation-checked, so never gate-tested
-# either way -- see the finding this fixes for the measured before/after).
+# WORK EXPERIENCE bullets ONLY (the loop below), and EQUAL to the gate's own set --
+# measured, not asserted in passing: `cv/validate.py`'s citation check fires on
+# `line.lstrip().startswith(("-", "•", "*"))`, and this tuple is that tuple, same members
+# in the same order.
+#
+# Equality is the requirement, and BOTH directions of it are load-bearing, which is why
+# this must not drift either way:
+#
+#   too NARROW -> the governing bug class. A `*` bullet carrying a citation is gate-CLEAN;
+#     a parser recognising only `-` would not see it as a bullet at all, would take it for
+#     a candidate company, and would refuse a CV the gate had already certified.
+#   too WIDE -> a gate BYPASS, which is strictly worse. A marker this parser accepts and
+#     validate.py does not is never citation-checked, so it reaches the PDF UNCITED with
+#     the fabrication gate never having looked at it.
+#
+# There is therefore exactly one correct value here, and it is whatever validate.py uses.
+# `test_the_work_bullet_markers_never_exceed_what_the_gate_citation_checks` derives that
+# set from validate.py's own AST and asserts equality, so a change to either side reds.
+#
+# The CERTIFICATES/EDUCATION reader does NOT use this tuple -- see `_TRAILING_MARKERS`
+# just below, which is deliberately wider. An earlier version of this comment said the
+# trailing reader "reuses this exact tuple", and that stopped being true in the very
+# commit that split them: the ceiling argument above is what forces WORK to match the
+# gate exactly, and it has no force in a section the gate never citation-checks, where
+# only the floor (do not refuse gate-clean input) applies.
 _BULLET_MARKERS = ("-", "•", "*")
 
 # CERTIFICATES/EDUCATION only, and DELIBERATELY WIDER than `_BULLET_MARKERS`. Widening
@@ -294,10 +306,32 @@ def parse_cv(text: str) -> CvDocument:
         # "add the missing field", i.e. INVENT a city, which then ships unchecked because
         # the gate does not model the meta line at all. Aiming fabrication pressure at the
         # feature whose whole job is preventing fabrication is worse than the strictness
-        # itself. Mis-split detection does not depend on the field count: it is carried
-        # entirely by `parts[0]`'s `\d{1,2}/\d{4}<dash>` prefix, which a line missing a
-        # pipe cannot satisfy. `parts[1:]` must all be non-empty either way -- an
-        # explicitly BLANK field is a composer slip, not a field that was never emitted.
+        # itself. Mis-split detection of the DATES field does not depend on the field
+        # count: it is carried entirely by `parts[0]`'s `\d{1,2}/\d{4}<dash>` prefix,
+        # which a line missing its first pipe cannot satisfy. `parts[1:]` must all be
+        # non-empty either way -- an explicitly BLANK field is a composer slip, not a
+        # field that was never emitted.
+        #
+        # THE ACCEPTED COST, stated here because this is where the trade-off is made.
+        # Two fields is now AMBIGUOUS: `dates | X` is read as `dates | title`, and there
+        # is no shape test that can tell a dropped ROLE from an omitted LOCATION, because
+        # both are free text. Measured 2026-08-06 against this repo's gate-clean fixture:
+        #
+        #     '02/2023–present | Alfa'                  -> title='Alfa',  location=''
+        #     '02/2023–present | Alfa, Staff Engineer'  -> title='Alfa, Staff Engineer'
+        #
+        # Both are gate-CLEAN, and both used to REFUSE -- so for a composer that drops
+        # the role, or types a comma where the second pipe belongs, this trades a refusal
+        # plus a retry for a WRONG PDF sent under the user's name. That is a genuine
+        # regression on those inputs and is not hidden here.
+        #
+        # Taken anyway, and the reason is asymmetry rather than frequency: the refusal it
+        # replaces was unanswerable. Nothing upstream can supply a location, so the only
+        # actionable reading of the old message was "invent a city" -- fabrication
+        # pressure aimed at the feature that exists to prevent fabrication, on EVERY
+        # lead, versus a wrong field on the subset of CVs whose role went missing. The
+        # same reasoning, and the same "no reliable SHAPE test tells the two apart",
+        # already governs the name/contact ordering residual at the top of this function.
         valid_meta = (meta_raw is not None and len(parts) in (2, 3)
                       and _DATE_RANGE_RE.match(parts[0]) and all(parts[1:]))
         if not valid_meta:
