@@ -220,7 +220,9 @@ def test_the_wheel_guard_is_falsified_by_dropping_package_data(tmp_path):
 - [ ] **Step 5: Run the tests to verify they fail**
 
 Run: `python -m pytest tests/test_packaging.py -v`
-Expected: `test_the_shipped_template_is_in_the_built_wheel` FAILS (the template file does not exist yet). The falsification test may pass vacuously at this point — that is expected and Step 8 re-checks it.
+Expected: **BOTH fail, for different reasons, and both reasons matter.**
+- `test_the_shipped_template_is_in_the_built_wheel` — fails on "is missing from the built wheel": `sluice/templates/` does not exist yet.
+- `test_the_wheel_guard_is_falsified_by_dropping_package_data` — fails on `assert "sluice/templates/__init__.py" in names`, **not** vacuously and **not** on the `PKG_DATA in original` premise (Step 2 already added the table). If it fails on the premise assertion instead, Step 2 did not land — go back and check.
 
 - [ ] **Step 6: Create the template package and the shipped template**
 
