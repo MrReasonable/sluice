@@ -1,4 +1,6 @@
 # tests/test_cv_engine.py
+import pytest
+
 from sluice.cv.bundle import build_bundle, render_bundle
 from sluice.cv.engine import run_one, run_batch
 from sluice.cv.validate import validate
@@ -203,7 +205,36 @@ def test_a_parse_failure_that_survives_the_retry_skips_the_lead():
     assert v.written == {}
 
 
-def test_a_renderer_without_precheck_is_not_gated_by_another_renderers_grammar(monkeypatch):
+# The review's own measured case: a section `template`'s grammar does not model, in a CV
+# that is otherwise entirely gate-clean. The bullet carries a citation and NO number --
+# both are load-bearing, and both were got wrong while writing this: an uncited bullet
+# reads as UNCITED (in_work is still true before CERTIFICATES), and a bare year reads as
+# an INVENTED METRIC. Either makes the fixture gate-DIRTY, and the test then passes for
+# the wrong reason -- which is what test_the_publications_fixture_passes_the_gate exists
+# to stop.
+PUBLICATIONS_CV = CLEAN_CV.replace(
+    "CERTIFICATES", "PUBLICATIONS\n- A paper on delivery [EF1]\n\nCERTIFICATES")
+
+
+def test_the_publications_fixture_passes_the_gate():
+    """A PREMISE of the test below, and the same trap
+    test_the_unparseable_fixture_still_passes_the_gate closes for its own fixture: if
+    this stops being gate-clean, the test below reports skipped-gate for a reason that
+    has nothing to do with the seam and passes for the wrong reason."""
+    assert "PUBLICATIONS" in PUBLICATIONS_CV, "the replace no-opped"
+    bundle_text = render_bundle(build_bundle(
+        entries=ENTRIES, baseline="BASELINE", negatives=[],
+        jd_keywords=[], prefix_map={"Example Foundry": "EF"}))
+    assert validate(PUBLICATIONS_CV, bundle_text) == []
+
+
+@pytest.mark.parametrize("cv_text,why", [
+    ("UNPARSEABLE_CV", "a meta line the template grammar cannot split"),
+    ("PUBLICATIONS_CV", "a section the template grammar does not model -- the exact CV "
+                        "the review measured as skipped-gate under cv.renderer: script"),
+])
+def test_a_renderer_without_precheck_is_not_gated_by_another_renderers_grammar(
+        monkeypatch, cv_text, why):
     """The seam inversion, and the reason `precheck` is a per-renderer hook.
 
     The engine used to call `parse_cv` unconditionally, which is the `template`
@@ -215,22 +246,31 @@ def test_a_renderer_without_precheck_is_not_gated_by_another_renderers_grammar(m
     the full-control escape hatch whose behaviour is out of scope, and an escape hatch
     that enforces the thing it exists to escape is not one.
 
-    UNPARSEABLE_CV is the right fixture precisely because
-    test_the_unparseable_fixture_still_passes_the_gate pins it as gate-CLEAN: the only
-    thing that could stop it rendering here is a grammar this renderer never declared.
-    Asserts on `rend.rendered`, not merely on the status -- "rendered" with an empty
-    renderer would mean the engine reported success having rendered nothing.
+    Both fixtures are pinned gate-CLEAN by their own premise tests above, so the only
+    thing that could stop either rendering here is a grammar this renderer never
+    declared. Asserts on `rend.rendered`, not merely on the status -- "rendered" with an
+    empty renderer would mean the engine reported success having rendered nothing. The
+    second half asserts the template-shaped renderer STILL refuses the same CV: a fix
+    that simply stopped prechecking anything would satisfy the first half alone.
     """
     _served(monkeypatch)
+    cv = globals()[cv_text]
     v = FakeVault(ENTRIES)
     rend = FakeRenderer()          # render() only -- the `script` renderer's shape
     assert not hasattr(rend, "precheck"), "this fixture must NOT declare the optional hook"
-    be = FakeBackend(UNPARSEABLE_CV)
     r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
-                v, _cfg(), be, FakeCache(), renderer=rend)
+                v, _cfg(), FakeBackend(cv), FakeCache(), renderer=rend)
     assert r.status == "rendered", (
-        f"a renderer that declares no grammar was gated by another one's: {r.violations}")
-    assert rend.rendered == [UNPARSEABLE_CV]
+        f"a renderer that declares no grammar was gated by another one's ({why}): "
+        f"{r.violations}")
+    assert rend.rendered == [cv]
+
+    gated = PrecheckingRenderer()
+    r2 = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
+                 FakeVault(ENTRIES), _cfg(), FakeBackend(cv), FakeCache(), renderer=gated)
+    assert r2.status == "skipped-gate" and gated.rendered == [], (
+        "the renderer that DOES declare this grammar stopped enforcing it, so the test "
+        "above proves nothing about where the requirement lives")
 
 
 def test_the_engine_folds_a_precheck_complaint_in_with_the_gates_own():
