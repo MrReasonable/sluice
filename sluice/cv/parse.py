@@ -107,8 +107,18 @@ _DASH = r"\s*[-–]\s*"
 # follows, and `parts[1]`/`parts[2]` below are already accepted as arbitrary non-empty
 # free text -- so strictness concentrated on `parts[0]`'s terminal word alone was never
 # buying anything the prefix does not already buy.
+#
+# The MONTH itself is `\d{1,2}`, not `\d{2}`: validate.py:89's chronology check is
+# `\d{2}/(\d{4})\s*[--]` -- a literal TWO-digit month -- so a single-digit month
+# ("1/2020-present") simply does not match that regex at all. `re.findall` then finds
+# no start year for that entry and silently omits it from the years list; an omitted
+# year can never break the `years == sorted(years, reverse=True)` check, so the gate
+# passes VACUOUSLY rather than failing. A parser requiring exactly two digits was
+# therefore stricter than a gate that does not even notice the entry exists -- the
+# governing bug class again, one field over. `\d{1,2}` closes it for both months in
+# the range (start and end), since nothing pins the end month's width either.
 _DATE_RANGE_RE = re.compile(
-    rf"^\d{{2}}/\d{{4}}{_DASH}(?:\d{{2}}/\d{{4}}|present|current|now)$", re.IGNORECASE)
+    rf"^\d{{1,2}}/\d{{4}}{_DASH}(?:\d{{1,2}}/\d{{4}}|present|current|now)$", re.IGNORECASE)
 
 # A citation the composer wrapped onto its own line (rather than trailing the bullet it
 # belongs to) still needs to disappear -- see the "wrapped" case in
@@ -287,7 +297,18 @@ def parse_cv(text: str) -> CvDocument:
     # whichever recognised header comes next, in a loop, rather than two fixed
     # if-blocks -- see the reversed-order case in tests/test_cv_parse.py.
     sections: dict[str, list[str]] = {}
-    while idx < len(lines) and lines[idx].strip():
+    while idx < len(lines):
+        # Skip a blank run before looking for the next header. compose.py's `_RULES`
+        # format block blank-separates "WORK EXPERIENCE" from its own first entry
+        # (see the fixture header lines above), so a model mirroring that spacing for
+        # CERTIFICATES/EDUCATION is the LIKELY case, not an exotic one -- measured: this
+        # is what a blank line straight after "CERTIFICATES" used to do before this fix,
+        # since the entries loop below never saw past it to find the real entries.
+        while idx < len(lines) and not lines[idx].strip():
+            idx += 1
+        if idx >= len(lines):
+            break
+
         header = next((h for h in _TRAILING_SECTIONS if _is_section(lines[idx], h)), None)
         if header is None or header in sections:
             # Neither a recognised header nor a repeat of one already read. MINOR,
@@ -300,7 +321,17 @@ def parse_cv(text: str) -> CvDocument:
             # the same "unmodelled trailing content" case is reported, not whether it
             # silently drops content that was never captured as a field.
             break
-        idx += 1
+        idx += 1  # consume the header line
+
+        # Skip blank line(s) between the header and its first entry -- see the comment
+        # at the top of this loop. Measured pre-fix: without this, a header immediately
+        # followed by a blank line made the entries loop below see the blank line first,
+        # read zero entries, and (in the version of this fix that shipped before the
+        # re-review caught it) RAISE -- burning a second LLM call to ask the model to
+        # do exactly what it already did, then binning a lead the gate had passed clean.
+        while idx < len(lines) and not lines[idx].strip():
+            idx += 1
+
         # Reuse _BULLET_MARKERS (hyphen/bullet-glyph/asterisk) and the identical
         # optional-space handling WORK bullets use (`[1:].lstrip()`), rather than the
         # narrower `startswith("- ")` this used to be. Measured pre-fix: a missing space
@@ -310,20 +341,34 @@ def parse_cv(text: str) -> CvDocument:
         # marker in either section shipped a PDF silently missing it.
         entries: list[str] = []
         while idx < len(lines) and lines[idx].strip().startswith(_BULLET_MARKERS):
-            entries.append(_strip_cite(lines[idx].strip()[1:].lstrip()))
+            entry = _strip_cite(lines[idx].strip()[1:].lstrip())
+            if entry:
+                # A lone marker with nothing after it ("-" alone) strips to "", which
+                # would otherwise render as an empty `<li>` in the PDF -- dropped rather
+                # than appended, since an empty entry is not content to protect, just
+                # noise the model emitted.
+                entries.append(entry)
             idx += 1
-        if not entries:
-            # A header present with zero recognised entries is the SAME harm as a
-            # missing WORK meta line: content silently absent from a PDF sent under the
-            # user's name -- and the template's `{% if document.certificates %}` guard
-            # then hides even the HEADING, so nothing in the rendered PDF hints anything
-            # was dropped. Refuse, consistent with how a malformed WORK entry is refused
-            # rather than silently skipped, instead of emitting an empty section.
-            raise CvParseError(
-                f"{header} header present but no entries recognised -- expected each "
-                f"entry to start with one of {_BULLET_MARKERS!r}")
+
+        # Skip a trailing blank run before deciding what is next (another header, or
+        # nothing left).
         while idx < len(lines) and not lines[idx].strip():
             idx += 1
+
+        # Refuse ONLY when unrecognised, non-blank content sits directly under this
+        # header -- that is the one case that actually hides real content from the PDF.
+        # A header followed by nothing but blanks, then another header or EOF, has NO
+        # content to drop: it is a legitimately empty section (a candidate who genuinely
+        # holds no certificates has no gate-clean way to satisfy any other verdict here,
+        # and validate() never requires one to exist), so this must yield an empty list,
+        # not a refusal that pressures the model toward inventing content to satisfy a
+        # message it cannot otherwise gate-cleanly answer -- the exact harm the
+        # fabrication gate exists to prevent, reintroduced by a parser refusal.
+        if idx < len(lines) and lines[idx].strip() and not any(
+                _is_section(lines[idx], h) for h in _TRAILING_SECTIONS):
+            raise CvParseError(
+                f"{header}: unrecognised line {lines[idx].strip()!r} -- expected each "
+                f"entry to start with one of {_BULLET_MARKERS!r}")
         sections[header] = entries
     certificates = sections.get("CERTIFICATES", [])
     education = sections.get("EDUCATION", [])

@@ -317,19 +317,119 @@ def test_parse_accepts_a_certificate_marker_with_no_space_after_it():
         "a malformed CERTIFICATES marker must not also delete EDUCATION")
 
 
-def test_parse_refuses_a_header_with_no_recognised_entries():
-    """A CERTIFICATES/EDUCATION header present with zero entries under any recognised
-    marker must REFUSE, not silently emit an empty section: an empty section renders
-    with no heading at all (`{% if document.certificates %}`), so a silent empty list
-    and a genuinely absent section are indistinguishable in the PDF. Uses an en dash,
-    which even WORK bullets do not recognise as a marker (`_BULLET_MARKERS` is
-    `-`/`•`/`*` only) -- a marker the fabrication gate never blesses for either trailing
-    section, so refusing it wastes nothing the gate would have allowed through anyway.
+def test_parse_refuses_unrecognised_content_under_a_trailing_header():
+    """A CERTIFICATES/EDUCATION header with UNRECOGNISED, non-blank content under it
+    (not a bullet-marked entry, not blank, not another recognised header) must REFUSE,
+    not silently drop that content: an empty section also renders with no heading at
+    all (`{% if document.certificates %}`), so a silently-dropped entry and a
+    genuinely empty section would otherwise be indistinguishable in the PDF. Uses an en
+    dash, which even WORK bullets do not recognise as a marker (`_BULLET_MARKERS` is
+    `-`/`•`/`*` only).
+
+    NOTE what this is NOT: "zero entries recognised", full stop, is NOT sufficient
+    reason to refuse -- a header followed by blank lines then EOF or another header is
+    a legitimately empty section (see test_parse_accepts_a_trailing_header_followed_
+    immediately_by_another and its blank-line/EOF sibling below) and must NOT raise.
+    An earlier version of this fix refused on zero entries unconditionally, which
+    reintroduced the exact governing bug class this feature exists to close: a blank
+    line straight after "CERTIFICATES" (which compose.py's own `_RULES` format
+    encourages, since it uses identical spacing after "WORK EXPERIENCE") burned a
+    wasted retry -- the fed-back message told the model to do exactly what it already
+    did -- and then binned a lead the gate had passed clean on the FIRST attempt. This
+    test's en dash is different in kind: it is content the parser genuinely cannot
+    place, not a formatting variant the gate already tolerates.
     """
     text = CV.replace("- Example Cloud Practitioner, 2022", "– Example Cloud Practitioner, 2022")
     assert "– Example Cloud Practitioner" in text, "the replace no-opped"
     with pytest.raises(CvParseError, match="CERTIFICATES"):
         parse_cv(text)
+
+
+def test_parse_accepts_a_blank_line_after_a_trailing_header():
+    """Reproduces the re-review's exact finding against this repo's own gate-clean
+    fixture: `CLEAN_CV` (tests/test_cv_engine.py) gate=PASSes as-is, and a blank line
+    inserted after its CERTIFICATES header must gate=PASS this parser too --
+    compose.py's `_RULES` format block blank-separates "WORK EXPERIENCE" from its own
+    first entry, so a model mirroring that spacing for CERTIFICATES is the LIKELY
+    case, not an exotic one. Using the repo's own gate-clean fixture (rather than the
+    synthetic `CV` above) is what makes the "gate passes, parser must too" property
+    concrete instead of merely asserted.
+
+    Measured pre-fix (the version of the CERTIFICATES/EDUCATION rewrite that shipped
+    before this re-review): this exact input RAISED "CERTIFICATES header present but
+    no entries recognised" -- reproduced end-to-end through cv/engine.py's run_one as
+    status=skipped-gate after TWO compose calls, because the fed-back message told the
+    model to do exactly what it already did.
+    """
+    from tests.test_cv_engine import CLEAN_CV
+    text = CLEAN_CV.replace("CERTIFICATES\n- CSM", "CERTIFICATES\n\n- CSM")
+    assert "CERTIFICATES\n\n- CSM" in text, "the replace no-opped"
+    doc = parse_cv(text)
+    assert doc.certificates == ["CSM"]
+    assert doc.education == ["Uni"]
+
+
+def test_parse_accepts_a_trailing_header_followed_immediately_by_another():
+    """A CERTIFICATES header with nothing under it before EDUCATION starts has NO
+    content to drop -- a candidate who genuinely holds no certificates has no
+    gate-clean way to invent one, and validate() never requires either trailing
+    section to be non-empty. This must yield an empty list, not a refusal: refusing
+    here would feed the model a message it can only satisfy by fabricating content,
+    which is the exact harm the fabrication gate exists to prevent.
+    """
+    text = CV.replace("CERTIFICATES\n- Example Cloud Practitioner, 2022\n\nEDUCATION",
+                      "CERTIFICATES\nEDUCATION")
+    assert "CERTIFICATES\nEDUCATION" in text, "the replace no-opped"
+    doc = parse_cv(text)
+    assert doc.certificates == []
+    assert doc.education == ["Example University, 2010-2013 | BSc Computer Science"]
+
+
+def test_parse_accepts_a_trailing_header_followed_only_by_blank_lines_then_eof():
+    """Same axis, at end of document: a CERTIFICATES header with nothing after it but
+    blank lines and EOF has no content to drop either.
+    """
+    text = CV.replace(
+        "CERTIFICATES\n- Example Cloud Practitioner, 2022\n\n"
+        "EDUCATION\n- Example University, 2010-2013 | BSc Computer Science\n",
+        "CERTIFICATES\n\n")
+    assert text.rstrip("\n").endswith("CERTIFICATES"), "the replace no-opped"
+    doc = parse_cv(text)
+    assert doc.certificates == []
+    assert doc.education == []
+
+
+def test_parse_drops_an_empty_certificate_entry():
+    """A lone marker with nothing after it (`"-"` alone) strips to the empty string,
+    which would otherwise render as a blank `<li>` in the PDF. Dropped rather than
+    appended: an empty entry is not content to protect, just noise the model emitted
+    alongside a real one.
+    """
+    text = CV.replace("- Example Cloud Practitioner, 2022",
+                      "- Example Cloud Practitioner, 2022\n-")
+    assert "2022\n-\n" in text, "the replace no-opped"
+    doc = parse_cv(text)
+    assert doc.certificates == ["Example Cloud Practitioner, 2022"]
+
+
+@pytest.mark.parametrize("meta,expected_dates", [
+    ("1/2021-present | EXAMPLECITY | Staff Engineer", "1/2021-present"),
+    ("03/2021-9/2024 | EXAMPLECITY | Staff Engineer", "03/2021-9/2024"),
+])
+def test_parse_accepts_a_single_digit_month(meta, expected_dates):
+    """validate.py:89's chronology check is `\\d{2}/(\\d{4})\\s*[--]` -- a literal
+    TWO-digit month. A single-digit month does not match that regex at all, so
+    `re.findall` omits the entry from the years list entirely and the reverse-
+    chronological check passes VACUOUSLY rather than failing -- the gate does not
+    merely tolerate this shape, it never notices the entry exists. A parser requiring
+    exactly two digits was stricter than a gate that is blind to the distinction --
+    the governing bug class again, one field over from the dash and the terminal word.
+    """
+    text = CV.replace("03/2021-present | EXAMPLECITY | Staff Engineer", meta)
+    assert meta in text, "the replace no-opped"
+    doc = parse_cv(text)
+    assert doc.work[0].dates == expected_dates
+    assert doc.work[0].title == "Staff Engineer"
 
 
 def test_parse_accepts_education_before_certificates():
