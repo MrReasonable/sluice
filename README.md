@@ -60,8 +60,11 @@ Sluice currently assumes:
 - an Obsidian-style markdown vault as the lead and experience store
 - a Claude CLI backend (run locally or shelled out over SSH) for the LLM
   judge and composer, with a cheaper per-token backend as fallback
-- an external WeasyPrint render script you supply, for turning a composed
-  CV into a PDF
+- a bundled renderer (`cv.renderer: template`, the default) that fills your
+  own Jinja2 template -- or the packaged one, if you don't supply one -- with
+  the composed CV and turns it into a PDF via WeasyPrint; `script`, shelling
+  out to an external render pipeline you supply, remains as a full-control
+  escape hatch
 - a browser for ATS forms: an automated browser for ingest sourcing, and a
   human at the keyboard for filling in application forms
 - a Google OAuth token for track's Gmail and Calendar access
@@ -69,7 +72,10 @@ Sluice currently assumes:
 Each of those is a seam meant to become a pluggable adapter. The roadmap:
 
 - **SP2**: LLM API backend adapter (replace the CLI shell-out with a direct API client)
-- **SP3**: bundled renderer (ship a renderer instead of depending on an external script)
+- **SP3**: bundled renderer (ship a renderer instead of depending on an external script) -- DONE:
+  `cv.renderer: template` fills a Jinja2 template via WeasyPrint; see Rendering
+  prerequisites below. `script` (the pre-SP3 external-script renderer) remains as an
+  escape hatch.
 - **SP4**: store adapter (a pluggable store behind the Obsidian vault)
 - **SP5**: fetch/browser adapter (a pluggable browser automation layer)
 - **SP6**: docs and CI
@@ -133,6 +139,42 @@ work; every `track` command refuses, dry runs included.
 That only applies where sluice picked the location itself. If you name a path --
 an environment variable or a config key -- it is used as given, with no warning
 and no refusal, because there is nothing to migrate from.
+
+## Rendering prerequisites
+
+`cv.renderer` defaults to `template`: sluice fills a Jinja2 template -- the packaged
+default, or your own via `cv.template`, e.g. `docs/cv-template-example.html.j2` -- with
+the parsed, fabrication-gated CV, then hands the result to WeasyPrint to produce a PDF.
+That needs an extra `pip install` cannot skip:
+
+```bash
+pip install 'sluice[render]'
+```
+
+...and, separately, WeasyPrint's own **system** libraries -- cairo, pango, and
+gdk-pixbuf. Those are **not** a Python dependency and cannot be made one (WeasyPrint
+links against them natively), so install them with your platform's package manager
+(Homebrew on macOS, `apt`/`dnf` on Linux -- see WeasyPrint's own installation docs for
+the exact package names on your system).
+
+**macOS, measured rather than assumed:** with cairo/pango/gdk-pixbuf installed via
+Homebrew, `import weasyprint` still failed until the dynamic linker was told where to
+find them:
+
+```bash
+export DYLD_FALLBACK_LIBRARY_PATH="$(brew --prefix)/lib"
+```
+
+None of this is new work removing a real limitation -- a bare `pip install sluice`
+still cannot produce a PDF, because those system libraries sit outside pip's reach no
+matter what this project ships. What changed is *when* the failure surfaces: selecting
+`template` (or `script`) with the extra or the libraries missing now raises at renderer
+construction, before a CV is ever composed, instead of arriving silently after an LLM
+composition and a fabrication-gate pass have already spent tokens on a CV that was
+never going to render.
+
+`cv.renderer: script` remains available if you would rather shell out to your own
+render pipeline than use `template`; see `sluice.yaml.example`.
 
 ## Configuration
 
