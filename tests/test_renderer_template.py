@@ -219,6 +219,38 @@ def test_the_shipped_template_sweep_covers_every_route_into_a_users_install():
     # makes it a witness rather than decoration.
     ("<p style=\"content: 'no agencies please'\"></p>",
      "...in a style ATTRIBUTE, which tag-stripping would otherwise erase"),
+    # ── round 2: the guard was still denylisting SYNTAX SHAPES ────────────────────
+    # Every row below was measured GREEN against the previous version of the harvest,
+    # which knew about the `content` property and nothing else, and deleted Jinja code
+    # wholesale on the premise that its output is always the gate-approved CvDocument.
+    ('{{ "seeking a remote-first Rust role, no agencies" }}',
+     "a Jinja STRING LITERAL. Measured through the real jinja2 and the shipped template: "
+     "planted after the <h1> line it renders VERBATIM into the HTML, and all nine "
+     "assertions in this file stayed green -- the premise that a Jinja block's output is "
+     "always CvDocument holds for a field reference and fails for a literal"),
+    ('{% set blurb = "no agencies please" %}',
+     "...in a STATEMENT rather than an expression, since the harvest must not depend on "
+     "which of the two delimiters the author reached for"),
+    ("{{ document.name | default('Anonymous Contractor') }}",
+     "...as a FILTER argument, which is the spelling a template author is most likely to "
+     "reach for innocently and the one that reads least like planted text"),
+    ('<style>li { list-style-type: "no agencies "; }</style>',
+     "CSS list-style-type: a word printed before EVERY bullet, and not `content:`"),
+    ('<style>h1 { string-set: hdr "seeking remote Rust work"; }'
+     " @page { @top-center { content: string(hdr); } }</style>",
+     "CSS string-set + a running header: the words are in the string-set declaration, "
+     "and the `content:` that prints them on every page carries no literal at all"),
+    ('<style>q { quotes: "no agencies" "please"; }</style>',
+     "CSS quotes: two literals, both drawn around quoted text"),
+    ('<style>h1 { bookmark-label: "seeking remote Rust work"; }</style>',
+     "CSS bookmark-label: into the PDF OUTLINE rather than the page, which is still text "
+     "shipped under the user's name"),
+    ("<p style=\"list-style-type: 'no agencies'\"></p>",
+     "...and a non-`content` property in a style ATTRIBUTE, so the generalisation and the "
+     "attribute route are both live at once rather than only in combination with each other"),
+    ("<svg><text>no agencies please</text></svg>",
+     "an SVG text node -- caught by the ordinary markup path, and pinned so the docstring's "
+     "residual list stays honest about which routes really are residual"),
 ])
 def test_the_no_content_guard_catches_planted_content(planted, why):
     """POSITIVE CONTROLS. The guard above is NEGATIVE -- it passes when it finds nothing
@@ -238,11 +270,106 @@ def test_the_no_content_guard_catches_planted_content(planted, why):
     assert not leftover_content(planted + text) <= composer_headings(), why
 
 
+def test_the_no_content_strip_still_has_exactly_one_definition():
+    """The sharing itself, asserted STRUCTURALLY instead of by convention.
+
+    This helper existed as two copies once, and a review found the identical bug in both:
+    that is why it was extracted. A comment saying "shared" does not stop the next author
+    inlining a variant, and round 2 of the review found TWO more bugs in the same strip --
+    if either had had to be fixed twice, one copy would still be wrong.
+
+    ENUMERATES from the source: every module under tests/ that so much as MENTIONS
+    `leftover_content` must either BE the canonical module or take it from there by
+    import. A hand-list of the two known consumers would walk straight past a third.
+    """
+    import ast
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent
+    canonical = root / "template_content.py"
+    assert canonical.is_file(), "the canonical module moved; this guard checks nothing"
+
+    mentions, definers, importers = set(), set(), set()
+    for path in sorted(root.rglob("*.py")):
+        src = path.read_text(encoding="utf-8")
+        if "leftover_content" not in src:
+            continue
+        mentions.add(path)
+        for node in ast.walk(ast.parse(src, filename=str(path))):
+            if isinstance(node, ast.FunctionDef) and node.name == "leftover_content":
+                definers.add(path)
+            # Both import spellings, so `import tests.template_content as tc` is not a
+            # hole -- and `... import leftover_content as _lc` is covered too, because
+            # `alias.name` is the ORIGINAL name, not the local binding.
+            elif isinstance(node, ast.ImportFrom) and (node.module or "") == \
+                    "tests.template_content":
+                importers.add(path)
+            elif isinstance(node, ast.Import) and any(
+                    a.name == "tests.template_content" for a in node.names):
+                importers.add(path)
+
+    assert len(mentions) > 1, (
+        "only one module mentions leftover_content -- either the consumers were deleted "
+        "or this sweep stopped matching, and for a structural guard those look identical")
+    assert definers == {canonical}, (
+        f"leftover_content is defined outside {canonical.name}: "
+        f"{sorted(str(p.relative_to(root)) for p in definers - {canonical})}. It was two "
+        f"copies once and the same bug lived in both -- import it, do not re-implement it.")
+    assert mentions - importers == {canonical}, (
+        f"{sorted(str(p.relative_to(root)) for p in mentions - importers - {canonical})} "
+        f"uses the name leftover_content without importing it from tests.template_content")
+
+
+@pytest.mark.parametrize("planted,why", [
+    ('<style>.x::after { content: attr(data-blurb); }</style>'
+     '<p class="x" data-blurb="no agencies"></p>',
+     "content: attr() -- the words live in an HTML ATTRIBUTE, and attribute values are "
+     "erased with their tag; harvesting them would mean flagging every class and href"),
+    ('<img src="missing.png" alt="no agencies please">',
+     "an alt attribute WeasyPrint may fall back to -- same place, same reason"),
+])
+def test_the_no_content_guards_known_residual_is_pinned_not_assumed(planted, why):
+    """The RESIDUAL, executable rather than asserted in prose.
+
+    `leftover_content`'s docstring names exactly two routes it structurally cannot see,
+    and a docstring is not a check -- a claim about a limit goes stale in silence the same
+    way a claim about a mechanism does, which is this repo's named defect class and the
+    reason this round exists at all. So the limit is a test: these rows MUST pass the
+    guard today, and the day one of them stops passing, someone has widened the harvest
+    and owes the docstring an edit.
+
+    This is a statement about the HARVEST, deliberately not about WeasyPrint: whether a
+    given build actually draws these is not measured here (no WeasyPrint in the offline
+    suite), and claiming it would be exactly the overreach being pinned against.
+    """
+    from tests.template_content import (composer_headings, leftover_content,
+                                        packaged_templates)
+
+    _, text = packaged_templates()[0]
+    assert leftover_content(planted + text) <= composer_headings(), (
+        f"the guard now catches this route ({why}) -- good, but leftover_content's "
+        f"docstring still lists it as a residual it cannot see. Update the docstring.")
+
+
 @pytest.mark.parametrize("benign", [
     "<style>.role::after { content: \"\"; }</style>",
     "<style>.meta span + span::before { content: \" | \"; }</style>",
     "<style>.bullets li::before { content: \"\\2022\"; }</style>",
     "<style>.name::after { content: \"{{ document.name }}\"; }</style>",
+    # The two exemptions the generalised property harvest carries, and they are what stop
+    # it from redding on a clean tree: BOTH shipped templates already name a font in
+    # quotes ("DejaVu Sans", "Times New Roman"). A guard that reds on a healthy repo is
+    # not a stricter guard, it is one people delete.
+    "<style>body { font-family: \"DejaVu Sans\", Helvetica; }</style>",
+    "<style>@font-face { src: url(\"Example Sans.woff2\"); font-family: \"Example Sans\"; }"
+    "</style>",
+    "<style>body { background: url(\"example-watermark.png\"); }</style>",
+    # Jinja that is a FIELD REFERENCE rather than a literal: its output is the candidate's
+    # own gate-approved CvDocument, so deleting it is correct and must stay correct.
+    "{% for role in document.work %}{{ role.company }}{% endfor %}",
+    # A Jinja COMMENT reaches no page at all -- the engine discards it before rendering --
+    # and both shipped templates open with a long one explaining their layout choices.
+    "{# a template author's note about why this layout is single-column #}",
 ])
 def test_the_no_content_guard_spares_punctuation_and_cv_data(benign):
     """NEGATIVE controls, and they are what stop the fix above from being useless.
