@@ -10,34 +10,51 @@ render-related or not, so a module-scope import of either would break commands t
 never touch rendering. Both are imported lazily, inside `_make`, and `TemplateRenderer`
 itself imports jinja2 lazily too so it stays constructible directly (as the tests do)
 without going through `_make` at all.
+
+It also implements the Renderer seam's OPTIONAL `precheck` hook (see
+`sluice/core/protocols.py`), which is how the meta-line grammar below stays THIS
+renderer's requirement instead of the engine's. `script` implements no counterpart and
+is deliberately not gated by it.
 """
 import os
 
 from sluice.core import plugins
-from sluice.cv.parse import parse_cv
+from sluice.cv.parse import CvParseError, parse_cv
 from sluice.renderers import register
 from sluice.renderers.script import RenderError  # one error type for the whole seam
 
-_MISSING_EXTRA = "renderer 'template' requires the render extra: pip install 'sluice[render]'"
+_PACKAGED_DEFAULT = "cv_plain.html.j2"
+
+# Covers BOTH ways the backend fails to load, because the fix differs and only one of
+# them is a pip problem. Naming only the extra sent a user with the extra already
+# installed hunting for a package they had -- see `_make`, and README's Rendering
+# prerequisites for the macOS loader-path case this text points at.
+_MISSING_EXTRA = (
+    "renderer 'template' could not load its rendering backend: pip install "
+    "'sluice[render]'. If that extra is ALREADY installed, WeasyPrint additionally needs "
+    "its native libraries (cairo, pango, gdk-pixbuf), which are not Python packages and "
+    "cannot be installed by pip -- see README.md's 'Rendering prerequisites', including "
+    "the macOS DYLD_FALLBACK_LIBRARY_PATH step that is needed even once Homebrew has "
+    "installed them. Or set cv.renderer: script to use your own render script instead."
+)
 
 
 class TemplateRenderer:
     """Fills a user's Jinja2 template with a parsed CvDocument and writes the PDF via
-    WeasyPrint. html_module/css_module are the WeasyPrint HTML/CSS classes (or fakes, in
-    tests) -- injected rather than imported here, exactly like `WeasyPrintRenderer`, so
-    this class can be constructed and unit-tested with no native libraries installed at
-    all."""
+    WeasyPrint. html_module is the WeasyPrint HTML class (or a fake, in tests) --
+    injected rather than imported here, so this class can be constructed and
+    unit-tested with no native libraries installed at all."""
 
-    def __init__(self, template_path, *, html_module, css_module):
-        # html_module/css_module mirror WeasyPrintRenderer's injected-class constructor
-        # shape, keeping the two renderer implementations swappable and testable the
-        # same way. css_module is stored but never called: this renderer's CSS lives
-        # inline in the template's own <style> block (cv_plain.html.j2 carries one, and
-        # a user template is free to carry its own), and WeasyPrint parses <style> tags
-        # out of the rendered HTML string automatically -- there is no separate
-        # stylesheet to hand it.
+    def __init__(self, template_path, *, html_module):
+        # Only HTML is injected. A `css_module` parameter sat here too, stored and never
+        # called, justified by a comment saying it mirrored `WeasyPrintRenderer`'s
+        # constructor shape -- and `WeasyPrintRenderer` is deleted in the same change that
+        # introduced this class, so the reason was false the moment it was written. This
+        # renderer's CSS lives inline in the template's own <style> block (cv_plain.html.j2
+        # carries one, and a user template is free to carry its own) and WeasyPrint parses
+        # <style> out of the rendered HTML string itself: there is no separate stylesheet
+        # to hand it, and so nothing for a CSS class to do.
         self._HTML = html_module
-        self._CSS = css_module
 
         # template_path=None/"" -> the packaged default. An explicitly named path must
         # be a FILE at construction time, not merely exist -- isfile, not exists():
@@ -46,6 +63,14 @@ class TemplateRenderer:
         # whole point of this check: a render failure must not surface only after the
         # LLM has already composed a CV and it has passed the fabrication gate.
         if template_path:
+            # expanduser at INGRESS, which is this project's rule for a path a user
+            # names (core/paths.py:30 states it, and this is a new ingress site). `~`
+            # is expanded by a SHELL, not by open(), so `cv.template: ~/mine.html.j2`
+            # in a YAML file reaches here literally and reported "is not a file" for a
+            # file that plainly exists. Expanded before the isfile check, so the check
+            # and the open agree, and before `_template_name` below, so an error names
+            # the path actually opened.
+            template_path = os.path.expanduser(template_path)
             if not os.path.isfile(template_path):
                 raise RenderError(
                     f"renderer 'template': cv.template is not a file: '{template_path}'. "
@@ -60,20 +85,36 @@ class TemplateRenderer:
             # merely a source checkout) -- see sluice/templates/__init__.py and the
             # design doc's Packaging section, both of which exist so this actually ships
             # in a wheel rather than only working from a checkout.
+            #
+            # Wrapped, because THIS is the branch every user takes. An install whose
+            # package-data went missing (the exact failure tests/test_packaging.py
+            # guards) raised a bare FileNotFoundError naming a path inside site-packages,
+            # while the explicitly-named branch above raised a RenderError that says what
+            # to do. The seam's callers handle RenderError; a stray OSError crossing the
+            # seam is the untyped failure this renderer exists to stop producing.
             from importlib.resources import files
-            text = files("sluice.templates").joinpath("cv_plain.html.j2").read_text(
-                encoding="utf-8")
+            try:
+                text = files("sluice.templates").joinpath(_PACKAGED_DEFAULT).read_text(
+                    encoding="utf-8")
+            except OSError as e:
+                raise RenderError(
+                    f"renderer 'template': the packaged default template "
+                    f"(sluice.templates:{_PACKAGED_DEFAULT}) could not be read: {e}. This "
+                    f"install is missing its package data; reinstall sluice, or set "
+                    f"cv.template to your own Jinja2 template."
+                ) from e
 
         # jinja2 imported here, not at module scope, and not only in `_make`: this class
         # must stay constructible directly (as every test in this module does) without
         # requiring a caller to go through the seam factory first.
         from jinja2 import Environment, StrictUndefined
+        from jinja2.exceptions import TemplateError
 
         # Named for the RenderError below: a StrictUndefined failure must say WHICH
         # template broke, and the packaged default has no filesystem path a user can
         # act on -- name it explicitly rather than letting an error print None/"".
         self._template_name = (
-            template_path or "sluice.templates:cv_plain.html.j2 (packaged default)")
+            template_path or f"sluice.templates:{_PACKAGED_DEFAULT} (packaged default)")
 
         # autoescape=True, UNCONDITIONALLY -- never select_autoescape(). Measured (see
         # the task report): select_autoescape()('cv_plain.html.j2') is False, because it
@@ -94,15 +135,53 @@ class TemplateRenderer:
         # unescaped character. `CvDocument` (sluice/cv/parse.py) always populates every
         # field its dataclasses declare, so StrictUndefined has nothing legitimate left
         # to break: every attribute a template can reach is guaranteed present.
-        self._template = Environment(
-            autoescape=True, undefined=StrictUndefined).from_string(text)
+        #
+        # `from_string` COMPILES, so an unclosed `{% for %}` raises here, at construction
+        # -- which is where this renderer wants every failure it can move. Wrapped
+        # because `from_string` carries NO filename: jinja2's own TemplateSyntaxError
+        # says `File "<template>", line 4`, so the raw exception loses exactly the thing
+        # `_template_name` exists to supply, and a user with several templates cannot
+        # tell which one broke. Re-raised with the original as `__cause__`, so the line
+        # number and the jinja2 traceback are still there for anyone who wants them.
+        try:
+            self._template = Environment(
+                autoescape=True, undefined=StrictUndefined).from_string(text)
+        except TemplateError as e:
+            raise RenderError(
+                f"renderer 'template': {self._template_name} is not valid Jinja2: {e}"
+            ) from e
+
+    def precheck(self, cv_text: str) -> list[str]:
+        """The Renderer seam's OPTIONAL grammar hook -- see core/protocols.py.
+
+        cv/engine.py calls this inside its compose/gate retry loop and folds the result
+        in with the fabrication gate's violations, so a CV this renderer cannot lay out
+        is re-composed once rather than discovered at render time, after the LLM spend
+        and past the only retry there is.
+
+        NOT a second fabrication gate, and it must never become one: it reports what
+        `parse_cv` reports, which is SHAPE only (see sluice/cv/parse.py's module
+        docstring). The `FORMAT:` prefix matches the shape the engine's other gate
+        messages take, since the string is prompt text fed straight back to the model.
+
+        `script` deliberately has no counterpart. It shells out to arbitrary user code
+        and has no grammar of its own to impose, and the engine applying THIS renderer's
+        grammar to it was measured to report `skipped-gate` on a gate-clean CV that the
+        operator's own script would have rendered.
+        """
+        try:
+            parse_cv(cv_text)
+        except CvParseError as e:
+            return [f"FORMAT: {e}"]
+        return []
 
     def render(self, cv_text: str, out_dir: str, *, neutral_name: str = "CV.pdf") -> str:
         # parse_cv, not a second gate: the fabrication gate has already run on cv_text by
         # the time any renderer sees it (see sluice/cv/parse.py's module docstring). A
-        # SHAPE this parser cannot model raises CvParseError, which cv/engine.py's
-        # existing single retry handles exactly like a gate violation -- this renderer
-        # neither catches it nor treats it specially, and never validates facts itself.
+        # SHAPE this parser cannot model raises CvParseError -- which `precheck` above
+        # has already reported to cv/engine.py's retry loop, so reaching this call with
+        # an unparseable CV means the retry was exhausted and the engine chose not to
+        # render. Left uncaught deliberately: it is the loud failure, not the silent one.
         document = parse_cv(cv_text)
         os.makedirs(out_dir, exist_ok=True)
         pdf_path = os.path.join(out_dir, neutral_name)
@@ -130,24 +209,30 @@ class TemplateRenderer:
 
 
 def _make(cvcfg):
-    # jinja2 checked FIRST, in its own statement, before weasyprint is even named:
+    # OSError alongside ImportError, and it is the one that actually fires in the field:
     # importing weasyprint without its native libraries (cairo/pango/gobject) raises
-    # OSError, not ImportError -- measured 2026-08-06 on this machine, no
-    # DYLD_FALLBACK_LIBRARY_PATH set -- and that would blow straight through an
-    # `except ImportError` below. Checking jinja2 first, and letting a missing jinja2
-    # short-circuit the statement before weasyprint's import ever runs, means a missing
-    # jinja2 alone is reported cleanly without ever touching weasyprint's import at all.
+    # `OSError: cannot load library 'libgobject-2.0-0'`, NOT ImportError -- measured
+    # 2026-08-06 on a machine with the render extra installed and no
+    # DYLD_FALLBACK_LIBRARY_PATH set. Catching ImportError alone let that escape the seam
+    # as a raw cffi OSError, which defeats this feature's whole claim that a render
+    # failure is now loud and diagnosable AT CONSTRUCTION rather than after the LLM
+    # spend. It is also the single likeliest real failure, because those libraries are
+    # not Python dependencies and no `pip install` can supply them.
+    #
+    # jinja2 stays FIRST, in its own statement: a missing jinja2 short-circuits before
+    # weasyprint's import runs at all, so the two failures cannot be confused for each
+    # other while the message covers both.
     try:
         import jinja2  # noqa: F401  -- imported only to prove the extra is installed;
         # TemplateRenderer imports Environment again itself when it actually builds one.
-        from weasyprint import CSS, HTML
-    except ImportError as e:
-        raise RenderError(_MISSING_EXTRA) from e
+        from weasyprint import HTML
+    except (ImportError, OSError) as e:
+        raise RenderError(f"{_MISSING_EXTRA} (underlying error: {e})") from e
     # CvConfig.template now exists (blank means "use the packaged default", per
     # TemplateRenderer's own constructor check), so read it directly -- the earlier
     # `getattr` defence only existed because the config field had not landed yet.
     template_path = cvcfg.template or None
-    return TemplateRenderer(template_path, html_module=HTML, css_module=CSS)
+    return TemplateRenderer(template_path, html_module=HTML)
 
 
 register("template", _make)

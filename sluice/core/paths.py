@@ -27,12 +27,16 @@ behaviour change smuggled into a path sweep.
 NORMALISATION, stated once here because it was four separate decisions with no shared
 home and two of them read as contradicting each other:
 
-    expanduser at INGRESS -- wherever a path first arrives from outside. FIVE sites, and
-    `tests/test_path_tilde.py` enumerates them from the source rather than trusting this
-    list, because the first version of this paragraph said four and was wrong the day it
-    was written: this module's explicit branch and its XDG fallback, `Vault.__init__`,
-    `onboard/questions.py`, and `cli.py` (both its `--vault`-versus-`$VAULT_DIR`
-    comparison and the preset it hands `sluice init`).
+    expanduser at INGRESS -- wherever a path first arrives from outside: this module's
+    explicit branch and its XDG fallback, `Vault.__init__`, `onboard/questions.py`,
+    `cli.py` (both its `--vault`-versus-`$VAULT_DIR` comparison and the preset it hands
+    `sluice init`), and `renderers/template.py` (`cv.template`, read out of YAML where
+    no shell expanded it). Deliberately NO count: this paragraph has carried a wrong
+    one twice -- it said four when there were five, and five when a sixth landed -- and
+    nothing went red either time, because a number in prose is not a check.
+    `tests/test_path_tilde.py::test_the_expanduser_roster_matches_the_source` enumerates
+    the sites from the source and fails in both directions, which is the only form of
+    this claim that can go stale loudly.
     abspath ONLY where the value outlives the cwd it was read in -- either written down
     or compared. `questions.py` and `cli.py`'s preset write the answer into a config
     file; `cli.py`'s comparison needs two spellings to be judged equal. Neither is true
