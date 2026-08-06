@@ -143,8 +143,10 @@ triage:
 # or a neutral placeholder by default.
 # cv:
 #   # Which renderer fills the seam.
-#   #   template - fills YOUR Jinja2 template with the parsed CV, via WeasyPrint. This is
-#   #              the default: sluice supplies the content (the fabrication-gated
+#   #   template - fills a Jinja2 template with the parsed CV, via WeasyPrint. This is the
+#   #              default, and it works out of the box: leave `template` below blank and
+#   #              it renders the PACKAGED layout; point it at your own .html.j2 file to
+#   #              use yours instead. sluice supplies the content (the fabrication-gated
 #   #              CvDocument), never the layout -- shipping a CV design would be the same
 #   #              mistake as shipping an opinion about which jobs are good. Needs
 #   #              `pip install 'sluice[render]'`; WeasyPrint's system libraries (cairo,

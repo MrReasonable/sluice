@@ -140,7 +140,14 @@ def load_cv_config(path: str | None = None) -> CvConfig:
     # default could silently change an operator's output, so refuse rather than guess --
     # inferring `renderer: script` from the presence of render_script would be an
     # implicit coupling between two keys, which is its own quiet wrong default.
-    if "render_script" in data and "renderer" not in data:
+    # `.get(...) is not None`, NOT `in data`: `render_script:` with nothing after it
+    # parses as None, and a half-edited or commented-out value is an ordinary thing to
+    # leave in a config file. Membership alone raised on a file that sets NOTHING, which
+    # is the state this guard exists to wave through -- the setattr loop below skips None
+    # too, so a valueless key must load exactly like an absent one. Same reasoning, and
+    # the same spelling, as the `compose_timeout` validator below; the loader's contract
+    # is pinned by test_a_valueless_key_never_becomes_None.
+    if data.get("render_script") is not None and "renderer" not in data:
         raise ValueError(
             "cv.render_script is set but cv.renderer is not, and the default renderer is "
             "now `template` (it was `script`). Add `cv.renderer: script` to keep using "

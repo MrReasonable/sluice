@@ -46,6 +46,26 @@ def test_render_script_with_an_explicit_renderer_is_accepted(tmp_path, monkeypat
     assert cfg.renderer == "script" and cfg.render_script == "./my_render.py"
 
 
+def test_a_valueless_render_script_does_not_trip_the_migration_guard(tmp_path, monkeypatch):
+    """`render_script:` with nothing after it is YAML null, and a commented-out or
+    half-edited value is an ordinary thing to leave in a config file.
+
+    The guard keyed on `"render_script" in data`, which is True for None -- so a file
+    that sets NOTHING raised, telling the operator to add `cv.renderer: script` to keep
+    a render script they had already removed. The setattr loop skips None, so a valueless
+    key must load exactly like an absent one; that contract is why
+    `test_a_valueless_key_never_becomes_None` exists, and this guard sat outside it
+    because it runs BEFORE the loop.
+    """
+    p = tmp_path / "sluice.yaml"
+    p.write_text("cv:\n  render_script:\n", encoding="utf-8")
+    monkeypatch.setenv("SLUICE_CONFIG", str(p))
+    cfg = load_cv_config(str(p))
+    assert cfg.renderer == "template", "an unset key changed the default renderer"
+    assert cfg.render_script == CvConfig().render_script, (
+        "a valueless key overwrote the code default instead of being skipped")
+
+
 def test_selecting_the_retired_weasyprint_name_names_template():
     """A BARE registry removal cannot produce this message: `plugins.get`'s unknown-name
     error lists the VALID names and would never mention `template`, so "raises, naming
