@@ -374,7 +374,23 @@ consistently engineers out; see `_select_backend`'s guard in `cli.py`.
 - Comments explain *why* — the invariant being upheld, the bug being prevented, the trade-off taken.
   The existing code is dense with them and several encode real incidents; match that density rather
   than stripping it.
-- Conventional commits (`fix(triage): ...`, `ci: ...`, `docs: ...`).
+- Conventional commits (`fix(triage): ...`, `ci: ...`, `docs: ...`). These are not decoration
+  since #12: release-please reads the subjects to decide the next version and to draft the
+  changelog, so a mistyped type silently changes what gets released.
+- **The version has ONE home: `sluice/__init__.py`.** `pyproject.toml` declares `dynamic` and
+  setuptools reads that attribute statically, so `pip show sluice` and `sluice --version` cannot
+  disagree — there is no second value to drift from. The line carries an
+  `# x-release-please-version` marker and `release-please-config.json` lists the file in
+  `extra-files`; BOTH are required, they are independent, and losing either stops the bump while
+  the release PR still opens and the changelog still updates. `tests/test_release_version.py`
+  pins the pair, enumerating marker-carrying files by walk rather than naming the path.
+- **Releases are cut by merging release-please's PR**, never by tagging from a shell: the tag and
+  the version are written by the same tool in the same commit. Edit the generated changelog entry
+  IN that PR before merging — a `fix(vault): ...` subject cannot say that a config now means
+  something different, and a breaking CONFIG change outranks a breaking API change here. Note the
+  PR needs a token that is not the default `GITHUB_TOKEN`, or the `qa-gates` ruleset blocks it
+  forever: GitHub raises no workflow runs from `GITHUB_TOKEN` events, so `ci-success` never
+  reports on it.
 - Tests assert on behaviour, not merely that code runs. Fixtures stay synthetic.
 - The four adapter seams (backend, store, renderer, fetcher — the config keys, and the
   `_STORE_SEAM`/`_FETCHER_SEAM`/`_RENDERER_SEAM` constants in `core/app.py`) are each a name-keyed

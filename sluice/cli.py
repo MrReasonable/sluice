@@ -17,6 +17,7 @@ import os
 import sys
 from dataclasses import asdict
 
+from sluice import __version__
 from sluice.core.config import load_config
 from sluice.core.health import HealthStore
 from sluice.core.log import get_logger, notify
@@ -909,6 +910,17 @@ def _print_doctor(report, *, offline) -> None:
 # ── argument parsing ─────────────────────────────────────────────────────────
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="sluice")
+    # `sluice --version` is what a user pastes into a bug report, so it must answer without
+    # demanding a subcommand -- argparse's version action fires while parsing and exits
+    # before the required-subcommand check is reached. That is a property of the ACTION,
+    # not of where this line sits: an earlier comment here claimed the placement was what
+    # made it work, and moving the call below `add_subparsers` left the suite green and the
+    # behaviour identical. Deleting the line is what reds it, which is the property the
+    # test asserts.
+    #
+    # Reads the ONE version literal (sluice/__init__.py); pyproject derives from the same
+    # attribute, so this cannot disagree with `pip show sluice`.
+    p.add_argument("--version", action="version", version=f"sluice {__version__}")
     top = p.add_subparsers(dest="group", required=True)
 
     ingest = top.add_parser("ingest", help="ingestion commands").add_subparsers(
