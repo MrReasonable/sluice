@@ -139,19 +139,61 @@ def test_parse_does_not_silently_misassign_fields(mutation, replacement, field, 
     assert doc.work[0].bullets == ["Cut p99 latency to 120ms", "Grew the team from 3 to 8"]
 
 
-@pytest.mark.parametrize("dash", ["-", "–", " – ", " - "])
-def test_parse_accepts_every_date_dash_the_gate_accepts(dash):
-    """The gate at cv/validate.py:89 matches `\\d{2}/(\\d{4})\\s*[--]` -- EN DASH or
-    hyphen, with optional surrounding whitespace -- and this repo's own CLEAN_CV fixture
-    uses the EN DASH. A parser that took the spec's literal `MM/YYYY-MM/YYYY` would raise
-    on a CV the gate PASSES, sending every lead through a pointless retry and then to
-    skipped-gate: the feature would compose CVs and bin all of them.
+@pytest.mark.parametrize("variant", [
+    # The SEPARATOR axis: the gate at cv/validate.py:89 matches `\d{2}/(\d{4})\s*[--]`
+    # -- EN DASH or hyphen, with optional surrounding whitespace -- and this repo's own
+    # CLEAN_CV fixture uses the EN DASH. A parser that took the spec's literal
+    # `MM/YYYY-MM/YYYY` would raise on a CV the gate PASSES, sending every lead through
+    # a pointless retry and then to skipped-gate: the feature would compose CVs and bin
+    # all of them.
+    "03/2021-present", "03/2021–present", "03/2021 – present", "03/2021 - present",
+    # The TERMINAL-TOKEN axis: validate.py's date check is a plain `re.findall` over
+    # START years and never inspects what follows the dash, so nothing upstream pins
+    # the open-ended token's casing or spelling. compose.py's `_RULES` gives the model
+    # NO slot for an open-ended range at all (`MM/YYYY-MM/YYYY`), so it must improvise
+    # one for the current role -- and every CV has a current role. Measured: all of
+    # these compose and pass the gate; before this fix, every row but the first here
+    # was refused by the parser.
+    "03/2021-Present", "03/2021-PRESENT", "03/2021-Current", "03/2021-current",
+    "03/2021-now", "03/2021-NOW",
+])
+def test_parse_accepts_every_date_dash_the_gate_accepts(variant):
+    """Both axes the gate is silent on -- separator character and terminal-token
+    spelling/casing -- must be accepted here, or a CV the gate certifies clean composes,
+    passes the gate, and is then silently binned right here. Test the AXIS: every
+    variant the gate accepts, not one specific string.
     """
-    text = CV.replace("03/2021-present", f"03/2021{dash}present")
-    assert f"03/2021{dash}present" in text, "the replace no-opped"
+    text = CV.replace("03/2021-present", variant)
+    assert variant in text, "the replace no-opped"
     doc = parse_cv(text)
     assert doc.work[0].title == "Staff Engineer"
     assert doc.work[0].location == "EXAMPLECITY"
+
+
+@pytest.mark.parametrize("canonical,drifted", [
+    ("PROFILE", "Profile"),
+    ("WORK EXPERIENCE", "Work Experience"),
+    ("CERTIFICATES", "Certificates"),
+    ("EDUCATION", "Education"),
+])
+def test_parse_accepts_case_drifted_section_headers(canonical, drifted):
+    """validate.py:99-108 upper-cases every section header before comparing (`u =
+    line.strip().upper()`), and engine.py's own two structural guards (~140, ~147)
+    deliberately mirror that -- so a CV titled "Work Experience" (title case) is exactly
+    as gate-clean as one titled "WORK EXPERIENCE". Before this fix the four section
+    comparisons in parse_cv were exact-string, so every row here PASSED the gate and was
+    REFUSED here: composed, gated, wasted the engine's one retry (the retry cannot help,
+    since nothing in cv/compose.py's `_RULES` pins the exact casing to reproduce), then
+    binned skipped-gate. Test the AXIS -- every header the gate recognises
+    case-insensitively -- not one specific string.
+    """
+    text = CV.replace(canonical, drifted)
+    assert drifted in text and canonical not in text, "the replace no-opped"
+    doc = parse_cv(text)
+    assert doc.name == "EXAMPLE PERSON"
+    assert len(doc.work) == 2
+    assert doc.certificates == ["Example Cloud Practitioner, 2022"]
+    assert doc.education == ["Example University, 2010-2013 | BSc Computer Science"]
 
 
 def test_parse_accepts_the_repos_own_gate_clean_fixture():
@@ -234,3 +276,78 @@ def test_parse_raises_on_an_empty_meta_field():
     assert "03/2021-present | EXAMPLECITY | \n" in text, "the replace no-opped"
     with pytest.raises(CvParseError, match="meta line"):
         parse_cv(text)
+
+
+@pytest.mark.parametrize("marker", ["•", "*"])
+def test_parse_accepts_certificates_and_education_with_every_bullet_marker(marker):
+    """cv/validate.py never citation-checks CERTIFICATES/EDUCATION at all (see
+    `_BULLET_MARKERS`' comment in parse.py) -- the gate is silent on which marker either
+    section uses. But this parser used to accept ONLY `"- "` (hyphen, then a literal
+    space) for both, while WORK bullets already accepted a bullet glyph and an asterisk
+    too. Measured pre-fix: a `•`/`*` marker in either trailing section yielded ZERO
+    entries, and the (also pre-fix) unconditional acceptance of an empty section made
+    that indistinguishable from the section genuinely being absent -- so BOTH
+    certificates and education vanished from a rendered PDF with nothing logged.
+    """
+    text = CV.replace("- Example Cloud Practitioner, 2022",
+                      f"{marker} Example Cloud Practitioner, 2022")
+    text = text.replace("- Example University, 2010-2013 | BSc Computer Science",
+                        f"{marker} Example University, 2010-2013 | BSc Computer Science")
+    assert f"{marker} Example Cloud" in text and f"{marker} Example University" in text, \
+        "the replace no-opped"
+    doc = parse_cv(text)
+    assert doc.certificates == ["Example Cloud Practitioner, 2022"]
+    assert doc.education == ["Example University, 2010-2013 | BSc Computer Science"]
+
+
+def test_parse_accepts_a_certificate_marker_with_no_space_after_it():
+    """The exact bug measured: `startswith("- ")` requires hyphen AND space, so
+    `-Example Cloud Practitioner` (no space) matched neither branch, leaving the
+    CERTIFICATES loop parked at that same non-blank line -- so the trailing blank-skip
+    never advanced past it, and the subsequent EDUCATION check then failed too (it was
+    not looking at "EDUCATION"). One missing space silently deleted BOTH sections from
+    the parsed document, and the shipped template's `{% if document.certificates %}`
+    guard hid the headings too -- nothing anywhere said a thing was missing.
+    """
+    text = CV.replace("- Example Cloud Practitioner, 2022", "-Example Cloud Practitioner, 2022")
+    assert "-Example Cloud Practitioner" in text, "the replace no-opped"
+    doc = parse_cv(text)
+    assert doc.certificates == ["Example Cloud Practitioner, 2022"]
+    assert doc.education == ["Example University, 2010-2013 | BSc Computer Science"], (
+        "a malformed CERTIFICATES marker must not also delete EDUCATION")
+
+
+def test_parse_refuses_a_header_with_no_recognised_entries():
+    """A CERTIFICATES/EDUCATION header present with zero entries under any recognised
+    marker must REFUSE, not silently emit an empty section: an empty section renders
+    with no heading at all (`{% if document.certificates %}`), so a silent empty list
+    and a genuinely absent section are indistinguishable in the PDF. Uses an en dash,
+    which even WORK bullets do not recognise as a marker (`_BULLET_MARKERS` is
+    `-`/`•`/`*` only) -- a marker the fabrication gate never blesses for either trailing
+    section, so refusing it wastes nothing the gate would have allowed through anyway.
+    """
+    text = CV.replace("- Example Cloud Practitioner, 2022", "– Example Cloud Practitioner, 2022")
+    assert "– Example Cloud Practitioner" in text, "the replace no-opped"
+    with pytest.raises(CvParseError, match="CERTIFICATES"):
+        parse_cv(text)
+
+
+def test_parse_accepts_education_before_certificates():
+    """validate.py:107 turns `in_work`/`in_profile` off on seeing EITHER header and
+    never records which one it saw or in what order -- the gate is completely
+    order-agnostic between these two sections, so a CV composing them in the other
+    order is exactly as gate-clean as the canonical one. Before this fix the two
+    trailing-section readers were two fixed if-blocks in a hard-coded order: a CV
+    emitting EDUCATION first parsed EDUCATION but never even looked for CERTIFICATES
+    afterwards -- silently dropping it, 'the same effect on certs' the finding this
+    fixes names for the malformed-marker case.
+    """
+    swapped = CV.replace(
+        "CERTIFICATES\n- Example Cloud Practitioner, 2022\n\n"
+        "EDUCATION\n- Example University, 2010-2013 | BSc Computer Science\n",
+        "EDUCATION\n- Example University, 2010-2013 | BSc Computer Science\n\n"
+        "CERTIFICATES\n- Example Cloud Practitioner, 2022\n")
+    assert swapped != CV, "the replace no-opped"
+    doc = parse_cv(swapped)
+    assert doc.certificates == ["Example Cloud Practitioner, 2022"]
+    assert doc.education == ["Example University, 2010-2013 | BSc Computer Science"]
