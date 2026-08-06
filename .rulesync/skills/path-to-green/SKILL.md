@@ -244,6 +244,21 @@ gh pr view "$PR" --json reviews \
    maintainer cannot unblock it from inside the loop. Report that state and stop. Do not reach for
    `--admin` to bypass the gate on your own initiative; that is the user's call, not yours.
 
+   **EXCEPT on a release PR, where waiting for CodeRabbit is waiting for something that cannot
+   happen.** `.coderabbit.yaml` skips any PR whose title starts `chore(main): release`, so no review
+   and no approval will EVER arrive on one — polling for an `APPROVED` object there burns the whole
+   iteration cap and then reports the generic stranded state, which reads as "something went wrong"
+   when nothing has. It is also the ONLY step in the release chain that fails quietly: missing App
+   secrets kill `create-github-app-token` at the first step, and a permission the installation lacks
+   errors there too.
+
+   A release PR is opened by the release-please GitHub App, not by the maintainer, so unlike every
+   other PR here **the maintainer CAN approve it** — that is the whole reason the token is an App
+   rather than a PAT. So detect it (author is an App/bot AND the title matches that prefix) and
+   report a DISTINCT terminal state: *awaiting human approval — one click, not a failure*. Never
+   approve it yourself, and never `--admin` past it: the approving review is the gate, and it is
+   still required.
+
 If any of these is false:
 
 - **Condition 1 fails (required check still `pending`)**: **wait** (back to Step 3).
