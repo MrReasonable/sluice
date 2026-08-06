@@ -67,11 +67,36 @@ class FakeCache:
 
 class FakeRenderer:
     """The Renderer seam, injected. Records what it was asked to render so a test can
-    assert a CV was NEVER rendered -- which is the fabrication gate's whole point."""
+    assert a CV was NEVER rendered -- which is the fabrication gate's whole point.
+
+    Implements `render` ONLY. That is the shape of the shipped `script` renderer, which
+    shells out to arbitrary user code and imposes no grammar of its own, and it is the
+    shape every test in this file wants by default: an engine that gated CVs on some
+    renderer's private grammar would be gating THIS one too. `precheck` is the optional
+    half of the seam (core/protocols.py) -- see PrecheckingRenderer below.
+    """
     def __init__(self): self.rendered = []
     def render(self, cv_text, out_dir, *, neutral_name="CV.pdf"):
         self.rendered.append(cv_text)
         return f"/tmp/x/{neutral_name}"
+
+
+class PrecheckingRenderer(FakeRenderer):
+    """A renderer that DOES implement the seam's optional `precheck`, in exactly the
+    shape `sluice/renderers/template.py` does: parse, and report a SHAPE failure as a
+    `FORMAT:` string for the engine to fold in with the gate's own violations.
+
+    Kept as a distinct class rather than added to FakeRenderer, because the distinction
+    between the two is the thing under test -- see
+    test_a_renderer_without_precheck_is_not_gated_by_another_renderers_grammar.
+    """
+    def precheck(self, cv_text):
+        from sluice.cv.parse import CvParseError, parse_cv
+        try:
+            parse_cv(cv_text)
+        except CvParseError as e:
+            return [f"FORMAT: {e}"]
+        return []
 
 class FakeBackend:
     def __init__(self, cv_out, audit_out="supported\tx\tSF1"):
@@ -155,7 +180,7 @@ def test_a_parse_failure_feeds_the_retry_not_the_bin(monkeypatch):
 
     be = TwoShotBackend()
     v = FakeVault(ENTRIES)
-    rend = FakeRenderer()
+    rend = PrecheckingRenderer()
     r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
                 v, _cfg(), be, FakeCache(), renderer=rend)
     assert r.status == "rendered", "a parse failure binned the lead instead of retrying it"
@@ -168,7 +193,7 @@ def test_a_parse_failure_that_survives_the_retry_skips_the_lead():
     """Same outcome as a lead that cannot clear the gate, and the renderer is never
     reached -- a half-parsed CV must never become a PDF sent under the user's name."""
     v = FakeVault(ENTRIES)
-    rend = FakeRenderer()
+    rend = PrecheckingRenderer()
     be = FakeBackend(UNPARSEABLE_CV)
     r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
                 v, _cfg(), be, FakeCache(), renderer=rend)
@@ -176,6 +201,81 @@ def test_a_parse_failure_that_survives_the_retry_skips_the_lead():
     assert any("FORMAT" in x for x in r.violations)
     assert rend.rendered == [], "an unparseable CV reached the renderer"
     assert v.written == {}
+
+
+def test_a_renderer_without_precheck_is_not_gated_by_another_renderers_grammar(monkeypatch):
+    """The seam inversion, and the reason `precheck` is a per-renderer hook.
+
+    The engine used to call `parse_cv` unconditionally, which is the `template`
+    renderer's grammar -- so an operator on `cv.renderer: script`, whose own script
+    imposes whatever grammar it likes, was gated by a requirement their renderer does not
+    have. Measured 2026-08-06 on a genuinely gate-clean CV carrying a PUBLICATIONS
+    section: `cv.renderer=script` reported skipped-gate with rendered=0, although the
+    script would have laid that section out fine. The branch's own spec calls `script`
+    the full-control escape hatch whose behaviour is out of scope, and an escape hatch
+    that enforces the thing it exists to escape is not one.
+
+    UNPARSEABLE_CV is the right fixture precisely because
+    test_the_unparseable_fixture_still_passes_the_gate pins it as gate-CLEAN: the only
+    thing that could stop it rendering here is a grammar this renderer never declared.
+    Asserts on `rend.rendered`, not merely on the status -- "rendered" with an empty
+    renderer would mean the engine reported success having rendered nothing.
+    """
+    _served(monkeypatch)
+    v = FakeVault(ENTRIES)
+    rend = FakeRenderer()          # render() only -- the `script` renderer's shape
+    assert not hasattr(rend, "precheck"), "this fixture must NOT declare the optional hook"
+    be = FakeBackend(UNPARSEABLE_CV)
+    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
+                v, _cfg(), be, FakeCache(), renderer=rend)
+    assert r.status == "rendered", (
+        f"a renderer that declares no grammar was gated by another one's: {r.violations}")
+    assert rend.rendered == [UNPARSEABLE_CV]
+
+
+def test_the_engine_folds_a_precheck_complaint_in_with_the_gates_own():
+    """`precheck` returns STRINGS the engine treats exactly like a gate violation --
+    that is the whole contract, and it is what puts a renderer's complaint in front of
+    the model's one retry instead of after the LLM spend.
+
+    Uses a renderer whose precheck is unrelated to parsing, so this pins the SEAM rather
+    than re-testing parse_cv: any renderer's complaint must reach `violations` and stop
+    the render, whatever its grammar happens to be.
+    """
+    class FussyRenderer(FakeRenderer):
+        def precheck(self, cv_text):
+            return ["FORMAT: this renderer wants something else entirely"]
+
+    v = FakeVault(ENTRIES)
+    rend = FussyRenderer()
+    be = FakeBackend(CLEAN_CV)     # gate-clean: only the precheck can stop this
+    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
+                v, _cfg(), be, FakeCache(), renderer=rend)
+    assert r.status == "skipped-gate"
+    assert any("something else entirely" in x for x in r.violations), r.violations
+    assert rend.rendered == [], "a renderer that refused the CV was still asked to render it"
+
+
+def test_the_engine_no_longer_imports_the_template_grammar():
+    """The coupling this inversion removes, asserted STRUCTURALLY.
+
+    Re-adding `from sluice.cv.parse import ...` to cv/engine.py would restore the
+    inversion while every behavioural test above still passed -- the unconditional call
+    is what they catch, not the import that enables it. `cv/parse.py` is the `template`
+    renderer's grammar; the orchestrator has no business knowing it exists.
+    """
+    import ast
+    import pathlib
+    src = pathlib.Path(__file__).resolve().parent.parent / "sluice" / "cv" / "engine.py"
+    tree = ast.parse(src.read_text(encoding="utf-8"), filename=str(src))
+    offenders = [n.lineno for n in ast.walk(tree)
+                 if isinstance(n, ast.ImportFrom) and (n.module or "").endswith("cv.parse")]
+    offenders += [n.lineno for n in ast.walk(tree)
+                  if isinstance(n, ast.Import)
+                  and any(a.name.endswith("cv.parse") for a in n.names)]
+    assert not offenders, (
+        f"cv/engine.py imports the `template` renderer's grammar at line(s) {offenders}; "
+        "reach it through the renderer's optional precheck hook instead")
 
 
 def test_clean_cv_is_actually_clean():

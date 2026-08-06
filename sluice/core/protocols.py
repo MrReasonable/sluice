@@ -352,6 +352,28 @@ class Renderer(Protocol):
     A renderer is only ever reached AFTER the fabrication gate has passed. It must not
     be given the power to bypass it: no renderer validates, and no renderer is called
     with outstanding violations.
+
+    OPTIONAL SECOND METHOD -- `precheck(cv_text) -> list[str]`. Not declared below,
+    because a Protocol member is a REQUIRED member and the whole point of this hook is
+    that a renderer may omit it; `cv/engine.py` reaches it via
+    `getattr(renderer, "precheck", None)` and skips the call when it is absent.
+
+    A renderer implements `precheck` when it needs the composed CV to satisfy a GRAMMAR
+    of its own -- something the fabrication gate does not model and cannot be extended to
+    model (the gate is out of scope, and a second gate beside it would be a way around
+    the real one). The engine calls it INSIDE its compose/gate retry loop and folds the
+    returned strings in with the gate's violations, so a renderer-specific formatting
+    complaint reaches the model's one retry rather than arriving after the LLM spend with
+    no recovery. Return `[]` for "nothing to say"; the strings are prompt text, so they
+    must name what is wrong and what was expected.
+
+    It is a per-RENDERER obligation and must not be hoisted into the engine. Measured
+    2026-08-06 on a genuinely gate-clean CV carrying a PUBLICATIONS section: with the
+    `template` renderer's grammar applied unconditionally, `cv.renderer: script` reported
+    `skipped-gate` and rendered nothing, although the operator's own script would have
+    laid that section out fine. `script` shells out to arbitrary user code and has no
+    grammar to impose, so it deliberately does NOT implement this -- one seam member
+    imposing another's requirements is the inversion this hook exists to undo.
     """
 
     def render(self, cv_text: str, out_dir: str, *, neutral_name: str = "CV.pdf") -> str: ...

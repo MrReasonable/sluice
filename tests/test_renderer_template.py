@@ -63,11 +63,10 @@ def _reset_fake_html_captured():
 
 def _renderer(tmp_path, template_text=None):
     if template_text is None:
-        return TemplateRenderer(None, html_module=FakeHTML, css_module=lambda string="": object())
+        return TemplateRenderer(None, html_module=FakeHTML)
     path = tmp_path / "user.html.j2"
     path.write_text(template_text, encoding="utf-8")
-    return TemplateRenderer(str(path), html_module=FakeHTML,
-                            css_module=lambda string="": object())
+    return TemplateRenderer(str(path), html_module=FakeHTML)
 
 
 def test_template_renderer_escapes_html_in_a_bullet(tmp_path):
@@ -107,8 +106,7 @@ def test_a_misspelled_nested_field_raises_naming_the_template(tmp_path):
     """
     path = tmp_path / "user.html.j2"
     path.write_text("{{ document.work[0].titel }}", encoding="utf-8")
-    r = TemplateRenderer(str(path), html_module=FakeHTML,
-                         css_module=lambda string="": object())
+    r = TemplateRenderer(str(path), html_module=FakeHTML)
     with pytest.raises(RenderError, match=r"template.*titel") as ei:
         r.render(CV, str(tmp_path / "out"))
     assert str(path) in str(ei.value)
@@ -127,8 +125,7 @@ def test_missing_template_file_raises_at_construction(tmp_path):
     """At CONSTRUCTION, not at call time -- the whole point of this feature is that a
     render failure stops arriving after the LLM spend."""
     with pytest.raises(RenderError, match="template"):
-        TemplateRenderer(str(tmp_path / "nope.html.j2"), html_module=FakeHTML,
-                         css_module=lambda string="": object())
+        TemplateRenderer(str(tmp_path / "nope.html.j2"), html_module=FakeHTML)
 
 
 def test_a_template_directory_is_refused_at_construction(tmp_path):
@@ -137,7 +134,7 @@ def test_a_template_directory_is_refused_at_construction(tmp_path):
     d = tmp_path / "adir.html.j2"
     d.mkdir()
     with pytest.raises(RenderError, match="template"):
-        TemplateRenderer(str(d), html_module=FakeHTML, css_module=lambda string="": object())
+        TemplateRenderer(str(d), html_module=FakeHTML)
 
 
 def test_the_shipped_template_renders_a_parsed_document(tmp_path):
@@ -229,8 +226,7 @@ def test_the_renderer_reports_when_it_writes_no_pdf(tmp_path):
         def write_pdf(self, path, stylesheets=None):
             pass          # writes nothing
 
-    r = TemplateRenderer(None, html_module=SilentHTML,
-                         css_module=lambda string="": object())
+    r = TemplateRenderer(None, html_module=SilentHTML)
     with pytest.raises(RenderError, match="no file"):
         r.render(CV, str(tmp_path / "out"))
 
@@ -302,3 +298,119 @@ def test_this_module_never_uses_importorskip():
             violations.append(node.lineno)
 
     assert not violations, f"pytest.importorskip called at line(s) {violations}"
+
+
+def test_precheck_reports_a_shape_failure_as_a_format_violation(tmp_path):
+    """The seam's OPTIONAL hook (core/protocols.py), implemented here and NOT by
+    `script`. cv/engine.py folds the returned strings in with the fabrication gate's own,
+    so this renderer's grammar reaches the model's one retry instead of surfacing at
+    render time -- after the LLM spend, past the only recovery there is.
+
+    Asserts both arms: `[]` for a CV this renderer can lay out, and a `FORMAT:`-prefixed
+    string naming the problem for one it cannot. A precheck that returned something
+    truthy for every CV would bin every lead, so the empty arm is the load-bearing one.
+    """
+    r = _renderer(tmp_path, "{{ document.name }}")
+    assert r.precheck(CV) == []
+    broken = CV.replace("03/2021-present | EXAMPLECITY | Staff Engineer",
+                        "03/2021-present Staff Engineer")
+    assert "03/2021-present Staff Engineer" in broken, "the replace no-opped"
+    msgs = r.precheck(broken)
+    assert len(msgs) == 1 and msgs[0].startswith("FORMAT: "), msgs
+    assert "meta line" in msgs[0]
+
+
+def test_a_jinja_syntax_error_is_raised_as_a_render_error_naming_the_template(tmp_path):
+    """`from_string` carries NO filename, so an unclosed `{% for %}` raises
+    `jinja2.exceptions.TemplateSyntaxError` reading `File "<template>", line N` -- which
+    loses precisely what `_template_name` exists to supply. A user with several templates
+    cannot tell which one broke, and the seam leaks a jinja2 type its callers do not
+    handle. Re-raised as RenderError, with the original preserved as `__cause__` so the
+    line number and jinja2's own traceback survive for anyone who wants them.
+    """
+    path = tmp_path / "broken.html.j2"
+    path.write_text("<p>{% for role in document.work %}{{ role.title }}</p>", encoding="utf-8")
+    with pytest.raises(RenderError, match="not valid Jinja2") as ei:
+        TemplateRenderer(str(path), html_module=FakeHTML)
+    assert str(path) in str(ei.value), "the error does not name the offending template"
+    from jinja2.exceptions import TemplateError
+    assert isinstance(ei.value.__cause__, TemplateError), (
+        "the original jinja2 error was discarded rather than chained")
+
+
+def test_a_tilde_in_cv_template_is_expanded(tmp_path, monkeypatch):
+    """expanduser at INGRESS -- core/paths.py states the convention and this is a new
+    ingress site. `~` is expanded by a SHELL; a value read out of a YAML file never met
+    one, so `cv.template: ~/mine.html.j2` arrived here literally and was reported as
+    "is not a file" for a file that plainly exists.
+
+    conftest.py's autouse fixture already points HOME at a tmp dir, but this sets it
+    explicitly: the assertion is about THIS path resolving under THIS home, and relying
+    on a fixture two files away to have chosen the same directory would make the test
+    pass for a reason it does not state.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))   # expanduser's Windows source
+    (home / "mine.html.j2").write_text("{{ document.name }}", encoding="utf-8")
+
+    r = TemplateRenderer("~/mine.html.j2", html_module=FakeHTML)
+    r.render(CV, str(tmp_path / "out"))
+    assert "EXAMPLE PERSON" in FakeHTML.captured["html"]
+
+
+def test_a_missing_packaged_default_raises_a_render_error(monkeypatch, tmp_path):
+    """The PACKAGED-DEFAULT branch, which is the one every user takes.
+
+    An explicitly-named path that cannot be read already raised a RenderError saying what
+    to do; the default branch raised a bare FileNotFoundError naming a path inside
+    site-packages -- an untyped failure crossing the seam, from the arm most likely to
+    be exercised. Reproduces the failure tests/test_packaging.py exists to prevent (an
+    install whose package data went missing) at the point where a user would meet it.
+    """
+    import importlib.resources
+
+    def no_package_data(_anchor):
+        raise FileNotFoundError("no such package data")
+
+    monkeypatch.setattr(importlib.resources, "files", no_package_data)
+    with pytest.raises(RenderError, match="packaged default"):
+        TemplateRenderer(None, html_module=FakeHTML)
+
+
+def test_a_missing_system_library_raises_naming_both_fixes(monkeypatch):
+    """The single MOST LIKELY real failure of this feature, and it used to escape raw.
+
+    WeasyPrint links natively against cairo/pango/gobject, which are not Python packages
+    and which no `pip install` can supply. Importing it without them raises
+    `OSError: cannot load library 'libgobject-2.0-0'` -- measured 2026-08-06 on a machine
+    with the render extra installed -- and `except ImportError` did not catch it, so the
+    branch's headline claim (a render failure is now loud and diagnosable AT
+    CONSTRUCTION) did not hold for the case it was written for.
+
+    The message must name BOTH fixes. A user who already has the extra and reads only
+    "pip install 'sluice[render]'" goes hunting for a package they have.
+    """
+    import builtins
+    real_import = builtins.__import__
+
+    def no_native_libs(name, *a, **kw):
+        if name.startswith("weasyprint"):
+            raise OSError("cannot load library 'libgobject-2.0-0': dlopen(...) not found")
+        return real_import(name, *a, **kw)
+
+    monkeypatch.setattr(builtins, "__import__", no_native_libs)
+    from sluice.renderers.template import _make
+
+    class Cfg:
+        template = ""
+    with pytest.raises(RenderError) as ei:
+        _make(Cfg())
+    msg = str(ei.value)
+    assert "sluice[render]" in msg, "the message does not name the extra"
+    assert "cairo" in msg and "pango" in msg, (
+        "the message does not name the SYSTEM libraries, which is the half a user with "
+        f"the extra already installed needs: {msg}")
+    assert "README" in msg, "the message does not point at the documented macOS step"
+    assert isinstance(ei.value.__cause__, OSError)
