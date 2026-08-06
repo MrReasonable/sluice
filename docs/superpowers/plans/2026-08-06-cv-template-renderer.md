@@ -741,7 +741,13 @@ def test_the_shipped_template_contributes_no_content():
     stripped = re.sub(r"<style\b.*?</style>", " ", text, flags=re.S | re.I)
     stripped = re.sub(r"\{\{.*?\}\}|\{%.*?%\}|\{#.*?#\}", " ", stripped, flags=re.S)
     stripped = re.sub(r"<[^>]*>", " ", stripped, flags=re.S)
-    leftover = {tok for tok in (t.strip() for t in stripped.splitlines()) if tok}
+    # A token with no letters and no digits is PUNCTUATION -- the " | " separators
+    # between dates/location/title, which `_RULES` itself uses in the format it asks the
+    # composer for. Punctuation is layout, not content, and layout is admittedly a
+    # shipped opinion (see the docstring). Dropping these keeps the guard aimed at the
+    # thing it can actually check: words the template puts in the user's mouth.
+    leftover = {tok for tok in (t.strip() for t in stripped.splitlines())
+                if tok and any(c.isalnum() for c in tok)}
     assert leftover <= headings, (
         f"the shipped template contributes content of its own: {sorted(leftover - headings)}")
 
