@@ -809,8 +809,13 @@ def test_this_module_never_uses_importorskip():
     with open(path, encoding="utf-8") as f:
         body = f.read()
     occurrences = [ln for ln in body.splitlines() if "importorskip" in ln]
-    # This docstring-and-comment file mentions the word; only a CALL is forbidden.
-    assert not [ln for ln in occurrences if "importorskip(" in ln]
+    # This docstring-and-comment file mentions the word; only a CALL is forbidden. Match
+    # the "pytest." qualifier every real call in this codebase uses, and build the needle
+    # by concatenation: this guard reads its OWN source, so a literal bare-name-plus-paren
+    # needle appears in this test's own `def` line and the guard fails on itself, every
+    # run, forever. Measured during implementation, not reasoned about.
+    call_form = "pytest." + "importorskip("
+    assert not [ln for ln in occurrences if call_form in ln]
 ```
 
 - [ ] **Step 3: Run the tests to verify they fail**
