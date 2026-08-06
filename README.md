@@ -140,7 +140,13 @@ That only applies where sluice picked the location itself. If you name a path --
 an environment variable or a config key -- it is used as given, with no warning
 and no refusal, because there is nothing to migrate from.
 
-## Rendering prerequisites
+## Rendering prerequisites (`cv.renderer: template` only)
+
+Everything in this section is a prerequisite of ONE renderer -- `template`, the default.
+`cv.renderer: script` needs none of it: it shells out to a render script you supply and
+never imports jinja2 or WeasyPrint, so if you are on `script` you need neither the
+`render` extra nor WeasyPrint's system libraries, and a `script` setup that works today
+is unaffected by anything below.
 
 `cv.renderer` defaults to `template`: sluice fills a Jinja2 template -- the packaged
 default, or your own via `cv.template`, e.g. `docs/cv-template-example.html.j2` -- with
@@ -170,12 +176,15 @@ export DYLD_FALLBACK_LIBRARY_PATH="$(brew --prefix)/lib"
 ```
 
 None of this is new work removing a real limitation -- a bare `pip install sluice`
-still cannot produce a PDF, because those system libraries sit outside pip's reach no
-matter what this project ships. What changed is *when* the failure surfaces: selecting
-`template` (or `script`) with the extra or the libraries missing now raises at renderer
+still cannot produce a PDF with `template`, because those system libraries sit outside
+pip's reach no matter what this project ships. What changed is *when* the failure
+surfaces: `template` with the extra or the libraries missing now raises at renderer
 construction, before a CV is ever composed, instead of arriving silently after an LLM
 composition and a fabrication-gate pass have already spent tokens on a CV that was
-never going to render.
+never going to render. `script` gained the same timing for its own, different
+precondition -- a `cv.render_script` that is missing or is not a file -- which is why
+both renderers fail early even though only one of them has anything to do with
+WeasyPrint.
 
 `cv.renderer: script` remains available if you would rather shell out to your own
 render pipeline than use `template`; see `sluice.yaml.example`.

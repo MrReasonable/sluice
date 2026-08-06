@@ -34,9 +34,15 @@ home and two of them read as contradicting each other:
     no shell expanded it). Deliberately NO count: this paragraph has carried a wrong
     one twice -- it said four when there were five, and five when a sixth landed -- and
     nothing went red either time, because a number in prose is not a check.
-    `tests/test_path_tilde.py::test_the_expanduser_roster_matches_the_source` enumerates
-    the sites from the source and fails in both directions, which is the only form of
-    this claim that can go stale loudly.
+    `tests/test_path_tilde.py::test_the_expanduser_roster_matches_the_source` derives the
+    set from the source and fails in both directions, which is the only form of this
+    claim that can go stale loudly. Its granularity is the FILE, not the call: it compares
+    the set of modules CONTAINING an `expanduser` call against a roster keyed the same
+    way, so a brand-new module reds and a module that loses its last call reds, while a
+    SECOND ingress added inside a module already on the roster does not. That is a real
+    limit and it is stated rather than implied -- three of the modules above already hold
+    more than one syntactic call between them, so a per-call roster would be pinning
+    something this paragraph does not claim.
     abspath ONLY where the value outlives the cwd it was read in -- either written down
     or compared. `questions.py` and `cli.py`'s preset write the answer into a config
     file; `cli.py`'s comparison needs two spellings to be judged equal. Neither is true
