@@ -171,7 +171,24 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
             # `(cv_text, out_dir, *, neutral_name)` and the renderer stay ignorant of this
             # retry loop.
             if _precheck is not None:
-                violations = violations + list(_precheck(cv_text))
+                reported = _precheck(cv_text)
+                # The seam's contract is `precheck(cv_text) -> list[str]`
+                # (core/protocols.py), and NOTHING types it: `precheck` is deliberately
+                # not a Protocol member, so a renderer returning a bare `str` type-checks
+                # everywhere and then `list(...)` spreads it one CHARACTER per violation
+                # -- dozens of single-letter "violations" fed into the retry prompt as
+                # gate feedback, with the actual complaint unreadable inside them and a
+                # second LLM call spent on it. Refuse instead, naming the renderer: a
+                # contract this loop cannot enforce statically is one it has to enforce
+                # here, and a quiet wrong result is the bug class this codebase removes.
+                # `tuple` is accepted as well as `list` -- both are the intended shape,
+                # and the harmful cases are `str`/`bytes`, which the check excludes.
+                if not isinstance(reported, (list, tuple)):
+                    raise TypeError(
+                        f"renderer {type(renderer).__name__}.precheck returned "
+                        f"{type(reported).__name__}, not list[str] -- see the Renderer "
+                        f"seam's contract in sluice/core/protocols.py")
+                violations = violations + list(reported)
             slop_err, _warns = _slop(cv_text)
             gate_msgs = violations + [f"SLOP {lbl}: {snip}" for _ln, lbl, snip in slop_err]
             if not gate_msgs:
