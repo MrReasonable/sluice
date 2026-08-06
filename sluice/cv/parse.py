@@ -79,6 +79,22 @@ _TRAILING_SECTIONS = frozenset({"CERTIFICATES", "EDUCATION"})
 # either way -- see the finding this fixes for the measured before/after).
 _BULLET_MARKERS = ("-", "•", "*")
 
+# CERTIFICATES/EDUCATION only, and DELIBERATELY WIDER than `_BULLET_MARKERS`. Widening
+# the shared tuple above would be a gate bypass: validate.py:123 citation-checks a WORK
+# line only when it starts with one of `-`/`•`/`*`, so a marker this parser accepted
+# there and the gate did not would render an UNCITED bullet into the PDF with the
+# citation gate never having looked at it. That reasoning does not reach the two trailing
+# sections, because the gate never citation-checks them AT ALL (`in_work` is false
+# throughout) -- there is no check here for a wider marker to slip past, so the only
+# effect of accepting one is that a gate-clean CV stops being refused.
+#
+# The en dash earns its place by measurement: `– CSM` under CERTIFICATES passes the gate
+# untouched and, before this, was refused by the loop below. That is the governing bug
+# class -- stricter here than upstream -- and it cost a retry the model could only spend
+# re-emitting what it had already sent. The em dash is here for the same reason as in
+# `_DASH`: the two are equally plausible outputs and equally invisible to the gate.
+_TRAILING_MARKERS = _BULLET_MARKERS + ("–", "—")
+
 # The gate at cv/validate.py:89 matches `\d{2}/(\d{4})\s*[–-]` -- EN DASH (U+2013) or
 # ASCII hyphen, with optional surrounding whitespace -- and this repo's own gate-clean
 # fixture (CLEAN_CV in tests/test_cv_engine.py) uses the en dash exclusively. The spec's
@@ -89,7 +105,18 @@ _BULLET_MARKERS = ("-", "•", "*")
 # validate.py -- the spec's Out of scope forbids touching the fabrication gate, and this
 # behavioural pin (see tests/test_cv_parse.py's CLEAN_CV import) is stronger than a shared
 # literal would be anyway.
-_DASH = r"\s*[-–]\s*"
+#
+# EM DASH (U+2014) and the word "to" are here for the OPPOSITE reason to the en dash, and
+# the difference matters: the en dash is IN the gate's character class, so a CV using it
+# is checked and passes. Neither of these two is -- so `\d{2}/(\d{4})\s*[–-]` does not
+# match that entry AT ALL, `re.findall` records no start year for it, and an omitted year
+# can never break `years == sorted(years, reverse=True)`. The gate passes VACUOUSLY, the
+# same way it does for a single-digit month below. Being invisible to the gate is not
+# being rejected by it: measured 2026-08-06, `02/2023—present` and `02/2023 to present`
+# are both gate-CLEAN and were both refused here. `to` requires whitespace on BOTH sides
+# so it cannot match inside a token, and `re.IGNORECASE` on the compiled pattern covers
+# `To`/`TO` without a second alternative.
+_DASH = r"(?:\s*[-–—]\s*|\s+to\s+)"
 
 # `present` is the only open-ended terminal the spec's literal grammar names, but
 # compose.py's own `_RULES` format block (`MM/YYYY-MM/YYYY`) gives the model NO slot for
@@ -158,9 +185,10 @@ def _is_header_shaped(line: str) -> bool:
     `_is_section`), only to pick an ERROR MESSAGE once a candidate company has ALREADY
     failed to be followed by a valid meta line.
 
-    This is NOT used to reject a candidate company outright: a real acronym employer
-    (IBM, NASA, HSBC, BBC) is all-caps too, and refusing it on casing alone would waste
-    the engine's one retry on a CV that was never malformed -- there is nothing for a
+    This is NOT used to reject a candidate company outright: an acronym-shaped employer
+    -- an all-caps initialism, the ordinary written form for a broadcaster, a bank or a
+    public agency -- looks identical to a heading, and refusing it on casing alone would
+    waste the engine's one retry on a CV that was never malformed: there is nothing for a
     re-composition to fix. It is used only to choose an ERROR MESSAGE once a candidate
     company has ALREADY failed to be followed by a valid meta line: at that point, an
     all-caps candidate is very likely a section header the composer emitted that this
@@ -238,33 +266,65 @@ def parse_cv(text: str) -> CvDocument:
 
         # A line that is not blank and not a known trailing section is a CANDIDATE
         # company -- regardless of casing. Whether it really is one is decided by what
-        # follows it, not by how it looks: an all-caps real employer (IBM, NASA, HSBC)
-        # must parse exactly like any other when a valid meta line follows, and casing
-        # is used only below, to pick an error message, once that check has failed.
+        # follows it, not by how it looks: an acronym-shaped employer (an all-caps
+        # initialism) must parse exactly like any other when a valid meta line follows,
+        # and casing is used only below, to pick an error message, once that check has
+        # failed.
         company = stripped
         idx += 1
         meta_raw = lines[idx].strip() if idx < len(lines) else None
         parts = [p.strip() for p in meta_raw.split("|")] if meta_raw is not None else []
-        valid_meta = (meta_raw is not None and len(parts) == 3
-                      and _DATE_RANGE_RE.match(parts[0]) and parts[1] and parts[2])
+        # TWO parts (`dates | title`) is as legal as three. Nothing upstream can supply a
+        # LOCATION: measured 2026-08-06, `cv/bundle.py`'s render_bundle emits no location
+        # anywhere in the source bundle (`'LOCATION' in bundle` is False), validate()
+        # never checks for one, and a two-field meta line is gate-CLEAN. Demanding three
+        # made this the strictest link in the chain for a field the model has no source
+        # for -- and the retry's only actionable reading of "unparseable meta line" is
+        # "add the missing field", i.e. INVENT a city, which then ships unchecked because
+        # the gate does not model the meta line at all. Aiming fabrication pressure at the
+        # feature whose whole job is preventing fabrication is worse than the strictness
+        # itself. Mis-split detection does not depend on the field count: it is carried
+        # entirely by `parts[0]`'s `\d{1,2}/\d{4}<dash>` prefix, which a line missing a
+        # pipe cannot satisfy. `parts[1:]` must all be non-empty either way -- an
+        # explicitly BLANK field is a composer slip, not a field that was never emitted.
+        valid_meta = (meta_raw is not None and len(parts) in (2, 3)
+                      and _DATE_RANGE_RE.match(parts[0]) and all(parts[1:]))
         if not valid_meta:
             if _is_header_shaped(company):
                 # All-caps, and what follows it doesn't look like a meta line either --
                 # almost certainly a section header this parser does not model (e.g.
                 # PUBLICATIONS) rather than a company whose meta line merely went wrong.
                 raise CvParseError(f"unmodelled section header {company!r}")
-            # Deliberately does not echo `company` here: it is exactly the untrusted
-            # candidate text the branch above is refusing, and a message that echoes it
-            # back would let a mutation that deletes that branch still satisfy a
-            # `pytest.raises(match=...)` on the header's own text via THIS unrelated
-            # path -- measured 2026-08-06, see the mutation witness in the task report.
-            # The two refusals must stay distinguishable by message, not just both
-            # truthy.
+            # NAME THE CANDIDATE LINE. `meta_raw` alone is very often the blank separator
+            # AFTER the offending line (an en-dash bullet, a `1.` numbered bullet, or
+            # stray prose all reach here with `meta_raw == ''`), so a message carrying
+            # only `meta_raw` pointed the retry at an empty string and told the model
+            # nothing it could act on.
+            #
+            # The two refusals stay distinguishable by their PREFIX, which is what the
+            # mutation witness now keys on. An earlier version withheld `company` from
+            # this arm instead, so that deleting the `_is_header_shaped` branch above
+            # could not still satisfy a `pytest.raises(match="PUBLICATIONS")` through
+            # here -- but withholding the one piece of actionable text was too high a
+            # price for that. `tests/test_cv_parse.py::test_parse_refuses_a_section_it_
+            # does_not_model` matches on "unmodelled section header" (not on the header
+            # text alone), which keeps the witness and costs the message nothing.
             if meta_raw is None:
-                raise CvParseError("missing meta line: WORK EXPERIENCE entry has no "
-                                    "line after its company")
-            raise CvParseError(f"unparseable meta line: {meta_raw!r}")
-        dates, location, title = parts
+                raise CvParseError(
+                    f"missing meta line: WORK EXPERIENCE entry {company!r} is the last "
+                    f"line of the CV, with no meta line after it")
+            raise CvParseError(
+                f"unparseable meta line under WORK EXPERIENCE entry {company!r}: expected "
+                f"'MM/YYYY-MM/YYYY | LOCATION | Role' (LOCATION may be omitted, leaving "
+                f"'MM/YYYY-MM/YYYY | Role') on the next line, got {meta_raw!r}")
+        # Unpack by WIDTH: `dates | location | title` when three, `dates | title` with an
+        # empty location when two. A template renders `document.work[].location` either
+        # way -- `CvDocument` always populates every field it declares, which is the
+        # premise StrictUndefined relies on in renderers/template.py.
+        if len(parts) == 3:
+            dates, location, title = parts
+        else:
+            (dates, title), location = parts, ""
         idx += 1
 
         bullets: list[str] = []
@@ -332,15 +392,23 @@ def parse_cv(text: str) -> CvDocument:
         while idx < len(lines) and not lines[idx].strip():
             idx += 1
 
-        # Reuse _BULLET_MARKERS (hyphen/bullet-glyph/asterisk) and the identical
-        # optional-space handling WORK bullets use (`[1:].lstrip()`), rather than the
-        # narrower `startswith("- ")` this used to be. Measured pre-fix: a missing space
-        # ("-Example Cloud Practitioner"), a bullet glyph, an asterisk, or an en dash
-        # marker each yielded ZERO entries here while passing the fabrication gate
-        # untouched (this content is never citation-checked) -- so a CV with a malformed
-        # marker in either section shipped a PDF silently missing it.
+        # `_TRAILING_MARKERS` (see its definition: the WORK set PLUS the en and em dash)
+        # and the identical optional-space handling WORK bullets use (`[1:].lstrip()`),
+        # rather than the narrower `startswith("- ")` this used to be. Measured pre-fix: a
+        # missing space ("-Example Cloud Practitioner"), a bullet glyph, an asterisk, or
+        # an en dash marker each yielded ZERO entries here while passing the fabrication
+        # gate untouched (this content is never citation-checked) -- so a CV with a
+        # malformed marker in either section shipped a PDF silently missing it.
+        #
+        # An earlier revision of this comment claimed all four cases were fixed while the
+        # loop still read `_BULLET_MARKERS`, under which the en dash was NOT a marker at
+        # all: it fell through to the refusal below. The comment was false for one of the
+        # four cases it named, which is this repo's named defect class -- a stated reason
+        # going stale in silence. It is true now because the tuple changed, not because
+        # the sentence was reworded, and
+        # `test_parse_accepts_a_dash_marker_the_gate_never_inspects` is what holds it.
         entries: list[str] = []
-        while idx < len(lines) and lines[idx].strip().startswith(_BULLET_MARKERS):
+        while idx < len(lines) and lines[idx].strip().startswith(_TRAILING_MARKERS):
             entry = _strip_cite(lines[idx].strip()[1:].lstrip())
             if entry:
                 # A lone marker with nothing after it ("-" alone) strips to "", which
@@ -368,7 +436,7 @@ def parse_cv(text: str) -> CvDocument:
                 _is_section(lines[idx], h) for h in _TRAILING_SECTIONS):
             raise CvParseError(
                 f"{header}: unrecognised line {lines[idx].strip()!r} -- expected each "
-                f"entry to start with one of {_BULLET_MARKERS!r}")
+                f"entry to start with one of {_TRAILING_MARKERS!r}")
         sections[header] = entries
     certificates = sections.get("CERTIFICATES", [])
     education = sections.get("EDUCATION", [])
