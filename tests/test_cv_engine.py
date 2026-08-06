@@ -106,6 +106,78 @@ CLEAN_CV = "\n".join([
 ])
 
 
+# An UNPARSEABLE meta line that still PASSES the fabrication gate -- the whole point of
+# this wiring. validate() reads only `\d{2}/(\d{4})\s*[--]` after WORK EXPERIENCE, so
+# dropping the pipes leaves the years (and every citation) intact and the gate clean.
+UNPARSEABLE_CV = CLEAN_CV.replace("02/2023–present | Alfa | Staff Engineer",
+                                  "02/2023–present Alfa Staff Engineer")
+
+
+def test_the_unparseable_fixture_still_passes_the_gate():
+    """A PREMISE of both tests below: they claim the engine catches a formatting failure
+    the GATE does not. If this fixture ever stops clearing the gate they would pass for
+    the wrong reason -- the same trap test_clean_cv_is_actually_clean exists to close."""
+    assert "Alfa Staff Engineer" in UNPARSEABLE_CV, "the replace no-opped"
+    bundle_text = render_bundle(build_bundle(
+        entries=ENTRIES, baseline="BASELINE", negatives=[],
+        jd_keywords=[], prefix_map={"Example Foundry": "EF"}))
+    assert validate(UNPARSEABLE_CV, bundle_text) == []
+
+
+def test_a_parse_failure_feeds_the_retry_not_the_bin(monkeypatch):
+    """A CV whose role line wobbles must be RE-COMPOSED, not thrown away.
+
+    The engine already composes up to twice, appending violations to the second prompt.
+    Making a parse failure fatal would kill the lead AFTER the LLM spend with no
+    recovery -- worse than the status quo, and it re-opens the exact problem this design
+    exists to close. The model is being asked to fix its own formatting, which is the
+    thing an LLM is reliably good at.
+
+    _served(monkeypatch) is unrelated to the parse-retry wiring under test: without it
+    the real `_render.serve` opens the FakeRenderer's made-up pdf path and raises
+    FileNotFoundError, exactly as it would for any OTHER test in this file that reaches
+    "rendered" with a non-empty served_dir -- see test_happy_path_renders_and_records and
+    every #60 test below, all of which mock the same seam for the same reason.
+    """
+    _served(monkeypatch)
+
+    class TwoShotBackend:
+        """First compose returns the unparseable CV; the second returns a clean one."""
+        def __init__(self):
+            self.last_backend = "primary"; self.prompts = []
+        def complete(self, prompt):
+            # Mirrors FakeBackend's routing: compose prompts carry "SOURCE BUNDLE"
+            # and not "auditing"; audit prompts carry both.
+            if not ("SOURCE BUNDLE" in prompt and "auditing" not in prompt):
+                return "supported\tx\tSF1"
+            self.prompts.append(prompt)
+            return UNPARSEABLE_CV if len(self.prompts) == 1 else CLEAN_CV
+
+    be = TwoShotBackend()
+    v = FakeVault(ENTRIES)
+    rend = FakeRenderer()
+    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
+                v, _cfg(), be, FakeCache(), renderer=rend)
+    assert r.status == "rendered", "a parse failure binned the lead instead of retrying it"
+    assert len(be.prompts) == 2, "the parse failure did not reach the existing retry"
+    assert "FORMAT" in be.prompts[1], "the parse error never reached the retry prompt"
+    assert rend.rendered == [CLEAN_CV], "the renderer got the unparseable CV"
+
+
+def test_a_parse_failure_that_survives_the_retry_skips_the_lead():
+    """Same outcome as a lead that cannot clear the gate, and the renderer is never
+    reached -- a half-parsed CV must never become a PDF sent under the user's name."""
+    v = FakeVault(ENTRIES)
+    rend = FakeRenderer()
+    be = FakeBackend(UNPARSEABLE_CV)
+    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
+                v, _cfg(), be, FakeCache(), renderer=rend)
+    assert r.status == "skipped-gate"
+    assert any("FORMAT" in x for x in r.violations)
+    assert rend.rendered == [], "an unparseable CV reached the renderer"
+    assert v.written == {}
+
+
 def test_clean_cv_is_actually_clean():
     # CLEAN_CV's validity is a PREMISE of every skipped-gate test below: those
     # assert the engine skips when the gate fails, and they keep passing if
