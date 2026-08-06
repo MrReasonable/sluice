@@ -356,8 +356,15 @@ def test_the_real_template_renderer_prechecks_through_run_one():
     render is never reached anyway, which is the point of the assertion. `None` for the
     template path takes the PACKAGED default, so this also proves the shipped template
     loads.
+
+    NO `pytest.importorskip("jinja2")`, and its absence is deliberate. jinja2 is in the
+    `test` extra precisely so this runs for real in CI, and this is the ONLY test proving
+    `precheck` reaches the engine through the real renderer -- so a skip guard here would
+    make the single test that matters most evaporate silently on the one machine where
+    the dependency is missing, reading green. That trap is recorded in
+    tests/test_renderers.py (weasyprint) and is now swept for across all of tests/ by
+    test_renderer_template.py::test_no_test_module_uses_importorskip.
     """
-    pytest.importorskip("jinja2")
     from sluice.renderers.template import TemplateRenderer
 
     class _Html:

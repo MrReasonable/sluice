@@ -1,8 +1,10 @@
 """The `template` renderer.
 
-NO `pytest.importorskip` ANYWHERE IN THIS FILE. jinja2 is in the `test` extra precisely
+NO `pytest.importorskip` ANYWHERE UNDER `tests/`. jinja2 is in the `test` extra precisely
 so these run in CI; an importorskip would silently skip them and read as green, which is
-the trap tests/test_renderers.py records having been hit by once already.
+the trap tests/test_renderers.py records having been hit by once already -- and which
+recurred a second time, in tests/test_cv_engine.py, while the guard below still read only
+this one file. `test_no_test_module_uses_importorskip` now sweeps the whole tree.
 
 WeasyPrint is NOT imported here -- it needs cairo/pango (and, on macOS, a
 DYLD_FALLBACK_LIBRARY_PATH). It is injected as a fake, exactly as the renderer it
@@ -436,10 +438,21 @@ def test_the_renderer_reports_when_it_writes_no_pdf(tmp_path):
         r.render(CV, str(tmp_path / "out"))
 
 
-def test_this_module_never_uses_importorskip():
-    """The trap is documented twice and has still recurred once.
+def test_no_test_module_uses_importorskip():
+    """The trap is documented twice and has now recurred TWICE.
 
-    Walks this file's own AST rather than string-matching, per CLAUDE.md's guard-testing
+    SWEEPS ALL OF `tests/`, and that widening is itself a review finding. This guard used
+    to read one hardcoded filename -- its own -- so it was structurally unable to see the
+    second recurrence, which landed in `tests/test_cv_engine.py`: a
+    `pytest.importorskip("jinja2")` opening the one test that drives the REAL
+    TemplateRenderer through `run_one`. With jinja2 genuinely absent that test SKIPPED and
+    the file read green, which is precisely the failure `tests/test_renderers.py` records
+    having been hit by once already with weasyprint. A guard scoped to the file it lives
+    in only ever protects the file least likely to reoffend.
+
+    jinja2 is in the `test` extra, so nothing under `tests/` needs a skip guard for it.
+
+    Walks each file's AST rather than string-matching, per CLAUDE.md's guard-testing
     rule: "Hand-listed names lose to an import alias... Derive the local bindings from
     each file's own ImportFrom and ClassDef nodes." A substring check keyed on
     "pytest.importorskip(" is evadable by `from pytest import importorskip` (then a BARE
@@ -452,57 +465,72 @@ def test_this_module_never_uses_importorskip():
     match, no matter what words they contain.
     """
     import ast
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        "test_renderer_template.py")
-    with open(path, encoding="utf-8") as f:
-        tree = ast.parse(f.read(), filename=path)
+    import pathlib
 
-    # Resolve the LOCAL bindings this file's own imports create, rather than assuming
-    # `pytest` or `importorskip` are the names in scope -- an aliased import walks
-    # straight past a check keyed on the canonical name, which is exactly the failure
-    # shape CLAUDE.md's guard-testing section names.
-    pytest_module_names = set()      # names bound to the `pytest` module itself
-    bare_importorskip_names = set()  # names bound directly to `pytest.importorskip`
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name == "pytest":
-                    pytest_module_names.add(alias.asname or alias.name)
-        elif isinstance(node, ast.ImportFrom):
-            if node.module == "pytest":
-                for alias in node.names:
-                    if alias.name == "importorskip":
-                        bare_importorskip_names.add(alias.asname or alias.name)
+    root = pathlib.Path(os.path.dirname(os.path.abspath(__file__)))
+    paths = sorted(root.rglob("*.py"))
 
-    # SCOPE assertion, same shape as test_the_shipped_template_contributes_no_content's
-    # "derived no headings" check just above. This file DOES `import pytest` (see the
-    # top of the module), so an empty `pytest_module_names` means the binding-resolution
-    # loop above is broken, not that the file is clean -- and a broken resolver makes
-    # `is_qualified` structurally unable to match ANY `pytest.importorskip(...)` call,
-    # however many exist below, leaving `violations` empty and this guard passing
-    # vacuously. `all([])` is `True`; a guard that finds nothing is not the same as a
-    # guard that looked.
-    assert pytest_module_names, (
-        "resolved no local binding for the `pytest` module import, so a qualified "
-        "pytest.importorskip(...) call could never match and this guard would pass "
-        "having checked nothing")
+    # SCOPE, asserted before the content. For a NEGATIVE guard an empty sweep reads
+    # exactly like a clean one, so pin that the walk found the tree it meant to -- and
+    # name this file specifically, since a sweep that silently stopped reaching the
+    # module it lives in has stopped being a widening of anything.
+    assert len(paths) > 1, "the tests/ walk found at most one file, so it swept nothing"
+    assert root / "test_renderer_template.py" in paths, (
+        "the sweep no longer reaches its own module, so the walk is broken")
 
+    resolved_any = False
     violations = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        # <binding>.importorskip(...) where <binding> resolves to the pytest module
-        # under ANY name it was imported as (plain "pytest" or an alias).
-        is_qualified = (isinstance(func, ast.Attribute) and func.attr == "importorskip"
-                        and isinstance(func.value, ast.Name)
-                        and func.value.id in pytest_module_names)
-        # a bare importorskip(...) reached via `from pytest import importorskip [as x]`.
-        is_bare = isinstance(func, ast.Name) and func.id in bare_importorskip_names
-        if is_qualified or is_bare:
-            violations.append(node.lineno)
+    for path in paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
-    assert not violations, f"pytest.importorskip called at line(s) {violations}"
+        # Resolve the LOCAL bindings EACH file's own imports create, rather than assuming
+        # `pytest` or `importorskip` are the names in scope -- an aliased import walks
+        # straight past a check keyed on the canonical name, which is exactly the failure
+        # shape CLAUDE.md's guard-testing section names. Per file, because a binding in
+        # one module says nothing about the names in another.
+        pytest_module_names = set()      # names bound to the `pytest` module itself
+        bare_importorskip_names = set()  # names bound directly to `pytest.importorskip`
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "pytest":
+                        pytest_module_names.add(alias.asname or alias.name)
+            elif isinstance(node, ast.ImportFrom):
+                if node.module == "pytest":
+                    for alias in node.names:
+                        if alias.name == "importorskip":
+                            bare_importorskip_names.add(alias.asname or alias.name)
+        resolved_any = resolved_any or bool(pytest_module_names)
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            # <binding>.importorskip(...) where <binding> resolves to the pytest module
+            # under ANY name it was imported as (plain "pytest" or an alias).
+            is_qualified = (isinstance(func, ast.Attribute) and func.attr == "importorskip"
+                            and isinstance(func.value, ast.Name)
+                            and func.value.id in pytest_module_names)
+            # a bare importorskip(...) reached via `from pytest import importorskip [as x]`.
+            is_bare = isinstance(func, ast.Name) and func.id in bare_importorskip_names
+            if is_qualified or is_bare:
+                violations.append(f"{path.relative_to(root)}:{node.lineno}")
+
+    # The other half of SCOPE, and the one that can hide. Many files under tests/ do
+    # `import pytest`; an empty `resolved_any` means the binding-resolution loop above is
+    # broken, not that the tree is clean -- and a broken resolver makes `is_qualified`
+    # structurally unable to match ANY `pytest.importorskip(...)` call, however many
+    # exist, leaving `violations` empty and this guard passing vacuously. `all([])` is
+    # `True`; a guard that finds nothing is not the same as a guard that looked.
+    assert resolved_any, (
+        "resolved no local binding for the `pytest` module in ANY file under tests/, so "
+        "a qualified pytest.importorskip(...) call could never match and this guard "
+        "would pass having checked nothing")
+
+    assert not violations, (
+        f"pytest.importorskip called at {violations}. Every dependency these tests reach "
+        f"for is in the `test` extra, so a skip guard cannot protect anything -- it can "
+        f"only turn an absent dependency into a green run.")
 
 
 def test_precheck_reports_a_shape_failure_as_a_format_violation(tmp_path):
