@@ -12,6 +12,14 @@ not land in the repo root, and a copy lets the second test build a MUTATED pypro
 without touching the real one. Measured 2026-08-06: 0.6s per build, no network --
 `--no-isolation` uses the already-installed setuptools, which is why setuptools and
 build are in the `test` extra.
+
+NOTE ON HERMETICITY: `conftest.py`'s session fixture blocks `socket.getaddrinfo` in THIS
+interpreter, and the build below runs in a SUBPROCESS, which does not inherit that block.
+The offline claim above therefore rests on `--no-isolation` (no environment is
+provisioned, so nothing is fetched) rather than on the suite's own network guard --
+verified by running the build with the machine offline. Left as a note rather than
+plumbed through: re-imposing the block in the child would mean an exec wrapper around
+`python -m build` for a claim the flag already carries.
 """
 import glob
 import os
@@ -21,8 +29,20 @@ import sys
 import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TEMPLATE = "sluice/templates/cv_plain.html.j2"
 PKG_DATA = '[tool.setuptools.package-data]\nsluice = ["templates/*.html.j2"]\n'
+
+
+def _expected_templates():
+    """Every template the package-data GLOB will pick up, enumerated from the tree.
+
+    Not one hardcoded name: the manifest ships `templates/*.html.j2`, so a second
+    template added beside the first is packaged automatically -- and a guard naming only
+    the first would keep passing while the new one silently failed to ship (or shipped
+    unchecked). Asserted non-empty by every caller, since a walk that finds nothing
+    satisfies a subset check without having looked.
+    """
+    d = f"{ROOT}/sluice/templates"
+    return sorted(f"sluice/templates/{n}" for n in os.listdir(d) if n.endswith(".html.j2"))
 
 
 def _build_wheel(dest, *, pyproject_text=None):
@@ -46,10 +66,13 @@ def _build_wheel(dest, *, pyproject_text=None):
     return zipfile.ZipFile(glob.glob(f"{dest}/out/*.whl")[0]).namelist()
 
 
-def test_the_shipped_template_is_in_the_built_wheel(tmp_path):
+def test_every_shipped_template_is_in_the_built_wheel(tmp_path):
+    expected = _expected_templates()
+    assert expected, "found no templates to check, so this guard would pass vacuously"
     names = _build_wheel(str(tmp_path))
-    assert TEMPLATE in names, (
-        f"{TEMPLATE} is missing from the built wheel. `packages.find` selects PACKAGES, "
+    missing = [t for t in expected if t not in names]
+    assert not missing, (
+        f"{missing} missing from the built wheel. `packages.find` selects PACKAGES, "
         f"not data: without [tool.setuptools.package-data] every `pip install sluice` "
         f"ships the default renderer with no template for it to render.")
 
@@ -68,6 +91,8 @@ def test_the_wheel_guard_is_falsified_by_dropping_package_data(tmp_path):
     assert PKG_DATA in original, (
         "the package-data table is not written as this guard expects, so stripping it "
         "would SILENTLY NO-OP and this test would pass for the wrong reason")
+    expected = _expected_templates()
+    assert expected, "found no templates to check, so this guard would pass vacuously"
     names = _build_wheel(str(tmp_path), pyproject_text=original.replace(PKG_DATA, ""))
     assert "sluice/templates/__init__.py" in names   # the PACKAGE still ships...
-    assert TEMPLATE not in names                     # ...its DATA does not
+    assert not [t for t in expected if t in names]   # ...its DATA does not

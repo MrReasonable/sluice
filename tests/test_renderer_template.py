@@ -149,37 +149,115 @@ def test_the_shipped_template_renders_a_parsed_document(tmp_path):
         assert expected in html, f"{expected!r} missing from the rendered CV"
 
 
-def test_the_shipped_template_contributes_no_content():
-    """The shipped template is NOT neutral -- a template must lay something out, so its
+def test_every_shipped_template_contributes_no_content():
+    """A shipped template is NOT neutral -- a template must lay something out, so its
     layout is a shipped opinion. The property that IS achievable and mechanically
     checkable is narrower: it contributes no CONTENT of its own.
 
-    The heading set is DERIVED from cv/compose.py's _RULES, never hand-listed, so this
-    guard cannot drift from what the composer actually emits.
+    ENUMERATES, rather than reading one hardcoded path. `pyproject.toml` ships the
+    directory by GLOB (`templates/*.html.j2`), so a second template dropped in beside
+    the first is packaged into every install automatically -- and was guarded by
+    nothing, because this read exactly one filename. The docs sweep in
+    tests/test_no_leaked_files.py already enumerated its side; the shipping side is the
+    one where an unguarded file actually reaches a user.
+
+    Strip and heading derivation are shared with that sweep (tests/template_content.py),
+    because they used to be two copies and the same bug lived in both.
     """
-    import re
-    from importlib.resources import files
+    from tests.template_content import (composer_headings, leftover_content,
+                                        packaged_templates)
 
-    from sluice.cv.compose import _RULES
-
-    headings = {ln.strip() for ln in _RULES.splitlines()
-                if ln.strip() and ln.strip() == ln.strip().upper()
-                and all(c.isalpha() or c.isspace() for c in ln.strip())}
+    headings = composer_headings()
     assert headings, "derived no headings, so this guard would pass vacuously"
 
-    text = files("sluice.templates").joinpath("cv_plain.html.j2").read_text(encoding="utf-8")
-    stripped = re.sub(r"<style\b.*?</style>", " ", text, flags=re.S | re.I)
-    stripped = re.sub(r"\{\{.*?\}\}|\{%.*?%\}|\{#.*?#\}", " ", stripped, flags=re.S)
-    stripped = re.sub(r"<[^>]*>", " ", stripped, flags=re.S)
-    # A token with no letters and no digits is PUNCTUATION -- the " | " separators
-    # between dates/location/title, which `_RULES` itself uses in the format it asks the
-    # composer for. Punctuation is layout, not content, and layout is admittedly a
-    # shipped opinion (see the docstring). Dropping these keeps the guard aimed at the
-    # thing it can actually check: words the template puts in the user's mouth.
-    leftover = {tok for tok in (t.strip() for t in stripped.splitlines())
-                if tok and any(c.isalnum() for c in tok)}
-    assert leftover <= headings, (
-        f"the shipped template contributes content of its own: {sorted(leftover - headings)}")
+    templates = packaged_templates()
+    assert templates, (
+        "no packaged *.html.j2 found -- for a NEGATIVE guard an empty sweep reads "
+        "exactly like a clean one, so the scope is asserted before the content is")
+
+    for name, text in templates:
+        leftover = leftover_content(text)
+        assert leftover <= headings, (
+            f"the shipped template {name} contributes content of its own: "
+            f"{sorted(leftover - headings)}")
+
+
+def test_the_shipped_template_sweep_covers_every_route_into_a_users_install():
+    """SCOPE, against the packaging manifest rather than against itself.
+
+    The sweep above inspects `*.html.j2` under `sluice.templates`. That is the only
+    package-data route today, and the assertion is what makes "only" true rather than
+    assumed: adding, say, `templates/*.css` or a second data directory to
+    `[tool.setuptools.package-data]` would ship a file into every install that the sweep
+    cannot see, and no test would say so. Derived from pyproject, so this reds on the
+    change that creates the hole instead of on the leak that eventually follows.
+    """
+    from tests.template_content import packaged_data_patterns
+
+    patterns = packaged_data_patterns()
+    assert patterns, "read no package-data patterns, so this guard checked nothing"
+    assert set(patterns) == {"templates/*.html.j2"}, (
+        f"pyproject ships package data this neutrality sweep does not inspect: "
+        f"{sorted(set(patterns) - {'templates/*.html.j2'})}. Extend "
+        "tests/template_content.py::packaged_templates to cover it, then widen this "
+        "assertion -- do not widen this assertion alone.")
+
+
+@pytest.mark.parametrize("planted,why", [
+    ("<p>seeking a remote-first role, no agencies</p>",
+     "plain body text -- the case the guard already caught"),
+    ("<style>.contact::after { content: \" -- seeking a remote-first role\"; }</style>",
+     "CSS GENERATED content: text WeasyPrint really renders, invisible to a guard that "
+     "deletes the style block wholesale"),
+    ("<style>.contact::before{content:'no agencies please'}</style>",
+     "...with single quotes and no spaces, since the harvest must not depend on "
+     "formatting"),
+    # EMPTY element, deliberately. An earlier version wrote `>x</p>` and passed for the
+    # wrong reason: `x` survives tag-stripping on its own, so the row went red whether or
+    # not the attribute was ever inspected. Measured -- scoping the harvest back to
+    # <style> blocks left this row GREEN once the stray `x` was removed, which is what
+    # makes it a witness rather than decoration.
+    ("<p style=\"content: 'no agencies please'\"></p>",
+     "...in a style ATTRIBUTE, which tag-stripping would otherwise erase"),
+])
+def test_the_no_content_guard_catches_planted_content(planted, why):
+    """POSITIVE CONTROLS. The guard above is NEGATIVE -- it passes when it finds nothing
+    -- so a healthy tree cannot distinguish "clean" from "broken and finding nothing".
+    Row 2 is the measured failure: planted verbatim in the shipped template, all twelve
+    assertions in this file stayed green.
+
+    Planted into the REAL shipped template rather than a synthetic stand-in, so each row
+    is the change a human would actually commit.
+    """
+    from tests.template_content import (composer_headings, leftover_content,
+                                        packaged_templates)
+
+    _, text = packaged_templates()[0]
+    assert leftover_content(text) <= composer_headings(), (
+        "the real template is already dirty, so this row proves nothing about the plant")
+    assert not leftover_content(planted + text) <= composer_headings(), why
+
+
+@pytest.mark.parametrize("benign", [
+    "<style>.role::after { content: \"\"; }</style>",
+    "<style>.meta span + span::before { content: \" | \"; }</style>",
+    "<style>.bullets li::before { content: \"\\2022\"; }</style>",
+    "<style>.name::after { content: \"{{ document.name }}\"; }</style>",
+])
+def test_the_no_content_guard_spares_punctuation_and_cv_data(benign):
+    """NEGATIVE controls, and they are what stop the fix above from being useless.
+
+    A guard that rejected every `content:` declaration would forbid the separators and
+    glyphs a layout is entitled to, and template authors would route around it. Empty
+    strings and pure punctuation carry no letters or digits and are dropped by the same
+    rule that already drops the " | " between dates and title; a literal interpolating a
+    CvDocument field is the CANDIDATE's content, not the template's.
+    """
+    from tests.template_content import (composer_headings, leftover_content,
+                                        packaged_templates)
+
+    _, text = packaged_templates()[0]
+    assert leftover_content(benign + text) <= composer_headings()
 
 
 def test_absent_jinja2_raises_naming_the_extra(monkeypatch, tmp_path):
