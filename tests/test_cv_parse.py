@@ -178,6 +178,56 @@ def test_parse_accepts_a_meta_line_with_no_location(meta, expected_title):
     assert doc.work[1].location == "EXAMPLECITY", "the three-field form must still work"
 
 
+def test_parse_accepts_a_blank_middle_meta_field_as_no_location():
+    """`dates |  | Role` is the SAME "no location" fact as `dates | Role`, spelled with
+    the pipes left in, and refusing one while accepting the other is strictness on an
+    axis the gate is blind to.
+
+    Measured 2026-08-06 BEFORE the fix, against this repo's own gate-clean fixture:
+    `02/2023-present |  | Staff Engineer` returned `validate() == []` and raised
+    "unparseable meta line" here. Nothing in compose.py's `_RULES` steers the model to
+    either spelling, so the only actionable reading of that refusal was again "invent a
+    city" -- fabrication pressure aimed at the feature that exists to prevent it, which
+    is the whole reason the two-field form above is accepted.
+
+    Uses the repo's gate-clean fixture and COMPUTES the gate verdict rather than
+    asserting it, so this cannot pass for the wrong reason if the fixture ever drifts.
+    """
+    from tests.test_cv_engine import CLEAN_CV
+    meta = "02/2023–present |  | Staff Engineer"
+    text = CLEAN_CV.replace("02/2023–present | Alfa | Staff Engineer", meta)
+    assert meta in text, "the replace no-opped"
+    assert _gate_verdict(text) == [], (
+        "the blank-middle line is no longer gate-clean, so this row no longer documents "
+        "a parser/gate disagreement and proves nothing about the parser")
+    doc = parse_cv(text)
+    assert doc.work[0].location == "", "a blank LOCATION must be present and empty"
+    assert doc.work[0].title == "Staff Engineer", "the TITLE must not shift a field left"
+    assert doc.work[0].dates == "02/2023–present"
+    assert doc.work[0].company == "Example Systems"
+
+
+@pytest.mark.parametrize("meta", [
+    " |  | Staff Engineer",                 # blank DATES
+    "02/2023–present | Alfa |  ",           # blank TITLE, three fields
+    "02/2023–present |   ",                 # blank TITLE, two fields
+])
+def test_a_blank_middle_field_did_not_loosen_the_other_positions(meta):
+    """The COUNTER-controls for the row above, and they are what stop that fix from
+    having quietly dropped the non-emptiness check altogether.
+
+    Only the middle field of a THREE-field line may be blank, because only LOCATION has
+    no upstream source. A blank DATES or a blank TITLE is a field the composer dropped,
+    and either renders as a hole in a PDF sent under the user's name -- the silent
+    misassignment `test_parse_raises_on_an_empty_meta_field` already refuses.
+    """
+    from tests.test_cv_engine import CLEAN_CV
+    text = CLEAN_CV.replace("02/2023–present | Alfa | Staff Engineer", meta)
+    assert meta in text, "the replace no-opped"
+    with pytest.raises(CvParseError, match="meta line"):
+        parse_cv(text)
+
+
 @pytest.mark.parametrize("mutation,replacement,field,expected", [
     # A date must not be absorbed into the title.
     ("03/2021-present | EXAMPLECITY | Staff Engineer",
@@ -644,6 +694,59 @@ def test_parse_accepts_education_before_certificates():
     doc = parse_cv(swapped)
     assert doc.certificates == ["Example Cloud Practitioner, 2022"]
     assert doc.education == ["Example University, 2010-2013 | BSc Computer Science"]
+
+
+def test_parse_refuses_a_repeated_trailing_header():
+    """The sibling of `test_parse_refuses_unrecognised_content_under_a_trailing_header`,
+    on the axis that guard missed: a header seen a SECOND time.
+
+    Measured 2026-08-06 BEFORE the fix, against this repo's own gate-clean fixture -- an
+    empty `CERTIFICATES`, then `EDUCATION`, then a second `CERTIFICATES` carrying two
+    entries was validate()-clean, slop-clean, did NOT raise, and returned
+    `certificates == []`. The shipped template guards each trailing section with
+    `{% if document.certificates %}`, so the heading vanished with the entries and the
+    PDF was indistinguishable from a candidate who genuinely holds none. That is verbatim
+    the harm the unrecognised-content guard states as this design's principle: user
+    content must not vanish silently from a PDF sent under their name.
+
+    The refusal is answerable without inventing anything (merge the two headings), which
+    is the test every refusal in this parser has to pass -- see the LOCATION cases above,
+    where it is what forced the opposite verdict.
+    """
+    from tests.test_cv_engine import CLEAN_CV
+    text = CLEAN_CV.replace(
+        "CERTIFICATES\n- CSM\nEDUCATION\n- Uni",
+        "CERTIFICATES\nEDUCATION\n- Uni\n\n"
+        "CERTIFICATES\n- Example Scrum Master\n- Example Cloud Practitioner")
+    assert text.count("CERTIFICATES") == 2, "the replace no-opped"
+    assert _gate_verdict(text) == [], (
+        "the repeated header is no longer gate-clean, so this test would pass as an "
+        "ordinary gate failure and say nothing about the parser dropping content")
+    with pytest.raises(CvParseError, match="CERTIFICATES appears twice"):
+        parse_cv(text)
+
+
+def test_unmodelled_trailing_content_is_refused_rather_than_left_unconsumed():
+    """Pins the CORRECTED claim in parse.py's trailing-section comment.
+
+    That comment used to say a section this parser does not model (e.g. SKILLS) sitting
+    after the trailing sections was "silently left unconsumed". Measured 2026-08-06, it
+    is not: the refusal at the end of the section loop rejects any non-blank line that is
+    not a recognised trailing header, so the SKILLS header itself raises there. The
+    comment was describing an arm nothing reaches.
+
+    This is a PROSE guard, and it is here because the same false-mechanism defect has now
+    been found four times on this branch. Asserting on the MESSAGE is what ties it to the
+    arm that actually fires -- a bare `pytest.raises(CvParseError)` would also be
+    satisfied by the repeated-header refusal above, or by any future arm.
+    """
+    from tests.test_cv_engine import CLEAN_CV
+    text = CLEAN_CV + "\n\nSKILLS\n- Python\n"
+    assert _gate_verdict(text) == [], (
+        "the SKILLS tail is no longer gate-clean, so the parser's behaviour on it is no "
+        "longer the parser/gate disagreement this test describes")
+    with pytest.raises(CvParseError, match=r"EDUCATION: unrecognised line 'SKILLS'"):
+        parse_cv(text)
 
 
 # ── the IMPLICATION sweep: gate-clean  =>  the parser does not refuse ────────────
