@@ -40,9 +40,14 @@ home and two of them read as contradicting each other:
     the set of modules CONTAINING an `expanduser` call against a roster keyed the same
     way, so a brand-new module reds and a module that loses its last call reds, while a
     SECOND ingress added inside a module already on the roster does not. That is a real
-    limit and it is stated rather than implied -- three of the modules above already hold
-    more than one syntactic call between them, so a per-call roster would be pinning
-    something this paragraph does not claim.
+    limit and it is stated rather than implied: a module on this roster can, and does,
+    spend more than one syntactic `expanduser` call on the single decision its roster
+    entry describes, so a per-call roster would pin formatting rather than convention.
+    NO COUNT here either -- and that is the third time of asking, because the sentence
+    you are reading shipped carrying a wrong one ("three of the modules" when it is two),
+    four lines below the warning above that a number in prose is not a check.
+    `test_the_expanduser_roster_matches_the_source` asserts the multi-call fact itself
+    rather than any number, which is the form of it that can go stale loudly.
     abspath ONLY where the value outlives the cwd it was read in -- either written down
     or compared. `questions.py` and `cli.py`'s preset write the answer into a config
     file; `cli.py`'s comparison needs two spellings to be judged equal. Neither is true

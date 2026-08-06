@@ -674,9 +674,16 @@ def test_the_expanduser_roster_matches_the_source():
     a reason left behind after its module stopped. State the limit exactly, because the
     docstring this guards used to imply the wider one -- a SECOND ingress added inside a
     module already on the roster is NOT caught. Deliberate: the roster's value is one
-    prose reason per module covering the DECISIONS it makes, and `cli.py` and
-    `core/paths.py` each already spend more than one syntactic `expanduser` call on a
-    single such decision, so a count would pin formatting rather than convention.
+    prose reason per module covering the DECISIONS it makes, and at least one module on
+    the roster already spends more than one syntactic `expanduser` call on a single such
+    decision, so a count would pin formatting rather than convention.
+
+    That last sentence is ASSERTED below, not merely written. paths.py's docstring makes
+    the same claim to justify the same limit, and it shipped a wrong COUNT of it -- the
+    third wrong number in that one paragraph, four lines under its own warning that a
+    number in prose is not a check. The assertion is deliberately on the FACT ("some
+    module has more than one") and not on how many or which: pinning either would pin
+    exactly the formatting this limit exists to avoid pinning.
     """
     pkg = pathlib.Path(__file__).resolve().parent.parent / "sluice"
     found = {}
@@ -693,6 +700,11 @@ def test_the_expanduser_roster_matches_the_source():
         f"stated over the wrong set of files; only-in-source="
         f"{sorted(set(found) - set(_EXPANDUSER_SITES))} only-in-roster="
         f"{sorted(set(_EXPANDUSER_SITES) - set(found))}")
+    assert any(n > 1 for n in found.values()), (
+        f"every module on the roster now holds exactly one expanduser call {found}, so "
+        f"the reason BOTH this docstring and paths.py give for keeping the roster "
+        f"file-keyed rather than call-keyed no longer holds. Either restate that limit "
+        f"or tighten the roster -- do not leave the justification standing unsupported.")
 
 
 # ── the orphan notice: named path absent, old location still populated ───────
