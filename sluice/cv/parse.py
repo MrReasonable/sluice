@@ -58,11 +58,22 @@ class CvDocument:
 
 
 # The only two headers legal immediately after a WORK EXPERIENCE role's bullets end.
-# Anything ELSE that is header-shaped there (see `_is_header_shaped`) -- a section this
-# parser does not model, or even a stray duplicate PROFILE/WORK EXPERIENCE -- is refused
-# by name rather than silently absorbed as a company, which would only fail one line
-# later as a bad meta line and hide the real problem behind a misleading one.
+# A line that is neither of these AND fails to be followed by a valid meta line (see
+# `_is_header_shaped`'s use below) is refused by name rather than silently absorbed as a
+# company, which would only fail one line later as a bad meta line and hide the real
+# problem behind a misleading one.
 _TRAILING_SECTIONS = frozenset({"CERTIFICATES", "EDUCATION"})
+
+# cv/validate.py:120-123: "the renderer treats '-', '•', and '*' all as bullets, so
+# a WORK bullet composed with '•' or '*' is delivered in the rendered PDF and MUST
+# be citation-checked here too" -- so a CV using either of those markers has ALREADY
+# passed the gate this parser sits downstream of. Recognising only a hyphen would make
+# this parser STRICTER than the gate -- the exact shape of the en-dash bug above: a CV
+# the gate passed gets refused and binned here instead. Scoped to WORK bullets only,
+# matching where the cited gate check itself applies (`in_work`) -- CERTIFICATES and
+# EDUCATION entries are composed with a hyphen only, per compose.py's own format
+# contract, so widening this to those sections would not be modelling anything real.
+_BULLET_MARKERS = ("-", "•", "*")
 
 # The gate at cv/validate.py:89 matches `\d{2}/(\d{4})\s*[–-]` -- EN DASH (U+2013) or
 # ASCII hyphen, with optional surrounding whitespace -- and this repo's own gate-clean
@@ -80,23 +91,30 @@ _DATE_RANGE_RE = re.compile(rf"^\d{{2}}/\d{{4}}{_DASH}(?:\d{{2}}/\d{{4}}|present
 # A citation the composer wrapped onto its own line (rather than trailing the bullet it
 # belongs to) still needs to disappear -- see the "wrapped" case in
 # test_parse_preserves_line_structure_while_stripping. Fullmatch (not the shared
-# `_CITE_RE`'s search/sub semantics) is deliberate: this line must be NOTHING BUT a
-# citation to be swallowed as a continuation, or a genuine new company/heading that
-# happens to start with "[" would vanish instead of being parsed.
-_CITE_ONLY_RE = re.compile(r"^\[[A-Za-z]{2}[0-9]+\]$")
+# `_CITE_RE`'s search/sub semantics) is deliberate: this line must be NOTHING BUT one or
+# more citations to be swallowed as a continuation, or a genuine new company/heading
+# that happens to start with "[" would vanish instead of being parsed. ONE-OR-MORE
+# (not exactly one): cv/compose.py:11 explicitly permits several citations per bullet
+# ("several allowed: [id] [id]"), and a multi-citation bullet is exactly as likely to
+# get wrapped onto its own line as a single-citation one.
+_CITE_ONLY_RE = re.compile(r"^(?:\[[A-Za-z]{2}[0-9]+\]\s*)+$")
 
 
 def _is_header_shaped(line: str) -> bool:
-    """True for a line the composer would only ever emit as a section heading.
+    """True for a line that LOOKS LIKE a section heading: exact, shipped uppercase, the
+    same way every heading this grammar defines (PROFILE, WORK EXPERIENCE, CERTIFICATES,
+    EDUCATION) is -- the fabrication gate itself matches section names case-sensitively
+    in exact uppercase.
 
-    Every heading this grammar defines (PROFILE, WORK EXPERIENCE, CERTIFICATES,
-    EDUCATION) is exact, shipped uppercase -- the fabrication gate itself matches section
-    names case-sensitively in exact uppercase. A company name is never all-caps in this
-    grammar's own fixtures ("Example Data Co", "Example Analytics Ltd"), so an all-caps,
-    letters-and-spaces-only line in the WORK EXPERIENCE body is a section-header ATTEMPT:
-    either one of the four modelled headers, or one this parser must refuse by name
-    rather than silently absorb as a company (which would then fail one line later,
-    misleadingly, as a bad meta line).
+    This is NOT used to reject a candidate company outright: a real acronym employer
+    (IBM, NASA, HSBC, BBC) is all-caps too, and refusing it on casing alone would waste
+    the engine's one retry on a CV that was never malformed -- there is nothing for a
+    re-composition to fix. It is used only to choose an ERROR MESSAGE once a candidate
+    company has ALREADY failed to be followed by a valid meta line: at that point, an
+    all-caps candidate is very likely a section header the composer emitted that this
+    parser does not model (e.g. PUBLICATIONS) rather than a company whose meta line
+    merely went wrong, so naming it "unmodelled" beats a generic "bad meta line" message
+    that hides the real problem. See the `if not valid_meta:` branch below.
     """
     stripped = line.strip()
     return bool(stripped) and stripped == stripped.upper() and any(c.isalpha() for c in stripped)
@@ -155,31 +173,34 @@ def parse_cv(text: str) -> CvDocument:
             # CERTIFICATES or EDUCATION -- stop here WITHOUT consuming the line, so the
             # section readers below start from it.
             break
-        if _is_header_shaped(stripped):
-            # All-caps, but not CERTIFICATES/EDUCATION -- e.g. a PUBLICATIONS section the
-            # composer emitted, or a stray duplicate heading. Unmodelled either way.
-            raise CvParseError(f"unmodelled section header {stripped!r}")
 
-        # A line that is not blank, not a known section, and not header-shaped is a
-        # company. The line immediately after it MUST be the meta line -- absorbing a
-        # differently-shaped line here (a bullet, a bare title) would silently misassign
-        # a field in a CV going to an employer under the user's name, which is the exact
-        # harm spec section 0 exists to prevent.
+        # A line that is not blank and not a known trailing section is a CANDIDATE
+        # company -- regardless of casing. Whether it really is one is decided by what
+        # follows it, not by how it looks: an all-caps real employer (IBM, NASA, HSBC)
+        # must parse exactly like any other when a valid meta line follows, and casing
+        # is used only below, to pick an error message, once that check has failed.
         company = stripped
         idx += 1
-        if idx >= len(lines):
+        meta_raw = lines[idx].strip() if idx < len(lines) else None
+        parts = [p.strip() for p in meta_raw.split("|")] if meta_raw is not None else []
+        valid_meta = (meta_raw is not None and len(parts) == 3
+                      and _DATE_RANGE_RE.match(parts[0]) and parts[1] and parts[2])
+        if not valid_meta:
+            if _is_header_shaped(company):
+                # All-caps, and what follows it doesn't look like a meta line either --
+                # almost certainly a section header this parser does not model (e.g.
+                # PUBLICATIONS) rather than a company whose meta line merely went wrong.
+                raise CvParseError(f"unmodelled section header {company!r}")
             # Deliberately does not echo `company` here: it is exactly the untrusted
-            # candidate text this branch is refusing, and a message that echoes it back
-            # would let a mutation that deletes the UNMODELLED-SECTION guard above still
-            # satisfy a `pytest.raises(match=...)` on that header's own text via THIS
-            # unrelated path -- measured 2026-08-06, see the mutation witness in the task
-            # report. The meta-line and unmodelled-section refusals must stay
-            # distinguishable by message, not just both truthy.
-            raise CvParseError("missing meta line: WORK EXPERIENCE entry has no line "
-                                "after its company")
-        meta_raw = lines[idx].strip()
-        parts = [p.strip() for p in meta_raw.split("|")]
-        if len(parts) != 3 or not _DATE_RANGE_RE.match(parts[0]):
+            # candidate text the branch above is refusing, and a message that echoes it
+            # back would let a mutation that deletes that branch still satisfy a
+            # `pytest.raises(match=...)` on the header's own text via THIS unrelated
+            # path -- measured 2026-08-06, see the mutation witness in the task report.
+            # The two refusals must stay distinguishable by message, not just both
+            # truthy.
+            if meta_raw is None:
+                raise CvParseError("missing meta line: WORK EXPERIENCE entry has no "
+                                    "line after its company")
             raise CvParseError(f"unparseable meta line: {meta_raw!r}")
         dates, location, title = parts
         idx += 1
@@ -187,14 +208,15 @@ def parse_cv(text: str) -> CvDocument:
         bullets: list[str] = []
         while idx < len(lines):
             line_stripped = lines[idx].strip()
-            if line_stripped.startswith("- "):
-                bullets.append(_strip_cite(line_stripped[2:]))
+            if line_stripped.startswith(_BULLET_MARKERS):
+                bullets.append(_strip_cite(line_stripped[1:].lstrip()))
                 idx += 1
                 continue
             if _CITE_ONLY_RE.match(line_stripped):
-                # A citation the composer wrapped onto its own line, trailing the bullet
-                # just added. It contributes nothing new -- swallow it and keep reading
-                # bullets, rather than letting it fall through as a bogus company/header.
+                # One or more citations the composer wrapped onto their own line,
+                # trailing the bullet just added. Contributes nothing new -- swallow it
+                # and keep reading bullets, rather than letting it fall through as a
+                # bogus company/header.
                 idx += 1
                 continue
             break
