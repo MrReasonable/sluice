@@ -371,9 +371,10 @@ than the rule** — read this before concluding a case is already swept. It asse
 real gate per row, over one alphabet: separator × terminal token × start-month width, applied to the
 FIRST role's date range in one fixture. So it covers `parts[0]` of one meta line and nothing else.
 Known un-swept axis, measured: a FOUR-field meta line
-(`02/2023–present | Alfa | Staff Engineer | Platform`) is gate-CLEAN and refused. That one is left
-refusing on purpose — four fields is genuinely malformed and the message names the expected shape,
-so the retry can act on it — but it is a gap in the sweep, not a case the sweep passed.
+(`02/2023–present | Example Location A | Staff Engineer | Platform`) is gate-CLEAN and
+refused. That one is left refusing on purpose — four fields is genuinely malformed and the message
+names the expected shape, so the retry can act on it — but it is a gap in the sweep, not a case the
+sweep passed.
 
 A REPEATED trailing header (`CERTIFICATES` … `EDUCATION` … `CERTIFICATES` again) is the second
 deliberate refusal of gate-clean input, and it was added rather than inherited: measured, it was
