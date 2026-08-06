@@ -390,7 +390,10 @@ consistently engineers out; see `_select_backend`'s guard in `cli.py`.
   something different, and a breaking CONFIG change outranks a breaking API change here. Note the
   PR needs a token that is not the default `GITHUB_TOKEN`, or the `qa-gates` ruleset blocks it
   forever: GitHub raises no workflow runs from `GITHUB_TOKEN` events, so `ci-success` never
-  reports on it.
+  reports on it. It is a GitHub App token minted per run, NOT a PAT, and the reason is the
+  approval leg: a PAT opens the PR as the repo owner, nobody may approve their own PR, and
+  `.coderabbit.yaml` now skips release PRs — so a PAT would deadlock them. An App authors the
+  PR, leaving a human free to approve.
 - Tests assert on behaviour, not merely that code runs. Fixtures stay synthetic.
 - The four adapter seams (backend, store, renderer, fetcher — the config keys, and the
   `_STORE_SEAM`/`_FETCHER_SEAM`/`_RENDERER_SEAM` constants in `core/app.py`) are each a name-keyed
