@@ -98,17 +98,30 @@ def autoload(package) -> None:
     for mod in pkgutil.iter_modules(package.__path__):
         if mod.name.startswith("_"):
             continue
-        # Snapshot the registry so the skip is TRANSACTIONAL. A plugin that calls
+        # Snapshot BOTH tables so the skip is TRANSACTIONAL. A plugin that calls
         # register() and THEN raises later in its import would otherwise leave its name
         # half-registered -- selectable by `get` even though the module never finished
         # importing and was logged as skipped. That is precisely the quiet-wrong-default
         # (a store resolving to a half-built implementation) this module exists to prevent,
         # so roll the registration back on failure. Copy the inner dicts, not just the
-        # top level: register() mutates them in place.
+        # top level: register() and register_retired() both mutate them in place.
+        #
+        # `_RETIRED` was left out of the first version, and the effect is worse than a
+        # cosmetic one: `renderers/template.py` registers a name and THEN retires
+        # `weasyprint`, so a plugin that raised between the two rolled the registration
+        # back while the retirement stayed. `get` then answered "unknown renderer
+        # 'template' (registered: (none registered)). The bundled weasyprint renderer has
+        # been replaced by template..." -- a message advising the very name it has just
+        # said does not exist, from a table describing a module that never finished
+        # importing. Both halves are written by the same import, so both must unwind with
+        # it.
         snapshot = {seam: dict(impls) for seam, impls in _REGISTRY.items()}
+        retired_snapshot = {seam: dict(hints) for seam, hints in _RETIRED.items()}
         try:
             importlib.import_module(f"{package.__name__}.{mod.name}")
         except Exception as e:  # a broken plugin must not sink the rest
             _log.warning("plugin module %s failed to import: %s", mod.name, e)
             _REGISTRY.clear()
             _REGISTRY.update(snapshot)
+            _RETIRED.clear()
+            _RETIRED.update(retired_snapshot)

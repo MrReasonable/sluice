@@ -148,8 +148,8 @@ the parsed CV, then hands the result to WeasyPrint to produce a PDF. The fabrica
 gate runs on the composed text *before* any template exists, so the PDF is derived
 from gate-approved content rather than identical to it: your own template is free text
 sluice does not audit, so it can add prose the gate never saw or a conditional that
-drops a gated section, either of which the gate cannot catch after the fact. That
-needs an extra `pip install` cannot skip:
+drops a gated section, either of which the gate cannot catch after the fact. Rendering
+needs an extra, and there is no way to skip it:
 
 ```bash
 pip install 'sluice[render]'
