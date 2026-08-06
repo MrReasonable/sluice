@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12+, Jinja2 (new, `render` + `test` extras), WeasyPrint (existing `render` extra), setuptools `package-data`.
 
-**THE SPEC IS NORMATIVE:** `docs/superpowers/specs/2026-08-06-cv-template-renderer-design.md`. Where a task says "per §X", read §X and implement what it says. Do **not** re-derive its decisions from this plan — this plan supplies sequencing, test code, and verification, not a second copy of the design. Where this plan and the spec disagree, the spec wins except on the three corrections listed below.
+**THE SPEC IS NORMATIVE:** `docs/superpowers/specs/2026-08-06-cv-template-renderer-design.md`. Where a task says "per §X", read §X and implement what it says. Do **not** re-derive its decisions from this plan — this plan supplies sequencing, test code, and verification, not a second copy of the design. Where this plan and the spec disagree, the spec wins except on the corrections listed below.
 
 ---
 
@@ -41,7 +41,7 @@ These were verified by execution today, on this machine, against this checkout. 
 | **`UnknownAdapter` already takes a `hint` kwarg** (`core/plugins.py`). The retired-name message has a natural home; no new exception type is needed. | Read at `core/plugins.py`. |
 | **The derived heading set is exactly `{PROFILE, WORK EXPERIENCE, CERTIFICATES, EDUCATION}`.** | Ran the derivation against the real `_RULES`. Test #13 is viable without hand-listing. |
 
-### Three corrections to the spec
+### Corrections to the spec
 
 1. **The orphaned-`weasyprint` count is SEVEN user-facing sites, not six.** The spec's table misses `CHANGELOG.md:124`, which tells a user to "set `cv.renderer: weasyprint`". **Treatment differs**: a changelog is a historical record of the v0.1.0 release and must **not** be rewritten. Leave line 124 alone and let release-please's new entry carry the migration note (spec §Migration case 3). Verify by grep, not by this count.
 2. **Four TEST sites also break** and the spec lists none of them: `tests/test_plugins.py:30`, `tests/test_renderers.py:33,44,60-88`, `tests/test_onboard_questions.py:71-72`, `tests/harness/renderer.py:49` (docstring). Note `sluice/onboard/questions.py` derives its renderer *choices* from the registry (self-healing) but the *hint* and the *test* are hardcoded.
@@ -302,7 +302,11 @@ Expected: RED with "is missing from the built wheel", then green again after res
 - [ ] **Step 9: Full suite, lint, commit**
 
 ```bash
-python -m pytest && ruff check sluice tests scripts
+# VENV-QUALIFIED, not bare. A bare `ruff` on this machine is a broken proto shim that
+# exits non-zero with an unrelated error, and every review round on this branch has had
+# to reach for `.venv/bin/ruff` explicitly. A bare `python` is the same hazard one step
+# removed -- it need not be the interpreter the `[test]` extra was installed into.
+.venv/bin/python -m pytest && .venv/bin/ruff check sluice tests scripts
 git add pyproject.toml .gitignore sluice/templates tests/test_packaging.py
 git commit -m "$(cat <<'EOF'
 feat(cv): package a default CV template and prove it reaches a wheel
@@ -1319,10 +1323,11 @@ EOF
 Every line below is a command whose output is the evidence. Do not mark an item done from reasoning.
 
 **Correctness**
-- [ ] `python -m pytest` — green, and the count is **above** the 2122 recorded at plan time.
-- [ ] `ruff check sluice tests scripts` — clean.
+- [ ] `.venv/bin/python -m pytest` — green. **No count**: three full review rounds each added tests, so any number written here is stale before it is read, and "above N" is satisfied by a run that silently stopped collecting a file. Green is the property; the named-test check below is what pins that the right tests are the ones running.
+- [ ] `.venv/bin/ruff check sluice tests scripts` — clean.
 - [ ] All 18 tests named in spec §Testing exist and pass. Check by name, not by count:
-      `python -m pytest --collect-only -q | grep -cE "test_parse_|test_template_|test_the_shipped_template|test_missing_template|test_absent_|test_a_parse_failure|test_selecting_the_retired|test_render_script_without|test_cv_template_default"`
+      `.venv/bin/python -m pytest --collect-only | grep -E "test_parse_|test_template_|test_the_shipped_template|test_missing_template|test_absent_|test_a_parse_failure|test_selecting_the_retired|test_render_script_without|test_cv_template_default"`
+      **NO `-q`, and that is the whole reason this item is worth re-reading.** `pyproject.toml` already sets `addopts = "-q"`, so the `-q` this command used to carry made it `-q -q`, which collapses the output to one `path: N` line per FILE and prints no test names at all. Measured 2026-08-06: as written it matched **0** lines, and with the `-q` dropped it matches 78 — an inert check that had certified this item green through three review rounds. It is the repo's named fail-open shape (a sweep that discovers nothing satisfies every assertion over it), so READ THE NAMES rather than a count: `grep -c` here is a floor, not an equality, since `test_parse_` alone matches far more than the 18.
 - [ ] Every new/changed guard was witnessed RED **by node id**, and for each one you confirmed no pre-existing test in the same file catches the mutant.
 
 **Packaging (the item three reviewers said would silently not work)**
@@ -1354,5 +1359,5 @@ Every line below is a command whose output is the evidence. Do not mark an item 
 ## Notes for the implementer
 
 - **Do not defer anything.** If you find a problem, address it in this branch. A deferred-minor backlog is where fail-open guards accumulate, because each looks too small for its own round. "Address" may mean recording the reasoning in a comment; it never means leaving it unmentioned.
-- **The spec is not infallible and neither is this plan.** Four corrections to the spec are listed above and were all found by grepping rather than by reading. If a count in either document does not match what you measure, the measurement wins — say so.
+- **The spec is not infallible and neither is this plan.** The corrections to the spec listed above were all found by grepping rather than by reading. If a count in either document does not match what you measure, the measurement wins — say so. (Three separate sentences here once stated how many corrections there were — "three", "Three", "Four" — over a list of five. Counts in prose go stale in silence; the list is the record, not the number in front of it.)
 - **A guard that discovers nothing passes.** `all([])` is `True`. Every sweep in this plan must assert on its SCOPE as well as its findings.
