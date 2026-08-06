@@ -119,6 +119,55 @@ def test_parse_refuses_a_section_it_does_not_model():
         parse_cv(extra)
 
 
+@pytest.mark.parametrize("meta", [
+    "03/2021 to 12/2025, EXAMPLECITY, Staff Engineer",  # commas where the pipes belong
+    "03/2021 - present EXAMPLECITY Staff Engineer",     # the pipes dropped entirely
+])
+def test_an_all_caps_company_with_a_broken_meta_line_is_not_called_an_unmodelled_header(meta):
+    """The retry cannot act on a message that names the WRONG LINE, and casing alone
+    named the wrong line for every acronym-shaped employer.
+
+    The companion to the test above, and the reason `_is_header_shaped` no longer decides
+    the message by itself. Both tests reach the SAME `if not valid_meta:` branch; what
+    separates them is what sits UNDER the candidate, which is the only place the
+    information lives:
+
+        PUBLICATIONS / '- Example paper, 2021'  -- ordinary section content, no
+            month/year token, so "unmodelled section header" is the true diagnosis.
+        EXAMPLE DATA CO / a line carrying dates, a place and a role -- plainly an
+            ATTEMPTED meta line, just mis-delimited.
+
+    Measured 2026-08-06 pre-fix, the second raised "unmodelled section header 'EXAMPLE
+    DATA CO'". That is not merely imprecise, it is misdirection: the composer is told its
+    employer's NAME is the defect, when the name is fine and the line below it is wrong.
+    An LLM handed that message can only delete or rename the employer -- neither of which
+    fixes anything -- so the one retry is spent and the lead is binned at `skipped-gate`,
+    the same terminal cost as the parser-stricter-than-the-gate class this file is mostly
+    about. `_is_header_shaped` cannot see the next line, so the fix reads the OFFENDING
+    line for a date-shaped token instead of asking the candidate to answer for it.
+
+    Asserts the ABSENCE of the wrong message as well as the presence of the right one: a
+    `match="meta line"` alone would be satisfied by the old behaviour too, since the
+    "unmodelled" arm is reached by exactly the same input and a future arm could carry
+    both phrases.
+    """
+    original = "Example Data Co\n03/2021-present | EXAMPLECITY | Staff Engineer"
+    assert original in CV, "the fixture moved; this replace would no-op"
+    text = CV.replace(original, f"EXAMPLE DATA CO\n{meta}")
+    assert f"EXAMPLE DATA CO\n{meta}\n" in text, "the replace no-opped"
+    with pytest.raises(CvParseError) as ei:
+        parse_cv(text)
+    message = str(ei.value)
+    assert "unmodelled section header" not in message, (
+        f"an attempted meta line was diagnosed as a section header: {message}")
+    assert "unparseable meta line" in message, (
+        f"the refusal no longer says what actually went wrong: {message}")
+    assert "EXAMPLE DATA CO" in message, (
+        f"the refusal does not name the entry the model must look under: {message}")
+    assert meta in message, (
+        f"the refusal does not quote the line the model must fix: {message}")
+
+
 @pytest.mark.parametrize("offending", [
     "– Coached the platform team",   # an en-dash "bullet": no marker this parser knows
     "1. Coached the platform team",  # a numbered bullet
