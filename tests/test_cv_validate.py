@@ -34,17 +34,17 @@ def _cv(work):
          "", "PROFILE", "I lead.", "", "WORK EXPERIENCE", ""]
     for co, dl, bs in work:
         L += [co, dl] + bs + [""]
-    L += ["CERTIFICATES", "- CSM", "", "EDUCATION", "- Uni"]
+    L += ["CERTIFICATES", "- Example Scrum Master", "", "EDUCATION", "- Uni"]
     return "\n".join(L)
 
 # Synthetic throughout. Only the descending start years matter to the gate
 # (validate.py:39); the count, roles, cities and employers are arbitrary.
 FULL = [
-    ("Example Systems", "02/2023–present | Alfa | Staff Engineer", ["- Shipped it [EF1]"]),
-    ("Example Analytics", "06/2020–01/2023 | Bravo | Senior Engineer",
+    ("Example Systems", "02/2023–present | Example Location A | Staff Engineer", ["- Shipped it [EF1]"]),
+    ("Example Analytics", "06/2020–01/2023 | Example Location B | Senior Engineer",
      ["- Grew team from 3 to 8 [EF1]"]),
-    ("Example Robotics", "09/2017–05/2020 | Charlie | Engineer", ["- Coached [EF1]"]),
-    ("Example Cartography", "07/2015–08/2017 | Alfa | Junior Engineer", ["- CI [EF1]"]),
+    ("Example Robotics", "09/2017–05/2020 | Example Location C | Engineer", ["- Coached [EF1]"]),
+    ("Example Cartography", "07/2015–08/2017 | Example Location A | Junior Engineer", ["- CI [EF1]"]),
 ]
 
 def test_clean_passes():
@@ -57,7 +57,7 @@ def test_employer_and_decoy_gates_are_off_by_default():
     # runs when the caller supplies a list.
     assert validate(_cv(FULL[:-1]), BUNDLE) == []
     f = [x[:] for x in FULL]
-    f[0] = ("Example Systems", "02/2023–present | Alfa | Staff Engineer", ["- Built at Example Decoy [EF1]"])
+    f[0] = ("Example Systems", "02/2023–present | Example Location A | Staff Engineer", ["- Built at Example Decoy [EF1]"])
     assert validate(_cv(f), BUNDLE) == []
 
 def test_id_digits_not_counted_as_metric():
@@ -71,31 +71,31 @@ def test_id_digits_not_counted_as_metric():
     # port's test->mutation pairs is what surfaced it. Kept (it still pins that a
     # digit-free citing bullet is clean) and paired with the load-bearing half.
     f = [x[:] for x in FULL]
-    f[3] = ("Example Cartography", "07/2015–08/2017 | Alfa | Junior Engineer",
+    f[3] = ("Example Cartography", "07/2015–08/2017 | Example Location A | Junior Engineer",
             ["- Owned direction [ET1]"])
     assert validate(_cv(f), BUNDLE) == []
 
     # `1` appears ONLY inside the id token [ET1]; ET1's metrics are 90 and 99. If
     # the parser scanned the id token too, the code's own digits would silently
     # become permitted figures, so this bullet MUST be flagged.
-    f[3] = ("Example Cartography", "07/2015–08/2017 | Alfa | Junior Engineer",
+    f[3] = ("Example Cartography", "07/2015–08/2017 | Example Location A | Junior Engineer",
             ["- Owned 1 direction [ET1]"])
     assert any("INVENTED" in x for x in validate(_cv(f), BUNDLE))
 
 def test_multi_citation_union():
     f = [x[:] for x in FULL]
-    f[3] = ("Example Cartography", "07/2015–08/2017 | Alfa | Junior Engineer",
+    f[3] = ("Example Cartography", "07/2015–08/2017 | Example Location A | Junior Engineer",
             ["- Lifted uptime 90 to 99 across a 15-person team [ET1] [ET2]"])
     assert validate(_cv(f), BUNDLE) == []
 
 def test_invented_metric_flagged():
     f = [x[:] for x in FULL]
-    f[1] = ("Example Analytics", "06/2020–01/2023 | Bravo | Senior Engineer", ["- Grew team from 3 to 23 [EF1]"])
+    f[1] = ("Example Analytics", "06/2020–01/2023 | Example Location B | Senior Engineer", ["- Grew team from 3 to 23 [EF1]"])
     assert any("INVENTED" in x for x in validate(_cv(f), BUNDLE))
 
 def test_uncited_flagged():
     f = [x[:] for x in FULL]
-    f[1] = ("Example Analytics", "06/2020–01/2023 | Bravo | Senior Engineer", ["- Grew team from 3 to 8"])
+    f[1] = ("Example Analytics", "06/2020–01/2023 | Example Location B | Senior Engineer", ["- Grew team from 3 to 8"])
     assert any("UNCITED" in x for x in validate(_cv(f), BUNDLE))
 
 def test_missing_employer_flagged():
@@ -104,14 +104,14 @@ def test_missing_employer_flagged():
 
 def test_decoy_flagged():
     f = [x[:] for x in FULL]
-    f[0] = ("Example Systems", "02/2023–present | Alfa | Staff Engineer", ["- Built at Example Decoy [EF1]"])
+    f[0] = ("Example Systems", "02/2023–present | Example Location A | Staff Engineer", ["- Built at Example Decoy [EF1]"])
     assert any("Example Decoy" in x for x in
                validate(_cv(f), BUNDLE, fabrication_decoys=FABRICATION_DECOYS))
 
 def test_decoy_case_insensitive_flagged():
     # lowercase/mixed-case "example decoy" must not slip past a case-sensitive check.
     f = [x[:] for x in FULL]
-    f[0] = ("Example Systems", "02/2023–present | Alfa | Staff Engineer", ["- Built at example decoy [EF1]"])
+    f[0] = ("Example Systems", "02/2023–present | Example Location A | Staff Engineer", ["- Built at example decoy [EF1]"])
     assert any("FABRICATED" in x or "Example Decoy" in x for x in
                validate(_cv(f), BUNDLE, fabrication_decoys=FABRICATION_DECOYS))
 
@@ -122,7 +122,7 @@ def test_bullet_marker_uncited_flagged():
     # '-') this bullet was invisible to the gate -- no violation was raised, so
     # a fabricated/uncited claim would sail through. It must be caught here too.
     f = [x[:] for x in FULL]
-    f[1] = ("Example Analytics", "06/2020–01/2023 | Bravo | Senior Engineer", ["• Grew team from 3 to 8"])
+    f[1] = ("Example Analytics", "06/2020–01/2023 | Example Location B | Senior Engineer", ["• Grew team from 3 to 8"])
     assert any("UNCITED" in x for x in validate(_cv(f), BUNDLE))
 
 
@@ -157,7 +157,7 @@ def _bundle(entries=None, baseline="Baseline prose, no digits.", negatives=None)
 def _work_cv(*bullets):
     return "\n".join(["JANE ROE", "", "PROFILE", "I build things.", "",
                       "WORK EXPERIENCE", "",
-                      "Example Systems", "02/2023–present | Alfa | Staff Engineer",
+                      "Example Systems", "02/2023–present | Example Location A | Staff Engineer",
                       *bullets, "",
                       "CERTIFICATES", "- Cert", "", "EDUCATION", "- School"])
 
@@ -169,7 +169,7 @@ def _cv_with_profile(profile, *bullets):
     # so the reverse-chronology check sees a single start year and passes.
     return "\n".join(["JANE ROE", "", "PROFILE", profile, "",
                       "WORK EXPERIENCE", "",
-                      "Example Systems", "02/2023–present | Alfa | Staff Engineer",
+                      "Example Systems", "02/2023–present | Example Location A | Staff Engineer",
                       *(bullets or ["- Ran 42 services [ES1]"]), "",
                       "CERTIFICATES", "- Cert", "", "EDUCATION", "- School"])
 

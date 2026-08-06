@@ -57,7 +57,7 @@ PASSING_CV = "\n".join([
     "- Grew the team from 3 to 8 engineers [EF1]",
     "",
     "CERTIFICATES",
-    "- CSM",
+    "- Example Scrum Master",
     "EDUCATION",
     "- Example University, 2015 | BSc",
 ])

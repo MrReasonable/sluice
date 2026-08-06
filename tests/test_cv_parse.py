@@ -195,7 +195,7 @@ def test_parse_accepts_a_blank_middle_meta_field_as_no_location():
     """
     from tests.test_cv_engine import CLEAN_CV
     meta = "02/2023–present |  | Staff Engineer"
-    text = CLEAN_CV.replace("02/2023–present | Alfa | Staff Engineer", meta)
+    text = CLEAN_CV.replace("02/2023–present | Example Location A | Staff Engineer", meta)
     assert meta in text, "the replace no-opped"
     assert _gate_verdict(text) == [], (
         "the blank-middle line is no longer gate-clean, so this row no longer documents "
@@ -209,7 +209,7 @@ def test_parse_accepts_a_blank_middle_meta_field_as_no_location():
 
 @pytest.mark.parametrize("meta", [
     " |  | Staff Engineer",                 # blank DATES
-    "02/2023–present | Alfa |  ",           # blank TITLE, three fields
+    "02/2023–present | Example Location A |  ",           # blank TITLE, three fields
     "02/2023–present |   ",                 # blank TITLE, two fields
 ])
 def test_a_blank_middle_field_did_not_loosen_the_other_positions(meta):
@@ -222,7 +222,7 @@ def test_a_blank_middle_field_did_not_loosen_the_other_positions(meta):
     misassignment `test_parse_raises_on_an_empty_meta_field` already refuses.
     """
     from tests.test_cv_engine import CLEAN_CV
-    text = CLEAN_CV.replace("02/2023–present | Alfa | Staff Engineer", meta)
+    text = CLEAN_CV.replace("02/2023–present | Example Location A | Staff Engineer", meta)
     assert meta in text, "the replace no-opped"
     with pytest.raises(CvParseError, match="meta line"):
         parse_cv(text)
@@ -429,8 +429,8 @@ def test_a_four_field_meta_line_is_gate_clean_and_refused_on_purpose():
     `.rulesync/rules/CLAUDE.md`'s coverage paragraph, which names this as the gap.
     """
     from tests.test_cv_engine import CLEAN_CV
-    meta = "02/2023–present | Alfa | Staff Engineer | Platform"
-    text = CLEAN_CV.replace("02/2023–present | Alfa | Staff Engineer", meta)
+    meta = "02/2023–present | Example Location A | Staff Engineer | Platform"
+    text = CLEAN_CV.replace("02/2023–present | Example Location A | Staff Engineer", meta)
     assert meta in text, "the replace no-opped"
     assert _gate_verdict(text) == [], (
         "the four-field line is no longer gate-clean, so it is an ordinary gate failure "
@@ -605,10 +605,10 @@ def test_parse_accepts_a_blank_line_after_a_trailing_header():
     model to do exactly what it already did.
     """
     from tests.test_cv_engine import CLEAN_CV
-    text = CLEAN_CV.replace("CERTIFICATES\n- CSM", "CERTIFICATES\n\n- CSM")
-    assert "CERTIFICATES\n\n- CSM" in text, "the replace no-opped"
+    text = CLEAN_CV.replace("CERTIFICATES\n- Example Scrum Master", "CERTIFICATES\n\n- Example Scrum Master")
+    assert "CERTIFICATES\n\n- Example Scrum Master" in text, "the replace no-opped"
     doc = parse_cv(text)
-    assert doc.certificates == ["CSM"]
+    assert doc.certificates == ["Example Scrum Master"]
     assert doc.education == ["Uni"]
 
 
@@ -628,7 +628,7 @@ def test_parse_accepts_a_blank_line_between_two_trailing_entries():
     first would be the content-vanishing harm this section's other guards refuse.
     """
     from tests.test_cv_engine import CLEAN_CV
-    text = CLEAN_CV.replace("CERTIFICATES\n- CSM",
+    text = CLEAN_CV.replace("CERTIFICATES\n- Example Scrum Master",
                             "CERTIFICATES\n- Example Cert One\n\n- Example Cert Two")
     assert "- Example Cert One\n\n- Example Cert Two" in text, "the replace no-opped"
     assert _gate_verdict(text) == [], (
@@ -650,7 +650,7 @@ def test_a_blank_line_did_not_stop_unrecognised_trailing_content_being_refused()
     from a PDF sent under the user's name, which is the harm that guard exists for.
     """
     from tests.test_cv_engine import CLEAN_CV
-    text = CLEAN_CV.replace("CERTIFICATES\n- CSM",
+    text = CLEAN_CV.replace("CERTIFICATES\n- Example Scrum Master",
                             "CERTIFICATES\n- Example Cert One\n\n1. Example Cert Two")
     assert "\n\n1. Example Cert Two" in text, "the replace no-opped"
     with pytest.raises(CvParseError, match=r"CERTIFICATES: unrecognised line '1\."):
@@ -813,7 +813,7 @@ def test_parse_refuses_a_repeated_trailing_header():
     """
     from tests.test_cv_engine import CLEAN_CV
     text = CLEAN_CV.replace(
-        "CERTIFICATES\n- CSM\nEDUCATION\n- Uni",
+        "CERTIFICATES\n- Example Scrum Master\nEDUCATION\n- Uni",
         "CERTIFICATES\nEDUCATION\n- Uni\n\n"
         "CERTIFICATES\n- Example Scrum Master\n- Example Cloud Practitioner")
     assert text.count("CERTIFICATES") == 2, "the replace no-opped"
