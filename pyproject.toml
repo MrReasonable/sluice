@@ -13,7 +13,7 @@ dependencies = ["pyyaml"]
 sluice = "sluice.cli:main"
 
 [project.optional-dependencies]
-render = ["weasyprint"]
+render = ["weasyprint", "jinja2"]
 google = ["google-api-python-client", "google-auth"]
 # The suite generates its own synthetic job titles rather than hardcoding anyone's
 # real role preferences, so faker is a test dependency (see tests/conftest.py).
@@ -21,7 +21,23 @@ google = ["google-api-python-client", "google-auth"]
 # pytest-cov is DEV-TIME ONLY and does not breach CLAUDE.md's stdlib-only rule, which binds
 # what SHIPS -- `dependencies` above, and the `render`/`google` extras a user opts into. This
 # extra is the same category as faker: installed to run the gate, never imported by `sluice/`.
-test = ["pytest", "faker", "pytest-cov"]
+#
+# jinja2 is in BOTH `render` and `test`, deliberately. CI installs only `[test]`, so a
+# shipped-template test written as `pytest.importorskip("jinja2")` would SKIP in CI and
+# read as green -- the exact trap tests/test_renderers.py records having been hit by, when
+# an importorskip("weasyprint") silently disabled the one test pinning citation stripping.
+# jinja2 is pure Python with no system libraries, so it belongs here on the same footing as
+# faker. WeasyPrint stays OUT: it needs cairo/pango, and is covered by injected fakes.
+#
+# setuptools + build are here so tests/test_packaging.py can build a REAL wheel offline
+# (`--no-isolation`, measured at 0.6s). Dev-time only, never imported by `sluice/`.
+test = ["pytest", "faker", "pytest-cov", "jinja2", "setuptools>=83.0.0", "build"]
+
+# `packages.find` selects PACKAGES, not DATA. Without this table a built wheel ships
+# sluice/templates/__init__.py and NOT the template beside it -- measured 2026-08-06 --
+# so every `pip install sluice` would get the default renderer with no template to render.
+[tool.setuptools.package-data]
+sluice = ["templates/*.html.j2"]
 
 [project.urls]
 Homepage = "https://github.com/MrReasonable/sluice"
