@@ -1,0 +1,49 @@
+name: Release Please
+
+# Runs on every push to main and keeps ONE open release PR, accumulating changes until you
+# merge it. Merging is what tags and cuts the GitHub release: the tag and the declared
+# version are written by the same tool in the same commit, so they cannot drift.
+#
+# THE TOKEN IS LOAD-BEARING, and without it this whole workflow is INERT rather than
+# broken-looking. GitHub does not start workflow runs from events raised by the default
+# GITHUB_TOKEN, so a release PR opened with it never triggers `ci.yml` (`on: pull_request`)
+# and `ci-success` never reports. The `qa-gates` ruleset on the default branch requires
+# `ci-success` plus one approving review with NO bypass actors -- so the PR opens, looks
+# healthy, and can never be merged. Measured against the live ruleset, not assumed.
+#
+# `RELEASE_PLEASE_TOKEN` should be a PAT -- the action's own documented recommendation --
+# with contents, pull-requests and issues write. Do NOT store a GitHub App INSTALLATION
+# token in it: those expire after an hour, and the `||` below tests whether the secret is
+# PRESENT, not whether it is VALID, so a stale one would be selected over the fallback and
+# every run would fail on an invalid token with the fallback right there unused. If you
+# prefer an App, mint the token INSIDE the job (`actions/create-github-app-token`) so it is
+# fresh per run.
+#
+# The `||` fallback keeps this workflow valid before that secret exists: it still opens a
+# PR, which simply cannot be merged yet. The approval leg needs its own answer too --
+# CodeRabbit auto-skips bot-authored PRs, so the release PR needs a human review or a
+# ruleset bypass.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the tag and the GitHub release
+      pull-requests: write # open and update the release PR
+      # The action labels the release PR (`autorelease:*`), and labels are an ISSUES-scoped
+      # resource, so this is required rather than implied by `pull-requests: write` -- the
+      # action's own docs list all three. Without it the job errors instead of quietly
+      # skipping the label. `skip-labeling` is the alternative if you would rather not.
+      issues: write
+    steps:
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

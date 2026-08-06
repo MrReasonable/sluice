@@ -1,6 +1,10 @@
 [project]
 name = "sluice"
-version = "0.1.0"
+# ONE home for the version: `sluice/__init__.py`. It was declared here AND there, with
+# nothing tying the two together -- so a release could bump one, ship the other, and
+# `pip show sluice` would disagree with `sluice --version` silently. setuptools reads the
+# attribute STATICALLY for a plain literal, so this costs no import at build time.
+dynamic = ["version"]
 description = "Sluice: an engineered, config-driven job-hunting pipeline (ingest, triage, CV tailoring, apply, track)."
 requires-python = ">=3.12"
 dependencies = ["pyyaml"]
@@ -25,6 +29,9 @@ Homepage = "https://github.com/MrReasonable/sluice"
 [build-system]
 requires = ["setuptools>=83.0.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+version = {attr = "sluice.__version__"}
 
 [tool.setuptools.packages.find]
 include = ["sluice*"]
