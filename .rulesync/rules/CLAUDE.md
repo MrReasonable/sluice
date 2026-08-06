@@ -364,13 +364,14 @@ dependency without a deliberate decision. The rule binds `sluice/` -- what ships
 `package.json` is not an exception to it: it pins the Node-based `rulesync` CLI that regenerates
 `.rulesync/`'s AI-tool outputs, a CI-only dev-time tool that never ships in the package and nothing
 a user installing `sluice` ever sees. Nor is the `test` extra (`pytest`, `faker`, `pytest-cov`,
-`jinja2`, `setuptools`, `build`), installed to run the gate and never imported by `sluice/`
-(`jinja2` sits in `test` too, deliberately -- see Commands above -- so a shipped-template test runs
-for real in CI rather than skipping the way an earlier `weasyprint` importorskip once did). Being
-an EXTRA is not what exempts it,
-which is the part the table disguises: `render` and `google` sit beside `test` in the same
-`optional-dependencies` and are firmly INSIDE the rule -- they install the very `weasyprint` and
-Google imports named above. The line is whether a user's install can end up executing it.
+`setuptools`, `build`) -- installed to run the gate and never imported by `sluice/`. Being an EXTRA
+is not what exempts a package from the rule, which is the part the table disguises: `render` and
+`google` sit beside `test` in the same `optional-dependencies` and are firmly INSIDE the rule --
+they install the very `jinja2`/`weasyprint` and Google imports named above. `jinja2` ALSO sits in
+`test` (deliberately -- see Commands above, so a shipped-template test runs for real in CI rather
+than skipping the way an earlier `weasyprint` importorskip once did), but being in two extras at
+once does not move it out of the rule: it is still `render` that puts it firmly inside, exactly
+like `weasyprint`. The line is whether a user's install can end up executing it.
 
 **Fail loudly at construction.** An unknown backend/adapter name raises and lists the valid names
 rather than falling through to a default. A quiet wrong default is the bug class this codebase most
