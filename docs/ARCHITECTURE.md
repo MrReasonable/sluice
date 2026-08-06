@@ -53,9 +53,11 @@ Shared by every sub-app:
   the cwd-relative literals survive in exactly one module.
 
   Normalisation is one rule with one apparent exception. `expanduser` at
-  INGRESS, wherever a path first arrives from outside -- five sites, enumerated
-  from the source by `tests/test_path_tilde.py` rather than listed here, because
-  the first version of this paragraph miscounted them. `abspath` ONLY where the
+  INGRESS, wherever a path first arrives from outside -- enumerated from the
+  source by `tests/test_path_tilde.py` rather than counted here, because two
+  versions of this paragraph carried a number and both were wrong (four when
+  there were five, five when a sixth landed) with nothing going red either
+  time. `abspath` ONLY where the
   value outlives the cwd it was read in, whether by being written down
   (`questions.py`, and the preset `cli.py` hands `sluice init`) or compared
   (`cli.py`'s `--vault` against `$VAULT_DIR`). Neither is true of what `resolve`
@@ -839,6 +841,20 @@ Four points in the config are the seams for pluggable adapters.
   fixed `<pre>` dump with no template -- is RETIRED: selecting it now raises,
   naming `template` as the replacement, rather than silently falling through
   to a default or a confusing "unknown adapter" error.
+  This seam has a second, OPTIONAL member: `precheck(cv_text) -> list[str]`.
+  A renderer implements it when the composed CV must satisfy a grammar of its
+  own that the fabrication gate does not model — `template` does (its meta-line
+  grammar), `script` deliberately does not, since it shells out to arbitrary
+  user code and has no grammar to impose. `cv/engine.py` reaches it through
+  `getattr(renderer, "precheck", None)` inside its compose/gate retry loop and
+  folds the strings in with the gate's violations, so a formatting complaint
+  reaches the model's one retry instead of arriving at render time, after the
+  LLM spend and past the only recovery there is. It is NOT a second fabrication
+  gate and must not become one: it reports SHAPE, never facts. Keeping it on
+  the renderer is what stops one implementation's requirements binding the
+  whole seam — measured, the engine calling `parse_cv` unconditionally reported
+  `skipped-gate` under `cv.renderer: script` for a gate-clean CV that script
+  would have rendered.
 - **fetcher**: `sluice/fetchers/`, selected by `fetcher:` (default `camofox`).
   Implementations: `camofox` (the headless-browser HTTP server).
 - **sources**: `ingest/sources/`, the registry all of the above are modelled on.

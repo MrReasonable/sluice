@@ -62,13 +62,12 @@ def _jd_keywords(role: str, jd: str) -> list:
 
 def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=False,
            guard_existing_cv=False, policy=StalenessPolicy()) -> CvResult:
-    # Lazy, matching the `render` import further down: cv.parse pulls in cv.render
-    # internally (for the shared _CITE_RE), so importing either at module scope would
-    # make every offline caller of this module -- including every test that never
-    # reaches this far -- pay for both. Loaded once per call, before the retry loop
-    # that uses it.
-    from sluice.cv.parse import CvParseError as _CvParseError
-    from sluice.cv.parse import parse_cv as _parse_cv
+    # The OPTIONAL half of the Renderer seam (see core/protocols.py). `getattr`, not a
+    # required protocol member: a renderer that imposes no grammar of its own must not be
+    # made to declare one. Resolved ONCE here rather than inside the retry loop, and the
+    # engine no longer imports cv.parse at all -- the grammar belongs to whichever
+    # renderer needs it, not to the orchestrator.
+    _precheck = getattr(renderer, "precheck", None)
     fm = note.fm
     # Process ONLY shortlist leads. This enforces the shortlist-only constraint and
     # inherently never touches (never clobbers) application-owned leads.
@@ -147,27 +146,32 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
             if not any(line.strip().upper() == "PROFILE" for line in cv_text.splitlines()):
                 violations = ["STRUCTURAL: composed CV lacks the exact 'PROFILE' header, "
                               "so the profile fabrication check did not run"] + violations
-            # Parse INSIDE the retry loop, in the same shape a gate violation takes.
-            # cv/validate.py never checks the meta-line grammar (`MM/YYYY-MM/YYYY |
-            # LOCATION | Role`) -- only the citation gate does -- so a CV that clears
-            # every fabrication check can still be unparseable by the `template`
-            # renderer, which calls parse_cv on its own to get the document it lays
-            # out. Raising there instead would arrive AFTER the LLM spend with no
-            # recovery: this loop is the only retry there is, and it closes before
-            # render ever runs. Parsing here means the model gets one chance to fix
-            # its own formatting, feeding gate_msgs into the second compose prompt
-            # exactly like a citation violation would.
-            # Parsing twice (here, and again inside the renderer once the CV clears
-            # the gate) is deliberate rather than wasteful: parse_cv is pure -- no
-            # I/O -- and the two callers use the result for different things (a gate
-            # check here, the document to render there), so keeping them separate
-            # calls is what lets the renderer stay ignorant of the engine's retry
-            # loop and the seam signature (`render(cv_text, out_dir, *,
-            # neutral_name)`) stay unchanged.
-            try:
-                _parse_cv(cv_text)
-            except _CvParseError as e:
-                violations = violations + [f"FORMAT: {e}"]
+            # Ask the RENDERER, inside the retry loop, in the same shape a gate violation
+            # takes. cv/validate.py never checks the `template` renderer's meta-line
+            # grammar (`MM/YYYY-MM/YYYY | LOCATION | Role`) -- only the citation gate does
+            # -- so a CV that clears every fabrication check can still be unrenderable by
+            # it. Discovering that at render time would be AFTER the LLM spend with no
+            # recovery: this loop is the only retry there is, and it closes before render
+            # ever runs. Asking here means the model gets one chance to fix its own
+            # formatting, feeding gate_msgs into the second compose prompt exactly like a
+            # citation violation would.
+            #
+            # Asking the renderer, rather than parsing here, is what keeps the requirement
+            # attached to the renderer that HAS it. The engine previously called
+            # `parse_cv` unconditionally, which imposed one implementation's grammar on
+            # the whole seam: measured 2026-08-06, a gate-clean CV carrying a PUBLICATIONS
+            # section reported `skipped-gate` under `cv.renderer: script`, whose own
+            # script would have rendered it. `precheck` is optional (core/protocols.py);
+            # `script` does not implement it and is not gated.
+            #
+            # The `template` renderer parses TWICE as a result (once here, once in
+            # `render` to get the document it lays out) -- deliberate rather than
+            # wasteful: parse_cv is pure, no I/O, and the two calls use the result for
+            # different things, which is what lets `render`'s seam signature stay
+            # `(cv_text, out_dir, *, neutral_name)` and the renderer stay ignorant of this
+            # retry loop.
+            if _precheck is not None:
+                violations = violations + list(_precheck(cv_text))
             slop_err, _warns = _slop(cv_text)
             gate_msgs = violations + [f"SLOP {lbl}: {snip}" for _ln, lbl, snip in slop_err]
             if not gate_msgs:
