@@ -164,7 +164,7 @@ _DASH = r"(?:\s*[-–—]\s*|\s+to\s+)"
 # buying anything the prefix does not already buy.
 #
 # The MONTH itself is `\d{1,2}`, not `\d{2}`: validate.py:89's chronology check is
-# `\d{2}/(\d{4})\s*[--]` -- a literal TWO-digit month -- so a single-digit month
+# `\d{2}/(\d{4})\s*[–-]` -- a literal TWO-digit month -- so a single-digit month
 # ("1/2020-present") simply does not match that regex at all. `re.findall` then finds
 # no start year for that entry and silently omits it from the years list; an omitted
 # year can never break the `years == sorted(years, reverse=True)` check, so the gate

@@ -173,7 +173,9 @@ whichever neighbour it was written next to:
    a closed set, compose a tailored CV against that bundle (an LLM call
    over `core.backends`), validate it against a fabrication gate (a hard
    fail triggers exactly one retry, then the lead is skipped rather than
-   rendered ungated), render (shells out to an external script), and serve
+   rendered ungated), render (by default `template`: fill the user's own
+   Jinja2 template — or the packaged one — and write a PDF via WeasyPrint;
+   `script` shells out to an external render script instead), and serve
    under an opaque, cache-busted filename. Above the hard gate sits a softer,
    human-facing layer (#60): an advisory LLM audit (`audit.py`) flags claims
    the bundle does not support, and an `unsupported` flag still renders and

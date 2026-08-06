@@ -834,8 +834,14 @@ class Sluice:
 
         Construction is still allowed to FAIL without killing the dry run, which is what
         the original `None` was reaching for: a missing template file or an uninstalled
-        WeasyPrint is a config problem with nothing to do with this CV, and a preview that
-        costs nothing must not die on it. So a `RenderError` is caught, warned about
+        WeasyPrint is a config problem with nothing to do with this CV, so a preview must
+        not die on it. What a dry run skips is the RENDER and the WRITES -- not the cost.
+        `cv/engine.py`'s `run_one` calls `_compose.compose(backend, ...)` and then
+        `run_audit(backend, ...)` ABOVE its `if dry_run:` return, so a dry run still
+        spends a composition and an audit call per lead. Stated because the earlier
+        wording here said a preview "costs nothing", which is the reading that makes a
+        `--dry-run` over a large shortlist look free. So a `RenderError` is caught,
+        warned about
         NAMING the lost check (a silently weaker dry run is the thing being fixed), and
         the run proceeds unchecked. An unknown `cv.renderer` NAME is deliberately not
         caught: that is `plugins.get`'s "fail loudly at construction, listing the valid
@@ -857,7 +863,7 @@ class Sluice:
             # See the docstring: a dry run wants the renderer for its `precheck` alone,
             # and must survive a renderer it cannot build. The engine never calls
             # `render()` on this path -- run_one returns `dry-run` above the render line.
-            from sluice.renderers.script import RenderError
+            from sluice.core.protocols import RenderError
             try:
                 renderer = self.renderer(cvcfg)
             except RenderError as e:

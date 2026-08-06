@@ -134,7 +134,7 @@ CLEAN_CV = "\n".join([
 
 
 # An UNPARSEABLE meta line that still PASSES the fabrication gate -- the whole point of
-# this wiring. validate() reads only `\d{2}/(\d{4})\s*[--]` after WORK EXPERIENCE, so
+# this wiring. validate() reads only `\d{2}/(\d{4})\s*[–-]` after WORK EXPERIENCE, so
 # dropping the pipes leaves the years (and every citation) intact and the gate clean.
 UNPARSEABLE_CV = CLEAN_CV.replace("02/2023–present | Alfa | Staff Engineer",
                                   "02/2023–present Alfa Staff Engineer")
