@@ -106,7 +106,9 @@ _BULLET_MARKERS = ("-", "•", "*")
 # The en dash earns its place by measurement: `– Example Scrum Master` under CERTIFICATES
 # passes the gate untouched and, before this, was refused by the loop below. (A synthetic
 # placeholder, not a real certification's acronym: `sluice/` is bound by the
-# no-personal-data rule the same way `tests/` is.) That is the governing bug
+# no-personal-data rule the same way `tests/` is. The CV fixtures used a real one until
+# round 3 -- this comment stated the policy while the fixture beside it broke it, and they
+# now use this same placeholder.) That is the governing bug
 # class -- stricter here than upstream -- and it cost a retry the model could only spend
 # re-emitting what it had already sent. The em dash is here for the same reason as in
 # `_DASH`: the two are equally plausible outputs and equally invisible to the gate.
@@ -393,8 +395,10 @@ def parse_cv(text: str) -> CvDocument:
         # is no shape test that can tell a dropped ROLE from an omitted LOCATION, because
         # both are free text. Measured 2026-08-06 against this repo's gate-clean fixture:
         #
-        #     '02/2023–present | Alfa'                  -> title='Alfa',  location=''
-        #     '02/2023–present | Alfa, Staff Engineer'  -> title='Alfa, Staff Engineer'
+        #     '02/2023–present | Example Location A'
+        #         -> title='Example Location A', location=''
+        #     '02/2023–present | Example Location A, Staff Engineer'
+        #         -> title='Example Location A, Staff Engineer', location=''
         #
         # Both are gate-CLEAN, and both used to REFUSE -- so for a composer that drops
         # the role, or types a comma where the second pipe belongs, this trades a refusal

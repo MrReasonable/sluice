@@ -124,27 +124,27 @@ def _cfg():
 # Synthetic throughout; only the descending start years are load-bearing.
 CLEAN_CV = "\n".join([
     "JANE ROE", "", "PROFILE", "I build reliable systems.", "", "WORK EXPERIENCE", "",
-    "Example Systems", "02/2023–present | Alfa | Staff Engineer", "- Shipped [EF1]", "",
-    "Example Analytics", "06/2020–01/2023 | Bravo | Senior Engineer",
+    "Example Systems", "02/2023–present | Example Location A | Staff Engineer", "- Shipped [EF1]", "",
+    "Example Analytics", "06/2020–01/2023 | Example Location B | Senior Engineer",
     "- Grew team from 3 to 8 [EF1]", "",
-    "Example Robotics", "09/2017–05/2020 | Charlie | Engineer", "- Coached [EF1]", "",
-    "Example Cartography", "07/2015–08/2017 | Alfa | Junior Engineer", "- CI [EF1]", "",
-    "CERTIFICATES", "- CSM", "EDUCATION", "- Uni",
+    "Example Robotics", "09/2017–05/2020 | Example Location C | Engineer", "- Coached [EF1]", "",
+    "Example Cartography", "07/2015–08/2017 | Example Location A | Junior Engineer", "- CI [EF1]", "",
+    "CERTIFICATES", "- Example Scrum Master", "EDUCATION", "- Uni",
 ])
 
 
 # An UNPARSEABLE meta line that still PASSES the fabrication gate -- the whole point of
 # this wiring. validate() reads only `\d{2}/(\d{4})\s*[–-]` after WORK EXPERIENCE, so
 # dropping the pipes leaves the years (and every citation) intact and the gate clean.
-UNPARSEABLE_CV = CLEAN_CV.replace("02/2023–present | Alfa | Staff Engineer",
-                                  "02/2023–present Alfa Staff Engineer")
+UNPARSEABLE_CV = CLEAN_CV.replace("02/2023–present | Example Location A | Staff Engineer",
+                                  "02/2023–present Example Location A Staff Engineer")
 
 
 def test_the_unparseable_fixture_still_passes_the_gate():
     """A PREMISE of both tests below: they claim the engine catches a formatting failure
     the GATE does not. If this fixture ever stops clearing the gate they would pass for
     the wrong reason -- the same trap test_clean_cv_is_actually_clean exists to close."""
-    assert "Alfa Staff Engineer" in UNPARSEABLE_CV, "the replace no-opped"
+    assert "Example Location A Staff Engineer" in UNPARSEABLE_CV, "the replace no-opped"
     bundle_text = render_bundle(build_bundle(
         entries=ENTRIES, baseline="BASELINE", negatives=[],
         jd_keywords=[], prefix_map={"Example Foundry": "EF"}))
