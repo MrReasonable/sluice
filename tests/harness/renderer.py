@@ -32,6 +32,38 @@ class RecordingRenderer:
     def __init__(self, recorder):
         self.recorder = recorder
 
+    def precheck(self, cv_text):
+        """The seam's OPTIONAL grammar hook, mirroring `renderers/template.py`'s.
+
+        Declared DELIBERATELY, and the reason is a measured hole rather than symmetry:
+        this fake is the renderer every e2e and functional test resolves through the real
+        composition root, and while it had no `precheck` the engine's
+        `getattr(renderer, "precheck", None)` was None on every one of those runs. The
+        grammar check this whole change exists to add was therefore dead code at the only
+        layer that exercises the full wiring -- the same shape as the seam inversion the
+        branch was written to fix.
+
+        Mirrors the real one exactly (parse, report a SHAPE failure as a `FORMAT:` string)
+        rather than returning `[]`: a hook that always answers "nothing to say" would keep
+        the call live and the CHECK dead, which is the worse of the two failures because
+        it looks covered. `tests/harness/config.py`'s PASSING_CV parses clean, so this
+        changes no existing expectation -- verified by running the suite. And the call is
+        genuinely REACHED rather than merely declared: mutating this method to raise turns
+        four tests under tests/e2e/ and tests/functional/ red, which is what makes the
+        paragraph above a measurement instead of an intention.
+
+        `script`'s deliberate absence of a counterpart is covered by
+        `tests/test_cv_engine.py::test_a_renderer_without_precheck_is_not_gated_by_
+        another_renderers_grammar`, whose own fake declares no hook; that property does
+        not need this one to stay hookless too.
+        """
+        from sluice.cv.parse import CvParseError, parse_cv
+        try:
+            parse_cv(cv_text)
+        except CvParseError as e:
+            return [f"FORMAT: {e}"]
+        return []
+
     def render(self, cv_text, out_dir, *, neutral_name="CV.pdf"):
         self.recorder.rendered.append(cv_text)
         os.makedirs(out_dir, exist_ok=True)

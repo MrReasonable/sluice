@@ -823,11 +823,24 @@ class Sluice:
         returns a `skipped-ambiguous` CvResult per candidate and composes for none of them
         (see the guard below). Both are refusals the CLI must exit non-zero on.
 
-        The renderer is resolved ONLY when not dry_run: a missing render script is a
-        config error that must surface at construction, before any LLM spend -- but a
-        dry run's whole point is to cost nothing and change nothing, so it must not
-        require a renderer to exist at all. This is the fabrication-gate-safe behaviour
-        `cli.py`'s old cmd_cv_run preserved; moving it here must not lose it.
+        The renderer is resolved for a dry run TOO, and that is a correction rather than
+        an oversight repaired: `renderer=None` on a dry run also switched off the seam's
+        optional `precheck` grammar hook, which `cv/engine.py` reaches via
+        `getattr(renderer, "precheck", None)`. Measured 2026-08-06 -- one CV, gate-clean
+        and unparseable by the `template` renderer, reported `status=dry-run,
+        violations=[]` on a dry run and `status=skipped-gate` with a `FORMAT:` violation
+        on the real run. A dry run IS the cheap preview, and it was false-greening exactly
+        the CV a real run refuses.
+
+        Construction is still allowed to FAIL without killing the dry run, which is what
+        the original `None` was reaching for: a missing template file or an uninstalled
+        WeasyPrint is a config problem with nothing to do with this CV, and a preview that
+        costs nothing must not die on it. So a `RenderError` is caught, warned about
+        NAMING the lost check (a silently weaker dry run is the thing being fixed), and
+        the run proceeds unchecked. An unknown `cv.renderer` NAME is deliberately not
+        caught: that is `plugins.get`'s "fail loudly at construction, listing the valid
+        names", and a dry run that hid it would report success for a pipeline that cannot
+        run at all.
 
         cv's config maps to Sluice.backend's fields via compose_model/compose_effort/
         compose_host/compose_claude_path -- NOT triage's claude_max_* fields. That
@@ -840,7 +853,21 @@ class Sluice:
         cvcfg = load_cv_config()
         if no_serve:
             cvcfg.served_dir = ""  # engine still renders; serve is skipped when dir is empty
-        renderer = None if dry_run else self.renderer(cvcfg)
+        if dry_run:
+            # See the docstring: a dry run wants the renderer for its `precheck` alone,
+            # and must survive a renderer it cannot build. The engine never calls
+            # `render()` on this path -- run_one returns `dry-run` above the render line.
+            from sluice.renderers.script import RenderError
+            try:
+                renderer = self.renderer(cvcfg)
+            except RenderError as e:
+                renderer = None
+                _log.warning(
+                    "cv --dry-run: renderer %r could not be constructed (%s), so its "
+                    "format precheck did NOT run -- a real run may still report "
+                    "skipped-gate for this lead", getattr(cvcfg, "renderer", ""), e)
+        else:
+            renderer = self.renderer(cvcfg)
         backend = self.backend(
             backend_role, primary_name=cvcfg.primary_backend,
             primary_model=cvcfg.compose_model, effort=cvcfg.compose_effort,

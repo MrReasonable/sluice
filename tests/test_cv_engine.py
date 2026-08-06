@@ -296,6 +296,87 @@ def test_the_engine_folds_a_precheck_complaint_in_with_the_gates_own():
     assert rend.rendered == [], "a renderer that refused the CV was still asked to render it"
 
 
+def test_a_precheck_returning_a_bare_string_is_refused_by_name():
+    """`precheck` is deliberately NOT a Protocol member (core/protocols.py explains why),
+    so NOTHING types its return value -- and the failure that leaves open is silent.
+
+    `list("FORMAT: bad meta line")` is 21 single-character strings, and the engine used
+    to splice exactly that into `violations`: the model's one retry would then be handed
+    twenty-one one-letter "gate violations" with the real complaint spelled out down the
+    left margin of them, and the lead binned after a second LLM call. The refusal has to
+    name the RENDERER, because the defect is in a plugin the engine did not write.
+
+    Asserts the message, not merely the type: a bare `pytest.raises(TypeError)` is also
+    satisfied by any unrelated TypeError raised anywhere in the compose path.
+    """
+    class SloppyRenderer(FakeRenderer):
+        def precheck(self, cv_text):
+            return "FORMAT: a string, not a list of them"
+
+    rend = SloppyRenderer()
+    with pytest.raises(TypeError, match=r"SloppyRenderer\.precheck returned str"):
+        run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
+                FakeVault(ENTRIES), _cfg(), FakeBackend(CLEAN_CV), FakeCache(), renderer=rend)
+    assert rend.rendered == [], "a renderer that broke the contract was still asked to render"
+
+
+@pytest.mark.parametrize("reported,expected", [
+    ([], "rendered"),
+    ((), "rendered"),
+    (["FORMAT: nope"], "skipped-gate"),
+    (("FORMAT: nope",), "skipped-gate"),
+])
+def test_the_precheck_contract_still_accepts_both_intended_shapes(
+        monkeypatch, reported, expected):
+    """The counter-controls for the refusal above: the check must reject `str`, not
+    everything. A guard that rejected the legitimate shapes too would be caught by
+    nothing else here -- every other precheck test in this file returns a list."""
+    _served(monkeypatch)
+
+    class Renderer(FakeRenderer):
+        def precheck(self, cv_text):
+            return reported
+
+    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
+                FakeVault(ENTRIES), _cfg(), FakeBackend(CLEAN_CV), FakeCache(),
+                renderer=Renderer())
+    assert r.status == expected
+
+
+def test_the_real_template_renderer_prechecks_through_run_one():
+    """The REAL `TemplateRenderer`, not a stand-in, driven through the engine.
+
+    Every other precheck test in this file uses a fake that re-implements the hook, so
+    renaming `TemplateRenderer.precheck` -- or letting the engine stop calling it --
+    reddens only tests in the renderer's own file. That is the seam INVERSION bug this
+    branch was written to fix, one level down: the wiring between the shipped renderer
+    and the engine had no test of its own.
+
+    `html_module` is a fake, so no WeasyPrint and no native libraries are needed; the
+    render is never reached anyway, which is the point of the assertion. `None` for the
+    template path takes the PACKAGED default, so this also proves the shipped template
+    loads.
+    """
+    pytest.importorskip("jinja2")
+    from sluice.renderers.template import TemplateRenderer
+
+    class _Html:
+        def __init__(self, **kw): pass
+        def write_pdf(self, path): raise AssertionError("render must not be reached")
+
+    rend = TemplateRenderer(None, html_module=_Html)
+    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
+                FakeVault(ENTRIES), _cfg(), FakeBackend(UNPARSEABLE_CV), FakeCache(),
+                renderer=rend)
+    assert r.status == "skipped-gate"
+    assert any("FORMAT" in v for v in r.violations), r.violations
+    # ...and the fixture is still the parser/gate disagreement it claims to be, not an
+    # ordinary gate failure that would report skipped-gate whatever the renderer did.
+    assert not any("FORMAT" not in v for v in r.violations), (
+        f"the fixture stopped being gate-clean, so this says nothing about the "
+        f"renderer's precheck: {r.violations}")
+
+
 def test_the_engine_no_longer_imports_the_template_grammar():
     """The coupling this inversion removes, asserted STRUCTURALLY.
 

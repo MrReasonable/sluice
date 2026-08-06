@@ -153,6 +153,113 @@ def test_compose_cv_single_lead_write_race_reports_dossier_failed(monkeypatch):
         "counted as a plain error")
 
 
+class _PrecheckStore:
+    """The minimum Store surface `run_one` touches before the gate: one shortlist note,
+    the experience entries the bundle is built from, and a baseline. Nothing past the
+    gate is reached, because the CV under test never clears it."""
+
+    def __init__(self, note):
+        self._note = note
+
+    def read_leads(self, statuses=None):
+        return [self._note]
+
+    def read_experience_entries(self, verified_only=True):
+        from tests.test_cv_engine import ENTRIES
+        return ENTRIES
+
+    def read_baseline(self):
+        return "BASELINE"
+
+
+def test_a_dry_run_applies_the_renderers_precheck_exactly_as_a_real_run_does(
+        tmp_path, monkeypatch):
+    """A dry run must not report a CV clean that a real run refuses.
+
+    `compose_cv` used to pass `renderer=None` for a dry run, and the engine reaches the
+    seam's optional grammar hook through `getattr(renderer, "precheck", None)` -- so
+    `None` switched the hook off along with the renderer. Measured 2026-08-06 on ONE CV,
+    gate-clean and unparseable by the `template` renderer's grammar: the dry run reported
+    `status=dry-run, violations=[]` while the real run reported `status=skipped-gate`
+    with a `FORMAT:` violation. The dry run IS the cheap preview, and it was false-greening
+    exactly the input a real run bins.
+
+    Asserted as EQUALITY between the two runs rather than against a literal, so the
+    property is "the dry run and the real run agree" -- which is the claim -- rather than
+    "the dry run happens to say this today".
+    """
+    from tests.test_cv_engine import (ENTRIES, FakeBackend, FakeCache, Note,
+                                      PrecheckingRenderer, UNPARSEABLE_CV)
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    monkeypatch.setenv("DOSSIER_DIR", str(tmp_path / "d"))
+
+    note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
+    app = Sluice(Config(), store=_PrecheckStore(note), renderer=PrecheckingRenderer())
+    monkeypatch.setattr(app, "backend", lambda *a, **k: FakeBackend(UNPARSEABLE_CV))
+    monkeypatch.setattr(app, "dossier_cache", lambda *a, **k: FakeCache())
+    monkeypatch.setattr("sluice.cv.config.load_cv_config",
+                        lambda: _precheck_cvcfg(tmp_path))
+
+    dry, = app.compose_cv(lead="Acme", dry_run=True)
+    real, = app.compose_cv(lead="Acme", dry_run=False)
+
+    assert real.status == "skipped-gate", (
+        "the real run stopped refusing this CV, so the two runs could agree while "
+        "checking nothing -- the fixture, not the dry run, is what broke")
+    assert any("FORMAT" in v for v in real.violations)
+    assert dry.status == real.status
+    assert dry.violations == real.violations
+    assert ENTRIES, "the bundle had no source entries, so nothing was composed against"
+
+
+def _precheck_cvcfg(tmp_path):
+    """CvConfig with the ENTRIES prefix_map the UNPARSEABLE_CV fixture's [EF1] citations
+    need, and output/served dirs under tmp_path so nothing can reach a real one."""
+    from sluice.cv.config import CvConfig
+    c = CvConfig()
+    c.output_dir = str(tmp_path / "cvout")
+    c.served_dir = str(tmp_path / "cvserved")
+    c.prefix_map = {"Example Foundry": "EF"}
+    return c
+
+
+def test_a_dry_run_survives_a_renderer_it_cannot_construct(tmp_path, monkeypatch, caplog):
+    """...and SAYS the check was skipped, rather than quietly reverting to the old
+    false-green.
+
+    The fix above made a dry run resolve the renderer. A renderer whose construction
+    fails -- an uninstalled WeasyPrint, a `cv.template` pointing at a file that is not
+    there -- is a config problem with nothing to do with this CV, and a preview that
+    costs nothing must not die on it. The warning is the load-bearing half: without it
+    the degraded dry run is indistinguishable from a checked one, which is the defect
+    being fixed rather than a smaller copy of it.
+    """
+    import logging
+
+    from sluice.renderers.script import RenderError
+    from tests.test_cv_engine import FakeBackend, FakeCache, Note, UNPARSEABLE_CV
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    monkeypatch.setenv("DOSSIER_DIR", str(tmp_path / "d"))
+
+    note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
+    app = Sluice(Config(), store=_PrecheckStore(note))
+    monkeypatch.setattr(app, "backend", lambda *a, **k: FakeBackend(UNPARSEABLE_CV))
+    monkeypatch.setattr(app, "dossier_cache", lambda *a, **k: FakeCache())
+    monkeypatch.setattr("sluice.cv.config.load_cv_config", lambda: _precheck_cvcfg(tmp_path))
+
+    def _boom(_cvcfg):
+        raise RenderError("renderer 'template': cv.template is not a file")
+    monkeypatch.setattr(app, "renderer", _boom)
+
+    with caplog.at_level(logging.WARNING):
+        result, = app.compose_cv(lead="Acme", dry_run=True)
+
+    assert result.status == "dry-run", "an unbuildable renderer killed the dry run"
+    assert any("precheck did NOT run" in r.getMessage() for r in caplog.records), (
+        "the dry run silently skipped the format check -- a degraded preview that says "
+        "nothing is the bug this whole change exists to remove")
+
+
 def test_prep_all_shortlist_on_empty_vault_returns_a_prep_result_list(tmp_path, monkeypatch):
     # No "Job Applications/Job Leads" dir at all -- Vault.read_leads tolerates a
     # missing dir and returns []. all_shortlist must still come back as a (possibly
