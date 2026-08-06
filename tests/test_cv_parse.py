@@ -180,3 +180,57 @@ def test_parse_returns_the_documented_types():
             if not hasattr(doc, f)] == []
     assert [f for f in ("company", "dates", "location", "title", "bullets")
             if not hasattr(doc.work[0], f)] == []
+
+
+def test_parse_accepts_an_all_caps_company_name():
+    """A real acronym employer (IBM, NASA, HSBC, BBC) is ordinary in a real job hunt.
+    Refusing it as an 'unmodelled section' merely for being all-caps reasons from two
+    synthetic placeholders ("Example Data Co", "Example Analytics Ltd") to a claim about
+    real employers, which is not sound -- and the refusal wastes the engine's one retry
+    on a CV that was never malformed: there is nothing for a re-composition to fix.
+    A line is only genuinely unmodelled when what FOLLOWS it also fails to look like a
+    meta line; a well-formed entry must parse regardless of the company's casing."""
+    text = CV.replace("Example Data Co", "IBM")
+    assert "IBM" in text, "the replace no-opped"
+    doc = parse_cv(text)
+    assert doc.work[0].company == "IBM"
+    assert doc.work[0].title == "Staff Engineer"
+
+
+def test_parse_accepts_bullet_and_asterisk_markers():
+    """cv/validate.py:120-123: the renderer treats a hyphen, a bullet glyph, and an
+    asterisk all as bullet markers, so a WORK bullet composed with either of the other
+    two already passes the gate this parser sits downstream of. A parser that only
+    recognised a hyphen is STRICTER than the gate -- exactly the en-dash bug's shape: a
+    CV the gate passed gets binned here instead."""
+    text = CV.replace("- Cut p99 latency to 120ms [ED1]", "• Cut p99 latency to 120ms [ED1]")
+    text = text.replace("- Grew the team from 3 to 8 [ED2]", "* Grew the team from 3 to 8 [ED2]")
+    assert "• Cut p99" in text and "* Grew the team" in text, "the replace no-opped"
+    doc = parse_cv(text)
+    assert doc.work[0].bullets == ["Cut p99 latency to 120ms", "Grew the team from 3 to 8"]
+
+
+def test_parse_swallows_a_wrapped_multi_citation_line():
+    """cv/compose.py:11 explicitly permits several citations per bullet ('several
+    allowed: [id] [id]'). `_CITE_ONLY_RE` used to fullmatch exactly ONE bracket pair, so
+    a multi-citation bullet the composer wrapped onto its own line ('[ED1] [EA1]') fell
+    through as an unrecognised line instead of being swallowed the way the single-
+    citation case already is."""
+    wrapped = CV.replace("- Cut p99 latency to 120ms [ED1]",
+                         "- Cut p99 latency to 120ms\n[ED1] [EA1]")
+    assert "120ms\n[ED1] [EA1]" in wrapped, "the replace no-opped"
+    doc = parse_cv(wrapped)
+    assert doc.work[0].bullets == ["Cut p99 latency to 120ms", "Grew the team from 3 to 8"]
+
+
+def test_parse_raises_on_an_empty_meta_field():
+    """A meta line's LOCATION and TITLE are free text, not date-shaped, so only an
+    explicit non-emptiness check catches a field the composer left blank. Verified: this
+    line used to parse cleanly to title="", which renders as a blank field in a PDF sent
+    to an employer under the user's name -- the exact silent-misassignment harm spec
+    section 0 exists to prevent, just with an empty string instead of a wrong one."""
+    text = CV.replace("03/2021-present | EXAMPLECITY | Staff Engineer",
+                      "03/2021-present | EXAMPLECITY | ")
+    assert "03/2021-present | EXAMPLECITY | \n" in text, "the replace no-opped"
+    with pytest.raises(CvParseError, match="meta line"):
+        parse_cv(text)
