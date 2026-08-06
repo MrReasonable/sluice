@@ -828,11 +828,17 @@ Four points in the config are the seams for pluggable adapters.
   suffixed. This is a vault filename concern, not a Store property — a store
   with real keys distinguishes those rows without it.
 - **renderer**: `sluice/renderers/`, selected by `cv.renderer:` (default
-  `script`). Implementations: `script` (shells out to the external WeasyPrint
-  script at `cv.render_script`) and `weasyprint` (bundled, in-process, needs
-  `pip install 'sluice[render]'`). Note the shipped `render_script` default
-  points at a file that does not exist in the repo; `script` now says so at
-  construction rather than dying after a CV has been composed and gated.
+  `template`). Implementations: `template` (fills a user's own Jinja2 template --
+  or the packaged default at `sluice/templates/cv_plain.html.j2` when
+  `cv.template` is blank -- with the parsed CV, then renders it via WeasyPrint;
+  needs `pip install 'sluice[render]'`) and `script` (the full-control escape
+  hatch: shells out to an external render script at `cv.render_script`). Note
+  the shipped `render_script` default points at a file that does not exist in
+  the repo; `script` says so at construction rather than dying after a CV has
+  been composed and gated. `weasyprint` -- the earlier bundled renderer, a
+  fixed `<pre>` dump with no template -- is RETIRED: selecting it now raises,
+  naming `template` as the replacement, rather than silently falling through
+  to a default or a confusing "unknown adapter" error.
 - **fetcher**: `sluice/fetchers/`, selected by `fetcher:` (default `camofox`).
   Implementations: `camofox` (the headless-browser HTTP server).
 - **sources**: `ingest/sources/`, the registry all of the above are modelled on.

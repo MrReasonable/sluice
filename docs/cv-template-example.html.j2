@@ -1,0 +1,94 @@
+{# Worked example: a CUSTOM Jinja2 template for `cv.template`, showing what a template
+   author can do beyond the packaged default (sluice/templates/cv_plain.html.j2) --
+   different typography, an accent rule under each heading, and a hanging-indent bullet
+   style. Point `cv.template` at a copy of this file (or your own) to use it; leave
+   `cv.template` unset to keep the packaged default.
+
+   SINGLE-COLUMN ON PURPOSE, same as the packaged default, and this is not a style
+   preference -- it is load-bearing. A CV's destination is an ATS upload (`apply` stages
+   it for a browser-assisted form fill), and a multi-column grid or table lays text out
+   VISUALLY but extracts in the WRONG ORDER when an ATS parses the PDF back to plain
+   text: column 1 top-to-bottom then column 2, or row-by-row across a table cell
+   boundary, neither of which matches how a human reads the page or how the CV's own
+   sections are meant to be read. Sluice cannot detect this after the fact -- a
+   two-column PDF still renders without error (see the design doc's Known limitations)
+   -- so the only real defence is a template author never reaching for a grid or table
+   here in the first place.
+
+   ZERO SAMPLE VALUES. Every text node below is either a CvDocument field
+   (`document.name`, `.contact`, `.profile`, `.work[].company/.dates/.location/.title/
+   .bullets`, `.certificates`, `.education`) or a structural heading matching
+   cv/compose.py's own vocabulary (PROFILE, WORK EXPERIENCE, CERTIFICATES, EDUCATION) --
+   the same two categories the packaged default is limited to, and
+   tests/test_no_leaked_files.py holds this file to that bar mechanically, not just by
+   convention. A worked example asked for "real CSS" is exactly the pressure that
+   produces a filled-in specimen with a plausible name and employer; there is no spot
+   below where a value is actually unavoidable, so none is used -- if you add one of
+   your own (a printed date, a page-footer label), prefer the `Example ...` /
+   `example.invalid` family over anything that could read as a real name or employer. #}
+<style>
+  @page { size: A4; margin: 20mm 18mm; }
+  body {
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 10.5pt;
+    line-height: 1.4;
+    color: #1a1a1a;
+  }
+  h1 {
+    font-family: Helvetica, Arial, sans-serif;
+    font-size: 18pt;
+    letter-spacing: 0.03em;
+    margin: 0 0 1mm;
+  }
+  .contact {
+    font-family: Helvetica, Arial, sans-serif;
+    font-size: 9pt;
+    color: #444444;
+    white-space: pre-wrap;
+    margin: 0 0 6mm;
+  }
+  h2 {
+    font-family: Helvetica, Arial, sans-serif;
+    font-size: 10pt;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #333333;
+    margin: 6mm 0 2mm;
+    padding-bottom: 1mm;
+    border-bottom: 1pt solid #999999;   /* the accent rule -- swap the colour, not the layout */
+  }
+  p { margin: 0 0 4mm; }
+  .role {
+    margin: 0 0 4mm;
+    break-inside: avoid;   /* keep one role's bullets from splitting across a page break */
+  }
+  .company { font-family: Helvetica, Arial, sans-serif; font-weight: bold; }
+  .meta { font-style: italic; color: #555555; }
+  ul { margin: 1.5mm 0 0; padding-left: 5mm; }
+  li { margin: 0 0 1mm; padding-left: 1mm; }
+</style>
+
+<h1>{{ document.name }}</h1>
+<div class="contact">{{ document.contact }}</div>
+
+<h2>PROFILE</h2>
+<p>{{ document.profile }}</p>
+
+<h2>WORK EXPERIENCE</h2>
+{% for role in document.work %}
+<div class="role">
+  <div class="company">{{ role.company }}</div>
+  <div class="meta">{{ role.dates }} | {{ role.location }} | {{ role.title }}</div>
+  <ul>{% for bullet in role.bullets %}<li>{{ bullet }}</li>{% endfor %}</ul>
+</div>
+{% endfor %}
+
+{% if document.certificates %}
+<h2>CERTIFICATES</h2>
+<ul>{% for item in document.certificates %}<li>{{ item }}</li>{% endfor %}</ul>
+{% endif %}
+
+{% if document.education %}
+<h2>EDUCATION</h2>
+<ul>{% for item in document.education %}<li>{{ item }}</li>{% endfor %}</ul>
+{% endif %}

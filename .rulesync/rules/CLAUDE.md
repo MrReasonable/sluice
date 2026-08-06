@@ -21,7 +21,9 @@ that drops the flag sends a human down an install path CI deliberately does not 
 ## Commands
 
 ```bash
-pip install -e ".[test]"        # pytest + pytest-cov + faker (the suite needs faker; see Neutrality)
+pip install -e ".[test]"        # pytest, pytest-cov, faker (see Neutrality), jinja2 (see the
+                                 # renderer seam below), setuptools + build (tests/test_packaging.py
+                                 # builds a real wheel offline)
 python -m pytest                # fast (well under a second), fully offline: no Camofox, no network
 python -m pytest tests/test_triage_engine.py            # one file
 python -m pytest tests/test_triage_engine.py -k judge   # one test
@@ -354,13 +356,18 @@ anyone's taste. Personal values reach the code only through `sluice.local.yaml` 
 
 **`sluice/` is standard-library only.** The sole exceptions: `yaml`, imported under a guarded
 `try/except ImportError` in each config module; the Google client libraries, imported lazily inside
-functions in `track/google_client.py`; and `weasyprint`, imported lazily inside
-`renderers/weasyprint.py`. HTTP goes through `urllib`, not `requests`. Do not add a runtime
+functions in `track/google_client.py`; and `jinja2`/`weasyprint`, both imported lazily inside
+`renderers/template.py` (`renderers/weasyprint.py` -- the old bundled renderer -- is DELETED;
+selecting the retired `weasyprint` renderer name now raises via `plugins._RETIRED`, naming
+`template` as the replacement). HTTP goes through `urllib`, not `requests`. Do not add a runtime
 dependency without a deliberate decision. The rule binds `sluice/` -- what ships to a user. The root
 `package.json` is not an exception to it: it pins the Node-based `rulesync` CLI that regenerates
 `.rulesync/`'s AI-tool outputs, a CI-only dev-time tool that never ships in the package and nothing
-a user installing `sluice` ever sees. Nor is the `test` extra (`pytest`, `faker`, `pytest-cov`),
-installed to run the gate and never imported by `sluice/`. Being an EXTRA is not what exempts it,
+a user installing `sluice` ever sees. Nor is the `test` extra (`pytest`, `faker`, `pytest-cov`,
+`jinja2`, `setuptools`, `build`), installed to run the gate and never imported by `sluice/`
+(`jinja2` sits in `test` too, deliberately -- see Commands above -- so a shipped-template test runs
+for real in CI rather than skipping the way an earlier `weasyprint` importorskip once did). Being
+an EXTRA is not what exempts it,
 which is the part the table disguises: `render` and `google` sit beside `test` in the same
 `optional-dependencies` and are firmly INSIDE the rule -- they install the very `weasyprint` and
 Google imports named above. The line is whether a user's install can end up executing it.
@@ -402,9 +409,10 @@ consistently engineers out; see `_select_backend`'s guard in `cli.py`.
   config `primary_backend`/`fallback_backend` selects; `claude-max`/`deepseek` ALSO survive as
   deprecated `--backend` role aliases, which is the separate role concern below, not a second registry);
   the RENDERER seam has two self-registering
-  production impls — `script` (the default external shell-out) and `weasyprint` (the bundled in-process
-  one, `pip install 'sluice[render]'`) — selected by `cv.renderer`, so by-name selection between real
-  implementations is already LIVE there; store and fetcher have one production impl each (`vault`,
+  production impls — `template` (the default: fills a user's Jinja2 template, or the packaged
+  default, via WeasyPrint; `pip install 'sluice[render]'`) and `script` (the external shell-out
+  escape hatch) — selected by `cv.renderer`, so by-name selection between real implementations is
+  already LIVE there; store and fetcher have one production impl each (`vault`,
   `camofox`). The selection is also exercised in tests — `tests/harness/` registers a fake fetcher
   (`browser.py`) and renderer (`renderer.py`) and resolves them through the same seam. The backend seam
   differs in shape, though: a role layer (auto/primary/fallback, in
