@@ -62,6 +62,13 @@ def _jd_keywords(role: str, jd: str) -> list:
 
 def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=False,
            guard_existing_cv=False, policy=StalenessPolicy()) -> CvResult:
+    # Lazy, matching the `render` import further down: cv.parse pulls in cv.render
+    # internally (for the shared _CITE_RE), so importing either at module scope would
+    # make every offline caller of this module -- including every test that never
+    # reaches this far -- pay for both. Loaded once per call, before the retry loop
+    # that uses it.
+    from sluice.cv.parse import CvParseError as _CvParseError
+    from sluice.cv.parse import parse_cv as _parse_cv
     fm = note.fm
     # Process ONLY shortlist leads. This enforces the shortlist-only constraint and
     # inherently never touches (never clobbers) application-owned leads.
@@ -140,6 +147,27 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
             if not any(line.strip().upper() == "PROFILE" for line in cv_text.splitlines()):
                 violations = ["STRUCTURAL: composed CV lacks the exact 'PROFILE' header, "
                               "so the profile fabrication check did not run"] + violations
+            # Parse INSIDE the retry loop, in the same shape a gate violation takes.
+            # cv/validate.py never checks the meta-line grammar (`MM/YYYY-MM/YYYY |
+            # LOCATION | Role`) -- only the citation gate does -- so a CV that clears
+            # every fabrication check can still be unparseable by the `template`
+            # renderer, which calls parse_cv on its own to get the document it lays
+            # out. Raising there instead would arrive AFTER the LLM spend with no
+            # recovery: this loop is the only retry there is, and it closes before
+            # render ever runs. Parsing here means the model gets one chance to fix
+            # its own formatting, feeding gate_msgs into the second compose prompt
+            # exactly like a citation violation would.
+            # Parsing twice (here, and again inside the renderer once the CV clears
+            # the gate) is deliberate rather than wasteful: parse_cv is pure -- no
+            # I/O -- and the two callers use the result for different things (a gate
+            # check here, the document to render there), so keeping them separate
+            # calls is what lets the renderer stay ignorant of the engine's retry
+            # loop and the seam signature (`render(cv_text, out_dir, *,
+            # neutral_name)`) stay unchanged.
+            try:
+                _parse_cv(cv_text)
+            except _CvParseError as e:
+                violations = violations + [f"FORMAT: {e}"]
             slop_err, _warns = _slop(cv_text)
             gate_msgs = violations + [f"SLOP {lbl}: {snip}" for _ln, lbl, snip in slop_err]
             if not gate_msgs:
