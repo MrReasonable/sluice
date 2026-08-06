@@ -68,8 +68,8 @@ def test_parse_path_expands_and_absolutises(tmp_path, monkeypatch):
 
 
 def test_parse_choice_lists_the_valid_names():
-    p = parse_choice("script", "weasyprint")
-    assert p("weasyprint") == "weasyprint"
+    p = parse_choice("script", "template")
+    assert p("template") == "template"
     with pytest.raises(BadAnswer, match="script"):
         p("wkhtmltopdf")
 
