@@ -612,6 +612,104 @@ def test_parse_accepts_a_blank_line_after_a_trailing_header():
     assert doc.education == ["Uni"]
 
 
+def test_parse_accepts_a_blank_line_between_two_trailing_entries():
+    """The gap the two earlier blank-line fixes in this same loop both missed.
+
+    Rounds 1 and 2 added blank-run skipping AFTER the header (the test above) and BEFORE
+    the next header; a blank line BETWEEN two entries was left refusing. Measured
+    2026-08-06 against this repo's own gate-clean fixture, pre-fix: `validate()` returned
+    `[]` and the parser raised "CERTIFICATES: unrecognised line '- Example Cert Two' --
+    expected each entry to start with one of ('-', '•', '*', '–', '—')". The message was
+    FALSE on its face -- the line it named starts with the very marker it demanded -- so
+    the retry was handed a complaint the model could only answer by re-emitting what it
+    had already sent, and the lead was then binned.
+
+    Asserts BOTH entries, not merely that parsing succeeded: silently keeping only the
+    first would be the content-vanishing harm this section's other guards refuse.
+    """
+    from tests.test_cv_engine import CLEAN_CV
+    text = CLEAN_CV.replace("CERTIFICATES\n- CSM",
+                            "CERTIFICATES\n- Example Cert One\n\n- Example Cert Two")
+    assert "- Example Cert One\n\n- Example Cert Two" in text, "the replace no-opped"
+    assert _gate_verdict(text) == [], (
+        "the blank-separated entries are no longer gate-clean, so this row no longer "
+        "documents a parser/gate disagreement and proves nothing about the parser")
+    doc = parse_cv(text)
+    assert doc.certificates == ["Example Cert One", "Example Cert Two"]
+    assert doc.education == ["Uni"], (
+        "a blank line inside CERTIFICATES must not also swallow EDUCATION")
+
+
+def test_a_blank_line_did_not_stop_unrecognised_trailing_content_being_refused():
+    """The COUNTER-CONTROL for the row above: the blank-run skip is a LOOKAHEAD for a
+    real entry, not a licence to walk past anything.
+
+    Unrecognised content sitting after a blank line must still refuse, or the fix above
+    would have quietly disabled `test_parse_refuses_unrecognised_content_under_a_trailing_
+    header` for every input that happens to carry a blank line first -- content vanishing
+    from a PDF sent under the user's name, which is the harm that guard exists for.
+    """
+    from tests.test_cv_engine import CLEAN_CV
+    text = CLEAN_CV.replace("CERTIFICATES\n- CSM",
+                            "CERTIFICATES\n- Example Cert One\n\n1. Example Cert Two")
+    assert "\n\n1. Example Cert Two" in text, "the replace no-opped"
+    with pytest.raises(CvParseError, match=r"CERTIFICATES: unrecognised line '1\."):
+        parse_cv(text)
+
+
+def test_parse_accepts_a_blank_line_between_two_work_bullets():
+    """H1's identical twin, one loop over -- and the reason both were fixed at once.
+
+    Measured 2026-08-06 against this repo's own gate-clean fixture, pre-fix: `validate()`
+    returned `[]` and the parser raised "unparseable meta line under WORK EXPERIENCE
+    entry '- Coached the team [EF1]'". The bullet after the blank line was taken for a
+    candidate COMPANY, and the blank separator after IT became the meta line -- so the
+    refusal named a bullet as an employer and quoted an empty string as its meta line.
+
+    Widening here is NOT a fabrication-gate bypass, and that is measured rather than
+    argued: validate.py's `in_work` flag is cleared only by a section header, never by a
+    blank line. `test_the_gate_still_inspects_a_bullet_after_a_blank_line` below is the
+    executable form of that claim.
+    """
+    from tests.test_cv_engine import CLEAN_CV
+    text = CLEAN_CV.replace("- Grew team from 3 to 8 [EF1]",
+                            "- Grew team from 3 to 8 [EF1]\n\n- Coached the team [EF1]")
+    assert "[EF1]\n\n- Coached the team" in text, "the replace no-opped"
+    assert _gate_verdict(text) == [], (
+        "the blank-separated bullets are no longer gate-clean, so this row no longer "
+        "documents a parser/gate disagreement and proves nothing about the parser")
+    doc = parse_cv(text)
+    assert [r.company for r in doc.work] == [
+        "Example Systems", "Example Analytics", "Example Robotics", "Example Cartography"], (
+        "the bullet after the blank line was absorbed as a COMPANY, adding a phantom role")
+    assert doc.work[1].bullets == ["Grew team from 3 to 8", "Coached the team"]
+
+
+def test_the_gate_still_inspects_a_bullet_after_a_blank_line():
+    """The NON-BYPASS claim the row above rests on, executed rather than asserted.
+
+    Accepting a blank line between WORK bullets would be strictly worse than the refusal
+    it replaces if the gate stopped citation-checking past that blank: an UNCITED bullet
+    would reach the PDF with the fabrication gate never having looked at it. It does not
+    -- `in_work` is cleared by a section header alone -- and this is what stops that
+    reasoning going stale if validate.py's section tracking ever changes.
+
+    Both arms of the gate, since they are separate checks over the same line.
+    """
+    from tests.test_cv_engine import CLEAN_CV
+    uncited = CLEAN_CV.replace("- Grew team from 3 to 8 [EF1]",
+                               "- Grew team from 3 to 8 [EF1]\n\n- Coached the team")
+    assert "\n\n- Coached the team" in uncited, "the replace no-opped"
+    assert any("UNCITED" in v for v in _gate_verdict(uncited)), (
+        "the gate no longer citation-checks a WORK bullet after a blank line, so the "
+        "parser accepting one IS now a fabrication-gate bypass")
+    invented = CLEAN_CV.replace("- Grew team from 3 to 8 [EF1]",
+                                "- Grew team from 3 to 8 [EF1]\n\n- Saved 42 million [EF1]")
+    assert "\n\n- Saved 42 million" in invented, "the replace no-opped"
+    assert any("INVENTED METRIC" in v for v in _gate_verdict(invented)), (
+        "the gate no longer number-checks a WORK bullet after a blank line")
+
+
 def test_parse_accepts_a_trailing_header_followed_immediately_by_another():
     """A CERTIFICATES header with nothing under it before EDUCATION starts has NO
     content to drop -- a candidate who genuinely holds no certificates has no
