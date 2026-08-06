@@ -669,9 +669,14 @@ def test_the_expanduser_roster_matches_the_source():
     stale silently -- this branch shipped a version naming FOUR ingress sites when there
     were five, and nothing went red.
 
-    Pinned by FILE rather than line, so ordinary edits do not churn it while a genuinely
-    new site still fails. Fails in BOTH directions: a site added with no reason recorded,
-    and a reason left behind after its site went away.
+    Pinned by FILE rather than by line or by count, so ordinary edits do not churn it.
+    Fails in BOTH directions: a MODULE that starts expanding with no reason recorded, and
+    a reason left behind after its module stopped. State the limit exactly, because the
+    docstring this guards used to imply the wider one -- a SECOND ingress added inside a
+    module already on the roster is NOT caught. Deliberate: the roster's value is one
+    prose reason per module covering the DECISIONS it makes, and `cli.py` and
+    `core/paths.py` each already spend more than one syntactic `expanduser` call on a
+    single such decision, so a count would pin formatting rather than convention.
     """
     pkg = pathlib.Path(__file__).resolve().parent.parent / "sluice"
     found = {}
