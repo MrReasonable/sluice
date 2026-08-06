@@ -140,6 +140,22 @@ Every config key is optional and falls back to a code default. See
 [`sluice.yaml.example`](sluice.yaml.example) for the full set of knobs
 across ingest, triage, cv, and apply, with comments on what each one does.
 
+## Releases
+
+Version history and migration notes live in [`CHANGELOG.md`](CHANGELOG.md), and
+`sluice --version` reports what you have installed.
+
+A breaking **config** change counts for more here than a breaking API change -- nothing
+imports sluice as a library, so what you have invested in is your `sluice.yaml` and your
+vault. Changes to what an unset value MEANS, to a load-bearing default, to where a file is
+read or written, or to what a status transition may do all carry an explicit migration
+note, even when no key is renamed.
+
+Releases are cut by [release-please](https://github.com/googleapis/release-please) from
+Conventional Commit subjects, with the changelog entry edited by hand in the release PR
+before it merges -- a generated subject cannot tell you your config now means something
+different, which is the change class that matters most here.
+
 ## License
 
 MIT. See [`LICENSE`](LICENSE).
