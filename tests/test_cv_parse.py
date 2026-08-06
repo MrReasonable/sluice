@@ -256,7 +256,7 @@ def test_parse_does_not_silently_misassign_fields(mutation, replacement, field, 
 
 
 @pytest.mark.parametrize("variant", [
-    # The SEPARATOR axis: the gate at cv/validate.py:89 matches `\d{2}/(\d{4})\s*[--]`
+    # The SEPARATOR axis: the gate at cv/validate.py:89 matches `\d{2}/(\d{4})\s*[–-]`
     # -- EN DASH or hyphen, with optional surrounding whitespace -- and this repo's own
     # CLEAN_CV fixture uses the EN DASH. A parser that took the spec's literal
     # `MM/YYYY-MM/YYYY` would raise on a CV the gate PASSES, sending every lead through
@@ -758,7 +758,7 @@ def test_parse_drops_an_empty_certificate_entry():
     ("03/2021-9/2024 | EXAMPLECITY | Staff Engineer", "03/2021-9/2024"),
 ])
 def test_parse_accepts_a_single_digit_month(meta, expected_dates):
-    """validate.py:89's chronology check is `\\d{2}/(\\d{4})\\s*[--]` -- a literal
+    """validate.py:89's chronology check is `\\d{2}/(\\d{4})\\s*[–-]` -- a literal
     TWO-digit month. A single-digit month does not match that regex at all, so
     `re.findall` omits the entry from the years list entirely and the reverse-
     chronological check passes VACUOUSLY rather than failing -- the gate does not

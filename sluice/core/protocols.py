@@ -40,6 +40,33 @@ class VaultConflict(RuntimeError):
     """
 
 
+class RenderError(RuntimeError):
+    """A renderer could not produce a PDF, or could not be CONSTRUCTED to try.
+
+    The Renderer seam's error type, and it lives here for the same reason `VaultConflict`
+    does: it is a property of the CONTRACT, not of any one implementation. It used to be
+    defined in `renderers/script.py` and imported from there by `renderers/template.py`
+    (under a comment reading "one error type for the whole seam", naming its own problem)
+    and by `core/app.py`'s dry-run construction guard. Measured with an AST sweep of
+    `core/`: that guard held the only import anywhere in `core/` that reached INSIDE an
+    implementation package for a NAME. The five others the sweep finds are package-level
+    `import sluice.<pkg>` autoloads in `_import_plugins` and `backends.py`, which exist
+    solely to trigger plugin self-registration and are the seam working as designed --
+    they bind no symbol from any implementation module. An orchestrator reaching into one
+    adapter to catch an error the OTHER adapter also raises is the seam inverted.
+
+    Raised at CONSTRUCTION wherever the failure is knowable there -- a missing template or
+    render script, an uninstalled `sluice[render]`, a template that is not valid Jinja2.
+    That is the whole point of the type: `cv/engine.py` reaches a renderer only after a
+    composition and a fabrication-gate pass, so a failure that waits until `render()` has
+    already cost the LLM spend and arrives with no recovery. Callers that can proceed
+    without a renderer (`compose_cv`'s dry run) catch it and say what was lost; callers
+    that cannot let it propagate.
+
+    `renderers/script.py` re-exports it, so the historical import path still resolves.
+    """
+
+
 class MalformedNoteField(Exception):
     """A store-managed field's on-disk content does not parse into the shape the store's
     own writers expect (e.g. `alt_urls` should be a JSON list[str]).
@@ -352,6 +379,14 @@ class Renderer(Protocol):
     A renderer is only ever reached AFTER the fabrication gate has passed. It must not
     be given the power to bypass it: no renderer validates, and no renderer is called
     with outstanding violations.
+
+    FAILURE MODE -- `RenderError` (defined above). A renderer signals every failure with
+    it, and raises at CONSTRUCTION for anything knowable there rather than at `render()`,
+    because by render time a composition and a gate pass have already been spent. This
+    contract went undocumented while the type itself lived in `renderers/script.py`, so
+    the seam declared no failure mode at all and its two implementations agreed on one
+    only by importing from each other. The Store seam does the same thing correctly with
+    `VaultConflict`, which is the shape copied here.
 
     OPTIONAL SECOND METHOD -- `precheck(cv_text) -> list[str]`. Not declared below,
     because a Protocol member is a REQUIRED member and the whole point of this hook is
