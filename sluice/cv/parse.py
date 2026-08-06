@@ -113,9 +113,20 @@ _TRAILING_MARKERS = _BULLET_MARKERS + ("–", "—")
 # can never break `years == sorted(years, reverse=True)`. The gate passes VACUOUSLY, the
 # same way it does for a single-digit month below. Being invisible to the gate is not
 # being rejected by it: measured 2026-08-06, `02/2023—present` and `02/2023 to present`
-# are both gate-CLEAN and were both refused here. `to` requires whitespace on BOTH sides
-# so it cannot match inside a token, and `re.IGNORECASE` on the compiled pattern covers
-# `To`/`TO` without a second alternative.
+# are both gate-CLEAN (validate() returns []) and were both refused here.
+#
+# The two are NOT equally harmful, and the difference is worth stating because the
+# obvious reading is wrong. ` to ` is refused by this parser and by nothing else, so it
+# was an isolated bin. An EM DASH additionally trips `cv/slop.py`'s EM-DASH rule, which
+# `cv/engine.py` folds into the same gate_msgs -- measured, 36 of the 162 rows in
+# tests/test_cv_parse.py's implication sweep are slop-flagged -- so that lead was already
+# being sent back with an actionable "don't use em dashes" message. Accepting it here
+# removes a REDUNDANT strictness rather than an isolated bin. Kept anyway: the em-dash
+# style rule belongs to the slop checker, which states it, and a parser must not be the
+# silent backstop for a rule another module owns and might legitimately relax.
+#
+# `to` requires whitespace on BOTH sides so it cannot match inside a token, and
+# `re.IGNORECASE` on the compiled pattern covers `To`/`TO` without a second alternative.
 _DASH = r"(?:\s*[-–—]\s*|\s+to\s+)"
 
 # `present` is the only open-ended terminal the spec's literal grammar names, but

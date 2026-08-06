@@ -226,6 +226,11 @@ def test_parse_does_not_silently_misassign_fields(mutation, replacement, field, 
     # the em dash and the word "to" are not in the gate's `[–-]` class AT ALL, so the
     # entry never matches `\d{2}/(\d{4})\s*[–-]`, contributes no start year, and the
     # reverse-chronology check passes VACUOUSLY. Invisible to the gate, and refused here.
+    # ` to ` was refused by this parser and by NOTHING else. An em dash additionally trips
+    # cv/slop.py's EM-DASH rule, which the engine folds into the same gate_msgs, so that
+    # lead was already being re-composed with an actionable message -- accepting it here
+    # removes redundant strictness, not an isolated bin. See `_DASH`'s comment for why it
+    # is accepted regardless.
     "03/2021—present", "03/2021 — present", "03/2021 to present", "03/2021 TO present",
 ])
 def test_parse_accepts_every_date_dash_the_gate_accepts(variant):
@@ -618,7 +623,20 @@ def test_parse_accepts_education_before_certificates():
 # certifies clean has already cost one LLM composition; refusing it here appends a FORMAT
 # violation, buys a SECOND composition, and -- when the retry cannot act on the message,
 # which is the usual case for a formatting variant nothing upstream pins -- ends at
-# `skipped-gate` with the lead binned. So the expectation below is COMPUTED from the gate
+# `skipped-gate` with the lead binned.
+#
+# `validate()` is the RIGHT antecedent even though it is not the engine's whole gate,
+# and the distinction is measured rather than assumed: `cv/engine.py` folds `cv/slop.py`
+# into the same `gate_msgs`, and 36 of the 162 rows below carry an em dash, which trips
+# the slop checker's EM-DASH rule independently. Those rows would be re-composed anyway,
+# with an actionable message -- so for them a parser refusal is REDUNDANT strictness
+# rather than an isolated bin, and the harm above is overstated. Using the wider gate as
+# the antecedent would have made 36 rows vacuous and hidden the parser's behaviour on
+# them; `validate()` keeps every row live, which is what a drift test between the gate
+# and the parser wants. The rows that carry the harm in full are the ones nothing else
+# objects to -- ` to `, the single-digit month, the terminal spellings.
+#
+# So the expectation below is COMPUTED from the gate
 # for every row rather than written down beside it: a row nobody thought to check when
 # widening the parser reds by itself, which is the only thing that ends the sequence.
 #
@@ -669,6 +687,27 @@ def test_the_gate_helper_can_both_pass_and_fail():
     dirty = CLEAN_CV.replace("- Shipped [EF1]", "- Shipped")
     assert "- Shipped\n" in dirty, "the replace no-opped"
     assert _gate_verdict(dirty), "the gate certified an UNCITED bullet clean"
+
+
+def test_which_separators_the_slop_checker_independently_objects_to():
+    """Pins the CLAIM the comments above make about the engine's OTHER gate.
+
+    `_DASH`'s comment and the sweep's block comment both say the em dash is redundantly
+    strict (cv/slop.py objects too, actionably) while ` to ` was an isolated bin. That is
+    a statement about a module this file does not otherwise touch, and a reason stated in
+    a comment goes stale in silence -- so it is executed here. If slop.py ever stops
+    flagging the em dash, or starts flagging ` to `, both comments become wrong and this
+    reds instead of them quietly misleading the next reader.
+    """
+    from sluice.cv.slop import check_text
+    from tests.test_cv_engine import CLEAN_CV
+
+    assert check_text(CLEAN_CV)[0] == [], (
+        "the base fixture is already slop-flagged, so neither row below discriminates")
+    em = CLEAN_CV.replace("02/2023–present", "02/2023—present")
+    assert check_text(em)[0], "cv/slop.py no longer objects to an em dash on its own"
+    to = CLEAN_CV.replace("02/2023–present", "02/2023 to present")
+    assert check_text(to)[0] == [], "cv/slop.py now objects to ' to ' as well"
 
 
 def test_the_separator_alphabet_still_carries_the_measured_regressions():
