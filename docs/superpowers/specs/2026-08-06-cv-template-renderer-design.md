@@ -390,6 +390,18 @@ entry replaced rather than the line deleted.
   HTML-specific in it, so an fpdf2 renderer needing no system libraries could sit on the
   same parse layer later. It could not consume HTML templates, so it would be a separate
   seam entry rather than a swap.
+- **A user's template sits AFTER the fabrication gate, and is not itself audited.** The
+  gate runs on the composed CV text; the template only ever sees the parsed
+  `CvDocument`, which is content the gate already approved. But the template itself is
+  free text sluice does not control: it can inject prose of its own (a hardcoded
+  objective statement, a claim baked into the layout) that the gate never saw at all, or
+  wrap a gated field in a conditional that silently drops it from the PDF (a section
+  omitted, a bullet's list truncated). Either way the PDF is no longer a faithful
+  transform of the gate-approved text -- it is *derived from* that text, not identical
+  to it, and that gap is a property of accepting arbitrary user templates rather than a
+  bug in the parser or the renderer. Nothing in this design audits a template's own
+  markup, and nothing should try: the same reasoning that keeps sluice from shipping an
+  opinion about CV layout keeps it from policing what a user writes into their own.
 
 ## Out of scope
 
