@@ -1,0 +1,45 @@
+{# The shipped DEFAULT template. It is not "neutral" -- a template must lay something
+   out, so its layout is a shipped opinion and the spec says so. What IS guaranteed, and
+   is guarded by test_the_shipped_template_contributes_no_content, is that it contributes
+   no CONTENT: every literal text node below is either a CvDocument field or a heading
+   the composer already emits. Single-column on purpose: a grid or table produces a PDF
+   whose text extracts in the wrong order, and the destination is an ATS upload. #}
+<style>
+  @page { size: A4; margin: 18mm 16mm; }
+  body { font-family: "DejaVu Sans", Helvetica, sans-serif; font-size: 10.5pt;
+         line-height: 1.35; }
+  h1 { font-size: 16pt; margin: 0 0 2mm; }
+  h2 { font-size: 11pt; margin: 5mm 0 1.5mm; text-transform: uppercase;
+       border-bottom: 0.4pt solid #000; }
+  .contact { white-space: pre-wrap; margin: 0 0 4mm; }
+  .role { margin: 0 0 3mm; }
+  .company { font-weight: bold; }
+  .meta { font-style: italic; }
+  ul { margin: 1mm 0 0; padding-left: 5mm; }
+  li { margin: 0 0 0.8mm; }
+</style>
+
+<h1>{{ document.name }}</h1>
+<div class="contact">{{ document.contact }}</div>
+
+<h2>PROFILE</h2>
+<p>{{ document.profile }}</p>
+
+<h2>WORK EXPERIENCE</h2>
+{% for role in document.work %}
+<div class="role">
+  <div class="company">{{ role.company }}</div>
+  <div class="meta">{{ role.dates }} | {{ role.location }} | {{ role.title }}</div>
+  <ul>{% for bullet in role.bullets %}<li>{{ bullet }}</li>{% endfor %}</ul>
+</div>
+{% endfor %}
+
+{% if document.certificates %}
+<h2>CERTIFICATES</h2>
+<ul>{% for item in document.certificates %}<li>{{ item }}</li>{% endfor %}</ul>
+{% endif %}
+
+{% if document.education %}
+<h2>EDUCATION</h2>
+<ul>{% for item in document.education %}<li>{{ item }}</li>{% endfor %}</ul>
+{% endif %}
