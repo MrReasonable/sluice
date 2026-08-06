@@ -46,7 +46,7 @@ def install_recording_renderer(recorder):
     """Register a recording renderer under the real `renderer` seam as
     `recording`. Config selects it via `cv.renderer: recording`, so `plugins.get`
     and that config key are exercised. The `renderer` registry asserts a SUBSET
-    (`{"script","weasyprint"} <= available`), so an extra name is safe."""
+    (`{"script","template"} <= available`), so an extra name is safe."""
     plugins.register(RENDERER_SEAM, RENDERER_NAME,
                      lambda cvcfg: RecordingRenderer(recorder))
     return recorder

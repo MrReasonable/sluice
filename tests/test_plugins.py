@@ -27,7 +27,7 @@ def test_shipped_defaults_resolve():
     assert cfg.fetcher == "camofox"
     assert "vault" in Sluice.available("store")
     assert "camofox" in Sluice.available("fetcher")
-    assert {"script", "weasyprint"} <= set(Sluice.available("renderer"))
+    assert {"script", "template"} <= set(Sluice.available("renderer"))
 
 
 def test_store_is_resolved_from_config_by_name(tmp_path, monkeypatch):

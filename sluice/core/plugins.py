@@ -27,6 +27,17 @@ _log = get_logger("plugins")
 # seam -> {name -> factory}. A factory takes the loaded config and returns the adapter.
 _REGISTRY: dict[str, dict[str, object]] = {}
 
+# seam -> {retired name -> migration hint}. A retired name is NOT in the registry, so it
+# is never offered as a choice (`sluice init` derives its choices from `available`) --
+# but selecting one must say what replaced it. A bare removal cannot: UnknownAdapter
+# lists the VALID names and would never mention the replacement.
+_RETIRED: dict[str, dict[str, str]] = {}
+
+
+def register_retired(seam: str, name: str, hint: str) -> None:
+    """Record that `name` was removed from `seam`, and what to use instead."""
+    _RETIRED.setdefault(seam, {})[name] = hint
+
 
 class UnknownAdapter(KeyError):
     """Raised at construction for a name no plugin registered under this seam."""
@@ -63,10 +74,12 @@ def register(seam: str, name: str, factory) -> None:
 
 def get(seam: str, name: str):
     """The factory registered for (seam, name). Raises UnknownAdapter, listing the
-    valid names, rather than falling back to a default."""
+    valid names, rather than falling back to a default. A RETIRED name still raises --
+    it must, since it is deliberately absent from `impls` -- but carries a hint naming
+    its replacement instead of the bare "unknown" message a never-registered name gets."""
     impls = _REGISTRY.get(seam, {})
     if name not in impls:
-        raise UnknownAdapter(seam, name, impls)
+        raise UnknownAdapter(seam, name, impls, hint=_RETIRED.get(seam, {}).get(name, ""))
     return impls[name]
 
 
