@@ -253,6 +253,32 @@ def test_the_shipped_template_sweep_covers_every_route_into_a_users_install():
     ("<svg><text>no agencies please</text></svg>",
      "an SVG text node -- caught by the ordinary markup path, and pinned so the docstring's "
      "residual list stays honest about which routes really are residual"),
+    # ── round 3: the harvest was tokenising the declaration VALUE with `[^;{}]*` ───
+    # Every row below was measured GREEN against round 2's harvest. The cut at the first
+    # `;`/`{`/`}` truncated the value MID-STRING, `_CSS_STRING_RE` then found no complete
+    # quote pair in the fragment, and the harvest returned the EMPTY SET -- not a partial
+    # catch, nothing at all. Verified against real CSS with tinycss2 (WeasyPrint's own
+    # tokeniser): a semicolon or brace between quotes is part of one declaration value.
+    ('<style>.contact::after { content: "seeking a remote role; no agencies"; }</style>',
+     "a SEMICOLON inside the string. The value was cut at it, leaving `\"seeking a remote "
+     "role` -- one unbalanced quote, from which the string extractor matched nothing"),
+    ('<style>.contact::after { content: "no agencies {please}"; }</style>',
+     "...and the BRACE form of the same cut, since the terminator class held all three"),
+    ('<p style="list-style-type: \'no agencies; please\'"></p>',
+     "...in a style ATTRIBUTE, so the tokenising bug and the attribute route are live at "
+     "once rather than only in combination"),
+    ('<style>h1 { string-set: hdr "seeking remote work; no agencies"; }'
+     " @page { @top-center { content: string(hdr); } }</style>",
+     "...feeding a RUNNING HEADER, which puts the truncated string on every page"),
+    ("<p style=list-style-type:'no agencies'></p>",
+     "the NINTH bypass, found beside the tokenising bug: an UNQUOTED style attribute whose "
+     "value then opens a quote of its own. `_STYLE_ATTR_RE` offered only the two quoted "
+     "forms, so this matched nothing and was never harvested at all"),
+    ("<p>{{ 450 }}</p>",
+     "a BARE NUMERIC literal in a Jinja output expression -- a pay floor typed straight "
+     "into the template. The Jinja pass harvested QUOTED literals only, so this rendered "
+     "verbatim and was never seen, while the docstring claimed to catch every literal a "
+     "template author can type and have drawn on the page"),
 ])
 def test_the_no_content_guard_catches_planted_content(planted, why):
     """POSITIVE CONTROLS. The guard above is NEGATIVE -- it passes when it finds nothing
@@ -329,6 +355,12 @@ def test_the_no_content_strip_still_has_exactly_one_definition():
      "erased with their tag; harvesting them would mean flagging every class and href"),
     ('<img src="missing.png" alt="no agencies please">',
      "an alt attribute WeasyPrint may fall back to -- same place, same reason"),
+    ("<p>{{ 450 if document.work else 0 }}</p>",
+     "a number inside a COMPOUND Jinja expression. Only the WHOLE-BODY form `{{ 450 }}` "
+     "is harvested -- see `_JINJA_NUMBER_RE`: taking every digit inside a `{{ }}` would "
+     "red on `document.work[0]` and on `truncate(200)`, ordinary constructs that draw no "
+     "number, and a guard that reds on a healthy template is one people delete. This is a "
+     "drawn line rather than a structural limit, which is exactly why it needs a row"),
 ])
 def test_the_no_content_guards_known_residual_is_pinned_not_assumed(planted, why):
     """The RESIDUAL, executable rather than asserted in prose.
