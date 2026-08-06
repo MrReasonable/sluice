@@ -49,6 +49,18 @@ class FakeHTML:
             f.write(b"%PDF-1.4 fake")
 
 
+@pytest.fixture(autouse=True)
+def _reset_fake_html_captured():
+    """FakeHTML.captured is CLASS-level mutable state, shared across every test in this
+    file. Every test today happens to call render() (which repopulates it) before
+    reading it, so a stale-read is not reachable YET -- but that is a property of what
+    today's test bodies happen to do, not a property this design guarantees. A future
+    test that reads `captured` without rendering first would otherwise silently see a
+    PREVIOUS test's html and pass on stale data instead of failing loudly. Reset before
+    every test so that failure mode cannot occur no matter how this file grows."""
+    FakeHTML.captured = {}
+
+
 def _renderer(tmp_path, template_text=None):
     if template_text is None:
         return TemplateRenderer(None, html_module=FakeHTML, css_module=lambda string="": object())
@@ -195,17 +207,56 @@ def test_the_renderer_reports_when_it_writes_no_pdf(tmp_path):
 
 
 def test_this_module_never_uses_importorskip():
-    """The trap is documented twice and has still recurred once."""
+    """The trap is documented twice and has still recurred once.
+
+    Walks this file's own AST rather than string-matching, per CLAUDE.md's guard-testing
+    rule: "Hand-listed names lose to an import alias... Derive the local bindings from
+    each file's own ImportFrom and ClassDef nodes." A substring check keyed on
+    "pytest.importorskip(" is evadable by `from pytest import importorskip` (then a BARE
+    call, no qualifier at all) or `import pytest as pt` (then `pt.importorskip(...)`) --
+    neither leaves that literal substring anywhere in the file for a string-match guard
+    to find, even though both actually invoke the exact function this test exists to
+    forbid. Walking the AST also disposes of the self-trip problem structurally rather
+    than by needle-crafting a match string: an AST walk sees CALLS, not substrings, so
+    this very test's own `def` line and its docstring are simply not calls and can never
+    match, no matter what words they contain.
+    """
+    import ast
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         "test_renderer_template.py")
     with open(path, encoding="utf-8") as f:
-        body = f.read()
-    occurrences = [ln for ln in body.splitlines() if "importorskip" in ln]
-    # This docstring-and-comment file mentions the word; only a CALL is forbidden. The
-    # match requires the "pytest." qualifier that every real call in this codebase uses
-    # (see tests/test_renderers.py) rather than the bare function name alone -- measured,
-    # not assumed: this guard reads its OWN source file, and this test's own `def` line
-    # ends in the bare name immediately followed by an opening paren, an accidental
-    # match a name-only check would flag on itself, every run, forever.
-    call_form = "pytest." + "importorskip("
-    assert not [ln for ln in occurrences if call_form in ln]
+        tree = ast.parse(f.read(), filename=path)
+
+    # Resolve the LOCAL bindings this file's own imports create, rather than assuming
+    # `pytest` or `importorskip` are the names in scope -- an aliased import walks
+    # straight past a check keyed on the canonical name, which is exactly the failure
+    # shape CLAUDE.md's guard-testing section names.
+    pytest_module_names = set()      # names bound to the `pytest` module itself
+    bare_importorskip_names = set()  # names bound directly to `pytest.importorskip`
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "pytest":
+                    pytest_module_names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == "pytest":
+                for alias in node.names:
+                    if alias.name == "importorskip":
+                        bare_importorskip_names.add(alias.asname or alias.name)
+
+    violations = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        # <binding>.importorskip(...) where <binding> resolves to the pytest module
+        # under ANY name it was imported as (plain "pytest" or an alias).
+        is_qualified = (isinstance(func, ast.Attribute) and func.attr == "importorskip"
+                        and isinstance(func.value, ast.Name)
+                        and func.value.id in pytest_module_names)
+        # a bare importorskip(...) reached via `from pytest import importorskip [as x]`.
+        is_bare = isinstance(func, ast.Name) and func.id in bare_importorskip_names
+        if is_qualified or is_bare:
+            violations.append(node.lineno)
+
+    assert not violations, f"pytest.importorskip called at line(s) {violations}"
