@@ -4,28 +4,42 @@ name: Release Please
 # merge it. Merging is what tags and cuts the GitHub release: the tag and the declared
 # version are written by the same tool in the same commit, so they cannot drift.
 #
-# THE TOKEN IS LOAD-BEARING, and without it this whole workflow is INERT rather than
+# THE TOKEN IS LOAD-BEARING, and without it this workflow is INERT rather than
 # broken-looking. GitHub does not start workflow runs from events raised by the default
 # GITHUB_TOKEN, so a release PR opened with it never triggers `ci.yml` (`on: pull_request`)
-# and `ci-success` never reports. The `qa-gates` ruleset on the default branch requires
-# `ci-success` plus one approving review with NO bypass actors -- so the PR opens, looks
-# healthy, and can never be merged. Measured against the live ruleset, not assumed.
+# and `ci-success` never reports. The `qa-gates` ruleset requires `ci-success` plus one
+# approving review with NO bypass actors -- so the PR would open, look healthy, and never
+# be mergeable. Measured against the live ruleset, not assumed.
 #
-# `RELEASE_PLEASE_TOKEN` should be a PAT -- the action's own documented recommendation --
-# with contents, pull-requests and issues write. Do NOT store a GitHub App INSTALLATION
-# token in it: those expire after an hour, and the `||` below tests whether the secret is
-# PRESENT, not whether it is VALID, so a stale one would be selected over the fallback and
-# every run would fail on an invalid token with the fallback right there unused. If you
-# prefer an App, mint the token INSIDE the job (`actions/create-github-app-token`) so it is
-# fresh per run.
+# WHY A GITHUB APP RATHER THAN A PAT, which is what this used first. Both trigger
+# workflows, so both clear `ci-success`. The difference is WHO AUTHORS the PR. A PAT opens
+# it as the repo owner, and GitHub does not let anyone approve their own pull request --
+# so with CodeRabbit configured to skip release PRs (see `.coderabbit.yaml`), nothing could
+# ever approve one and releases would deadlock. An App opens the PR as the App, so a human
+# can review and approve it normally. The gate stays fully intact; the approver just
+# changes.
 #
-# The `||` fallback keeps this workflow valid before that secret exists: it still opens a
-# PR, which simply cannot be merged yet. The approval leg needs its own answer too --
-# CodeRabbit auto-skips bot-authored PRs, so the release PR needs a human review or a
-# ruleset bypass.
+# The token is minted PER RUN and never stored. Installation tokens expire after an hour,
+# and a stored one would be a secret that is present but invalid -- which is worse than
+# absent, because presence is what a fallback tests. Nothing here has a fallback for that
+# reason: if the App secrets are missing the run fails loudly at the first step rather than
+# opening a PR that cannot be merged.
+#
+# THE APP INSTALLATION needs `contents: write`, `pull requests: write` and `issues: write`
+# -- the last because release-please labels the release PR `autorelease:*` and labels are
+# an issues-scoped resource.
+
 on:
   push:
     branches: [main]
+
+# Added deliberately, and not a restore: this workflow shipped without it. Two runs racing
+# would both compute a release from the same branch and fight over the same release branch
+# ref. `cancel-in-progress: false` because the back half of a release -- tagging, then
+# cutting the GitHub release -- must not be interrupted midway; queue instead.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -33,17 +47,27 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    # No elevated GITHUB_TOKEN permissions: every write below is made with the App
+    # installation token, whose scope comes from the App itself. Leaving these at the
+    # workflow default keeps the built-in token read-only even if a future step uses it.
     permissions:
-      contents: write # create the tag and the GitHub release
-      pull-requests: write # open and update the release PR
-      # The action labels the release PR (`autorelease:*`), and labels are an ISSUES-scoped
-      # resource, so this is required rather than implied by `pull-requests: write` -- the
-      # action's own docs list all three. Without it the job errors instead of quietly
-      # skipping the label. `skip-labeling` is the alternative if you would rather not.
-      issues: write
+      contents: read
     steps:
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          app-id: ${{ secrets.RELEASE_PLEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_PRIVATE_KEY }}
+          # Scope the minted token DOWN to what release-please needs. Without these it
+          # inherits the App installation's blanket permissions -- zizmor flags that as
+          # HIGH, and rightly: the App may later be granted something for another purpose
+          # and this token would silently gain it too. `issues` is the non-obvious one:
+          # labels are issues-scoped, and release-please labels the PR `autorelease:*`.
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json

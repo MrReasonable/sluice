@@ -25,6 +25,21 @@ reviews:
     # on demand (`@coderabbitai review`) instead -- which is what you actually want:
     # reviewed when the PR is ready, not while it is still being iterated on.
     auto_incremental_review: false
+    # release-please's PRs are machine-generated: a version bump, a manifest bump, and a
+    # changelog section assembled from commit subjects CodeRabbit has already reviewed on
+    # the PRs that introduced them. Reviewing them again spends a scarce Fair-Usage slot on
+    # a diff with no new code in it.
+    #
+    # Matched on TITLE, not author, and the title is the more durable key. release-please's
+    # title format is its own (`chore(<branch>): release <version>`) and does not depend on
+    # who opens the PR -- an identity this repo has already changed once, from a PAT to a
+    # GitHub App, which flipped the author from the repo owner to `<app>[bot]` mid-review.
+    # A rule keyed on that would have needed rewriting each time; this one did not.
+    #
+    # The prefix will not catch a real PR that merely says "release" -- verified against
+    # "fix(cv): release a held lead", which still gets reviewed.
+    ignore_title_keywords:
+      - "chore(main): release"
     base_branches:
       - main
   path_instructions:
