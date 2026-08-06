@@ -357,7 +357,9 @@ lead binned. Instances of it shipped on the `template` renderer's parser REPEATE
 someone happening to think of a case and adding a row: the en dash, the em dash, the word `to`, the
 terminal token's casing and spelling, a single-digit month, a case-drifted section header, a blank
 line under a trailing header, an en-dash CERTIFICATES marker, a LOCATION field nothing upstream can
-supply. Deliberately no total — the count is not derivable from anything executable, two files
+supply — and, on a second review round, that same LOCATION field spelled as a BLANK MIDDLE pipe
+(`dates |  | Role`), which was refused while the two-field spelling of the identical fact was
+accepted. Deliberately no total — the count is not derivable from anything executable, two files
 carried different numbers, and this repo has already been bitten by a stale count in prose twice
 (`core/paths.py`'s ingress sites). The LOCATION one is the worst shape: the only actionable reading
 of "add the missing field" is *invent a city*, so a parser refusal became fabrication pressure aimed
@@ -372,6 +374,17 @@ Known un-swept axis, measured: a FOUR-field meta line
 (`02/2023–present | Alfa | Staff Engineer | Platform`) is gate-CLEAN and refused. That one is left
 refusing on purpose — four fields is genuinely malformed and the message names the expected shape,
 so the retry can act on it — but it is a gap in the sweep, not a case the sweep passed.
+
+A REPEATED trailing header (`CERTIFICATES` … `EDUCATION` … `CERTIFICATES` again) is the second
+deliberate refusal of gate-clean input, and it was added rather than inherited: measured, it was
+gate-clean AND slop-clean AND parsed without raising, returning `certificates == []` with the second
+block's entries gone — and since the template guards each section with `{% if document.certificates
+%}`, the heading vanished with them, so the PDF was indistinguishable from a candidate who holds
+none. Both exceptions pass the same test, and it is the test to apply to any third: the refusal must
+be answerable WITHOUT inventing content (here, merge the two headings). That is exactly what the
+LOCATION refusal failed, and why that one went the other way. The repeat is refused even when it
+turns out to be empty and so drops nothing; that over-refusal is stated in `cv/parse.py` rather than
+disguised as a distinction the code draws.
 
 The one place a parser may legitimately be stricter is a WORK bullet marker, and there the
 requirement is EQUALITY with the gate, not merely "no wider": a marker `validate.py` does not also
@@ -450,7 +463,13 @@ consistently engineers out; see `_select_backend`'s guard in `cli.py`.
   (`template` does, `script` does not, and the engine reaches it through `getattr` so an absent one
   gates nothing). Keeping it on the renderer is what stops one implementation's requirements binding
   the whole seam — measured, the engine imposing `template`'s grammar unconditionally reported
-  `skipped-gate` under `cv.renderer: script` for a gate-clean CV. Store and fetcher have one production impl each (`vault`,
+  `skipped-gate` under `cv.renderer: script` for a gate-clean CV. Being optional means it is the one
+  seam member NOTHING types, so the engine checks the RETURN at the call site and raises naming the
+  renderer: a `precheck` returning a bare `str` was otherwise spread one CHARACTER per violation into
+  the retry prompt. `Sluice.compose_cv` resolves the renderer on a `--dry-run` too, purely so this
+  hook runs — a dry run reporting no violations where a real run reports `skipped-gate` is a preview
+  that false-greens the input it is previewing; a `RenderError` during that construction is caught,
+  WARNED about by name, and the dry run proceeds. Store and fetcher have one production impl each (`vault`,
   `camofox`). The selection is also exercised in tests — `tests/harness/` registers a fake fetcher
   (`browser.py`) and renderer (`renderer.py`) and resolves them through the same seam. The backend seam
   differs in shape, though: a role layer (auto/primary/fallback, in
