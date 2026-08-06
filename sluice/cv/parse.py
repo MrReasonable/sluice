@@ -168,13 +168,19 @@ def parse_cv(text: str) -> CvDocument:
         company = stripped
         idx += 1
         if idx >= len(lines):
-            raise CvParseError(f"missing meta line after company {company!r}")
+            # Deliberately does not echo `company` here: it is exactly the untrusted
+            # candidate text this branch is refusing, and a message that echoes it back
+            # would let a mutation that deletes the UNMODELLED-SECTION guard above still
+            # satisfy a `pytest.raises(match=...)` on that header's own text via THIS
+            # unrelated path -- measured 2026-08-06, see the mutation witness in the task
+            # report. The meta-line and unmodelled-section refusals must stay
+            # distinguishable by message, not just both truthy.
+            raise CvParseError("missing meta line: WORK EXPERIENCE entry has no line "
+                                "after its company")
         meta_raw = lines[idx].strip()
         parts = [p.strip() for p in meta_raw.split("|")]
         if len(parts) != 3 or not _DATE_RANGE_RE.match(parts[0]):
-            raise CvParseError(
-                f"unparseable meta line after company {company!r}: {meta_raw!r}"
-            )
+            raise CvParseError(f"unparseable meta line: {meta_raw!r}")
         dates, location, title = parts
         idx += 1
 
