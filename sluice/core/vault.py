@@ -1179,11 +1179,22 @@ class Vault:
         honour). Facts only -- `core/doctor.py:classify_store` turns them into
         verdicts.
 
-        `_is_dir`/`_is_note_file`, not `os.path.exists`: both propagate a real
-        PermissionError instead of reading an unstatable path as merely absent,
-        the same rule every other existence check in this module follows, and for
-        the same reason -- a vault doctor cannot even STAT is a fact worth a loud
+        `_is_dir`, not `os.path.exists`: it propagates a real PermissionError
+        instead of reading an unstatable path as merely absent, the same rule
+        every other existence check in this module follows, and for the same
+        reason -- a vault doctor cannot even STAT is a fact worth a loud
         failure, not a quiet False.
+
+        `baseline_exists` calls `read_baseline()` itself rather than merely
+        stat-checking the path (`_is_note_file` would report a 0-byte or
+        permission-denied file as "exists"), because doctor's whole point is
+        answering "would a REAL cv run actually succeed here" -- and reading is
+        the exact operation a real run performs. Only `(FileNotFoundError,
+        IsADirectoryError)` -- both genuinely "no baseline here" -- are read as
+        absent; a real PermissionError propagates out of this method entirely
+        (to the caller's own broad handler) rather than being folded into a
+        quiet False, matching this module's own rule that an unreadable file
+        must be loud, never read as empty.
 
         Deliberately does NOT walk `leads_dir` (2627 notes in the vault this was
         built against): doctor is a preflight meant to run often and cheaply, not
@@ -1195,10 +1206,16 @@ class Vault:
         exactly the kind of thing worth surfacing before a compose is attempted."""
         if not _is_dir(self.dir):
             return {"vault_exists": False}
+        try:
+            self.read_baseline()
+        except (FileNotFoundError, IsADirectoryError):
+            baseline_exists = False
+        else:
+            baseline_exists = True
         entries = self.read_experience_entries(verified_only=False)
         return {
             "vault_exists": True,
-            "baseline_exists": _is_note_file(os.path.join(self.dir, self.baseline_rel)),
+            "baseline_exists": baseline_exists,
             "criteria_present": bool(self.read_criteria().strip()),
             "experience_total": len(entries),
             "experience_verified": sum(1 for e in entries if e.get("verified")),

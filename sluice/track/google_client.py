@@ -58,6 +58,27 @@ def _write_token(path: str, data: str) -> None:
         raise
 
 
+def probe_availability() -> tuple[bool, str | None]:
+    """Can `RealGoogleClient` actually be built in this process? Returns
+    (available, import_error). Used by `sluice doctor` (core/app.py) to report
+    on track's Google adapter WITHOUT importing the google client libs itself --
+    this module is the ONE sanctioned site (see CLAUDE.md's stdlib-only rule for
+    `sluice/`), so a second copy of these three imports living in core/app.py
+    would duplicate knowledge of exactly which submodules matter and could
+    silently drift out of step with `_creds`/`gmail`/`calendar` below.
+
+    `(ImportError, OSError)`, not `ImportError` alone, for the same reason
+    `renderers/template.py`'s `_make` catches both: a missing NATIVE dependency
+    underneath a Python package does not always surface as ImportError."""
+    try:
+        from google.auth.transport.requests import Request  # noqa: F401
+        from google.oauth2.credentials import Credentials  # noqa: F401
+        from googleapiclient.discovery import build  # noqa: F401
+    except (ImportError, OSError) as e:
+        return False, str(e)
+    return True, None
+
+
 class RealGoogleClient:
     """Gmail + Calendar over google_token.json. Lazy-imports google libs."""
 

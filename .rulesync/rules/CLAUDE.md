@@ -501,7 +501,7 @@ consistently engineers out; see `_select_backend`'s guard in `cli.py`.
   production impls — `template` (the default: fills a user's Jinja2 template, or the packaged
   default, via WeasyPrint; `pip install 'sluice[render]'`) and `script` (the external shell-out
   escape hatch) — selected by `cv.renderer`, so by-name selection between real implementations is
-  already LIVE there. That seam alone has a second, OPTIONAL member, `precheck(cv_text) ->
+  already LIVE there. That seam has a second, OPTIONAL member, `precheck(cv_text) ->
   list[str]`: a renderer implements it only when the composed CV must satisfy a grammar of its own
   (`template` does, `script` does not, and the engine reaches it through `getattr` so an absent one
   gates nothing). Keeping it on the renderer is what stops one implementation's requirements binding
@@ -513,7 +513,12 @@ consistently engineers out; see `_select_backend`'s guard in `cli.py`.
   hook runs — a dry run reporting no violations where a real run reports `skipped-gate` is a preview
   that false-greens the input it is previewing; a `RenderError` during that construction is caught,
   WARNED about by name, and the dry run proceeds. Store and fetcher have one production impl each (`vault`,
-  `camofox`). The selection is also exercised in tests — `tests/harness/` registers a fake fetcher
+  `camofox`); the STORE seam has since grown the same OPTIONAL shape, `preflight() -> dict`, reached
+  via `getattr` exactly like `precheck` and for the same reason (an implementation that cannot say is
+  not one that is broken) — `sluice doctor` (see below) is the one caller, and `Vault.preflight`
+  answers with FACTS (vault dir, baseline CV, Judging Profile, Experience Library counts), never
+  verdicts, keeping classification in `core/doctor.py` where the backend rules already live. The
+  selection is also exercised in tests — `tests/harness/` registers a fake fetcher
   (`browser.py`) and renderer (`renderer.py`) and resolves them through the same seam. The backend seam
   differs in shape, though: a role layer (auto/primary/fallback, in
   `Sluice.backend()`) sits above the provider lookup, and its factory takes resolved construction params

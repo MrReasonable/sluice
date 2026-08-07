@@ -1240,10 +1240,16 @@ class Sluice:
 
         # Renderer: construction IS the probe (see classify_renderer). No PDF is
         # written and no backend is called, so this is cheap and safe under
-        # --offline too.
+        # --offline too. `plugins.UnknownAdapter` (a misconfigured `cv.renderer`
+        # naming no registered renderer) is caught alongside `RenderError` --
+        # both are "this seam member could not be built" for doctor's purposes.
+        # Measured: a typo'd `cv.renderer` previously crashed the WHOLE command
+        # with an uncaught UnknownAdapter, losing the backend checks already
+        # computed above -- the opposite of what a diagnostic tool run BECAUSE
+        # something is wrong should do.
         try:
             self.renderer(cv_cfg)
-        except RenderError as e:
+        except (RenderError, plugins.UnknownAdapter) as e:
             components.append(_doctor.classify_renderer(str(e)))
         else:
             components.append(_doctor.classify_renderer(None))
@@ -1256,37 +1262,48 @@ class Sluice:
         # without the hook contributes nothing; a store whose hook raises
         # becomes one DEAD row naming the failure rather than an uncaught
         # exception out of the one command meant to diagnose a broken install.
-        preflight_fn = getattr(self.store(), "preflight", None)
-        if preflight_fn is not None:
-            try:
-                components.extend(_doctor.classify_store(preflight_fn()))
-            except Exception as e:  # noqa: BLE001 -- see the comment above: a
-                # broken preflight must be reported, not crash doctor itself.
-                components.append(_doctor.ComponentCheck(
-                    "store", "preflight", _doctor.DEAD, str(e)))
-
-        # Track/Google: sluice/ is stdlib-only except for the three named,
-        # deliberate exceptions (yaml, the Google client libs, jinja2/weasyprint)
-        # -- see CLAUDE.md -- so the Google libs are lazy-imported here exactly
-        # as track/google_client.py itself lazy-imports them, and under the same
-        # (ImportError, OSError) pair renderers/template.py's `_make` catches:
-        # a missing native dependency does not always surface as ImportError.
+        # `self.store()` itself is also guarded, against BOTH ways building the
+        # vault store can fail: a misconfigured `store:` name raises
+        # UnknownAdapter at RESOLUTION (before preflight() is ever reachable),
+        # and an invalid `lead_layout` makes `Vault.__init__` raise ValueError
+        # (`layout_subfolder`'s own guard, core/leads.py) -- reachable when a
+        # `Config` is constructed directly rather than through `load_config()`,
+        # which validates `lead_layout` itself and never gets here. Both must
+        # be reported the same way rather than crashing -- the identical fix
+        # as the renderer's, one layer earlier.
         try:
-            from google.auth.transport.requests import Request  # noqa: F401
-            from google.oauth2.credentials import Credentials  # noqa: F401
-            from googleapiclient.discovery import build  # noqa: F401
-            google_available, google_import_error = True, None
-        except (ImportError, OSError) as e:
-            google_available, google_import_error = False, str(e)
+            store = self.store()
+        except (plugins.UnknownAdapter, ValueError) as e:
+            components.append(_doctor.ComponentCheck("store", "store", _doctor.DEAD, str(e)))
+        else:
+            preflight_fn = getattr(store, "preflight", None)
+            if preflight_fn is not None:
+                try:
+                    components.extend(_doctor.classify_store(preflight_fn()))
+                except Exception as e:  # noqa: BLE001 -- see the comment above: a
+                    # broken preflight must be reported, not crash doctor itself.
+                    components.append(_doctor.ComponentCheck(
+                        "store", "preflight", _doctor.DEAD, str(e)))
+
+        # Track/Google: probed through track.google_client's own helper rather
+        # than importing the google libs here a second time -- that module is
+        # the ONE sanctioned import site (see CLAUDE.md's stdlib-only rule for
+        # `sluice/`), so doctor asks it rather than duplicating its imports.
+        from sluice.track.google_client import probe_availability
+
+        google_available, google_import_error = probe_availability()
         components.append(_doctor.classify_track_google(
             available=google_available, import_error=google_import_error,
             token_present=os.path.exists(track_cfg.token_path)))
 
-        # Preference gates: enumerated generically over every loaded config's
+        # Gate posture: enumerated generically over every loaded config's
         # list-typed fields (list_typed_fields), never hand-listed -- the same
         # discipline tests/test_sluice_neutral_defaults.py's identically-shaped
         # sweep applies to the DEFAULTS, applied here to this install's CURRENT
-        # values. SourceConfig.searches is deliberately excluded: it is a
+        # values. Most swept fields are preference gates in the #26/#63 sense;
+        # a few (Config.dossier_allow_hosts, the noise-word lists) are not --
+        # see classify_gate's docstring for why that is fine, since every row
+        # is NOTICE regardless. SourceConfig.searches is deliberately excluded: it is a
         # per-source override living inside `sources: {id: {...}}`, not a flat
         # field on one of these instances, so this generic sweep cannot reach
         # it without also loading and iterating the sources dict. NOT reported

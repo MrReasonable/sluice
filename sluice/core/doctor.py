@@ -299,20 +299,24 @@ def classify_store(facts: dict | None) -> list:
     say is not a store that is broken.
 
     Missing vault or missing baseline CV are DEAD: `cv run` cannot compose
-    without a baseline, and every sub-app treats an unreadable vault the same
-    way. A missing Judging Profile is DEGRADED, not dead -- `core/criteria.py`
-    ships a documented neutral fallback that states only "nothing is
-    configured" and never invents an opinion, so triage still runs; it just
-    judges nothing preferentially until the profile exists. The experience
-    library count is a NOTICE: zero verified entries means every CV bullet
-    would fail the fabrication gate's citation check, which is worth knowing
-    before a compose, not a defect in the store."""
+    without a baseline, and every sub-app that touches `self.store()` --
+    which, ingest through track, is all five -- treats an unreadable vault the
+    same way. A missing Judging Profile is DEGRADED, not dead --
+    `core/criteria.py` ships a documented neutral fallback that states only
+    "nothing is configured" and never invents an opinion, so triage still
+    runs; it just judges nothing preferentially until the profile exists. The
+    experience library count is a NOTICE: zero verified entries means every CV
+    bullet would fail the fabrication gate's citation check, which is worth
+    knowing before a compose, not a defect in the store."""
     if facts is None:
         return []
     out = []
     if not facts.get("vault_exists"):
-        return [ComponentCheck("store", "vault_dir", DEAD,
-                                "vault directory does not exist", blocks=("cv", "triage", "apply"))]
+        # ALL FIVE, not just cv/triage/apply: `Sluice.ingest` (VaultSink),
+        # `leads` (expire/dedupe/reconcile) and `track` all call self.store()
+        # too -- a missing vault stops the entire pipeline, not a subset of it.
+        return [ComponentCheck("store", "vault_dir", DEAD, "vault directory does not exist",
+                                blocks=("ingest", "triage", "cv", "apply", "track"))]
     if not facts.get("baseline_exists"):
         out.append(ComponentCheck(
             "store", "baseline_rel", DEAD,
@@ -380,12 +384,19 @@ def list_typed_fields(cfg) -> list:
 
 
 def classify_gate(owner: str, name: str, value: list) -> ComponentCheck:
-    """One posture NOTICE per preference gate: abstaining (empty -- every lead
-    passes through) or active (non-empty -- this install has an opinion).
-    Always NOTICE, never DEGRADED: an abstaining gate is the shipped default
-    and legitimate (#26/#63, and the 672ad2a incident this whole invariant
-    exists to prevent), so it must never affect the exit code or read as a
-    problem -- only as a fact worth knowing before a run."""
+    """One posture NOTICE per list-typed field `list_typed_fields` swept from a
+    loaded config: abstaining (empty) or active (non-empty). Most of these are
+    preference gates in the #26/#63 sense (an unconfigured one passes every
+    lead through) -- but the sweep is generic over EVERY list-typed field, so
+    it also catches `Config.dossier_allow_hosts` (a security allowlist, empty
+    meaning "no exceptions granted") and the two noise-word normalization
+    lists, neither of which is a preference a lead is judged against. Calling
+    the row NOTICE rather than a stronger word is what keeps this harmless
+    even where the label overreaches: always NOTICE, never DEGRADED, so an
+    abstaining ANYTHING here (the shipped default, and legitimate -- the
+    672ad2a incident this whole invariant exists to prevent) never affects the
+    exit code or reads as a problem, only as a fact worth knowing before a
+    run."""
     subject = f"{owner}.{name}"
     if not value:
         return ComponentCheck("gates", subject, NOTICE, "abstaining (empty)")
