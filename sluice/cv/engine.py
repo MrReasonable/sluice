@@ -190,23 +190,36 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
             # renderer alike; only a renderer may guard what its own LAYOUT needs,
             # and `script` implements no `precheck` at all to reach.
             #
-            # Two independent checks, chained so the second only evaluates when the
-            # first found nothing wrong (a count mismatch already explains itself; an
-            # anchor complaint on TOP of it would just restate the same underlying
-            # defect in a second sentence). A count mismatch alone misses a same-count
-            # REORDERING (name emitted before contact, the opposite of what compose.py
-            # requests); an anchor mismatch alone misses "preamble + otherwise-correct
-            # name", where the preamble becomes the printed CONTACT block and the name
-            # line itself is never inspected. Measured on the real production path
-            # (#99): a preamble prefixed onto an otherwise flawless CV parsed with a
-            # LinkedIn-URL line as the candidate's NAME and the real name buried in
-            # CONTACT -- validate() alone reported zero violations.
+            # Three checks, chained so each only evaluates when the ones before it found
+            # nothing wrong (an earlier violation already explains itself; a later
+            # complaint on top of it would just restate the same underlying defect in a
+            # second sentence). A count mismatch alone misses a same-count REORDERING
+            # (name emitted before contact, the opposite of what compose.py requests);
+            # an anchor mismatch alone misses "preamble + otherwise-correct name", where
+            # the preamble becomes the printed CONTACT block and the name line itself is
+            # never inspected. Measured on the real production path (#99): a preamble
+            # prefixed onto an otherwise flawless CV parsed with a LinkedIn-URL line as
+            # the candidate's NAME and the real name buried in CONTACT -- validate()
+            # alone reported zero violations.
+            #
+            # Neither the count nor the anchor check alone catches a same-count
+            # SUBSTITUTION: a preamble sentence occupying exactly the contact slot,
+            # with the real name still correctly anchored as the last line. That
+            # passes both of the checks above while silently dropping the real contact
+            # information (CodeRabbit, PR #100 review, on this same #99 guard) -- so the
+            # third check compares header[:-1] against cvcfg.contact's own non-empty
+            # lines, not merely their count. It runs LAST, after the anchor check,
+            # because a same-count REORDERING (REVERSED_HEADER_CV) also fails this
+            # comparison and the anchor check's message ("not the name heading") is the
+            # more specific diagnosis for that shape; this check exists for the
+            # shape neither of the other two names.
             header_lines = cv_text.splitlines()
             profile_idx = next((i for i, ln in enumerate(header_lines)
                                 if ln.strip().upper() == "PROFILE"), None)
             if profile_idx is not None:
                 header = [ln.strip() for ln in header_lines[:profile_idx] if ln.strip()]
-                expected_n = len([ln for ln in cvcfg.contact.splitlines() if ln.strip()]) + 1
+                expected_contact = [ln.strip() for ln in cvcfg.contact.splitlines() if ln.strip()]
+                expected_n = len(expected_contact) + 1
                 if len(header) != expected_n:
                     violations = [f"STRUCTURAL: expected {expected_n} line(s) before "
                                   f"PROFILE (the configured contact block, then the "
@@ -219,6 +232,10 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
                                   f"{cvcfg.name.upper()!r} -- the parser takes the LAST "
                                   f"line before PROFILE as the candidate's "
                                   f"name"] + violations
+                elif header[:-1] != expected_contact:
+                    violations = ["STRUCTURAL: the lines before the name heading do not "
+                                  "match the configured contact block -- a preamble or "
+                                  "other text has replaced a real contact line"] + violations
             # Ask the RENDERER, inside the retry loop, in the same shape a gate violation
             # takes. cv/validate.py never checks the `template` renderer's meta-line
             # grammar (`MM/YYYY-MM/YYYY | LOCATION | Role`) -- only the citation gate does
