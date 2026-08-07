@@ -471,6 +471,18 @@ def cmd_cv_run(args, config) -> int:
     if not results and not args.all_shortlist:
         print(f"cv: no shortlist lead matching '{args.lead}'", file=sys.stderr)
         return 1
+    # #99: cv.name is one root-config value, not per-lead, so a run that reaches
+    # ANY skipped-config result reached ALL of them the same way -- checking
+    # presence is equivalent to checking every result, and simpler. Scoped to
+    # BOTH --lead and --all-shortlist (unlike the ambiguous branch below, which is
+    # genuinely per-lead): nothing composed at all here, for a reason the user can
+    # fix in one place, so both call shapes exit non-zero with the same actionable
+    # line rather than a batch silently reporting zero rendered CVs.
+    if any(r.status == "skipped-config" for r in results):
+        print("cv: cv.name is still the shipped placeholder 'Your Name' -- set "
+              "it in the cv: block of sluice.yaml before composing (it becomes "
+              "the PDF's headline)", file=sys.stderr)
+        return 1
     # A named --lead that resolved to two notes composed for NEITHER, so it exits non-zero
     # for the same reason the no-match branch above does: the user asked for a CV and did
     # not get one. Falling through to the per-result loop would print a `skipped-ambiguous`

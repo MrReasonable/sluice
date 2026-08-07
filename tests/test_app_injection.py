@@ -304,8 +304,16 @@ def test_compose_cv_include_stale_reaches_the_engine(tmp_path, monkeypatch):
     # gate would have prevented -- so tripping the suite's DNS guard is the proof that
     # --include-stale was threaded. DnsUsedInTests subclasses BaseException exactly so
     # it cannot be swallowed by an `except Exception` on the way out.
+    #
+    # #99: off the shipped default, or the new pre-spend config refusal (which sits
+    # AFTER the staleness gate this test bypasses via include_stale) would return
+    # skipped-config before the dossier fetch this test exists to prove is reached
+    # -- an unrelated config concern this test should not be blocked by.
+    from sluice.cv.config import CvConfig
     from tests.conftest import DnsUsedInTests
     monkeypatch.setenv("SLUICE_CONFIG", "")
+    monkeypatch.setattr("sluice.cv.config.load_cv_config",
+                        lambda: CvConfig(name="Jane Roe"))
     s = Sluice(Config(lead_ttl_days=30), store=_StaleNoteStore(),
                backend=_Recorder(), renderer=object(), today=lambda: "2026-07-27")
     with pytest.raises(DnsUsedInTests):

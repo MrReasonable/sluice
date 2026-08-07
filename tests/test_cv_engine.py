@@ -119,6 +119,13 @@ def _cfg():
     # so the single ENTRIES company must still code to "EF1" (the 2-letter
     # fallback for "Example Foundry" would yield "EX1").
     c.prefix_map = {"Example Foundry": "EF"}
+    # #99: name must match CLEAN_CV's own "JANE ROE" heading and be off the shipped
+    # placeholder default -- both the new pre-spend config refusal and the new
+    # header-anchor STRUCTURAL guard read cvcfg.name, so every test in this file
+    # that expects to reach compose (which is most of them) needs a real value here,
+    # the same way it already needs output_dir/served_dir off their cwd-relative
+    # defaults.
+    c.name = "Jane Roe"
     return c
 
 # Synthetic throughout; only the descending start years are load-bearing.
@@ -214,6 +221,101 @@ def test_a_parse_failure_that_survives_the_retry_skips_the_lead():
 # to stop.
 PUBLICATIONS_CV = CLEAN_CV.replace(
     "CERTIFICATES", "PUBLICATIONS\n- A paper on delivery [EF1]\n\nCERTIFICATES")
+
+
+# ── #99: a composer preamble desyncs cv/parse.py's header-line assignment ──────
+# `parse.py:381-389` takes whatever non-blank lines precede PROFILE, calls the LAST
+# one the name and everything before it the contact block -- zero shape check on
+# either. All three fixtures below insert extra text ahead of "JANE ROE" (the one
+# line CLEAN_CV already has there), reproducing the two variants captured on the
+# real production path (#99): a composer routinely opens with a one-sentence
+# acknowledgement before the CV proper.
+#
+# PREAMBLE_BEFORE_NAME_CV keeps the name line intact and correct -- only an EXTRA
+# line appears before PROFILE. Isolates the count guard: the anchor guard would
+# NOT fire here on its own (the last line before PROFILE still IS "JANE ROE"),
+# which is what makes this fixture prove the count guard is independently
+# load-bearing rather than redundant with the anchor check.
+PREAMBLE_BEFORE_NAME_CV = CLEAN_CV.replace(
+    "JANE ROE",
+    "I'll compose a tailored CV for Jane Roe applying for Analyst at Example "
+    "Foundry, drawing only from the verified source bundle.\n\nJANE ROE",
+    1)
+
+# PREAMBLE_WITH_CONTACT_BLOCK_CV is the fuller, realistic Variant B captured live:
+# preamble, THEN the name, THEN a multi-line contact block the model volunteered
+# from the bundle even though cvcfg.contact is unset. The real name ends up
+# buried mid-block and the LAST line before PROFILE -- what parse.py takes as the
+# name -- is a contact line. Both the count guard (5 lines where 1 was expected)
+# and the anchor guard (the last line isn't the name) fire on this fixture; it is
+# not meant to isolate either in isolation, only to prove the fix catches the
+# realistic end-to-end shape, "two defects stacked" as it was actually observed.
+PREAMBLE_WITH_CONTACT_BLOCK_CV = CLEAN_CV.replace(
+    "JANE ROE",
+    "I'll tailor Jane Roe's CV for the Analyst role at Example Foundry, "
+    "emphasizing relevant delivery experience.\n\nJANE ROE\n\n"
+    "Phone number: +1 555 0100\n"
+    "Email address: jane.roe@example.invalid\n"
+    "Web: https://www.linkedin.com/in/example/",
+    1)
+
+# REVERSED_HEADER_CV isolates the anchor guard from the count guard: the LINE COUNT
+# is exactly what a configured one-line `cv.contact` would produce, but the model
+# emitted name-then-contact instead of the contact-then-name order compose.py's
+# _RULES specify (`{contact}\n\n{name_heading}`) -- parse.py:381-389's own accepted
+# trade-off, now closed once cvcfg carries ground truth to compare against. The
+# count guard must NOT fire on this fixture (that is what proves the anchor guard
+# is independently load-bearing, not merely a second copy of the count check).
+REVERSED_HEADER_CV = CLEAN_CV.replace(
+    "JANE ROE", "JANE ROE\n\nPhone: +1 555 0100", 1)
+
+
+def test_the_preamble_fixtures_are_gate_clean_and_misparse():
+    """A PREMISE of every #99 test below: they claim the ENGINE catches something
+    validate() and parse_cv() both silently accept. If any fixture ever stops being
+    gate-clean, or parse_cv ever starts raising on it, those tests would pass for a
+    reason that has nothing to do with the new guards -- the same trap
+    test_the_unparseable_fixture_still_passes_the_gate closes for its own fixture.
+
+    Also pins the actual misassignment computationally (not merely "does not raise"),
+    since that misassignment -- not a parse failure -- is the entire defect #99 is
+    about. Mirrors the redacted evidence posted to the real issue: the LinkedIn line
+    becomes the parsed name; the preamble becomes part of the parsed contact.
+    """
+    from sluice.cv.parse import parse_cv
+    from sluice.cv.slop import check_text
+
+    bundle_text = render_bundle(build_bundle(
+        entries=ENTRIES, baseline="BASELINE", negatives=[],
+        jd_keywords=[], prefix_map={"Example Foundry": "EF"}))
+
+    # The marker is a substring UNIQUE to what each `.replace()` actually inserted --
+    # "JANE ROE" alone would not do (CLEAN_CV already contains it before any replace
+    # runs, so that check would stay green even if a fixture silently reverted to
+    # CLEAN_CV verbatim, which is exactly the no-op trap this assertion exists to
+    # catch: PREAMBLE_BEFORE_NAME_CV == CLEAN_CV passed every OTHER assertion here).
+    for fixture, marker, why in [
+        (PREAMBLE_BEFORE_NAME_CV, "I'll compose a tailored CV",
+         "an extra line before an otherwise-correct name"),
+        (PREAMBLE_WITH_CONTACT_BLOCK_CV, "linkedin.com/in/example",
+         "a preamble ahead of a full contact block"),
+        (REVERSED_HEADER_CV, "Phone: +1 555 0100",
+         "name-then-contact instead of contact-then-name"),
+    ]:
+        assert marker in fixture, f"the replace no-opped ({why})"
+        assert validate(fixture, bundle_text) == [], (
+            f"fixture no longer gate-clean ({why}) -- the #99 tests below would "
+            f"pass for the wrong reason")
+        assert check_text(fixture)[0] == [], f"fixture no longer slop-clean ({why})"
+
+    assert parse_cv(PREAMBLE_BEFORE_NAME_CV).name == "JANE ROE", (
+        "premise changed: the anchor line is no longer intact in this fixture")
+    assert parse_cv(PREAMBLE_WITH_CONTACT_BLOCK_CV).name == (
+        "Web: https://www.linkedin.com/in/example/"), (
+        "premise changed: the real corruption this fixture reproduces no longer "
+        "misparses the same way")
+    assert parse_cv(REVERSED_HEADER_CV).name == "Phone: +1 555 0100", (
+        "premise changed: the reversed order no longer misparses the same way")
 
 
 def test_the_publications_fixture_passes_the_gate():
@@ -496,7 +598,11 @@ def test_drifted_work_header_fails_closed():
     r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
                 v, _cfg(), FakeBackend(drifted), FakeCache(), renderer=rend)
     assert r.status == "skipped-gate"
-    assert any("STRUCTURAL" in x for x in r.violations)
+    # Exact message, not merely "STRUCTURAL" -- #99 added two more STRUCTURAL
+    # producers to this same engine, so a loose substring match would stay green if
+    # this guard broke and one of the newer ones happened to also fire.
+    assert ("STRUCTURAL: composed CV lacks the exact 'WORK EXPERIENCE' header, so "
+            "the citation gate did not run") in r.violations
     assert v.written == {}
     assert rend.rendered == [], "a CV was RENDERED despite an open fabrication gate"
 
@@ -513,6 +619,97 @@ def test_missing_profile_header_is_structural():
     assert ("STRUCTURAL: composed CV lacks the exact 'PROFILE' header, so the "
             "profile fabrication check did not run") in r.violations
     assert rend.rendered == [], "a CV with no PROFILE header was RENDERED"
+
+def test_a_preamble_before_the_name_fails_closed():
+    # Uses a plain FakeRenderer (no precheck) deliberately: this is the whole reason
+    # the #99 guard lives in the ENGINE and not in cv/parse.py -- it must bind a
+    # renderer that declares no grammar of its own (the `script` renderer's shape),
+    # not only the `template` renderer whose precheck already reaches parse_cv.
+    v = FakeVault(ENTRIES)
+    rend = FakeRenderer()
+    assert not hasattr(rend, "precheck"), "this fixture must NOT declare the optional hook"
+    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
+                v, _cfg(), FakeBackend(PREAMBLE_BEFORE_NAME_CV), FakeCache(), renderer=rend)
+    assert r.status == "skipped-gate"
+    assert any("STRUCTURAL" in x and "before PROFILE" in x for x in r.violations), r.violations
+    assert v.written == {}
+    assert rend.rendered == [], "a CV was RENDERED despite an open fabrication gate"
+
+
+def test_a_preamble_with_a_real_contact_block_fails_closed():
+    v = FakeVault(ENTRIES)
+    rend = FakeRenderer()
+    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
+                v, _cfg(), FakeBackend(PREAMBLE_WITH_CONTACT_BLOCK_CV), FakeCache(),
+                renderer=rend)
+    assert r.status == "skipped-gate"
+    assert any("STRUCTURAL" in x and "before PROFILE" in x for x in r.violations), r.violations
+    assert v.written == {}
+    assert rend.rendered == [], "a CV was RENDERED despite an open fabrication gate"
+
+
+def test_a_reversed_header_block_fails_closed():
+    # Isolates the ANCHOR guard from the count guard: cfg.contact is set to exactly
+    # the one line REVERSED_HEADER_CV supplies, so the line COUNT is correct and only
+    # the ORDER is wrong. If the count guard alone were doing the work, this fixture
+    # -- which the count guard cannot see anything wrong with -- would sail through.
+    cfg = _cfg()
+    cfg.contact = "Phone: +1 555 0100"
+    v = FakeVault(ENTRIES)
+    rend = FakeRenderer()
+    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
+                v, cfg, FakeBackend(REVERSED_HEADER_CV), FakeCache(), renderer=rend)
+    assert r.status == "skipped-gate"
+    assert any("STRUCTURAL" in x and "not the name heading" in x for x in r.violations), (
+        r.violations)
+    assert rend.rendered == [], "a CV was RENDERED despite an open fabrication gate"
+
+
+def test_a_preamble_reaches_the_retry_not_the_bin(monkeypatch):
+    # Same posture as test_a_parse_failure_feeds_the_retry_not_the_bin: a composer
+    # mistake must be fed back to the model for ONE retry, never binned outright.
+    _served(monkeypatch)
+
+    class TwoShotBackend:
+        def __init__(self):
+            self.last_backend = "primary"; self.prompts = []
+        def complete(self, prompt):
+            if not ("SOURCE BUNDLE" in prompt and "auditing" not in prompt):
+                return "supported\tx\tSF1"
+            self.prompts.append(prompt)
+            return PREAMBLE_BEFORE_NAME_CV if len(self.prompts) == 1 else CLEAN_CV
+
+    be = TwoShotBackend()
+    v = FakeVault(ENTRIES)
+    rend = FakeRenderer()
+    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
+                v, _cfg(), be, FakeCache(), renderer=rend)
+    assert r.status == "rendered", "a preamble binned the lead instead of retrying it"
+    assert len(be.prompts) == 2, "the STRUCTURAL violation did not reach the existing retry"
+    assert "STRUCTURAL" in be.prompts[1], "the violation never reached the retry prompt"
+    assert rend.rendered == [CLEAN_CV], "the renderer got the preamble-corrupted CV"
+
+
+def test_the_shipped_default_name_is_refused_before_any_spend():
+    # #99 3b: the "YOUR NAME" headline needs NO preamble at all to occur -- a CV
+    # composed under the unconfigured default is complying exactly with what the
+    # prompt requested, so no STRUCTURAL guard can distinguish it from a genuine
+    # name. Refuse before any spend, mirroring the #9 staleness guard immediately
+    # above it in cv/engine.py. The zero-calls assertion is the load-bearing one:
+    # "refuses" alone would also be satisfied by a refusal AFTER an LLM call.
+    from sluice.cv.config import CvConfig
+    cfg = _cfg()
+    cfg.name = CvConfig().name  # explicitly revert this file's override back to default
+    v = FakeVault(ENTRIES)
+    rend = FakeRenderer()
+    be = FakeBackend(CLEAN_CV)
+    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
+                v, cfg, be, FakeCache(), renderer=rend)
+    assert r.status == "skipped-config"
+    assert be.calls == 0, "the shipped default was refused AFTER an LLM call, not before"
+    assert v.written == {}
+    assert rend.rendered == []
+
 
 def test_happy_path_renders_and_records(monkeypatch):
     import sluice.cv.render as _render_mod

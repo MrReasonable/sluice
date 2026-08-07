@@ -348,6 +348,30 @@ deterministic gate cannot, and an `unsupported` flag WITHHOLDS the send-ready `t
 `Store.sign_off`/`hold_for_signoff`, cleared by `sluice cv signoff`) rather than blocking rendering —
 it never touches the pure hard gate.
 
+**The gate is blind to the name/contact block, and that block renders as the PDF's headline (#99).**
+`cv/validate.py` never inspects anything before `PROFILE`; `cv/parse.py`'s grammar takes the LAST
+non-blank line before `PROFILE` as the name and everything before it as contact, with zero shape check
+on either. Measured on the real production path: a composer's routine one-sentence preamble ahead of
+the CV proper desyncs that assignment silently -- a LinkedIn-URL contact line became the parsed name,
+the real name landed in contact, `validate()` reported zero violations, and the CV would have rendered.
+`cv/engine.py`'s retry loop closes this with two inline STRUCTURAL guards, in the same shape as the
+`WORK EXPERIENCE`/`PROFILE` header checks beside them: the header block's LINE COUNT must match
+`cvcfg.contact`'s lines plus one (the name), and its LAST line must case-fold-match `cvcfg.name`. Both
+compare against `cvcfg` -- ground truth `cv/parse.py` never has, since it is pure and takes only
+`text` -- and BOTH live in the engine rather than reaching them through `cv.parse` or a renderer's
+`precheck`, for the same reason as each other: `precheck` only reaches the `template` renderer (`script`
+implements none at all, `test_a_renderer_without_precheck_is_not_gated_by_another_renderers_grammar`),
+while these guards must bind every renderer alike, because the shape they enforce is what `compose.py`'s
+own prompt REQUESTED, not what any one renderer's LAYOUT needs. **The engine may guard what the prompt
+required; only a renderer may guard what its own layout needs.** A composed CV that leaves `cv.name` at
+the shipped placeholder `"Your Name"` needs no preamble at all to fail the same way -- it is the model
+complying exactly with what was configured, and no STRUCTURAL check can distinguish a placeholder from
+a real name that happens to read `"Your Name"`. `cv/engine.py` therefore also refuses to compose at all
+while `cv.name` is still that default, before any dossier fetch or LLM spend (`skipped-config`),
+mirroring the `#9` staleness guard beside it -- the same "quiet wrong default" posture
+`cv/config.py`'s `load_cv_config` already takes for other fields, applied here to the single most
+visible line of an artefact sent under the user's identity.
+
 **A renderer's `precheck` must never be STRICTER than that gate** -- with two narrowly-scoped,
 individually-justified exceptions, both stated below with the test that licenses them ("the refusal
 must be answerable WITHOUT inventing content"); read to the end of this section before concluding a
@@ -378,6 +402,15 @@ Known un-swept axis, measured: a FOUR-field meta line
 refused. That one is left refusing on purpose — four fields is genuinely malformed and the message
 names the expected shape, so the retry can act on it — but it is a gap in the sweep, not a case the
 sweep passed.
+
+The name/contact misassignment (#99, above) is a THIRD gate-clean, un-swept case, and it is
+deliberately NOT a third exception to the implication: `parse_cv` still does not raise on it, on
+purpose, because the parser has no ground truth to refuse against and tightening it would only
+protect the `template` renderer for zero added coverage on the path that actually ships. Protection
+lives at `cv/engine.py` instead, comparing the same header block against `cvcfg`.
+`test_a_preamble_line_is_gate_clean_and_parsed_without_refusal_on_purpose`
+(`tests/test_cv_parse.py`) pins this as intentional, the same way the two exceptions below are
+pinned — read it before "fixing" this by widening the parser after all.
 
 A REPEATED trailing header (`CERTIFICATES` … `EDUCATION` … `CERTIFICATES` again) is the second
 deliberate refusal of gate-clean input, and it was added rather than inherited: measured, it was
