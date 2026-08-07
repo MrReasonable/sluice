@@ -183,11 +183,18 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
                 # here, and a quiet wrong result is the bug class this codebase removes.
                 # `tuple` is accepted as well as `list` -- both are the intended shape,
                 # and the harmful cases are `str`/`bytes`, which the check excludes.
-                if not isinstance(reported, (list, tuple)):
+                #
+                # The CONTAINER check alone let a non-str ELEMENT through -- `[None]`
+                # passes `isinstance(reported, (list, tuple))` and then extends straight
+                # into `violations`, so a broken renderer that returns e.g. `[None]`
+                # feeds `None` into the retry prompt build below rather than being
+                # refused here where the cause is still traceable to the renderer.
+                if (not isinstance(reported, (list, tuple))
+                        or not all(isinstance(item, str) for item in reported)):
                     raise TypeError(
                         f"renderer {type(renderer).__name__}.precheck returned "
-                        f"{type(reported).__name__}, not list[str] -- see the Renderer "
-                        f"seam's contract in sluice/core/protocols.py")
+                        f"{type(reported).__name__}, not a list/tuple of str -- see the "
+                        f"Renderer seam's contract in sluice/core/protocols.py")
                 violations = violations + list(reported)
             slop_err, _warns = _slop(cv_text)
             gate_msgs = violations + [f"SLOP {lbl}: {snip}" for _ln, lbl, snip in slop_err]
