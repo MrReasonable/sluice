@@ -831,6 +831,18 @@ Four points in the config are the seams for pluggable adapters.
   keeps the clean, digest-less name (zero migration); only the collider is
   suffixed. This is a vault filename concern, not a Store property — a store
   with real keys distinguishes those rows without it.
+  This seam has a second, OPTIONAL member too: `preflight() -> dict`, the same
+  shape as the renderer seam's `precheck` below (undeclared on the `Protocol`
+  for the identical reason -- an optional member must stay optional to
+  declare). `sluice doctor` reaches it via `getattr(store, "preflight", None)`;
+  an implementation that omits it reports nothing for that component rather
+  than being treated as broken. `Vault.preflight` returns FACTS only (does the
+  vault directory exist, is the baseline CV readable, is a Judging Profile
+  present, how many Experience Library entries are verified) -- never
+  verdicts, which stay in `core/doctor.py` alongside the backend classification
+  rules. It is read-only by contract: stats paths and reuses this store's own
+  read methods, never opens anything that does not already exist, so it
+  cannot disarm the #81 relocation notice above.
 - **renderer**: `sluice/renderers/`, selected by `cv.renderer:` (default
   `template`). Implementations: `template` (fills a user's own Jinja2 template --
   or the packaged default at `sluice/templates/cv_plain.html.j2` when
