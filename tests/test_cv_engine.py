@@ -256,7 +256,7 @@ PREAMBLE_WITH_CONTACT_BLOCK_CV = CLEAN_CV.replace(
     "emphasizing relevant delivery experience.\n\nJANE ROE\n\n"
     "Phone number: +1 555 0100\n"
     "Email address: jane.roe@example.invalid\n"
-    "Web: https://www.linkedin.com/in/example/",
+    "Web: https://www.example.invalid/in/example",
     1)
 
 # REVERSED_HEADER_CV isolates the anchor guard from the count guard: the LINE COUNT
@@ -297,7 +297,7 @@ def test_the_preamble_fixtures_are_gate_clean_and_misparse():
     for fixture, marker, why in [
         (PREAMBLE_BEFORE_NAME_CV, "I'll compose a tailored CV",
          "an extra line before an otherwise-correct name"),
-        (PREAMBLE_WITH_CONTACT_BLOCK_CV, "linkedin.com/in/example",
+        (PREAMBLE_WITH_CONTACT_BLOCK_CV, "example.invalid/in/example",
          "a preamble ahead of a full contact block"),
         (REVERSED_HEADER_CV, "Phone: +1 555 0100",
          "name-then-contact instead of contact-then-name"),
@@ -311,7 +311,7 @@ def test_the_preamble_fixtures_are_gate_clean_and_misparse():
     assert parse_cv(PREAMBLE_BEFORE_NAME_CV).name == "JANE ROE", (
         "premise changed: the anchor line is no longer intact in this fixture")
     assert parse_cv(PREAMBLE_WITH_CONTACT_BLOCK_CV).name == (
-        "Web: https://www.linkedin.com/in/example/"), (
+        "Web: https://www.example.invalid/in/example"), (
         "premise changed: the real corruption this fixture reproduces no longer "
         "misparses the same way")
     assert parse_cv(REVERSED_HEADER_CV).name == "Phone: +1 555 0100", (
