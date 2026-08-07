@@ -354,12 +354,18 @@ non-blank line before `PROFILE` as the name and everything before it as contact,
 on either. Measured on the real production path: a composer's routine one-sentence preamble ahead of
 the CV proper desyncs that assignment silently -- a LinkedIn-URL contact line became the parsed name,
 the real name landed in contact, `validate()` reported zero violations, and the CV would have rendered.
-`cv/engine.py`'s retry loop closes this with two inline STRUCTURAL guards, in the same shape as the
+`cv/engine.py`'s retry loop closes this with three inline STRUCTURAL guards, in the same shape as the
 `WORK EXPERIENCE`/`PROFILE` header checks beside them: the header block's LINE COUNT must match
-`cvcfg.contact`'s lines plus one (the name), and its LAST line must case-fold-match `cvcfg.name`. Both
-compare against `cvcfg` -- ground truth `cv/parse.py` never has, since it is pure and takes only
-`text` -- and BOTH live in the engine rather than reaching them through `cv.parse` or a renderer's
-`precheck`, for the same reason as each other: `precheck` only reaches the `template` renderer (`script`
+`cvcfg.contact`'s lines plus one (the name), its LAST line must case-fold-match `cvcfg.name`, and the
+lines BEFORE that last one must equal `cvcfg.contact`'s own non-empty lines verbatim. The third guard
+was added on CodeRabbit's review of the first two (PR #100): a same-count preamble occupying exactly
+the contact slot, with the name still correctly anchored, passed both of the first two checks while
+silently dropping the real contact information. It runs LAST, after the name-anchor check, because a
+same-count REORDERING also fails the content comparison and the anchor check's message is the more
+specific diagnosis for that shape. All three compare against `cvcfg` -- ground truth `cv/parse.py`
+never has, since it is pure and takes only `text` -- and all three live in the engine rather than
+reaching them through `cv.parse` or a renderer's `precheck`, for the same reason as each other:
+`precheck` only reaches the `template` renderer (`script`
 implements none at all, `test_a_renderer_without_precheck_is_not_gated_by_another_renderers_grammar`),
 while these guards must bind every renderer alike, because the shape they enforce is what `compose.py`'s
 own prompt REQUESTED, not what any one renderer's LAYOUT needs. **The engine may guard what the prompt
