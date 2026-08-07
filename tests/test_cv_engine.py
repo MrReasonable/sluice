@@ -269,6 +269,21 @@ PREAMBLE_WITH_CONTACT_BLOCK_CV = CLEAN_CV.replace(
 REVERSED_HEADER_CV = CLEAN_CV.replace(
     "JANE ROE", "JANE ROE\n\nPhone: +1 555 0100", 1)
 
+# PREAMBLE_REPLACING_CONTACT_CV isolates the CONTENT guard (added on CodeRabbit review
+# of #100's fix) from both the count guard and the anchor guard: with a one-line
+# `cv.contact` configured, a preamble sentence occupies the contact slot exactly -- the
+# header is the expected two lines and the last one still IS the configured name, so
+# neither the count check nor the anchor check fires. Only comparing header[:-1]
+# against cvcfg.contact's own lines catches that the "contact" line is prose, not the
+# real contact information, which is gone. Unlike the two fixtures above, this one does
+# NOT corrupt the parsed NAME -- parse_cv's last-line rule still lands on "JANE ROE" --
+# which is exactly why the anchor check alone cannot see anything wrong with it.
+PREAMBLE_REPLACING_CONTACT_CV = CLEAN_CV.replace(
+    "JANE ROE",
+    "Here is the tailored CV for the Analyst role, prepared from the verified "
+    "source bundle only.\n\nJANE ROE",
+    1)
+
 
 def test_the_preamble_fixtures_are_gate_clean_and_misparse():
     """A PREMISE of every #99 test below: they claim the ENGINE catches something
@@ -301,6 +316,8 @@ def test_the_preamble_fixtures_are_gate_clean_and_misparse():
          "a preamble ahead of a full contact block"),
         (REVERSED_HEADER_CV, "Phone: +1 555 0100",
          "name-then-contact instead of contact-then-name"),
+        (PREAMBLE_REPLACING_CONTACT_CV, "Here is the tailored CV",
+         "a preamble occupying the contact slot with the name still anchored"),
     ]:
         assert marker in fixture, f"the replace no-opped ({why})"
         assert validate(fixture, bundle_text) == [], (
@@ -316,6 +333,17 @@ def test_the_preamble_fixtures_are_gate_clean_and_misparse():
         "misparses the same way")
     assert parse_cv(REVERSED_HEADER_CV).name == "Phone: +1 555 0100", (
         "premise changed: the reversed order no longer misparses the same way")
+    # The opposite failure mode from the two fixtures above: name comes out RIGHT
+    # (parse_cv's last-line rule still lands on "JANE ROE"), and it is the CONTACT
+    # that silently becomes the preamble sentence -- which is exactly why the anchor
+    # check alone cannot see anything wrong with this fixture.
+    parsed = parse_cv(PREAMBLE_REPLACING_CONTACT_CV)
+    assert parsed.name == "JANE ROE", (
+        "premise changed: the name anchor is no longer intact in this fixture")
+    assert parsed.contact == (
+        "Here is the tailored CV for the Analyst role, prepared from the verified "
+        "source bundle only."), (
+        "premise changed: this fixture no longer misassigns contact the same way")
 
 
 def test_the_publications_fixture_passes_the_gate():
@@ -598,7 +626,7 @@ def test_drifted_work_header_fails_closed():
     r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
                 v, _cfg(), FakeBackend(drifted), FakeCache(), renderer=rend)
     assert r.status == "skipped-gate"
-    # Exact message, not merely "STRUCTURAL" -- #99 added two more STRUCTURAL
+    # Exact message, not merely "STRUCTURAL" -- #99 added three more STRUCTURAL
     # producers to this same engine, so a loose substring match would stay green if
     # this guard broke and one of the newer ones happened to also fire.
     assert ("STRUCTURAL: composed CV lacks the exact 'WORK EXPERIENCE' header, so "
@@ -662,6 +690,27 @@ def test_a_reversed_header_block_fails_closed():
     assert r.status == "skipped-gate"
     assert any("STRUCTURAL" in x and "not the name heading" in x for x in r.violations), (
         r.violations)
+    assert rend.rendered == [], "a CV was RENDERED despite an open fabrication gate"
+
+
+def test_a_preamble_replacing_the_contact_line_fails_closed():
+    # Isolates the CONTENT guard from both the count guard and the anchor guard: with
+    # `cv.contact` configured to one line, PREAMBLE_REPLACING_CONTACT_CV's header is
+    # exactly the expected two lines and the last one still IS the configured name --
+    # neither the count check nor the anchor check sees anything wrong with it. Only
+    # comparing the actual line against cvcfg.contact catches that a preamble sentence,
+    # not the real contact information, occupies that slot. (CodeRabbit, PR #100
+    # review: the original #99 guards checked the header's line COUNT and its final
+    # line but never the CONTENT of the lines in between.)
+    cfg = _cfg()
+    cfg.contact = "Phone: +1 555 0100"
+    v = FakeVault(ENTRIES)
+    rend = FakeRenderer()
+    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
+                v, cfg, FakeBackend(PREAMBLE_REPLACING_CONTACT_CV), FakeCache(), renderer=rend)
+    assert r.status == "skipped-gate"
+    assert any("STRUCTURAL" in x and "do not match" in x for x in r.violations), r.violations
+    assert v.written == {}
     assert rend.rendered == [], "a CV was RENDERED despite an open fabrication gate"
 
 
