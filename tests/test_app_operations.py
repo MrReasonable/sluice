@@ -236,7 +236,7 @@ def test_a_dry_run_survives_a_renderer_it_cannot_construct(tmp_path, monkeypatch
     """
     import logging
 
-    from sluice.renderers.script import RenderError
+    from sluice.core.protocols import RenderError
     from tests.test_cv_engine import FakeBackend, FakeCache, Note, UNPARSEABLE_CV
     monkeypatch.setenv("VAULT_DIR", str(tmp_path))
     monkeypatch.setenv("DOSSIER_DIR", str(tmp_path / "d"))
