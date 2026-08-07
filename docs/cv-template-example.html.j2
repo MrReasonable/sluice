@@ -78,7 +78,9 @@
 {% for role in document.work %}
 <div class="role">
   <div class="company">{{ role.company }}</div>
-  <div class="meta">{{ role.dates }} | {{ role.location }} | {{ role.title }}</div>
+  {# select() drops a blank LOCATION rather than leaving a dangling " |  | " -- see the
+     same fix and its reasoning in sluice/templates/cv_plain.html.j2. #}
+  <div class="meta">{{ [role.dates, role.location, role.title] | select | join(" | ") }}</div>
   <ul>{% for bullet in role.bullets %}<li>{{ bullet }}</li>{% endfor %}</ul>
 </div>
 {% endfor %}
