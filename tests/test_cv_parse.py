@@ -488,6 +488,42 @@ def test_a_four_field_meta_line_is_gate_clean_and_refused_on_purpose():
         parse_cv(text)
 
 
+def test_a_preamble_line_is_gate_clean_and_parsed_without_refusal_on_purpose():
+    """The mirror image of test_a_four_field_meta_line_is_gate_clean_and_refused_on_
+    purpose above: a THIRD un-swept, gate-clean shape (#99, a composer prepending a
+    one-sentence acknowledgement ahead of the name), left NOT refusing on purpose.
+
+    Every other row in this file's implication sweep either widens the parser (a
+    genuine formatting variant the gate tolerates) or documents a deliberate refusal
+    (the four-field line, the repeated trailing header). This is the third kind:
+    gate-clean, parseable without raising, and left that way -- because the fix for
+    #99 lives at cv/engine.py instead, comparing this same header block against
+    cvcfg.name/cvcfg.contact, ground truth this pure parser (it takes only `text`)
+    never has. Tightening THIS function would only bind the `template` renderer
+    (`script` implements no `precheck` to reach it through) and would mint a THIRD
+    exception to the `validate == [] ⇒ no raise` implication for zero added coverage
+    on the path that actually ships -- see cv/parse.py:381-402's own comment.
+
+    If someone later "fixes" this by making parse_cv raise here, this test reds and
+    names why that would be the wrong fix, not merely an incomplete one.
+    """
+    from tests.test_cv_engine import CLEAN_CV
+    preamble = ("I'll compose a tailored CV for Jane Roe applying for Staff "
+                "Engineer at Example Systems, drawing only from the verified "
+                "source bundle.\n\nJANE ROE")
+    text = CLEAN_CV.replace("JANE ROE", preamble, 1)
+    assert preamble in text, "the replace no-opped"
+    assert _gate_verdict(text) == [], (
+        "the preamble line is no longer gate-clean, so this no longer documents a "
+        "parser/gate disagreement and proves nothing about the parser")
+    doc = parse_cv(text)   # must NOT raise -- that is the behaviour being pinned
+    assert doc.name == "JANE ROE", (
+        "premise changed: the anchor line is no longer intact in this fixture")
+    assert "I'll compose a tailored CV" in doc.contact, (
+        "premise changed: the preamble is no longer what lands in the parsed "
+        "contact field")
+
+
 @pytest.mark.parametrize("marker", ["•", "*"])
 def test_parse_accepts_certificates_and_education_with_every_bullet_marker(marker):
     """cv/validate.py never citation-checks CERTIFICATES/EDUCATION at all (see

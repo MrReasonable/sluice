@@ -170,7 +170,12 @@ triage:
 #   # send-ready pointer until you `sluice cv signoff` the lead, rather than auto-serving.
 #   # Ships on (a safety valve, not a preference); set false to restore auto-serve.
 #   require_signoff: true
-#   name: Your Name
+#   # Required before composing works (#99): a CV composed while this is still the
+#   # shipped placeholder "Your Name" is refused before any spend, because this value
+#   # becomes the PDF's <h1> -- a composer complying with the prompt exactly as
+#   # configured would otherwise headline the document with the literal placeholder,
+#   # a wrong artefact no format guard can distinguish from a genuine name.
+#   name: <your full name>
 #   contact: |
 #     Phone number: +1 555 0100
 #     Email address: you@example.com

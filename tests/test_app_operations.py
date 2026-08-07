@@ -220,6 +220,12 @@ def _precheck_cvcfg(tmp_path):
     c.output_dir = str(tmp_path / "cvout")
     c.served_dir = str(tmp_path / "cvserved")
     c.prefix_map = {"Example Foundry": "EF"}
+    # #99: off the shipped default (else the new pre-spend config refusal fires
+    # before either test below ever reaches the precheck this helper exists to
+    # test), and matching UNPARSEABLE_CV's own "JANE ROE" heading so the new
+    # header-anchor STRUCTURAL guard does not ALSO fire and mask which check the
+    # test is actually about.
+    c.name = "Jane Roe"
     return c
 
 
