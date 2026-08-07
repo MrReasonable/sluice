@@ -66,6 +66,27 @@ def test_a_valueless_render_script_does_not_trip_the_migration_guard(tmp_path, m
         "a valueless key overwrote the code default instead of being skipped")
 
 
+def test_a_valueless_renderer_still_trips_the_migration_guard(tmp_path, monkeypatch):
+    """The MIRROR of the test above, on the OTHER operand of the same guard.
+
+    The guard originally read `"renderer" not in data` -- membership, not `.get(...) is
+    None`. `renderer:` with nothing after it (YAML null) makes that membership check
+    FALSE, since the key IS present, so a config with `render_script: mine.py` alongside
+    a blanked-out `renderer:` slipped past the guard entirely: `load_cv_config` returned
+    `renderer="template"` with the operator's `render_script` silently unused -- the
+    exact quiet renderer switch this guard exists to refuse, for a config shape at least
+    as plausible as a half-edited value being one this guard already treats as ordinary
+    (see the render_script-side test above). CodeRabbit's cloud review on PR #97 found
+    this; the local review rounds tested `render_script:` null but never the symmetric
+    `renderer:` null.
+    """
+    p = tmp_path / "sluice.yaml"
+    p.write_text("cv:\n  render_script: ./my_render.py\n  renderer:\n", encoding="utf-8")
+    monkeypatch.setenv("SLUICE_CONFIG", str(p))
+    with pytest.raises(ValueError, match="cv.renderer: script"):
+        load_cv_config(str(p))
+
+
 def test_selecting_the_retired_weasyprint_name_names_template():
     """A BARE registry removal cannot produce this message: `plugins.get`'s unknown-name
     error lists the VALID names and would never mention `template`, so "raises, naming

@@ -348,7 +348,10 @@ deterministic gate cannot, and an `unsupported` flag WITHHOLDS the send-ready `t
 `Store.sign_off`/`hold_for_signoff`, cleared by `sluice cv signoff`) rather than blocking rendering —
 it never touches the pure hard gate.
 
-**A renderer's `precheck` must never be STRICTER than that gate.** `cv/engine.py`'s retry loop also
+**A renderer's `precheck` must never be STRICTER than that gate** -- with two narrowly-scoped,
+individually-justified exceptions, both stated below with the test that licenses them ("the refusal
+must be answerable WITHOUT inventing content"); read to the end of this section before concluding a
+given refusal violates the rule. `cv/engine.py`'s retry loop also
 calls the Renderer seam's optional `precheck(cv_text) -> list[str]` (`core/protocols.py`) and folds
 its strings in with the gate's violations, so a renderer's own grammar reaches the model's one retry
 rather than arriving after the LLM spend. That makes it the one place a formatting rule can bin a
