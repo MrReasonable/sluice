@@ -6,8 +6,10 @@ from dataclasses import dataclass
 import pytest
 
 from sluice.core.doctor import (
-    DEAD, DEGRADED, OK, BackendCheck, BackendTarget, DoctorReport, RoleUse,
-    classify, enumerate_targets, format_roles,
+    DEAD, DEGRADED, NOTICE, OK, BackendCheck, BackendTarget, ComponentCheck,
+    DoctorReport, RoleUse, classify, classify_cv_identity, classify_gate,
+    classify_renderer, classify_store, classify_track_google, enumerate_targets,
+    format_roles, list_typed_fields,
 )
 
 
@@ -19,6 +21,48 @@ def _no_ambient_sluice_config(monkeypatch):
     # fail them. Same guard the config-test modules use (test_sluice_neutral_
     # defaults.py, test_triage_config.py, test_config.py).
     monkeypatch.delenv("SLUICE_CONFIG", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _harmless_components(monkeypatch):
+    """`Sluice.doctor` now also classifies the renderer, cv identity, the
+    store's on-disk artefacts and track's Google adapter (`ComponentCheck`,
+    core/doctor.py) -- and every test below PREDATES that, written when doctor
+    classified backends alone. On a bare, unconfigured `Sluice()` those four
+    are genuinely broken (no vault at `./vault`, no WeasyPrint native libs in
+    the test environment, `cv.name` still the shipped placeholder), which
+    would fail every `exit_code() == 0` assertion below for reasons that have
+    nothing to do with what each test is actually checking. Measured: without
+    this fixture, 5 pre-existing tests in this file go red the moment
+    Sluice.doctor grows components, none of them about a backend.
+
+    `Sluice.store`/`Sluice.renderer` are patched to return a bare sentinel --
+    `getattr(sentinel, "preflight", None)` is None (nothing to report, the
+    documented optional-seam shape) and a sentinel is not RenderError, so
+    construction "succeeds" trivially. `cv.config.load_cv_config` is patched
+    to a name/contact-filled CvConfig so cv-identity classifies OK rather than
+    DEAD on the placeholder.
+
+    Composes correctly with the file's existing "read `load_cv_config()`, then
+    `dataclasses.replace` a couple of fields, then monkeypatch it back"
+    pattern (`test_doctor_probe_does_not_inherit_the_compose_timeout` and
+    others): because fixtures apply before a test body runs, those tests'
+    OWN call to `load_cv_config()` already observes this fixture's healthy
+    default and carries `name`/`contact` through the `replace`. A test that
+    wants the REAL renderer/store/cv-identity behaviour (below, in the
+    component-check section) re-patches the same three targets locally --
+    monkeypatch applies a test body's own patch after fixture setup, so the
+    local one wins."""
+    import dataclasses
+
+    from sluice.core.app import Sluice
+    from sluice.cv.config import CvConfig
+
+    monkeypatch.setattr(Sluice, "store", lambda self: object())
+    monkeypatch.setattr(Sluice, "renderer", lambda self, cvcfg: object())
+    healthy_cv = dataclasses.replace(CvConfig(), name="Test Person",
+                                     contact="test@example.invalid")
+    monkeypatch.setattr("sluice.cv.config.load_cv_config", lambda *a, **k: healthy_cv)
 
 
 # ── fakes: minimal config objects with just the fields enumerate reads ────────
@@ -294,11 +338,16 @@ def test_doctor_offline_dead_when_plugin_unregistered(monkeypatch):
     assert rep.exit_code() == 1
 
 
-def test_doctor_never_builds_a_store_or_browser(monkeypatch):
-    # The offline guarantee: doctor touches only the backend seam.
+def test_doctor_never_builds_a_fetcher(monkeypatch):
+    # The offline guarantee, narrowed by ComponentCheck: doctor now legitimately
+    # resolves the store (to reach its optional preflight hook) and the renderer
+    # (construction IS the probe -- see classify_renderer), but a live Camofox
+    # browser is still never touched. This test used to also pin "never builds a
+    # store"; that half is now `test_doctor_store_preflight_writes_nothing` and
+    # `test_a_store_without_preflight_reports_nothing_rather_than_raising` below,
+    # which assert what doctor's store use actually does rather than that it
+    # doesn't happen at all.
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
-    monkeypatch.setattr(Sluice, "store",
-                        lambda self: pytest.fail("doctor resolved a store"))
     monkeypatch.setattr(Sluice, "fetcher",
                         lambda self: pytest.fail("doctor resolved a fetcher"))
     Sluice().doctor(probe=_ok_probe)            # must not fail
@@ -563,4 +612,219 @@ def test_offline_doctor_also_reports_an_option_like_host_dead(monkeypatch):
     assert bad, "the option-like host produced no check at all"
     assert bad[0].state == DEAD, f"offline blessed it: {bad[0].state} / {bad[0].detail}"
     assert "argument injection" in bad[0].detail
-    assert report.exit_code() == 1
+
+
+# ── component checks: pure classification ──────────────────────────────────
+def test_classify_renderer_ok():
+    c = classify_renderer(None)
+    assert c.state == OK
+    assert c.blocks == ()
+
+
+def test_classify_renderer_dead_blocks_cv_and_names_the_fix():
+    c = classify_renderer("weasyprint could not be imported")
+    assert c.state == DEAD
+    assert c.blocks == ("cv",)
+    assert "weasyprint could not be imported" in c.detail
+    # A DEAD renderer must say WHAT TO DO, not just that it is broken -- the
+    # LOCATION field lesson (CLAUDE.md) applies here too: a refusal with no
+    # actionable next step just relocates the confusion.
+    assert "render" in c.detail and "cairo" in c.detail
+
+
+def test_classify_cv_identity_placeholder_is_dead_blank_contact_is_degraded():
+    checks = classify_cv_identity("Your Name", "", placeholder="Your Name")
+    by_subject = {c.subject: c for c in checks}
+    assert by_subject["cv.name"].state == DEAD
+    assert by_subject["cv.name"].blocks == ("cv",)
+    assert by_subject["cv.contact"].state == DEGRADED
+
+
+def test_classify_cv_identity_configured_is_ok():
+    checks = classify_cv_identity("Real Name", "real@example.invalid",
+                                  placeholder="Your Name")
+    assert all(c.state == OK for c in checks)
+
+
+def test_classify_store_missing_vault_short_circuits_to_one_dead_row():
+    # Four DEAD rows for one cause (a vault that does not exist) would bury the
+    # actual problem -- classify_store must short-circuit rather than also
+    # report baseline/criteria/experience as independently broken.
+    checks = classify_store({"vault_exists": False})
+    assert len(checks) == 1
+    assert checks[0].state == DEAD
+    assert checks[0].blocks == ("cv", "triage", "apply")
+
+
+def test_classify_store_missing_baseline_is_dead_missing_profile_is_degraded():
+    checks = classify_store({
+        "vault_exists": True, "baseline_exists": False, "criteria_present": False,
+        "experience_total": 0, "experience_verified": 0,
+    })
+    by_subject = {c.subject: c for c in checks}
+    assert by_subject["baseline_rel"].state == DEAD
+    assert by_subject["Judging Profile"].state == DEGRADED
+    assert by_subject["Experience Library"].state == NOTICE
+
+
+def test_classify_store_healthy_facts_are_ok():
+    checks = classify_store({
+        "vault_exists": True, "baseline_exists": True, "criteria_present": True,
+        "experience_total": 10, "experience_verified": 8,
+    })
+    by_subject = {c.subject: c for c in checks}
+    assert by_subject["baseline_rel"].state == OK
+    assert by_subject["Judging Profile"].state == OK
+    assert "8" in by_subject["Experience Library"].detail
+    assert "10" in by_subject["Experience Library"].detail
+
+
+def test_classify_store_none_facts_reports_nothing():
+    # None means the store has no preflight() at all -- "cannot say" must not
+    # be reported the same as "said something is wrong".
+    assert classify_store(None) == []
+
+
+def test_classify_track_google_unavailable_is_degraded():
+    c = classify_track_google(available=False,
+                              import_error="no module named googleapiclient",
+                              token_present=False)
+    assert c.state == DEGRADED
+    assert "googleapiclient" in c.detail
+
+
+def test_classify_track_google_no_token_is_degraded():
+    c = classify_track_google(available=True, import_error=None, token_present=False)
+    assert c.state == DEGRADED
+    assert "token" in c.detail
+
+
+def test_classify_track_google_ready_is_ok():
+    c = classify_track_google(available=True, import_error=None, token_present=True)
+    assert c.state == OK
+
+
+def test_list_typed_fields_ignores_non_list_fields():
+    @dataclass
+    class _Sample:
+        titles: list = None
+        floor: int = 0
+
+    obj = _Sample(titles=["a", "b"], floor=3)
+    assert list_typed_fields(obj) == [("titles", ["a", "b"])]
+
+
+def test_classify_gate_empty_is_abstaining_notice_nonempty_is_active_notice():
+    abstaining = classify_gate("TriageConfig", "accept_titles", [])
+    active = classify_gate("TriageConfig", "accept_titles", ["a", "b"])
+    assert abstaining.state == NOTICE and "abstaining" in abstaining.detail
+    assert active.state == NOTICE and "2" in active.detail
+    assert abstaining.subject == active.subject == "TriageConfig.accept_titles"
+
+
+def test_an_abstaining_gate_never_affects_the_exit_code():
+    # The load-bearing exclusion: NOTICE must not contribute under --strict
+    # either, or a fresh install that has not opted into every optional gate
+    # would fail a cron job's --strict check on its own shipped defaults --
+    # the 672ad2a class aimed at doctor's exit status instead of a lead.
+    notice = ComponentCheck("gates", "TriageConfig.accept_titles", NOTICE,
+                            "abstaining (empty)")
+    rep = DoctorReport(checks=[], components=[notice])
+    assert rep.exit_code() == 0
+    assert rep.exit_code(strict=True) == 0
+
+
+# ── component checks: through the full Sluice.doctor wiring ──────────────────
+def test_a_dead_renderer_fails_the_exit_code(monkeypatch):
+    from sluice.core.protocols import RenderError
+
+    def _raise(self, cvcfg):
+        raise RenderError("weasyprint could not be imported")
+
+    monkeypatch.setattr(Sluice, "renderer", _raise)   # overrides the autouse sentinel
+    rep = Sluice().doctor(offline=True)
+    renderer_checks = [c for c in rep.components if c.component == "renderer"]
+    assert renderer_checks and renderer_checks[0].state == DEAD
+    assert rep.exit_code() == 1
+
+
+def test_every_preference_gate_appears_in_the_posture_report():
+    # SCOPE assertion, not a violations assertion -- CLAUDE.md's own lesson: a
+    # sweep whose derivation enumerates nothing would make the membership
+    # check below pass vacuously. Derived from the same dataclasses
+    # Sluice.doctor loads, via the same list_typed_fields helper it calls, so
+    # a gate added to any of them cannot silently go unreported by BOTH sides
+    # agreeing to ignore it.
+    from sluice.apply.config import ApplyConfig
+    from sluice.core.config import Config
+    from sluice.cv.config import CvConfig
+    from sluice.track.config import TrackConfig
+    from sluice.triage.config import TriageConfig
+
+    expected = {
+        f"{type(cfg).__name__}.{name}"
+        for cfg in (Config(), TriageConfig(), CvConfig(), TrackConfig(), ApplyConfig())
+        for name, _ in list_typed_fields(cfg)
+    }
+    assert expected, "the derivation enumerated no list-typed gate at all"
+
+    rep = Sluice().doctor(offline=True)
+    reported = {c.subject for c in rep.components if c.component == "gates"}
+    assert reported == expected
+
+
+def test_doctor_store_preflight_writes_nothing(monkeypatch, tmp_path):
+    # The mutation-testable form of what test_doctor_never_builds_a_fetcher used
+    # to also claim about the store: doctor now legitimately resolves it, so
+    # "never touched" is no longer true -- "touches it and writes nothing" is
+    # the property that actually matters (see #81's relocation-notice hazard:
+    # even a read that CREATES a file disarms it for every later run).
+    from sluice.core.vault import Vault
+
+    vault = Vault(str(tmp_path))
+    monkeypatch.setattr(Sluice, "store", lambda self: vault)
+    before = sorted(str(p) for p in tmp_path.rglob("*"))
+    Sluice().doctor(probe=_ok_probe)
+    after = sorted(str(p) for p in tmp_path.rglob("*"))
+    assert before == after == [], (
+        f"store.preflight() created something: before={before} after={after}")
+
+
+def test_a_store_without_preflight_reports_nothing_rather_than_raising(monkeypatch):
+    # The getattr seam, same shape as cv/engine.py's optional Renderer.precheck:
+    # a store that does not implement preflight() is not a store that is
+    # broken, so it must contribute zero component rows, not a crash.
+    class _StoreWithoutPreflight:
+        pass
+
+    monkeypatch.setattr(Sluice, "store", lambda self: _StoreWithoutPreflight())
+    rep = Sluice().doctor(offline=True)   # must not raise
+    assert not [c for c in rep.components if c.component == "store"]
+
+
+def test_a_store_whose_preflight_raises_is_reported_dead_not_crashed(monkeypatch):
+    class _BrokenStore:
+        def preflight(self):
+            raise PermissionError("cannot stat vault_dir")
+
+    monkeypatch.setattr(Sluice, "store", lambda self: _BrokenStore())
+    rep = Sluice().doctor(offline=True)   # must not raise -- doctor diagnoses, never crashes
+    store_checks = [c for c in rep.components if c.component == "store"]
+    assert store_checks and store_checks[0].state == DEAD
+    assert "cannot stat vault_dir" in store_checks[0].detail
+    assert rep.exit_code() == 1
+
+
+def test_cli_doctor_prints_component_section(monkeypatch, capsys):
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    rc = main(["doctor", "--offline"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "gates" in out
+    assert "notice" in out
+    # The backend table's own summary line is untouched -- pinned verbatim by
+    # test_print_doctor_shows_elapsed_for_a_live_probe -- and a second summary
+    # line for components follows it, counting a fourth state the first line
+    # never has to.
+    assert " notice\n" in out

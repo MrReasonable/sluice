@@ -135,7 +135,34 @@ class LeadNote:
 
 class Store(Protocol):
     """The lead/experience store. See tests/conformance/test_store_contract.py -- an
-    implementation that does not pass that suite is not a Store, whatever it claims."""
+    implementation that does not pass that suite is not a Store, whatever it claims.
+
+    OPTIONAL MEMBER -- `preflight() -> dict`. Not declared below, for the identical
+    reason `Renderer.precheck` is not: a Protocol member is a REQUIRED member, and the
+    whole point of this hook is that a store may omit it. `sluice doctor` (core/app.py)
+    reaches it via `getattr(store, "preflight", None)` and reports nothing for that
+    component when it is absent, rather than treating an unimplemented hook as a
+    failure -- the same shape `cv/engine.py` already gives the renderer seam's optional
+    `precheck`.
+
+    A store implements `preflight` to answer "can a run actually use me right now?"
+    with facts doctor cannot get any other way -- for the vault: does the configured
+    directory exist, is the baseline CV readable, is a Judging Profile present, how
+    many Experience Library entries are verified. It returns FACTS, not verdicts:
+    classification is `core/doctor.py`'s job, kept pure there the same way backend
+    classification is kept separate from `Sluice.doctor`'s credential resolution.
+
+    MUST NOT create or open anything that does not already exist, and MUST NOT read a
+    store file that could disarm a later relocation notice -- see #81's warning at
+    `core/paths.py`: `sqlite3.connect` creates a 0-byte file merely by OPENING one, and
+    the relocation notice on a dedup store is keyed on the resolved path NOT existing,
+    so a "harmless" preflight probe would silently disable it for every later run this
+    process makes. `Vault.preflight` therefore only `stat`s paths and reads documents
+    through the store's own existing read methods (`read_baseline`, `read_criteria`,
+    `read_experience_entries`), never opens a store's OWN internal state file (a
+    SQLite-backed store's preflight must not connect to its database), and never walks
+    the full lead scan set -- doctor is a preflight users run often and cheaply, not a
+    second `leads` pass."""
 
     def read_leads(self, statuses: set | None = None) -> list:
         """Every stored lead as a LeadNote, filtered to `statuses` when given.

@@ -1,12 +1,14 @@
-"""sluice doctor: prove the configured backends are actually usable.
+"""sluice doctor: prove the pipeline is actually usable, not just configured.
 
 Pure, zero-I/O core. The impure half -- resolving creds, building a provider,
-running a one-token round-trip -- lives in `Sluice.doctor` (core/app.py); the
+running a one-token round-trip, constructing (but never writing through) the
+store and renderer seams -- lives in `Sluice.doctor` (core/app.py); the
 formatting and exit-code plumbing live in `cli.py`. This module owns only the
-rules: what backends are configured (enumeration), and given a set of resolved
-facts about one of them, is it ok / degraded / dead (classification).
+rules: what is configured (enumeration), and given a set of resolved facts
+about one piece of it, is it ok / degraded / dead / worth a notice
+(classification).
 
-The classification is ROLE-AWARE, and that is the whole point. The default
+Backend classification is ROLE-AWARE, and that is the whole point. The default
 install ships a keyless `deepseek` fallback, which `_make_fallback` already
 treats as a sanctioned degrade to primary-only -- so a keyless *fallback* is
 `degraded` (exit 0), while a keyless *primary* (a run cannot happen) is `dead`.
@@ -14,16 +16,28 @@ A backend whose credentials ARE present but whose round-trip fails is `dead`
 regardless of role: that is the silently-non-functional fallback this tool
 exists to catch -- the one you believe in and never test until the primary
 dies.
+
+Backends were the only thing doctor probed for a while, which let the renderer,
+the store artefacts and every preference gate stay invisible: `2 ok, 1
+degraded` was reported by a real install whose renderer could not construct
+(WeasyPrint's native libraries were not on the dynamic linker's path) and whose
+`cv.contact` was blank, so a composed CV would have rendered with no way to
+reach the candidate. Nothing above probed for either, because nothing did.
+`ComponentCheck` below is the second table this module now classifies, one row
+per non-backend piece a run depends on.
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 
 from sluice.core.backends import option_like
 
-# The three states, as bare strings so callers (cli formatter, exit_code) and
-# tests share one vocabulary without importing an enum.
+# Four states, as bare strings so callers (cli formatter, exit_code) and tests
+# share one vocabulary without importing an enum. NOTICE is not a severity --
+# see DoctorReport.exit_code for why it is excluded from the count rather than
+# folded in as the mildest DEGRADED.
 OK = "ok"
 DEGRADED = "degraded"
 DEAD = "dead"
+NOTICE = "notice"
 
 # The round-trip prompt. Tiny on purpose -- a per-token backend costs a token or
 # two to answer it, and the answer is discarded (only "did complete() raise?"
@@ -69,17 +83,50 @@ class BackendCheck:
     elapsed: float | None = None  # round-trip seconds, when one was run
 
 
+@dataclass(frozen=True)
+class ComponentCheck:
+    """One non-backend fact `sluice doctor` reports on: the renderer, the CV
+    identity fields, the store's on-disk artefacts, track's Google adapter, or
+    one preference gate's posture.
+
+    `component` groups rows in the printed report ("renderer", "cv-identity",
+    "store", "track", "gates"); `subject` names the specific thing
+    checked within that group ("cv.renderer", "cv.contact",
+    "TriageConfig.accept_titles", ...). `blocks` names the sub-apps this
+    specific failure stops -- the ComponentCheck analogue of BackendTarget.uses
+    -- so the printed detail can say what a DEAD/DEGRADED row actually costs
+    rather than leaving the reader to infer it."""
+    component: str
+    subject: str
+    state: str
+    detail: str
+    blocks: tuple = ()
+
+
 @dataclass
 class DoctorReport:
     checks: list  # list[BackendCheck]
+    components: list = field(default_factory=list)  # list[ComponentCheck]
 
     def exit_code(self, *, strict: bool = False) -> int:
-        """Non-zero iff a run-blocking backend is dead. `--strict` additionally
-        fails on any degraded backend (the cron mode that enforces a believed-in
-        fallback)."""
-        if any(c.state == DEAD for c in self.checks):
+        """Non-zero iff a run-blocking backend or component is dead. `--strict`
+        additionally fails on any degraded one (the cron mode that enforces a
+        believed-in fallback).
+
+        NOTICE never contributes, under `--strict` or otherwise -- that
+        exclusion is BY CONSTRUCTION (the states this loop tests for), not a
+        filter applied to a wider set, so it cannot be silently dropped by
+        deleting one `if`. This is the same posture #26/#63 already state for
+        an empty preference gate: abstaining is the shipped default and
+        legitimate, so a fresh, wholly unconfigured install must exit 0. If a
+        NOTICE affected the exit code, `--strict` in a cron job would fail on
+        every install that has not opted into every optional gate -- the
+        672ad2a class one level up, this time aimed at the tool's own exit
+        status rather than at a lead."""
+        states = [c.state for c in self.checks] + [c.state for c in self.components]
+        if DEAD in states:
             return 1
-        if strict and any(c.state == DEGRADED for c in self.checks):
+        if strict and DEGRADED in states:
             return 1
         return 0
 
@@ -183,3 +230,163 @@ def format_roles(uses: list) -> str:
         if subs:
             parts.append(f"{role}: {', '.join(subs)}")
     return "; ".join(parts)
+
+
+# ── component checks ──────────────────────────────────────────────────────────
+# Everything below classifies a piece of the pipeline other than a backend.
+# Each function is a pure `facts -> ComponentCheck(es)` mapping, mirroring
+# `classify` above; `Sluice.doctor` (core/app.py) gathers the facts.
+
+_MISSING_RENDER_LIBS = (
+    "the renderer could not be constructed -- see the message above for the exact "
+    "cause. If it names jinja2/weasyprint, `pip install 'sluice[render]'`; if the "
+    "install already has that extra, WeasyPrint additionally needs its native "
+    "libraries (cairo, pango, gdk-pixbuf), which are not a Python dependency (see "
+    "README.md's Rendering section for the platform-specific install + the "
+    "DYLD_FALLBACK_LIBRARY_PATH note on macOS)."
+)
+
+
+def classify_renderer(error: str | None) -> ComponentCheck:
+    """`error` is the RenderError message from constructing `cv.renderer`, or
+    None if construction succeeded. Construction is the whole probe -- no PDF
+    is written and no LLM is called, so this is cheap and runs under
+    `--offline` -- because `renderers/template.py:_make` already raises at
+    construction for anything knowable there (a missing extra, a missing
+    native library, an unreadable configured template), exactly so a run
+    fails before the dossier fetch and the LLM spend rather than after."""
+    if error is not None:
+        return ComponentCheck("renderer", "cv.renderer", DEAD,
+                               f"{error} ({_MISSING_RENDER_LIBS})", blocks=("cv",))
+    return ComponentCheck("renderer", "cv.renderer", OK, "constructs ok")
+
+
+def classify_cv_identity(name: str, contact: str, *, placeholder: str) -> list:
+    """The two header-block fields `cv/engine.py`'s STRUCTURAL guards (#99) and
+    `skipped-config` refusal already gate a real compose on. Doctor states the
+    same two facts BEFORE any spend rather than after: `cv.name` still at the
+    shipped placeholder is DEAD (mirrors `skipped-config` -- no STRUCTURAL
+    check can tell a placeholder from a genuine name that happens to match
+    it, so this is the earliest point the two can be told apart, and only
+    because doctor knows the shipped default). `cv.contact` blank is DEGRADED,
+    not dead: the packaged template renders it verbatim into the PDF, but a
+    user's OWN `cv.template` may hardcode contact details instead, so doctor
+    cannot assert this is universally wrong -- only that it usually is."""
+    out = []
+    if name.strip() == placeholder:
+        out.append(ComponentCheck(
+            "cv-identity", "cv.name", DEAD,
+            f"still the shipped placeholder {placeholder!r} -- a compose would "
+            f"refuse before any spend (skipped-config)", blocks=("cv",)))
+    else:
+        out.append(ComponentCheck("cv-identity", "cv.name", OK, "configured"))
+    if not contact.strip():
+        out.append(ComponentCheck(
+            "cv-identity", "cv.contact", DEGRADED,
+            "blank -- the packaged template renders this verbatim; a rendered CV "
+            "would carry no way to reach you unless your own cv.template supplies "
+            "contact details another way"))
+    else:
+        out.append(ComponentCheck("cv-identity", "cv.contact", OK, "configured"))
+    return out
+
+
+def classify_store(facts: dict | None) -> list:
+    """`facts` is the store's own `preflight()` result (see core/protocols.py),
+    or None when the configured store does not implement the optional method --
+    reported as nothing rather than an error, the same shape `cv/engine.py`
+    already gives the renderer seam's optional `precheck`. A store that cannot
+    say is not a store that is broken.
+
+    Missing vault or missing baseline CV are DEAD: `cv run` cannot compose
+    without a baseline, and every sub-app treats an unreadable vault the same
+    way. A missing Judging Profile is DEGRADED, not dead -- `core/criteria.py`
+    ships a documented neutral fallback that states only "nothing is
+    configured" and never invents an opinion, so triage still runs; it just
+    judges nothing preferentially until the profile exists. The experience
+    library count is a NOTICE: zero verified entries means every CV bullet
+    would fail the fabrication gate's citation check, which is worth knowing
+    before a compose, not a defect in the store."""
+    if facts is None:
+        return []
+    out = []
+    if not facts.get("vault_exists"):
+        return [ComponentCheck("store", "vault_dir", DEAD,
+                                "vault directory does not exist", blocks=("cv", "triage", "apply"))]
+    if not facts.get("baseline_exists"):
+        out.append(ComponentCheck(
+            "store", "baseline_rel", DEAD,
+            "baseline CV not found at the configured path -- cv run cannot "
+            "compose without it", blocks=("cv",)))
+    else:
+        out.append(ComponentCheck("store", "baseline_rel", OK, "found"))
+    if not facts.get("criteria_present"):
+        out.append(ComponentCheck(
+            "store", "Judging Profile", DEGRADED,
+            "not found -- triage falls back to the shipped neutral default "
+            "(no preferential judgement) until you write one"))
+    else:
+        out.append(ComponentCheck("store", "Judging Profile", OK, "found"))
+    verified = facts.get("experience_verified", 0)
+    total = facts.get("experience_total", 0)
+    out.append(ComponentCheck(
+        "store", "Experience Library", NOTICE,
+        f"{verified} verified / {total} total entries -- only verified entries "
+        f"are citable by the CV fabrication gate"))
+    return out
+
+
+def classify_track_google(*, available: bool, import_error: str | None,
+                           token_present: bool) -> ComponentCheck:
+    """`track run` reconciles Gmail + Calendar over `sluice/track/google_client.py`,
+    which lazy-imports the google client libraries so the rest of sluice stays
+    importable without them (`sluice/` is stdlib-only except for the three
+    named, deliberate exceptions -- see CLAUDE.md). DEGRADED only, never DEAD:
+    track is one optional sub-app among five, and a job hunt can run entirely
+    on the other four."""
+    if not available:
+        return ComponentCheck(
+            "track", "google client libs", DEGRADED,
+            f"not importable ({import_error}) -- track run cannot reconcile "
+            f"Gmail/Calendar; pip install 'sluice[google]'")
+    if not token_present:
+        return ComponentCheck(
+            "track", "google_token.json", DEGRADED,
+            "google libs are importable but no token file exists yet -- the "
+            "first `track run` will need an interactive OAuth consent")
+    return ComponentCheck("track", "google", OK, "libs importable, token present")
+
+
+def list_typed_fields(cfg) -> list:
+    """(name, value) for every field of `cfg`'s dataclass whose CURRENT value is
+    a list. Value-keyed via isinstance, not the annotation, for the same reason
+    `tests/test_sluice_neutral_defaults.py`'s identically-shaped
+    `_list_defaulting_fields` is: `list[str]` is a `types.GenericAlias`, not
+    `list`, so an annotation-keyed sweep silently misses the first
+    `list[str]` field written while looking live. That test enumerates DEFAULT
+    values to pin the neutral-defaults invariant (an unconfigured gate ships
+    empty); this one enumerates the LOADED config's current values, because
+    doctor's job is reporting this install's actual posture, not auditing the
+    shipped defaults.
+
+    Deliberately does not attempt an int-typed gate (`contract_floor_gbp_day`,
+    `perm_floor_gbp`, `lead_ttl_days`): those are legitimately non-empty in a
+    configured install and "0 == abstain" is not a universal reading a generic
+    sweep can apply (`lead_ttl_days`'s own bool-subclasses-int hazard is the
+    sharpest example) -- CLAUDE.md states this sweep must not be widened to
+    ints, and each of those already carries its own named guard elsewhere."""
+    return [(f.name, getattr(cfg, f.name)) for f in fields(cfg)
+            if isinstance(getattr(cfg, f.name), list)]
+
+
+def classify_gate(owner: str, name: str, value: list) -> ComponentCheck:
+    """One posture NOTICE per preference gate: abstaining (empty -- every lead
+    passes through) or active (non-empty -- this install has an opinion).
+    Always NOTICE, never DEGRADED: an abstaining gate is the shipped default
+    and legitimate (#26/#63, and the 672ad2a incident this whole invariant
+    exists to prevent), so it must never affect the exit code or read as a
+    problem -- only as a fact worth knowing before a run."""
+    subject = f"{owner}.{name}"
+    if not value:
+        return ComponentCheck("gates", subject, NOTICE, "abstaining (empty)")
+    return ComponentCheck("gates", subject, NOTICE, f"active: {len(value)} value(s)")
