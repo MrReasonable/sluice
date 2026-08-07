@@ -140,14 +140,22 @@ def load_cv_config(path: str | None = None) -> CvConfig:
     # default could silently change an operator's output, so refuse rather than guess --
     # inferring `renderer: script` from the presence of render_script would be an
     # implicit coupling between two keys, which is its own quiet wrong default.
-    # `.get(...) is not None`, NOT `in data`: `render_script:` with nothing after it
+    # `.get(...) is not None`, NOT `in data`, on BOTH sides -- and the two sides fail in
+    # OPPOSITE directions if only one is fixed. `render_script:` with nothing after it
     # parses as None, and a half-edited or commented-out value is an ordinary thing to
-    # leave in a config file. Membership alone raised on a file that sets NOTHING, which
-    # is the state this guard exists to wave through -- the setattr loop below skips None
-    # too, so a valueless key must load exactly like an absent one. Same reasoning, and
-    # the same spelling, as the `compose_timeout` validator below; the loader's contract
-    # is pinned by test_a_valueless_key_never_becomes_None.
-    if data.get("render_script") is not None and "renderer" not in data:
+    # leave in a config file; membership alone raised on a file that sets NOTHING, which
+    # is the state this guard exists to wave through. But `"renderer" not in data` has
+    # the MIRROR bug: `renderer:` (present, YAML null) makes the key membership check
+    # False, so a user who wrote `render_script: mine.py` alongside a blanked-out
+    # `renderer:` slipped PAST this guard entirely -- measured 2026-08-06, `load_cv_config`
+    # returned `renderer="template"` with their `render_script` silently unused, the exact
+    # quiet-renderer-switch this guard exists to refuse. `data.get("renderer") is None`
+    # closes it: a null value is now treated the same as an absent key, on both operands.
+    # The setattr loop below skips None the same way, so a valueless key loads exactly
+    # like an absent one either side of this check. Same reasoning, and the same
+    # spelling, as the `compose_timeout` validator below; the loader's contract is pinned
+    # by test_a_valueless_key_never_becomes_None.
+    if data.get("render_script") is not None and data.get("renderer") is None:
         raise ValueError(
             "cv.render_script is set but cv.renderer is not, and the default renderer is "
             "now `template` (it was `script`). Add `cv.renderer: script` to keep using "

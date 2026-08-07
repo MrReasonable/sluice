@@ -204,6 +204,7 @@ def catalogue(*, default_vault: str = "") -> tuple:
                  "Providers"),
         Question("renderer", f"CV renderer -- {', '.join(renderers)}?", parse_choice(*renderers),
                  ("cv.renderer",), "Providers",
-                 hint="template fills a Jinja2 template -- the packaged default, or your "
-                      "own via cv.template: pip install 'sluice[render]'."),
+                 hint="template fills a Jinja2 template. It uses the packaged default "
+                      "unless cv.template names your own template file. Install support "
+                      "with: pip install 'sluice[render]'."),
     )
