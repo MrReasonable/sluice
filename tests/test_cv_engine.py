@@ -320,6 +320,24 @@ def test_a_precheck_returning_a_bare_string_is_refused_by_name():
     assert rend.rendered == [], "a renderer that broke the contract was still asked to render"
 
 
+def test_a_precheck_returning_a_non_string_element_is_refused_by_name():
+    """The CONTAINER check alone (`isinstance(reported, (list, tuple))`) let a non-str
+    ELEMENT through: `[None]` passes it and then extends straight into `violations`,
+    so a broken renderer that returns `[None]` fed `None` into the retry prompt build
+    instead of being refused here, where the cause is still traceable to the renderer.
+    Same shape as the bare-string case above, one level down.
+    """
+    class SloppyRenderer(FakeRenderer):
+        def precheck(self, cv_text):
+            return [None]
+
+    rend = SloppyRenderer()
+    with pytest.raises(TypeError, match=r"SloppyRenderer\.precheck returned list"):
+        run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
+                FakeVault(ENTRIES), _cfg(), FakeBackend(CLEAN_CV), FakeCache(), renderer=rend)
+    assert rend.rendered == [], "a renderer that broke the contract was still asked to render"
+
+
 @pytest.mark.parametrize("reported,expected", [
     ([], "rendered"),
     ((), "rendered"),
