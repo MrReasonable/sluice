@@ -108,9 +108,17 @@ class TemplateRenderer:
 
         # jinja2 imported here, not at module scope, and not only in `_make`: this class
         # must stay constructible directly (as every test in this module does) without
-        # requiring a caller to go through the seam factory first.
-        from jinja2 import Environment, StrictUndefined
-        from jinja2.exceptions import TemplateError
+        # requiring a caller to go through the seam factory first. `_make` already proves
+        # jinja2 is installed before it ever reaches this constructor, so THAT path is
+        # covered -- but a direct construction (the one this docstring says stays
+        # supported) skips `_make` entirely, and without this except a missing jinja2
+        # there escaped as a bare `ImportError` rather than the seam's `RenderError`,
+        # same gap `_make` itself closed for `ImportError`/`OSError` a few lines below.
+        try:
+            from jinja2 import Environment, StrictUndefined
+            from jinja2.exceptions import TemplateError
+        except ImportError as e:
+            raise RenderError(f"{_MISSING_EXTRA} (underlying error: {e})") from e
 
         # Named for the RenderError below: a StrictUndefined failure must say WHICH
         # template broke, and the packaged default has no filesystem path a user can
@@ -194,14 +202,35 @@ class TemplateRenderer:
         # the offending template rather than surfacing a bare jinja2 traceback with no
         # renderer context -- Jinja2's own UndefinedError text already names the
         # missing attribute (e.g. "... object has no attribute 'nmae'").
-        from jinja2.exceptions import UndefinedError
+        from jinja2.exceptions import TemplateError, UndefinedError
         try:
             html = self._template.render(document=document)
         except UndefinedError as e:
             raise RenderError(
                 f"renderer 'template': {self._template_name} references a field "
                 f"CvDocument does not have: {e}") from e
-        self._HTML(string=html).write_pdf(pdf_path)
+        except (TemplateError, TypeError, ValueError) as e:
+            # UndefinedError is one Jinja2 runtime failure among several a user's free-text
+            # template can trigger -- a filter applied to the wrong type raises
+            # TemplateRuntimeError (a TemplateError) or a bare TypeError/ValueError from
+            # the filter itself. `__init__` already wraps a syntax error at COMPILE time
+            # for the identical reason: the template is content this renderer does not
+            # control, and the seam's contract is ONE error type, not "whichever Jinja2
+            # exception happens to be raised this time."
+            raise RenderError(
+                f"renderer 'template': {self._template_name} failed to render: "
+                f"{type(e).__name__}: {e}") from e
+        # WeasyPrint's own failures (and any OSError writing pdf_path) are the second half
+        # of the seam-untyped gap above: nothing after the try/except catches them, so a
+        # WeasyPrint internal error crossed the seam raw. Bounded to this ONE call --
+        # there is no other code between it and the "wrote no file" check below that this
+        # broad except could accidentally swallow.
+        try:
+            self._HTML(string=html).write_pdf(pdf_path)
+        except Exception as e:
+            raise RenderError(
+                f"renderer 'template': WeasyPrint could not write {pdf_path}: "
+                f"{type(e).__name__}: {e}") from e
         # This renderer's OWN "wrote no file" check. cv/render.py has an equivalent, but
         # that one belongs to the `script` renderer's subprocess path and does not apply
         # here (spec's Failure modes table) -- this renderer never shells out.
