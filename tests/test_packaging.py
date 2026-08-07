@@ -57,13 +57,19 @@ def _build_wheel(dest, *, pyproject_text=None):
     for named in ("LICENSE", "README.md"):   # pyproject metadata references these
         if os.path.exists(f"{ROOT}/{named}"):
             shutil.copy(f"{ROOT}/{named}", dest)
+    # timeout=300: the module docstring measures a real build at 0.6s, so a five-minute
+    # bound costs nothing on a healthy run and stops a hung build from hanging the whole
+    # suite with no output -- `subprocess.run` has no timeout by default.
     proc = subprocess.run(
         [sys.executable, "-m", "build", "--wheel", "--no-isolation",
          "--outdir", f"{dest}/out"],
-        cwd=dest, capture_output=True, text=True)
+        cwd=dest, capture_output=True, text=True, timeout=300)
     assert proc.returncode == 0, (
         f"wheel build failed:\n{proc.stdout[-2000:]}\n{proc.stderr[-2000:]}")
-    return zipfile.ZipFile(glob.glob(f"{dest}/out/*.whl")[0]).namelist()
+    wheels = glob.glob(f"{dest}/out/*.whl")
+    assert wheels, f"the build reported success but produced no wheel in {dest}/out"
+    with zipfile.ZipFile(wheels[0]) as zf:
+        return zf.namelist()
 
 
 def test_every_shipped_template_is_in_the_built_wheel(tmp_path):

@@ -29,7 +29,12 @@
 {% for role in document.work %}
 <div class="role">
   <div class="company">{{ role.company }}</div>
-  <div class="meta">{{ role.dates }} | {{ role.location }} | {{ role.title }}</div>
+  {# select() drops empty strings before the join, so a blank LOCATION (parse.py accepts
+     a 2-field meta line with no location -- see its module docstring) does not leave a
+     dangling " |  | " in a PDF sent under the user's name. Measured: gate-clean output
+     from the 2-field form renders "03/2021-present | Staff Engineer" here, not
+     "03/2021-present |  | Staff Engineer". #}
+  <div class="meta">{{ [role.dates, role.location, role.title] | select | join(" | ") }}</div>
   <ul>{% for bullet in role.bullets %}<li>{{ bullet }}</li>{% endfor %}</ul>
 </div>
 {% endfor %}
