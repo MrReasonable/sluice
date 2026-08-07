@@ -261,6 +261,16 @@ from sluice.core.backends import (           # noqa: E402
     BackendError, OpenAiCompatibleBackend,
 )
 
+# Captured at IMPORT time, before any test's autouse fixture ever patches
+# Sluice.renderer/Sluice.store -- the two typo'd-adapter-name tests below need
+# the REAL seam resolution (to actually reach plugins.get and raise
+# UnknownAdapter), not the _harmless_components fixture's bare sentinel, so
+# they restore these via monkeypatch.setattr(Sluice, "renderer", _REAL_RENDERER)
+# etc. rather than trying to "undo" a fixture patch that has not applied yet
+# at collection time.
+_REAL_RENDERER = Sluice.renderer
+_REAL_STORE = Sluice.store
+
 
 def _ok_probe(backend):
     """A round-trip that always succeeds -- returns nothing, raises nothing."""
@@ -612,6 +622,7 @@ def test_offline_doctor_also_reports_an_option_like_host_dead(monkeypatch):
     assert bad, "the option-like host produced no check at all"
     assert bad[0].state == DEAD, f"offline blessed it: {bad[0].state} / {bad[0].detail}"
     assert "argument injection" in bad[0].detail
+    assert report.exit_code() == 1
 
 
 # ── component checks: pure classification ──────────────────────────────────
@@ -653,7 +664,7 @@ def test_classify_store_missing_vault_short_circuits_to_one_dead_row():
     checks = classify_store({"vault_exists": False})
     assert len(checks) == 1
     assert checks[0].state == DEAD
-    assert checks[0].blocks == ("cv", "triage", "apply")
+    assert checks[0].blocks == ("ingest", "triage", "cv", "apply", "track")
 
 
 def test_classify_store_missing_baseline_is_dead_missing_profile_is_degraded():
@@ -746,6 +757,143 @@ def test_a_dead_renderer_fails_the_exit_code(monkeypatch):
     renderer_checks = [c for c in rep.components if c.component == "renderer"]
     assert renderer_checks and renderer_checks[0].state == DEAD
     assert rep.exit_code() == 1
+
+
+def test_a_typo_d_renderer_name_is_reported_dead_not_crashed(monkeypatch):
+    # A misconfigured cv.renderer/store name raises plugins.UnknownAdapter at
+    # RESOLUTION, before RenderError or the store's optional preflight() are
+    # ever reachable. Witnessed: before this guard existed, a typo'd
+    # cv.renderer crashed the WHOLE command with an uncaught UnknownAdapter,
+    # losing every check already computed -- the opposite of what a
+    # diagnostic tool run BECAUSE something is wrong should do.
+    import dataclasses
+
+    from sluice.cv.config import CvConfig
+
+    cvc = dataclasses.replace(CvConfig(), renderer="bogus-typo",
+                              name="Test Person", contact="test@example.invalid")
+    monkeypatch.setattr("sluice.cv.config.load_cv_config", lambda *a, **k: cvc)
+    # Restore the REAL renderer resolution -- the autouse fixture's sentinel
+    # would swallow the typo silently, since it never calls plugins.get at all.
+    monkeypatch.setattr(Sluice, "renderer", _REAL_RENDERER)
+    rep = Sluice().doctor(offline=True)   # must not raise
+    renderer_checks = [c for c in rep.components if c.component == "renderer"]
+    assert renderer_checks and renderer_checks[0].state == DEAD
+    assert "bogus-typo" in renderer_checks[0].detail
+    assert rep.exit_code() == 1
+
+
+def test_a_typo_d_store_name_is_reported_dead_not_crashed(monkeypatch):
+    import dataclasses
+
+    from sluice.core.config import Config
+
+    cfg = dataclasses.replace(Config(), store="bogus-typo")
+    # Restore the REAL store resolution -- the autouse fixture's sentinel
+    # would swallow the typo silently, since it never calls plugins.get at all.
+    monkeypatch.setattr(Sluice, "store", _REAL_STORE)
+    rep = Sluice(cfg).doctor(offline=True)   # must not raise
+    store_checks = [c for c in rep.components if c.component == "store"]
+    assert store_checks and store_checks[0].state == DEAD
+    assert "bogus-typo" in store_checks[0].detail
+    assert rep.exit_code() == 1
+
+
+def test_an_invalid_lead_layout_is_reported_dead_not_crashed(monkeypatch):
+    # A sibling of the two typo tests above: `Vault.__init__` raises
+    # ValueError (not UnknownAdapter) for an unrecognized `lead_layout`
+    # (`layout_subfolder`'s own guard, core/leads.py). `load_config()`
+    # already validates this for the real CLI path (main() catches it before
+    # Sluice is ever constructed), but a directly-constructed Config -- which
+    # is exactly how a library caller or a test builds one -- bypasses that,
+    # so Sluice.doctor() must guard it independently, the same as it already
+    # guards an unknown store/renderer NAME at the same call site.
+    import dataclasses
+
+    from sluice.core.config import Config
+
+    cfg = dataclasses.replace(Config(), lead_layout="bogus-layout")
+    monkeypatch.setattr(Sluice, "store", _REAL_STORE)
+    rep = Sluice(cfg).doctor(offline=True)   # must not raise
+    store_checks = [c for c in rep.components if c.component == "store"]
+    assert store_checks and store_checks[0].state == DEAD
+    assert "bogus-layout" in store_checks[0].detail
+    assert rep.exit_code() == 1
+
+
+def test_sluice_doctor_wires_the_loaded_cv_config_into_cv_identity(monkeypatch):
+    # Closes a real gap: every OTHER test in this file runs under the autouse
+    # _harmless_components fixture's FIXED healthy CvConfig, so none of them
+    # prove Sluice.doctor actually reads cv_cfg.name/cv_cfg.contact rather
+    # than a hardcoded stand-in. Witnessed: hardcoding classify_cv_identity's
+    # inputs in core/app.py to constants left the whole suite green.
+    import dataclasses
+
+    from sluice.cv.config import CvConfig
+
+    custom = dataclasses.replace(CvConfig(), name="Distinctive Custom Name",
+                                 contact="distinctive@example.invalid")
+    monkeypatch.setattr("sluice.cv.config.load_cv_config", lambda *a, **k: custom)
+    rep = Sluice().doctor(offline=True)
+    by_subject = {c.subject: c for c in rep.components if c.component == "cv-identity"}
+    assert by_subject["cv.name"].state == OK
+    assert by_subject["cv.contact"].state == OK
+
+    placeholder = CvConfig()   # name still "Your Name", contact still ""
+    monkeypatch.setattr("sluice.cv.config.load_cv_config", lambda *a, **k: placeholder)
+    rep = Sluice().doctor(offline=True)
+    by_subject = {c.subject: c for c in rep.components if c.component == "cv-identity"}
+    assert by_subject["cv.name"].state == DEAD
+    assert by_subject["cv.contact"].state == DEGRADED
+
+
+def test_sluice_doctor_wires_a_real_vaults_preflight_into_store_components(monkeypatch, tmp_path):
+    # Closes a real gap: Vault.preflight()'s dict keys are never checked
+    # against what classify_store actually reads, and no test builds a REAL
+    # Vault with real artefacts on disk and checks the resulting components.
+    # Witnessed: renaming baseline_exists -> baseline_exist in
+    # Vault.preflight left the whole suite green (classify_store's .get()
+    # silently reads the typo'd key as absent).
+    from sluice.core.vault import Vault
+
+    (tmp_path / "My CV").mkdir()
+    (tmp_path / "My CV" / "CV.md").write_text("# Baseline\n", encoding="utf-8")
+    (tmp_path / "Job Applications").mkdir()
+    (tmp_path / "Job Applications" / "Judging Profile.md").write_text(
+        "criteria\n", encoding="utf-8")
+    vault = Vault(str(tmp_path))
+    monkeypatch.setattr(Sluice, "store", lambda self: vault)
+
+    rep = Sluice().doctor(offline=True)
+    by_subject = {c.subject: c for c in rep.components if c.component == "store"}
+    assert by_subject["baseline_rel"].state == OK
+    assert by_subject["Judging Profile"].state == OK
+
+
+def test_sluice_doctor_wires_the_real_token_path_into_track_google(monkeypatch, tmp_path):
+    # Same gap, one level narrower: track_cfg.token_path -> os.path.exists(...)
+    # is never exercised with a REAL path in any test above (the autouse
+    # fixture and every other test leave it at whatever the real environment
+    # resolves to). Witnessed: hardcoding token_present=True in core/app.py
+    # left the whole suite green.
+    import dataclasses
+
+    from sluice.track.config import TrackConfig
+
+    monkeypatch.setattr("sluice.track.google_client.probe_availability",
+                        lambda: (True, None))
+    token_path = tmp_path / "google_token.json"
+    trk = dataclasses.replace(TrackConfig(), token_path=str(token_path))
+    monkeypatch.setattr("sluice.track.config.load_track_config", lambda *a, **k: trk)
+    rep = Sluice().doctor(offline=True)
+    track_checks = [c for c in rep.components if c.component == "track"]
+    assert track_checks and track_checks[0].state == DEGRADED
+    assert "token" in track_checks[0].detail
+
+    token_path.write_text("{}", encoding="utf-8")
+    rep = Sluice().doctor(offline=True)
+    track_checks = [c for c in rep.components if c.component == "track"]
+    assert track_checks and track_checks[0].state == OK
 
 
 def test_every_preference_gate_appears_in_the_posture_report():
