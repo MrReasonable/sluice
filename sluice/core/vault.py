@@ -1173,6 +1173,37 @@ class Vault:
         store), not a path a caller passes in."""
         return _read(os.path.join(self.dir, self.baseline_rel))
 
+    def preflight(self) -> dict:
+        """`sluice doctor`'s optional Store hook (see core/protocols.py's `Store`
+        docstring for the contract this implements and the no-writes rule it must
+        honour). Facts only -- `core/doctor.py:classify_store` turns them into
+        verdicts.
+
+        `_is_dir`/`_is_note_file`, not `os.path.exists`: both propagate a real
+        PermissionError instead of reading an unstatable path as merely absent,
+        the same rule every other existence check in this module follows, and for
+        the same reason -- a vault doctor cannot even STAT is a fact worth a loud
+        failure, not a quiet False.
+
+        Deliberately does NOT walk `leads_dir` (2627 notes in the vault this was
+        built against): doctor is a preflight meant to run often and cheaply, not
+        a second `leads` pass, and nothing a lead-by-lead scan would answer here
+        that `read_leads` itself does not already answer for every OTHER command
+        that needs it. `read_experience_entries` is the one exception -- the
+        Experience Library is two orders of magnitude smaller and its entries are
+        the fabrication gate's only citable evidence, so a zero-verified count is
+        exactly the kind of thing worth surfacing before a compose is attempted."""
+        if not _is_dir(self.dir):
+            return {"vault_exists": False}
+        entries = self.read_experience_entries(verified_only=False)
+        return {
+            "vault_exists": True,
+            "baseline_exists": _is_note_file(os.path.join(self.dir, self.baseline_rel)),
+            "criteria_present": bool(self.read_criteria().strip()),
+            "experience_total": len(entries),
+            "experience_verified": sum(1 for e in entries if e.get("verified")),
+        }
+
     def set_tailored_cv(self, ref, value: str, *, only_if_absent: bool = False) -> bool:
         """Set the tailored_cv frontmatter field, body byte-for-byte intact. When
         `only_if_absent`, do NOT overwrite a tailored_cv that is already present in the

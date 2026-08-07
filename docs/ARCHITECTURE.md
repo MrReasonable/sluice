@@ -867,13 +867,26 @@ Four points in the config are the seams for pluggable adapters.
   Implementations: `camofox` (the headless-browser HTTP server).
 - **sources**: `ingest/sources/`, the registry all of the above are modelled on.
 
-`sluice doctor` is a read-only preflight over the backend seam: it enumerates every
-configured backend (primary and fallback, per sub-app), classifies each as
-`ok`/`degraded`/`dead`, and exits non-zero when a run-blocking backend is dead. The
+`sluice doctor` is a read-only preflight over the whole pipeline, not only the backend
+seam: it enumerates every configured backend (primary and fallback, per sub-app) and
+classifies each as `ok`/`degraded`/`dead`, then does the same for a second table of
+component checks -- the renderer (does `cv.renderer` actually construct, catching a
+missing `render` extra or WeasyPrint's native libraries before the dossier fetch and
+LLM spend rather than after), the CV identity fields (`cv.name` still the shipped
+placeholder, `cv.contact` blank), the store's on-disk artefacts (the vault directory,
+the baseline CV, the Judging Profile, Experience Library entry counts, via the
+Store seam's OPTIONAL `preflight()` hook), track's Google adapter, and the current
+posture (abstaining or active) of every list-typed preference gate. Backend
 classification is role-aware -- a keyless fallback degrades (the sanctioned
 primary-only path, exit 0), while a keyed-but-broken backend is `dead` regardless of
-role, the silently-non-functional fallback the tool exists to catch. Live round-trip
-by default; `--offline` for a config-only check; `--strict` to also fail on degraded.
+role, the silently-non-functional fallback the tool exists to catch. Component
+classification adds a fourth state, `notice`, for the gate-posture rows: it NEVER
+affects `exit_code`, under `--strict` or otherwise, because an abstaining gate (an
+unconfigured preference simply passes every lead through) is the shipped default and
+legitimate -- grading it as a failure would be the 672ad2a class of bug (see Invariants)
+aimed at doctor's own exit status. Live round-trip by default; `--offline` for a
+config-only check (the component checks were already local, so `--offline` changes
+nothing about them); `--strict` to also fail on degraded.
 
 ## Injected collaborators — the other kind of seam
 

@@ -5,7 +5,7 @@
   sluice ingest test-source ID [--raw]      run ONE source live (fixture capture)
   sluice ingest enable|disable ID           persist an operator on/off override
   sluice health                             per-source baseline + retire state
-  sluice doctor [--offline] [--strict]      preflight configured backends (live round-trip)
+  sluice doctor [--offline] [--strict]      preflight backends + renderer/store/gates
 
 `run` and `test-source` drive the live Camofox session; the rest are offline.
 enable/disable persist to a small JSON overlay (SLUICE_DISABLED) so an operator
@@ -902,10 +902,19 @@ def cmd_doctor(args, config) -> int:
 
 
 def _print_doctor(report, *, offline) -> None:
-    """One line per distinct backend, annotated with the sub-app roles it serves.
-    Written to stdout, like `health`/`list-sources` -- doctor's output IS the
-    answer the operator asked for, not a run side-report."""
-    from sluice.core.doctor import DEAD, DEGRADED, OK, format_roles
+    """One line per distinct backend, annotated with the sub-app roles it serves,
+    followed by one line per component check (renderer, cv identity, store
+    artefacts, track's Google adapter, preference gate posture). Written to
+    stdout, like `health`/`list-sources` -- doctor's output IS the answer the
+    operator asked for, not a run side-report.
+
+    The backend table's own summary line ("N ok, N degraded, N dead") is left
+    untouched rather than folded together with the component table's: it is
+    pinned verbatim by an existing test, and the two tables answer different
+    questions -- one backend can serve six roles, one component check is one
+    fact -- so a single merged count would blur "how many distinct backends
+    are broken" into "how many lines printed"."""
+    from sluice.core.doctor import DEAD, DEGRADED, NOTICE, OK, format_roles
 
     print(f"sluice doctor  ({'offline' if offline else 'live round-trip'})\n")
     for c in report.checks:
@@ -917,6 +926,17 @@ def _print_doctor(report, *, offline) -> None:
     n_deg = sum(1 for c in report.checks if c.state == DEGRADED)
     n_dead = sum(1 for c in report.checks if c.state == DEAD)
     print(f"\n{n_ok} ok, {n_deg} degraded, {n_dead} dead")
+
+    if report.components:
+        print()
+        for c in report.components:
+            blocks = f"  blocks: {', '.join(c.blocks)}" if c.blocks else ""
+            print(f"{c.component:12} {c.subject:32} {c.state:9} {c.detail}{blocks}")
+        c_ok = sum(1 for c in report.components if c.state == OK)
+        c_deg = sum(1 for c in report.components if c.state == DEGRADED)
+        c_dead = sum(1 for c in report.components if c.state == DEAD)
+        c_notice = sum(1 for c in report.components if c.state == NOTICE)
+        print(f"\n{c_ok} ok, {c_deg} degraded, {c_dead} dead, {c_notice} notice")
 
 
 # ── argument parsing ─────────────────────────────────────────────────────────
@@ -1100,7 +1120,8 @@ def _build_parser() -> argparse.ArgumentParser:
                       help="never prompt; answer only from flags")
     init.set_defaults(func=cmd_init)
 
-    doctor = top.add_parser("doctor", help="preflight the configured backends")
+    doctor = top.add_parser(
+        "doctor", help="preflight backends, renderer, store artefacts and gate posture")
     doctor.add_argument("--offline", action="store_true",
                         help="config-only checks; no round-trip")
     doctor.add_argument("--strict", action="store_true",

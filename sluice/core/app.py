@@ -1142,12 +1142,30 @@ class Sluice:
         """Preflight every configured backend (primary + fallback, per sub-app):
         is the provider known, is a model resolved, are the credentials present
         in THIS process, and -- unless `offline` -- does a one-token round-trip
-        succeed? Returns a DoctorReport whose `exit_code` is non-zero when a
-        run-blocking backend is dead.
+        succeed? Also preflights everything else a run depends on that a green
+        backend table said nothing about: the renderer actually constructs, the
+        CV identity fields are filled in, the store's baseline CV and Judging
+        Profile are where they should be, track's Google adapter is usable, and
+        every preference gate's current posture (abstaining or active).
+        Returns a DoctorReport whose `checks` (backends) and `components`
+        (everything else) both feed `exit_code`, non-zero when anything
+        run-blocking is dead.
 
-        Backends only: this method touches neither `self.store()` nor
-        `self.fetcher()`, so `sluice doctor` never constructs a browser or a
-        store. `probe` is the test seam -- a `callable(backend) -> None` that
+        `self.store()` and `self.renderer()` ARE now constructed here -- unlike
+        the backend probe, neither performs I/O by being built (a Store's
+        `__init__` sets attributes; a Renderer's factory imports its libraries
+        and, for `template`, reads a template file, never writes one), and
+        `self.fetcher()` (a live Camofox browser) is still never touched, so
+        `sluice doctor` still never opens a browser. The store's OPTIONAL
+        `preflight()` hook (see core/protocols.py's `Store` docstring) is
+        reached via `getattr`, exactly as `cv/engine.py` reaches the renderer
+        seam's optional `precheck` -- a store that does not implement it reports
+        nothing for that component rather than being treated as broken, and a
+        store whose `preflight()` itself raises is reported as the one DEAD row
+        that failure is, rather than crashing the one tool that diagnoses a
+        broken install.
+
+        `probe` is the test seam -- a `callable(backend) -> None` that
         raises `BackendError` on failure; it defaults to the real round-trip.
         The provider is built DIRECTLY via `make_backend` (not the role
         composite), so there is no `FallbackBackend` to disentangle, and it is
@@ -1157,14 +1175,18 @@ class Sluice:
         import shutil
         import time
 
+        from sluice.apply.config import load_apply_config
         from sluice.core import doctor as _doctor
         from sluice.core.backends import DEFAULT_MODELS, BackendError, make_backend
-        from sluice.cv.config import load_cv_config
+        from sluice.core.protocols import RenderError
+        from sluice.cv.config import CvConfig, load_cv_config
         from sluice.track.config import load_track_config
         from sluice.triage.config import load_triage_config
 
-        targets = _doctor.enumerate_targets(
-            load_triage_config(), load_cv_config(), load_track_config())
+        triage_cfg = load_triage_config()
+        cv_cfg = load_cv_config()
+        track_cfg = load_track_config()
+        targets = _doctor.enumerate_targets(triage_cfg, cv_cfg, track_cfg)
         if probe is None:
             probe = lambda b: b.complete(_doctor.PROBE_PROMPT)  # noqa: E731
 
@@ -1213,7 +1235,72 @@ class Sluice:
                 probe_error=probe_error)
             check.elapsed = elapsed
             checks.append(check)
-        return _doctor.DoctorReport(checks=checks)
+
+        components = []
+
+        # Renderer: construction IS the probe (see classify_renderer). No PDF is
+        # written and no backend is called, so this is cheap and safe under
+        # --offline too.
+        try:
+            self.renderer(cv_cfg)
+        except RenderError as e:
+            components.append(_doctor.classify_renderer(str(e)))
+        else:
+            components.append(_doctor.classify_renderer(None))
+
+        components.extend(
+            _doctor.classify_cv_identity(cv_cfg.name, cv_cfg.contact, placeholder=CvConfig.name))
+
+        # Store: the optional preflight() hook, reached the same way
+        # cv/engine.py reaches the renderer seam's optional precheck. A store
+        # without the hook contributes nothing; a store whose hook raises
+        # becomes one DEAD row naming the failure rather than an uncaught
+        # exception out of the one command meant to diagnose a broken install.
+        preflight_fn = getattr(self.store(), "preflight", None)
+        if preflight_fn is not None:
+            try:
+                components.extend(_doctor.classify_store(preflight_fn()))
+            except Exception as e:  # noqa: BLE001 -- see the comment above: a
+                # broken preflight must be reported, not crash doctor itself.
+                components.append(_doctor.ComponentCheck(
+                    "store", "preflight", _doctor.DEAD, str(e)))
+
+        # Track/Google: sluice/ is stdlib-only except for the three named,
+        # deliberate exceptions (yaml, the Google client libs, jinja2/weasyprint)
+        # -- see CLAUDE.md -- so the Google libs are lazy-imported here exactly
+        # as track/google_client.py itself lazy-imports them, and under the same
+        # (ImportError, OSError) pair renderers/template.py's `_make` catches:
+        # a missing native dependency does not always surface as ImportError.
+        try:
+            from google.auth.transport.requests import Request  # noqa: F401
+            from google.oauth2.credentials import Credentials  # noqa: F401
+            from googleapiclient.discovery import build  # noqa: F401
+            google_available, google_import_error = True, None
+        except (ImportError, OSError) as e:
+            google_available, google_import_error = False, str(e)
+        components.append(_doctor.classify_track_google(
+            available=google_available, import_error=google_import_error,
+            token_present=os.path.exists(track_cfg.token_path)))
+
+        # Preference gates: enumerated generically over every loaded config's
+        # list-typed fields (list_typed_fields), never hand-listed -- the same
+        # discipline tests/test_sluice_neutral_defaults.py's identically-shaped
+        # sweep applies to the DEFAULTS, applied here to this install's CURRENT
+        # values. SourceConfig.searches is deliberately excluded: it is a
+        # per-source override living inside `sources: {id: {...}}`, not a flat
+        # field on one of these instances, so this generic sweep cannot reach
+        # it without also loading and iterating the sources dict. NOT reported
+        # anywhere else either -- `sluice ingest list-sources` prints
+        # enabled/disabled + health, not whether a source still runs its
+        # built-in example search. That gap is real and open, not closed by
+        # this comment.
+        for cfg in (self.config, triage_cfg, cv_cfg, track_cfg, load_apply_config()):
+            owner = type(cfg).__name__
+            components.extend(
+                _doctor.classify_gate(owner, name, value)
+                for name, value in _doctor.list_typed_fields(cfg))
+
+        return _doctor.DoctorReport(checks=checks, components=components)
 
     # ── introspection ────────────────────────────────────────────────────────
     @staticmethod
