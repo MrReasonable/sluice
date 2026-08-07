@@ -14,7 +14,7 @@ import os
 
 import pytest
 
-from sluice.renderers.script import RenderError
+from sluice.core.protocols import RenderError
 from sluice.renderers.template import TemplateRenderer
 
 CV = """\
@@ -46,7 +46,11 @@ class FakeHTML:
     def __init__(self, string=""):
         FakeHTML.captured["html"] = string
 
-    def write_pdf(self, path, stylesheets=None):
+    def write_pdf(self, path):
+        # No `stylesheets` kwarg: it was WeasyPrintRenderer's shape (a separate CSS
+        # object it passed alongside the HTML), and that class is deleted. This
+        # renderer's own write_pdf call passes only `path`, so a fake still accepting
+        # `stylesheets` no longer pins the call shape the real code can actually make.
         with open(path, "wb") as f:
             f.write(b"%PDF-1.4 fake")
 
@@ -149,6 +153,24 @@ def test_the_shipped_template_renders_a_parsed_document(tmp_path):
     for expected in ("EXAMPLE PERSON", "Example Data Co", "Staff Engineer",
                      "EXAMPLECITY", "Example Cloud Practitioner, 2022"):
         assert expected in html, f"{expected!r} missing from the rendered CV"
+
+
+def test_a_blank_location_does_not_leave_a_dangling_separator(tmp_path):
+    """`sluice/cv/parse.py` accepts a 2-field meta line with no location, setting
+    `location=""` -- and both templates joined dates/location/title with unconditional
+    `|` characters, so the rendered line read `03/2021-present |  | Staff Engineer`.
+    `leftover_content` classifies a bare `" | "` as punctuation (see its own no-content
+    guard), so nothing else in this file's guards would have caught the defect either.
+    CodeRabbit's cloud review on PR #97 found this against the shipped template.
+    """
+    cv_no_location = CV.replace(
+        "03/2021-present | EXAMPLECITY | Staff Engineer", "03/2021-present | Staff Engineer")
+    assert "03/2021-present | Staff Engineer" in cv_no_location, "the replace no-opped"
+    r = _renderer(tmp_path)
+    r.render(cv_no_location, str(tmp_path / "out"))
+    html = FakeHTML.captured["html"]
+    assert "03/2021-present | Staff Engineer" in html
+    assert " |  | " not in html, "a blank LOCATION left a dangling separator in the PDF"
 
 
 def test_every_shipped_template_contributes_no_content():
@@ -462,7 +484,7 @@ def test_the_renderer_reports_when_it_writes_no_pdf(tmp_path):
     """This renderer's OWN check. cv/render.py's equivalent belongs to the subprocess
     path and does not apply here."""
     class SilentHTML(FakeHTML):
-        def write_pdf(self, path, stylesheets=None):
+        def write_pdf(self, path):
             pass          # writes nothing
 
     r = TemplateRenderer(None, html_module=SilentHTML)
@@ -601,6 +623,61 @@ def test_a_jinja_syntax_error_is_raised_as_a_render_error_naming_the_template(tm
     from jinja2.exceptions import TemplateError
     assert isinstance(ei.value.__cause__, TemplateError), (
         "the original jinja2 error was discarded rather than chained")
+
+
+def test_absent_jinja2_raises_naming_the_extra_on_direct_construction(monkeypatch, tmp_path):
+    """The docstring's OWN claim -- this class stays constructible directly, without
+    going through `_make` -- means jinja2's absence must be caught here too, not only in
+    `_make`. Before this, a direct construction with jinja2 missing raised a bare
+    `ImportError` at the `from jinja2 import ...` line, leaking the untyped failure
+    `_make`'s own try/except already exists to stop. CodeRabbit's cloud review found
+    this: `_make` proves jinja2 is installed before it ever reaches this constructor, so
+    only the DIRECT path was exposed.
+    """
+    import builtins
+    real_import = builtins.__import__
+
+    def no_jinja(name, *a, **kw):
+        if name.startswith("jinja2"):
+            raise ImportError("no jinja2")
+        return real_import(name, *a, **kw)
+
+    monkeypatch.setattr(builtins, "__import__", no_jinja)
+    with pytest.raises(RenderError, match=r"sluice\[render\]"):
+        TemplateRenderer(None, html_module=FakeHTML)
+
+
+def test_a_bad_expression_at_render_time_is_raised_as_a_render_error(tmp_path):
+    """`UndefinedError` is ONE Jinja2 runtime failure among several a user's free-text
+    template can trigger. Before this fix, only `UndefinedError` was converted, so any
+    other runtime failure -- a `TemplateRuntimeError`, or a bare `TypeError`/`ValueError`
+    from an expression or filter -- crossed the seam raw. Verified against the real
+    engine: `document.name` is a `str`, and `str + int` raises `TypeError` at render time,
+    not at template-compile time (`__init__`'s syntax check does not see it).
+    """
+    path = tmp_path / "bad_expr.html.j2"
+    path.write_text("<p>{{ document.name + 1 }}</p>", encoding="utf-8")
+    r = TemplateRenderer(str(path), html_module=FakeHTML)
+    with pytest.raises(RenderError, match="failed to render") as ei:
+        r.render(CV, str(tmp_path / "out"))
+    assert str(path) in str(ei.value), "the error does not name the offending template"
+
+
+def test_a_weasyprint_failure_at_write_time_is_raised_as_a_render_error(tmp_path):
+    """`self._HTML(...).write_pdf(pdf_path)` is the SECOND half of the seam-untyped gap:
+    a WeasyPrint internal failure, or an OSError on the output path, propagated raw
+    before this fix. `core/protocols.py` states RenderError is the seam's error type for
+    a renderer that "could not produce a PDF" -- this is that case.
+    """
+    class BoomHTML(FakeHTML):
+        def write_pdf(self, path):
+            raise RuntimeError("weasyprint blew up")
+
+    r = TemplateRenderer(None, html_module=BoomHTML)
+    with pytest.raises(RenderError, match="WeasyPrint could not write") as ei:
+        r.render(CV, str(tmp_path / "out"))
+    assert isinstance(ei.value.__cause__, RuntimeError), (
+        "the original WeasyPrint error was discarded rather than chained")
 
 
 def test_a_tilde_in_cv_template_is_expanded(tmp_path, monkeypatch):
