@@ -113,6 +113,39 @@ def _rewritable_marker_line(line: str) -> bool:
         re.search(r"""["']\d+\.\d+\.\d+["']""", line))
 
 
+def _is_generated_relpath(rel_parts: tuple) -> bool:
+    """True for a path (already made RELATIVE to the repo root) this sweep must skip.
+
+    Pulled out of `_files_carrying_the_marker` as its own pure function so the ancestor-
+    directory regression below can assert on it directly, with synthetic `Path` objects,
+    rather than needing a real checkout nested under a directory named `build`/`dist` to
+    reproduce.
+
+    "build" and "dist" are the DoD's own trap: a repo-root `python -m build` drops
+    `build/lib/sluice/__init__.py` (a copy of the real file, marker and all) into a
+    directory `.gitignore` already excludes -- so `git status` stays clean while this
+    sweep, walking the real filesystem rather than git's index, finds a SECOND
+    marker-carrying file `extra-files` never lists and fails permanently with an error
+    about release-please that says nothing about wheels. Measured 2026-08-06: running
+    the DoD's required `python -m build` from repo root reproduces this exactly, and
+    cleaning the stray `build/` afterwards is what makes the suite green again -- skip
+    both so a routine, DoD-instructed build cannot arm a permanent trap for whoever runs
+    it next.
+
+    `rel_parts` MUST already be relative to the repo root, not `path.parts`: `rglob`
+    yields paths PREFIXED with the root, so the bare `.parts` form would walk every
+    ANCESTOR of the checkout too -- a repo cloned under a directory literally named
+    `build` or `dist` (plausible: both are common names for a parent workspace folder)
+    would match on that ancestor and skip the ENTIRE sweep, silently, the same "sweep
+    discovers nothing and passes" shape CLAUDE.md names as its own guard-testing failure
+    mode. Only `build`/`dist` need root-scoping (`.git`/`.venv`/etc. never legitimately
+    sit at the repo root as a real tracked directory, so matching them anywhere is safe).
+    """
+    if any(part in {".git", ".venv", "node_modules", "__pycache__"} for part in rel_parts):
+        return True
+    return rel_parts[:1] in (("build",), ("dist",))
+
+
 def _files_carrying_the_marker():
     """Every file with a REWRITABLE marker line, found by WALKING.
 
@@ -125,18 +158,7 @@ def _files_carrying_the_marker():
     for path in root.rglob("*"):
         if not path.is_file() or path in skip:
             continue
-        # "build" and "dist" are the DoD's own trap: a repo-root `python -m build` drops
-        # `build/lib/sluice/__init__.py` (a copy of the real file, marker and all) into
-        # a directory `.gitignore` already excludes -- so `git status` stays clean while
-        # this sweep, walking the real filesystem rather than git's index, finds a SECOND
-        # marker-carrying file `extra-files` never lists and fails permanently with an
-        # error about release-please that says nothing about wheels. Measured 2026-08-06:
-        # running the DoD's required `python -m build` from repo root reproduces this
-        # exactly, and cleaning the stray `build/` afterwards is what makes the suite
-        # green again -- skip both so a routine, DoD-instructed build cannot arm a
-        # permanent trap for whoever runs it next.
-        if any(part in {".git", ".venv", "node_modules", "__pycache__", "build", "dist"}
-               for part in path.parts):
+        if _is_generated_relpath(path.relative_to(root).parts):
             continue
         try:
             text = path.read_text(encoding="utf-8")
@@ -145,6 +167,33 @@ def _files_carrying_the_marker():
         if any(_rewritable_marker_line(ln) for ln in text.splitlines()):
             out.add(path.relative_to(root).as_posix())
     return out
+
+
+def test_a_repo_root_named_build_does_not_blind_the_whole_sweep():
+    """CodeRabbit's cloud review on PR #97: the sweep used to check `path.parts`
+    (every ancestor of the checkout, since `rglob` yields paths PREFIXED with the root)
+    rather than the path RELATIVE to the root. A checkout sitting under a directory
+    literally named `build` or `dist` -- a plausible parent-workspace name -- would have
+    matched on that ancestor and silently excluded the ENTIRE tree, the "sweep discovers
+    nothing and passes" failure shape this repo has already been bitten by. `sluice/`
+    itself must never be excluded merely for living under such a parent.
+    """
+    assert not _is_generated_relpath(("sluice", "__init__.py")), (
+        "an ordinary tracked file was excluded")
+    assert not _is_generated_relpath(("README.md",))
+    # The regression: rel_parts is ALREADY relative to root, so a `build`/`dist` ANCESTOR
+    # never appears in it at all -- there is nothing here for the old ancestor-matching
+    # bug to latch onto, which is exactly what makes the fix correct.
+    assert _is_generated_relpath(("build", "lib", "sluice", "__init__.py")), (
+        "a real build/ artefact at the repo root was not excluded"
+    )
+    assert _is_generated_relpath(("dist", "sluice-0.1.0.whl"))
+    # And the one case the fix must NOT over-exclude: "build" or "dist" appearing
+    # somewhere OTHER than the first path component is an ordinary tracked path, not the
+    # generated root directory this sweep exists to skip.
+    assert not _is_generated_relpath(("sluice", "cv", "build_bundle_helpers.py")), (
+        "a tracked file merely CONTAINING 'build' in its name was wrongly excluded"
+    )
 
 
 def test_extra_files_names_every_file_carrying_the_marker():
