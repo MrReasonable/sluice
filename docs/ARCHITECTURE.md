@@ -858,9 +858,11 @@ Four points in the config are the seams for pluggable adapters.
   `skipped-gate` under `cv.renderer: script` for a gate-clean CV that script
   would have rendered. `precheck` still carries renderer-SPECIFIC grammar only
   (`template`'s meta-line format); the pre-`PROFILE` name/contact header block
-  is enforced separately, by two inline STRUCTURAL guards in `cv/engine.py`
-  itself (#99), because that shape is what `cv/compose.py`'s prompt requested of
-  every renderer alike, not a layout requirement any one renderer owns.
+  is enforced separately, by three inline STRUCTURAL guards in `cv/engine.py`
+  itself (#99: header line count, name anchor; a third added on review,
+  comparing the contact lines' actual content against `cvcfg.contact`), because
+  that shape is what `cv/compose.py`'s prompt requested of every renderer
+  alike, not a layout requirement any one renderer owns.
 - **fetcher**: `sluice/fetchers/`, selected by `fetcher:` (default `camofox`).
   Implementations: `camofox` (the headless-browser HTTP server).
 - **sources**: `ingest/sources/`, the registry all of the above are modelled on.
