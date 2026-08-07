@@ -42,6 +42,17 @@ def test_prompt_is_a_tailoring_task_and_forbids_invention():
     assert p.count("--") == 1                            # only the (--) rule names the token; no `--` in the prompt's own prose
 
 
+def test_prompt_forbids_a_preamble_before_the_cv():
+    # #99 (3a): a complement to the STRUCTURAL guards in cv/engine.py, not a
+    # substitute -- this only reduces how often a preamble appears, it does not
+    # catch one that slips through. Wording assertion, matching this file's
+    # existing convention: pins that the instruction is present, not that a
+    # preamble cannot occur.
+    p = C.build_prompt("BUNDLE-TEXT", "JD-TEXT", "Acme", "Analyst")
+    assert "no preamble" in p.lower()
+    assert "first line of the CV" in p
+
+
 def test_cv_prompt_expresses_no_role_or_culture_preference():
     # neu-001: the triage guard test_shipped_prompt_expresses_no_role_or_culture_
     # preference (tests/test_prompt.py) covers only the TRIAGE prompt, not this CV

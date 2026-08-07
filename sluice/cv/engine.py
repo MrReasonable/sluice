@@ -15,6 +15,7 @@ from sluice.core.log import get_logger
 from sluice.cv import bundle as _bundle
 from sluice.cv import compose as _compose
 from sluice.cv.audit import run_audit, unsupported_claims
+from sluice.cv.config import CvConfig
 from sluice.cv.slop import check_text as _slop
 from sluice.cv.validate import validate as _validate
 
@@ -35,6 +36,10 @@ class CvResult:
     for neither twin),
     needs-signoff (an unsupported profile audit flag withheld the send-ready pointer,
     #60), skipped-needs-signoff (a re-run over a lead already held for sign-off),
+    skipped-config (#99: cv.name is still the shipped placeholder default, refused
+    before any dossier fetch or compose -- see run_one; the value becomes the PDF's
+    <h1>, and a composer complying with the prompt as configured produces a headline
+    no STRUCTURAL guard can distinguish from a genuine name),
     dry-run, error (a single lead's exception caught by run_batch -- see run_batch --
     so one bad lead never aborts the rest of the batch)."""
     lead: str
@@ -95,6 +100,31 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
     if policy.blocks(fm.get("last_seen", "")):
         return CvResult(note.ref, "skipped-stale")
 
+    # #99: refuse to compose while cv.name is still the shipped placeholder. Every
+    # composed CV's header block is required to end with cvcfg.name as the exact
+    # candidate name line (see the STRUCTURAL guard below), and compose.py's prompt
+    # literally shows the model `{name_heading}` = "YOUR NAME" when this is unset --
+    # textually indistinguishable, to the model, from a template placeholder token
+    # it should resolve rather than a real value it must reproduce. A CV composed
+    # under the default therefore has nothing wrong to catch: "YOUR NAME" is
+    # perfectly name-shaped, it is just wrong, and `document.name` renders as the
+    # PDF's <h1> (sluice/templates/cv_plain.html.j2) with no length cap and no
+    # fallback. This is the "quiet wrong default" bug class cv/config.py's
+    # load_cv_config already refuses elsewhere in this sub-app, applied to the most
+    # visible line of an artefact sent under the user's identity. Refused BEFORE any
+    # spend -- a dossier fetch drives a real browser and compose is an LLM call --
+    # mirroring the #9 staleness guard immediately above, which this sits after so
+    # a stale lead still reports skipped-stale rather than a config complaint that
+    # would not have mattered for it anyway.
+    # `CvConfig.name`, NOT `CvConfig().name`: a bare construction outside the
+    # loader is exactly what test_no_production_code_builds_a_sub_app_config_directly
+    # forbids (blank path defaults are only safe filled in by load_cv_config). A
+    # dataclass with a plain (non-factory) default leaves it readable as a CLASS
+    # attribute without instantiating -- an ast.Attribute access, not an ast.Call,
+    # so the sweep does not see it, and no throwaway instance is built either.
+    if cvcfg.name.strip() == CvConfig.name:
+        return CvResult(note.ref, "skipped-config")
+
     company, role = fm.get("company", ""), fm.get("role", "")
     jd, dossier_failed = "", False
     try:
@@ -146,6 +176,49 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
             if not any(line.strip().upper() == "PROFILE" for line in cv_text.splitlines()):
                 violations = ["STRUCTURAL: composed CV lacks the exact 'PROFILE' header, "
                               "so the profile fabrication check did not run"] + violations
+            # STRUCTURAL guards #3/#4 (#99): the header block before PROFILE must have
+            # exactly the shape compose.py's own prompt requested -- cvcfg.contact's
+            # lines, then the name heading, and nothing else. cv/parse.py:381-389
+            # already explains why no SHAPE test can tell a genuine name/contact line
+            # from a composer's stray preamble sentence in isolation ("a name can look
+            # like anything, contact details are not universally regex-shaped"); these
+            # guards do not try to. They compare against `cvcfg`, ground truth the
+            # parser never has (parse.py is pure and takes only `text`). Recomputed
+            # here rather than reached through cv.parse
+            # (test_the_engine_no_longer_imports_the_template_grammar forbids the
+            # import): the engine may guard what the PROMPT required of every
+            # renderer alike; only a renderer may guard what its own LAYOUT needs,
+            # and `script` implements no `precheck` at all to reach.
+            #
+            # Two independent checks, chained so the second only evaluates when the
+            # first found nothing wrong (a count mismatch already explains itself; an
+            # anchor complaint on TOP of it would just restate the same underlying
+            # defect in a second sentence). A count mismatch alone misses a same-count
+            # REORDERING (name emitted before contact, the opposite of what compose.py
+            # requests); an anchor mismatch alone misses "preamble + otherwise-correct
+            # name", where the preamble becomes the printed CONTACT block and the name
+            # line itself is never inspected. Measured on the real production path
+            # (#99): a preamble prefixed onto an otherwise flawless CV parsed with a
+            # LinkedIn-URL line as the candidate's NAME and the real name buried in
+            # CONTACT -- validate() alone reported zero violations.
+            header_lines = cv_text.splitlines()
+            profile_idx = next((i for i, ln in enumerate(header_lines)
+                                if ln.strip().upper() == "PROFILE"), None)
+            if profile_idx is not None:
+                header = [ln.strip() for ln in header_lines[:profile_idx] if ln.strip()]
+                expected_n = len([ln for ln in cvcfg.contact.splitlines() if ln.strip()]) + 1
+                if len(header) != expected_n:
+                    violations = [f"STRUCTURAL: expected {expected_n} line(s) before "
+                                  f"PROFILE (the configured contact block, then the "
+                                  f"name heading) but found {len(header)} -- drop any "
+                                  f"extra text (a preamble, acknowledgement, or "
+                                  f"separator) before the contact block"] + violations
+                elif header and header[-1].casefold() != cvcfg.name.strip().casefold():
+                    violations = [f"STRUCTURAL: the line immediately before PROFILE is "
+                                  f"{header[-1]!r}, not the name heading "
+                                  f"{cvcfg.name.upper()!r} -- the parser takes the LAST "
+                                  f"line before PROFILE as the candidate's "
+                                  f"name"] + violations
             # Ask the RENDERER, inside the retry loop, in the same shape a gate violation
             # takes. cv/validate.py never checks the `template` renderer's meta-line
             # grammar (`MM/YYYY-MM/YYYY | LOCATION | Role`) -- only the citation gate does

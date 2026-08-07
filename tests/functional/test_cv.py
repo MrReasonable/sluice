@@ -53,6 +53,26 @@ def test_cv_run_no_matching_lead_returns_1(cli):
     assert "no shortlist lead matching" in err
 
 
+def test_cv_run_shipped_default_name_returns_1(cli):
+    """#99: the harness pins `cv.name: "Jane Roe"` by default (see harness/config.py's
+    own neutrality note) precisely so every OTHER functional test in this file composes
+    for real -- this is the one test that deliberately reverts that override back to the
+    shipped placeholder, through the real CLI, to prove cmd_cv_run's own exit-code
+    handling for it (compose_cv's refusal is covered at the engine level already;
+    this covers the handler wiring on top of it, the same split test_cv_run_ambiguous_
+    lead_composes_for_neither_and_returns_1 draws for the ambiguous case).
+    """
+    from sluice.cv.config import CvConfig
+    backend = ScriptedBackend(cv_by_company={"Example Foundry": PASSING_CV})
+    h, run = cli(backend=backend, cv_name=CvConfig().name)
+    _seed_shortlist_lead(h.paths["vault"], "Example Foundry", "Staff Engineer")
+    rc, _out, err = run(["cv", "run", "--lead", "example-foundry"])
+    assert rc == 1
+    assert "cv.name" in err and "Your Name" in err
+    assert h.recorder.rendered == []           # nothing composed, nothing rendered
+    assert backend.prompts == []               # and the refusal cost no LLM call
+
+
 def test_cv_run_ambiguous_lead_composes_for_neither_and_returns_1(cli):
     """A `--lead` fragment matching TWO shortlist notes must refuse, not compose for
     whichever the store listed first (#1).

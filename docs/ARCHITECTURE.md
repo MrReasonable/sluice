@@ -856,7 +856,11 @@ Four points in the config are the seams for pluggable adapters.
   the renderer is what stops one implementation's requirements binding the
   whole seam — measured, the engine calling `parse_cv` unconditionally reported
   `skipped-gate` under `cv.renderer: script` for a gate-clean CV that script
-  would have rendered.
+  would have rendered. `precheck` still carries renderer-SPECIFIC grammar only
+  (`template`'s meta-line format); the pre-`PROFILE` name/contact header block
+  is enforced separately, by two inline STRUCTURAL guards in `cv/engine.py`
+  itself (#99), because that shape is what `cv/compose.py`'s prompt requested of
+  every renderer alike, not a layout requirement any one renderer owns.
 - **fetcher**: `sluice/fetchers/`, selected by `fetcher:` (default `camofox`).
   Implementations: `camofox` (the headless-browser HTTP server).
 - **sources**: `ingest/sources/`, the registry all of the above are modelled on.

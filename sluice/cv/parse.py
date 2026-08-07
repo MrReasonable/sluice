@@ -383,10 +383,25 @@ def parse_cv(text: str) -> CvDocument:
     # then name heading, then PROFILE). A model that emits the conventional CV order
     # instead -- name first, contact details after -- yields `name="Email: ..."` and a
     # contact block containing the real name, with nothing to catch it: both fields are
-    # free text with no shape to validate against. Not fixed here because there is no
+    # free text with no shape to validate against. Not fixed HERE because there is no
     # reliable SHAPE test to tell the two orderings apart (a name can look like
     # anything, contact details are not universally regex-shaped), and guessing wrong
     # would trade one silent misassignment for another rather than removing it.
+    #
+    # #99: this is also what happens when a composer prepends a stray preamble
+    # sentence ahead of the name -- one MORE non-blank line than either order above,
+    # silently absorbed the same way. That case IS covered now, deliberately NOT
+    # here: `cv/engine.py`'s retry loop compares this same header block against
+    # `cvcfg.name`/`cvcfg.contact`, ground truth this pure parser never has access
+    # to (it takes only `text`). Tightening THIS function to refuse the shape
+    # instead would only protect the `template` renderer (the `script` renderer
+    # implements no `precheck` to reach it through) and would force a THIRD
+    # documented exception to `validate(cv, bundle) == [] ⇒ parse_cv(cv) does not
+    # raise` -- see tests/test_cv_parse.py's implication sweep -- for zero added
+    # coverage on the path that actually ships. Deliberately not covered here:
+    # test_a_preamble_line_is_gate_clean_and_parsed_without_refusal_on_purpose pins
+    # this as intentional so a future reader does not "fix" it by minting that
+    # third exception.
     name = _strip_cite(header_lines[-1])
     contact = _strip_cite("\n".join(header_lines[:-1]))
 
