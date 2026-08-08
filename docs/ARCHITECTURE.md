@@ -59,7 +59,7 @@ Shared by every sub-app:
   there were five, five when a sixth landed) with nothing going red either
   time. `abspath` ONLY where the
   value outlives the cwd it was read in, whether by being written down
-  (`questions.py`, and the preset `cli.py` hands `sluice init`) or compared
+  (`questions.py`, and the preset `cli.py` hands `job-sluice init`) or compared
   (`cli.py`'s `--vault` against `$VAULT_DIR`). Neither is true of what `resolve`
   returns, so it does not abspath, and a relative explicit value comes back
   exactly as written. At CONSUMPTION, neither -- except that a path becoming a
@@ -186,7 +186,7 @@ whichever neighbour it was written next to:
    simply invisible to apply without the pointer. A held lead is skipped on
    re-run so a non-deterministic re-audit cannot promote it by luck.
    (`needs-signoff` and `skipped-needs-signoff` are `CvResult` run-report
-   labels, not `status`-key values.) `sluice cv signoff --lead X` promotes
+   labels, not `status`-key values.) `job-sluice cv signoff --lead X` promotes
    the held CV after the candidate reviews the flagged claims; `--discard`
    rejects it and frees a fresh compose. The default is on
    (`cv.require_signoff`); it never touches the pure hard gate.
@@ -222,7 +222,7 @@ whichever neighbour it was written next to:
 
 ## `onboard/` — a command package, not a sixth sub-app
 
-`sluice/onboard/` backs `sluice init` (#8). It sits BESIDE the pipeline rather
+`sluice/onboard/` backs `job-sluice init` (#8). It sits BESIDE the pipeline rather
 than inside it: nothing in `ingest -> triage -> cv -> apply -> track` imports it,
 and it has no engine, no store of its own and no place in any run.
 
@@ -415,7 +415,7 @@ not `changed` -- nothing was written, so there is nothing to report as a change)
 
 **Lead staleness** (#9) is the other human-gated read-path pass. `lead_ttl_days`
 (root `Config`, default `0` = off) is the age past which a lead's `last_seen`
-makes it stale. `sluice leads expire` REPORTS the stale set and writes nothing;
+makes it stale. `job-sluice leads expire` REPORTS the stale set and writes nothing;
 `--expire [SLUG...]` dismisses everything reported, or only the slugs named, by
 EXACT slug equality. It moves a lead to `dismiss` — the triage-owned end state,
 never a `_TERMINAL`, since every terminal is application-owned — recording the
@@ -435,7 +435,7 @@ proxy: whether a role is still open can only be answered on the employer's own
 site, so it does not replace checking before applying.
 
 A fourth property sits beside the write contract, but a deliberately weaker one:
-**read-path dedup** (#23) is human-gated, not automatic. `sluice leads dedupe`
+**read-path dedup** (#23) is human-gated, not automatic. `job-sluice leads dedupe`
 clusters already-stored lead notes it suspects are duplicates and REPORTS the
 clusters; it changes nothing. `--merge <id> [<id>...]` merges only the clusters
 the human names, by a report id that hashes the cluster's membership, so an id
@@ -459,7 +459,7 @@ under `_merged/` at all — while pruning the name at every depth would
 instead hide a same-named folder the *user* made and mint duplicates of its notes.
 Excluding it by name is load-bearing regardless: before the scan was recursive it was
 invisible only because `os.listdir` is flat, and a walk that reached it would return
-every loser `sluice leads dedupe --merge` archived, undoing #81.
+every loser `job-sluice leads dedupe --merge` archived, undoing #81.
 
 Two rules follow from sharing a directory with the user's own notes. A file counts as
 a lead when EITHER `company` or `role` is present (`_is_lead_note`), and is excluded
@@ -492,7 +492,7 @@ archives automatically. An unknown value raises and lists the valid names, at BO
 `load_config` (so a YAML typo is a usage error, not a traceback) and `Vault.__init__`
 (so the ~150 direct `Vault(...)` constructions are covered too).
 
-**`sluice leads reconcile`** is the only pass that MOVES a lead note. It reports by
+**`job-sluice leads reconcile`** is the only pass that MOVES a lead note. It reports by
 default and moves on `--apply`; there is no `--dry-run`, because the default *is* the
 dry run. It moves notes only within the **managed** folders — the leads-dir root, plus
 the layout's own folders. The root is seeded explicitly and is not derivable: under
@@ -623,8 +623,8 @@ still reported. Repairing the state is NOT reconcile's job, and #1 settled that
 explicitly: the slug IS the note filename, so a rename orphans the note from
 `_resolve_path`'s candidate walk and the next scrape mints a fresh one, while
 choosing which twin survives is a merge decision `resolve_merge_status` owns.
-`sluice leads reconcile` REPORTS the pair under `ambiguous`, names both paths and
-moves neither; the repair is `sluice leads dedupe --merge`, or a hand rename.
+`job-sluice leads reconcile` REPORTS the pair under `ambiguous`, names both paths and
+moves neither; the repair is `job-sluice leads dedupe --merge`, or a hand rename.
 
 Sluice does not write this state. Creates go to one directory, `_resolve_path`
 refuses an ambiguous candidate, and — since a stale scan-set cache would otherwise
@@ -689,7 +689,7 @@ paths, so every command that reads leads says so. What it costs is that the twin
 enters `seen.db` (`updated` and `merged` are both on the sink's allowlist), so
 *ingest* stops re-reporting the ambiguity, and the other twin's `last_seen` stays
 frozen. Sluice does not create this state — it arrives from a human with a filesystem
-— and repairing it belongs with `sluice leads dedupe --merge` (or a hand
+— and repairing it belongs with `job-sluice leads dedupe --merge` (or a hand
 rename). `leads reconcile` REPORTS such a pair and declines to move either note:
 the filename is the slug, so it cannot rename, and it must not pick a survivor.
 
@@ -834,7 +834,7 @@ Four points in the config are the seams for pluggable adapters.
   This seam has a second, OPTIONAL member too: `preflight() -> dict`, the same
   shape as the renderer seam's `precheck` below (undeclared on the `Protocol`
   for the identical reason -- an optional member must stay optional to
-  declare). `sluice doctor` reaches it via `getattr(store, "preflight", None)`;
+  declare). `job-sluice doctor` reaches it via `getattr(store, "preflight", None)`;
   an implementation that omits it reports nothing for that component rather
   than being treated as broken. `Vault.preflight` returns FACTS only (does the
   vault directory exist, is the baseline CV readable, is a Judging Profile
@@ -847,7 +847,7 @@ Four points in the config are the seams for pluggable adapters.
   `template`). Implementations: `template` (fills a user's own Jinja2 template --
   or the packaged default at `sluice/templates/cv_plain.html.j2` when
   `cv.template` is blank -- with the parsed CV, then renders it via WeasyPrint;
-  needs `pip install 'sluice[render]'`) and `script` (the full-control escape
+  needs `pip install -e '.[render]'`) and `script` (the full-control escape
   hatch: shells out to an external render script at `cv.render_script`). Note
   the shipped `render_script` default points at a file that does not exist in
   the repo; `script` says so at construction rather than dying after a CV has
@@ -879,7 +879,7 @@ Four points in the config are the seams for pluggable adapters.
   Implementations: `camofox` (the headless-browser HTTP server).
 - **sources**: `ingest/sources/`, the registry all of the above are modelled on.
 
-`sluice doctor` is a read-only preflight over the whole pipeline, not only the backend
+`job-sluice doctor` is a read-only preflight over the whole pipeline, not only the backend
 seam: it enumerates every configured backend (primary and fallback, per sub-app) and
 classifies each as `ok`/`degraded`/`dead`, then does the same for a second table of
 component checks -- the renderer (does `cv.renderer` actually construct, catching a
@@ -898,7 +898,9 @@ unconfigured preference simply passes every lead through) is the shipped default
 legitimate -- grading it as a failure would be the 672ad2a class of bug (see Invariants)
 aimed at doctor's own exit status. Live round-trip by default; `--offline` for a
 config-only check (the component checks were already local, so `--offline` changes
-nothing about them); `--strict` to also fail on degraded.
+nothing about them); `--strict` to also fail on degraded. See `docs/USAGE.md` for every
+flag `doctor` and the rest of the CLI take, and `docs/CONFIGURATION.md` for every config
+key these seams read.
 
 ## Injected collaborators — the other kind of seam
 

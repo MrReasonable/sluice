@@ -93,7 +93,7 @@ that touches them, and do not "tidy" them without a test:
   truncated), advancing through #5's location-suffix and title-digest candidates so two notes split
   only on a PROVEN difference (`same_opportunity`) -- the same title at one firm in two cities now
   yields two notes, not one. Drifted company/title strings that still escape both are reconciled
-  after the fact by the human-gated `sluice leads dedupe` (#23), which merges only what a human
+  after the fact by the human-gated `job-sluice leads dedupe` (#23), which merges only what a human
   names and archives losers reversibly -- and `_resolve_path` PROBES that archive before creating
   (#81), so the create arm now reads `_merged/` too. Any change near `_resolve_path`,
   `_archived_match`, `upsert`, `same_opportunity`, or `merge_cluster` must reckon with

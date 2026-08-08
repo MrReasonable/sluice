@@ -11,7 +11,7 @@
 # (Geography moved: the root `locations` key was read by nothing and is retired -- setting
 # it now raises. Declare where you will work under `triage.target_locations` below.)
 
-# Days since a lead was last seen in a scrape before `sluice leads expire` proposes
+# Days since a lead was last seen in a scrape before `job-sluice leads expire` proposes
 # dismissing it, and before `cv run` and `apply prep` refuse to spend on it. 0 = OFF,
 # which is the shipped default. Commented out rather than set, for the same reason as
 # `locations` above: this file is COPIED, and an active value would hand every copier a
@@ -23,7 +23,7 @@
 # How the lead store FILES your notes on disk (#1). "" (the shipped default) is flat: every note
 # in one directory, exactly as before this existed. "active_archive" splits them into Active/ and
 # Archive/ -- Archive holds dismissed leads and every finished application (rejected, accepted,
-# withdrawn) -- and NOTHING moves on its own: `sluice leads reconcile` reports the drift, and only
+# withdrawn) -- and NOTHING moves on its own: `job-sluice leads reconcile` reports the drift, and only
 # `--apply` files anything. The scan is recursive either way, so subfolders you make yourself are
 # read as leads and are never relocated. Commented out rather than set, for the same reason as
 # `lead_ttl_days` above: this file is COPIED, and an active value would hand every copier a filing
@@ -84,7 +84,7 @@ relevance_drop: ['sport and exercise psychologist']   # ...then drop any contain
 # location_noise_words:
 #   - remote
 
-# Tokens stripped from a job TITLE before `sluice leads dedupe` decides two roles are the
+# Tokens stripped from a job TITLE before `job-sluice leads dedupe` decides two roles are the
 # same posting. Empty by default (strictest: only near-identical titles cluster). Add board
 # decorations you observe. Generic examples only — never your real filter list.
 # dedupe_title_noise_words:
@@ -149,8 +149,9 @@ triage:
 #   #              use yours instead. sluice supplies the content (the fabrication-gated
 #   #              CvDocument), never the layout -- shipping a CV design would be the same
 #   #              mistake as shipping an opinion about which jobs are good. Needs
-#   #              `pip install 'sluice[render]'`; WeasyPrint's system libraries (cairo,
-#   #              pango, gdk-pixbuf) are NOT a Python dependency and cannot be made one --
+#   #              `pip install -e '.[render]'` (there is no PyPI release yet); WeasyPrint's
+#   #              system libraries (cairo, pango, gdk-pixbuf) are NOT a Python dependency and
+#   #              cannot be made one --
 #   #              see README's Rendering prerequisites, including a macOS loader-path
 #   #              gotcha that is easy to hit even with the libraries installed.
 #   #   script   - the full-control escape hatch: shells out to an external render script
@@ -167,7 +168,7 @@ triage:
 #   template: <path-to-your-template.html.j2>
 #   render_script: ./scripts/cv_render_v2.py
 #   # An `unsupported` audit claim (anywhere in the CV, not just the profile) WITHHOLDS the
-#   # send-ready pointer until you `sluice cv signoff` the lead, rather than auto-serving.
+#   # send-ready pointer until you `job-sluice cv signoff` the lead, rather than auto-serving.
 #   # Ships on (a safety valve, not a preference); set false to restore auto-serve.
 #   require_signoff: true
 #   # Required before composing works (#99): a CV composed while this is still the
@@ -222,7 +223,7 @@ track:
   # domain (a DKIM/DMARC/SPF pass aligned with it) -- a From header is free text
   # anyone can forge, and a wrong `applied` silently suppresses a real application.
   # A corroborated (ATS-relay + company-in-body), unauthenticated or ambiguous match
-  # always proposes for `sluice track confirm`, regardless of this value.
+  # always proposes for `job-sluice track confirm`, regardless of this value.
   auto_apply_min: 0.75
   # ats_relay_domains and job_board_domains together list the hosts SHARED BY MANY
   # EMPLOYERS: ATS relays, and the job boards sluice scrapes. Both are SAFETY
