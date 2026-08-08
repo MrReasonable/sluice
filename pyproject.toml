@@ -53,7 +53,7 @@ test = ["pytest", "faker", "pytest-cov", "jinja2", "setuptools>=83.0.0", "build"
 
 # `packages.find` selects PACKAGES, not DATA. Without this table a built wheel ships
 # sluice/templates/__init__.py and NOT the template beside it -- measured 2026-08-06 --
-# so every `pip install sluice` would get the default renderer with no template to render.
+# so every `pip install job-sluice` would get the default renderer with no template to render.
 [tool.setuptools.package-data]
 sluice = ["templates/*.html.j2"]
 

@@ -54,7 +54,7 @@ worse than none.)
 
 4. **Offline and hermetic.** No test may touch the network, a real Camofox server, a real vault, or
    a real backend. Parsers are tested against golden fixtures captured with
-   `sluice ingest test-source ID --raw`. Impure `fetch` is separated from pure `parse` precisely so
+   `job-sluice ingest test-source ID --raw`. Impure `fetch` is separated from pure `parse` precisely so
    `parse` is testable offline — a test that needs a browser means the seam was crossed.
 
 5. **Determinism.** Seeds are fixed (`Faker.seed(20260713)`). No wall-clock dependence, no ordering

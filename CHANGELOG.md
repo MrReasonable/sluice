@@ -54,30 +54,34 @@ previous release to differ from.
 `ingest -> triage -> cv -> apply -> track`, each a sub-app under a shared core, driven by
 one YAML file and the environment.
 
-- **`sluice init`** — an onboarding wizard that writes a config from a question catalogue
+- **`job-sluice init`** — an onboarding wizard that writes a config from a question catalogue
   and scaffolds a Judging Profile in your vault. Every question you skip is written
   **commented out**, so an unanswered run produces a config that behaves exactly like no
   config at all. It never overwrites an existing file, so re-running is safe.
-- **`sluice ingest`** — scrapes configured job boards through a browser fetcher into a
+- **`job-sluice ingest`** — scrapes configured job boards through a browser fetcher into a
   lead store, de-duplicating against what it has already seen. Sources are declarative
   plugins; one broken source is logged and skipped rather than sinking the run.
-- **`sluice triage`** — deterministic classification plus an optional LLM judge that reads
+- **`job-sluice triage`** — deterministic classification plus an optional LLM judge that reads
   its criteria from *your* vault (`Job Applications/Judging Profile.md`). There IS a
   fallback compiled in, and it is not a hidden set of preferences: it states only that
   nothing is configured and declines to invent an opinion. `--no-llm` runs the
   deterministic half alone.
-- **`sluice cv`** — composes a CV tailored to a shortlisted lead from a closed bundle of
+- **`job-sluice cv`** — composes a CV tailored to a shortlisted lead from a closed bundle of
   your verified experience entries, then gates it. See *Fabrication gate* below.
-- **`sluice apply`** — stages the rendered CV and a prep packet for a shortlisted lead.
-- **`sluice track`** — reconciles the funnel from email and calendar signals, and can
+- **`job-sluice apply`** — stages the rendered CV and a prep packet for a shortlisted lead.
+- **`job-sluice track`** — reconciles the funnel from email and calendar signals, and can
   advance a lead to `applied` from a confirmation receipt when the evidence is strong
   enough (and proposes it for a human otherwise).
-- **`sluice leads`** — maintenance passes: `dedupe`, `expire`, `reconcile`. These
+- **`job-sluice leads`** — maintenance passes: `dedupe`, `expire`, `reconcile`. These
   **report and change nothing** until told otherwise; the pipeline commands write by
   default. None of them offers `--dry-run`, because the default *is* the dry run.
-- **`sluice doctor`** — preflights every configured backend. `--offline` classifies from
-  config alone without a round trip.
-- **`sluice --version`** — prints the version, for bug reports.
+- **`job-sluice doctor`** — preflights every configured backend, the renderer, `cv.name`/
+  `cv.contact` identity, the store's on-disk artefacts (vault, baseline CV, Judging Profile,
+  Experience Library), the track sub-app's Google adapter, and every list-typed preference
+  gate's abstain/active posture. `--offline` classifies from config alone without a round
+  trip; `--strict` also fails on a degraded (not just dead) result.
+- **`job-sluice health`** — per-source scrape baseline and retire state.
+- **`job-sluice --version`** — prints the version, for bug reports.
 
 ### Guarantees this release makes
 
@@ -111,22 +115,26 @@ These are enforced by tests rather than promised in prose.
   fails is never rendered — composition retries once, then the lead is skipped. The
   qualitative gap that leaves is exactly what the layer above it is for: an advisory LLM
   audit flags unsupported claims and withholds the send-ready pointer until you sign off
-  (`cv.require_signoff`, on by default; `sluice cv signoff` releases a held lead).
+  (`cv.require_signoff`, on by default; `job-sluice cv signoff` releases a held lead).
 
 ### Requirements and known limitations
 
 - **Python 3.12+.** `sluice/` is standard-library only apart from `pyyaml`; the Google and
   WeasyPrint integrations are opt-in extras.
-- **Rendering needs setting up before `sluice cv run` can produce a PDF.** The default
-  `cv.renderer` is `script`, which shells out to an external render script that this
-  repository does not ship — so on a fresh install it fails at construction with a message
-  telling you so. Either point `cv.render_script` at your own script, or install the
-  bundled renderer with `pip install 'sluice[render]'` and set `cv.renderer: weasyprint`.
+- **Rendering needs setting up before `job-sluice cv run` can produce a PDF.** The default
+  `cv.renderer` is `template`, which fills a Jinja2 template — the packaged default, or your
+  own via `cv.template` — and hands it to WeasyPrint. That needs the `render` extra
+  (`pip install -e '.[render]'` — there is no PyPI release yet) plus WeasyPrint's own system
+  libraries (cairo, pango, gdk-pixbuf), which pip cannot install; on a fresh install missing
+  either, `cv run` fails at renderer construction with a message telling you so, before any
+  composition is attempted.
+  `cv.renderer: script` remains as a full-control escape hatch that shells out to a render
+  script you supply, needing neither the extra nor the system libraries.
 - **Ingest needs a running browser server**, and so does `cv` whenever a lead's dossier is
   not already cached — the fetcher is opened lazily on a cache miss. The LLM backends speak
   HTTP, and `track` and a non-`--offline` `doctor` reach the network too. The genuinely
-  offline commands are `triage --no-llm`, `leads`, `init`, and `doctor --offline`.
+  offline commands are `triage run --no-llm`, `leads`, `health`, `init`, and `doctor --offline`.
 - **The LLM backends need credentials** unless you use the flat-rate CLI backend. Run
-  `sluice doctor` to see what is reachable before a real run.
+  `job-sluice doctor` to see what is reachable before a real run.
 
 [0.1.0]: https://github.com/MrReasonable/sluice/releases/tag/v0.1.0
