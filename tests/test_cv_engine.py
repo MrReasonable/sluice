@@ -739,6 +739,53 @@ def test_a_preamble_reaches_the_retry_not_the_bin(monkeypatch):
     assert rend.rendered == [CLEAN_CV], "the renderer got the preamble-corrupted CV"
 
 
+# ── #28 (sixth branch): a conversational envelope around an otherwise-clean CV ──
+def test_a_trailing_conversational_envelope_is_recovered_on_the_first_attempt(monkeypatch):
+    # Captured on the real production path (#28): the composer wraps an
+    # otherwise gate-clean CV in a closing remark behind a single markdown-style
+    # '---' fence, with NO leading preamble -- the model complying with "no
+    # preamble" but still appending a closing summary. This is the shape the
+    # original #28 fix candidate's two-fence-only unwrap did not cover, and
+    # which the #99/#100 header guards above cannot see at all (they only
+    # inspect lines BEFORE PROFILE). Recovery happens in compose.py itself, so
+    # this must render on the FIRST attempt -- be.calls == 2 (one compose, one
+    # audit) proves no retry was needed, not merely that one eventually worked.
+    _served(monkeypatch)
+    enveloped = (CLEAN_CV + "\n\n---\n\n"
+                 "CV tailored for Example Foundry's Analyst role. "
+                 "All bullets cited from source bundle.")
+    v = FakeVault(ENTRIES)
+    rend = FakeRenderer()
+    be = FakeBackend(enveloped)
+    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
+                v, _cfg(), be, FakeCache(), renderer=rend)
+    assert r.status == "rendered", r.violations
+    assert be.calls == 2, "the envelope reached a second compose attempt, not compose.py's own recovery"
+    assert rend.rendered == [CLEAN_CV]
+
+
+def test_a_header_stripped_between_name_and_profile_still_fails_closed():
+    # The end-to-end proof for the accepted gap documented on
+    # test_unwrap_envelope_may_strip_a_real_header_when_a_fence_splits_it_from_profile
+    # (test_cv_compose.py): compose.py's envelope recovery can misread a fence
+    # sitting between the name and PROFILE as a leading aside and strip the real
+    # name with it -- an unobserved shape, but worth pinning that it degrades
+    # safely. The resulting CV has no header line before PROFILE, which is
+    # exactly what the pre-existing #99 STRUCTURAL count guard rejects, so this
+    # must still report skipped-gate and render nothing, not a CV missing its
+    # own name.
+    lines = CLEAN_CV.splitlines()
+    name_idx = lines.index("JANE ROE")
+    corrupted = "\n".join(lines[:name_idx + 1] + ["---"] + lines[name_idx + 1:])
+    v = FakeVault(ENTRIES)
+    rend = FakeRenderer()
+    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
+                v, _cfg(), FakeBackend(corrupted), FakeCache(), renderer=rend)
+    assert r.status == "skipped-gate"
+    assert any("STRUCTURAL" in x and "before PROFILE" in x for x in r.violations), r.violations
+    assert rend.rendered == [], "a CV missing its own name was RENDERED"
+
+
 def test_the_shipped_default_name_is_refused_before_any_spend():
     # #99 3b: the "YOUR NAME" headline needs NO preamble at all to occur -- a CV
     # composed under the unconfigured default is complying exactly with what the
