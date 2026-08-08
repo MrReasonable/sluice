@@ -170,6 +170,58 @@ def test_unwrap_envelope_never_strips_a_section_whose_header_already_printed():
     assert C._unwrap_agent_envelope(corrupted) == corrupted
 
 
+def test_unwrap_envelope_never_strips_an_en_dash_marked_education_entry():
+    # Critical finding (sluice-invariant-reviewer, round 2 of local /review-pr
+    # on this branch): the fix for the previous round's WORK-entry finding only
+    # recognized an ASCII '-' bullet, but cv/parse.py's own _TRAILING_MARKERS
+    # ("-", "•", "*", "–", "—") accepts an en dash or em dash as
+    # an equally real, gate-clean CERTIFICATES/EDUCATION marker (parse.py's own
+    # comment cites the en dash as a real production-observed format). A fence
+    # right after the EDUCATION header, followed by an en-dash-marked entry,
+    # reproduced the identical silent-deletion bug through a marker
+    # _looks_like_cv_content simply hadn't been told about.
+    lines = CV_BODY.splitlines()
+    edu_header_idx = lines.index("EDUCATION")
+    en_dash_entry = "– Example University"
+    corrupted = "\n".join(lines[:edu_header_idx + 1] + ["---", en_dash_entry])
+    assert C._unwrap_agent_envelope(corrupted) == corrupted
+
+
+def test_unwrap_envelope_leaves_a_three_fence_document_untouched_in_the_middle():
+    # Low finding (sluice-test-engineer, round 2): pins that a genuine interior
+    # '---' divider survives even when the document ALSO has short asides on
+    # both outer sides -- three fences, not two. The first and last fences are
+    # still the only ones consulted for stripping; the interior one must never
+    # be mistaken for either boundary.
+    wrapped = "\n".join([
+        "Here's the tailored CV:", "", "---", "",
+        CV_BODY[:CV_BODY.index("CERTIFICATES")].rstrip(),
+        "---",
+        CV_BODY[CV_BODY.index("CERTIFICATES"):],
+        "", "---", "", "Done.",
+    ])
+    result = C._unwrap_agent_envelope(wrapped)
+    assert "Here's the tailored CV" not in result
+    assert "Done." not in result
+    assert "---" in result, "the genuine interior divider must survive"
+
+
+def test_unwrap_envelope_may_leave_a_bulleted_aside_unstripped():
+    # Medium finding (sluice-invariant-reviewer, round 2), pinned as an
+    # accepted, safe-direction limitation rather than fixed: a genuine
+    # conversational aside formatted as its own markdown bullet list defeats
+    # _looks_like_cv_content's bullet check, the same way it protects a real
+    # CV entry. This degrades safely rather than silently -- the leftover '---'
+    # fence still trips slop.py's DOUBLE-HYPHEN-DASH rule, so the CV still
+    # fails the gate and retries/skips rather than shipping with the aside
+    # baked in. Never observed on the real production path (every captured
+    # aside has been plain prose); see
+    # test_unwrap_envelope_may_strip_a_real_header_when_a_fence_splits_it_from_profile
+    # for the sibling accepted gap on the opposite side of this same tradeoff.
+    wrapped = "\n".join([CV_BODY, "", "---", "", "- Let me know if you'd like edits."])
+    assert C._unwrap_agent_envelope(wrapped) == wrapped
+
+
 def test_unwrap_envelope_may_strip_a_real_header_when_a_fence_splits_it_from_profile():
     # Deliberately accepted gap, not a bug, and pinned here so it cannot regress
     # into something worse unnoticed: the header block (contact + name) is the

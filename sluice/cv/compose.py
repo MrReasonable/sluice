@@ -82,13 +82,28 @@ def build_prompt(bundle_text, jd, company, role, name="Your Name", contact="",
 _REQUIRED_HEADERS = {"PROFILE", "WORK EXPERIENCE", "CERTIFICATES", "EDUCATION"}
 
 
+# Deliberately a LITERAL duplicate of cv/parse.py's _TRAILING_MARKERS, not an
+# import of it: compose.py runs before any renderer or parser is chosen, and
+# reaching into parse.py's grammar from here would be the same cross-layer
+# coupling cv/engine.py's own STRUCTURAL guards already refuse for the
+# identical reason (see their comment: "the engine may guard what the prompt
+# required; only a renderer may guard what its own layout needs" --
+# recomputed rather than imported). The two lists drifting apart is the
+# accepted cost of that separation; a marker parse.py adds and this list
+# doesn't reproduces the exact bug this constant exists to close (round 2 of
+# this branch's own /review-pr: an en-dash-marked EDUCATION entry, a real
+# gate-clean format parse.py's own comment cites as production-observed, was
+# silently stripped when this list only knew the ASCII '-').
+_BULLET_MARKERS = ("-", "•", "*", "–", "—")
+
+
 def _looks_like_cv_content(line):
-    """A bullet ("- ...") or a pipe-separated meta line ("dates | LOCATION |
-    Role") -- the two shapes every real entry under WORK EXPERIENCE,
-    CERTIFICATES and EDUCATION is built from (see _RULES's format block
-    above). Neither shape occurs in the short conversational asides captured
-    on the real production path (#28): a model's preamble or closing remark
-    is plain prose, never a bulleted or pipe-delimited line.
+    """A bullet (any of _BULLET_MARKERS) or a pipe-separated meta line
+    ("dates | LOCATION | Role") -- the two shapes every real entry under WORK
+    EXPERIENCE, CERTIFICATES and EDUCATION is built from (see _RULES's format
+    block above). Neither shape occurs in the short conversational asides
+    captured on the real production path (#28): a model's preamble or closing
+    remark is plain prose, never a bulleted or pipe-delimited line.
 
     This is what closes two real content-loss findings from this branch's own
     /review-pr round, both confirmed by execution: a genuine final WORK entry
@@ -99,8 +114,16 @@ def _looks_like_cv_content(line):
     re-seen by the header check below). Checking for the entry's own shape,
     not merely the section header's presence, catches both without needing to
     remember what appeared on the other side of the fence.
+
+    Accepted tradeoff, not a bug: a genuine conversational aside formatted as
+    its own bullet (e.g. "- Let me know if you'd like edits.") is
+    indistinguishable from a real bullet by shape alone and so is left
+    unstripped too. This degrades safely rather than silently -- the leftover
+    fence still trips slop.py's DOUBLE-HYPHEN-DASH rule, so the CV still fails
+    the gate and retries/skips rather than shipping with the aside baked in.
+    See test_unwrap_envelope_may_leave_a_bulleted_aside_unstripped.
     """
-    return line.startswith("-") or " | " in line
+    return line.startswith(_BULLET_MARKERS) or " | " in line
 
 
 def _is_envelope_aside(lines, max_lines=3):
