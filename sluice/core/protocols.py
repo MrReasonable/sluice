@@ -56,7 +56,7 @@ class RenderError(RuntimeError):
     adapter to catch an error the OTHER adapter also raises is the seam inverted.
 
     Raised at CONSTRUCTION wherever the failure is knowable there -- a missing template or
-    render script, an uninstalled `sluice[render]`, a template that is not valid Jinja2.
+    render script, an uninstalled `job-sluice[render]`, a template that is not valid Jinja2.
     That is the whole point of the type: `cv/engine.py` reaches a renderer only after a
     composition and a fabrication-gate pass, so a failure that waits until `render()` has
     already cost the LLM spend and arrives with no recovery. Callers that can proceed

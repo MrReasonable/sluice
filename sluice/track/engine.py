@@ -237,10 +237,18 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                 rep.proposed += 1
                 target = _PROPOSE_TARGET.get(ev.type, "")
                 if ev.lead_slug and target:
-                    hint = f'sluice track confirm --lead "{ev.lead_slug}" --to {target}'
+                    hint = f'job-sluice track confirm --lead "{ev.lead_slug}" --to {target}'
                 elif ev.candidates:
-                    opts = "; ".join(f'--lead "{c}" --to {target or "<status>"}' for c in ev.candidates)
-                    hint = f"(ambiguous lead; pick one: sluice track confirm {opts})"
+                    # Each option needs its own "job-sluice track confirm" prefix -- prefixing
+                    # only the first (as an earlier version did) leaves every option after the
+                    # first ";" reading as a bare --lead/--to fragment, not a runnable command.
+                    # Stays single-line: `hint` is printed as one row of the OPEN PROPOSALS
+                    # report (cli.py's `... {e.proposal} :: {e.hint}`), so an embedded newline
+                    # here would break that format rather than just being ugly.
+                    opts = "; ".join(
+                        f'job-sluice track confirm --lead "{c}" --to {target or "<status>"}'
+                        for c in ev.candidates)
+                    hint = f"(ambiguous lead; pick one: {opts})"
                 else:
                     hint = f'(no runnable action for type "{ev.type}" / lead "{res.lead}"; review manually)'
                 entry = Entry(message_id=mid, lead=ev.lead_slug or "",
