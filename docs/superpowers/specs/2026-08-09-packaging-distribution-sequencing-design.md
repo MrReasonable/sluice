@@ -37,12 +37,21 @@ its head at once.
 PyPI is first among the channels because it's the one mechanism #104 itself calls genuinely
 unproven — Trusted Publishing has never run in this repo — so it gets proven earliest, via a
 TestPyPI dry run, rather than discovered broken at the first real release alongside three
-other new channels. deb/rpm and Homebrew both consume the wheel the `build` job produces, so
-they're ordered after Docker establishes the "install the built artifact, not the published
-one" pattern once. Homebrew is last: #104 calls it the highest-maintenance channel (hand
-outside code owns cairo/pango/gdk-pixbuf plus WeasyPrint's whole resource tree), and it's the
-one channel with the least reason to be time-critical — pipx/uv already give every platform a
-one-command install.
+other new channels. deb/rpm depends only on the `build` job's wheel (PR 2) — the same artifact
+Docker consumes, not Docker's `Dockerfile` itself — so it can branch and land in parallel with
+the Docker channel; the table's "Depends on: 2" is correct as written, and nothing orders it
+after PR 4. Homebrew is the one channel that genuinely depends on Docker (dependency "4" in the
+table): its bump job reuses the exact "install the built artifact, not the published one"
+pattern PR 4 establishes once, rather than reinventing it. Homebrew also lands last for an
+independent reason: #104 calls it the highest-maintenance channel (hand outside code owns
+cairo/pango/gdk-pixbuf plus WeasyPrint's whole resource tree), and it's the one channel with the
+least reason to be time-critical — pipx/uv already give every platform a one-command install.
+
+PR 1's `authors` field ships in the public sdist/wheel metadata, so it is pinned to the same
+noreply identity this repo already uses in every commit trailer (`MrReasonable
+<4990954+MrReasonable@users.noreply.github.com>`), never a personal email address; PR 1's
+`tests/test_packaging.py` extension asserts the built wheel's `METADATA` carries that identity
+and no other email.
 
 Install docs land **last**, once every channel is real, matching #104's own principle: "written
 alongside the mechanism that makes them true." Documenting a channel before it has shipped a
@@ -81,7 +90,12 @@ exercise it:
   `release-please.yml`, environment `pypi`), create the `pypi` GitHub environment, **and**
   add the separate pending trusted publisher on `test.pypi.org` (the gap above). Then
   manually trigger the `workflow_dispatch` TestPyPI dry run to prove the OIDC handshake for
-  real before it's load-bearing for an actual release.
+  real before it's load-bearing for an actual release. **Do not approve the next
+  release-please PR until this is done** — release-please merges are routine and
+  semi-automatic, and a merge landing first runs the `pypi` job straight into a missing
+  trusted publisher while `build`, `attest`, `docker` and `linux-packages` in that same
+  release still succeed, producing a publicly visible partially-failed release instead of a
+  clean first publish.
 - **After PR 4 merges**, once the first image has pushed: set the GHCR package visibility to
   public.
 - **After PR 6 merges**: create `MrReasonable/homebrew-tap` (public, empty) and install the
@@ -101,7 +115,29 @@ text-matching style (no YAML parse, since `pyyaml` is a guarded optional import)
 that inspects the workflow file itself — gating conditions, per-job permissions, which install
 command in `docs/INSTALL.md` names a channel the workflow actually produces.
 
-## Risks (carried from #104, unchanged)
+The Docker channel's one hard invariant — the `docker` job installs the `build` job's wheel,
+never `pip install job-sluice` from PyPI — falls between those two idioms (not a built artifact
+the assert-then-falsify style inspects, not the workflow file the text-matching style
+inspects), so PR 4 names its own check rather than leaving the gap implicit: a text-match
+assertion against the `Dockerfile`'s own source, asserting it does not contain the literal
+string `pip install job-sluice` and does reference the wheel path the `build` job produces. No
+real `docker build` runs inside the offline pytest suite — pulling a base image needs network,
+which this suite deliberately does not have — so this stays a text check on the `Dockerfile`
+source, the same shape `test_ci_wiring.py` already uses for the workflow YAML, not an executed
+build.
+
+PR 6's Homebrew formula lives in a separate repository (`homebrew-tap`), which could have left
+its correctness outside both idioms entirely. It doesn't: the formula is generated from a
+template committed in `sluice` itself and rendered via `brew update-python-resources` during
+the bump job, so its content is asserted with the same assert-then-falsify idiom PR 1 already
+uses for wheel metadata — assert the rendered formula names the expected `depends_on` set and
+resource versions, then strip one and assert the guard catches it — before the bump job ever
+pushes the rendered file to `homebrew-tap` over the App token. `homebrew-tap` carries no test
+suite of its own; it only ever receives an artifact already verified in `sluice`.
+
+## Risks
+
+First three carried from #104 unchanged; the fourth is specific to this sequencing:
 
 - The `pypi` Trusted Publishing job is the one mechanism proven only by the TestPyPI dry run,
   not by anything CI can assert statically.
@@ -109,3 +145,8 @@ command in `docs/INSTALL.md` names a channel the workflow actually produces.
   regenerated.
 - The `claude-cli` service, now explicitly out of #104's scope, remains unbuilt and
   undocumented until its own follow-up issue lands.
+- A release-please merge landing before the PyPI/TestPyPI trusted publishers are configured
+  produces a partially-failed release — every job but `pypi` succeeds, and the failure is
+  publicly visible on a release the maintainer approved without realizing the manual step was
+  still outstanding. Mitigated only by the explicit hold instruction in Manual-prerequisite
+  timing above; nothing in CI enforces it.
