@@ -386,18 +386,27 @@ comply with everything except "no preamble, acknowledgement, commentary, separat
 remark", wrapping an otherwise gate-clean CV in a short conversational aside on one or both sides,
 delimited by a markdown-style `---` line. `slop.py`'s unqualified `DOUBLE-HYPHEN-DASH` rule correctly
 rejects a bare `---` either way -- the fix is not to weaken that gate but to recover the real CV
-before it reaches the gate at all. `compose()`'s `_unwrap_agent_envelope` strips a short, header-free
-aside (fewer than four non-blank lines, none of them one of the CV's own section headers) from before
-the first such fence and/or after the last one; a fence anywhere else, or one with genuine CV content
-on both sides, is left untouched, because guessing wrong there would silently discard a real section
-rather than merely fail a gate that retries. It closes the specific gap the original fix candidate for
-#28 (a two-fence-only unwrap) left open: a model complying with "no preamble" still appends a closing
-remark behind a SINGLE fence, which a two-fence-only unwrap cannot see. The one accepted gap is a
-fence positioned between the name and `PROFILE` -- never observed on the real production path, since
-every captured case wraps the WHOLE CV rather than a sub-slice of its own header -- which this
-function cannot distinguish from a genuine leading aside and may strip along with the real name; that
-degrades safely rather than silently, because the resulting headerless CV still trips the `#99`
-STRUCTURAL count guard immediately above and forces the ordinary retry rather than shipping nameless.
+before it reaches the gate at all. `compose()`'s `_unwrap_agent_envelope` strips a short aside
+(fewer than four non-blank lines) from before the first such fence and/or after the last one, but
+ONLY when none of those lines is one of the CV's own section headers OR shaped like one of its
+entries (a bullet, or a pipe-separated `dates | LOCATION | Role` meta line); a fence anywhere else, or
+one with genuine CV content on either side, is left untouched, because guessing wrong there would
+silently discard a real section rather than merely fail a gate that retries. It closes the specific
+gap the original fix candidate for `#28` (a two-fence-only unwrap) left open: a model complying with
+"no preamble" still appends a closing remark behind a SINGLE fence, which a two-fence-only unwrap
+cannot see. The entry-shape check itself closes two content-loss findings from this fix's own
+`/review-pr` round, both confirmed by execution rather than argued from the code: a genuine final
+WORK EXPERIENCE entry (company line, meta line, one cited bullet) is exactly as short and as
+header-free as a real conversational aside, and so is a section's own body when a fence lands right
+after that section's header rather than before it, since the header is then on the wrong side of the
+fence for the header check alone to see. Checking for the entry's own shape catches both without
+needing to remember what already appeared on the other side of a fence. The one gap still accepted
+is a fence positioned between the name and `PROFILE` -- never observed on the real production path,
+since every captured case wraps the WHOLE CV rather than a sub-slice of its own header, and a bare
+name line has neither a section header nor an entry shape to be caught by -- which this function may
+still misread as a genuine leading aside and strip along with the real name; that degrades safely
+rather than silently, because the resulting headerless CV still trips the `#99` STRUCTURAL count
+guard immediately above and forces the ordinary retry rather than shipping nameless.
 
 **A renderer's `precheck` must never be STRICTER than that gate** -- with two narrowly-scoped,
 individually-justified exceptions, both stated below with the test that licenses them ("the refusal
