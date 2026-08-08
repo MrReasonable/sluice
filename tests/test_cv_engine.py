@@ -739,6 +739,25 @@ def test_a_preamble_reaches_the_retry_not_the_bin(monkeypatch):
     assert rend.rendered == [CLEAN_CV], "the renderer got the preamble-corrupted CV"
 
 
+class ComposeCountingBackend:
+    """Like FakeBackend, but counts COMPOSE calls specifically rather than every
+    complete() call -- both compose attempts route through the compose branch,
+    while a successful run's one audit call does not, so compose_calls == 1 is
+    the assertion that actually discriminates "recovered on the first attempt"
+    from "exhausted both attempts": both paths total 2 complete() calls overall
+    (2 compose + 0 audit on failure, 1 compose + 1 audit on success), which is
+    what made an earlier be.calls == 2 assertion here pass for the wrong reason
+    (sluice-test-engineer, local /review-pr on this branch)."""
+    def __init__(self, cv_out, audit_out="supported\tx\tSF1"):
+        self.cv_out = cv_out; self.audit_out = audit_out
+        self.last_backend = "primary"; self.compose_calls = 0
+    def complete(self, prompt):
+        if "SOURCE BUNDLE" in prompt and "auditing" not in prompt:
+            self.compose_calls += 1
+            return self.cv_out
+        return self.audit_out
+
+
 # ── #28 (sixth branch): a conversational envelope around an otherwise-clean CV ──
 def test_a_trailing_conversational_envelope_is_recovered_on_the_first_attempt(monkeypatch):
     # Captured on the real production path (#28): the composer wraps an
@@ -748,19 +767,19 @@ def test_a_trailing_conversational_envelope_is_recovered_on_the_first_attempt(mo
     # original #28 fix candidate's two-fence-only unwrap did not cover, and
     # which the #99/#100 header guards above cannot see at all (they only
     # inspect lines BEFORE PROFILE). Recovery happens in compose.py itself, so
-    # this must render on the FIRST attempt -- be.calls == 2 (one compose, one
-    # audit) proves no retry was needed, not merely that one eventually worked.
+    # this must render on the FIRST attempt -- compose_calls == 1 proves no
+    # retry was needed, not merely that one eventually worked.
     _served(monkeypatch)
     enveloped = (CLEAN_CV + "\n\n---\n\n"
                  "CV tailored for Example Foundry's Analyst role. "
                  "All bullets cited from source bundle.")
     v = FakeVault(ENTRIES)
     rend = FakeRenderer()
-    be = FakeBackend(enveloped)
+    be = ComposeCountingBackend(enveloped)
     r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
                 v, _cfg(), be, FakeCache(), renderer=rend)
     assert r.status == "rendered", r.violations
-    assert be.calls == 2, "the envelope reached a second compose attempt, not compose.py's own recovery"
+    assert be.compose_calls == 1, "the envelope reached a second compose attempt, not compose.py's own recovery"
     assert rend.rendered == [CLEAN_CV]
 
 
