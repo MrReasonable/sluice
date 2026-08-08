@@ -53,6 +53,116 @@ def test_prompt_forbids_a_preamble_before_the_cv():
     assert "first line of the CV" in p
 
 
+# ── #28: recover the artefact from an agent's conversational envelope ─────────
+# Captured on the real production path (#28, sixth branch): a `claude-max` compose
+# call returns an otherwise gate-clean CV wrapped in a markdown-style '---' fence,
+# either side of which carries a short conversational aside. compose.py's own
+# prompt forbids emitting a bare '---' at all ("no preamble, acknowledgement,
+# commentary, separator, or closing remark"), so unqualified `slop.py` correctly
+# treats it as a DOUBLE-HYPHEN-DASH violation -- the fix is to recover the real CV
+# before it ever reaches the gate, not to weaken the gate.
+CV_BODY = "\n".join([
+    "JANE ROE", "", "PROFILE", "I build reliable systems.", "", "WORK EXPERIENCE", "",
+    "Example Systems", "02/2023-present | Example Location A | Staff Engineer",
+    "- Shipped [EF1]", "",
+    "CERTIFICATES", "- Example Cert", "EDUCATION", "- Example University",
+])
+
+
+def test_unwrap_envelope_passes_through_text_with_no_fence():
+    assert C._unwrap_agent_envelope(CV_BODY) == CV_BODY
+
+
+def test_unwrap_envelope_strips_a_two_fence_wrapper():
+    wrapped = "\n".join([
+        "Here's the tailored CV for the Analyst role:", "", "---", "",
+        CV_BODY, "",
+        "---", "",
+        "CV tailored for Acme's Analyst role. All bullets cited from source bundle.",
+    ])
+    assert C._unwrap_agent_envelope(wrapped) == CV_BODY
+
+
+def test_unwrap_envelope_strips_a_leading_preamble_with_no_trailing_fence():
+    wrapped = "\n".join([
+        "Here's the tailored CV for the Analyst role:", "", "---", "", CV_BODY,
+    ])
+    assert C._unwrap_agent_envelope(wrapped) == CV_BODY
+
+
+def test_unwrap_envelope_strips_a_trailing_summary_with_no_leading_fence():
+    # The gap the original #28 fix candidate missed: it required TWO fences to
+    # fire, but a model complying with "no preamble" still appends a closing
+    # remark behind a SINGLE fence -- captured on the real production path (#28,
+    # comment 6) as `errors: [(95, 'DOUBLE-HYPHEN-DASH', '---')]` with no leading
+    # fence anywhere in the text.
+    wrapped = "\n".join([
+        CV_BODY, "", "---", "",
+        "CV tailored for Acme's Analyst role. All bullets cited from source bundle.",
+    ])
+    assert C._unwrap_agent_envelope(wrapped) == CV_BODY
+
+
+def test_unwrap_envelope_is_idempotent():
+    wrapped = "\n".join(["Here's the CV:", "", "---", "", CV_BODY, "", "---", "", "Done."])
+    once = C._unwrap_agent_envelope(wrapped)
+    assert C._unwrap_agent_envelope(once) == once
+
+
+def test_unwrap_envelope_leaves_a_mid_document_fence_untouched():
+    # A stray '---' deep inside real content (e.g. the composer used it as an
+    # ad-hoc divider) must NOT be treated as an envelope boundary: there is real
+    # CV material on both sides of it, not a short conversational aside, and
+    # guessing wrong here would silently discard a genuine section (CERTIFICATES,
+    # EDUCATION) -- exactly the failure class the fabrication gate exists to
+    # prevent. Left untouched for slop.py to flag on its own merits.
+    lines = CV_BODY.splitlines()
+    work_idx = lines.index("WORK EXPERIENCE")
+    corrupted = "\n".join(lines[:work_idx + 1] + ["---"] + lines[work_idx + 1:])
+    assert C._unwrap_agent_envelope(corrupted) == corrupted
+
+
+def test_unwrap_envelope_leaves_a_fence_immediately_before_a_real_section_untouched():
+    # A single fence sitting right before a short, entirely legitimate final
+    # section (EDUCATION, itself only two lines here) must not be mistaken for a
+    # trailing envelope postamble merely because the remaining text is short.
+    lines = CV_BODY.splitlines()
+    edu_idx = lines.index("EDUCATION")
+    corrupted = "\n".join(lines[:edu_idx] + ["---"] + lines[edu_idx:])
+    assert C._unwrap_agent_envelope(corrupted) == corrupted
+
+
+def test_unwrap_envelope_may_strip_a_real_header_when_a_fence_splits_it_from_profile():
+    # Deliberately accepted gap, not a bug, and pinned here so it cannot regress
+    # into something worse unnoticed: the header block (contact + name) is the
+    # one part of a genuine CV that carries none of _REQUIRED_HEADERS's keywords
+    # -- the exact gap cv/engine.py's own #99/#100 STRUCTURAL guards exist to
+    # cover, because no shape test can tell a genuine name line from a stray
+    # aside in isolation. A fence positioned between the name and PROFILE --
+    # never observed on the real production path; every captured case wraps the
+    # WHOLE CV, not a sub-slice of its own header -- is therefore misread as a
+    # leading aside and stripped. This is safe rather than silent: the result has
+    # no header line at all before PROFILE, which engine.py's own STRUCTURAL
+    # guard (header line-count) still rejects, forcing the ordinary retry -- a
+    # wasted attempt, never a CV that silently ships without its own name (see
+    # test_a_header_stripped_between_name_and_profile_still_fails_closed in
+    # test_cv_engine.py for the end-to-end proof).
+    lines = CV_BODY.splitlines()
+    name_idx = lines.index("JANE ROE")
+    corrupted = "\n".join(lines[:name_idx + 1] + ["---"] + lines[name_idx + 1:])
+    result = C._unwrap_agent_envelope(corrupted)
+    assert "JANE ROE" not in result
+
+
+def test_compose_strips_an_agent_envelope_before_returning():
+    wrapped = "\n".join([
+        "Here's the tailored CV:", "", "---", "", CV_BODY, "", "---", "", "Done.",
+    ])
+    be = FakeBackend([wrapped])
+    out = C.compose(be, "B", "J", "Acme", "Analyst")
+    assert out == CV_BODY
+
+
 def test_cv_prompt_expresses_no_role_or_culture_preference():
     # neu-001: the triage guard test_shipped_prompt_expresses_no_role_or_culture_
     # preference (tests/test_prompt.py) covers only the TRIAGE prompt, not this CV

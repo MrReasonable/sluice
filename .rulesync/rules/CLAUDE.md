@@ -378,6 +378,27 @@ mirroring the `#9` staleness guard beside it -- the same "quiet wrong default" p
 `cv/config.py`'s `load_cv_config` already takes for other fields, applied here to the single most
 visible line of an artefact sent under the user's identity.
 
+**`compose.py` recovers the artefact from an agentic backend's conversational envelope (#28).**
+`claude --print` is Claude Code, an agent, not a completion endpoint: given a "compose X" prompt it
+may write a file and summarise, ask clarifying questions, hedge about missing tools, comply with a
+drifted output format, or -- the shape that survived #91's argv fix and #99/#100's header guards --
+comply with everything except "no preamble, acknowledgement, commentary, separator, or closing
+remark", wrapping an otherwise gate-clean CV in a short conversational aside on one or both sides,
+delimited by a markdown-style `---` line. `slop.py`'s unqualified `DOUBLE-HYPHEN-DASH` rule correctly
+rejects a bare `---` either way -- the fix is not to weaken that gate but to recover the real CV
+before it reaches the gate at all. `compose()`'s `_unwrap_agent_envelope` strips a short, header-free
+aside (fewer than four non-blank lines, none of them one of the CV's own section headers) from before
+the first such fence and/or after the last one; a fence anywhere else, or one with genuine CV content
+on both sides, is left untouched, because guessing wrong there would silently discard a real section
+rather than merely fail a gate that retries. It closes the specific gap the original fix candidate for
+#28 (a two-fence-only unwrap) left open: a model complying with "no preamble" still appends a closing
+remark behind a SINGLE fence, which a two-fence-only unwrap cannot see. The one accepted gap is a
+fence positioned between the name and `PROFILE` -- never observed on the real production path, since
+every captured case wraps the WHOLE CV rather than a sub-slice of its own header -- which this
+function cannot distinguish from a genuine leading aside and may strip along with the real name; that
+degrades safely rather than silently, because the resulting headerless CV still trips the `#99`
+STRUCTURAL count guard immediately above and forces the ordinary retry rather than shipping nameless.
+
 **A renderer's `precheck` must never be STRICTER than that gate** -- with two narrowly-scoped,
 individually-justified exceptions, both stated below with the test that licenses them ("the refusal
 must be answerable WITHOUT inventing content"); read to the end of this section before concluding a
