@@ -132,6 +132,44 @@ def test_unwrap_envelope_leaves_a_fence_immediately_before_a_real_section_untouc
     assert C._unwrap_agent_envelope(corrupted) == corrupted
 
 
+def test_unwrap_envelope_never_strips_a_genuine_final_work_entry():
+    # Critical finding (sluice-invariant-reviewer, local /review-pr on this
+    # branch): a real final WORK EXPERIENCE entry -- company line, a
+    # pipe-separated meta line, one cited bullet -- is exactly 3 non-blank
+    # lines and contains none of _REQUIRED_HEADERS's literal tokens, so the
+    # original "short and header-free" heuristic misread it as a disposable
+    # trailing aside and deleted it in full. validate() has no WORK EXPERIENCE
+    # completeness check, so a truncated CV like this would have cleared the
+    # gate silently -- a real, possibly the most JD-relevant, job history
+    # entry vanishing from a CV sent under the user's name with no error.
+    text = "\n".join([
+        "JANE ROE", "", "PROFILE", "I build reliable systems.", "", "WORK EXPERIENCE", "",
+        "Example Systems", "02/2023-present | Example Location A | Staff Engineer",
+        "- Shipped [EF1]", "",
+        "---",
+        "Example Foundry",
+        "01/2020-01/2023 | Example Location B | Senior Engineer",
+        "- Shipped real work [EF2]",
+    ])
+    assert C._unwrap_agent_envelope(text) == text
+
+
+def test_unwrap_envelope_never_strips_a_section_whose_header_already_printed():
+    # High finding (sluice-reviewer, same review round): the aside check only
+    # scans the chunk AFTER the fence for header keywords, with no memory of a
+    # header already emitted before it. A fence placed right after a section's
+    # own header line, but before that section's short body, is misread as a
+    # trailing postamble -- e.g. "...EDUCATION\n---\n- Example University" --
+    # silently deleting the real education entry. This falsified this
+    # function's own "one accepted gap" claim; fixed by refusing to strip any
+    # chunk that looks like structured CV content (a bullet line), not merely
+    # one that is short and header-free.
+    lines = CV_BODY.splitlines()
+    edu_header_idx = lines.index("EDUCATION")
+    corrupted = "\n".join(lines[:edu_header_idx + 1] + ["---"] + lines[edu_header_idx + 1:])
+    assert C._unwrap_agent_envelope(corrupted) == corrupted
+
+
 def test_unwrap_envelope_may_strip_a_real_header_when_a_fence_splits_it_from_profile():
     # Deliberately accepted gap, not a bug, and pinned here so it cannot regress
     # into something worse unnoticed: the header block (contact + name) is the

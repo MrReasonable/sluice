@@ -82,17 +82,41 @@ def build_prompt(bundle_text, jd, company, role, name="Your Name", contact="",
 _REQUIRED_HEADERS = {"PROFILE", "WORK EXPERIENCE", "CERTIFICATES", "EDUCATION"}
 
 
+def _looks_like_cv_content(line):
+    """A bullet ("- ...") or a pipe-separated meta line ("dates | LOCATION |
+    Role") -- the two shapes every real entry under WORK EXPERIENCE,
+    CERTIFICATES and EDUCATION is built from (see _RULES's format block
+    above). Neither shape occurs in the short conversational asides captured
+    on the real production path (#28): a model's preamble or closing remark
+    is plain prose, never a bulleted or pipe-delimited line.
+
+    This is what closes two real content-loss findings from this branch's own
+    /review-pr round, both confirmed by execution: a genuine final WORK entry
+    (company line + this meta line + this bullet) is exactly as short and as
+    header-free as a real conversational aside, and so is a section's body
+    when a fence lands right after that section's OWN header line rather than
+    before it (the header itself is on the wrong side of the fence to be
+    re-seen by the header check below). Checking for the entry's own shape,
+    not merely the section header's presence, catches both without needing to
+    remember what appeared on the other side of the fence.
+    """
+    return line.startswith("-") or " | " in line
+
+
 def _is_envelope_aside(lines, max_lines=3):
-    """A short remark with none of the CV's own section headers in it -- the
-    shape of the preamble/postamble sentences captured on the real production
-    path (#28), never a genuine section boundary. Bounding the length is what
-    keeps this from swallowing a real section that merely happens to be short
-    (e.g. a two-line EDUCATION entry, which fails on the header check alone,
-    but a section-free run of unrelated short lines would not)."""
+    """A short remark with none of the CV's own section headers or entry shapes
+    in it -- the shape of the preamble/postamble sentences captured on the real
+    production path (#28), never a genuine section boundary. Bounding the
+    length is what keeps this from swallowing a real section that merely
+    happens to be short (e.g. a two-line EDUCATION entry, which also fails the
+    entry-shape check below, but a section-free run of unrelated short lines
+    would not)."""
     non_blank = [ln.strip() for ln in lines if ln.strip()]
     if not non_blank or len(non_blank) > max_lines:
         return False
-    return not any(ln.upper() in _REQUIRED_HEADERS for ln in non_blank)
+    if any(ln.upper() in _REQUIRED_HEADERS for ln in non_blank):
+        return False
+    return not any(_looks_like_cv_content(ln) for ln in non_blank)
 
 
 def _unwrap_agent_envelope(text):
