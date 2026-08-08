@@ -53,11 +53,13 @@ def test_the_installed_metadata_matches_the_declared_attribute():
 
     import sluice
 
-    assert importlib.metadata.version("sluice") == sluice.__version__, (
+    assert importlib.metadata.version("job-sluice") == sluice.__version__, (
         "installed metadata and sluice.__version__ disagree. If you have just pulled a "
         "release bump, the editable install's dist-info is frozen at install time -- "
         're-run `pip install -e ".[test]"`. Otherwise the build has stopped reading the '
-        "attribute, which is the drift the dynamic version exists to prevent.")
+        "attribute, which is the drift the dynamic version exists to prevent. Note the "
+        'distribution name is "job-sluice" (import package and console script stay `sluice`/'
+        "`job-sluice` respectively -- see pyproject.toml's [project] comment).")
 
 
 def test_cli_version_flag_prints_the_declared_version(capsys):
@@ -78,7 +80,7 @@ def test_cli_version_flag_prints_the_declared_version(capsys):
     with pytest.raises(SystemExit) as ei:
         main(["--version"])
     assert ei.value.code == 0
-    assert capsys.readouterr().out.strip() == f"sluice {sluice.__version__}"
+    assert capsys.readouterr().out.strip() == f"job-sluice {sluice.__version__}"
 
 
 # ── the release-please config's couplings to THIS repo (#12) ─────────────────────

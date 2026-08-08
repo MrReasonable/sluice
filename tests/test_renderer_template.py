@@ -732,7 +732,7 @@ def test_a_missing_system_library_raises_naming_both_fixes(monkeypatch):
     CONSTRUCTION) did not hold for the case it was written for.
 
     The message must name BOTH fixes. A user who already has the extra and reads only
-    "pip install 'sluice[render]'" goes hunting for a package they have.
+    "pip install 'job-sluice[render]'" goes hunting for a package they have.
     """
     import builtins
     real_import = builtins.__import__
@@ -750,7 +750,12 @@ def test_a_missing_system_library_raises_naming_both_fixes(monkeypatch):
     with pytest.raises(RenderError) as ei:
         _make(Cfg())
     msg = str(ei.value)
-    assert "sluice[render]" in msg, "the message does not name the extra"
+    # The exact distribution name, not a bare substring check: "sluice[render]" is ALSO a
+    # substring of the correct "job-sluice[render]" (the PyPI distribution, since the rename
+    # -- see pyproject.toml's [project] comment), so a substring assertion here would pass
+    # whether or not the message actually said the right thing, and did exactly that until
+    # this was tightened.
+    assert "job-sluice[render]" in msg, "the message does not name the extra"
     assert "cairo" in msg and "pango" in msg, (
         "the message does not name the SYSTEM libraries, which is the half a user with "
         f"the extra already installed needs: {msg}")

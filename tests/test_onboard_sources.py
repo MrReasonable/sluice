@@ -96,7 +96,7 @@ def test_the_board_prompt_promises_only_what_the_config_encodes(tmp_path):
     shown = out.getvalue()
     assert "add your own searches" in shown
     assert "stays enabled either way" in shown
-    assert "sluice ingest disable" in shown
+    assert "job-sluice ingest disable" in shown
 
 
 def test_the_walk_is_offline_and_sees_every_registered_board():

@@ -206,5 +206,5 @@ def catalogue(*, default_vault: str = "") -> tuple:
                  ("cv.renderer",), "Providers",
                  hint="template fills a Jinja2 template. It uses the packaged default "
                       "unless cv.template names your own template file. Install support "
-                      "with: pip install 'sluice[render]'."),
+                      "with: pip install 'job-sluice[render]'."),
     )

@@ -1,20 +1,38 @@
 [project]
-name = "sluice"
+# The PyPI distribution name. It is deliberately NOT "sluice": that name has been squatted
+# since 2015 by an unrelated, dormant zfs-snapshot tool (last release 0.3.1, 2015-08-28) with
+# no console script of its own, so there is no binary collision -- but `pip install sluice`
+# can never resolve to this project. "job-sluice" is the distribution AND the console script
+# (see [project.scripts] below); the IMPORT PACKAGE stays `sluice` (so `import sluice` and
+# every `SLUICE_*` env var / XDG path are unaffected -- those are internal, invisible to a
+# user, and renaming the XDG state directory would be a breaking CONFIG change for zero
+# user-visible benefit). Distribution name, import name and command name are three
+# independent things in Python packaging; only the first and third changed here.
+name = "job-sluice"
 # ONE home for the version: `sluice/__init__.py`. It was declared here AND there, with
 # nothing tying the two together -- so a release could bump one, ship the other, and
-# `pip show sluice` would disagree with `sluice --version` silently. setuptools reads the
-# attribute STATICALLY for a plain literal, so this costs no import at build time.
+# `pip show job-sluice` would disagree with `job-sluice --version` silently. setuptools reads
+# the attribute STATICALLY for a plain literal, so this costs no import at build time.
 dynamic = ["version"]
 description = "Sluice: an engineered, config-driven job-hunting pipeline (ingest, triage, CV tailoring, apply, track)."
 requires-python = ">=3.12"
 dependencies = ["pyyaml"]
 
 [project.scripts]
-sluice = "sluice.cli:main"
+job-sluice = "sluice.cli:main"
 
 [project.optional-dependencies]
 render = ["weasyprint", "jinja2"]
 google = ["google-api-python-client", "google-auth"]
+# Shell completion (zsh, bash, tcsh, fish). Same shape as `render`/`google`: a bare install
+# never needs it, `sluice/cli.py` guards the import (`try/except ImportError`), and
+# `argcomplete.autocomplete(parser)` is itself a no-op unless a shell's completion hook has
+# set `_ARGCOMPLETE` in the environment -- so importing it costs nothing on an ordinary run.
+# Chosen over a hand-generated static completion script (an earlier draft of this extra):
+# argcomplete's `.completer` callbacks complete REAL values -- actual registered source ids,
+# actual status tokens -- by reading the live argparse tree, so there is no generated file to
+# keep in sync and no drift-detection machinery needed at all.
+completion = ["argcomplete"]
 # The suite generates its own synthetic job titles rather than hardcoding anyone's
 # real role preferences, so faker is a test dependency (see tests/conftest.py).
 #

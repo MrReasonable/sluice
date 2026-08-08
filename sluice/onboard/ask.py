@@ -158,7 +158,7 @@ class TtyAsker:
         self._say(f"  {', '.join(sorted(allowed))}")
         self._say("  Every registered board stays enabled either way -- this only replaces a "
                   "board's built-in example search with your own.")
-        self._say("  To stop a board running at all: sluice ingest disable ID")
+        self._say("  To stop a board running at all: job-sluice ingest disable ID")
         self._say("  [blank = skip, and every source runs its own example search]")
         while True:
             raw = self._read()
@@ -205,7 +205,7 @@ class NoInputAsker:
             return q.parse(self.presets[q.key])
         if q.key == "vault_dir":
             raise MissingAnswer(
-                "sluice init needs to know where your vault is. Pass --vault PATH, or run without "
+                "job-sluice init needs to know where your vault is. Pass --vault PATH, or run without "
                 "--no-input to be asked.")
         return None
 

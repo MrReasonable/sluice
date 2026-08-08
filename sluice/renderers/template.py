@@ -33,7 +33,7 @@ _PACKAGED_DEFAULT = "cv_plain.html.j2"
 # prerequisites for the macOS loader-path case this text points at.
 _MISSING_EXTRA = (
     "renderer 'template' could not load its rendering backend: pip install "
-    "'sluice[render]'. If that extra is ALREADY installed, WeasyPrint additionally needs "
+    "'job-sluice[render]'. If that extra is ALREADY installed, WeasyPrint additionally needs "
     "its native libraries (cairo, pango, gdk-pixbuf), which are not Python packages and "
     "cannot be installed by pip -- see README.md's 'Rendering prerequisites', including "
     "the macOS DYLD_FALLBACK_LIBRARY_PATH step that is needed even once Homebrew has "
