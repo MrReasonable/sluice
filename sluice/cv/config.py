@@ -53,7 +53,7 @@ class CvConfig:
     # load_cv_config RAISES on it rather than letting `hasattr` drop it in silence.
     # Which renderer fills the seam. "template" is the default: it fills the user's own
     # Jinja2 template (or the packaged one) with the parsed CV and writes the PDF via
-    # WeasyPrint (pip install 'sluice[render]'). "script" is the external shell-out to a
+    # WeasyPrint (pip install 'job-sluice[render]'). "script" is the external shell-out to a
     # user-supplied WeasyPrint script, for full control over rendering. There is no
     # "weasyprint" renderer any more -- selecting it raises naming `template` as the
     # replacement (sluice/renderers/template.py's retired-name registration), because it

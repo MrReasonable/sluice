@@ -1,11 +1,12 @@
-"""sluice command-line interface.
+"""sluice command-line interface. Installed as the `job-sluice` console script (the PyPI
+distribution and the command are both `job-sluice`; the import package stays `sluice`).
 
-  sluice ingest list-sources [--health]     list plugins + enabled/health state
-  sluice ingest run [--all|--source ID ...] [--sink vault|json] [--dry-run]
-  sluice ingest test-source ID [--raw]      run ONE source live (fixture capture)
-  sluice ingest enable|disable ID           persist an operator on/off override
-  sluice health                             per-source baseline + retire state
-  sluice doctor [--offline] [--strict]      preflight backends + renderer/store/gates
+  job-sluice ingest list-sources [--health]     list plugins + enabled/health state
+  job-sluice ingest run [--all|--source ID ...] [--sink vault|json] [--dry-run]
+  job-sluice ingest test-source ID [--raw]      run ONE source live (fixture capture)
+  job-sluice ingest enable|disable ID           persist an operator on/off override
+  job-sluice health                             per-source baseline + retire state
+  job-sluice doctor [--offline] [--strict]      preflight backends + renderer/store/gates
 
 `run` and `test-source` drive the live Camofox session; the rest are offline.
 enable/disable persist to a small JSON overlay (SLUICE_DISABLED) so an operator
@@ -16,6 +17,16 @@ import json
 import os
 import sys
 from dataclasses import asdict
+
+# Optional: shell-completion support (`job-sluice[completion]`). Guarded like every other opt-in
+# runtime dependency (yaml, jinja2, weasyprint, the Google libs) -- a bare install must not
+# need this. `argcomplete.autocomplete(parser)` (called in `main`, below) is itself a no-op
+# unless a shell's completion hook has set `_ARGCOMPLETE` in the environment, so calling it
+# unconditionally when the import succeeds costs nothing on an ordinary invocation.
+try:
+    import argcomplete
+except ImportError:  # pragma: no cover - exercised by not having the extra installed
+    argcomplete = None
 
 from sluice import __version__
 from sluice.core.config import load_config
@@ -199,7 +210,7 @@ def cmd_leads_reconcile(args, config) -> int:
         # load_config) and then calls args.func bare, so without this the RuntimeError reaches the
         # user as a stack trace -- which is exactly what the capability check exists to avoid, so
         # leaving it unhandled would make the guard's justification pure prose.
-        print(f"sluice: {exc}", file=sys.stderr)
+        print(f"job-sluice: {exc}", file=sys.stderr)
         return 2
 
     if args.json:
@@ -211,13 +222,13 @@ def cmd_leads_reconcile(args, config) -> int:
         # to stdout and its count line to stderr. (An earlier draft of this comment claimed the
         # two precedents DISAGREED and that this was a tie-break; measured, they agree. The
         # behaviour was right and the stated reason was invented.) It keeps
-        # `sluice leads reconcile | grep` useful and matches --json, already on stdout.
+        # `job-sluice leads reconcile | grep` useful and matches --json, already on stdout.
         verb = "moved" if args.apply else "would move"
         for _slug, src, dst in rep["moves"]:
             print(f"reconcile: {verb} {src} -> {dst}")
         for slug, refs in sorted(rep["ambiguous"].items()):
             print(f"reconcile: {slug}: NOT moved -- {len(refs)} notes claim this slug "
-                  f"({', '.join(refs)}); merge them (sluice leads dedupe) or rename one")
+                  f"({', '.join(refs)}); merge them (job-sluice leads dedupe) or rename one")
         for slug, raw in rep["unknown"]:
             print(f"reconcile: {slug}: left in place -- status {raw!r} is not canonical")
         for slug, where in rep["user_filed"]:
@@ -323,7 +334,7 @@ def _format_degraded(report) -> str:
             continue
         reason = r.drift or ("error" if r.status == "error" else "ok")
         lines.append(f"- {r.source_id}: {reason}{' [RETIRED]' if r.retired else ''}")
-    return "sluice: degraded sources this run:\n" + "\n".join(lines)
+    return "job-sluice: degraded sources this run:\n" + "\n".join(lines)
 
 
 # ── triage ───────────────────────────────────────────────────────────────────
@@ -394,7 +405,7 @@ def cmd_leads_expire(args, config) -> int:
                 # Print the way OUT, not just the refusal. Without it this is a permanent
                 # no with no stated remedy, on every run.
                 print(f'expire: {slug}: refused (sign-off hold) -- resolve it first: '
-                      f'sluice cv signoff --lead "{slug}" --discard', file=sys.stderr)
+                      f'job-sluice cv signoff --lead "{slug}" --discard', file=sys.stderr)
             elif outcome != "dismissed":
                 print(f"expire: {slug}: {outcome}", file=sys.stderr)
         print("expire: " + ", ".join(f"{n} {o}" for o, n in sorted(counts.items())),
@@ -441,7 +452,7 @@ def cmd_triage_run(args, config) -> int:
                                    backend_role=args.backend)
     print(f"triage: {report.counts} judged={report.judged} "
           f"backend={report.backend} failures={len(report.failures)}", file=sys.stderr)
-    notify(f"sluice triage: {report.counts} (backend {report.backend})", config=config)
+    notify(f"job-sluice triage: {report.counts} (backend {report.backend})", config=config)
     return 0
 
 
@@ -512,7 +523,7 @@ def cmd_cv_run(args, config) -> int:
         print(f"cv: {blind} CV(s) composed blind (dossier fetch failed)", file=sys.stderr)
     rendered = [r for r in results if r.status == "rendered"]
     if rendered:
-        notify("sluice cv: " + "; ".join(
+        notify("job-sluice cv: " + "; ".join(
             f"{r.served} (audit flags: {len(r.audit_flags)})" for r in rendered),
             config=config)
     return 0
@@ -701,7 +712,7 @@ def cmd_init(args, config, *, asker=None) -> int:
     env_vault = os.environ.get("VAULT_DIR")
     if args.vault and env_vault and os.path.abspath(os.path.expanduser(env_vault)) != \
             os.path.abspath(os.path.expanduser(args.vault)):
-        print("sluice init: --vault and $VAULT_DIR name different directories. Unset one, or pass "
+        print("job-sluice init: --vault and $VAULT_DIR name different directories. Unset one, or pass "
               "the one you mean.", file=sys.stderr)
         return 2
 
@@ -747,12 +758,12 @@ def cmd_init(args, config, *, asker=None) -> int:
         answers = {k: by_key[k].parse(v) if k in by_key else v for k, v in presets.items()}
         answers.update(collect(asker, questions))
     except MissingAnswer as exc:
-        print(f"sluice init: {exc}", file=sys.stderr)
+        print(f"job-sluice init: {exc}", file=sys.stderr)
         return 2
 
     vault_dir = answers["vault_dir"]
     if os.path.exists(vault_dir) and not os.path.isdir(vault_dir):
-        print(f"sluice init: {vault_dir} is not a directory.", file=sys.stderr)
+        print(f"job-sluice init: {vault_dir} is not a directory.", file=sys.stderr)
         return 2
     vault_created = not os.path.exists(vault_dir)
 
@@ -883,8 +894,8 @@ def cmd_init(args, config, *, asker=None) -> int:
 
     print("\nNext:")
     print("  1. fill in the headings in your Judging Profile")
-    print("  2. sluice ingest list-sources --health")
-    print("  3. sluice triage run --no-llm")
+    print("  2. job-sluice ingest list-sources --health")
+    print("  3. job-sluice triage run --no-llm")
 
     # Nothing is rolled back on a partial failure. Deleting a file we just wrote to someone's disk,
     # to tidy up after a failure they can see and retry, is a destructive act -- and a re-run skips
@@ -916,7 +927,7 @@ def _print_doctor(report, *, offline) -> None:
     are broken" into "how many lines printed"."""
     from sluice.core.doctor import DEAD, DEGRADED, NOTICE, OK, format_roles
 
-    print(f"sluice doctor  ({'offline' if offline else 'live round-trip'})\n")
+    print(f"job-sluice doctor  ({'offline' if offline else 'live round-trip'})\n")
     for c in report.checks:
         t = c.target
         elapsed = f"  ({c.elapsed:.1f}s)" if c.elapsed is not None else ""
@@ -939,10 +950,42 @@ def _print_doctor(report, *, offline) -> None:
         print(f"\n{c_ok} ok, {c_deg} degraded, {c_dead} dead, {c_notice} notice")
 
 
+# ── shell-completion candidate providers ─────────────────────────────────────
+#
+# Attached below as `.completer` on the relevant Action, which is the attribute
+# `argcomplete` reads when it IS installed; setting it costs nothing when it is not, since
+# nothing else ever looks at it. A completer must NEVER raise -- an exception here breaks the
+# user's shell on every TAB press, not just this command, so each is wrapped defensively and
+# each stays OFFLINE: no vault, no backend, no network, matching the same offline guarantee
+# `ingest list-sources` already gives (both read the same in-memory plugin registry, populated
+# once at import time). `--lead` (cv/apply/track) deliberately gets no completer here: doing
+# that live would mean opening the user's vault and re-deriving the shortlist on every TAB
+# press, which is a materially bigger and riskier feature than this pass -- left for later,
+# not silently dropped.
+
+
+def _complete_source_id(prefix, parsed_args, **kwargs):
+    """Real registered source ids, for `ingest`'s `--source`/`id` completion."""
+    try:
+        return [s.id for s in registry.all_sources() if s.id.startswith(prefix)]
+    except Exception:
+        return []
+
+
+def _complete_status(prefix, parsed_args, **kwargs):
+    """The canonical status vocabulary, for `track confirm --to`."""
+    try:
+        from sluice.core.status import CANONICAL
+
+        return sorted(s for s in CANONICAL if s.startswith(prefix))
+    except Exception:
+        return []
+
+
 # ── argument parsing ─────────────────────────────────────────────────────────
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="sluice")
-    # `sluice --version` is what a user pastes into a bug report, so it must answer without
+    p = argparse.ArgumentParser(prog="job-sluice")
+    # `job-sluice --version` is what a user pastes into a bug report, so it must answer without
     # demanding a subcommand -- argparse's version action fires while parsing and exits
     # before the required-subcommand check is reached. That is a property of the ACTION,
     # not of where this line sits: an earlier comment here claimed the placement was what
@@ -951,48 +994,50 @@ def _build_parser() -> argparse.ArgumentParser:
     # test asserts.
     #
     # Reads the ONE version literal (sluice/__init__.py); pyproject derives from the same
-    # attribute, so this cannot disagree with `pip show sluice`.
-    p.add_argument("--version", action="version", version=f"sluice {__version__}")
+    # attribute, so this cannot disagree with `pip show job-sluice`.
+    p.add_argument("--version", action="version", version=f"job-sluice {__version__}")
     top = p.add_subparsers(dest="group", required=True)
 
     ingest = top.add_parser("ingest", help="ingestion commands").add_subparsers(
         dest="cmd", required=True
     )
 
-    ls = ingest.add_parser("list-sources")
+    ls = ingest.add_parser("list-sources", help="list registered sources and enabled/health state")
     ls.add_argument("--health", action="store_true")
     ls.set_defaults(func=cmd_list_sources)
 
-    run = ingest.add_parser("run")
+    run = ingest.add_parser("run", help="scrape configured sources into the lead store")
     # --all and --source name the same selection two ways, and _selected keys off
     # args.source ALONE -- so `run --source X --all` silently ran only X and dropped
     # --all. Make them mutually exclusive so the ambiguous combination errors instead
     # of degrading silently (the module docstring's `run [--all|--source ID ...]`
     # already claimed the exclusion). NOT required: bare `run` still means all sources.
     sel = run.add_mutually_exclusive_group()
-    sel.add_argument("--source", action="append", help="source id (repeatable)")
+    sel.add_argument(
+        "--source", action="append", help="source id (repeatable)"
+    ).completer = _complete_source_id
     sel.add_argument("--all", action="store_true")
     run.add_argument("--sink", choices=["vault", "json"], default="vault")
     run.add_argument("--dry-run", action="store_true")
     run.set_defaults(func=cmd_run)
 
-    ts = ingest.add_parser("test-source")
-    ts.add_argument("id")
+    ts = ingest.add_parser("test-source", help="run one source live, print its parsed leads")
+    ts.add_argument("id").completer = _complete_source_id
     ts.add_argument("--raw", action="store_true", help="print raw fetch payload only")
     ts.set_defaults(func=cmd_test_source)
 
-    en = ingest.add_parser("enable")
-    en.add_argument("id")
+    en = ingest.add_parser("enable", help="re-enable a source disabled by a prior --disable")
+    en.add_argument("id").completer = _complete_source_id
     en.set_defaults(func=cmd_enable)
 
-    di = ingest.add_parser("disable")
-    di.add_argument("id")
+    di = ingest.add_parser("disable", help="turn a source off until a matching --enable")
+    di.add_argument("id").completer = _complete_source_id
     di.set_defaults(func=cmd_disable)
 
     triage = top.add_parser("triage", help="triage commands").add_subparsers(
         dest="cmd", required=True)
 
-    tr = triage.add_parser("run")
+    tr = triage.add_parser("run", help="classify leads: deterministic rules, then an LLM judge")
     tr.add_argument("--status", default="new,research")
     tr.add_argument("--limit", type=int)
     tr.add_argument("--dry-run", action="store_true")
@@ -1001,13 +1046,13 @@ def _build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--no-llm", action="store_true")
     tr.set_defaults(func=cmd_triage_run)
 
-    tn = triage.add_parser("normalize-status")
+    tn = triage.add_parser("normalize-status", help="canonicalize status aliases (e.g. 'shortlisted')")
     tn.add_argument("--dry-run", action="store_true")
     tn.set_defaults(func=cmd_triage_normalize)
 
     cv = top.add_parser("cv", help="cv tailoring commands").add_subparsers(
         dest="cmd", required=True)
-    cvrun = cv.add_parser("run")
+    cvrun = cv.add_parser("run", help="compose, gate and render a tailored CV for a shortlist lead")
     g = cvrun.add_mutually_exclusive_group(required=True)
     g.add_argument("--lead", help="compose one CV for the shortlist lead matching this slug")
     g.add_argument("--all-shortlist", action="store_true",
@@ -1023,7 +1068,8 @@ def _build_parser() -> argparse.ArgumentParser:
     cvrun.add_argument("--include-stale", action="store_true",
                        help="compose even for a lead older than lead_ttl_days")
     cvrun.set_defaults(func=cmd_cv_run)
-    cvsign = cv.add_parser("signoff")
+    cvsign = cv.add_parser(
+        "signoff", help="release or discard a CV held for a human sign-off (#60)")
     cvsign.add_argument("--lead", required=True,
                         help="sign off (or --discard) the CV held for the shortlist lead matching this slug")
     cvsign.add_argument("--discard", action="store_true",
@@ -1033,7 +1079,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     apply_ = top.add_parser("apply", help="application prep + tracking").add_subparsers(
         dest="cmd", required=True)
-    ap = apply_.add_parser("prep")
+    ap = apply_.add_parser("prep", help="stage a tailored CV + prep packet for a shortlist lead")
     apg = ap.add_mutually_exclusive_group(required=True)
     apg.add_argument("--lead", help="stage one application for the shortlist lead matching this slug")
     apg.add_argument("--all-shortlist", action="store_true", help="preview the ready queue (no CV staged)")
@@ -1046,7 +1092,7 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="stage even a lead older than lead_ttl_days")
     ap.set_defaults(func=cmd_apply_prep)
 
-    arec = apply_.add_parser("record")
+    arec = apply_.add_parser("record", help="mark a lead applied after you submit it by hand")
     arec.add_argument("--lead", required=True)
     arec.add_argument("--ats", default=None)
     arec.add_argument("--url", default=None)
@@ -1055,14 +1101,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
     track = top.add_parser("track", help="application tracking from email + calendar").add_subparsers(
         dest="cmd", required=True)
-    trun = track.add_parser("run")
+    trun = track.add_parser("run", help="reconcile the funnel from email + calendar signals")
     trun.add_argument("--dry-run", action="store_true")
     trun.add_argument("--backend", choices=_BACKEND_CHOICES, default="auto",
                       help=_BACKEND_HELP)
     trun.set_defaults(func=cmd_track_run)
-    tconf = track.add_parser("confirm")
+    tconf = track.add_parser("confirm", help="apply a proposed status transition by hand")
     tconf.add_argument("--lead", required=True)
-    tconf.add_argument("--to", required=True)
+    tconf.add_argument("--to", required=True).completer = _complete_status
     tconf.add_argument("--when", default=None)
     tconf.add_argument("--dry-run", action="store_true")
     tconf.set_defaults(func=cmd_track_confirm)
@@ -1108,7 +1154,7 @@ def _build_parser() -> argparse.ArgumentParser:
     rc.add_argument("--json", action="store_true", help="machine-readable report")
     rc.set_defaults(func=cmd_leads_reconcile)
 
-    health = top.add_parser("health")
+    health = top.add_parser("health", help="per-source baseline + retire state")
     health.set_defaults(func=cmd_health)
 
     init = top.add_parser("init", help="scaffold a config and a Judging Profile")
@@ -1131,14 +1177,17 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
-    args = _build_parser().parse_args(argv)
+    parser = _build_parser()
+    if argcomplete is not None:
+        argcomplete.autocomplete(parser)
+    args = parser.parse_args(argv)
     try:
         config = load_config()
     except ValueError as exc:
         # A retired or malformed config key is a USAGE error, not a crash. It reached the user as a
-        # raw traceback, and the command it blocked hardest was `sluice init` -- the one that would
+        # raw traceback, and the command it blocked hardest was `job-sluice init` -- the one that would
         # have written them a correct config -- plus `doctor`, which exists to diagnose exactly this.
-        print(f"sluice: {exc}", file=sys.stderr)
+        print(f"job-sluice: {exc}", file=sys.stderr)
         return 2
     return args.func(args, config)
 

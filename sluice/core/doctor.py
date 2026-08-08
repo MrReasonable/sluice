@@ -239,7 +239,7 @@ def format_roles(uses: list) -> str:
 
 _MISSING_RENDER_LIBS = (
     "the renderer could not be constructed -- see the message above for the exact "
-    "cause. If it names jinja2/weasyprint, `pip install 'sluice[render]'`; if the "
+    "cause. If it names jinja2/weasyprint, `pip install 'job-sluice[render]'`; if the "
     "install already has that extra, WeasyPrint additionally needs its native "
     "libraries (cairo, pango, gdk-pixbuf), which are not a Python dependency (see "
     "README.md's Rendering section for the platform-specific install + the "
@@ -352,7 +352,7 @@ def classify_track_google(*, available: bool, import_error: str | None,
         return ComponentCheck(
             "track", "google client libs", DEGRADED,
             f"not importable ({import_error}) -- track run cannot reconcile "
-            f"Gmail/Calendar; pip install 'sluice[google]'")
+            f"Gmail/Calendar; pip install 'job-sluice[google]'")
     if not token_present:
         return ComponentCheck(
             "track", "google_token.json", DEGRADED,
