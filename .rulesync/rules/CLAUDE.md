@@ -102,10 +102,10 @@ Running the pipeline:
 
 ```bash
 export SLUICE_CONFIG="$(pwd)/sluice.local.yaml"  # git-ignored; quoted for paths with spaces
-sluice init --no-input --vault ./vault           # writes the config + a Judging Profile
-sluice ingest list-sources --health
-sluice ingest run --source reed --dry-run  # dry-run/JSON sink never writes vault or seen.db
-sluice triage run --no-llm                 # deterministic classify only, no backend call
+job-sluice init --no-input --vault ./vault       # writes the config + a Judging Profile
+job-sluice ingest list-sources --health
+job-sluice ingest run --source reed --dry-run  # dry-run/JSON sink never writes vault or seen.db
+job-sluice triage run --no-llm              # deterministic classify only, no backend call
                                            # (needs leads already in the vault: the dry run above
                                            #  writes none, so drop --dry-run to feed this)
 ```
@@ -118,7 +118,7 @@ a `horticultural consultant` survives, and `accept_titles`, `contract_floor_gbp_
 `perm_floor_gbp` are live too. So a fresh copy scrapes and then silently discards nearly
 everything, which reads as a broken source rather than a closed gate.
 
-`sluice init` (#8) exists to remove that trap: it renders the config FROM the question catalogue
+`job-sluice init` (#8) exists to remove that trap: it renders the config FROM the question catalogue
 with every unanswered key COMMENTED, so an unanswered run writes a file that is field-for-field
 equal to no config at all EXCEPT `vault_dir` — the wizard's one required answer, and the one
 difference `tests/test_onboard_plan.py` exempts by name. It never overwrites an artefact, so
@@ -127,13 +127,13 @@ re-running is safe. The example file stays a catalogue to read, not a template t
 the copy.
 
 `ingest run` and `ingest test-source` drive a live Camofox browser server; every other command is
-offline. `sluice ingest test-source ID --raw` prints the raw fetch payload, which is how golden
+offline. `job-sluice ingest test-source ID --raw` prints the raw fetch payload, which is how golden
 parser fixtures get captured.
 
 ## Architecture
 
 Pipeline: `ingest -> triage -> cv -> apply -> track`. Five sub-apps under `sluice/`, all sitting on
-`sluice/core/`, plus `sluice/onboard/` — a COMMAND package for `sluice init`, not a sixth sub-app:
+`sluice/core/`, plus `sluice/onboard/` — a COMMAND package for `job-sluice init`, not a sixth sub-app:
 nothing downstream imports it and it sits beside the pipeline rather than inside it.
 `docs/ARCHITECTURE.md` has the per-module detail; what follows is what you cannot see from the file
 tree.
@@ -240,7 +240,7 @@ enumerated `LeadNote` is byte-identical to no guard at all, because the snapshot
 construction. It is a parameter on the existing writer rather than a second write function, because
 CodeQL flags a new write function as a new sink.
 
-`sluice leads reconcile` (#1) is the one pass that MOVES a note, and a move writes no note bytes —
+`job-sluice leads reconcile` (#1) is the one pass that MOVES a note, and a move writes no note bytes —
 only a directory entry, via the `O_EXCL`-reserve + `os.replace` primitive `merge_cluster` shares. It
 never read-modify-writes a status, so never-regress is untouched. That is NOT the same as
 never-clobber holding "by construction", and the difference is measured: a move landing between
@@ -305,7 +305,7 @@ in `shortlist_by_slug`, `can_apply`, and `confidence >= auto_apply_min`. Every w
 proposes to the dead-letter for a human, because a wrong `applied` silently suppresses a real
 application and is irreversible.
 An unrecognized status is passed through untouched rather than silently rewritten.
-`sluice leads expire` (#9) writes `dismiss` — triage-owned, so never-regress permits it — and never
+`job-sluice leads expire` (#9) writes `dismiss` — triage-owned, so never-regress permits it — and never
 a `_TERMINAL`, since every terminal is application-owned. It reads only
 `TRIAGE_OWNED - {"dismiss"}` (derived, never hand-listed, so the set cannot name an
 application-owned state) and passes that same set as `require_status`, which is what actually holds
@@ -345,7 +345,7 @@ composition exactly once with the violations fed back, then skips the lead — a
 ungated. Above this hard gate sits a softer, human-facing layer (#60, on by default via
 `cv.require_signoff`): an advisory LLM audit (`cv/audit.py`) catches the qualitative fabrication the
 deterministic gate cannot, and an `unsupported` flag WITHHOLDS the send-ready `tailored_cv` pointer (status `needs-signoff`, via
-`Store.sign_off`/`hold_for_signoff`, cleared by `sluice cv signoff`) rather than blocking rendering —
+`Store.sign_off`/`hold_for_signoff`, cleared by `job-sluice cv signoff`) rather than blocking rendering —
 it never touches the pure hard gate.
 
 **The gate is blind to the name/contact block, and that block renders as the PDF's headline (#99).**
@@ -444,22 +444,28 @@ anyone's taste. Personal values reach the code only through `sluice.local.yaml` 
 
 **`sluice/` is standard-library only.** The sole exceptions: `yaml`, imported under a guarded
 `try/except ImportError` in each config module; the Google client libraries, imported lazily inside
-functions in `track/google_client.py`; and `jinja2`/`weasyprint`, both imported lazily inside
+functions in `track/google_client.py`; `jinja2`/`weasyprint`, both imported lazily inside
 `renderers/template.py` (`renderers/weasyprint.py` -- the old bundled renderer -- is DELETED;
 selecting the retired `weasyprint` renderer name now raises via `plugins._RETIRED`, naming
-`template` as the replacement). HTTP goes through `urllib`, not `requests`. Do not add a runtime
-dependency without a deliberate decision. The rule binds `sluice/` -- what ships to a user. The root
-`package.json` is not an exception to it: it pins the Node-based `rulesync` CLI that regenerates
-`.rulesync/`'s AI-tool outputs, a CI-only dev-time tool that never ships in the package and nothing
-a user installing `sluice` ever sees. Nor is the `test` extra (`pytest`, `faker`, `pytest-cov`,
-`setuptools`, `build`) -- installed to run the gate and never imported by `sluice/`. Being an EXTRA
-is not what exempts a package from the rule, which is the part the table disguises: `render` and
-`google` sit beside `test` in the same `optional-dependencies` and are firmly INSIDE the rule --
-they install the very `jinja2`/`weasyprint` and Google imports named above. `jinja2` ALSO sits in
-`test` (deliberately -- see Commands above, so a shipped-template test runs for real in CI rather
-than skipping the way an earlier `weasyprint` importorskip once did), but being in two extras at
-once does not move it out of the rule: it is still `render` that puts it firmly inside, exactly
-like `weasyprint`. The line is whether a user's install can end up executing it.
+`template` as the replacement); and `argcomplete`, imported under the same guarded
+`try/except ImportError` shape at the top of `cli.py`, behind the `completion` extra --
+`argcomplete.autocomplete(parser)` is itself a no-op unless a shell's completion hook has set
+`_ARGCOMPLETE`, so importing it costs nothing on an ordinary invocation, and its `.completer`
+callbacks (see `_complete_source_id`/`_complete_status`) must never raise, since an exception
+there breaks the user's shell on every TAB press, not just the one command. HTTP goes through
+`urllib`, not `requests`. Do not add a runtime dependency without a deliberate decision. The rule
+binds `sluice/` -- what ships to a user. The root `package.json` is not an exception to it: it
+pins the Node-based `rulesync` CLI that regenerates `.rulesync/`'s AI-tool outputs, a CI-only
+dev-time tool that never ships in the package and nothing a user installing `job-sluice` ever
+sees. Nor is the `test` extra (`pytest`, `faker`, `pytest-cov`, `setuptools`, `build`) --
+installed to run the gate and never imported by `sluice/`. Being an EXTRA is not what exempts a
+package from the rule, which is the part the table disguises: `render`, `google` and `completion`
+sit beside `test` in the same `optional-dependencies` and are firmly INSIDE the rule -- they
+install the very `jinja2`/`weasyprint`, Google, and `argcomplete` imports named above. `jinja2`
+ALSO sits in `test` (deliberately -- see Commands above, so a shipped-template test runs for real
+in CI rather than skipping the way an earlier `weasyprint` importorskip once did), but being in
+two extras at once does not move it out of the rule: it is still `render` that puts it firmly
+inside, exactly like `weasyprint`. The line is whether a user's install can end up executing it.
 
 **Fail loudly at construction.** An unknown backend/adapter name raises and lists the valid names
 rather than falling through to a default. A quiet wrong default is the bug class this codebase most
@@ -473,9 +479,21 @@ consistently engineers out; see `_select_backend`'s guard in `cli.py`.
 - Conventional commits (`fix(triage): ...`, `ci: ...`, `docs: ...`). These are not decoration
   since #12: release-please reads the subjects to decide the next version and to draft the
   changelog, so a mistyped type silently changes what gets released.
+- **The PyPI distribution name is `job-sluice`, not `sluice`.** The latter has been squatted
+  since 2015 by an unrelated, dormant zfs-snapshot tool with no console script of its own (no
+  binary collision, but `pip install sluice` could never resolve here). Distribution name,
+  import package, and console-script name are three independent things in Python packaging, and
+  only two of them changed: `pyproject.toml`'s `[project] name` and `[project.scripts]` are both
+  `job-sluice`, but `import sluice` and every `SLUICE_*` env var / `~/.config/sluice/` XDG path
+  stay exactly as they are -- those are invisible to a user, and renaming them would be a
+  breaking CONFIG change (this project's own change-classification rule below rates that above a
+  breaking API change) for no user-visible benefit. Do not "fix" `job-sluice` back to `sluice`
+  anywhere it appears in `pyproject.toml`, `cli.py`'s `prog=`/`--version`, or a user-facing
+  printed string -- see `test_release_version.py` and `tests/test_docs_claims.py`, both of which
+  pin this.
 - **The version has ONE home: `sluice/__init__.py`.** `pyproject.toml` declares `dynamic` and
-  setuptools reads that attribute statically, so `pip show sluice` and `sluice --version` cannot
-  disagree — there is no second value to drift from. The line carries an
+  setuptools reads that attribute statically, so `pip show job-sluice` and `job-sluice --version`
+  cannot disagree — there is no second value to drift from. The line carries an
   `# x-release-please-version` marker and `release-please-config.json` lists the file in
   `extra-files`; BOTH are required, they are independent, and losing either stops the bump while
   the release PR still opens and the changelog still updates. `tests/test_release_version.py`
@@ -499,7 +517,7 @@ consistently engineers out; see `_select_backend`'s guard in `cli.py`.
   deprecated `--backend` role aliases, which is the separate role concern below, not a second registry);
   the RENDERER seam has two self-registering
   production impls — `template` (the default: fills a user's Jinja2 template, or the packaged
-  default, via WeasyPrint; `pip install 'sluice[render]'`) and `script` (the external shell-out
+  default, via WeasyPrint; `pip install -e '.[render]'`) and `script` (the external shell-out
   escape hatch) — selected by `cv.renderer`, so by-name selection between real implementations is
   already LIVE there. That seam has a second, OPTIONAL member, `precheck(cv_text) ->
   list[str]`: a renderer implements it only when the composed CV must satisfy a grammar of its own
@@ -515,7 +533,7 @@ consistently engineers out; see `_select_backend`'s guard in `cli.py`.
   WARNED about by name, and the dry run proceeds. Store and fetcher have one production impl each (`vault`,
   `camofox`); the STORE seam has since grown the same OPTIONAL shape, `preflight() -> dict`, reached
   via `getattr` exactly like `precheck` and for the same reason (an implementation that cannot say is
-  not one that is broken) — `sluice doctor` (see below) is the one caller, and `Vault.preflight`
+  not one that is broken) — `job-sluice doctor` (see below) is the one caller, and `Vault.preflight`
   answers with FACTS (vault dir, baseline CV, Judging Profile, Experience Library counts), never
   verdicts, keeping classification in `core/doctor.py` where the backend rules already live. The
   selection is also exercised in tests — `tests/harness/` registers a fake fetcher
@@ -527,3 +545,15 @@ consistently engineers out; see `_select_backend`'s guard in `cli.py`.
   around them.
 - `.rulesync/` is canonical. `CLAUDE.md`, `AGENTS.md`, `.claude/` and the other AI-tool outputs are
   generated and gitignored; edit the source, then regenerate.
+- **`README.md` and everything under `docs/`, plus `CONTRIBUTING.md`/`SECURITY.md`, are the
+  opposite of the point above: tracked, hand-written, human-facing documentation, not generated
+  outputs.** Edit them directly; there is no source-of-truth file to regenerate them from, the way
+  there is for `CLAUDE.md`/`AGENTS.md`. `docs/USAGE.md` is the one exception with an automated
+  check on it rather than a generator: `tests/test_docs_claims.py` walks the real `cli.py` parser
+  and fails the build if a command it documents stops existing, or a real command goes
+  undocumented -- the same generate-then-diff discipline as the `rulesync` CI job, applied to a
+  hand-written file instead of a generated one. `docs/ARCHITECTURE.md` is the living technical
+  description (module-by-module, the seams, the store contract); `docs/USAGE.md` is the CLI
+  reference; `docs/CONFIGURATION.md` is the config-key reference; `docs/TROUBLESHOOTING.md` is
+  fixes for specific failures. `docs/superpowers/specs/` and `.../plans/` are historical design
+  documents once implemented -- not maintained, and the code wins on any disagreement.
