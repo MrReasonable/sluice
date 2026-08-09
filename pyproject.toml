@@ -99,6 +99,10 @@ sluice = ["templates/*.html.j2"]
 
 [project.urls]
 Homepage = "https://github.com/MrReasonable/sluice"
+Changelog = "https://github.com/MrReasonable/sluice/blob/main/CHANGELOG.md"
+Issues = "https://github.com/MrReasonable/sluice/issues"
+Source = "https://github.com/MrReasonable/sluice"
+Documentation = "https://github.com/MrReasonable/sluice/blob/main/docs/USAGE.md"
 
 [build-system]
 requires = ["setuptools>=83.0.0"]

@@ -292,3 +292,84 @@ def test_the_keywords_guard_is_falsified_by_dropping_them(tmp_path):
     _build_wheel(dest, pyproject_text=original.replace(KEYWORDS_LINE, ""))
     metadata = _read_metadata(dest)
     assert "Keywords:" not in metadata
+
+
+def _read_entry_points(dest):
+    """Read and decode entry_points.txt from the wheel `_build_wheel(dest, ...)` just built."""
+    wheels = glob.glob(f"{dest}/out/*.whl")
+    assert wheels, f"no wheel found in {dest}/out to read entry points from"
+    with zipfile.ZipFile(wheels[0]) as zf:
+        ep_name = next(n for n in zf.namelist() if n.endswith(".dist-info/entry_points.txt"))
+        return zf.read(ep_name).decode("utf-8")
+
+
+EXTRA_URLS_LINES = (
+    'Changelog = "https://github.com/MrReasonable/sluice/blob/main/CHANGELOG.md"\n'
+    'Issues = "https://github.com/MrReasonable/sluice/issues"\n'
+    'Source = "https://github.com/MrReasonable/sluice"\n'
+    'Documentation = "https://github.com/MrReasonable/sluice/blob/main/docs/USAGE.md"\n'
+)
+# TWO distinct representations, deliberately not one constant: pyproject.toml is TOML
+# (the value is a quoted string), but a wheel's entry_points.txt is INI-format (the value
+# is bare, unquoted) -- reusing one string for both would either fail to match the real
+# pyproject.toml line or, worse, get replace()'d into it and silently corrupt it into
+# invalid TOML.
+CONSOLE_SCRIPT_PYPROJECT_LINE = 'job-sluice = "sluice.cli:main"\n'
+CONSOLE_SCRIPT_ENTRY_POINT_LINE = "job-sluice = sluice.cli:main"
+
+
+def test_wheel_metadata_carries_the_full_project_url_set(tmp_path):
+    dest = str(tmp_path)
+    _build_wheel(dest)
+    metadata = _read_metadata(dest)
+    expected = {
+        "Project-URL: Homepage, https://github.com/MrReasonable/sluice",
+        "Project-URL: Changelog, https://github.com/MrReasonable/sluice/blob/main/CHANGELOG.md",
+        "Project-URL: Issues, https://github.com/MrReasonable/sluice/issues",
+        "Project-URL: Source, https://github.com/MrReasonable/sluice",
+        "Project-URL: Documentation, https://github.com/MrReasonable/sluice/blob/main/docs/USAGE.md",
+    }
+    missing = {line for line in expected if line not in metadata}
+    assert not missing, f"{missing} missing from wheel METADATA's Project-URL set"
+
+
+def test_the_project_url_guard_is_falsified_by_dropping_the_extra_urls(tmp_path):
+    with open(f"{ROOT}/pyproject.toml", encoding="utf-8") as f:
+        original = f.read()
+    assert EXTRA_URLS_LINES in original, (
+        "the extra project URLs are not written as this guard expects, so stripping "
+        "them would SILENTLY NO-OP and this test would pass for the wrong reason")
+    dest = str(tmp_path)
+    _build_wheel(dest, pyproject_text=original.replace(EXTRA_URLS_LINES, ""))
+    metadata = _read_metadata(dest)
+    assert "Project-URL: Homepage," in metadata  # unrelated field, still present
+    assert "Project-URL: Changelog," not in metadata
+    assert "Project-URL: Issues," not in metadata
+    assert "Project-URL: Documentation," not in metadata
+
+
+def test_wheel_console_script_is_job_sluice(tmp_path):
+    dest = str(tmp_path)
+    _build_wheel(dest)
+    entry_points = _read_entry_points(dest)
+    assert "[console_scripts]" in entry_points
+    assert CONSOLE_SCRIPT_ENTRY_POINT_LINE in entry_points, (
+        "the console script must stay named job-sluice -- the PyPI distribution name "
+        "renamed from sluice in #103, and a silent rename here would break every "
+        "documented install instruction")
+
+
+def test_the_console_script_guard_is_falsified_by_a_rename(tmp_path):
+    with open(f"{ROOT}/pyproject.toml", encoding="utf-8") as f:
+        original = f.read()
+    assert CONSOLE_SCRIPT_PYPROJECT_LINE in original, (
+        "the console script is not written as this guard expects, so renaming it "
+        "would SILENTLY NO-OP and this test would pass for the wrong reason")
+    dest = str(tmp_path)
+    renamed_pyproject_line = 'job-sluice-renamed = "sluice.cli:main"\n'
+    renamed_entry_point_line = "job-sluice-renamed = sluice.cli:main"
+    _build_wheel(dest, pyproject_text=original.replace(
+        CONSOLE_SCRIPT_PYPROJECT_LINE, renamed_pyproject_line))
+    entry_points = _read_entry_points(dest)
+    assert CONSOLE_SCRIPT_ENTRY_POINT_LINE not in entry_points
+    assert renamed_entry_point_line in entry_points  # the mutation landed, not a no-op
