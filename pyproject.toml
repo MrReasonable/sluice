@@ -97,6 +97,9 @@ test = ["pytest", "faker", "pytest-cov", "jinja2", "setuptools>=83.0.0", "build"
 [tool.setuptools.package-data]
 sluice = ["templates/*.html.j2"]
 
+# Homepage and Source deliberately point at the identical URL: no separate docs/marketing
+# site exists for this project, so there is nothing distinct for Homepage to name. Not an
+# oversight to "fix" by picking a different value for one of them.
 [project.urls]
 Homepage = "https://github.com/MrReasonable/sluice"
 Changelog = "https://github.com/MrReasonable/sluice/blob/main/CHANGELOG.md"

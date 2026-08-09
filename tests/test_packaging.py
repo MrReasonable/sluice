@@ -20,7 +20,21 @@ provisioned, so nothing is fetched) rather than on the suite's own network guard
 verified by running the build with the machine offline. Left as a note rather than
 plumbed through: re-imposing the block in the child would mean an exec wrapper around
 `python -m build` for a claim the flag already carries.
+
+This module has grown past checking only the template: it now pins the whole of
+pyproject.toml's PyPI-facing metadata as it lands in a real wheel -- license, readme (as
+the long description, and, separately, that its markdown actually resolves off-repo,
+since PyPI does not rewrite relative links the way GitHub does), authors (pinned to the
+project's own noreply identity), classifiers (DERIVED from CI's own test matrix rather
+than hand-listed, so the two cannot silently drift apart), keywords, project URLs, and
+the console script. Every POSITIVE assertion below reads a single pristine, unmutated
+wheel built ONCE by the module-scoped `pristine_wheel` fixture below -- measured,
+building one separately per test took this module from ~1.2s to ~9.2s, ~4.2s of which
+was seven tests rebuilding the identical wheel. Every FALSIFY test still builds its own
+MUTATED wheel per test, deliberately UNshared: each mutates a different line and must
+not see another test's mutation.
 """
+import dataclasses
 import glob
 import os
 import re
@@ -29,7 +43,10 @@ import subprocess
 import sys
 import zipfile
 
+import pytest
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CI = os.path.join(ROOT, ".github", "workflows", "ci.yml")
 PKG_DATA = '[tool.setuptools.package-data]\nsluice = ["templates/*.html.j2"]\n'
 
 
@@ -46,8 +63,14 @@ def _expected_templates():
     return sorted(f"sluice/templates/{n}" for n in os.listdir(d) if n.endswith(".html.j2"))
 
 
-def _build_wheel(dest, *, pyproject_text=None):
-    """Copy sluice/ + pyproject into `dest`, build a wheel there, return its namelist."""
+def _build_wheel(dest, *, pyproject_text=None, readme_text=None):
+    """Copy sluice/ + pyproject + README into `dest`, build a wheel there, return its namelist.
+
+    `pyproject_text` and `readme_text` each default to this repo's own file; either can be
+    swapped for a MUTATED copy so a falsify test can build from an altered pyproject.toml
+    or an altered README.md without touching the real one on disk -- the same shape,
+    extended to a second file for the same reason.
+    """
     shutil.copytree(f"{ROOT}/sluice", f"{dest}/sluice",
                     ignore=shutil.ignore_patterns("__pycache__"))
     if pyproject_text is None:
@@ -58,6 +81,9 @@ def _build_wheel(dest, *, pyproject_text=None):
     for named in ("LICENSE", "README.md"):   # pyproject metadata references these
         if os.path.exists(f"{ROOT}/{named}"):
             shutil.copy(f"{ROOT}/{named}", dest)
+    if readme_text is not None:   # override the copy above with a MUTATED README
+        with open(f"{dest}/README.md", "w", encoding="utf-8") as f:
+            f.write(readme_text)
     # timeout=300: the module docstring measures a real build at 0.6s, so a five-minute
     # bound costs nothing on a healthy run and stops a hung build from hanging the whole
     # suite with no output -- `subprocess.run` has no timeout by default.
@@ -73,20 +99,99 @@ def _build_wheel(dest, *, pyproject_text=None):
         return zf.namelist()
 
 
+def _read_dist_info(dest, suffix):
+    """Read and decode a `.dist-info/<suffix>` member from the wheel `_build_wheel` just
+    built in `dest`.
+
+    Shared by `_read_metadata` (suffix="METADATA") and `_read_entry_points`
+    (suffix="entry_points.txt") -- both need the identical glob-the-wheel / open-the-zip /
+    find-the-member dance, and duplicating it across two functions was two copies that
+    could silently drift apart under a future change to either.
+    """
+    wheels = glob.glob(f"{dest}/out/*.whl")
+    assert wheels, f"no wheel found in {dest}/out to read {suffix} from"
+    with zipfile.ZipFile(wheels[0]) as zf:
+        member = next(n for n in zf.namelist() if n.endswith(f".dist-info/{suffix}"))
+        return zf.read(member).decode("utf-8")
+
+
 def _read_metadata(dest):
     """Read and decode the METADATA file from the wheel `_build_wheel(dest, ...)` just built.
 
     Independent of `_build_wheel`'s own return value (a bare name list) so that function's
-    existing two callers and their assertions are untouched by this addition.
+    existing callers and their assertions are untouched by this addition.
     """
-    wheels = glob.glob(f"{dest}/out/*.whl")
-    assert wheels, f"no wheel found in {dest}/out to read metadata from"
-    with zipfile.ZipFile(wheels[0]) as zf:
-        meta_name = next(n for n in zf.namelist() if n.endswith(".dist-info/METADATA"))
-        return zf.read(meta_name).decode("utf-8")
+    return _read_dist_info(dest, "METADATA")
+
+
+def _read_entry_points(dest):
+    """Read and decode entry_points.txt from the wheel `_build_wheel(dest, ...)` just built."""
+    return _read_dist_info(dest, "entry_points.txt")
+
+
+def _long_description_body(metadata):
+    """The long-description BODY of a wheel's METADATA -- everything after the header block.
+
+    Core Metadata (an RFC 822-derived format) separates its header block from the payload
+    with the first blank line, and the headers above it are single-line `Key: value`
+    pairs with no blank lines of their own -- so partitioning on the first "\\n\\n" lands
+    exactly on that boundary. Verified against a real build: the returned body starts with
+    README.md's own first line, verbatim.
+    """
+    _, _, body = metadata.partition("\n\n")
+    return body
+
+
+_RELATIVE_MARKDOWN_LINK_RE = re.compile(r"\]\((?!https?://|#)[^)]*\)")
+
+
+def _relative_markdown_links(text):
+    """Every markdown link TARGET in `text` that is neither an absolute URL nor an in-page
+    anchor -- i.e. one that would 404 when this text renders somewhere other than this
+    repo's own GitHub page. PyPI does not rewrite relative links in the long description
+    it renders; they resolve against pypi.org/project/job-sluice/, not against this repo,
+    confirmed by a real `twine check --strict` run, which passes regardless -- that check
+    validates well-formed markdown, not that every link it contains actually resolves from
+    PyPI's own domain.
+    """
+    return _RELATIVE_MARKDOWN_LINK_RE.findall(text)
+
+
+_MATRIX_PYTHON_VERSIONS_RE = re.compile(r'python-version:\s*\[([^\]]*)\]')
+
+
+def _expected_python_classifiers():
+    """The `Programming Language :: Python :: 3.X` classifiers CI's own test matrix implies.
+
+    DERIVED from `.github/workflows/ci.yml`'s `matrix.python-version` list, never hand-
+    listed: a hand-listed copy is exactly the shape of drift this guard exists to catch --
+    measured, bumping CI's matrix to a 4th Python version and leaving a hand-listed
+    constant here untouched left the guard built from it green. Text-matched, not YAML-
+    parsed, for the same reason tests/test_ci_wiring.py gives in its own module docstring:
+    pyyaml is a guarded optional import in `sluice/`, so a test that needs it can skip
+    itself into uselessness on a bare install.
+
+    `python-version: [...]` (bracketed) appears in ci.yml exactly once -- every other
+    `python-version:` line in that file sets a single quoted string (`"3.12"`), not a
+    list -- so the regex needs no `matrix:` anchoring to stay unambiguous. Asserted below
+    rather than assumed: a second bracketed match would mean this function no longer knows
+    which one is the real test matrix.
+    """
+    with open(CI, encoding="utf-8") as f:
+        text = f.read()
+    matches = list(_MATRIX_PYTHON_VERSIONS_RE.finditer(text))
+    assert len(matches) == 1, (
+        f"expected exactly one bracketed python-version list in {CI}, found "
+        f"{len(matches)} -- this guard cannot say which one is the CI test matrix")
+    versions = re.findall(r'"([\d.]+)"', matches[0].group(1))
+    return ["Classifier: Programming Language :: Python :: 3"] + [
+        f"Classifier: Programming Language :: Python :: {v}" for v in versions
+    ]
 
 
 LICENSE_EXPRESSION_LINE = 'license = "MIT"\n'
+LICENSE_FILES_LINE = 'license-files = ["LICENSE"]\n'
+LICENSE_FILES_EMPTY_LINE = 'license-files = []\n'
 README_LINE = 'readme = "README.md"\n'
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 NOREPLY_AUTHOR_EMAIL = "4990954+MrReasonable@users.noreply.github.com"
@@ -103,13 +208,6 @@ _LEAKED_AUTHORS_LINES = (
     '    {name = "Example Person", email = "example.person@example.invalid"},\n'
     ']\n'
 )
-
-EXPECTED_PYTHON_CLASSIFIERS = [
-    "Classifier: Programming Language :: Python :: 3",
-    "Classifier: Programming Language :: Python :: 3.12",
-    "Classifier: Programming Language :: Python :: 3.13",
-    "Classifier: Programming Language :: Python :: 3.14",
-]
 CLASSIFIERS_LINES = (
     'classifiers = [\n'
     '    "Development Status :: 4 - Beta",\n'
@@ -127,52 +225,52 @@ CLASSIFIERS_LINES = (
 KEYWORDS_LINE = (
     'keywords = ["job-search", "job-hunting", "cli", "cv", "resume", "automation"]\n'
 )
+EXTRA_URLS_LINES = (
+    'Changelog = "https://github.com/MrReasonable/sluice/blob/main/CHANGELOG.md"\n'
+    'Issues = "https://github.com/MrReasonable/sluice/issues"\n'
+    'Source = "https://github.com/MrReasonable/sluice"\n'
+    'Documentation = "https://github.com/MrReasonable/sluice/blob/main/docs/USAGE.md"\n'
+)
+# TWO distinct representations, deliberately not one constant: pyproject.toml is TOML
+# (the value is a quoted string), but a wheel's entry_points.txt is INI-format (the value
+# is bare, unquoted) -- reusing one string for both would either fail to match the real
+# pyproject.toml line or, worse, get replace()'d into it and silently corrupt it into
+# invalid TOML.
+CONSOLE_SCRIPT_PYPROJECT_LINE = 'job-sluice = "sluice.cli:main"\n'
+CONSOLE_SCRIPT_ENTRY_POINT_LINE = "job-sluice = sluice.cli:main"
 
 
-def test_wheel_metadata_carries_the_spdx_license_expression(tmp_path):
-    dest = str(tmp_path)
-    _build_wheel(dest)
-    metadata = _read_metadata(dest)
-    assert "License-Expression: MIT" in metadata, (
-        "pyproject.toml's [project] table should declare license = \"MIT\" (PEP 639 SPDX "
-        "form) -- without it, PyPI has no machine-readable license for the package page")
-    assert "License-File: LICENSE" in metadata, (
-        "the LICENSE file should ship in the sdist/wheel -- via the explicit "
-        "license-files = [\"LICENSE\"] declaration below, or via setuptools' own default "
-        "auto-discovery glob (LICEN[CS]E*/COPYING*/NOTICE*/AUTHORS*) if that were ever "
-        "removed; either way this assertion is what actually matters")
+@dataclasses.dataclass(frozen=True)
+class _PristineWheel:
+    namelist: list
+    metadata: str
+    entry_points: str
 
 
-def test_the_license_expression_guard_is_falsified_by_dropping_it(tmp_path):
-    """Only license = "MIT" is falsified here, not license-files.
+@pytest.fixture(scope="module")
+def pristine_wheel(tmp_path_factory):
+    """The unmutated wheel every POSITIVE assertion in this module reads from, built ONCE.
 
-    Verified against setuptools' own pyproject_config docs: when license-files is
-    unset, setuptools defaults it to the glob ['LICEN[CS]E*', 'COPYING*', 'NOTICE*',
-    'AUTHORS*'] and auto-discovers this repo's LICENSE file regardless -- so
-    "License-File: LICENSE" stays in the wheel's METADATA even with the explicit
-    license-files = ["LICENSE"] line removed, and asserting its absence there would
-    assert something false. license-files is still declared in pyproject.toml (see
-    Step 3) for self-documenting intent and to constrain the glob against a future
-    NOTICE/COPYING/AUTHORS file this repo doesn't have today -- it just isn't
-    independently falsifiable by this mechanism, and this test says so rather than
-    silently asserting a property that isn't real.
+    Seven positive-assertion tests each used to call `_build_wheel` on an identical,
+    unmutated copy of the tree -- measured, that took this module from ~1.2s to ~9.2s.
+    Every FALSIFY test still builds its own MUTATED wheel per test via `_build_wheel`
+    directly; those are deliberately NOT routed through this fixture, since each mutates a
+    different line of pyproject.toml or README.md and must not see another test's
+    mutation, or share a wheel with one that has already been altered.
     """
-    with open(f"{ROOT}/pyproject.toml", encoding="utf-8") as f:
-        original = f.read()
-    assert LICENSE_EXPRESSION_LINE in original, (
-        "the license expression is not written as this guard expects, so stripping it "
-        "would SILENTLY NO-OP and this test would pass for the wrong reason")
-    dest = str(tmp_path)
-    _build_wheel(dest, pyproject_text=original.replace(LICENSE_EXPRESSION_LINE, ""))
-    metadata = _read_metadata(dest)
-    assert "License-Expression:" not in metadata
+    dest = str(tmp_path_factory.mktemp("pristine-wheel"))
+    namelist = _build_wheel(dest)
+    return _PristineWheel(
+        namelist=namelist,
+        metadata=_read_metadata(dest),
+        entry_points=_read_entry_points(dest),
+    )
 
 
-def test_every_shipped_template_is_in_the_built_wheel(tmp_path):
+def test_every_shipped_template_is_in_the_built_wheel(pristine_wheel):
     expected = _expected_templates()
     assert expected, "found no templates to check, so this guard would pass vacuously"
-    names = _build_wheel(str(tmp_path))
-    missing = [t for t in expected if t not in names]
+    missing = [t for t in expected if t not in pristine_wheel.namelist]
     assert not missing, (
         f"{missing} missing from the built wheel. `packages.find` selects PACKAGES, "
         f"not data: without [tool.setuptools.package-data] every `pip install sluice` "
@@ -200,15 +298,86 @@ def test_the_wheel_guard_is_falsified_by_dropping_package_data(tmp_path):
     assert not [t for t in expected if t in names]   # ...its DATA does not
 
 
-def test_wheel_metadata_carries_the_readme_as_the_long_description(tmp_path):
+def test_wheel_metadata_carries_the_spdx_license_expression(pristine_wheel):
+    metadata = pristine_wheel.metadata
+    assert "License-Expression: MIT" in metadata, (
+        "pyproject.toml's [project] table should declare license = \"MIT\" (PEP 639 SPDX "
+        "form) -- without it, PyPI has no machine-readable license for the package page")
+    assert "License-File: LICENSE" in metadata, (
+        "the LICENSE file should ship in the sdist/wheel -- via the explicit "
+        "license-files = [\"LICENSE\"] declaration below, or via setuptools' own default "
+        "auto-discovery glob (LICEN[CS]E*/COPYING*/NOTICE*/AUTHORS*) if that were ever "
+        "removed; either way this assertion is what actually matters")
+
+
+def test_the_license_expression_guard_is_falsified_by_dropping_it(tmp_path):
+    """Only license = "MIT" is falsified by DELETION here, not license-files.
+
+    Verified against setuptools' own pyproject_config docs: when license-files is unset,
+    setuptools defaults it to the glob ['LICEN[CS]E*', 'COPYING*', 'NOTICE*', 'AUTHORS*']
+    and auto-discovers this repo's LICENSE file regardless -- so "License-File: LICENSE"
+    stays in the wheel's METADATA even with the explicit license-files = ["LICENSE"] line
+    DELETED, and asserting its absence there would assert something false. license-files
+    is still declared in pyproject.toml for self-documenting intent and to constrain the
+    glob against a future NOTICE/COPYING/AUTHORS file this repo doesn't have today.
+
+    license-files IS falsifiable, though -- by SUBSTITUTION, not deletion. Measured: both
+    `license-files = []` (an explicit empty list) and `license-files = ["NOTICE"]` (a
+    filename that doesn't exist) make "License-File: LICENSE" disappear from the built
+    wheel. That correction matters beyond this docstring having stated the wrong
+    mechanism: a typo or an accidental glob narrowing in a future edit could silently ship
+    an MIT-licensed public package with NO license text in the wheel at all, and the
+    positive assertion above had no falsify partner that could catch it --
+    test_the_license_files_field_is_falsified_by_emptying_it below is that partner.
+    """
+    with open(f"{ROOT}/pyproject.toml", encoding="utf-8") as f:
+        original = f.read()
+    assert LICENSE_EXPRESSION_LINE in original, (
+        "the license expression is not written as this guard expects, so stripping it "
+        "would SILENTLY NO-OP and this test would pass for the wrong reason")
     dest = str(tmp_path)
-    _build_wheel(dest)
+    _build_wheel(dest, pyproject_text=original.replace(LICENSE_EXPRESSION_LINE, ""))
     metadata = _read_metadata(dest)
+    assert "License-Expression:" not in metadata
+
+
+def test_the_license_files_field_is_falsified_by_emptying_it(tmp_path):
+    """The falsify partner test_the_license_expression_guard_is_falsified_by_dropping_it's
+    own docstring says the positive assertion above was missing: license-files IS
+    falsifiable, by SUBSTITUTION rather than deletion. Emptying the explicit list is the
+    shape a future edit could actually introduce by accident (a typo, or a glob narrowed
+    too far), and losing it silently would ship an MIT-licensed public package with no
+    license text in the wheel at all -- worth guarding even though this specific mutation
+    (an empty list) is not itself a plausible accidental edit on its own; it is the
+    simplest one that exercises the same failure mode as a narrowed glob would.
+    """
+    with open(f"{ROOT}/pyproject.toml", encoding="utf-8") as f:
+        original = f.read()
+    assert LICENSE_FILES_LINE in original, (
+        "license-files is not written as this guard expects, so emptying it would "
+        "SILENTLY NO-OP and this test would pass for the wrong reason")
+    dest = str(tmp_path)
+    _build_wheel(
+        dest, pyproject_text=original.replace(LICENSE_FILES_LINE, LICENSE_FILES_EMPTY_LINE))
+    metadata = _read_metadata(dest)
+    assert "License-File: LICENSE" not in metadata
+
+
+def test_wheel_metadata_carries_the_readme_as_the_long_description(pristine_wheel):
+    metadata = pristine_wheel.metadata
     assert "Description-Content-Type: text/markdown" in metadata, (
         "pyproject.toml's [project] table should declare readme = \"README.md\" -- without "
         "it, the PyPI project page renders with a blank description")
-    assert "Sluice is an engineered, config-driven job-hunting pipeline" in metadata, (
-        "the README's own opening line should appear in the wheel's long description")
+    # DERIVED from the real README.md at test time, not a hardcoded literal copy of its
+    # opening sentence: a hardcoded copy cannot catch TRUNCATION (only that some fixed
+    # substring survived), and it silently goes stale the moment the opening prose changes
+    # for an unrelated reason. The first 120 characters cover the title line plus enough of
+    # the first sentence to be a meaningful, drift-proof fingerprint.
+    with open(f"{ROOT}/README.md", encoding="utf-8") as f:
+        opening = f.read()[:120]
+    assert opening in metadata, (
+        "the README's own opening content should appear verbatim in the wheel's long "
+        "description")
 
 
 def test_the_readme_guard_is_falsified_by_dropping_the_readme_field(tmp_path):
@@ -223,18 +392,61 @@ def test_the_readme_guard_is_falsified_by_dropping_the_readme_field(tmp_path):
     assert "Description-Content-Type:" not in metadata
 
 
-def test_wheel_author_identity_is_the_project_noreply_address(tmp_path):
+def test_wheel_long_description_has_no_relative_markdown_links(pristine_wheel):
+    """PyPI does not rewrite relative markdown links in the long description it renders --
+    they resolve against pypi.org/project/job-sluice/, not against this repo, and 404. This
+    is invisible to `twine check --strict`, confirmed by running it: that check validates
+    well-formed markdown, not that every link it contains actually resolves from PyPI's own
+    domain. README.md's own repo-relative links (`docs/USAGE.md`, `LICENSE`, ...) are
+    rewritten to absolute `https://github.com/MrReasonable/sluice/blob/main/...` URLs
+    instead -- GitHub resolves an absolute link to its own repo fine when the README
+    renders in-repo, and PyPI resolves the same URL for the same reason: it no longer
+    depends on the resolving page's own location. Anchor-only links (`#section`) are
+    exempt -- those work wherever the page renders, PyPI included.
+    """
+    body = _long_description_body(pristine_wheel.metadata)
+    assert body, (
+        "no long-description body found in METADATA -- the header/body split point may "
+        "have moved, and this guard would be scanning nothing")
+    bad = _relative_markdown_links(body)
+    assert not bad, (
+        f"{bad} -- relative markdown link(s) in the long description. PyPI does not "
+        f"rewrite these; they 404 against pypi.org/project/job-sluice/. Rewrite each to an "
+        f"absolute https://github.com/MrReasonable/sluice/blob/main/<path> URL in README.md.")
+
+
+def test_the_relative_markdown_link_guard_is_falsified_by_reintroducing_one(tmp_path):
+    """The guard above must be FALSIFIABLE, not merely green on today's already-fixed
+    README. This reintroduces a relative link into a MUTATED copy of the real README
+    content -- never the file on disk -- and confirms the guard catches it.
+    """
+    with open(f"{ROOT}/README.md", encoding="utf-8") as f:
+        original_readme = f.read()
+    mutated = original_readme + "\n\nSee [an example](some/relative/path.md) for details.\n"
+    assert _relative_markdown_links(mutated), (
+        "the injected fixture line is not itself relative-link-shaped, so this test would "
+        "SILENTLY NO-OP and pass for the wrong reason")
     dest = str(tmp_path)
-    _build_wheel(dest)
+    _build_wheel(dest, readme_text=mutated)
     metadata = _read_metadata(dest)
+    bad = _relative_markdown_links(_long_description_body(metadata))
+    assert bad, (
+        "the guard failed to detect a relative markdown link reintroduced into the "
+        "README -- it would silently pass a real regression the same way")
+
+
+def test_wheel_author_identity_is_the_project_noreply_address(pristine_wheel):
+    metadata = pristine_wheel.metadata
     assert f"Author-email: MrReasonable <{NOREPLY_AUTHOR_EMAIL}>" in metadata, (
         "pyproject.toml's [project] table should declare authors with the project's "
         "existing noreply commit-trailer identity, not left unset or personal")
     emails = set(_EMAIL_RE.findall(metadata))
     assert emails == {NOREPLY_AUTHOR_EMAIL}, (
         f"unexpected email address(es) in wheel metadata: {emails - {NOREPLY_AUTHOR_EMAIL}}. "
-        f"authors ships in every published sdist/wheel -- only the project's public noreply "
-        f"identity belongs there, never a personal address")
+        f"authors ships in every published sdist/wheel, and so does README.md as the long "
+        f"description (Task 2) -- only the project's public noreply identity belongs in "
+        f"either, so check BOTH pyproject.toml's authors field AND README.md for a leaked "
+        f"personal address, not authors alone")
 
 
 def test_the_author_identity_guard_is_falsified_by_a_personal_email(tmp_path):
@@ -247,27 +459,33 @@ def test_the_author_identity_guard_is_falsified_by_a_personal_email(tmp_path):
     _build_wheel(dest, pyproject_text=original.replace(AUTHORS_LINES, _LEAKED_AUTHORS_LINES))
     metadata = _read_metadata(dest)
     emails = set(_EMAIL_RE.findall(metadata))
-    assert emails == {"example.person@example.invalid"}, (
-        "the guard should have detected the injected non-noreply email but did not -- "
-        "it would silently pass a real leak the same way")
+    # NOT exact-set equality against {"example.person@example.invalid"}: the whole-METADATA
+    # scan also covers README.md's body (Task 2 embeds it as the long description), so an
+    # unrelated email-shaped string anywhere in README.md's own prose would make an exact-
+    # set assertion fail for a reason that has nothing to do with THIS mutation. What this
+    # test actually needs to prove is narrower and isolates it: the noreply address is gone
+    # AND the injected leaked one is present, regardless of what else the README may add.
+    assert NOREPLY_AUTHOR_EMAIL not in emails and "example.person@example.invalid" in emails, (
+        f"the guard should have detected the injected non-noreply email and lost the "
+        f"noreply one, but did not (emails found: {emails}) -- it would silently pass a "
+        f"real leak the same way")
 
 
-def test_wheel_metadata_carries_the_ci_matrix_python_classifiers(tmp_path):
-    dest = str(tmp_path)
-    _build_wheel(dest)
-    metadata = _read_metadata(dest)
-    missing = [c for c in EXPECTED_PYTHON_CLASSIFIERS if c not in metadata]
+def test_wheel_metadata_carries_the_ci_matrix_python_classifiers(pristine_wheel):
+    expected = _expected_python_classifiers()
+    assert expected, (
+        "no Python-version classifiers derived from .github/workflows/ci.yml -- a broken "
+        "regex would otherwise let this guard pass having enumerated nothing")
+    metadata = pristine_wheel.metadata
+    missing = [c for c in expected if c not in metadata]
     assert not missing, (
-        f"{missing} missing from wheel METADATA. These must match "
-        f".github/workflows/ci.yml's matrix.python-version exactly -- if that matrix "
-        f"changes, this list (and pyproject.toml's classifiers) must change with it")
+        f"{missing} missing from wheel METADATA. These are DERIVED from "
+        f".github/workflows/ci.yml's matrix.python-version -- if that matrix changes, "
+        f"pyproject.toml's classifiers must change with it")
     assert "Classifier: License ::" not in metadata, (
         "a License :: classifier combined with the PEP 639 license = \"MIT\" SPDX "
         "expression (Task 1) is a deprecated combination setuptools >=77 warns about -- "
         "the license belongs in License-Expression only")
-    assert "Keywords:" in metadata, (
-        "pyproject.toml's [project] table should declare keywords -- without them the "
-        "package is harder to find via PyPI search")
 
 
 def test_the_classifiers_guard_is_falsified_by_dropping_them(tmp_path):
@@ -276,10 +494,35 @@ def test_the_classifiers_guard_is_falsified_by_dropping_them(tmp_path):
     assert CLASSIFIERS_LINES in original, (
         "classifiers are not written as this guard expects, so stripping them "
         "would SILENTLY NO-OP and this test would pass for the wrong reason")
+    expected = _expected_python_classifiers()
+    assert expected, "no Python-version classifiers derived from ci.yml to falsify against"
     dest = str(tmp_path)
     _build_wheel(dest, pyproject_text=original.replace(CLASSIFIERS_LINES, ""))
     metadata = _read_metadata(dest)
-    assert not any(c in metadata for c in EXPECTED_PYTHON_CLASSIFIERS)
+    assert not any(c in metadata for c in expected)
+
+
+def test_wheel_metadata_carries_keywords(pristine_wheel):
+    """Split out from test_wheel_metadata_carries_the_ci_matrix_python_classifiers above,
+    which originally bundled three unrelated assertions (classifiers present, the
+    deprecated License:: classifier absent, keywords present) under one name. This is the
+    positive counterpart test_the_keywords_guard_is_falsified_by_dropping_them below
+    previously had none of its own.
+
+    Asserts the VALUES, not merely the header's presence -- a bare "Keywords:" in metadata
+    check stays green against a typo or a list silently narrowed to one term, which is the
+    drift that actually costs PyPI discoverability. Every other field in this module is
+    pinned exactly (the classifiers exact-set check above, the Project-URL set below); this
+    one was the outlier.
+    """
+    expected_keywords = re.findall(r'"([^"]+)"', KEYWORDS_LINE)
+    assert expected_keywords, (
+        "no keywords parsed out of KEYWORDS_LINE, so this guard would pass vacuously")
+    expected_line = f"Keywords: {','.join(expected_keywords)}"
+    assert expected_line in pristine_wheel.metadata, (
+        f"pyproject.toml's keywords should reach METADATA verbatim as '{expected_line}' -- "
+        f"without them the package is harder to find via PyPI search, and a silently "
+        f"shortened list reads the same as a full one")
 
 
 def test_the_keywords_guard_is_falsified_by_dropping_them(tmp_path):
@@ -294,34 +537,8 @@ def test_the_keywords_guard_is_falsified_by_dropping_them(tmp_path):
     assert "Keywords:" not in metadata
 
 
-def _read_entry_points(dest):
-    """Read and decode entry_points.txt from the wheel `_build_wheel(dest, ...)` just built."""
-    wheels = glob.glob(f"{dest}/out/*.whl")
-    assert wheels, f"no wheel found in {dest}/out to read entry points from"
-    with zipfile.ZipFile(wheels[0]) as zf:
-        ep_name = next(n for n in zf.namelist() if n.endswith(".dist-info/entry_points.txt"))
-        return zf.read(ep_name).decode("utf-8")
-
-
-EXTRA_URLS_LINES = (
-    'Changelog = "https://github.com/MrReasonable/sluice/blob/main/CHANGELOG.md"\n'
-    'Issues = "https://github.com/MrReasonable/sluice/issues"\n'
-    'Source = "https://github.com/MrReasonable/sluice"\n'
-    'Documentation = "https://github.com/MrReasonable/sluice/blob/main/docs/USAGE.md"\n'
-)
-# TWO distinct representations, deliberately not one constant: pyproject.toml is TOML
-# (the value is a quoted string), but a wheel's entry_points.txt is INI-format (the value
-# is bare, unquoted) -- reusing one string for both would either fail to match the real
-# pyproject.toml line or, worse, get replace()'d into it and silently corrupt it into
-# invalid TOML.
-CONSOLE_SCRIPT_PYPROJECT_LINE = 'job-sluice = "sluice.cli:main"\n'
-CONSOLE_SCRIPT_ENTRY_POINT_LINE = "job-sluice = sluice.cli:main"
-
-
-def test_wheel_metadata_carries_the_full_project_url_set(tmp_path):
-    dest = str(tmp_path)
-    _build_wheel(dest)
-    metadata = _read_metadata(dest)
+def test_wheel_metadata_carries_the_full_project_url_set(pristine_wheel):
+    metadata = pristine_wheel.metadata
     expected = {
         "Project-URL: Homepage, https://github.com/MrReasonable/sluice",
         "Project-URL: Changelog, https://github.com/MrReasonable/sluice/blob/main/CHANGELOG.md",
@@ -343,15 +560,14 @@ def test_the_project_url_guard_is_falsified_by_dropping_the_extra_urls(tmp_path)
     _build_wheel(dest, pyproject_text=original.replace(EXTRA_URLS_LINES, ""))
     metadata = _read_metadata(dest)
     assert "Project-URL: Homepage," in metadata  # unrelated field, still present
+    assert "Project-URL: Source," not in metadata
     assert "Project-URL: Changelog," not in metadata
     assert "Project-URL: Issues," not in metadata
     assert "Project-URL: Documentation," not in metadata
 
 
-def test_wheel_console_script_is_job_sluice(tmp_path):
-    dest = str(tmp_path)
-    _build_wheel(dest)
-    entry_points = _read_entry_points(dest)
+def test_wheel_console_script_is_job_sluice(pristine_wheel):
+    entry_points = pristine_wheel.entry_points
     assert "[console_scripts]" in entry_points
     assert CONSOLE_SCRIPT_ENTRY_POINT_LINE in entry_points, (
         "the console script must stay named job-sluice -- the PyPI distribution name "

@@ -62,7 +62,7 @@ Four more command groups sit alongside the pipeline rather than inside it: `job-
 (scaffold a config), `job-sluice doctor` (preflight everything below before you spend an LLM
 call finding out it's broken), `job-sluice health` (per-source scrape state), and
 `job-sluice leads` (dedupe/expire/reconcile maintenance passes). See [Commands](#commands) for
-the full list, and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the module-by-module
+the full list, and [`docs/ARCHITECTURE.md`](https://github.com/MrReasonable/sluice/blob/main/docs/ARCHITECTURE.md) for the module-by-module
 detail.
 
 ## Status: work in progress
@@ -73,7 +73,7 @@ Sluice currently assumes:
 - a Claude CLI backend (run locally or shelled out over SSH) as one option for
   the LLM judge and composer, with direct API backends (Anthropic, OpenAI,
   DeepSeek) as the alternative — see `--backend` in
-  [`docs/USAGE.md`](docs/USAGE.md)
+  [`docs/USAGE.md`](https://github.com/MrReasonable/sluice/blob/main/docs/USAGE.md)
 - a bundled renderer (`cv.renderer: template`, the default) that fills your
   own Jinja2 template -- or the packaged one, if you don't supply one -- with
   the composed CV and turns it into a PDF via WeasyPrint; `script`, shelling
@@ -154,7 +154,7 @@ vocabulary rather than a static list that could go stale. Activate it for zsh:
 eval "$(register-python-argcomplete job-sluice)"
 ```
 
-or drop that line in your `.zshrc` via [`plugins/job-sluice/`](plugins/job-sluice/), which is
+or drop that line in your `.zshrc` via [`plugins/job-sluice/`](https://github.com/MrReasonable/sluice/tree/main/plugins/job-sluice), which is
 shaped as a normal oh-my-zsh/zinit plugin:
 
 ```bash
@@ -180,7 +180,7 @@ the distribution and the console script are both `job-sluice`. The import
 package (`import sluice`), the `SLUICE_*` environment variables, and the
 `~/.config/sluice/` XDG paths are unaffected: those are invisible to a user
 and renaming them would be a breaking **config** change (this project's own
-[CHANGELOG](CHANGELOG.md) policy rates that above a breaking API change) for
+[CHANGELOG](https://github.com/MrReasonable/sluice/blob/main/CHANGELOG.md) policy rates that above a breaking API change) for
 no user-visible benefit. Only the thing you type at a shell prompt changed.
 
 ## Quickstart
@@ -246,7 +246,7 @@ and no refusal, because there is nothing to migrate from.
 ## Before you run the pipeline for real
 
 `job-sluice doctor` (offline, then live) is the fast way to find out which of
-these you're still missing — see [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)
+these you're still missing — see [`docs/TROUBLESHOOTING.md`](https://github.com/MrReasonable/sluice/blob/main/docs/TROUBLESHOOTING.md)
 for what a `dead`/`degraded` line means and how to fix it. In outline:
 
 - **A baseline CV** at `My CV/CV.md` in your vault (`baseline_rel`), and at
@@ -263,7 +263,7 @@ for what a `dead`/`degraded` line means and how to fix it. In outline:
   persistent headless-browser service this repository does not bundle — see
   [jo-inc/camofox-browser](https://github.com/jo-inc/camofox-browser).
   By default sluice looks for it at `http://127.0.0.1:9377`
-  (`CAMOFOX_URL`); see [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for the
+  (`CAMOFOX_URL`); see [`docs/CONFIGURATION.md`](https://github.com/MrReasonable/sluice/blob/main/docs/CONFIGURATION.md) for the
   full set of `CAMOFOX_*` variables. `track` and a non-`--offline` `doctor` still
   reach the network for their own reasons; see the genuinely-offline command
   list in `CHANGELOG.md`.
@@ -273,7 +273,7 @@ for what a `dead`/`degraded` line means and how to fix it. In outline:
 ## Commands
 
 Nine top-level command groups. Full flag reference, exit codes, and which
-stream each command writes to: [`docs/USAGE.md`](docs/USAGE.md).
+stream each command writes to: [`docs/USAGE.md`](https://github.com/MrReasonable/sluice/blob/main/docs/USAGE.md).
 
 | Command | Purpose |
 |---|---|
@@ -337,25 +337,26 @@ WeasyPrint.
 render pipeline than use `template`; see `sluice.yaml.example`.
 
 More renderer/backend/store/browser failures and their fixes:
-[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
+[`docs/TROUBLESHOOTING.md`](https://github.com/MrReasonable/sluice/blob/main/docs/TROUBLESHOOTING.md).
 
 ## Configuration
 
 Every config key is optional and falls back to a code default. See
-[`sluice.yaml.example`](sluice.yaml.example) for the full catalogue with
-inline comments, and [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for a
+[`sluice.yaml.example`](https://github.com/MrReasonable/sluice/blob/main/sluice.yaml.example) for the full catalogue with
+inline comments, and [`docs/CONFIGURATION.md`](https://github.com/MrReasonable/sluice/blob/main/docs/CONFIGURATION.md) for a
 reference organized by block with each key's default and what leaving it
 unset means.
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the dev setup, the test/lint
-commands, and the invariants a change is expected to respect.
-[`SECURITY.md`](SECURITY.md) covers vulnerability reporting.
+See [`CONTRIBUTING.md`](https://github.com/MrReasonable/sluice/blob/main/CONTRIBUTING.md) for
+the dev setup, the test/lint commands, and the invariants a change is expected to respect.
+[`SECURITY.md`](https://github.com/MrReasonable/sluice/blob/main/SECURITY.md) covers
+vulnerability reporting.
 
 ## Releases
 
-Version history and migration notes live in [`CHANGELOG.md`](CHANGELOG.md), and
+Version history and migration notes live in [`CHANGELOG.md`](https://github.com/MrReasonable/sluice/blob/main/CHANGELOG.md), and
 `job-sluice --version` reports what you have installed.
 
 A breaking **config** change counts for more here than a breaking API change -- nothing
@@ -371,4 +372,4 @@ different, which is the change class that matters most here.
 
 ## License
 
-MIT. See [`LICENSE`](LICENSE).
+MIT. See [`LICENSE`](https://github.com/MrReasonable/sluice/blob/main/LICENSE).
