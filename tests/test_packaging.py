@@ -86,6 +86,7 @@ def _read_metadata(dest):
 
 
 LICENSE_EXPRESSION_LINE = 'license = "MIT"\n'
+README_LINE = 'readme = "README.md"\n'
 
 
 def test_wheel_metadata_carries_the_spdx_license_expression(tmp_path):
@@ -157,3 +158,26 @@ def test_the_wheel_guard_is_falsified_by_dropping_package_data(tmp_path):
     names = _build_wheel(str(tmp_path), pyproject_text=original.replace(PKG_DATA, ""))
     assert "sluice/templates/__init__.py" in names   # the PACKAGE still ships...
     assert not [t for t in expected if t in names]   # ...its DATA does not
+
+
+def test_wheel_metadata_carries_the_readme_as_the_long_description(tmp_path):
+    dest = str(tmp_path)
+    _build_wheel(dest)
+    metadata = _read_metadata(dest)
+    assert "Description-Content-Type: text/markdown" in metadata, (
+        "pyproject.toml's [project] table should declare readme = \"README.md\" -- without "
+        "it, the PyPI project page renders with a blank description")
+    assert "Sluice is an engineered, config-driven job-hunting pipeline" in metadata, (
+        "the README's own opening line should appear in the wheel's long description")
+
+
+def test_the_readme_guard_is_falsified_by_dropping_the_readme_field(tmp_path):
+    with open(f"{ROOT}/pyproject.toml", encoding="utf-8") as f:
+        original = f.read()
+    assert README_LINE in original, (
+        "the readme field is not written as this guard expects, so stripping it "
+        "would SILENTLY NO-OP and this test would pass for the wrong reason")
+    dest = str(tmp_path)
+    _build_wheel(dest, pyproject_text=original.replace(README_LINE, ""))
+    metadata = _read_metadata(dest)
+    assert "Description-Content-Type:" not in metadata
