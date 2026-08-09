@@ -104,6 +104,30 @@ _LEAKED_AUTHORS_LINES = (
     ']\n'
 )
 
+EXPECTED_PYTHON_CLASSIFIERS = [
+    "Classifier: Programming Language :: Python :: 3",
+    "Classifier: Programming Language :: Python :: 3.12",
+    "Classifier: Programming Language :: Python :: 3.13",
+    "Classifier: Programming Language :: Python :: 3.14",
+]
+CLASSIFIERS_LINES = (
+    'classifiers = [\n'
+    '    "Development Status :: 4 - Beta",\n'
+    '    "Environment :: Console",\n'
+    '    "Intended Audience :: Developers",\n'
+    '    "Operating System :: OS Independent",\n'
+    '    "Programming Language :: Python :: 3",\n'
+    '    "Programming Language :: Python :: 3.12",\n'
+    '    "Programming Language :: Python :: 3.13",\n'
+    '    "Programming Language :: Python :: 3.14",\n'
+    '    "Topic :: Office/Business",\n'
+    '    "Topic :: Utilities",\n'
+    ']\n'
+)
+KEYWORDS_LINE = (
+    'keywords = ["job-search", "job-hunting", "cli", "cv", "resume", "automation"]\n'
+)
+
 
 def test_wheel_metadata_carries_the_spdx_license_expression(tmp_path):
     dest = str(tmp_path)
@@ -226,3 +250,45 @@ def test_the_author_identity_guard_is_falsified_by_a_personal_email(tmp_path):
     assert emails == {"example.person@example.invalid"}, (
         "the guard should have detected the injected non-noreply email but did not -- "
         "it would silently pass a real leak the same way")
+
+
+def test_wheel_metadata_carries_the_ci_matrix_python_classifiers(tmp_path):
+    dest = str(tmp_path)
+    _build_wheel(dest)
+    metadata = _read_metadata(dest)
+    missing = [c for c in EXPECTED_PYTHON_CLASSIFIERS if c not in metadata]
+    assert not missing, (
+        f"{missing} missing from wheel METADATA. These must match "
+        f".github/workflows/ci.yml's matrix.python-version exactly -- if that matrix "
+        f"changes, this list (and pyproject.toml's classifiers) must change with it")
+    assert "Classifier: License ::" not in metadata, (
+        "a License :: classifier combined with the PEP 639 license = \"MIT\" SPDX "
+        "expression (Task 1) is a deprecated combination setuptools >=77 warns about -- "
+        "the license belongs in License-Expression only")
+    assert "Keywords:" in metadata, (
+        "pyproject.toml's [project] table should declare keywords -- without them the "
+        "package is harder to find via PyPI search")
+
+
+def test_the_classifiers_guard_is_falsified_by_dropping_them(tmp_path):
+    with open(f"{ROOT}/pyproject.toml", encoding="utf-8") as f:
+        original = f.read()
+    assert CLASSIFIERS_LINES in original, (
+        "classifiers are not written as this guard expects, so stripping them "
+        "would SILENTLY NO-OP and this test would pass for the wrong reason")
+    dest = str(tmp_path)
+    _build_wheel(dest, pyproject_text=original.replace(CLASSIFIERS_LINES, ""))
+    metadata = _read_metadata(dest)
+    assert not any(c in metadata for c in EXPECTED_PYTHON_CLASSIFIERS)
+
+
+def test_the_keywords_guard_is_falsified_by_dropping_them(tmp_path):
+    with open(f"{ROOT}/pyproject.toml", encoding="utf-8") as f:
+        original = f.read()
+    assert KEYWORDS_LINE in original, (
+        "keywords are not written as this guard expects, so stripping them "
+        "would SILENTLY NO-OP and this test would pass for the wrong reason")
+    dest = str(tmp_path)
+    _build_wheel(dest, pyproject_text=original.replace(KEYWORDS_LINE, ""))
+    metadata = _read_metadata(dest)
+    assert "Keywords:" not in metadata

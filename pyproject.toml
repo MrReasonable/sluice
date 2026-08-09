@@ -39,6 +39,24 @@ readme = "README.md"
 authors = [
     {name = "MrReasonable", email = "4990954+MrReasonable@users.noreply.github.com"},
 ]
+# Python-version entries must match .github/workflows/ci.yml's matrix.python-version exactly
+# (tests/test_packaging.py::test_wheel_metadata_carries_the_ci_matrix_python_classifiers pins
+# this) -- a CI matrix bump with no corresponding update here goes silently stale on PyPI.
+# No "License :: OSI Approved :: MIT License" classifier: combined with the PEP 639
+# license = "MIT" SPDX expression above, setuptools >=77 treats that pairing as deprecated.
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Office/Business",
+    "Topic :: Utilities",
+]
+keywords = ["job-search", "job-hunting", "cli", "cv", "resume", "automation"]
 
 [project.scripts]
 job-sluice = "sluice.cli:main"
