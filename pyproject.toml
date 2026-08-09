@@ -34,6 +34,11 @@ license-files = ["LICENSE"]
 # no separate content-type declaration needed. Without this, PyPI's project page renders
 # with a blank description.
 readme = "README.md"
+# Ships in every published sdist/wheel, so this is pinned to the same noreply identity every
+# commit trailer in this repo's git history already uses -- never a personal email address.
+authors = [
+    {name = "MrReasonable", email = "4990954+MrReasonable@users.noreply.github.com"},
+]
 
 [project.scripts]
 job-sluice = "sluice.cli:main"
