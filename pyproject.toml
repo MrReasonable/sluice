@@ -17,6 +17,19 @@ dynamic = ["version"]
 description = "Sluice: an engineered, config-driven job-hunting pipeline (ingest, triage, CV tailoring, apply, track)."
 requires-python = ">=3.12"
 dependencies = ["pyyaml"]
+# PEP 639 SPDX license expression -- the modern, non-deprecated form. setuptools >=77 (this
+# repo pins >=83 in [build-system] and the test extra) warns loudly if a `License ::`
+# classifier is combined with this field, so no such classifier is added below. Emits
+# `License-Expression: MIT` in the built wheel's METADATA (Core Metadata 2.4), not the
+# older `License:` field.
+license = "MIT"
+# Explicit for self-documenting intent and to constrain the glob against a future
+# NOTICE/COPYING/AUTHORS file this repo doesn't have today. setuptools already
+# auto-discovers LICENSE via its own default glob (LICEN[CS]E*/COPYING*/NOTICE*/AUTHORS*)
+# when this is unset, so removing this line would NOT stop the LICENSE file from
+# shipping -- see the test docstring below for why that makes this line unfalsifiable
+# by absence, and what's tested instead.
+license-files = ["LICENSE"]
 
 [project.scripts]
 job-sluice = "sluice.cli:main"
