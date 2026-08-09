@@ -18,10 +18,11 @@ description = "Sluice: an engineered, config-driven job-hunting pipeline (ingest
 requires-python = ">=3.12"
 dependencies = ["pyyaml"]
 # PEP 639 SPDX license expression -- the modern, non-deprecated form. setuptools >=77 (this
-# repo pins >=83 in [build-system] and the test extra) warns loudly if a `License ::`
-# classifier is combined with this field, so no such classifier is added below. Emits
-# `License-Expression: MIT` in the built wheel's METADATA (Core Metadata 2.4), not the
-# older `License:` field.
+# repo pins >=83 in [build-system] and the test extra) HARD-ERRORS at build time
+# (setuptools.errors.InvalidConfigError, confirmed by a real build attempt -- not merely a
+# warning) if a `License ::` classifier is combined with this field, so no such classifier
+# is added below. Emits `License-Expression: MIT` in the built wheel's METADATA (Core
+# Metadata 2.4), not the older `License:` field.
 license = "MIT"
 # Explicit for self-documenting intent and to constrain the glob against a future
 # NOTICE/COPYING/AUTHORS file this repo doesn't have today. setuptools already
@@ -43,7 +44,8 @@ authors = [
 # (tests/test_packaging.py::test_wheel_metadata_carries_the_ci_matrix_python_classifiers pins
 # this) -- a CI matrix bump with no corresponding update here goes silently stale on PyPI.
 # No "License :: OSI Approved :: MIT License" classifier: combined with the PEP 639
-# license = "MIT" SPDX expression above, setuptools >=77 treats that pairing as deprecated.
+# license = "MIT" SPDX expression above, setuptools >=77 HARD-ERRORS on that pairing
+# (InvalidConfigError) rather than merely warning about it.
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
