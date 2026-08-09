@@ -28,11 +28,15 @@ since PyPI does not rewrite relative links the way GitHub does), authors (pinned
 project's own noreply identity), classifiers (DERIVED from CI's own test matrix rather
 than hand-listed, so the two cannot silently drift apart), keywords, project URLs, and
 the console script. Every POSITIVE assertion below reads a single pristine, unmutated
-wheel built ONCE by the module-scoped `pristine_wheel` fixture below -- measured,
-building one separately per test took this module from ~1.2s to ~9.2s, ~4.2s of which
-was seven tests rebuilding the identical wheel. Every FALSIFY test still builds its own
-MUTATED wheel per test, deliberately UNshared: each mutates a different line and must
-not see another test's mutation.
+wheel built ONCE by the module-scoped `pristine_wheel` fixture below, rather than each
+positive test calling `_build_wheel` on its own identical, unmutated copy -- sharing one
+build keeps this module's total runtime in the single digits (measured ~7-10s across
+runs, varying with system load; a per-fixture-addition number here would only go stale
+again, so this states the current order of magnitude rather than a precise figure -- see
+`git log` on this file for the fix-wave commit that established the shared-fixture
+pattern if the exact before/after numbers matter). Every FALSIFY test still builds its
+own MUTATED wheel per test, deliberately UNshared: each mutates a different line and
+must not see another test's mutation.
 """
 import dataclasses
 import glob
@@ -143,21 +147,60 @@ def _long_description_body(metadata):
 
 
 _RELATIVE_MARKDOWN_LINK_RE = re.compile(r"\]\((?!https?://|#)[^)]*\)")
+# CommonMark's OTHER link syntax: a reference-style definition line, e.g. "[usage]:
+# docs/USAGE.md", distinct from an inline link's "[usage](docs/USAGE.md)". A guard that
+# only matched the inline form would stay green while a reference-style relative link
+# reached PyPI's rendered page just as broken -- README.md has none of this form today,
+# but nothing stops a future edit from introducing one, and this guard's whole job is to
+# catch that before it ships.
+_RELATIVE_MARKDOWN_REFERENCE_RE = re.compile(
+    r"^\s{0,3}\[[^\]]+\]:\s*(?!https?://|#)\S+", re.MULTILINE)
 
 
 def _relative_markdown_links(text):
     """Every markdown link TARGET in `text` that is neither an absolute URL nor an in-page
     anchor -- i.e. one that would 404 when this text renders somewhere other than this
-    repo's own GitHub page. PyPI does not rewrite relative links in the long description
-    it renders; they resolve against pypi.org/project/job-sluice/, not against this repo,
-    confirmed by a real `twine check --strict` run, which passes regardless -- that check
-    validates well-formed markdown, not that every link it contains actually resolves from
-    PyPI's own domain.
+    repo's own GitHub page. Covers both inline links (`[text](target)`) and reference-
+    style link DEFINITIONS (`[label]: target`). PyPI does not rewrite relative links in
+    the long description it renders; they resolve against pypi.org/project/job-sluice/,
+    not against this repo, confirmed by a real `twine check --strict` run, which passes
+    regardless -- that check validates well-formed markdown, not that every link it
+    contains actually resolves from PyPI's own domain.
     """
-    return _RELATIVE_MARKDOWN_LINK_RE.findall(text)
+    return (_RELATIVE_MARKDOWN_LINK_RE.findall(text)
+            + _RELATIVE_MARKDOWN_REFERENCE_RE.findall(text))
 
 
 _MATRIX_PYTHON_VERSIONS_RE = re.compile(r'python-version:\s*\[([^\]]*)\]')
+
+
+def _extract_python_versions(ci_text):
+    """The `"X.Y"` version strings inside `ci_text`'s one bracketed `python-version: [...]`
+    list.
+
+    Split out of `_expected_python_classifiers` below so this is directly testable against
+    a SYNTHETIC ci.yml-shaped string, without needing a real broken
+    `.github/workflows/ci.yml` fixture on disk. Asserts its own result is non-empty: a
+    broken inner extraction regex (e.g. an unquoted or single-quoted matrix) must fail
+    LOUDLY here, not silently degrade `_expected_python_classifiers` to its one hardcoded
+    generic classifier -- which would still satisfy THAT function's own non-empty check
+    while having enumerated no real versions at all. That is exactly the "a sweep that
+    discovers nothing passes" trap this repo's own culture names as a repeat offender
+    (`all([])` is `True`), and it is what a version-count-blind `assert expected` cannot
+    catch: see test_extract_python_versions_fails_loudly_on_an_unquoted_matrix below,
+    which proves this assertion actually fires rather than merely reading well.
+    """
+    matches = list(_MATRIX_PYTHON_VERSIONS_RE.finditer(ci_text))
+    assert len(matches) == 1, (
+        f"expected exactly one bracketed python-version list, found "
+        f"{len(matches)} -- this guard cannot say which one is the CI test matrix")
+    versions = re.findall(r'"([\d.]+)"', matches[0].group(1))
+    assert versions, (
+        "no quoted Python version strings found inside the matrix's bracketed list -- "
+        "the extraction regex may be broken (e.g. an unquoted or single-quoted matrix), "
+        "and returning nothing here would silently degrade the caller to its one "
+        "hardcoded generic classifier, which would still pass a non-empty check")
+    return versions
 
 
 def _expected_python_classifiers():
@@ -173,20 +216,35 @@ def _expected_python_classifiers():
 
     `python-version: [...]` (bracketed) appears in ci.yml exactly once -- every other
     `python-version:` line in that file sets a single quoted string (`"3.12"`), not a
-    list -- so the regex needs no `matrix:` anchoring to stay unambiguous. Asserted below
-    rather than assumed: a second bracketed match would mean this function no longer knows
-    which one is the real test matrix.
+    list -- so `_extract_python_versions` needs no `matrix:` anchoring to stay
+    unambiguous, and it is the one that asserts uniqueness and non-emptiness; this
+    function trusts its result.
     """
     with open(CI, encoding="utf-8") as f:
         text = f.read()
-    matches = list(_MATRIX_PYTHON_VERSIONS_RE.finditer(text))
-    assert len(matches) == 1, (
-        f"expected exactly one bracketed python-version list in {CI}, found "
-        f"{len(matches)} -- this guard cannot say which one is the CI test matrix")
-    versions = re.findall(r'"([\d.]+)"', matches[0].group(1))
+    versions = _extract_python_versions(text)
     return ["Classifier: Programming Language :: Python :: 3"] + [
         f"Classifier: Programming Language :: Python :: {v}" for v in versions
     ]
+
+
+def test_extract_python_versions_fails_loudly_on_an_unquoted_matrix():
+    """Proves _extract_python_versions's own non-empty guard actually fires on a plausible
+    broken input -- not just that the assertion reads well.
+
+    An unquoted `python-version: [3.12, 3.13, 3.14]` (a plausible outcome of a future
+    ci.yml reformat) is still matched by the OUTER bracket regex, but the inner
+    `"([\\d.]+)"` extraction -- which requires double-quoted version strings -- matches
+    zero versions against it. Without the dedicated non-empty assertion, that would
+    silently return `[]` rather than raise, which is exactly the shape that would let
+    `_expected_python_classifiers` degrade to its one hardcoded generic classifier.
+    """
+    unquoted_matrix = "matrix:\n  python-version: [3.12, 3.13, 3.14]\n"
+    assert re.findall(r'"([\d.]+)"', unquoted_matrix) == [], (
+        "test fixture assumption changed -- this input is no longer version-less under "
+        "the inner extraction regex, update this test")
+    with pytest.raises(AssertionError, match="no quoted Python version"):
+        _extract_python_versions(unquoted_matrix)
 
 
 LICENSE_EXPRESSION_LINE = 'license = "MIT"\n'
@@ -251,8 +309,11 @@ class _PristineWheel:
 def pristine_wheel(tmp_path_factory):
     """The unmutated wheel every POSITIVE assertion in this module reads from, built ONCE.
 
-    Seven positive-assertion tests each used to call `_build_wheel` on an identical,
-    unmutated copy of the tree -- measured, that took this module from ~1.2s to ~9.2s.
+    Every positive-assertion test in this module used to call `_build_wheel` on its own
+    identical, unmutated copy of the tree -- sharing this one build across all of them
+    instead keeps the module's total runtime in the single digits (see the module
+    docstring above for the current measured range; not repeated here as a precise
+    number, since this file keeps growing and a stale one would just be wrong again).
     Every FALSIFY test still builds its own MUTATED wheel per test via `_build_wheel`
     directly; those are deliberately NOT routed through this fixture, since each mutates a
     different line of pyproject.toml or README.md and must not see another test's
@@ -418,21 +479,55 @@ def test_wheel_long_description_has_no_relative_markdown_links(pristine_wheel):
 def test_the_relative_markdown_link_guard_is_falsified_by_reintroducing_one(tmp_path):
     """The guard above must be FALSIFIABLE, not merely green on today's already-fixed
     README. This reintroduces a relative link into a MUTATED copy of the real README
-    content -- never the file on disk -- and confirms the guard catches it.
+    content -- never the file on disk -- and confirms the guard catches it. Both link
+    SHAPES are exercised: an inline link and a reference-style definition, since
+    _relative_markdown_links checks both and a witness that only covers one shape would
+    leave the other's detection unproven.
     """
     with open(f"{ROOT}/README.md", encoding="utf-8") as f:
         original_readme = f.read()
-    mutated = original_readme + "\n\nSee [an example](some/relative/path.md) for details.\n"
-    assert _relative_markdown_links(mutated), (
-        "the injected fixture line is not itself relative-link-shaped, so this test would "
-        "SILENTLY NO-OP and pass for the wrong reason")
+    mutated = (
+        original_readme
+        + "\n\nSee [an example](some/relative/path.md) for details.\n"
+        + "\n[a reference]: another/relative/path.md\n"
+    )
+    found = _relative_markdown_links(mutated)
+    assert len(found) >= 2, (
+        "the injected fixture lines are not both relative-link-shaped (one inline, one "
+        f"reference-style), so this test would SILENTLY NO-OP and pass for the wrong "
+        f"reason -- found: {found}")
     dest = str(tmp_path)
     _build_wheel(dest, readme_text=mutated)
     metadata = _read_metadata(dest)
     bad = _relative_markdown_links(_long_description_body(metadata))
-    assert bad, (
-        "the guard failed to detect a relative markdown link reintroduced into the "
-        "README -- it would silently pass a real regression the same way")
+    assert len(bad) >= 2, (
+        "the guard failed to detect one or both reintroduced relative markdown links "
+        f"(inline and reference-style) -- it would silently pass a real regression the "
+        f"same way (found: {bad})")
+
+
+def test_the_readme_content_match_is_falsified_by_substituting_the_readme(tmp_path):
+    """test_the_readme_guard_is_falsified_by_dropping_the_readme_field above only proves
+    the readme FIELD is required -- dropping it entirely kills BOTH of the positive
+    test's assertions (Description-Content-Type and the content match) at once, proving
+    nothing about the content-match check specifically. This instead keeps
+    readme = "README.md" intact and swaps the README's CONTENT for something sharing none
+    of the real file's opening text, proving the content-match assertion -- not just field
+    presence -- would catch a truncated or substituted README shipped under an unchanged
+    readme field.
+    """
+    substituted_readme = "Not the real README content at all.\n"
+    with open(f"{ROOT}/README.md", encoding="utf-8") as f:
+        real_opening = f.read()[:120]
+    assert real_opening not in substituted_readme, (
+        "the substitute fixture happens to share the real opening text, so this test "
+        "would SILENTLY NO-OP and pass for the wrong reason")
+    dest = str(tmp_path)
+    _build_wheel(dest, readme_text=substituted_readme)
+    metadata = _read_metadata(dest)
+    assert real_opening not in metadata, (
+        "the content-match guard failed to detect a substituted README -- a truncated or "
+        "swapped README under an unchanged readme field would silently ship unnoticed")
 
 
 def test_wheel_author_identity_is_the_project_noreply_address(pristine_wheel):
@@ -472,20 +567,62 @@ def test_the_author_identity_guard_is_falsified_by_a_personal_email(tmp_path):
 
 
 def test_wheel_metadata_carries_the_ci_matrix_python_classifiers(pristine_wheel):
+    # expected is guaranteed non-empty by _extract_python_versions's own assertion --
+    # no redundant non-empty check needed here.
     expected = _expected_python_classifiers()
-    assert expected, (
-        "no Python-version classifiers derived from .github/workflows/ci.yml -- a broken "
-        "regex would otherwise let this guard pass having enumerated nothing")
     metadata = pristine_wheel.metadata
-    missing = [c for c in expected if c not in metadata]
-    assert not missing, (
-        f"{missing} missing from wheel METADATA. These are DERIVED from "
-        f".github/workflows/ci.yml's matrix.python-version -- if that matrix changes, "
-        f"pyproject.toml's classifiers must change with it")
+    actual = {
+        line for line in metadata.splitlines()
+        if line.startswith("Classifier: Programming Language :: Python")
+    }
+    # EXACT-set, not a subset check: a subset check only catches a classifier missing
+    # after CI's matrix grows, not a STALE classifier surviving after CI's matrix
+    # shrinks -- both are the same "pyproject.toml's classifiers must change with
+    # ci.yml's matrix" drift this guard exists to catch, and a subset check silently
+    # missed the second half of that claim.
+    assert actual == set(expected), (
+        f"Python-version classifiers don't match .github/workflows/ci.yml's "
+        f"matrix.python-version exactly -- expected {set(expected)}, got {actual}. If "
+        f"that matrix changed, pyproject.toml's classifiers must change with it, in "
+        f"either direction (missing OR stale entries both count)")
     assert "Classifier: License ::" not in metadata, (
         "a License :: classifier combined with the PEP 639 license = \"MIT\" SPDX "
-        "expression (Task 1) is a deprecated combination setuptools >=77 warns about -- "
+        "expression (Task 1) is a deprecated combination setuptools >=77 HARD-ERRORS on "
+        "(setuptools.errors.InvalidConfigError, confirmed by a real build attempt) -- "
         "the license belongs in License-Expression only")
+
+
+def test_the_deprecated_license_classifier_guard_is_falsified_by_reintroducing_it(tmp_path):
+    """Proves the absence-check above ("Classifier: License ::" not in metadata) is real
+    protection, not a check that would pass regardless of what pyproject.toml declares.
+
+    Cannot reintroduce the classifier ALONGSIDE license = "MIT" and still build: verified
+    directly (not assumed) that combination is a hard setuptools.errors.InvalidConfigError,
+    not a warning -- see the comment above `classifiers` in pyproject.toml. So this
+    mutation instead drops the SPDX license line (license-files stays independently valid
+    without it, per test_the_license_expression_guard_is_falsified_by_dropping_it above)
+    and reintroduces the classifier, proving the classifier alone reaches METADATA when
+    nothing stops it -- the discriminating fact the absence-check depends on.
+    """
+    with open(f"{ROOT}/pyproject.toml", encoding="utf-8") as f:
+        original = f.read()
+    assert LICENSE_EXPRESSION_LINE in original, (
+        "the license expression is not written as this guard expects, so stripping it "
+        "would SILENTLY NO-OP and this test would pass for the wrong reason")
+    assert CLASSIFIERS_LINES in original, (
+        "classifiers are not written as this guard expects, so inserting into them "
+        "would SILENTLY NO-OP and this test would pass for the wrong reason")
+    reintroduced_classifiers = CLASSIFIERS_LINES.replace(
+        'classifiers = [\n', 'classifiers = [\n    "License :: OSI Approved :: MIT License",\n')
+    assert reintroduced_classifiers != CLASSIFIERS_LINES  # the insertion landed
+    mutated = original.replace(LICENSE_EXPRESSION_LINE, "").replace(
+        CLASSIFIERS_LINES, reintroduced_classifiers)
+    dest = str(tmp_path)
+    _build_wheel(dest, pyproject_text=mutated)
+    metadata = _read_metadata(dest)
+    assert "Classifier: License :: OSI Approved :: MIT License" in metadata, (
+        "the guard should have detected the reintroduced deprecated classifier but did "
+        "not -- it would silently pass a real regression the same way")
 
 
 def test_the_classifiers_guard_is_falsified_by_dropping_them(tmp_path):
@@ -494,8 +631,8 @@ def test_the_classifiers_guard_is_falsified_by_dropping_them(tmp_path):
     assert CLASSIFIERS_LINES in original, (
         "classifiers are not written as this guard expects, so stripping them "
         "would SILENTLY NO-OP and this test would pass for the wrong reason")
+    # expected is guaranteed non-empty by _extract_python_versions's own assertion.
     expected = _expected_python_classifiers()
-    assert expected, "no Python-version classifiers derived from ci.yml to falsify against"
     dest = str(tmp_path)
     _build_wheel(dest, pyproject_text=original.replace(CLASSIFIERS_LINES, ""))
     metadata = _read_metadata(dest)
