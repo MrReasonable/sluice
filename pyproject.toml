@@ -30,6 +30,10 @@ license = "MIT"
 # shipping -- see the test docstring below for why that makes this line unfalsifiable
 # by absence, and what's tested instead.
 license-files = ["LICENSE"]
+# setuptools auto-derives Description-Content-Type: text/markdown from the .md extension --
+# no separate content-type declaration needed. Without this, PyPI's project page renders
+# with a blank description.
+readme = "README.md"
 
 [project.scripts]
 job-sluice = "sluice.cli:main"
