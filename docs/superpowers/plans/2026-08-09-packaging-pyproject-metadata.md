@@ -83,7 +83,7 @@ def _read_metadata(dest):
         return zf.read(meta_name).decode("utf-8")
 
 
-LICENSE_LINES = 'license = "MIT"\nlicense-files = ["LICENSE"]\n'
+LICENSE_EXPRESSION_LINE = 'license = "MIT"\n'
 
 
 def test_wheel_metadata_carries_the_spdx_license_expression(tmp_path):
@@ -94,32 +94,48 @@ def test_wheel_metadata_carries_the_spdx_license_expression(tmp_path):
         "pyproject.toml's [project] table should declare license = \"MIT\" (PEP 639 SPDX "
         "form) -- without it, PyPI has no machine-readable license for the package page")
     assert "License-File: LICENSE" in metadata, (
-        "license-files = [\"LICENSE\"] should be declared so the LICENSE file itself ships "
-        "in the sdist/wheel, not just a reference to its name")
+        "the LICENSE file should ship in the sdist/wheel -- via the explicit "
+        "license-files = [\"LICENSE\"] declaration below, or via setuptools' own default "
+        "auto-discovery glob (LICEN[CS]E*/COPYING*/NOTICE*/AUTHORS*) if that were ever "
+        "removed; either way this assertion is what actually matters")
 
 
-def test_the_license_guard_is_falsified_by_dropping_the_license_fields(tmp_path):
+def test_the_license_expression_guard_is_falsified_by_dropping_it(tmp_path):
+    """Only license = "MIT" is falsified here, not license-files.
+
+    Verified against setuptools' own pyproject_config docs: when license-files is
+    unset, setuptools defaults it to the glob ['LICEN[CS]E*', 'COPYING*', 'NOTICE*',
+    'AUTHORS*'] and auto-discovers this repo's LICENSE file regardless -- so
+    "License-File: LICENSE" stays in the wheel's METADATA even with the explicit
+    license-files = ["LICENSE"] line removed, and asserting its absence there would
+    assert something false. license-files is still declared in pyproject.toml (see
+    Step 3) for self-documenting intent and to constrain the glob against a future
+    NOTICE/COPYING/AUTHORS file this repo doesn't have today -- it just isn't
+    independently falsifiable by this mechanism, and this test says so rather than
+    silently asserting a property that isn't real.
+    """
     with open(f"{ROOT}/pyproject.toml", encoding="utf-8") as f:
         original = f.read()
-    assert LICENSE_LINES in original, (
-        "the license fields are not written as this guard expects, so stripping them "
+    assert LICENSE_EXPRESSION_LINE in original, (
+        "the license expression is not written as this guard expects, so stripping it "
         "would SILENTLY NO-OP and this test would pass for the wrong reason")
     dest = str(tmp_path)
-    _build_wheel(dest, pyproject_text=original.replace(LICENSE_LINES, ""))
+    _build_wheel(dest, pyproject_text=original.replace(LICENSE_EXPRESSION_LINE, ""))
     metadata = _read_metadata(dest)
     assert "License-Expression:" not in metadata
-    assert "License-File:" not in metadata
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_packaging.py -k license -v`
 Expected: both new tests FAIL — `test_wheel_metadata_carries_the_spdx_license_expression` fails
-its first assertion (no `License-Expression:` line yet), and
-`test_the_license_guard_is_falsified_by_dropping_the_license_fields` fails its own `assert
-LICENSE_LINES in original` (the fields don't exist in `pyproject.toml` yet, so the guard's setup
-assertion is what fails, not the property it's meant to check — the correct failing shape at this
-point).
+its first assertion (no `License-Expression:` line yet — note its second assertion, on
+`License-File: LICENSE`, would actually PASS even now, since setuptools auto-discovers the
+LICENSE file by default; the test still correctly fails overall on the first assertion), and
+`test_the_license_expression_guard_is_falsified_by_dropping_it` fails its own `assert
+LICENSE_EXPRESSION_LINE in original` (the field doesn't exist in `pyproject.toml` yet, so the
+guard's setup assertion is what fails, not the property it's meant to check — the correct failing
+shape at this point).
 
 - [ ] **Step 3: Add the license fields to pyproject.toml**
 
@@ -133,6 +149,12 @@ line, add:
 # `License-Expression: MIT` in the built wheel's METADATA (Core Metadata 2.4), not the
 # older `License:` field.
 license = "MIT"
+# Explicit for self-documenting intent and to constrain the glob against a future
+# NOTICE/COPYING/AUTHORS file this repo doesn't have today. setuptools already
+# auto-discovers LICENSE via its own default glob (LICEN[CS]E*/COPYING*/NOTICE*/AUTHORS*)
+# when this is unset, so removing this line would NOT stop the LICENSE file from
+# shipping -- see the test docstring below for why that makes this line unfalsifiable
+# by absence, and what's tested instead.
 license-files = ["LICENSE"]
 ```
 
