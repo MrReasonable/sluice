@@ -72,6 +72,61 @@ def _build_wheel(dest, *, pyproject_text=None):
         return zf.namelist()
 
 
+def _read_metadata(dest):
+    """Read and decode the METADATA file from the wheel `_build_wheel(dest, ...)` just built.
+
+    Independent of `_build_wheel`'s own return value (a bare name list) so that function's
+    existing two callers and their assertions are untouched by this addition.
+    """
+    wheels = glob.glob(f"{dest}/out/*.whl")
+    assert wheels, f"no wheel found in {dest}/out to read metadata from"
+    with zipfile.ZipFile(wheels[0]) as zf:
+        meta_name = next(n for n in zf.namelist() if n.endswith(".dist-info/METADATA"))
+        return zf.read(meta_name).decode("utf-8")
+
+
+LICENSE_EXPRESSION_LINE = 'license = "MIT"\n'
+
+
+def test_wheel_metadata_carries_the_spdx_license_expression(tmp_path):
+    dest = str(tmp_path)
+    _build_wheel(dest)
+    metadata = _read_metadata(dest)
+    assert "License-Expression: MIT" in metadata, (
+        "pyproject.toml's [project] table should declare license = \"MIT\" (PEP 639 SPDX "
+        "form) -- without it, PyPI has no machine-readable license for the package page")
+    assert "License-File: LICENSE" in metadata, (
+        "the LICENSE file should ship in the sdist/wheel -- via the explicit "
+        "license-files = [\"LICENSE\"] declaration below, or via setuptools' own default "
+        "auto-discovery glob (LICEN[CS]E*/COPYING*/NOTICE*/AUTHORS*) if that were ever "
+        "removed; either way this assertion is what actually matters")
+
+
+def test_the_license_expression_guard_is_falsified_by_dropping_it(tmp_path):
+    """Only license = "MIT" is falsified here, not license-files.
+
+    Verified against setuptools' own pyproject_config docs: when license-files is
+    unset, setuptools defaults it to the glob ['LICEN[CS]E*', 'COPYING*', 'NOTICE*',
+    'AUTHORS*'] and auto-discovers this repo's LICENSE file regardless -- so
+    "License-File: LICENSE" stays in the wheel's METADATA even with the explicit
+    license-files = ["LICENSE"] line removed, and asserting its absence there would
+    assert something false. license-files is still declared in pyproject.toml (see
+    Step 3) for self-documenting intent and to constrain the glob against a future
+    NOTICE/COPYING/AUTHORS file this repo doesn't have today -- it just isn't
+    independently falsifiable by this mechanism, and this test says so rather than
+    silently asserting a property that isn't real.
+    """
+    with open(f"{ROOT}/pyproject.toml", encoding="utf-8") as f:
+        original = f.read()
+    assert LICENSE_EXPRESSION_LINE in original, (
+        "the license expression is not written as this guard expects, so stripping it "
+        "would SILENTLY NO-OP and this test would pass for the wrong reason")
+    dest = str(tmp_path)
+    _build_wheel(dest, pyproject_text=original.replace(LICENSE_EXPRESSION_LINE, ""))
+    metadata = _read_metadata(dest)
+    assert "License-Expression:" not in metadata
+
+
 def test_every_shipped_template_is_in_the_built_wheel(tmp_path):
     expected = _expected_templates()
     assert expected, "found no templates to check, so this guard would pass vacuously"
