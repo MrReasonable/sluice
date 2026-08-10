@@ -573,3 +573,44 @@ def test_tier2_resolution_and_the_later_judge_share_one_fetch(tmp_path, titles):
     prompt = backend.prompts[0]
     assert '"company": "Resolved Co"' in prompt
     assert '"company": ""' not in prompt
+
+
+def test_the_judge_reads_lead_fields_off_the_note_not_a_stale_cached_snapshot(tmp_path, titles):
+    """The same defect one step wider, and the reason engine.py re-derives four fields
+    rather than only `company`.
+
+    get_or_build snapshots company/role/location/role_type off the lead at BUILD time,
+    and the url-hash cache_key made that snapshot outlive the edits it used to be
+    invalidated by: keying on company+role meant a hand edit to either MINTED a new key
+    and re-fetched, so the snapshot could not go stale. Keying on the url means an entry
+    built before the edit is reused, unchanged, for the rest of its ttl -- and what the
+    judge is shown is the only place that is visible.
+
+    Stated against a cache that returns a fully-populated STALE dossier, which is what
+    a real cache hit from before an edit looks like."""
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "lead.md", _fields("Current Co", accept[0].title()))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.accept_titles = list(accept)
+
+    stale = _RecordingCache(dossier={
+        "company": "Stale Co", "position": "Stale Role", "location": "stale-city",
+        "role_type": "contract", "jd": {"markdown": "j"}, "glassdoor": {},
+        "page_title": "", "structured_data": ""})
+    backend = _Backend()
+    eng.run(v, cfg, backend, stale, audit, statuses=("new",))
+
+    # Key-scoped, not a bare substring sweep: the system prompt's own worked examples
+    # contain the word "contract", so `"contract" not in prompt` reddens for a reason
+    # that has nothing to do with the dossier -- measured, not guessed at.
+    prompt = backend.prompts[0]
+    for key, stale_value in (("company", "Stale Co"), ("position", "Stale Role"),
+                             ("location", "stale-city"), ("role_type", "contract")):
+        assert f'"{key}": "{stale_value}"' not in prompt, \
+            f"the judge was shown the cache's stale {key}"
+    assert '"company": "Current Co"' in prompt
+    assert f'"position": "{accept[0].title()}"' in prompt
+    assert '"location": "remote"' in prompt
+    assert '"role_type": "permanent"' in prompt
