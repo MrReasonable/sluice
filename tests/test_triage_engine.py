@@ -493,6 +493,60 @@ def test_apply_classification_race_produces_no_persisted_audit_entry(tmp_path, t
     assert audit.read_recent(30) == []                      # no false persisted entry
 
 
+def test_an_application_owned_lead_produces_no_persisted_audit_entry(tmp_path, titles):
+    # The PRE-EXISTING skip, which has the identical shape to the race above and so
+    # had the identical bug: apply.py's _guarded() refuses the write outright because
+    # the lead has already left TRIAGE_OWNED, yet classify() still computed a decision
+    # for it, and that decision used to reach the audit log -- a persisted line saying
+    # this lead was dismissed on a day nothing was written to it, which
+    # render_rejected_note then puts in front of a human.
+    #
+    # No monkeypatching here, deliberately: unlike the race, this needs no interleaving
+    # at all. The lead simply IS `applied` when the run reads it, which is the ordinary
+    # state of every lead a human has already acted on, reached by pointing `--status`
+    # at it. That is what makes this the commoner of the two.
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "done.md", _fields("Applied Co", reject[0].title(), status="applied"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.reject_titles = list(reject)
+
+    report = eng.run(v, cfg, _Backend(), _cache(tmp_path), audit,
+                     statuses=("new", "applied"))
+
+    after = v.read_leads()[0]
+    assert after.status == "applied"           # untouched: _guarded() refused the write
+    assert report.counts["skipped"] >= 1
+    assert audit.read_recent(30) == [], \
+        "a decision that _guarded() refused to write must not be persisted as if it had"
+
+
+def test_an_application_owned_lead_the_judge_saw_produces_no_persisted_audit_entry(tmp_path,
+                                                                                   titles):
+    # The judge-pass half of the test above, and NOT redundant with it: the two audit
+    # sites are separate `if`s, so a fix applied to only one leaves the other writing
+    # the same false line. An application-owned lead whose title classify() KEEPS is
+    # enriched and judged like any other (the pre-gate reads the title, not the
+    # status), and only apply_verdict's _guarded() then refuses the write.
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "done.md", _fields("Applied Co", accept[0].title(), status="applied"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.accept_titles = list(accept)
+
+    report = eng.run(v, cfg, _Backend(), _cache(tmp_path), audit,
+                     statuses=("new", "applied"))
+
+    after = v.read_leads()[0]
+    assert after.status == "applied"           # untouched: _guarded() refused the write
+    assert report.judged == 1                  # the judge really did run on it
+    assert report.counts["skipped"] >= 1
+    assert audit.read_recent(30) == [], \
+        "a verdict that _guarded() refused to write must not be persisted as if it had"
+
+
 def test_apply_verdict_race_produces_no_persisted_audit_entry(tmp_path, titles, monkeypatch):
     accept, reject = titles
     v = Vault(str(tmp_path / "vault"))
