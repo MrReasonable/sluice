@@ -193,6 +193,47 @@ def test_from_dossier_reads_jobposting_jsonld():
     assert resolve._from_dossier(d) == "Example Co"
 
 
+def test_from_dossier_finds_a_jobposting_that_is_not_the_first_block():
+    # THE shape this feature was built for. A real board routinely emits a site-wide
+    # Organization or BreadcrumbList schema in an ld+json tag BEFORE the page's own
+    # JobPosting one, so `_LD_JSON_JS` collects every tag into an array rather than
+    # taking document.querySelector's first match -- which on exactly those pages
+    # captured the wrong block and made tier 2 abstain.
+    d = {"page_title": "", "structured_data": json.dumps([
+        {"@type": "BreadcrumbList", "itemListElement": []},
+        {"@type": "JobPosting", "hiringOrganization": {"name": "Example Co"}},
+    ])}
+    assert resolve._from_dossier(d) == "Example Co"
+
+
+def test_from_dossier_finds_a_jobposting_inside_a_later_blocks_graph():
+    # The two shapes compose: the array of blocks is one level, and any single block
+    # may itself be a `@graph` container, putting the JobPosting TWO levels down. A
+    # flat one-level walk over the array reads the @graph wrapper's own (absent)
+    # @type and abstains.
+    d = {"page_title": "", "structured_data": json.dumps([
+        {"@type": "Organization", "name": "Example Board"},
+        {"@context": "https://schema.org", "@graph": [
+            {"@type": "WebPage"},
+            {"@type": "JobPosting", "hiringOrganization": {"name": "Example Co"}},
+        ]},
+    ])}
+    assert resolve._from_dossier(d) == "Example Co"
+
+
+def test_from_dossier_skips_a_block_that_failed_to_parse_in_the_page():
+    # `_LD_JSON_JS` maps an unparseable block to null rather than dropping the whole
+    # capture, so a single malformed tag next to a good one must not cost the good one.
+    d = {"page_title": "", "structured_data": json.dumps([
+        None, {"@type": "JobPosting", "hiringOrganization": {"name": "Example Co"}}])}
+    assert resolve._from_dossier(d) == "Example Co"
+
+
+def test_from_dossier_reads_an_empty_capture_array_as_an_abstain():
+    # A page with no ld+json at all now yields "[]" from the probe, not "".
+    assert resolve._from_dossier({"page_title": "", "structured_data": "[]"}) is None
+
+
 def test_from_dossier_reads_a_title_pattern_when_structured_data_is_absent():
     d = {"structured_data": "", "page_title": "Staff Engineer at Example Co | Example Board"}
     assert resolve._from_dossier(d) == "Example Co"
