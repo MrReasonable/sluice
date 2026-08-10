@@ -73,6 +73,18 @@ def test_wellfound_company_from_url_confident_match():
     assert src.company_from_url("https://wellfound.com/company/example-co") == "Example Co"
 
 
+def test_wellfound_company_from_url_keeps_a_numeric_disambiguation_suffix():
+    # A real observed Wellfound shape: two companies wanting the same slug get a
+    # numeric suffix. Asserted against what `.replace("-", " ").title()` MEASURABLY
+    # does with a digit rather than what it looks like it should -- `str.title()`
+    # treats a digit as a word character, so it passes through unchanged here but
+    # would upper-case a letter FOLLOWING one ("example-co-2b" -> "Example Co 2B").
+    # Naming the boundary matters because the suffix is part of the identity: an
+    # extractor that dropped it would resolve two different companies to one name.
+    src = sources.get("wellfound")
+    assert src.company_from_url("https://wellfound.com/company/example-co-1") == "Example Co 1"
+
+
 def test_wellfound_company_from_url_abstains_without_a_company_segment():
     src = sources.get("wellfound")
     assert src.company_from_url("https://wellfound.com/jobs/2837465-staff-engineer") is None

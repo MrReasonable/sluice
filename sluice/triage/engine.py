@@ -89,7 +89,8 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
                         if not wrote:
                             report.failures.append(
                                 f"company-resolve {note.ref}: company write did not land "
-                                "(status changed, or company was already set)")
+                                "(status changed, company was already set, or the "
+                                "status is not one triage owns)")
                 if wrote or dry_run:
                     note.fm["company"] = resolved
                     decision, reason = classify(note.fm, cfg)
@@ -116,8 +117,9 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
             # that never actually applied, which render_rejected_note would
             # otherwise render into a human-facing summary as if it had.
             report.failures.append(
-                f"apply-race {note.ref}: status changed before the {decision} write "
-                "landed (or the value was already current)")
+                f"apply-race {note.ref}: the {decision} write did not land (status "
+                "changed, the value was already current, or the status is not one "
+                "triage owns)")
         key = "skipped" if outcome in ("skipped", "skipped-race") else (
             "dismiss" if decision == "reject" else "needs_review")
         report.counts[key] = report.counts.get(key, 0) + 1
@@ -176,8 +178,9 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
             if outcome == "skipped-race":
                 # Symmetric with the classify-pass site above.
                 report.failures.append(
-                    f"apply-race {note.ref}: status changed before the verdict write "
-                    "landed (or the value was already current)")
+                    f"apply-race {note.ref}: the verdict write did not land (status "
+                    "changed, the value was already current, or the status is not one "
+                    "triage owns)")
             key = "skipped" if outcome in ("skipped", "skipped-race") else _status.normalize(
                 verdict.get("verdict", ""))
             report.counts[key] = report.counts.get(key, 0) + 1
