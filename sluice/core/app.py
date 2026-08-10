@@ -104,6 +104,13 @@ _BACKEND_SEAM = "backend"
 # construction instead of dropping it silently (see Sluice.__init__).
 _SEAMS = (_STORE_SEAM, _FETCHER_SEAM, _RENDERER_SEAM, _BACKEND_SEAM)
 
+# Read once per successful dossier fetch, alongside document.body.innerText: JobPosting
+# structured data, when a board embeds it (#109 tier-2 company resolution).
+_LD_JSON_JS = (
+    "(() => { const el = document.querySelector("
+    "'script[type=\"application/ld+json\"]'); return el ? el.textContent : ''; })()"
+)
+
 # The injected collaborators of Sluice.__init__ -- NOT seams. Used only to make a
 # typo'd keyword point at the right fix: they are keyword-only params, so a typo
 # never binds to them and always lands in **overrides, where it would otherwise be
@@ -396,6 +403,10 @@ class Sluice:
         The lead url comes off a scraped listing, so it is guarded (#18): checked before
         a tab is opened, and the LANDED url re-checked before the body is read. A refusal
         RAISES rather than returning an empty dossier -- see the comment on the raise.
+
+        Also captures document.title and any JSON-LD script tag's text content in the
+        same already-open tab (#109), for triage's tier-2 company resolution. Both are
+        best-effort: an unreadable probe degrades to "" rather than refusing the fetch.
         """
         from sluice.core.dossier import DossierCache
         from sluice.core import urlguard
@@ -434,6 +445,7 @@ class Sluice:
 
         def fetch(lead: dict) -> dict:
             md, url = "", lead.get("url")
+            page_title, structured_data = "", ""
             if url:
                 pre = urlguard.check_url(url, allow_hosts=allow, resolve=resolve)
                 if not pre.allowed:
@@ -476,9 +488,20 @@ class Sluice:
                         # Same reasoning as no-tab: a non-string body used to become a
                         # cached empty JD indistinguishable from a real empty one.
                         _refuse(urlguard.BODY_UNREADABLE, pre.host)
+                    # #109 tier-2 resolution: best-effort, unlike the JD body above --
+                    # a source that omits a page title or JSON-LD is common and not a
+                    # transport failure, so a non-string probe result degrades to ""
+                    # rather than refusing the whole (otherwise-good) dossier fetch.
+                    title_res = c.evaluate(tid, "document.title")
+                    got_title = title_res.get("result") if isinstance(title_res, dict) else None
+                    page_title = got_title if isinstance(got_title, str) else ""
+                    ld_res = c.evaluate(tid, _LD_JSON_JS)
+                    got_ld = ld_res.get("result") if isinstance(ld_res, dict) else None
+                    structured_data = got_ld if isinstance(got_ld, str) else ""
                 finally:
                     c.close_tab(tid)
-            return {"jd": {"markdown": md or ""}, "glassdoor": {}}
+            return {"jd": {"markdown": md or ""}, "glassdoor": {},
+                    "page_title": page_title, "structured_data": structured_data}
 
         return DossierCache(dossier_dir, ttl_days, fetcher=fetch)
 
