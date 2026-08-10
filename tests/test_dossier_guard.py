@@ -2,7 +2,7 @@
 import pytest
 
 from sluice.core import urlguard
-from sluice.core.app import Sluice
+from sluice.core.app import Sluice, _LD_JSON_JS
 from sluice.core.config import Config
 from tests.harness.config import FIXTURE_ADDR as GLOBAL_ADDR   # the ONE sanctioned
 # globally-routable fixture address (RFC 3068, withdrawn by RFC 7526: global, no
@@ -17,8 +17,9 @@ class _Tab:
     """A fake Fetcher recording its exact probe sequence."""
 
     def __init__(self, landed="https://jobs.invalid/x", body="JD BODY",
-                 landed_result=_UNSET):
+                 landed_result=_UNSET, title="", ld_json=""):
         self.landed, self.body, self.landed_result = landed, body, landed_result
+        self.title, self.ld_json = title, ld_json
         self.calls = []
 
     def create_tab(self, url):
@@ -31,6 +32,10 @@ class _Tab:
             if self.landed_result is not _UNSET:
                 return self.landed_result
             return {"result": self.landed}
+        if js == "document.title":
+            return {"result": self.title}
+        if js == _LD_JSON_JS:
+            return {"result": self.ld_json}
         return {"result": self.body}
 
     def scroll(self, tid, amount):
@@ -66,8 +71,25 @@ def test_an_allowed_url_fetches_and_probes_in_order(tmp_path, role):
         ("create_tab", "https://jobs.invalid/x"),
         ("evaluate", "location.href"),
         ("evaluate", "document.body.innerText"),
+        ("evaluate", "document.title"),
+        ("evaluate", _LD_JSON_JS),
         ("close_tab", "tab-1"),
     ]
+
+
+def test_page_title_and_structured_data_are_captured_into_the_dossier(tmp_path, role):
+    tab = _Tab(title="Staff Engineer at Example Co | Example Board",
+              ld_json='{"@type": "JobPosting"}')
+    d = _cache(tmp_path, tab).get_or_build({"url": "https://jobs.invalid/x",
+                                            "company": "Aye", "role": role})
+    assert d["page_title"] == "Staff Engineer at Example Co | Example Board"
+    assert d["structured_data"] == '{"@type": "JobPosting"}'
+
+
+def test_a_lead_with_no_url_gets_blank_page_title_and_structured_data(tmp_path, role):
+    tab = _Tab()
+    d = _cache(tmp_path, tab).get_or_build({"company": "Aye", "role": role})
+    assert d["page_title"] == "" and d["structured_data"] == ""
 
 
 def test_a_blocked_url_never_opens_a_tab(tmp_path, role):
