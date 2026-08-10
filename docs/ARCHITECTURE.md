@@ -129,6 +129,10 @@ Shared by every sub-app:
   does not double-fetch; also captures `page_title`/`structured_data` for
   triage's tier-2 company resolution, excluded from what `slim()` sends the
   judge), the source-agnostic `Lead` model, logging, and the relevance gate.
+  Re-keying `cache_key` makes every dossier cached before this version
+  unreachable, so expect one full re-fetch on the first triage or cv run after
+  upgrading -- bounded, not data loss, since the default `ttl_days: 7` would
+  have expired them inside a week anyway.
 
 **How a state file behaves when it cannot be read** is one convention, keyed on
 what a wrong answer COSTS, not on which module happens to own the file. A

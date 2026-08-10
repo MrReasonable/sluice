@@ -17,8 +17,12 @@ class FakeVault:
     def __init__(self, entries, notes=None):
         self._entries = entries; self._notes = notes or []; self.written = {}; self.fields = {}
     def read_experience_entries(self, verified_only=True): return self._entries
-    # Signature must track protocols.Store EXACTLY. This fake carrying the old
-    # read_baseline(rel=...) is what let a real TypeError ship green.
+    # Tracks the SUBSET of protocols.Store that cv actually exercises, and each
+    # method it does carry must match that method's real signature exactly -- this
+    # fake carrying the old read_baseline(rel=...) is what let a real TypeError ship
+    # green. Deliberately NOT the whole contract: update_fields below omits
+    # require_status and require_blank, which cv never passes; the conformance suite
+    # in tests/conformance/ is what holds real stores to the full signature.
     def read_baseline(self): return "BASELINE"
     def read_leads(self, statuses=None): return self._notes
     def _fresh(self, ref): return next((n for n in self._notes if n.ref == ref), None)
