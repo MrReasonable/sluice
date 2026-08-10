@@ -182,7 +182,10 @@ whichever neighbour it was written next to:
    `triage.company_resolve_fetch` is on. `apply.py` writes verdicts back,
    skipping any lead already in the application lifecycle (its own writes,
    and the new resolution write, are all `require_status`-guarded against
-   a lead entering that lifecycle mid-run); `audit.py` logs every decision.
+   a lead entering that lifecycle mid-run); `audit.py` logs every decision
+   that actually landed -- a lead whose write was refused (already
+   application-owned, or a status change mid-run) is logged nowhere, so the
+   audit never claims a decision that was not applied.
 3. **cv** (`sluice/cv/`): select verified source material, bundle it into
    a closed set, compose a tailored CV against that bundle (an LLM call
    over `core.backends`), validate it against a fabrication gate (a hard

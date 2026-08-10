@@ -3,14 +3,14 @@
 Deterministic classify resolves the obvious cases for free (no dossier, no LLM).
 A lead classify() leaves at blank-company needs_review gets ONE resolution
 attempt (#109): a free URL-pattern tier 1, then -- opt-in via
-cfg.company_resolve_fetch, independent of no_llm -- a real, no-LLM page-visit
-tier 2, reusing the same fetch/cache the enrich pass needs anyway. Only the
-kept, ambiguous leads are enriched and judged. dry_run computes and reports but
-writes nothing (no vault edits, no audit lines) -- resolution's COMPUTATION
-still runs under dry_run, only its write is skipped. no_llm runs classify +
-(tier-1-only) resolve + apply + audit only. Every lead already in the
-application lifecycle is skipped by the apply layer, so triage never clobbers
-human state.
+cfg.company_resolve_fetch -- a real, no-LLM page-visit tier 2, reusing the same
+fetch/cache the enrich pass needs anyway. Only the kept, ambiguous leads are
+enriched and judged. dry_run computes and reports but writes nothing (no vault
+edits, no audit lines) -- resolution's COMPUTATION still runs under dry_run,
+only its write is skipped. no_llm runs classify + (tier-1-only) resolve + apply
++ audit only. Every lead already in the application lifecycle is skipped by the
+apply layer, so triage never clobbers human state -- and a skipped lead is
+audited nowhere, because no decision of ours landed on it.
 """
 from dataclasses import dataclass, field
 from datetime import date
@@ -123,7 +123,22 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
         key = "skipped" if outcome in ("skipped", "skipped-race") else (
             "dismiss" if decision == "reject" else "needs_review")
         report.counts[key] = report.counts.get(key, 0) + 1
-        if outcome != "skipped-race":
+        # BOTH skip outcomes, grouped exactly as `key` above groups them, because they
+        # have the identical shape: a decision was computed and NO write happened.
+        # `skipped-race` is #109's own (the fresh-status re-read refused); plain
+        # `skipped` is the pre-existing one (apply.py's _guarded() refused, because the
+        # lead has already left TRIAGE_OWNED -- it is `applied`, `offer`, ...). The
+        # argument that excludes the first excludes the second unchanged: a persisted
+        # audit line claiming a decision that never applied, which render_rejected_note
+        # would put in front of a human as if it had. Both are still COUNTED (`key`
+        # above): a skip is reported, just not audited as a decision.
+        #
+        # dry_run forces `skipped` at both sites too, so under dry_run _audit is now
+        # never called at all. `_audit`'s own `if not dry_run` and the `not dry_run`
+        # on the render gate below are kept regardless: neither site's correctness
+        # should depend on a fact established 100 lines away, and a future outcome
+        # value that reaches _audit under dry_run must still write nothing.
+        if outcome not in ("skipped", "skipped-race"):
             _audit({"ts": today, "slug": note.slug,
                     "company": note.fm.get("company", ""), "role": note.fm.get("role", ""),
                     "url": note.fm.get("url", ""), "stage": "classify",
@@ -197,7 +212,8 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
             key = "skipped" if outcome in ("skipped", "skipped-race") else _status.normalize(
                 verdict.get("verdict", ""))
             report.counts[key] = report.counts.get(key, 0) + 1
-            if outcome != "skipped-race":
+            # Symmetric with the classify-pass site above, both outcomes and both reasons.
+            if outcome not in ("skipped", "skipped-race"):
                 _audit({"ts": today, "slug": verdict["lead_id"],
                         "company": note.fm.get("company", ""),
                         "role": note.fm.get("role", ""), "url": note.fm.get("url", ""),
