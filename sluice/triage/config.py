@@ -79,8 +79,29 @@ def load_triage_config(path: str | None = None) -> TriageConfig:
             data = (yaml.safe_load(f) or {}).get("triage") or {}
         refuse_retired_dossier_dir("triage", data)
         for k, v in data.items():
-            if hasattr(cfg, k) and v is not None:
-                setattr(cfg, k, v)
+            if not hasattr(cfg, k) or v is None:
+                continue
+            # A field whose CODE DEFAULT is a bool must be given a real YAML boolean.
+            # The mirror image of the root loader's lead_ttl_days check (core/config.py):
+            # there the hazard is that PyYAML resolves `yes`/`on`/`true` to a real bool
+            # which then passes an isinstance(int) test; here it is that a QUOTED
+            # `company_resolve_fetch: "false"` is not a YAML boolean at all -- it stays
+            # the string "false", which this loop would setattr verbatim and every
+            # consumer reads in a boolean context, where a non-empty string is TRUE. So
+            # the one spelling a user reaches for to keep a knob OFF is the spelling that
+            # silently switches it ON, with nothing anywhere going red. Fail loudly at
+            # construction instead, this file's house style.
+            #
+            # Keyed on the default's type rather than on a hardcoded field list so a bool
+            # knob added later cannot quietly opt out of the check. `getattr(cfg, k)` is
+            # still the code default here: a YAML mapping yields each key once, so no
+            # earlier iteration of this loop has replaced it.
+            if isinstance(getattr(cfg, k), bool) and not isinstance(v, bool):
+                raise ValueError(
+                    f"triage.{k} must be a YAML boolean (true/false), got {v!r}. Quoted, "
+                    f'it is a STRING -- and "false" is truthy in Python, so the knob '
+                    f"would be switched ON by the value meant to switch it off.")
+            setattr(cfg, k, v)
     # AFTER the loop, so `audit_jsonl: ""` in a config file resolves rather than
     # escaping as the empty string the loop just set.
     cfg.audit_jsonl = resolve(env_var="TRIAGE_AUDIT", config_value=cfg.audit_jsonl,
