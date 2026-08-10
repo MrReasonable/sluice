@@ -17,9 +17,11 @@ class _Tab:
     """A fake Fetcher recording its exact probe sequence."""
 
     def __init__(self, landed="https://jobs.invalid/x", body="JD BODY",
-                 landed_result=_UNSET, title="", ld_json=""):
+                 landed_result=_UNSET, title="", ld_json="",
+                 title_result=_UNSET, ld_json_result=_UNSET):
         self.landed, self.body, self.landed_result = landed, body, landed_result
         self.title, self.ld_json = title, ld_json
+        self.title_result, self.ld_json_result = title_result, ld_json_result
         self.calls = []
 
     def create_tab(self, url):
@@ -33,8 +35,12 @@ class _Tab:
                 return self.landed_result
             return {"result": self.landed}
         if js == "document.title":
+            if self.title_result is not _UNSET:
+                return self.title_result
             return {"result": self.title}
         if js == _LD_JSON_JS:
+            if self.ld_json_result is not _UNSET:
+                return self.ld_json_result
             return {"result": self.ld_json}
         return {"result": self.body}
 
@@ -181,6 +187,29 @@ def test_an_unreadable_body_is_refused(tmp_path, role):
             {"url": "https://jobs.invalid/x", "company": "Aye", "role": role})
     assert str(ei.value) == urlguard.BODY_UNREADABLE
     assert isinstance(ei.value, urlguard.DossierUnavailable)
+
+
+@pytest.mark.parametrize("bad", [None, "not-a-dict", {}, {"result": 42}])
+def test_an_unreadable_page_title_degrades_to_blank(tmp_path, role, bad):
+    """Unlike the hard refusals above, an unreadable page title is best-effort: the
+    fetch succeeds with page_title="", not refused, since many job boards don't set
+    a meaningful title. Degradation is what the guard exists to express."""
+    tab = _Tab(title_result=bad)
+    d = _cache(tmp_path, tab).get_or_build({"url": "https://jobs.invalid/x",
+                                            "company": "Aye", "role": role})
+    assert d["page_title"] == ""
+    assert d["jd"]["markdown"] == "JD BODY", "fetch must not be refused"
+
+
+@pytest.mark.parametrize("bad", [None, "not-a-dict", {}, {"result": 42}])
+def test_an_unreadable_json_ld_degrades_to_blank(tmp_path, role, bad):
+    """Same as title: JSON-LD is best-effort. An unreadable probe does not refuse the
+    fetch; the field degrades to ""."""
+    tab = _Tab(ld_json_result=bad)
+    d = _cache(tmp_path, tab).get_or_build({"url": "https://jobs.invalid/x",
+                                            "company": "Aye", "role": role})
+    assert d["structured_data"] == ""
+    assert d["jd"]["markdown"] == "JD BODY", "fetch must not be refused"
 
 
 def test_a_transport_failure_logs_as_failed_not_refused(tmp_path, role, caplog):
