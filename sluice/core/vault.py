@@ -2184,7 +2184,15 @@ def _fm_value(inner: str | None, key: str) -> str:
 
 def _set_fm(inner: str, key: str, literal: str) -> str:
     """Replace `key:`'s line in a frontmatter block, or append it if absent.
-    `literal` is written verbatim, so the caller controls quoting."""
+    `literal` is written verbatim, so the caller controls quoting -- a caller
+    writing unmediated external content (e.g. #109's resolved company, pulled
+    from a scraped page's title or JSON-LD) is responsible for its OWN
+    structural-character guard before the value reaches here; see
+    `triage/resolve.py`'s `_safe`. This is not a design change, just a warning
+    for the next raw-content writer: a blanket character check at this layer
+    would reject the wrapping quotes every existing quoted caller
+    (`glassdoor_rating`, `culture_flags`) already relies on -- the check is only
+    meaningful pre-quote, which only the caller holds."""
     pat = rf"(?m)^\s*{re.escape(key)}\s*:.*$"
     if re.search(pat, inner):
         return re.sub(pat, f"{key}: {literal}", inner, count=1)
