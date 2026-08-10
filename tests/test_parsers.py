@@ -55,3 +55,29 @@ def test_parser_yields_valid_leads(sid):
     assert all(l.title for l in leads)
     if sid != "google":
         assert all(l.url for l in leads)
+
+
+# company_from_url (#109): a tier-1, free URL-pattern extractor. The URL shapes
+# below are verified against a real `job-sluice ingest test-source wellfound
+# --raw` capture -- real Wellfound company cards link to a BARE `/company/<slug>`
+# with no trailing path (end-of-string boundary), and real job-posting cards link
+# to `/jobs/<id>-<title-slug>` with NO `/company/` segment at all, so the abstain
+# case below uses that shape rather than the plan's illustrative `/role/r/...`
+# search-page URL, which is a different (also-abstaining) shape never seen on an
+# actual card link. The slug itself stays a neutral placeholder ("example-co"),
+# per this repo's rule against real employer names in tests/ -- every other
+# fixture under tests/fixtures/*/raw.json does the same (example.com + Acme/Globex
+# placeholders rather than literal captured URLs/companies).
+def test_wellfound_company_from_url_confident_match():
+    src = sources.get("wellfound")
+    assert src.company_from_url("https://wellfound.com/company/example-co") == "Example Co"
+
+
+def test_wellfound_company_from_url_abstains_without_a_company_segment():
+    src = sources.get("wellfound")
+    assert src.company_from_url("https://wellfound.com/jobs/2837465-staff-engineer") is None
+
+
+def test_wellfound_company_from_url_abstains_on_an_empty_url():
+    src = sources.get("wellfound")
+    assert src.company_from_url("") is None

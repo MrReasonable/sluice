@@ -44,6 +44,28 @@ class Ctx:
 
 
 class Source(Protocol):
+    """A job board plugin: what to search, how to fetch results, and how to parse
+    them into Leads. `fetch` is the only impure member -- it drives a `Ctx`'s
+    browser client; `parse` is pure, tested offline against golden fixtures under
+    tests/fixtures/<id>/raw.json.
+
+    OPTIONAL MEMBER -- `company_from_url(self, url: str) -> str | None`. Not
+    declared as a required member below, for the identical reason `Store.preflight`
+    and `Renderer.precheck` are not: a Protocol member is a REQUIRED member, and the
+    whole point of this hook is that a source may omit it.
+    `sluice.triage.resolve.resolve_company` (#109) reaches it via
+    `getattr(source, "company_from_url", None)` and treats its absence as tier-1
+    abstaining for that source -- the same shape those two other optional seam
+    members already use.
+
+    Implement it only where the board's real URL shape unambiguously encodes the
+    hiring company with a clear delimiter on both ends of the captured slug --
+    never a guessed split point. Must never raise: it runs against live,
+    hand-maintained scraped URLs on every triage run, so `resolve_company` isolates
+    any exception from it and treats that as an abstain rather than letting one
+    source's bug on one unanticipated URL shape crash the whole batch.
+    """
+
     id: str
     enabled: bool
     kind: str
