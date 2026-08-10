@@ -139,17 +139,30 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
             except Exception as e:
                 report.failures.append(f"dossier {note.ref}: {e}")
                 continue
-            # #109: get_or_build SNAPSHOTS `company` off the lead at BUILD time, and the
-            # classify pass above resolves a blank one into note.fm AFTER that -- while
-            # Task 1's url-hash cache_key makes both passes land on the SAME entry, which
-            # is exactly the double-fetch saving it was added for. So the cheaper fetch
-            # and a stale judge input are the same fact, and the entry keeps serving that
-            # stale blank for the whole ttl (7 days by default), on precisely the leads
-            # this feature exists to give a company to. Re-derived here, at the point the
-            # dossier is handed to the judge, rather than written back into the cache:
-            # the cached JSON stays a faithful record of what was fetched, and every
-            # consumer of it that cares reads the note, which is the source of truth.
-            d = {**d, "company": note.fm.get("company", "") or d.get("company", "")}
+            # #109: get_or_build SNAPSHOTS these four off the lead at BUILD time, and the
+            # classify pass above resolves a blank company into note.fm AFTER that --
+            # while the url-hash cache_key makes both passes land on the SAME entry,
+            # which is exactly the double-fetch saving it was added for. So the cheaper
+            # fetch and a stale judge input are the same fact, and the entry keeps
+            # serving that stale blank for the whole ttl (7 days by default), on
+            # precisely the leads this feature exists to give a company to.
+            #
+            # All four, not just `company`, because they share one cause and the same
+            # key change widened it: keying on company/role meant a hand edit to either
+            # MINTED a new key and re-fetched, and keying on the url means the old entry
+            # is reused with its old snapshot instead. The note the engine is holding is
+            # the source of truth for every one of them; only the FETCHED half of the
+            # dossier (jd, glassdoor) is the cache's to answer for.
+            #
+            # Re-derived here, where the dossier is handed to the judge, rather than
+            # written back: the cached JSON stays a faithful record of what was fetched.
+            # `or` per field so a blank note value falls back rather than blanking a
+            # populated dossier field.
+            d = {**d,
+                 "company": note.fm.get("company", "") or d.get("company", ""),
+                 "position": note.fm.get("role", "") or d.get("position", ""),
+                 "location": note.fm.get("location", "") or d.get("location", ""),
+                 "role_type": note.fm.get("role_type", "") or d.get("role_type", "")}
             dossiers.append(d)
             note_by_id[d["lead_id"]] = note
         # Compose the judge prompt from the candidate's vault-sourced criteria
