@@ -2203,18 +2203,29 @@ def _fm_value(inner: str | None, key: str) -> str:
 
 def _set_fm(inner: str, key: str, literal: str) -> str:
     """Replace `key:`'s line in a frontmatter block, or append it if absent.
-    `literal` is written verbatim, so the caller controls quoting -- a caller
-    writing unmediated external content (e.g. #109's resolved company, pulled
-    from a scraped page's title or JSON-LD) is responsible for its OWN
-    structural-character guard before the value reaches here; see
-    `triage/resolve.py`'s `_safe`. This is not a design change, just a warning
-    for the next raw-content writer: a blanket character check at this layer
-    would reject the wrapping quotes every existing quoted caller
-    (`glassdoor_rating`, `culture_flags`) already relies on -- the check is only
-    meaningful pre-quote, which only the caller holds."""
+    `literal` is written verbatim, so the caller controls quoting.
+
+    The REPLACEMENT is a callable, not an f-string, and that is the whole point:
+    `re.sub` interprets backslash escapes in a STRING replacement template, so a
+    literal carrying one was rewritten on its way through this function rather
+    than written. All three arms were measured: `"Foo\\Bar Ltd"` raised
+    `re.PatternError: bad escape \\B` (and `re.PatternError` is not
+    `VaultConflict`, so triage's `except VaultConflict` could not catch it and one
+    scraped company killed a whole batch mid-run); `"Foo\\nBar"` silently became a
+    real newline and split the frontmatter; `"Foo\\g<0>Bar"` silently expanded to
+    the matched line. A callable replacement is substituted verbatim, so all three
+    are now closed HERE, once, for every caller -- it is not the writer's problem.
+
+    What DOES remain the caller's problem is anything structural inside the quoted
+    scalar it hands over, because this layer cannot tell a wrapping quote from an
+    embedded one: a blanket character check here would reject the quotes every
+    existing quoted caller (`glassdoor_rating`, `culture_flags`) relies on. A
+    caller writing unmediated external content (e.g. #109's resolved company,
+    pulled from a scraped page's title or JSON-LD) therefore still needs its own
+    pre-quote guard; see `triage/resolve.py`'s `_safe`."""
     pat = rf"(?m)^\s*{re.escape(key)}\s*:.*$"
     if re.search(pat, inner):
-        return re.sub(pat, f"{key}: {literal}", inner, count=1)
+        return re.sub(pat, lambda _m: f"{key}: {literal}", inner, count=1)
     return f"{inner}\n{key}: {literal}" if inner else f"{key}: {literal}"
 
 

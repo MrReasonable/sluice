@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from sluice.triage import resolve
@@ -132,8 +134,22 @@ def test_dossier_page_title_non_string_abstains_rather_than_raising():
     assert got is None
 
 
-@pytest.mark.parametrize("unsafe", ['Example "Co"', "Example\nCo", "Example\rCo",
-                                    "Example\\Co"])
+# The last five are the class sluice's OWN frontmatter parser cannot see: `_fm_dict`/
+# `_fm_value` split on "\n" specifically and match with a `(?m)` regex, so a VT/FF/FS/NUL
+# or a NEL round-trips through this suite untouched. A REAL YAML parser -- what the note
+# is actually read with once it reaches the candidate's editor -- does not: measured
+# against PyYAML 6.0.3, the four control characters raise `ReaderError: unacceptable
+# character`, and U+0085 NEL is SILENTLY folded to a space, which is the worse arm
+# because nothing anywhere reports it. U+2028/U+2029 survived PyYAML here but are
+# line/paragraph separators the YAML spec's own character productions exclude, so a
+# different reader may split on them; `str.isprintable()` rejects the whole class in one
+# check, which is the side to err on for a value scraped off an untrusted page.
+_UNSAFE_COMPANIES = ['Example "Co"', "Example\nCo", "Example\rCo", "Example\\Co",
+                     "Example\x0bCo", "Example\x0cCo", "Example\x1cCo", "Example\x00Co",
+                     "Example\x85Co"]
+
+
+@pytest.mark.parametrize("unsafe", _UNSAFE_COMPANIES)
 def test_tier1_candidate_with_a_structural_character_is_rejected(unsafe):
     src = _source(company_from_url=lambda url: unsafe)
     cache = _RecordingCache()
@@ -142,12 +158,32 @@ def test_tier1_candidate_with_a_structural_character_is_rejected(unsafe):
     assert got is None
 
 
-@pytest.mark.parametrize("unsafe", ['Example "Co"', "Example\nCo", "Example\rCo",
-                                    "Example\\Co"])
+@pytest.mark.parametrize("unsafe", _UNSAFE_COMPANIES)
 def test_tier2_candidate_with_a_structural_character_is_rejected(unsafe):
-    cache = _RecordingCache(dossier={"page_title": f"Staff Engineer at {unsafe} | Board",
-                                     "structured_data": ""})
+    cache = _RecordingCache(dossier={
+        "page_title": "",
+        "structured_data": json.dumps({"@type": "JobPosting",
+                                       "hiringOrganization": {"name": unsafe}})})
     got = resolve.resolve_company(FM, None, cache, no_llm=False, company_resolve_fetch=True)
+    assert got is None
+
+
+@pytest.mark.parametrize("blank", ["   ", " "])
+def test_tier1_candidate_that_is_only_whitespace_is_rejected(blank):
+    # Both values are what the SHIPPED wellfound extractor actually returns, measured:
+    # `slug.replace("-", " ").title()` turns a `/company/---` path segment into "   "
+    # and `/company/-` into " ", and its own trailing `or None` sees a non-empty string
+    # in each case. Written through as `company: "   "` that is strictly worse than
+    # abstaining -- classify.py's blank-company branch tests `.strip()`, so the lead
+    # keeps landing on needs_review while require_blank now refuses to ever correct it,
+    # and meanwhile the note shows a human a company that is not one.
+    #
+    # Both are PRINTABLE, so `str.isprintable()` does not catch them: this pins
+    # `_safe`'s separate `.strip()` clause, not its printability clause.
+    src = _source(company_from_url=lambda url: blank)
+    cache = _RecordingCache()
+    got = resolve.resolve_company(FM, _get_source({"example-board": src}), cache,
+                                  no_llm=False, company_resolve_fetch=True)
     assert got is None
 
 
