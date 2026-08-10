@@ -124,8 +124,11 @@ Shared by every sub-app:
 - `resilience.py`: retry-with-backoff, hard timeout, and rate-limit
   precheck helpers that wrap each source's I/O.
 - `health.py`, `dossier.py`, `leads.py`, `log.py`, `relevance.py`: health
-  reporting, per-lead dossier assembly, the source-agnostic `Lead` model,
-  logging, and the relevance gate.
+  reporting, per-lead dossier assembly (`DossierCache`, keyed on a stable url
+  hash rather than the company/role slug so a #109 mid-run company mutation
+  does not double-fetch; also captures `page_title`/`structured_data` for
+  triage's tier-2 company resolution, excluded from what `slim()` sends the
+  judge), the source-agnostic `Lead` model, logging, and the relevance gate.
 
 **How a state file behaves when it cannot be read** is one convention, keyed on
 what a wrong answer COSTS, not on which module happens to own the file. A
@@ -167,8 +170,15 @@ whichever neighbour it was written next to:
 2. **triage** (`sluice/triage/`): `classify.py` resolves obvious cases
    deterministically, for free; only kept, ambiguous leads are enriched
    and sent to an LLM judge (`judge.py`, `prompt.py`, over `core.backends`).
-   `apply.py` writes verdicts back, skipping any lead already in the
-   application lifecycle; `audit.py` logs every decision.
+   A lead classify() leaves at blank-company `needs_review` gets one
+   resolution attempt (`resolve.py`, #109) before that -- a free
+   URL-pattern tier 1, then an opt-in, no-LLM page-visit tier 2 -- so
+   "for free" no longer describes the WHOLE classify pass unconditionally:
+   a blank-company lead can trigger a real (still non-LLM) page visit when
+   `triage.company_resolve_fetch` is on. `apply.py` writes verdicts back,
+   skipping any lead already in the application lifecycle (its own writes,
+   and the new resolution write, are all `require_status`-guarded against
+   a lead entering that lifecycle mid-run); `audit.py` logs every decision.
 3. **cv** (`sluice/cv/`): select verified source material, bundle it into
    a closed set, compose a tailored CV against that bundle (an LLM call
    over `core.backends`), validate it against a fabrication gate (a hard
@@ -433,6 +443,18 @@ anything, both with `--include-stale`; the policy reaching all three is one
 frozen `StalenessPolicy` built by `Sluice.staleness()`. Staleness is a cheap
 proxy: whether a role is still open can only be answered on the employer's own
 site, so it does not replace checking before applying.
+
+**Preventing overwrites of hand-edits** (#109): a sibling guard to
+`require_status`, also on `Vault.update_fields`, named `require_blank`. It
+re-reads the named fields' **current** content inside the CAS transform and
+refuses the write (returns `False`, matching `require_status`'s abstain
+contract) if any of them hold non-blank content — refusing on **presence**
+rather than value-inequality, so even a value identical to what would be
+written still refuses. This closes a race where a company resolved from a
+scraped page could silently overwrite a company a human typed into the note
+during the multi-second resolution fetch. Like `require_status`, it is now
+part of the `Store` protocol contract, so any future second Store
+implementation must honor it too.
 
 A fourth property sits beside the write contract, but a deliberately weaker one:
 **read-path dedup** (#23) is human-gated, not automatic. `job-sluice leads dedupe`
@@ -876,8 +898,20 @@ Four points in the config are the seams for pluggable adapters.
   that shape is what `cv/compose.py`'s prompt requested of every renderer
   alike, not a layout requirement any one renderer owns.
 - **fetcher**: `sluice/fetchers/`, selected by `fetcher:` (default `camofox`).
-  Implementations: `camofox` (the headless-browser HTTP server).
+  Implementations: `camofox` (the headless-browser HTTP server). The dossier
+  fetch closure built from it (`Sluice.dossier_cache`) reads
+  `document.body.innerText` for the JD, and -- for triage's tier-2 company
+  resolution (#109) -- also `document.title` and any
+  `script[type="application/ld+json"]` tag's text content, in the same
+  already-open tab. The JD read is a hard refusal on an unreadable body; the
+  two resolution-only captures are best-effort and degrade to `""` instead.
 - **sources**: `ingest/sources/`, the registry all of the above are modelled on.
+  A source may optionally implement `company_from_url(url) -> str | None`
+  (#109), the same optional-member shape as `Store.preflight`/
+  `Renderer.precheck` above -- `Sluice.triage()` threads `sources.get` into
+  `triage.engine.run` as `get_source`, the same lazy inside-the-method import
+  `ingest()` already uses; `triage/` itself never imports `sluice.ingest`
+  directly.
 
 `job-sluice doctor` is a read-only preflight over the whole pipeline, not only the backend
 seam: it enumerates every configured backend (primary and fallback, per sub-app) and
