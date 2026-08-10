@@ -92,6 +92,39 @@ def test_page_title_and_structured_data_are_captured_into_the_dossier(tmp_path, 
     assert d["structured_data"] == '{"@type": "JobPosting"}'
 
 
+def test_the_json_ld_probe_collects_every_block_not_just_the_first(tmp_path, role):
+    """A drift pin on the probe SOURCE, stated as such: this suite has no JS engine, so
+    nothing here can execute `_LD_JSON_JS` against a DOM. What it can do is refuse the
+    one-line regression that made the feature miss its main case -- `document.querySelector`
+    returns the FIRST ld+json tag, and a real board routinely puts a site-wide Organization
+    or BreadcrumbList schema ahead of the page's own JobPosting one.
+
+    The array shape is the other half of the contract, and it is not pinned here alone:
+    test_a_multi_block_json_ld_capture_reaches_the_dossier_intact below runs the consumer
+    over the exact shape this JS produces.
+    """
+    assert "querySelectorAll(" in _LD_JSON_JS
+    assert "document.querySelector(" not in _LD_JSON_JS
+    assert "JSON.stringify(Array.from(" in _LD_JSON_JS
+
+
+def test_a_multi_block_json_ld_capture_reaches_the_dossier_intact(tmp_path, role):
+    """The cross-module half: the capture side stores an ARRAY of parsed blocks, and
+    triage's extractor must find the JobPosting inside it wherever it sits. Asserted
+    end-to-end rather than on either side alone, because the two were written in
+    different tasks and each is internally consistent with a shape the other does not
+    produce."""
+    from sluice.triage import resolve
+    captured = ('[{"@type":"BreadcrumbList","itemListElement":[]},'
+                '{"@type":"JobPosting","hiringOrganization":{"name":"Example Co"}},'
+                'null]')
+    tab = _Tab(ld_json=captured)
+    d = _cache(tmp_path, tab).get_or_build({"url": "https://jobs.invalid/x",
+                                            "company": "", "role": role})
+    assert d["structured_data"] == captured
+    assert resolve._from_dossier(d) == "Example Co"
+
+
 def test_a_lead_with_no_url_gets_blank_page_title_and_structured_data(tmp_path, role):
     tab = _Tab()
     d = _cache(tmp_path, tab).get_or_build({"company": "Aye", "role": role})

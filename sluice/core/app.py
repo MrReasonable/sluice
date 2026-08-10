@@ -106,9 +106,23 @@ _SEAMS = (_STORE_SEAM, _FETCHER_SEAM, _RENDERER_SEAM, _BACKEND_SEAM)
 
 # Read once per successful dossier fetch, alongside document.body.innerText: JobPosting
 # structured data, when a board embeds it (#109 tier-2 company resolution).
+#
+# querySelectorAll, not querySelector: a real job board routinely emits SEVERAL ld+json
+# tags, and the page's own JobPosting is often not the first -- a site-wide Organization
+# or a BreadcrumbList schema commonly precedes it in DOM order. Taking the first match
+# captured the wrong block on exactly the pages tier 2 exists for, so it abstained there
+# and nowhere else, which is the hardest shape of this bug to notice.
+#
+# Each block is parsed in the PAGE and the array re-stringified, rather than concatenating
+# raw text: the tags are independent documents, so their raw texts do not compose into one
+# parseable JSON value. A block that will not parse becomes `null` rather than discarding
+# the whole capture, so one malformed tag cannot cost a good one -- `resolve.py`'s
+# `_iter_nodes` skips a null the same way it skips any other non-object. A page with no
+# such tag at all yields "[]" (not ""), which that same walk reads as an abstain.
 _LD_JSON_JS = (
-    "(() => { const el = document.querySelector("
-    "'script[type=\"application/ld+json\"]'); return el ? el.textContent : ''; })()"
+    "(() => JSON.stringify(Array.from(document.querySelectorAll("
+    "'script[type=\"application/ld+json\"]')).map(e => { try { "
+    "return JSON.parse(e.textContent); } catch (_) { return null; } })))()"
 )
 
 # The injected collaborators of Sluice.__init__ -- NOT seams. Used only to make a
