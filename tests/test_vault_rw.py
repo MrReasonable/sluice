@@ -1,5 +1,8 @@
 import os
-from sluice.core.vault import Vault
+
+import pytest
+
+from sluice.core.vault import Vault, _set_fm
 
 
 def _write_note(vault, name, fm_lines, body="body\n"):
@@ -49,6 +52,39 @@ def test_update_fields_sets_values_preserves_body_and_is_idempotent(tmp_path):
     # a key that did not exist gets added
     v.update_fields(path, {"glassdoor_rating": '"3.9"'})
     assert v.read_leads()[0].fm["glassdoor_rating"] == "3.9"
+
+
+@pytest.mark.parametrize("literal, expected", [
+    # A backslash the OLD f-string replacement template turned into a regex escape:
+    # `\B` is not one, so re.sub raised re.PatternError from inside the write. Not a
+    # VaultConflict, so no caller's `except VaultConflict` could catch it.
+    ('"Foo\\Bar Ltd"', 'company: "Foo\\Bar Ltd"'),
+    # Worse, because it did not raise: `\n` IS a valid escape in a replacement
+    # template, so the value silently gained a real newline and split the frontmatter.
+    ('"Foo\\nBar"', 'company: "Foo\\nBar"'),
+    # Worse again: a group reference expanded to the whole matched line, so the
+    # written value contained the OLD line it was replacing.
+    ('"Foo\\g<0>Bar"', 'company: "Foo\\g<0>Bar"'),
+])
+def test_set_fm_writes_a_backslash_literal_verbatim(literal, expected):
+    """_set_fm's replacement must be a CALLABLE: re.sub interprets escapes in a string
+    replacement template, so every literal above was rewritten on its way through.
+
+    This is the layer that can fix it once for every caller. `triage/resolve.py`'s
+    `_safe` still rejects a backslash, but for the INDEPENDENT reason that a raw
+    backslash inside a double-quoted YAML scalar is a YAML escape -- a different
+    failure, in a different reader, that this function cannot see."""
+    assert _set_fm('company: ""\nstatus: new', "company", literal) == \
+        expected + "\nstatus: new"
+
+
+def test_set_fm_leaves_an_ordinary_quoted_literal_byte_identical():
+    """The paired control: the callable replacement must not change what every
+    existing quoted caller (`glassdoor_rating`, `culture_flags`) already writes."""
+    inner = 'company: "Acme"\nglassdoor_rating: ""\nstatus: new'
+    assert _set_fm(inner, "glassdoor_rating", '"3.9"') == \
+        'company: "Acme"\nglassdoor_rating: "3.9"\nstatus: new'
+    assert _set_fm(inner, "culture_flags", '"a, b"') == inner + '\nculture_flags: "a, b"'
 
 
 def test_normalize_all_statuses(tmp_path):

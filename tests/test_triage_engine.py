@@ -428,14 +428,16 @@ def test_company_write_never_overwrites_a_company_a_human_typed_mid_run(tmp_path
 
 def test_a_backslash_in_a_resolved_company_does_not_kill_the_batch(tmp_path, titles):
     # resolve.py's docstring promises "one source's bug on one unanticipated URL shape
-    # must not crash the whole triage run". A backslash is not a VaultConflict, so
-    # engine.py's `except VaultConflict` cannot catch it: _set_fm substitutes the literal
-    # through re.sub, which interprets escapes in the REPLACEMENT template -- so a scraped
-    # `Foo\Bar Ltd` raises re.PatternError ("bad escape \B") mid-batch and every lead after
-    # it is silently never processed, while the ones before it are already written. (Other
-    # backslash sequences corrupt silently instead of raising: `\n` in a replacement
-    # template becomes a real newline, breaking the frontmatter.) The guard is resolve.py's
-    # _safe, which must reject a backslash for the same reason it rejects a quote.
+    # must not crash the whole triage run", and a scraped `Foo\Bar Ltd` is exactly that
+    # shape. The batch-killing arm of this -- _set_fm's re.sub interpreting `\B` as an
+    # escape in its REPLACEMENT template and raising re.PatternError, which is not a
+    # VaultConflict and so escaped engine.py's `except` -- is now fixed at the vault
+    # layer (a callable replacement; see test_vault_rw.py). What is witnessed HERE is
+    # the surviving, independent reason resolve.py's `_safe` must still reject a
+    # backslash: a raw backslash inside the double-quoted YAML scalar the write produces
+    # is a YAML escape, so `company: "Foo\Bar Ltd"` is a ScannerError in the candidate's
+    # own note reader -- a lead written into a state a human cannot open, which no
+    # amount of correctness at the vault layer would prevent.
     accept, reject = titles
     v = Vault(str(tmp_path / "vault"))
     _note(v, "aaa.md", _blank_fields(accept[0].title(), source="ex-board", url="https://x/1"))
