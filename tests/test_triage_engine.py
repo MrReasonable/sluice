@@ -20,9 +20,19 @@ def _note(v, name, fm_lines):
 
 class _Backend:
     """Echoes back the actual lead_ids from the batch prompt (as a real judge
-    does), so verdicts always match the dossiers the engine built."""
+    does), so verdicts always match the dossiers the engine built.
+
+    Records every prompt it is handed: what the judge is TOLD is the only place
+    some of this feature's effects are observable, and reading it off the real
+    prompt keeps that assertion honest about the whole engine -> judge -> slim()
+    path rather than a hand-built dossier."""
     last_backend = "primary"
+
+    def __init__(self):
+        self.prompts = []
+
     def complete(self, prompt):
+        self.prompts.append(prompt)
         ids = re.findall(r"Dossier \d+ lead_id: (\S+)", prompt)
         return json.dumps([{"lead_id": i, "verdict": "shortlist",
                             "relevance_score": 80} for i in ids])
@@ -541,10 +551,20 @@ def test_tier2_resolution_and_the_later_judge_share_one_fetch(tmp_path, titles):
     real_cache = DossierCache(str(tmp_path / "dos"), ttl_days=7, fetcher=fetcher,
                               clock=lambda: datetime(2026, 7, 7))
 
-    eng.run(v, cfg, _Backend(), real_cache, audit, statuses=("new",),
+    backend = _Backend()
+    eng.run(v, cfg, backend, real_cache, audit, statuses=("new",),
            get_source=_get_source({}))     # unknown source -> tier 1 abstains, tier 2 runs
 
     after = v.read_leads()[0]
     assert after.fm["company"] == "Resolved Co"
     assert after.status == "shortlist"           # resolved, then judged and shortlisted
     assert len(calls) == 1                       # classify-pass fetch reused by enrich/judge
+    # Sharing the fetch is only half of what has to be true, and on its own it is what
+    # BREAKS the other half: the classify-pass fetch builds the cache entry while company
+    # is still "", and get_or_build snapshots `company` off the lead at BUILD time. The
+    # enrich pass then hits that same entry -- by design, that is what makes the count
+    # above 1 -- so without a re-derive the judge is handed the stale blank for the full
+    # cache TTL, on the very leads this feature exists to give a company to.
+    prompt = backend.prompts[0]
+    assert '"company": "Resolved Co"' in prompt
+    assert '"company": ""' not in prompt
