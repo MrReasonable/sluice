@@ -113,6 +113,25 @@ def test_extractor_exception_abstains_rather_than_propagating():
     assert cache.calls == 1    # tier 1's crash must not stop tier 2 from being attempted
 
 
+def test_jsonld_hiring_org_name_non_string_abstains_rather_than_raising():
+    # structured_data is live, board-authored JSON-LD with no schema enforcement: a
+    # hiringOrganization.name of a list (or dict/number/bool) makes the plain-string
+    # `.strip()` in _hiring_org_from_jsonld raise AttributeError if uncaught.
+    cache = _RecordingCache(dossier={
+        "structured_data": '{"@type": "JobPosting", "hiringOrganization": {"name": ["Example Co"]}}',
+        "page_title": ""})
+    got = resolve.resolve_company(FM, None, cache, no_llm=False, company_resolve_fetch=True)
+    assert got is None
+
+
+def test_dossier_page_title_non_string_abstains_rather_than_raising():
+    # A hand-edited or pre-#109 cache entry can carry a non-string page_title, which
+    # makes re.Pattern.match() raise TypeError if uncaught.
+    cache = _RecordingCache(dossier={"structured_data": "", "page_title": 12345})
+    got = resolve.resolve_company(FM, None, cache, no_llm=False, company_resolve_fetch=True)
+    assert got is None
+
+
 @pytest.mark.parametrize("unsafe", ['Example "Co"', "Example\nCo", "Example\rCo"])
 def test_tier1_candidate_with_a_structural_character_is_rejected(unsafe):
     src = _source(company_from_url=lambda url: unsafe)
