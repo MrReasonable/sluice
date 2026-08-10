@@ -3,6 +3,7 @@ lead snapshot), cached on disk with a TTL so re-runs skip network I/O. The fetch
 (Camofox-backed in production) and clock are injected, so TTL and hit/miss are unit
 tested offline. Schema mirrors the legacy schema_version 2 so the existing cached
 dossiers are reused as-is."""
+import hashlib
 import json
 import os
 import re
@@ -15,7 +16,12 @@ def _slug(lead: dict) -> str:
 
 
 def slim(dossier: dict, *, jd_limit: int = 4000) -> dict:
-    out = {k: v for k, v in dossier.items() if k != "lead_snapshot"}
+    # page_title/structured_data (#109) are resolution-only fields, never judge-relevant --
+    # structured_data especially can run several KB on some boards, so excluding it here
+    # (not at storage time in get_or_build, which resolve.py's _from_dossier still needs
+    # to read directly off the cached dict) is what keeps it out of every judge prompt.
+    out = {k: v for k, v in dossier.items()
+          if k not in ("lead_snapshot", "page_title", "structured_data")}
     jd = dict(out.get("jd") or {})
     if "markdown" in jd:
         jd["markdown"] = jd["markdown"][:jd_limit]
@@ -31,7 +37,19 @@ class DossierCache:
         self.clock = clock
 
     def cache_key(self, lead: dict) -> str:
-        return (lead.get("lead_id") or _slug(lead))
+        """`lead_id` first, then a stable hash of `url` (#109) -- url does not change
+        across the classify-pass company mutation this feature performs, so the
+        classify-pass resolution fetch and the later enrich-pass judge fetch land on
+        the SAME cache entry instead of double-fetching. Falls back to the
+        company/role slug only when neither is available (e.g. a #23 Google lead
+        with no url)."""
+        lead_id = lead.get("lead_id")
+        if lead_id:
+            return lead_id
+        url = lead.get("url")
+        if url:
+            return "url-" + hashlib.sha256(url.encode()).hexdigest()[:16]
+        return _slug(lead)
 
     def _path(self, lead: dict) -> str:
         return os.path.join(self.dir, f"{self.cache_key(lead)}.json")
@@ -61,6 +79,11 @@ class DossierCache:
             "lead_snapshot": dict(lead),
             "jd": enrich.get("jd", {}),
             "glassdoor": enrich.get("glassdoor", {}),
+            # #109 tier-2 company resolution reads these two off a fresh dossier
+            # directly; defaulting to "" here (not None) is what lets an OLD cached
+            # dossier missing them entirely still parse via a plain .get(...) or "".
+            "page_title": enrich.get("page_title", ""),
+            "structured_data": enrich.get("structured_data", ""),
             "built_at": self.clock().isoformat(),
         }
         os.makedirs(self.dir, exist_ok=True)
