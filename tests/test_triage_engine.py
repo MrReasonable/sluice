@@ -393,6 +393,66 @@ def test_company_write_already_current_self_heals_without_a_misleading_claim(tmp
                                               # apply_classification write below still lands
 
 
+def test_company_write_never_overwrites_a_company_a_human_typed_mid_run(tmp_path, titles, monkeypatch):
+    # The "is it blank?" decision is made from the read_leads() SNAPSHOT, but the write
+    # happens after a tier-2 page fetch -- a real page load, seconds. A human editing the
+    # note in Obsidian inside that window has their typed company silently replaced by the
+    # scraped one, with no signal. Same argument Task 6 makes for `status`, applied to the
+    # field this feature actually writes, and closed the same way: a FRESH re-read inside
+    # the CAS transform (require_blank), never the caller's stale snapshot.
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "blank.md", _blank_fields(accept[0].title(), source="ex-board"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.company_resolve_fetch = True
+
+    real = v.update_fields
+    calls = {"n": 0}
+    def racer(ref, fields, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            real(ref, {"company": '"Human Typed Co"'})   # a human edits it in Obsidian
+        return real(ref, fields, **kw)
+    monkeypatch.setattr(v, "update_fields", racer)
+
+    report = eng.run(v, cfg, _Backend(), _RecordingCache(), audit, statuses=("new",),
+                     get_source=_get_source({"ex-board": _tier1_source("Resolved Co")}))
+
+    after = v.read_leads()[0]
+    # A DIFFERENT value from the one this run resolved: the guard must refuse on
+    # presence, not merely no-op on an identical value the way rev2-001 does.
+    assert after.fm["company"] == "Human Typed Co"
+    assert any("company-resolve" in f for f in report.failures)
+
+
+def test_a_backslash_in_a_resolved_company_does_not_kill_the_batch(tmp_path, titles):
+    # resolve.py's docstring promises "one source's bug on one unanticipated URL shape
+    # must not crash the whole triage run". A backslash is not a VaultConflict, so
+    # engine.py's `except VaultConflict` cannot catch it: _set_fm substitutes the literal
+    # through re.sub, which interprets escapes in the REPLACEMENT template -- so a scraped
+    # `Foo\Bar Ltd` raises re.PatternError ("bad escape \B") mid-batch and every lead after
+    # it is silently never processed, while the ones before it are already written. (Other
+    # backslash sequences corrupt silently instead of raising: `\n` in a replacement
+    # template becomes a real newline, breaking the frontmatter.) The guard is resolve.py's
+    # _safe, which must reject a backslash for the same reason it rejects a quote.
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "aaa.md", _blank_fields(accept[0].title(), source="ex-board", url="https://x/1"))
+    _note(v, "bbb.md", _fields("Survivor Co", reject[0].title()))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.reject_titles = list(reject)
+    cfg.company_resolve_fetch = True
+
+    eng.run(v, cfg, _Backend(), _RecordingCache(), audit, statuses=("new",),
+            get_source=_get_source({"ex-board": _tier1_source("Foo\\Bar Ltd")}))
+
+    statuses = {n.fm["company"]: n.status for n in v.read_leads()}
+    assert statuses[""] == "needs_review"          # abstained rather than writing it
+    assert statuses["Survivor Co"] == "dismiss"    # the rest of the batch still ran
+
+
 def test_apply_classification_race_produces_no_persisted_audit_entry(tmp_path, titles, monkeypatch):
     accept, reject = titles
     v = Vault(str(tmp_path / "vault"))
