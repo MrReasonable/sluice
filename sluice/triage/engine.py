@@ -71,16 +71,25 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
                 wrote = False
                 if not dry_run:
                     try:
+                        # require_blank, alongside require_status: this decision ("company
+                        # is blank, so filling it in is safe") was made from the read_leads
+                        # snapshot, and tier 2 spends SECONDS on a real page load before
+                        # getting here. A human typing the company into Obsidian in that
+                        # window must win -- never-clobber -- so the blankness check has to
+                        # be a FRESH re-read inside the CAS transform, exactly like
+                        # require_status beside it. A caller-side check on `company` above
+                        # is stale by construction and would be an equivalent mutant.
                         wrote = vault.update_fields(
                             note.ref, {"company": f'"{resolved}"'},
-                            require_status=frozenset(_status.TRIAGE_OWNED))
+                            require_status=frozenset(_status.TRIAGE_OWNED),
+                            require_blank=frozenset({"company"}))
                     except VaultConflict as e:
                         report.failures.append(f"company-resolve {note.ref}: {e}")
                     else:
                         if not wrote:
                             report.failures.append(
                                 f"company-resolve {note.ref}: company write did not land "
-                                "(status changed, or the value was already current)")
+                                "(status changed, or company was already set)")
                 if wrote or dry_run:
                     note.fm["company"] = resolved
                     decision, reason = classify(note.fm, cfg)
