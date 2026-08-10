@@ -403,16 +403,48 @@ def test_example_config_ships_lead_ttl_days_off():
 # company_resolve_fetch needs its OWN guard, same reasoning as lead_ttl_days above:
 # turning it on lets a blank-company lead trigger a REAL page visit, so an
 # unconfigured install must never start doing that unprompted the moment it
-# upgrades. Unlike lead_ttl_days this is a genuine bool field (no int/bool
-# YAML-resolution hazard), so no extra validation is needed -- only the default.
+# upgrades. The default is NOT the whole guard -- it needs the loader's type check
+# too, for the mirror image of lead_ttl_days' reason: the hazard there is that
+# PyYAML resolves `yes` to a real bool that then passes an isinstance(int) test,
+# and the hazard here is that a QUOTED `"false"` is not a YAML boolean at all but
+# a non-empty string, which is truthy. See test_a_quoted_false... below.
 
 def test_company_resolve_fetch_dataclass_default_is_off():
     assert TriageConfig().company_resolve_fetch is False
 
 
-def test_company_resolve_fetch_loader_default_is_off(monkeypatch):
+def test_company_resolve_fetch_loader_default_is_off(tmp_path, monkeypatch):
+    # config_file() is `$SLUICE_CONFIG or <config root>/config.yaml`, and the second
+    # rung reads $XDG_CONFIG_HOME -- measured: a planted `<XDG>/sluice/config.yaml`
+    # setting this knob does load through `load_triage_config(None)`. Both rungs are
+    # already sandboxed for EVERY test by conftest's autouse `_pin_paths` (pinned in
+    # turn by test_path_sandbox.py), so this pins them again only to keep the
+    # hermeticity of a defaults assertion legible where the assertion is, exactly as
+    # the `delenv` line beside it (equally redundant) already does.
     monkeypatch.delenv("SLUICE_CONFIG", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     assert load_triage_config(None).company_resolve_fetch is False
+
+
+def test_a_quoted_false_does_not_silently_enable_company_resolve_fetch(tmp_path):
+    # `company_resolve_fetch: "false"` is the spelling a user reaches for to keep the
+    # knob OFF, and it is the one that used to switch it ON: quoted, it is the STRING
+    # "false", which the loader's setattr wrote verbatim and resolve.py's
+    # `not company_resolve_fetch` then read as truthy. An unconfigured-adjacent install
+    # would start opening real pages against third-party sites, with nothing red
+    # anywhere. Loud at construction, like every other malformed key in this codebase.
+    p = tmp_path / "sluice.yaml"
+    p.write_text('triage:\n  company_resolve_fetch: "false"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="company_resolve_fetch"):
+        load_triage_config(str(p))
+
+
+def test_a_real_yaml_boolean_still_turns_company_resolve_fetch_on(tmp_path):
+    # The other half: a guard that refused every value would be indistinguishable from
+    # the knob being dead, and the raise test above cannot tell those apart.
+    p = tmp_path / "sluice.yaml"
+    p.write_text("triage:\n  company_resolve_fetch: true\n", encoding="utf-8")
+    assert load_triage_config(str(p)).company_resolve_fetch is True
 
 
 def test_the_example_config_ships_company_resolve_fetch_commented():
