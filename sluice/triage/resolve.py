@@ -7,18 +7,20 @@ worse than staying blank."""
 import json
 import re
 
-# `"`/`\n`/`\r` break the frontmatter's own structure. The BACKSLASH is here for a
-# different and less obvious reason, and it is the one that bites: the literal reaches
-# `core/vault.py`'s `_set_fm`, which substitutes it via `re.sub(pat, f"{key}: {literal}")`
-# -- and re.sub interprets escapes in the REPLACEMENT template, not just the pattern. A
-# scraped `Foo\Bar Ltd` therefore raises `re.PatternError: bad escape \B` from inside the
-# write, and `re.PatternError` is not `VaultConflict`, so triage's `except VaultConflict`
-# lets it kill the WHOLE batch mid-run with the earlier leads already written -- the exact
-# failure `resolve_company`'s own extractor guard exists to prevent. Sequences that happen
-# to be VALID escapes are worse, not better: `\n` in a replacement template becomes a real
-# newline and silently splits the frontmatter. This is the caller-side guard `_set_fm`'s
-# docstring names as the writer's responsibility, so it belongs here rather than there.
-_UNSAFE_CHARS = ('"', "\n", "\r", "\\")
+# The two PRINTABLE characters that are still structural, so `_safe`'s `str.isprintable()`
+# clause cannot speak to them. Both are structural INSIDE the double-quoted scalar
+# `core/vault.py`'s `_set_fm` writes (`company: "<value>"`) -- measured against PyYAML
+# 6.0.3, which is what a real note reader (Obsidian, a script) uses, not sluice's own
+# line-based `_fm_dict`:
+#   `"`   closes the scalar early -- `company: "Foo"Bar"` is a ParserError.
+#   `\`   opens a YAML escape sequence. `"Foo\Bar Ltd"` is a ScannerError (unknown
+#         escape), and the sequences that happen to be VALID are the worse arm, not the
+#         better one: `"Foo\nBar"` parses to a real newline INSIDE the value, so what a
+#         human reads back is silently not what the board published.
+# `\n`/`\r` deliberately do NOT appear here: `str.isprintable()` already rejects them
+# along with the rest of the C0/C1 class, and listing them twice would leave two entries
+# no mutation of this tuple could ever redden.
+_UNSAFE_CHARS = ('"', "\\")
 
 # Anchored full-string, deliberately narrow: a page_title that merely CONTAINS
 # "at"/"hiring" without this exact shape must abstain, not guess a company from a
@@ -32,7 +34,10 @@ _TITLE_PATTERNS = (
 def _hiring_org_from_jsonld(raw: str) -> str | None:
     """schema.org/JobPosting -> hiringOrganization.name, tolerating a bare object, a
     list of nodes, or a `@graph` array -- and any malformed/missing shape, which
-    abstains (None) rather than raising."""
+    abstains (None) rather than raising. That last promise is scoped to SHAPE:
+    reached through `resolve_company`'s guarded entry point every field TYPE is
+    covered too, but called directly (as the tests do) a non-string
+    `hiringOrganization.name` still raises on its own `.strip()`."""
     if not raw:
         return None
     try:
@@ -64,7 +69,9 @@ def _hiring_org_from_jsonld(raw: str) -> str | None:
 def _from_dossier(dossier: dict) -> str | None:
     """Tier 2's pure extraction step: JSON-LD first (structured, board-authored,
     highest confidence), then a small set of real-capture-validated title shapes.
-    JSON-LD wins when both are present and disagree."""
+    JSON-LD wins when both are present and disagree. Same scoping as
+    `_hiring_org_from_jsonld` above: only through `resolve_company` is a non-string
+    `page_title` an abstain rather than a `TypeError` out of `re.Pattern.match`."""
     hit = _hiring_org_from_jsonld(dossier.get("structured_data") or "")
     if hit:
         return hit
@@ -86,7 +93,29 @@ def resolve_company(fm: dict, get_source, dossier_cache, *,
     always abstains), injected so this stays testable without importing the real
     registry."""
     def _safe(candidate):
-        return candidate if candidate and not any(c in candidate for c in _UNSAFE_CHARS) else None
+        # Four rejections, none of which subsumes the next:
+        #  * falsy          -- both tiers' own abstain (None, or ""); also the None-guard
+        #                      the two attribute calls below need.
+        #  * all-whitespace -- PRINTABLE, so isprintable() waves it through, and truthy,
+        #                      so the extractor's own `or None` does too. wellfound.py's
+        #                      `slug.replace("-", " ").title()` returns "   " for a
+        #                      `/company/---` path segment. Checked on a COPY: the written
+        #                      value stays exactly what the board published.
+        #  * not printable  -- False for every C0/C1 control character, U+0085 NEL, and
+        #                      every Zl/Zp separator: the class that survives sluice's OWN
+        #                      frontmatter parser (`_fm_dict`/`_fm_value` split on "\n"
+        #                      specifically and match `(?m)`) but that a REAL YAML parser
+        #                      either refuses outright or, for NEL, silently folds to a
+        #                      space. Reachable from ordinary well-formed input: a legal
+        #                      `{"hiringOrganization":{"name":"Example\x0bCo"}}` is a
+        #                      string `_hiring_org_from_jsonld` returns intact. It also
+        #                      rejects non-ASCII whitespace (NBSP from an `&nbsp;`), which
+        #                      is an abstain rather than a mangle -- the direction this
+        #                      whole module errs in by design.
+        #  * _UNSAFE_CHARS  -- printable, but structural inside the quoted scalar; see there.
+        if not candidate or not candidate.strip() or not candidate.isprintable():
+            return None
+        return None if any(c in candidate for c in _UNSAFE_CHARS) else candidate
 
     url = fm.get("url") or ""
     src_id = fm.get("source") or ""
