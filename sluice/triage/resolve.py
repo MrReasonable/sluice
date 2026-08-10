@@ -32,6 +32,12 @@ _TITLE_PATTERNS = (
 )
 
 
+# How deep `_iter_nodes` will walk board-authored JSON-LD before abstaining. Named
+# rather than inlined so the boundary test can be written AGAINST the cap instead of
+# against a copied literal that would drift silently the day this number changes.
+_MAX_DEPTH = 6
+
+
 def _iter_nodes(data, depth: int = 0):
     """Every JSON object reachable in a JSON-LD payload, flattening arrays and `@graph`.
 
@@ -43,10 +49,13 @@ def _iter_nodes(data, depth: int = 0):
     abstains, silently, on a page that did publish what was asked for.
 
     Anything that is neither a list nor a dict yields nothing, which is what skips the
-    `null` the capture writes for a block the page could not parse. Depth-capped because
-    this is board-authored, untrusted input; 6 is well past the deepest real shape
-    (array -> block -> @graph -> node)."""
-    if depth > 6:
+    `null` the capture writes for a block the page could not parse. Depth-capped
+    (`_MAX_DEPTH`) because this is board-authored, untrusted input: without the cap a
+    payload nested a few hundred levels deep raises RecursionError out of the `yield
+    from` chain, and the cap's value is well past the deepest real shape
+    (array -> block -> @graph -> node). A node deeper than that is not read at all, so
+    tier 2 abstains on it rather than resolving it."""
+    if depth > _MAX_DEPTH:
         return
     if isinstance(data, list):
         for item in data:
