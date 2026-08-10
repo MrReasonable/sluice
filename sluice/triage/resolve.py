@@ -99,7 +99,17 @@ def resolve_company(fm: dict, get_source, dossier_cache, *,
         return None
     try:
         dossier = dossier_cache.get_or_build(fm)
+        return _safe(_from_dossier(dossier))
     except Exception:
         return None  # a failed fetch just means "couldn't resolve" -- fall through to
-                     # classify()'s existing needs_review branch, not a fatal per-lead error
-    return _safe(_from_dossier(dossier))
+                     # classify()'s existing needs_review branch, not a fatal per-lead error.
+                     # Widened to also cover _from_dossier/_safe: tier 2 reads live,
+                     # board-authored JSON-LD and page titles with NO schema enforcement at
+                     # read time -- hiringOrganization.name can be a list/dict/number/bool
+                     # instead of a string (making _hiring_org_from_jsonld's own .strip()
+                     # raise AttributeError), and a hand-edited or pre-#109 cache entry can
+                     # carry a non-string page_title (making re.Pattern.match() raise
+                     # TypeError). Both are reachable through ordinary tier-2 operation, not
+                     # just a corrupted cache, so both must abstain rather than crash the
+                     # whole triage batch over one bad lead -- the same reason the extractor
+                     # call above gets its own except Exception.
