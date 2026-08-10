@@ -49,3 +49,27 @@ def test_never_clobbers_application_status(tmp_path):
     assert apply_verdict(v, note, {"verdict": "dismiss", "relevance_score": 5},
                          {}) == "skipped"
     assert v.read_leads()[0].status == "applied"     # untouched
+
+
+def test_apply_classification_returns_skipped_race_on_a_status_change_between_read_and_write(tmp_path):
+    v = Vault(str(tmp_path))
+    _note(v, "D.md", ['company: "Delta"', "status: new", "score: 0",
+                      'relevance_notes: ""'])
+    note = v.read_leads({"new"})[0]
+    # Simulate a receipt/manual `apply record` landing between read_leads() and
+    # this write -- the lead has already left TRIAGE_OWNED by the time the write
+    # is attempted, but `note.status` (frozen at read time) still reads "new".
+    v.update_fields(note.ref, {"status": "applied"})
+    assert apply_classification(v, note, "reject", "IC role") == "skipped-race"
+    assert v.read_leads()[0].status == "applied"     # the real status survives untouched
+
+
+def test_apply_verdict_returns_skipped_race_on_a_status_change_between_read_and_write(tmp_path):
+    v = Vault(str(tmp_path))
+    _note(v, "E.md", ['company: "Epsilon"', "status: new", "score: 0",
+                      'glassdoor_rating: ""', 'culture_flags: ""', 'relevance_notes: ""'])
+    note = v.read_leads({"new"})[0]
+    v.update_fields(note.ref, {"status": "applied"})
+    verdict = {"verdict": "shortlist", "relevance_score": 82, "fit_reasoning": "fit"}
+    assert apply_verdict(v, note, verdict, {}) == "skipped-race"
+    assert v.read_leads()[0].status == "applied"
