@@ -375,8 +375,13 @@ def test_company_write_already_current_self_heals_without_a_misleading_claim(tmp
     # rev2-001: a concurrent resolution computes the identical company first, so
     # THIS run's write abstains at the require_blank guard: the company field is
     # no longer blank after the concurrent write, so require_blank refuses on
-    # presence (before any value comparison). Decision stays needs_review this run,
-    # self-healing on the next once company reads back non-blank.
+    # presence (before any value comparison). Decision stays needs_review this run.
+    #
+    # It self-heals on a later run that is explicitly pointed at needs_review leads
+    # -- NOT on the default status set: `triage run` reads ("new", "research"), so a
+    # lead parked on needs_review is not picked up again until someone passes
+    # `--status needs_review`. The company is correct in the vault either way; what
+    # waits is the re-classification that would act on it.
     accept, reject = titles
     v = Vault(str(tmp_path / "vault"))
     _note(v, "blank.md", _blank_fields(accept[0].title(), source="ex-board"))
