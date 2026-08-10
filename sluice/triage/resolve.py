@@ -9,9 +9,10 @@ import re
 
 # The two PRINTABLE characters that are still structural, so `_safe`'s `str.isprintable()`
 # clause cannot speak to them. Both are structural INSIDE the double-quoted scalar
-# `core/vault.py`'s `_set_fm` writes (`company: "<value>"`) -- measured against PyYAML
-# 6.0.3, which is what a real note reader (Obsidian, a script) uses, not sluice's own
-# line-based `_fm_dict`:
+# `core/vault.py`'s `_set_fm` writes (`company: "<value>"`). Measured against PyYAML
+# 6.0.3, standing in for the YAML parser a note is really read with once it leaves
+# sluice -- an editor's, a script's -- as opposed to sluice's own line-based `_fm_dict`,
+# which sees neither:
 #   `"`   closes the scalar early -- `company: "Foo"Bar"` is a ParserError.
 #   `\`   opens a YAML escape sequence. `"Foo\Bar Ltd"` is a ScannerError (unknown
 #         escape), and the sequences that happen to be VALID are the worse arm, not the
@@ -121,9 +122,10 @@ def resolve_company(fm: dict, get_source, dossier_cache, *,
         #  * not printable  -- False for every C0/C1 control character, U+0085 NEL, and
         #                      every Zl/Zp separator: the class that survives sluice's OWN
         #                      frontmatter parser (`_fm_dict`/`_fm_value` split on "\n"
-        #                      specifically and match `(?m)`) but that a REAL YAML parser
+        #                      specifically and match `(?m)`) but that a real YAML parser
         #                      either refuses outright or, for NEL, silently folds to a
-        #                      space. Reachable from ordinary well-formed input: a legal
+        #                      space (measured: PyYAML 6.0.3). Reachable from ordinary
+        #                      well-formed input -- a legal
         #                      `{"hiringOrganization":{"name":"Example\x0bCo"}}` is a
         #                      string `_hiring_org_from_jsonld` returns intact. It also
         #                      rejects non-ASCII whitespace (NBSP from an `&nbsp;`), which
