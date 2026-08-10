@@ -7,7 +7,18 @@ worse than staying blank."""
 import json
 import re
 
-_UNSAFE_CHARS = ('"', "\n", "\r")
+# `"`/`\n`/`\r` break the frontmatter's own structure. The BACKSLASH is here for a
+# different and less obvious reason, and it is the one that bites: the literal reaches
+# `core/vault.py`'s `_set_fm`, which substitutes it via `re.sub(pat, f"{key}: {literal}")`
+# -- and re.sub interprets escapes in the REPLACEMENT template, not just the pattern. A
+# scraped `Foo\Bar Ltd` therefore raises `re.PatternError: bad escape \B` from inside the
+# write, and `re.PatternError` is not `VaultConflict`, so triage's `except VaultConflict`
+# lets it kill the WHOLE batch mid-run with the earlier leads already written -- the exact
+# failure `resolve_company`'s own extractor guard exists to prevent. Sequences that happen
+# to be VALID escapes are worse, not better: `\n` in a replacement template becomes a real
+# newline and silently splits the frontmatter. This is the caller-side guard `_set_fm`'s
+# docstring names as the writer's responsibility, so it belongs here rather than there.
+_UNSAFE_CHARS = ('"', "\n", "\r", "\\")
 
 # Anchored full-string, deliberately narrow: a page_title that merely CONTAINS
 # "at"/"hiring" without this exact shape must abstain, not guess a company from a
