@@ -31,6 +31,32 @@ _TITLE_PATTERNS = (
 )
 
 
+def _iter_nodes(data, depth: int = 0):
+    """Every JSON object reachable in a JSON-LD payload, flattening arrays and `@graph`.
+
+    Recursive rather than one-level because the capture side hands over an ARRAY of
+    blocks (`core/app.py`'s `_LD_JSON_JS` collects every `ld+json` script tag, since the
+    page's JobPosting is often not the first), and any ONE of those blocks may itself be
+    a bare object, an array of nodes, or a `@graph` container -- so a JobPosting can sit
+    two levels down. A one-level walk reads a `@graph` wrapper's own (absent) `@type` and
+    abstains, silently, on a page that did publish what was asked for.
+
+    Anything that is neither a list nor a dict yields nothing, which is what skips the
+    `null` the capture writes for a block the page could not parse. Depth-capped because
+    this is board-authored, untrusted input; 6 is well past the deepest real shape
+    (array -> block -> @graph -> node)."""
+    if depth > 6:
+        return
+    if isinstance(data, list):
+        for item in data:
+            yield from _iter_nodes(item, depth + 1)
+    elif isinstance(data, dict):
+        yield data
+        graph = data.get("@graph")
+        if isinstance(graph, (list, dict)):
+            yield from _iter_nodes(graph, depth + 1)
+
+
 def _hiring_org_from_jsonld(raw: str) -> str | None:
     """schema.org/JobPosting -> hiringOrganization.name, tolerating a bare object, a
     list of nodes, or a `@graph` array -- and any malformed/missing shape, which
@@ -44,16 +70,7 @@ def _hiring_org_from_jsonld(raw: str) -> str | None:
         data = json.loads(raw)
     except (ValueError, TypeError):
         return None
-    if isinstance(data, list):
-        nodes = data
-    elif isinstance(data, dict):
-        graph = data.get("@graph")
-        nodes = graph if isinstance(graph, list) else [data]
-    else:
-        return None
-    for node in nodes:
-        if not isinstance(node, dict):
-            continue
+    for node in _iter_nodes(data):
         node_type = node.get("@type")
         types = node_type if isinstance(node_type, list) else [node_type]
         if "JobPosting" not in types:
