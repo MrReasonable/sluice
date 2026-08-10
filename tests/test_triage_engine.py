@@ -389,8 +389,8 @@ def test_company_write_already_current_self_heals_without_a_misleading_claim(tmp
     after = v.read_leads()[0]
     assert after.fm["company"] == "Resolved Co"       # the concurrent write survives
     assert any("company-resolve" in f for f in report.failures)
-    assert after.status == "needs_review"     # this run's write was a no-op; the eventual
-                                              # apply_classification write below still lands
+    assert after.status == "needs_review"     # this run's write abstains at require_blank; the
+                                              # eventual apply_classification write below still lands
 
 
 def test_company_write_never_overwrites_a_company_a_human_typed_mid_run(tmp_path, titles, monkeypatch):
