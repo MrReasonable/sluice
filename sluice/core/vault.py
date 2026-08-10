@@ -1024,7 +1024,8 @@ class Vault:
     def update_fields(self, ref, fields: dict, *,
                       append_note: str | None = None,
                       note_tag: str | None = None,
-                      require_status: frozenset | None = None) -> bool:
+                      require_status: frozenset | None = None,
+                      require_blank: frozenset | None = None) -> bool:
         """Surgically set frontmatter keys (literal YAML scalars), body byte-for-byte
         intact. Optionally append a guarded note to relevance_notes (skipped if note_tag
         is present, so re-runs are idempotent). Routed through _cas_write: the edit is
@@ -1032,7 +1033,19 @@ class Vault:
         keys and body survive. May raise VaultConflict on sustained conflict (#16).
 
         `require_status` (#9): when given, re-read the status from the FRESH note and
-        write nothing unless it is in that set. Returns whether a write happened."""
+        write nothing unless it is in that set. Returns whether a write happened.
+
+        `require_blank` (#109): the same discipline for a NON-status field -- re-read each
+        named key from the FRESH note and write nothing unless every one of them is empty.
+        It exists because #109 decides "company is blank, so filling it in is safe" from a
+        read_leads() snapshot and then spends SECONDS on a tier-2 page fetch before
+        writing; a human typing the company into Obsidian inside that window would
+        otherwise have it silently replaced by the scraped value. Refusal is on PRESENCE,
+        not on inequality, so it also refuses a DIFFERENT value -- which is what separates
+        it from the benign already-current no-op this method already reports as False.
+        Generalised over field NAMES rather than hardcoded to `company` for the same reason
+        `require_status` takes a set: the next unmediated-external-content writer needs the
+        same guard, and a second write function would be a second CodeQL sink."""
         def transform(text: str) -> str:
             inner, body = _split_frontmatter(text)
             if inner is None:
@@ -1047,6 +1060,12 @@ class Vault:
             # which _cas_write already reports as False -- no new machinery needed.
             if require_status is not None and \
                     _status.normalize(_fm_value(inner, "status")) not in require_status:
+                return text
+            # Same freshness rule, same reason (see the docstring): decided HERE against
+            # the fresh bytes, never by the caller, because the caller's snapshot predates
+            # the window this guard exists to cover.
+            if require_blank is not None and \
+                    any(_fm_value(inner, key).strip() for key in require_blank):
                 return text
             for key, literal in fields.items():
                 inner = _set_fm(inner, key, literal)

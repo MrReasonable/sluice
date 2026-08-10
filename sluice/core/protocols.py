@@ -239,7 +239,8 @@ class Store(Protocol):
         ...
 
     def update_fields(self, ref, fields: dict, *, append_note=None, note_tag=None,
-                      require_status: frozenset | None = None) -> bool:
+                      require_status: frozenset | None = None,
+                      require_blank: frozenset | None = None) -> bool:
         """Set exactly the named frontmatter keys, leaving the body byte-for-byte intact.
         This is the sanctioned write path for triage, cv, apply and track. MAY raise
         VaultConflict if the note changed under a sustained concurrent edit and the store
@@ -260,7 +261,18 @@ class Store(Protocol):
         the write and cannot see a concurrent entry into the application lifecycle (via
         `apply record` or a #10 receipt). A store that ignored it would silently write a
         triage status over `applied` -- never-regress, and irreversible in practice
-        because the audit note would claim a prior status that was no longer true (#9)."""
+        because the audit note would claim a prior status that was no longer true (#9).
+
+        `require_blank` (#109) carries the identical obligation for the NAMED NON-STATUS
+        keys: re-read each from the FRESH stored note and abstain -- nothing written,
+        returns False -- unless every one of them is empty. Never-clobber, in the same
+        family: #109's blank-company resolution decides the field is safe to fill from a
+        snapshot and then spends SECONDS on a page fetch before writing, so a human's own
+        edit landing in that window is precisely what it protects. An implementation MUST
+        refuse on PRESENCE rather than on inequality -- a value DIFFERING from the one
+        offered is the harmful case, and it is the one a store comparing values would
+        wave through. Same delegation argument as above: a caller-side blankness check
+        reads the pre-fetch snapshot and is byte-identical to no check at all."""
         ...
 
     def merge_cluster(self, survivor_ref, loser_refs, *, alt_urls, first_seen, last_seen) -> list:

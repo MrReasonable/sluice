@@ -779,6 +779,48 @@ def test_update_fields_require_status_compares_the_NORMALIZED_status(store_name,
     assert store.read_leads()[0].status == "dismiss"
 
 
+def test_update_fields_require_blank_abstains_when_the_field_is_already_set(store_name, tmp_path,
+                                                                           monkeypatch):
+    """#109 never-clobber. Same argument as require_status directly above, for a NON-status
+    field: the caller decides "this field is blank, so filling it in is safe" from a
+    snapshot, then spends seconds on a tier-2 page fetch before writing. A human editing
+    the note in Obsidian inside that window is exactly who never-clobber protects, and a
+    caller-side blankness check cannot see them. So the store owns it.
+
+    The refusal is on PRESENCE, not on inequality: it must refuse a value that DIFFERS
+    from the one being written, which is what separates this from the benign
+    already-current no-op `update_fields` already reports as False.
+    """
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    store.upsert(_lead())
+    ref = store.read_leads()[0].ref
+    store.update_fields(ref, {"company": '"Human Typed Co"'})
+
+    wrote = store.update_fields(ref, {"company": '"Scraped Co"'},
+                                require_blank=frozenset({"company"}))
+
+    assert wrote is False, "a field already carrying a value must not be overwritten"
+    assert store.read_leads()[0].fm["company"] == "Human Typed Co", \
+        "require_blank must not let a scraped value land on a human's own edit"
+
+
+def test_update_fields_require_blank_writes_when_the_field_is_blank(store_name, tmp_path,
+                                                                    monkeypatch):
+    """The other half: a genuinely blank field is filled in normally and reports True.
+    A guard that refused everything would be indistinguishable from the feature being
+    dead, and the abstain test above cannot tell those apart."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    store.upsert(_lead())
+    ref = store.read_leads()[0].ref
+    store.update_fields(ref, {"company": '""'})
+
+    wrote = store.update_fields(ref, {"company": '"Scraped Co"'},
+                                require_blank=frozenset({"company"}))
+
+    assert wrote is True
+    assert store.read_leads()[0].fm["company"] == "Scraped Co"
+
+
 def test_update_fields_reports_False_when_the_record_does_not_change(store_name, tmp_path,
                                                                     monkeypatch):
     """The bool reports whether the stored record CHANGED, not whether the guard passed.
