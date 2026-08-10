@@ -1,9 +1,11 @@
 # Triage company-name resolution — classify() names the fix but never attempts it (#109)
 
-**Status:** design approved 2026-08-10; revised after two rounds of `/review-plan`. Round 1 (5
-reviewers): 0 Critical, 9 High, 6 Medium, 1 Low. Round 2 (5 reviewers, re-verifying round 1's fixes
-against the actual revised text rather than trusting the changelog): 1 Critical, 4 High, 5 Medium,
-2 Low. All addressed — changelog at the bottom.
+**Status:** design approved 2026-08-10; revised after three rounds of `/review-plan`, each
+re-verifying the prior round's fixes against the actual text rather than trusting the changelog.
+Round 1 (5 reviewers): 0 Critical, 9 High, 6 Medium, 1 Low. Round 2: 1 Critical, 4 High, 5 Medium,
+2 Low — the Critical was caused by round 1's own fix. Round 3 (reviewers specifically directed to
+scrutinize round 2's own new fixes): 0 Critical, 3 High, 4 Medium, 3 Low. All addressed — changelog
+at the bottom.
 
 **Issue:** #109 — `triage: classify() names the fix for a blank company but never attempts it,
 and needs_review is a one-way trap`
@@ -218,7 +220,13 @@ def resolve_company(fm: dict, get_source, dossier_cache, *,
             source = None
         extractor = getattr(source, "company_from_url", None)
         if extractor:
-            hit = _safe(extractor(url))
+            try:
+                hit = _safe(extractor(url))
+            except Exception:
+                hit = None  # a per-source extractor is newly-authored, hand-maintained regex
+                            # code running against live scraped URLs -- exactly the untrusted
+                            # input class the _safe guard exists for. One source's bug on one
+                            # unanticipated URL shape must not crash the whole triage run.
             if hit:
                 return hit
     if no_llm or not company_resolve_fetch or not url:
@@ -233,7 +241,17 @@ def resolve_company(fm: dict, get_source, dossier_cache, *,
 
 The `try/except KeyError` on `get_source` covers a lead whose `source` frontmatter names a
 retired/renamed source module — abstain, not raise, consistent with "an unrecognized status is
-passed through untouched" elsewhere in this codebase's error posture.
+passed through untouched" elsewhere in this codebase's error posture. **The `try/except Exception`
+around `extractor(url)` (added in round 3, `rev3-001`, High)** covers the same untrusted-input
+class from the other direction: unlike `get_or_build`'s existing isolation, a per-source
+`company_from_url` implementation had no equivalent guard in earlier drafts, despite being
+newly-authored, hand-maintained regex code running against live scraped URLs on every triage run —
+exactly the input class this design elsewhere treats as untrustworthy (the whole reason `_safe`
+exists). Without it, one source's extractor raising on an unanticipated URL shape (an unmatched
+`.group()`, a malformed slug) would propagate uncaught out of `resolve_company`, out of `engine.py`'s
+per-note loop (which has no enclosing guard around the call either), and crash the entire `triage
+run` for every remaining lead in the batch — not merely fail the one problematic lead, the way
+`get_source`'s `KeyError`, the dossier fetch, and the JSON-LD parse are all already isolated to do.
 
 The `try/except Exception` around `dossier_cache.get_or_build` is deliberately **softer** than the
 enrich pass's own handling of the same call (`engine.py:82-86`, which records into
@@ -291,8 +309,8 @@ even longer pre-existing dossier-fetch-plus-LLM-judge round trip — to `apply_v
 closing an equally real gap that predates this feature entirely:
 
 ```python
-# triage/apply.py -- both functions gain the same parameter, and both propagate
-# the write's actual outcome instead of assuming it always lands:
+# triage/apply.py -- both functions gain the same parameter, and both distinguish the
+# NEW race from the pre-existing, unrelated _guarded() skip by returning a different string:
 
 def apply_classification(vault, note, decision, reason) -> str:
     if _guarded(note):
@@ -303,17 +321,57 @@ def apply_classification(vault, note, decision, reason) -> str:
         note.ref, {"status": new_status},
         append_note=f"{tag} {decision}: {reason}".strip(), note_tag=tag,
         require_status=frozenset(_status.TRIAGE_OWNED))
-    return "applied" if wrote else "skipped"
+    return "applied" if wrote else "skipped-race"
 ```
 
 `apply_verdict` gains the identical `require_status=` argument and the identical
-`return "applied" if wrote else "skipped"` change. Existing tests are unaffected: none construct
-the "lead exits `TRIAGE_OWNED` between read and write" race this guard specifically catches — that
+`return "applied" if wrote else "skipped-race"` change.
+
+**`"skipped-race"`, not a reused `"skipped"`** — two round-3 findings (`arch3-001`, `inv3-001`,
+independently converging on the same gap from different angles) showed that simply reusing
+`"skipped"` here was not enough. `engine.py`'s existing loop unconditionally calls `_audit(...)`
+with the never-applied `decision`/`reason` after computing `outcome`, for every outcome — including
+the pre-existing `dry_run` "skipped" case, where that's the *desired* behaviour (it's how a dry
+run's in-memory preview gets populated; `_audit`'s persisted half is separately gated on `not
+dry_run`, so a dry-run entry is never written to disk in the first place). But for a **real**
+(non-dry_run) run, invariant review traced the consequence precisely: a race the CAS guard
+correctly stops from touching the vault still produces a *persisted* audit-log entry claiming a
+reject/needs_review decision for a lead the vault correctly still shows as `applied` —
+`render_rejected_note` renders straight from that log, so a human-facing "rejected leads" summary
+can list a job as dismissed while the note itself says otherwise. The pre-existing `_guarded()`
+skip (which predates this design and returns plain `"skipped"`, unchanged) has the same latent
+shape, but fixing that is explicitly out of scope here (see "Out of scope" below) — this fix is
+scoped to the *new* race this design's own tier-2 fetch introduces, not a general sweep.
+
+In `engine.py`'s classify-pass and judge-pass loops: `report.counts` still buckets `"skipped-race"`
+under `"skipped"` (unchanged aggregate stat — the lead genuinely wasn't decided this run), but
+`_audit(...)` is now called only when `outcome not in ("skipped-race",)`, closing the false-entry
+gap, and a `report.failures` entry is added specifically for `"skipped-race"` (mirroring the
+company write's own cause-agnostic message), giving an operator the same visibility into this race
+that the company write already has — closing `arch3-001`'s asymmetry finding directly.
+
+Existing tests are unaffected: none construct the "lead exits `TRIAGE_OWNED` between read and
+write" race this guard specifically catches, and none depend on `apply_classification`/
+`apply_verdict` ever returning anything but `"applied"` or the pre-existing `"skipped"` — that
 shape is deliberately exercised only by the new race test named below, mirroring how `#9`'s own
 `require_status` race test was built. This is judged in-scope for #109 rather than a deferred
 follow-up: it's the same existing parameter `update_fields` already carries (shipped by `#9`),
 applied to two calls that already sit on the code path this design's own change widens — "address
 as you find it," not a new mechanism.
+
+**A narrower, accepted ambiguity remains, deliberately unaddressed** (`rev3-002`, round 3): `wrote`
+can be `False` for the same two reasons discussed for the company write above — a genuine
+`require_status` mismatch, *or* a benign "the note already holds this value" no-op (realistic here
+too: a same-day re-triage of a `needs_review` lead recomputing an identical decision — a scenario
+this design itself makes newly common, since it's what makes repeated `--status needs_review`
+re-runs useful). Both collapse to `"skipped-race"` and both get bucketed under `report.counts["skipped"]`,
+even though the already-current case reflects a lead whose real status is already correct. This is
+the same ambiguity `rev2-001` named and accepted for the company write, applied consistently here
+rather than re-litigated: distinguishing the two causes would require `update_fields` to expose
+*why* it returned `False`, a broader contract change out of scope for this design. No data is at
+risk either way — the vault's status is correct in both cases — only the printed run summary is
+mildly imprecise for the already-current sub-case, exactly as already accepted elsewhere in this
+design.
 
 ### Tier 1 — `Source.company_from_url`
 
@@ -429,6 +487,13 @@ optimisation bounded by `ttl_days`, not a correctness-bearing store, so a one-ti
 wave is a cost, not a bug; nothing else in `core/dossier.py` parses cache filenames as anything but
 an opaque key.
 
+**This cache is shared with `cv`, not triage-exclusive** (`arch3-002`, round 3): `core/app.py`'s
+`dossier_cache()` docstring states "the ONE dossier cache directory, for both triage and cv (`#80`)",
+and `cv/engine.py`'s `run_one` calls the same `get_or_build`. The one-time invalidation wave above
+sweeps cv's cached dossiers too, permanently re-keyed thereafter — functionally benign (a shortlisted
+lead reaching `cv` already carries a stable, non-blank `company`, so its key was already stable
+before this fix), but worth stating rather than leaving as an unacknowledged cross-sub-app effect.
+
 A lead that resolves via tier 2 and still ends up `reject` (its now-known company matches
 `reject_companies`) or `needs_review` (some other classify branch) leaves a now-unused cached
 dossier on disk until its TTL expires — accepted, matching how the existing cache already tolerates
@@ -481,19 +546,29 @@ the existing neutrality convention (`tests/conftest.py`, `#31`/`#53`).
   tier 1 would have missed; `company_resolve_fetch=False` (the shipped default) never calls the
   dossier cache either, independent of `no_llm`; an unknown `source` id (`get_source` raising
   `KeyError`) abstains rather than raising; a `dossier_cache.get_or_build` exception abstains
-  rather than propagating.
+  rather than propagating; **a `company_from_url` implementation raising an arbitrary exception
+  abstains rather than propagating** (`rev3-001`, round 3 — the tier-1 counterpart to the existing
+  tier-2 fetch-exception test).
+- **`TriageConfig().company_resolve_fetch is False`, and `load_triage_config()` with no config
+  file yields `False`** (`neu3-001`, round 3) — a dedicated pinning test, named the same way
+  `lead_ttl_days`/`lead_layout`'s own abstain-default guards are, so a later edit cannot silently
+  re-flip the round-2 default correction (`inv2-003`) without a test going red.
 - **Scraped-content safety (`inv2-002`):** a tier-1 extractor and a tier-2 `_from_dossier` result
-  each containing an embedded `"` or newline are rejected — `resolve_company` returns `None`, not
-  the unsafe candidate — for both tiers independently.
+  each containing an embedded `"`, `\n`, **or `\r`** (round 3, `test3-002` — the third `_UNSAFE_CHARS`
+  member, previously unnamed here) are rejected — `resolve_company` returns `None`, not the unsafe
+  candidate — for both tiers independently.
 - **Per-source `company_from_url` golden fixtures:** Wellfound's confident-match case and its
   abstain case (a `wellfound.com` URL without a `/company/` segment), mirroring the existing
   golden-parser-fixture convention. **Built from a real capture, not the illustrative regex above**
   (`rev2-002`) — see Dependency order below. Any additional source implemented during
   implementation gets the same pair, same rule.
 - **`_from_dossier` unit tests:** a JobPosting JSON-LD hit; a title-pattern hit when structured data
-  is absent; a title-pattern **near-miss** that abstains rather than guessing (a `page_title`
-  containing "hiring" or "at" without the expected structure); both absent or unparseable → `None`;
-  malformed JSON-LD → `None`, not a raised exception.
+  is absent; **JSON-LD wins when both structured data and a matching title pattern are present and
+  disagree** (`test3-001`, round 3 — the priority between the two tier-2 extraction methods was
+  previously asserted in prose only, with no test proving it); a title-pattern **near-miss** that
+  abstains rather than guessing (a `page_title` containing "hiring" or "at" without the expected
+  structure); both absent or unparseable → `None`; malformed JSON-LD → `None`, not a raised
+  exception.
 - **A regression test pinning `classify()`'s signature** — it must not gain a `dossier_cache`,
   `sources`, or `fetcher` parameter, protecting the docstring's "no dossier, no LLM" contract the
   same way `test_a_renderer_without_precheck_is_not_gated_by_another_renderers_grammar` protects the
@@ -521,8 +596,15 @@ the existing neutrality convention (`tests/conftest.py`, `#31`/`#53`).
   - **The `apply_classification`/`apply_verdict` hardening race** (`inv2-001` — the Critical fix):
     a lead advances to `applied` (or is judged concurrently to an `APPLICATION_OWNED` status)
     between `read_leads` and `apply_classification`'s/`apply_verdict`'s own write; both must return
-    `"skipped"`, the vault's status must remain `applied`, and neither writes `needs_review`/a
+    `"skipped-race"`, the vault's status must remain `applied`, and neither writes `needs_review`/a
     verdict status over it. Constructed the same way `#9`'s own `require_status` race test is.
+  - **The audit log carries no false entry for that same race** (`arch3-001`/`inv3-001`, round 3):
+    in the same scenario, `audit.read_recent(30)` (what `render_rejected_note` renders from) must
+    contain **no** entry for that lead — proving the `_audit(...)` gate on `outcome not in
+    ("skipped-race",)` actually prevents the persisted false record, not merely that the vault
+    status survives. A companion assertion confirms `report.failures` **does** gain an entry for
+    this case, distinct from the pre-existing, unrelated `_guarded()`-at-read-time skip (which
+    remains untouched and silent, per "Out of scope" below).
   - Under `dry_run`, a lead that resolves and would become `keep` shows the correct bump in
     `report.counts["keep"]`; a lead that resolves and would become `reject`/`needs_review` is
     **not** distinguishable in `report.counts` from an unresolved lead (both bucket to `"skipped"`)
@@ -559,6 +641,11 @@ Mutate by moving or deleting, never adding.
 | Delete `slim()`'s `page_title`/`structured_data` exclusion | the `slim()`-never-contains-those-keys test (built from a fixture with both fields populated) |
 | Delete the `except KeyError` around `get_source(src_id)` | the unknown-source-id-abstains test |
 | Delete the `except Exception` around `dossier_cache.get_or_build` inside `resolve_company` | the fetch-exception-abstains test |
+| Delete the `except Exception` around `extractor(url)` inside `resolve_company` | the extractor-exception-abstains test (`rev3-001`) |
+| Swap the two extraction attempts inside `_from_dossier` (title-pattern before JSON-LD) | the JSON-LD-wins-when-both-present test (`test3-001`) |
+| Change `apply_classification`'s/`apply_verdict`'s `"skipped-race"` back to plain `"skipped"` | the audit-log-has-no-false-entry test for the hardening race (`inv2-001`/`inv3-001`) |
+| Delete the `outcome not in ("skipped-race",)` guard around `_audit(...)` | the same audit-log-has-no-false-entry test |
+| Delete `TriageConfig.company_resolve_fetch`'s `False` default (change to `True`) | the `TriageConfig().company_resolve_fetch is False` pinning test (`neu3-001`) |
 
 ## Docs
 
@@ -583,6 +670,15 @@ Mutate by moving or deleting, never adding.
 - `sluice.yaml.example`: the new `triage.company_resolve_fetch` knob, commented out at `false` —
   matching the file's existing convention for opt-in feature toggles (`lead_ttl_days`), not the
   "active illustrative value" convention reserved for preference knobs a user is expected to tune.
+- **`core/vault.py`'s `_set_fm` docstring** *(added in round 3, `arch3-003`)*: gains one clause
+  noting that a caller writing unmediated external content is responsible for its own
+  structural-character guard before the value reaches `_set_fm` — pointing at `resolve.py`'s
+  `_safe` as the precedent. `_safe` is correctly placed in `resolve.py`, not inside `_set_fm`
+  itself: `_set_fm`'s `literal` argument is already the post-quote string (e.g. `f'"{resolved}"'`),
+  so a blanket character check at that layer would reject the wrapping quotes every existing
+  quoted caller (`glassdoor_rating`, `culture_flags`) already relies on. The check is only
+  meaningful pre-quote, which only the caller holds — this docstring clause is a warning for the
+  next raw-content writer, not a design change.
 
 ## Definition of done
 
@@ -594,11 +690,16 @@ python -m pytest
 Dependency order:
 
 1. `DossierCache`'s schema addition (`page_title`/`structured_data`), the `cache_key` url-hash
-   preference, and `slim()`'s new exclusion — nothing else can be tested against them otherwise.
+   preference, and `slim()`'s new exclusion — nothing else *in tier 2* can be tested against them
+   otherwise.
 2. A real `job-sluice ingest test-source wellfound --raw` capture, *before* Wellfound's
    `company_from_url` and its golden fixtures are written (`rev2-002`) — the illustrative pattern
-   above is not a specification.
-3. `resolve.py`, including the `_safe` scraped-content guard.
+   above is not a specification. **Independent of step 1** (`rev3-003`, round 3): Wellfound's
+   `company_from_url` is a pure tier-1 URL-string extractor that touches neither `DossierCache`,
+   `page_title`, `structured_data`, nor `cache_key` — it may be done before, after, or in parallel
+   with step 1.
+3. `resolve.py`, including the `_safe` scraped-content guard and the tier-1 extractor's own
+   `try/except` isolation — this step genuinely depends on both 1 and 2.
 4. The `engine.py`/`Sluice.triage()` `get_source`-threading and call-site wiring, verified early
    against the existing `tests/test_triage_engine.py` call sites, which must stay green unmodified
    given `get_source`'s default.
@@ -668,3 +769,39 @@ actual text, not the changelog's claims), 1 Critical / 4 High / 5 Medium / 2 Low
   (`test2-003`).
 - **Low:** corrected a factual claim about an existing (non-existent) `Source` Protocol docstring
   (`arch2-003`); added the actual updated `run()` signature to the code sketch (`rev2-003`).
+
+**2026-08-10, round 3 post-`/review-plan`:** 5 reviewers, specifically directed to scrutinize round
+2's own new fixes hardest — since round 2's Critical finding was itself caused by round 1's fix.
+0 Critical / 3 High / 4 Medium / 3 Low, all addressed. No new Critical, but two reviewers
+(architect, invariant) independently converged on the same real gap in round 2's own Critical fix
+from different angles:
+
+- **High (two reviewers, one fix):** the `require_status` hardening on `apply_classification`/
+  `apply_verdict` correctly stops the vault clobber, but the surrounding `engine.py` loop still
+  unconditionally wrote a *persisted audit-log entry* claiming the never-applied decision — which
+  `render_rejected_note` renders into a human-facing summary, so a race the fix successfully aborts
+  at the data layer could still make a real application look dismissed in that summary. Fixed by
+  having `apply_classification`/`apply_verdict` return a new, distinct `"skipped-race"` outcome
+  (rather than reusing plain `"skipped"`), gating the audit call on it, and adding a
+  `report.failures` entry for visibility — deliberately scoped to only the *new* race this design
+  introduces, not a general sweep of the pre-existing, unrelated `_guarded()` skip (`arch3-001`,
+  `inv3-001`).
+- **High:** wrapped the tier-1 `company_from_url` extractor call in the same exception isolation
+  the tier-2 fetch already has — newly-authored, per-source regex code running against live
+  scraped URLs had no guard, so one source's bug on one unanticipated URL shape could have crashed
+  the entire `triage run` (`rev3-001`).
+- **Medium:** explicitly accepted (rather than re-engineered) the same `wrote=False`
+  cause-ambiguity already named for the company write, now also present on the hardened
+  `apply_classification`/`apply_verdict` writes — no data risk, only a mildly imprecise
+  `report.counts` bucket for an already-correct lead (`rev3-002`). Acknowledged the shared
+  `DossierCache` directory means the `cache_key` fix's one-time invalidation also sweeps `cv`'s
+  cached dossiers, functionally benign but previously unstated (`arch3-002`). Added a dedicated
+  test pinning `TriageConfig().company_resolve_fetch is False`, matching this codebase's own
+  convention for abstain-default regression tests (`neu3-001`). Added a test proving JSON-LD wins
+  over the title-pattern heuristic when both are present and disagree, previously asserted in prose
+  only (`test3-001`).
+- **Low:** corrected the Dependency order's implied step-1-before-step-2 dependency — Wellfound's
+  `company_from_url` is independent of the `DossierCache`/`cache_key` work (`rev3-003`); added a
+  docstring clause to `_set_fm` warning future raw-content writers about the responsibility `_safe`
+  discharges here (`arch3-003`); named the third `_UNSAFE_CHARS` member (`\r`) explicitly in the
+  scraped-content-safety test description, previously only two of three were named (`test3-002`).
