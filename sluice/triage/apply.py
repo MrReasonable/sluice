@@ -23,11 +23,16 @@ def apply_classification(vault, note, decision, reason) -> str:
         return "skipped"
     new_status = _DECISION_STATUS.get(decision, "needs_review")
     tag = f"[triage {date.today().isoformat()}]"
-    vault.update_fields(
+    # require_status (#109 inv2-001): the pre-existing _guarded() check above reads
+    # note.status, a plain dataclass field frozen at read_leads() time -- byte-identical
+    # to no guard at all against a real vault. This re-reads the FRESH status inside the
+    # CAS transform, closing the window a #109 tier-2 fetch (real page load, seconds) now
+    # opens ahead of this write.
+    wrote = vault.update_fields(
         note.ref, {"status": new_status},
         append_note=f"{tag} {decision}: {reason}".strip(), note_tag=tag,
-    )
-    return "applied"
+        require_status=frozenset(_status.TRIAGE_OWNED))
+    return "applied" if wrote else "skipped-race"
 
 
 def apply_verdict(vault, note, verdict, dossier) -> str:
@@ -50,5 +55,9 @@ def apply_verdict(vault, note, verdict, dossier) -> str:
     if verdict.get("recommended_next_action"):
         parts.append("Next: " + verdict["recommended_next_action"])
     note_text = f"{tag} " + " ".join(p for p in parts if p)
-    vault.update_fields(note.ref, fields, append_note=note_text.strip(), note_tag=tag)
-    return "applied"
+    # require_status: same hardening as apply_classification above, closing the
+    # identical pre-existing gap behind the (even longer) dossier-fetch-plus-judge
+    # round trip.
+    wrote = vault.update_fields(note.ref, fields, append_note=note_text.strip(), note_tag=tag,
+                                require_status=frozenset(_status.TRIAGE_OWNED))
+    return "applied" if wrote else "skipped-race"
