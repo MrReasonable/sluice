@@ -91,6 +91,22 @@ def test_triage_threads_the_triage_config_into_the_backend(tmp_path, monkeypatch
     assert seen["fallback_model"] == "deepseek-v4-flash"  # ...and cheap_model for fallback
 
 
+def test_triage_threads_get_source_into_engine_run(tmp_path, monkeypatch):
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    monkeypatch.setenv("TRIAGE_AUDIT", str(tmp_path / "a.jsonl"))
+    monkeypatch.setenv("DOSSIER_DIR", str(tmp_path / "d"))
+    app = Sluice(Config())
+    seen = {}
+    def fake_run(vault, cfg, backend, cache, audit, **kw):
+        seen.update(kw)
+        from sluice.triage.engine import TriageReport
+        return TriageReport()
+    monkeypatch.setattr("sluice.triage.engine.run", fake_run)
+    app.triage(no_llm=True)
+    from sluice.ingest import sources
+    assert seen["get_source"] is sources.get
+
+
 def test_compose_cv_unknown_lead_returns_empty(tmp_path, monkeypatch):
     monkeypatch.setenv("VAULT_DIR", str(tmp_path))
     app = Sluice(Config())
