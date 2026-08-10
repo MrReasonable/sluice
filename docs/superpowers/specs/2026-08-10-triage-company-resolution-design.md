@@ -72,7 +72,7 @@ dossier, no LLM (`classify.py:1-7`). Resolution happens in `triage/engine.py`'s 
 # `decision, reason = classify(note.fm, cfg)`:
 company = (note.fm.get("company") or "").strip()
 if not company or company.lower() == "unknown":
-    resolved = resolve.resolve_company(note.fm, sources.get, dossier_cache, no_llm=no_llm)
+    resolved = resolve.resolve_company(note.fm, get_source, dossier_cache, no_llm=no_llm)
     if resolved:
         wrote = vault.update_fields(
             note.ref, {"company": f'"{resolved}"'},
@@ -81,6 +81,15 @@ if not company or company.lower() == "unknown":
             note.fm["company"] = resolved
 decision, reason = classify(note.fm, cfg)
 ```
+
+`get_source` is a new parameter on `triage.engine.run` (alongside `dossier_cache`/`audit`,
+`engine.py:34-35`), not an import: `triage/` must not import `sluice.ingest` directly, since the
+pipeline's sub-app dependency direction (`ingest -> triage -> cv -> apply -> track`) only crosses
+at the composition root. `Sluice.triage()` (`core/app.py:786-815`) gains the same lazy,
+inside-the-method import its `ingest()` neighbour already uses for `ingest.base`/`ingest.engine`
+(`core/app.py:508-509`) — `from sluice.ingest import sources` — and passes `sources.get` as the new
+argument to `_triage_run`, exactly the way it already passes `cache = self.dossier_cache(...)`.
+`triage/engine.py` itself only ever sees a callable.
 
 `resolve_company` is a thin orchestrator:
 
@@ -106,13 +115,23 @@ def resolve_company(fm: dict, get_source, dossier_cache, *, no_llm: bool) -> str
     try:
         dossier = dossier_cache.get_or_build(fm)
     except Exception:
-        return None  # same failure shape triage/engine.py already tolerates per-lead
+        return None  # a failed fetch just means "couldn't resolve" -- fall through to
+                     # classify()'s existing needs_review branch, not a fatal per-lead error
     return _from_dossier(dossier)
 ```
 
 The `try/except KeyError` on `get_source` covers a lead whose `source` frontmatter names a
 retired/renamed source module — abstain, not raise, consistent with "an unrecognized status is
 passed through untouched" elsewhere in this codebase's error posture.
+
+The `try/except Exception` around `dossier_cache.get_or_build` is deliberately **softer** than the
+enrich pass's own handling of the same call (`engine.py:82-86`, which records into
+`report.failures` and `continue`s — dropping the lead from `keeps` entirely, because a `keep`
+verdict genuinely cannot be judged without a JD). A failed resolution fetch loses nothing a failed
+enrich-pass fetch would: the lead simply proceeds to `classify()` with its company still blank,
+landing on the same `needs_review` branch it would have reached with this feature absent. No
+`report.failures` entry, because "couldn't resolve a company" is not a run failure — it's the
+documented residual (see below).
 
 ### Tier 1 — `Source.company_from_url`
 
@@ -160,14 +179,16 @@ already tolerates a `keep` that never gets judged in a `--no-llm` run.
 
 ### The vault write
 
-One `update_fields(note.ref, {"company": f'"{resolved}"'}, require_status=frozenset(TRIAGE_OWNED))`
+One
+`update_fields(note.ref, {"company": f'"{resolved}"'}, require_status=frozenset(_status.TRIAGE_OWNED))`
 call, quoted the same way `_render_new` originally writes the field (`vault.py:1863`) and the way
 `apply_verdict` already quotes `glassdoor_rating`/`culture_flags` (`triage/apply.py:43-44`).
 Independent of the classify decision's own write — `apply_classification` still only fires for
 `reject`/`needs_review` (`engine.py:60-75`), never for `keep`, and this write must happen for all
 three outcomes, so it cannot be folded into `apply_classification`'s existing call.
 
-`require_status=frozenset(TRIAGE_OWNED)` (`core/status.py:14`) guards the same race the `#9`
+`_status.TRIAGE_OWNED` (`core/status.py:14`, imported in `engine.py:12` as `_status` already)
+guards the same race the `#9`
 staleness feature's `require_status` param exists for: if the lead entered the application
 lifecycle between `read_leads` and this write (a receipt, a manual `apply record`), the write
 abstains — returns `False`, writes nothing — and this run proceeds with `note.fm["company"]` still
@@ -227,13 +248,15 @@ Mutate by moving or deleting, never adding.
 | Delete `require_status=` from the company write | a racing test: lead advances to `applied` between read and write, company write must not land |
 | Swap tier order (try tier 2 before tier 1) | the tier-1-hit-skips-dossier-cache test |
 | Delete the JSON-LD parse's `try/except` | the malformed-structured-data-abstains test |
-| Delete the `if hit:` guard so a `company_from_url` returning `""` is treated as resolved | a source fixture whose extractor abstains (returns `None`/`""`) on a non-matching URL |
+| Delete the `if hit:` guard so a `company_from_url` returning `""` is treated as resolved | the per-source abstain-case fixture (a non-matching URL, extractor returns `""`) |
 
 ## Docs
 
 - `docs/ARCHITECTURE.md`: the `Source` protocol's optional-member list gains
   `company_from_url`, alongside the existing note about `precheck`/`preflight`; the dossier
-  fetch closure's description gains the two new captured fields.
+  fetch closure's description gains the two new captured fields; `Sluice.triage()`'s description
+  in the composition-root section notes it now also threads `sources.get` into `triage.engine.run`,
+  the same way it already threads `dossier_cache`/`backend`.
 - `.rulesync/rules/CLAUDE.md`: not touched by this spec directly — flagged for a follow-up edit
   once implemented, since the CV-fabrication-gate section's "abstain over guess" framing now has a
   sibling instance worth cross-referencing, and `.rulesync/` is self-edited per standing project
@@ -248,7 +271,8 @@ python -m pytest
 
 Dependency order: the `DossierCache` schema addition and the extended fetch closure first (nothing
 else can be tested against them otherwise), then `Source.company_from_url` plus whichever sources
-implement it, then `resolve.py`, then the `engine.py` wiring last.
+implement it, then `resolve.py`, then the `engine.py`/`Sluice.triage()` `get_source`-threading and
+call-site wiring last.
 
 ## Out of scope
 
