@@ -363,10 +363,10 @@ def test_company_write_require_status_abstain_leaves_the_original_needs_review_d
 
 def test_company_write_already_current_self_heals_without_a_misleading_claim(tmp_path, titles, monkeypatch):
     # rev2-001: a concurrent resolution computes the identical company first, so
-    # THIS run's write is a genuine no-op (require_status still passes; the value
-    # already matched). Same behaviour as the require_status-abstain case: decision
-    # stays needs_review this run, self-healing on the next once company reads
-    # back non-blank.
+    # THIS run's write abstains at the require_blank guard: the company field is
+    # no longer blank after the concurrent write, so require_blank refuses on
+    # presence (before any value comparison). Decision stays needs_review this run,
+    # self-healing on the next once company reads back non-blank.
     accept, reject = titles
     v = Vault(str(tmp_path / "vault"))
     _note(v, "blank.md", _blank_fields(accept[0].title(), source="ex-board"))
