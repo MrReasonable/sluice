@@ -45,6 +45,51 @@ def _cache(tmp_path):
                         clock=lambda: datetime(2026, 7, 7))
 
 
+def _blank_fields(role, *, source="ex-board", url="https://x/y", status="new"):
+    return ['company: ""', f'role: "{role}"', 'location: "remote"',
+           'salary: ""', 'role_type: "permanent"', f'url: "{url}"',
+           f'source: "{source}"',
+           f"status: {status}", "score: 0", 'glassdoor_rating: ""',
+           'culture_flags: ""', 'relevance_notes: ""']
+
+
+class _RecordingCache(DossierCache):
+    """A DossierCache stand-in recording get_or_build calls without touching disk,
+    for proving how many fetches a run actually performs.
+
+    Subclasses the real cache rather than duck-typing it so `lead_id` is stamped by
+    the PRODUCTION cache_key and cannot drift from it. Faithfulness there is
+    load-bearing, not decoration: the real get_or_build always stamps that key, and
+    engine.py's enrich pass indexes `note_by_id[d["lead_id"]]` OUTSIDE its own
+    try/except -- so a double omitting it raises a KeyError that reads as a bug in
+    the code under test rather than as an unfaithful double (tst-003). Nothing
+    inherited is ever reached: get_or_build is fully overridden and is the only
+    method engine.py and resolve.py call, so the blank dir/None fetcher stay inert."""
+    def __init__(self, dossier=None):
+        super().__init__("", 0, None)
+        self.calls = []
+        self._dossier = dossier or {"page_title": "", "structured_data": ""}
+
+    def get_or_build(self, fm):
+        self.calls.append(dict(fm))
+        return {"lead_id": self.cache_key(fm), **self._dossier}
+
+
+def _tier1_source(company):
+    class _Source:
+        def company_from_url(self, url):
+            return company
+    return _Source()
+
+
+def _get_source(mapping):
+    def _get(sid):
+        if sid not in mapping:
+            raise KeyError(sid)
+        return mapping[sid]
+    return _get
+
+
 def test_pipeline_classifies_and_judges(tmp_path, titles):
     accept, reject = titles
     v = Vault(str(tmp_path / "vault"))
@@ -166,3 +211,278 @@ def test_triage_judge_conflict_is_counted_and_batch_continues(tmp_path, titles, 
     statuses = {n.fm["company"]: n.status for n in v.read_leads()}
     assert statuses["Example Conflict Co"] == "new"          # conflicted lead left in its prior state
     assert statuses["Beta"] == "shortlist"     # survivor still applied (_Backend's verdict)
+
+
+def test_resolution_never_attempted_for_a_lead_classify_would_reject_anyway(tmp_path, titles):
+    # Proves the arch-001/rev-002 cost-neutrality fix: gating resolution on
+    # decision == "needs_review" means classify()'s existing free title reject
+    # (which runs BEFORE the blank-company branch) short-circuits resolution
+    # entirely for a lead that was never going to reach it.
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "blank.md", _blank_fields(reject[0].title()))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.reject_titles = list(reject)
+    cfg.company_resolve_fetch = True
+    cache = _RecordingCache()
+
+    eng.run(v, cfg, _Backend(), cache, audit, statuses=("new",), get_source=_get_source({}))
+
+    assert cache.calls == []
+    assert v.read_leads()[0].status == "dismiss"
+
+
+def test_tier1_resolution_reclassifies_to_dismiss_on_reject_companies(tmp_path, titles):
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "blank.md", _blank_fields(accept[0].title(), source="ex-board"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.reject_companies = ["resolved co"]
+    cfg.company_resolve_fetch = True
+    cache = _RecordingCache()
+
+    eng.run(v, cfg, _Backend(), cache, audit, statuses=("new",),
+           get_source=_get_source({"ex-board": _tier1_source("Resolved Co")}))
+
+    after = v.read_leads()[0]
+    assert after.fm["company"] == "Resolved Co"
+    assert after.status == "dismiss"
+    assert cache.calls == []          # tier 1 hit, tier 2 never reached
+
+
+def test_tier2_resolution_reclassifies_to_dismiss_on_reject_companies(tmp_path, titles):
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "blank.md", _blank_fields(accept[0].title(), source="ex-board"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.reject_companies = ["resolved co"]
+    cfg.company_resolve_fetch = True
+    dossier = {"page_title": "", "structured_data":
+              '{"@type": "JobPosting", "hiringOrganization": {"name": "Resolved Co"}}'}
+    cache = _RecordingCache(dossier=dossier)
+
+    eng.run(v, cfg, _Backend(), cache, audit, statuses=("new",),
+           get_source=_get_source({}))     # unknown source -> tier 1 abstains
+
+    after = v.read_leads()[0]
+    assert after.fm["company"] == "Resolved Co"
+    assert after.status == "dismiss"
+    assert len(cache.calls) == 1
+
+
+def test_no_llm_leaves_a_tier1_miss_lead_unresolved(tmp_path, titles):
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "blank.md", _blank_fields(accept[0].title()))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.company_resolve_fetch = True
+    cache = _RecordingCache()
+
+    eng.run(v, cfg, _Backend(), cache, audit, statuses=("new",),
+           no_llm=True, get_source=_get_source({}))
+
+    after = v.read_leads()[0]
+    assert after.fm["company"] == ""
+    assert after.status == "needs_review"
+    assert cache.calls == []
+
+
+def test_company_resolve_fetch_off_by_default_leaves_a_lead_unresolved(tmp_path, titles):
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "blank.md", _blank_fields(accept[0].title()))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()          # company_resolve_fetch left at its False default
+    cache = _RecordingCache()
+
+    eng.run(v, cfg, _Backend(), cache, audit, statuses=("new",), get_source=_get_source({}))
+
+    after = v.read_leads()[0]
+    assert after.fm["company"] == ""
+    assert after.status == "needs_review"
+    assert cache.calls == []
+
+
+def test_company_write_vault_conflict_leaves_the_original_needs_review_decision(tmp_path, titles, monkeypatch):
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "blank.md", _blank_fields(accept[0].title(), source="ex-board"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.company_resolve_fetch = True
+
+    real = v.update_fields
+    calls = {"n": 0}
+    def flaky(ref, fields, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise VaultConflict(ref)
+        return real(ref, fields, **kw)
+    monkeypatch.setattr(v, "update_fields", flaky)
+
+    report = eng.run(v, cfg, _Backend(), _RecordingCache(), audit, statuses=("new",),
+                     get_source=_get_source({"ex-board": _tier1_source("Resolved Co")}))
+
+    after = v.read_leads()[0]
+    assert after.fm["company"] == ""               # the company write never landed
+    assert after.status == "needs_review"           # classify()'s original decision stands
+    assert any("company-resolve" in f for f in report.failures)
+
+
+def test_company_write_require_status_abstain_leaves_the_original_needs_review_decision(tmp_path, titles, monkeypatch):
+    # Mirrors #9's own require_status race test construction: the lead advances
+    # into the application lifecycle between read_leads() and the company write.
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "blank.md", _blank_fields(accept[0].title(), source="ex-board"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.company_resolve_fetch = True
+
+    real = v.update_fields
+    calls = {"n": 0}
+    def racer(ref, fields, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            real(ref, {"status": "applied"})    # a receipt lands first
+        return real(ref, fields, **kw)
+    monkeypatch.setattr(v, "update_fields", racer)
+
+    report = eng.run(v, cfg, _Backend(), _RecordingCache(), audit, statuses=("new",),
+                     get_source=_get_source({"ex-board": _tier1_source("Resolved Co")}))
+
+    after = v.read_leads()[0]
+    assert after.status == "applied"
+    assert after.fm["company"] == ""
+    assert any("company-resolve" in f for f in report.failures)
+
+
+def test_company_write_already_current_self_heals_without_a_misleading_claim(tmp_path, titles, monkeypatch):
+    # rev2-001: a concurrent resolution computes the identical company first, so
+    # THIS run's write is a genuine no-op (require_status still passes; the value
+    # already matched). Same behaviour as the require_status-abstain case: decision
+    # stays needs_review this run, self-healing on the next once company reads
+    # back non-blank.
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "blank.md", _blank_fields(accept[0].title(), source="ex-board"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.company_resolve_fetch = True
+
+    real = v.update_fields
+    calls = {"n": 0}
+    def racer(ref, fields, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            real(ref, {"company": '"Resolved Co"'})   # a concurrent resolution wrote first
+        return real(ref, fields, **kw)
+    monkeypatch.setattr(v, "update_fields", racer)
+
+    report = eng.run(v, cfg, _Backend(), _RecordingCache(), audit, statuses=("new",),
+                     get_source=_get_source({"ex-board": _tier1_source("Resolved Co")}))
+
+    after = v.read_leads()[0]
+    assert after.fm["company"] == "Resolved Co"       # the concurrent write survives
+    assert any("company-resolve" in f for f in report.failures)
+    assert after.status == "needs_review"     # this run's write was a no-op; the eventual
+                                              # apply_classification write below still lands
+
+
+def test_apply_classification_race_produces_no_persisted_audit_entry(tmp_path, titles, monkeypatch):
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "race.md", _fields("Race Co", reject[0].title()))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.reject_titles = list(reject)
+
+    real = eng.apply_classification
+    def racer(vault, note, decision, reason):
+        vault.update_fields(note.ref, {"status": "applied"})    # a receipt lands first
+        return real(vault, note, decision, reason)
+    monkeypatch.setattr(eng, "apply_classification", racer)
+
+    report = eng.run(v, cfg, _Backend(), _cache(tmp_path), audit, statuses=("new",))
+
+    after = v.read_leads()[0]
+    assert after.status == "applied"                       # the vault clobber is stopped
+    assert report.counts["skipped"] >= 1
+    assert any("apply-race" in f for f in report.failures)
+    assert audit.read_recent(30) == []                      # no false persisted entry
+
+
+def test_apply_verdict_race_produces_no_persisted_audit_entry(tmp_path, titles, monkeypatch):
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "race.md", _fields("Race Co", accept[0].title()))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.accept_titles = list(accept)
+
+    real = eng.apply_verdict
+    def racer(vault, note, verdict, dossier):
+        vault.update_fields(note.ref, {"status": "applied"})
+        return real(vault, note, verdict, dossier)
+    monkeypatch.setattr(eng, "apply_verdict", racer)
+
+    report = eng.run(v, cfg, _Backend(), _cache(tmp_path), audit, statuses=("new",))
+
+    after = v.read_leads()[0]
+    assert after.status == "applied"
+    assert report.counts["skipped"] >= 1
+    assert any("apply-race" in f for f in report.failures)
+    assert audit.read_recent(30) == []
+
+
+def test_dry_run_resolution_keep_count_is_accurate_but_reject_bucket_is_not(tmp_path, titles):
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "keep.md", _blank_fields(accept[0].title(), source="ex-board", url="https://x/1"))
+    _note(v, "rej.md", _blank_fields(accept[0].title(), source="ex-board", url="https://x/2"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.reject_companies = ["blocked co"]
+    cfg.company_resolve_fetch = True
+
+    class _UrlKeyedSource:
+        def company_from_url(self, url):
+            return {"https://x/1": "Resolved Co", "https://x/2": "Blocked Co"}.get(url)
+
+    report = eng.run(v, cfg, _Backend(), _RecordingCache(), audit, statuses=("new",),
+                     dry_run=True, get_source=_get_source({"ex-board": _UrlKeyedSource()}))
+
+    assert report.counts["keep"] == 1
+    assert report.counts["skipped"] >= 1
+    for note in v.read_leads():
+        assert note.fm["company"] == ""      # nothing actually written under dry_run
+
+
+def test_tier2_resolution_and_the_later_judge_share_one_fetch(tmp_path, titles):
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "blank.md", _blank_fields(accept[0].title(), source="ex-board", url="https://x/1"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.company_resolve_fetch = True
+
+    calls = []
+    def fetcher(lead):
+        calls.append(lead.get("url"))
+        return {"jd": {"markdown": "j"}, "glassdoor": {}, "page_title": "",
+                "structured_data": '{"@type": "JobPosting", '
+                                   '"hiringOrganization": {"name": "Resolved Co"}}'}
+    real_cache = DossierCache(str(tmp_path / "dos"), ttl_days=7, fetcher=fetcher,
+                              clock=lambda: datetime(2026, 7, 7))
+
+    eng.run(v, cfg, _Backend(), real_cache, audit, statuses=("new",),
+           get_source=_get_source({}))     # unknown source -> tier 1 abstains, tier 2 runs
+
+    after = v.read_leads()[0]
+    assert after.fm["company"] == "Resolved Co"
+    assert after.status == "shortlist"           # resolved, then judged and shortlisted
+    assert len(calls) == 1                       # classify-pass fetch reused by enrich/judge

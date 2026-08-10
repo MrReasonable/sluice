@@ -232,3 +232,11 @@ def test_a_single_symbol_range_reads_its_upper_bound(titles):
     cfg = _cfg(titles)
     cfg.perm_floor_gbp = 35_000
     assert classify(L(titles, salary="£30,000-40,000"), cfg)[0] == "keep"
+
+
+def test_classify_signature_never_gains_a_side_effecting_dependency():
+    import inspect
+    params = set(inspect.signature(classify).parameters)
+    assert params == {"lead", "cfg"}, (
+        "classify() must stay pure -- no dossier_cache, sources, or fetcher "
+        "parameter, per its own docstring's no-dossier/no-LLM contract")
