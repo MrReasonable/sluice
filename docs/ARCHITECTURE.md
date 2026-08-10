@@ -905,10 +905,12 @@ Four points in the config are the seams for pluggable adapters.
   Implementations: `camofox` (the headless-browser HTTP server). The dossier
   fetch closure built from it (`Sluice.dossier_cache`) reads
   `document.body.innerText` for the JD, and -- for triage's tier-2 company
-  resolution (#109) -- also `document.title` and any
-  `script[type="application/ld+json"]` tag's text content, in the same
-  already-open tab. The JD read is a hard refusal on an unreadable body; the
-  two resolution-only captures are best-effort and degrade to `""` instead.
+  resolution (#109) -- also `document.title` and EVERY
+  `script[type="application/ld+json"]` tag, parsed in the page and returned as
+  one JSON array (a board's own JobPosting schema is routinely not the first
+  such tag), in the same already-open tab. The JD read is a hard refusal on an
+  unreadable body; the two resolution-only captures are best-effort and degrade
+  to `""` instead.
 - **sources**: `ingest/sources/`, the registry all of the above are modelled on.
   A source may optionally implement `company_from_url(url) -> str | None`
   (#109), the same optional-member shape as `Store.preflight`/
