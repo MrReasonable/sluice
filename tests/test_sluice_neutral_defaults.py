@@ -399,6 +399,31 @@ def test_example_config_ships_lead_ttl_days_off():
     assert "lead_ttl_days" in text, "the knob must be documented in the example config"
 
 
+# ── #109: tier-2 company resolution's opt-in gate ────────────────────────────
+# company_resolve_fetch needs its OWN guard, same reasoning as lead_ttl_days above:
+# turning it on lets a blank-company lead trigger a REAL page visit, so an
+# unconfigured install must never start doing that unprompted the moment it
+# upgrades. Unlike lead_ttl_days this is a genuine bool field (no int/bool
+# YAML-resolution hazard), so no extra validation is needed -- only the default.
+
+def test_company_resolve_fetch_dataclass_default_is_off():
+    assert TriageConfig().company_resolve_fetch is False
+
+
+def test_company_resolve_fetch_loader_default_is_off(monkeypatch):
+    monkeypatch.delenv("SLUICE_CONFIG", raising=False)
+    assert load_triage_config(None).company_resolve_fetch is False
+
+
+def test_the_example_config_ships_company_resolve_fetch_commented():
+    import yaml
+    text = _EXAMPLE_PATH.read_text(encoding="utf-8")
+    assert "company_resolve_fetch:" in text, "company_resolve_fetch must be documented at all"
+    doc = yaml.safe_load(text) or {}
+    assert "company_resolve_fetch" not in (doc.get("triage") or {}), \
+        "company_resolve_fetch must ship COMMENTED, not active"
+
+
 # ── #80: the example config must ship no machine-specific path ───────────────
 
 # `key: value` on a line that may be commented out, or a block-sequence item (`- value`).
