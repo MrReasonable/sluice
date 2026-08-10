@@ -108,6 +108,39 @@ def test_update_fields_self_heals_a_concurrent_different_key(tmp_path, monkeypat
     assert "# body" in txt              # body intact
 
 
+def test_require_blank_is_re_read_on_every_attempt_not_once_when_update_fields_is_entered(
+        tmp_path, monkeypatch):
+    # #109's require_blank guard lives INSIDE the transform, and its docstring says why:
+    # "decided HERE, against the fresh bytes ... only a re-read inside the transform can
+    # see it". Nothing tested that placement. The triage-engine tests all land the human's
+    # edit BEFORE update_fields is called, which a check hoisted to call entry -- one read,
+    # outside _cas_write's retry loop -- passes just as well.
+    #
+    # This lands it strictly AFTER entry: `racing_read` fires on the FIRST read of the
+    # note and returns the PRE-edit bytes, so whichever read comes first (an entry-time
+    # one in a hoisted variant, or _cas_write's own capture) sees a still-blank company,
+    # and only a guard re-evaluated on the RETRY sees the human's value. Hoist the check
+    # out of `transform` and this reddens with "Scraped Co" written over the human.
+    d = _leads_dir(tmp_path); d.mkdir(parents=True, exist_ok=True)
+    f = d / "Example Foundry - Analyst.md"
+    f.write_text('---\ncompany: ""\nrole: "Analyst"\nstatus: new\n---\n\n# body\n',
+                 encoding="utf-8")
+    v = Vault(str(tmp_path))
+    def racer():   # a human typing the employer into Obsidian, mid-write
+        f.write_text(f.read_text(encoding="utf-8").replace(
+            'company: ""', 'company: "Human Typed Co"'), encoding="utf-8")
+    racing_read(monkeypatch, str(f), racer)
+
+    wrote = v.update_fields(str(f), {"company": '"Scraped Co"'},
+                            require_blank=frozenset({"company"}))
+
+    txt = f.read_text(encoding="utf-8")
+    assert wrote is False, "the guard must refuse on the RETRY's fresh bytes"
+    assert 'company: "Human Typed Co"' in txt   # the human's edit stands
+    assert "Scraped Co" not in txt              # never-clobber, on the retry too
+    assert "# body" in txt                      # and nothing else was disturbed
+
+
 def test_append_body_section_self_heals(tmp_path, monkeypatch):
     f = _seed_note(tmp_path)
     v = Vault(str(tmp_path))
