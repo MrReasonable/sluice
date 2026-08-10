@@ -132,7 +132,8 @@ def test_dossier_page_title_non_string_abstains_rather_than_raising():
     assert got is None
 
 
-@pytest.mark.parametrize("unsafe", ['Example "Co"', "Example\nCo", "Example\rCo"])
+@pytest.mark.parametrize("unsafe", ['Example "Co"', "Example\nCo", "Example\rCo",
+                                    "Example\\Co"])
 def test_tier1_candidate_with_a_structural_character_is_rejected(unsafe):
     src = _source(company_from_url=lambda url: unsafe)
     cache = _RecordingCache()
@@ -141,7 +142,8 @@ def test_tier1_candidate_with_a_structural_character_is_rejected(unsafe):
     assert got is None
 
 
-@pytest.mark.parametrize("unsafe", ['Example "Co"', "Example\nCo", "Example\rCo"])
+@pytest.mark.parametrize("unsafe", ['Example "Co"', "Example\nCo", "Example\rCo",
+                                    "Example\\Co"])
 def test_tier2_candidate_with_a_structural_character_is_rejected(unsafe):
     cache = _RecordingCache(dossier={"page_title": f"Staff Engineer at {unsafe} | Board",
                                      "structured_data": ""})
