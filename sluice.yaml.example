@@ -111,6 +111,12 @@ triage:
   # was declared but read by nothing before #80 -- setting it did nothing, silently.
   # A leading `~` is expanded, in the key and in the variable alike.
   # audit_jsonl:        # <- uncomment and set YOUR OWN
+  # Off by default (#109): turning this on lets a blank-company needs_review lead
+  # trigger a REAL page visit (no LLM call) to try to identify the employer from
+  # the page itself. An unconfigured install must not start opening browser tabs
+  # against arbitrary third-party sites the moment it upgrades -- the same
+  # opt-in-only posture as lead_ttl_days/lead_layout above.
+  # company_resolve_fetch: true   # <- uncomment to opt in
   contract_floor_gbp_day: 450     # illustrative; set your own (0 = no floor)
   perm_floor_gbp: 90000          # illustrative; set your own (0 = no floor)
   primary_backend: claude-max

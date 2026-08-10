@@ -65,6 +65,7 @@ sweep keyed on list defaults.
 | `cheap_model` | `"deepseek-v4-flash"` | the fallback role's model |
 | `claude_max_host` / `claude_max_path` | `""` / `"claude"` | empty host runs `claude_max_path` locally; set a host to shell it over SSH. A leading `-` in either is refused (argument-injection guard) |
 | `route_borderline` | `false` | |
+| `company_resolve_fetch` | `false` | opt-in: lets a blank-company `needs_review` lead trigger a real (no-LLM) page visit to try to identify the employer from the page itself; off by default so an unconfigured install never opens a browser tab it wasn't asked to |
 
 ## `cv:`
 

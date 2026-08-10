@@ -59,6 +59,13 @@ class TriageConfig:
     claude_max_host: str = ""
     claude_max_path: str = "claude"
     route_borderline: bool = False
+    # Off by default (#109): gates the tier-2 (real, no-LLM page-visit) half of
+    # blank-company resolution independently of --no-llm. An unconfigured install
+    # must not start opening real browser tabs against arbitrary third-party sites
+    # for its whole needs_review backlog the moment it upgrades -- the same
+    # abstain-by-default posture as lead_ttl_days/lead_layout. Tier 1 (free,
+    # URL-pattern-only) is unaffected by this knob and always runs.
+    company_resolve_fetch: bool = False
 
 
 def load_triage_config(path: str | None = None) -> TriageConfig:
