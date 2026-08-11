@@ -452,6 +452,8 @@ def cmd_triage_run(args, config) -> int:
                                    backend_role=args.backend)
     print(f"triage: {report.counts} judged={report.judged} "
           f"backend={report.backend} failures={len(report.failures)}", file=sys.stderr)
+    for msg in report.failures:
+        print(f"  {msg}", file=sys.stderr)
     notify(f"job-sluice triage: {report.counts} (backend {report.backend})", config=config)
     return 0
 
@@ -629,6 +631,9 @@ def cmd_apply_record(args, config) -> int:
         f = out["fields"]
         print(f"apply-record: {args.lead} -> applied "
               f"(ats={f['ats']} cv={f['applied_cv']})", file=sys.stderr)
+        if out.get("url_dropped"):
+            print("  applied_url dropped: --url was unsafe for frontmatter "
+                  "and was not recorded", file=sys.stderr)
         return 0
     print(f"apply-record: {args.lead} refused (status={out['reason']})", file=sys.stderr)
     return 1
