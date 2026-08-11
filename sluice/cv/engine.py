@@ -360,11 +360,15 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
 def run_batch(vault, cvcfg, backend, dossier_cache, *, renderer, limit=None,
               dry_run=False, policy=StalenessPolicy()) -> list:
     notes = [n for n in vault.read_leads({"shortlist"})]
-    # The LAST consumer of a `read_leads` list that walked it without the slug guard (#1).
-    # `index_by_slug` is the shared verdict -- track, `leads expire` and `apply`'s batch path
-    # take the same one -- so the call sites cannot drift into different opinions about what
-    # ambiguous means. Only the second element is wanted: this pass walks notes, not slugs,
-    # which is exactly the shape that let `apply/select.py:select_all` keep both twins.
+    # A consumer of a `read_leads` list that walked it without the slug guard (#1) --
+    # not claimed as the LAST: #109's triage/engine.py reached the identical defect by a
+    # different route (keyed on a dossier cache hash, not a bare walk) and needed the same
+    # fix, which is why this comment no longer counts consumers. `index_by_slug` is the
+    # shared verdict -- track, `leads expire`, `apply`'s batch path, and triage's enrich
+    # pass all take the same one -- so the call sites cannot drift into different opinions
+    # about what ambiguous means. Only the second element is wanted: this pass walks notes,
+    # not slugs, which is exactly the shape that let `apply/select.py:select_all` keep both
+    # twins.
     _, dropped = index_by_slug(notes)
     for msg in ambiguous_slug_warnings("cv: shortlisted lead", dropped):
         _log.warning("%s", msg)

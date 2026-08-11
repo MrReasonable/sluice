@@ -298,9 +298,12 @@ def index_by_slug(notes) -> tuple[dict, dict]:
 def ambiguous_slug_warnings(what: str, dropped: dict) -> list[str]:
     """One warning line per slug `index_by_slug` dropped, ready for the CALLER's logger.
 
-    Pure: it formats, nothing writes. It lives beside `index_by_slug` so the four call sites
-    cannot drift into four different ways of saying the same thing -- which is the drift that
-    moving the logging out to them would otherwise have bought.
+    Pure: it formats, nothing writes. It lives beside `index_by_slug` so its call sites
+    (five as of #109's triage/engine.py) cannot drift into as many different ways of saying
+    the same thing -- which is the drift that moving the logging out to them would otherwise
+    have bought. Count deliberately not pinned as a literal here: this docstring itself is
+    the site that went stale twice before (see docs/ARCHITECTURE.md's note on this), because
+    prose numbers do not go red when a new call site lands.
 
     The refs, never the slug alone: these notes collide BY slug, so repeating it names
     nothing a human can act on, whereas the paths name the two files to rename or merge.
