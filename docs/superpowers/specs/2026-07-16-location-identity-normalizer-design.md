@@ -7,6 +7,15 @@
   normalizer, the tri-state and every mechanism item came back clean from all five, and **every**
   finding landed in the two cross-issue handoffs added a round earlier. Those were then cut (#26) and
   scoped. Unblocks #5.
+
+> **SUPERSEDED IN PART, 2026-08-11 (#119)** — the `Remote`/`<city>` decision below (`DIFFERENT` by
+> default, `UNKNOWN` only when `remote` is configured as noise) was reversed after the failure mode
+> was reported for real: a role advertised remote-friendly and cross-posted with the employer's HQ
+> city never clustered as a duplicate, no matter how many times dedupe ran. `_compare_locations` now
+> treats a side whose token set is EXACTLY `{"remote"}` as `UNKNOWN` against a disjoint other side
+> unconditionally, not only when configured as noise — see `tests/test_leads_location.py`. The
+> reasoning below documents WHY the original call was made and is left as the historical record; it
+> is no longer what the code does.
 - **Issue**: **#25**. Split out of #6 on 2026-07-16 after the code contradicted #6 as filed (see
   Background). #6 keeps the demashing half, is re-diagnosed, and is blocked on capturing a real
   payload; this spec is the half #5 actually waits on.
