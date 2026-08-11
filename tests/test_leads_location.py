@@ -127,14 +127,35 @@ def test_noise_as_a_bare_str_raises():
         _compare_locations("Palmerburgh", "Clarkefurt", noise="Palmerburgh")
 
 
-def test_remote_versus_a_city_is_the_accepted_cost():
-    # On the record (user decision, 2026-07-16). remoteok and weworkremotely ship as sources, so
-    # remote-vs-city is a shipped configuration and this splits out of the box. Pinned in BOTH
-    # directions so it cannot be "fixed" by accident -- a code-default noise list is NOT the fix,
-    # because stripping "remote" turns "Remote, US" vs "Remote, UK" from SAME into a SPLIT.
-    assert _compare_locations("Remote", "Palmerburgh") == DIFFERENT
-    # Configuring it ABSTAINS; it does not merge. Subtraction empties one side.
+def test_bare_remote_versus_a_named_city_abstains_rather_than_splitting():
+    # #119 -- supersedes the 2026-07-16 "accepted cost" decision this test used to pin (user
+    # reconfirmed the reversal 2026-08-11 after the failure mode was reported for real: a role
+    # advertised as remote-friendly, cross-posted to a board that instead records the employer's
+    # HQ city, never clustered as a duplicate no matter how many times dedupe ran). "Remote" is
+    # evidence of NO FIXED LOCATION, not evidence of a location that conflicts with a named city
+    # -- so a side whose token set, after noise subtraction, is EXACTLY {"remote"} now abstains
+    # (UNKNOWN) instead of actively splitting (DIFFERENT). Configuring "remote" as noise still
+    # abstains the same way, unchanged.
+    assert _compare_locations("Remote", "Palmerburgh") == UNKNOWN
+    assert _compare_locations("Palmerburgh", "Remote") == UNKNOWN            # symmetric
     assert _compare_locations("Remote", "Palmerburgh", {"remote"}) == UNKNOWN
+
+
+def test_remote_versus_remote_is_still_same():
+    assert _compare_locations("Remote", "Remote") == SAME
+
+
+def test_remote_with_a_country_is_unaffected_and_still_compares_normally():
+    # THE regression the superseded decision's own comment warned a naive fix (a global noise
+    # strip on "remote") would cause: "Remote, US" vs "Remote, UK" share only the "remote" token,
+    # so stripping it unconditionally would turn a SAME pair into a SPLIT. This fix is narrower
+    # than that -- it applies only when a side's token set is EXACTLY {"remote"} with nothing
+    # else -- so a listing that names "remote" AND a country keeps comparing on ordinary overlap:
+    # shared tokens still merge...
+    assert _compare_locations("Remote, US", "Remote, UK") == SAME
+    # ...and a genuine mismatch still splits, exactly as before -- "Remote, US" is more specific
+    # than bare "Remote" and a real conflict there IS evidence of difference.
+    assert _compare_locations("Remote, US", "Palmerburgh") == DIFFERENT
 
 
 def test_noise_emptying_both_sides_abstains_rather_than_splitting():

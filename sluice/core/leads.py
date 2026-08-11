@@ -44,6 +44,17 @@ def _norm_location(s: str) -> str:
     return re.sub(r"\W+", " ", s).strip()
 
 
+# The single, MEASURED remote-work token this widens for (#119): "remote" tokenizes to
+# exactly {"remote"} and is evidence of NO FIXED LOCATION, not evidence of a location
+# DIFFERENT from a named city -- a role advertised as "Remote" and cross-posted with the
+# employer's HQ city are the same real vacancy, not competing claims about the same fact.
+# Kept to exactly this reported, reproduced shape rather than a guessed broader remote-
+# work vocabulary (fully remote, wfh, anywhere, ...) -- widen only with the same measured-
+# evidence discipline docs/superpowers/specs/2026-07-16-location-identity-evidence.py used
+# to justify overlap over subset comparison below.
+_REMOTE_ONLY = frozenset({"remote"})
+
+
 def _compare_locations(a: str, b: str, noise=frozenset()) -> str:
     """Compare two locations by token OVERLAP. Returns DIFFERENT only on positive evidence of
     difference -- disjoint, non-empty token sets. Overlapping evidence is SAME; absent evidence is
@@ -61,6 +72,27 @@ def _compare_locations(a: str, b: str, noise=frozenset()) -> str:
     _norm_location and TOKENIZED rather than used raw, because raw subtraction gives a knob that
     silently does nothing: {'UK'} never matches the token 'uk' (case), and {'United Kingdom'} equals
     no single token (arity). A bare str raises rather than iterating into characters (shape).
+
+    #119: a side whose token set, after subtraction, is EXACTLY the bare-remote vocabulary
+    (_REMOTE_ONLY) abstains against a disjoint other side instead of splitting -- "remote" alone
+    is absent-location evidence, not conflicting-location evidence. A HYBRID set ({'remote',
+    'us'}) is unaffected and still compares on ordinary overlap: it is more specific than bare
+    "remote", and a real mismatch there IS evidence of difference (the exact regression the
+    2026-07-16 decision this reverses warned a global noise-strip on "remote" would cause --
+    "Remote, US" vs "Remote, UK" sharing only the "remote" token would SPLIT if it were
+    unconditionally dropped; checked for EXACT equality, this fix never reaches that path).
+
+    Reaches TWO consumers, not only #5's read-path `leads dedupe` proposal: `same_opportunity`
+    calls this from the live ingest write path too (`Vault._reconcile`), so a bare-Remote
+    scrape landing on an existing named-city note now MERGES (last_seen bump only -- still
+    never-clobber-safe, the same bounded action every other UNKNOWN verdict already takes)
+    instead of minting a second note. Wider than #119 asked for by name, but the identity
+    question ("is this the same real job?") is the same one in both places, so the answer
+    should be too -- catching the duplicate at ingest is strictly better than creating it and
+    relying on a human to notice it in `leads dedupe` afterward. The accepted residual: a
+    genuinely different, same-titled, same-company remote opening posted at the same time as
+    a named-city one would also merge rather than get its own note -- an existing UNKNOWN-
+    verdict trade-off, not a new one, and not a new invariant risk.
     """
     if isinstance(noise, str):
         raise TypeError(f"noise must be a set of words, not a str: {noise!r}")
@@ -72,7 +104,11 @@ def _compare_locations(a: str, b: str, noise=frozenset()) -> str:
     # 'Remote', {'remote'}) return DIFFERENT -- splitting two identical locations.
     if not ta or not tb:
         return UNKNOWN
-    return SAME if ta & tb else DIFFERENT
+    if ta & tb:
+        return SAME
+    if ta == _REMOTE_ONLY or tb == _REMOTE_ONLY:
+        return UNKNOWN
+    return DIFFERENT
 
 
 @dataclass(frozen=True)

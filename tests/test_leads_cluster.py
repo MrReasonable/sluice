@@ -54,6 +54,34 @@ def test_blank_location_clusters_both_orders():
     assert _slugs(cluster_duplicates([b, a])) == [["a", "b"]]
 
 
+def test_remote_location_clusters_with_a_named_city_both_orders():
+    # #119: the actual reported failure -- the same real vacancy scraped once as "Remote"
+    # and once with the employer's HQ city never clustered, because bare "Remote" used to
+    # actively SPLIT against a named city (see test_leads_location.py's
+    # test_bare_remote_versus_a_named_city_abstains_rather_than_splitting for the unit-level
+    # fix). At the clustering layer this is the end-to-end proof: same company+role,
+    # remote-vs-city location, now clusters like any other blank-location pair.
+    a = _note("a", location="Remote")
+    b = _note("b", location=LOCATIONS[0])
+    assert _slugs(cluster_duplicates([a, b])) == [["a", "b"]]
+    assert _slugs(cluster_duplicates([b, a])) == [["a", "b"]]
+
+
+def test_remote_versus_two_different_named_cities_still_clusters_nothing():
+    # NOT a #119 regression witness (that's the 2-note test above, plus the unit tests in
+    # test_leads_location.py) -- both the fixed and the pre-#119 code produce [] here, for
+    # different reasons (fixed: one connected component fails the full-clique check across
+    # Alfa/Bravo; pre-#119: three disconnected size-1 components, each below the size>=2
+    # cluster floor). What this guards is a DIFFERENT, plausible bug: #119 must not turn
+    # "remote" into a universal bridge that picks one of two genuinely DIFFERENT cities for
+    # an ambiguous remote-tagged note -- the same pre-existing "chain spans a DIFFERENT pair"
+    # safe-under-merge rule _location_cliques already applies to any ambiguous bridge.
+    a = _note("a", location="Remote")
+    b = _note("b", location=LOCATIONS[0])
+    c = _note("c", location=LOCATIONS[1])
+    assert cluster_duplicates([a, b, c]) == []
+
+
 def test_positive_two_clique():
     a = _note("a", location=LOCATIONS[0])
     b = _note("b", location=LOCATIONS[0])
