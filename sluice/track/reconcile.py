@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from sluice.core import status as _status
+from sluice.core.vault import frontmatter_safe
 from sluice.track.calendar_sync import sync_event
 
 _SCHEDULE_TARGET = {"phone_screen": "phone_screen", "interview": "interview"}
@@ -57,7 +58,12 @@ def _advance(vault, note, target, ev, dry_run=False):
     elif ev.ics and ev.ics.start:
         fields["interview_date"] = f'"{ev.ics.start.date().isoformat()}"'
     if ev.links:
-        fields["interview_link"] = f'"{ev.links[0]}"'
+        # #111: ev.links[0] is parsed out of an inbound email -- untrusted, same class
+        # as resolve.py's scraped company. A structural character must not corrupt the
+        # note's frontmatter; abstain on this one field rather than the whole advance.
+        safe_link = frontmatter_safe(ev.links[0])
+        if safe_link:
+            fields["interview_link"] = f'"{safe_link}"'
     if not dry_run:
         vault.update_fields(note.ref, fields)
 

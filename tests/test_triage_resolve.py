@@ -179,7 +179,7 @@ def test_tier1_candidate_that_is_only_whitespace_is_rejected(blank):
     # and meanwhile the note shows a human a company that is not one.
     #
     # Both are PRINTABLE, so `str.isprintable()` does not catch them: this pins
-    # `_safe`'s separate `.strip()` clause, not its printability clause.
+    # `frontmatter_safe`'s separate `.strip()` clause, not its printability clause.
     src = _source(company_from_url=lambda url: blank)
     cache = _RecordingCache()
     got = resolve.resolve_company(FM, _get_source({"example-board": src}), cache,

@@ -59,6 +59,20 @@ def test_cancellation_ics_does_not_advance():
     assert res.status_to is None and "status: interview" in pathlib.Path(path).read_text()
 
 
+def test_interview_link_with_a_structural_character_is_dropped_but_status_still_advances():
+    # #111: ev.links[0] is parsed out of an inbound email -- untrusted, same class as
+    # resolve.py's scraped company. A structural character must not corrupt the note's
+    # frontmatter; the interview signal itself (status/date/materials) still lands.
+    v, notes, path = _vault_with("Example Tidal - EM", "applied")
+    ev = Event(lead_slug="Example Tidal - EM", type="interview", confidence=0.9, ics=_ics(),
+               links=['https://x/deck"; status: applied'])
+    res = R.reconcile(ev, notes, v, TrackConfig(), FakeGoogleClient(events=[]))
+    assert res.action == "applied" and res.status_to == "interview"
+    text = pathlib.Path(path).read_text()
+    assert "status: interview" in text
+    assert "interview_link" not in text
+
+
 def test_soft_rejection_proposes_not_auto():
     v, notes, path = _vault_with("Example Tidal - EM", "phone_screen")
     ev = Event(lead_slug="Example Tidal - EM", type="rejection", confidence=0.7, summary="on file")  # below auto_reject_min

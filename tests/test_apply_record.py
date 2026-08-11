@@ -47,6 +47,32 @@ def test_record_dry_run_writes_nothing():
     assert "status: shortlist" in pathlib.Path(note.ref).read_text()  # untouched
 
 
+def test_record_drops_a_structural_applied_url_but_still_applies():
+    # #111: url is a CLI --url flag value -- human-typed, but a pasted URL could still
+    # carry a stray `"` and corrupt the note's frontmatter on write. The apply itself
+    # (status/date/ats/cv) must still land; only the unsafe url is dropped.
+    v = _lead(_SHORTLIST)
+    note = v.read_leads({"shortlist"})[0]
+    out = rec.record(v, note, ApplyConfig(), ats="greenhouse", url='https://x/apply"; status: applied')
+    assert out["ok"] is True
+    assert "applied_url" not in out["fields"]
+    # A silently dropped --url is invisible to the human who typed it (invariant review,
+    # #111 follow-up): the CLI has to be able to tell the caller was given a url and it
+    # was NOT recorded, distinct from "no url was ever passed".
+    assert out["url_dropped"] is True
+    text = pathlib.Path(note.ref).read_text()
+    assert "status: applied" in text
+    assert "applied_url" not in text
+
+
+def test_record_does_not_flag_url_dropped_when_no_url_given():
+    v = _lead(_SHORTLIST)
+    note = v.read_leads({"shortlist"})[0]
+    out = rec.record(v, note, ApplyConfig(), ats="greenhouse")
+    assert out["ok"] is True
+    assert "url_dropped" not in out
+
+
 def test_record_returns_conflict_on_vault_conflict(monkeypatch):
     # #16 Task 6: a sustained write-race in update_fields must not escape record()
     # as an unhandled traceback -- it becomes a first-class refused outcome, same
