@@ -110,6 +110,15 @@ jobs:
 
   attest:
     needs: [release-please, build]
+    # success() is belt-and-suspenders, not load-bearing on its own: GitHub Actions already
+    # ANDs an implicit success() into any custom `if:` that doesn't name a status function
+    # (verified against GitHub's own docs), so a failed `build` would skip this job even
+    # without it. Spelled out anyway, for the same reason the == 'true' string comparison
+    # below is spelled out rather than left implicit -- so a future reader doesn't mistake it
+    # for redundant noise and "clean it up." Contrast `ci.yml`'s ci-success, which uses
+    # `if: always()` specifically to BYPASS this same default because it must run and report
+    # even when its dependencies failed; this job's default (skip on failure) is the one it
+    # wants.
     if: success() && needs.release-please.outputs.release_created == 'true'
     runs-on: ubuntu-latest
     # Neither elevated permission below is requested on `build` -- keeping them here means the

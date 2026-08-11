@@ -158,7 +158,7 @@ def test_release_please_job_keeps_its_original_permissions():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `python -m pytest tests/test_release_publish_wiring.py -v`
+Run: `.venv/bin/python -m pytest tests/test_release_publish_wiring.py -v`
 Expected: `test_release_please_job_exposes_the_release_created_output` FAILS on the first
 assertion (`id: release` doesn't exist yet in the live file).
 `test_release_please_job_keeps_its_original_permissions` PASSES already (the job's permissions
@@ -196,12 +196,12 @@ it.)
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `python -m pytest tests/test_release_publish_wiring.py -v`
+Run: `.venv/bin/python -m pytest tests/test_release_publish_wiring.py -v`
 Expected: both tests PASS.
 
 - [ ] **Step 5: Verify the workflow file still passes lint**
 
-Run: `zizmor --offline --strict-collection .github/workflows/`
+Run: `.venv/bin/zizmor --offline --strict-collection .github/workflows/`
 Expected: no new findings. (If `zizmor` or its pinned requirements aren't installed locally, run
 `.venv/bin/python -m pip install --require-hashes -r .github/zizmor-requirements.txt` first, per
 `ci.yml`'s `lint` job.)
@@ -264,7 +264,7 @@ def test_build_job_runs_twine_check_strict():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `python -m pytest tests/test_release_publish_wiring.py -v`
+Run: `.venv/bin/python -m pytest tests/test_release_publish_wiring.py -v`
 Expected: the four new tests FAIL — `_job_directives("build")` raises `ValueError` (no job named
 `build` exists yet), which pytest reports as an ERROR rather than a plain assertion failure. The
 two tests from Task 1 still PASS.
@@ -317,12 +317,12 @@ falsified prose claim above is corrected, not the embedded YAML.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `python -m pytest tests/test_release_publish_wiring.py -v`
+Run: `.venv/bin/python -m pytest tests/test_release_publish_wiring.py -v`
 Expected: all six tests PASS.
 
 - [ ] **Step 5: Verify the workflow file still passes lint**
 
-Run: `zizmor --offline --strict-collection .github/workflows/`
+Run: `.venv/bin/zizmor --offline --strict-collection .github/workflows/`
 Expected: no new findings.
 
 - [ ] **Step 6: Commit**
@@ -437,7 +437,7 @@ def test_workflow_wide_permissions_stay_read_only():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `python -m pytest tests/test_release_publish_wiring.py -v`
+Run: `.venv/bin/python -m pytest tests/test_release_publish_wiring.py -v`
 Expected: the six new tests FAIL — `_job_directives("attest")` raises `ValueError` (no job named
 `attest` exists yet) for the first three; `test_build_and_attest_agree_on_the_artifact_name` and
 `test_attest_covers_the_whole_dist_directory` fail the same way via `_step_containing`.
@@ -470,15 +470,15 @@ of `release-please:` and `build:`, at 2-space indent):
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `python -m pytest tests/test_release_publish_wiring.py -v`
+Run: `.venv/bin/python -m pytest tests/test_release_publish_wiring.py -v`
 Expected: all twelve tests PASS.
 
 - [ ] **Step 5: Full quality bar**
 
 ```bash
-python -m pytest
-ruff check sluice tests scripts
-zizmor --offline --strict-collection .github/workflows/
+.venv/bin/python -m pytest
+.venv/bin/ruff check sluice tests scripts
+.venv/bin/zizmor --offline --strict-collection .github/workflows/
 ```
 
 Expected: full suite green, `ruff` clean, `zizmor` clean. This is the same set of checks

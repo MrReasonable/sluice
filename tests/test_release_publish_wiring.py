@@ -76,13 +76,40 @@ def test_release_please_job_exposes_the_release_created_output():
     )
 
 
+def _permissions_block(job: str) -> str:
+    """The exact `permissions:` mapping of `job`, trailing-comment-stripped, bounded by the
+    next same-indent key.
+
+    An `in`/`not in` probe over individual permission names lets an unnamed THIRD
+    permission (e.g. `packages: write`) slip in unnoticed -- the same gap
+    `test_workflow_wide_permissions_stay_read_only` closes for the workflow-wide block,
+    applied here one level deeper: a job's `permissions:` isn't necessarily the last key in
+    its block (`steps:`/`outputs:` can follow), so the boundary must be found, not assumed.
+    Trailing inline comments (e.g. `id-token: write  # mints ...`) are stripped here,
+    narrowly: `_job_directives`'s own comment-stripping only removes FULL-LINE comments, and
+    every permission value in this file is a bare identifier that can never itself contain
+    `#`, so a blanket `# to end-of-line` strip is safe in this one context without needing to
+    touch that shared, locked helper.
+    """
+    block = _job_directives(job)
+    match = re.search(r"\n( +)permissions:\n", block)
+    assert match, f"the {job!r} job has no `permissions:` key"
+    indent = match.group(1)
+    start = match.end()
+    end = re.search(rf"\n{indent}[a-z][\w-]*:\n", block[start:])
+    body = block[start : start + end.start()] if end else block[start:]
+    body = "\n".join(re.sub(r"\s*#.*$", "", ln) for ln in body.splitlines())
+    return f"{indent}permissions:\n{body}"
+
+
 def test_release_please_job_keeps_its_original_permissions():
     """A future edit accidentally copying attest's elevated permissions onto release-please --
     the job that mints the App token -- would go unnoticed without this."""
-    block = _job_directives("release-please")
-    assert "contents: read" in block
-    assert "id-token: write" not in block
-    assert "attestations: write" not in block
+    assert _permissions_block("release-please") == "    permissions:\n      contents: read", (
+        "release-please's permissions must be EXACTLY `contents: read` -- an unnamed "
+        "elevated permission here would pass a probe over just id-token/attestations "
+        "undetected"
+    )
 
 
 def test_release_please_job_exposes_the_release_sha_output():
@@ -121,10 +148,10 @@ def test_build_job_is_gated_on_release_created():
 
 
 def test_build_job_has_no_elevated_permissions():
-    block = _job_directives("build")
-    assert "contents: read" in block
-    assert "id-token: write" not in block
-    assert "attestations: write" not in block
+    assert _permissions_block("build") == "    permissions:\n      contents: read", (
+        "build's permissions must be EXACTLY `contents: read` -- an unnamed elevated "
+        "permission here would pass a probe over just id-token/attestations undetected"
+    )
 
 
 def test_build_job_runs_twine_check_strict():
@@ -203,12 +230,13 @@ def test_attest_job_needs_release_please_and_build_exactly():
 
 
 def test_attest_job_has_the_elevated_permissions_it_needs():
-    block = _job_directives("attest")
-    assert "id-token: write" in block, (
-        "attest needs id-token: write for attest-build-provenance's OIDC token"
-    )
-    assert "attestations: write" in block, (
-        "attest needs attestations: write to attach the attestation"
+    assert _permissions_block("attest") == (
+        "    permissions:\n      id-token: write\n      attestations: write"
+    ), (
+        "attest's permissions must be EXACTLY id-token: write and attestations: write, "
+        "nothing more and nothing less -- id-token: write mints the OIDC token "
+        "attest-build-provenance exchanges for a Sigstore cert, and attestations: write "
+        "lets it attach the resulting attestation to this repo"
     )
 
 
