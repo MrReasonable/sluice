@@ -167,3 +167,19 @@ def test_the_wellfound_extractor_under_test_is_the_shipped_one(wellfound):
     assert _SYNTHETIC_HOST.replace(".", r"\.") in wf._COMPANY_URL_RE.pattern
     # Deliberately NOT asserted by running the extractor over a URL at the board's
     # real domain: keeping that out of this file's fixtures is the point of the swap.
+
+
+def test_host_re_matches_the_boards_own_registered_search_url():
+    # Every test above runs against the SYNTHETIC host, by design -- which means
+    # nothing else in this file notices if `_HOST_RE` itself drifts from the real
+    # board (a typo, a copy-paste from another source) and starts matching NOTHING
+    # at the actual site. Pinned here against PRODUCTION data instead of a literal:
+    # `searches_spec`'s own URL is where the source plugin already commits to the
+    # real domain it scrapes, so deriving the expected host from it (rather than
+    # spelling "wellfound.com" in this file) still keeps tests/** free of the real
+    # domain while catching a `_HOST_RE` that no longer matches the board it names.
+    from urllib.parse import urlparse
+
+    from sluice.ingest.sources import wellfound as wf
+    real_host = urlparse(sources.get("wellfound").searches()[0].url).netloc
+    assert re.fullmatch(wf._HOST_RE, real_host)
