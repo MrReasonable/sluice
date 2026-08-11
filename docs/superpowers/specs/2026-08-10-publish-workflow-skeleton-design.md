@@ -300,13 +300,14 @@ configured cases; this document doesn't restate that, since it isn't new here.
 ## Definition of done
 
 ```bash
-python -m pytest tests/test_release_publish_wiring.py -v
-python -m pytest                              # full suite stays green
-ruff check sluice tests scripts
-zizmor --offline --strict-collection .github/workflows/    # already CI's lint job; run it locally
-                                                             # too since this PR edits a workflow
-                                                             # file directly, including the new
-                                                             # id:/outputs: edit to release-please
+.venv/bin/python -m pytest tests/test_release_publish_wiring.py -v
+.venv/bin/python -m pytest                    # full suite stays green
+.venv/bin/ruff check sluice tests scripts
+.venv/bin/zizmor --offline --strict-collection .github/workflows/  # already CI's lint job; run it
+                                                             # locally too since this PR edits a
+                                                             # workflow file directly, including
+                                                             # the new id:/outputs: edit to
+                                                             # release-please
 ```
 
 `zizmor` is named explicitly rather than left implicit: "Testing" above already leans on it to
