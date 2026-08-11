@@ -95,8 +95,8 @@ build:
     - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
       with:
         python-version: "3.12"
-    - run: pip install build twine
-    - run: python -m build
+    - run: pip install --require-hashes -r .github/build-requirements.txt
+    - run: python -m build --no-isolation
     - run: twine check --strict dist/*
     - uses: actions/upload-artifact@<sha> # vX.Y.Z
       with:
@@ -108,7 +108,24 @@ build:
 Python 3.12 (the floor, matching the `lint` job's single-version precedent — there is exactly one
 release build to make, not a matrix to prove compatibility across).
 
-**Deliberately NOT `--no-isolation`.** `tests/test_packaging.py`'s `_build_wheel` uses
+**CORRECTED post-implementation (CodeRabbit finding on PR #116, superseding this section's
+original reasoning below — kept for the record, per this repo's discipline of correcting a
+falsified claim everywhere it's stated rather than deleting it silently):** the original
+reasoning below argued FOR isolation and got the security property backwards. `python -m
+build`'s isolated mode creates a fresh ephemeral environment and does an UNVERIFIED `pip
+install` of `pyproject.toml`'s `[build-system].requires` (`setuptools`) at build time — this
+bypasses `build-requirements.txt`'s hash-lock entirely, in the same signing path that lock
+exists to protect. The build step now runs `python -m build --no-isolation` against the SAME
+hash-verified environment `pip install --require-hashes -r .github/build-requirements.txt`
+already built (which now also pins `setuptools` and keyring's real Linux-only transitive
+dependencies — `SecretStorage`/`jeepney`/`cryptography`/`cffi`/`pycparser` — a second CodeRabbit
+finding on the same PR: `pip download --platform ...` run on a non-Linux host silently drops
+`sys_platform == "linux"`-gated dependencies because pip evaluates markers against the CURRENT
+host, not the `--platform` target; verified by reproducing the gap and by a real Linux x86_64
+Docker container end-to-end build). See `build-requirements.txt`'s own header for the
+regeneration recipe that avoids this trap.
+
+**Original reasoning (superseded above):** `tests/test_packaging.py`'s `_build_wheel` uses
 `--no-isolation` for speed (~0.6s per build, run hundreds of times across the suite) against a
 COPIED source tree, and its own docstring is explicit that the offline claim rests on the flag
 rather than the suite's network guard, which doesn't reach a subprocess. The real release build
@@ -116,7 +133,10 @@ here runs once, on a runner with real network, and should get `python -m build`'
 isolated behavior — a fresh ephemeral build environment provisioned from the pinned
 `[build-system]` requirements, the same thing a contributor following `docs/INSTALL.md`'s "build
 from source" instructions would get. Reusing `--no-isolation`'s speed optimization here would
-build against whatever happens to already be on the runner's Python instead.
+build against whatever happens to already be on the runner's Python instead. *(This missed that
+neither "isolated" nor a naive `--no-isolation` against ambient packages achieves hash-verified
+supply-chain integrity — only `--no-isolation` against a DELIBERATELY hash-locked environment
+does, which is what the workflow now does.)*
 
 Artifact name is `dist`, retention 1 day — it's consumed by `attest` (and, from PR 3 on, by
 `pypi`/`docker`/`linux-packages`) within the same run, minutes later. Nothing needs it to survive
