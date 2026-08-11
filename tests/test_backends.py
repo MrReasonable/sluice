@@ -466,6 +466,37 @@ def test_claudemax_missing_binary_scrubs_path():
     assert "<path>" in msg
 
 
+def test_claudemax_nonzero_exit_scrubs_the_stdout_fallback_diagnostic():
+    """#115: the stdout fallback goes through the SAME _scrub as stderr always has --
+    a host/path that happens to appear in the CLI's own stdout message must not leak."""
+    class R:
+        returncode, stderr = 1, ""
+        stdout = f"session for {_SYNTH_HOST} expired, run claude auth login"
+    with pytest.raises(BackendError) as ei:
+        _claude(lambda *a, **k: R()).complete("x")
+    msg = str(ei.value)
+    assert _SYNTH_HOST not in msg
+    assert "<host>" in msg
+    assert "run claude auth login" in msg  # diagnostic survives the scrub
+
+
+def test_claudemax_stdout_fallback_redacts_before_truncating():
+    # Symmetric to test_claudemax_redacts_before_truncating, but for the NEW stdout
+    # fallback call site (self._scrub(proc.stdout).strip()[:200]) -- every existing
+    # straddle-host test here uses a string well under 200 chars, so a slice-then-redact
+    # reorder on this specific line would leak a straddling host undetected. Host
+    # straddles index 200 of proc.stdout; proc.stderr stays empty so the fallback fires.
+    straddle_host = "HOST-SENTINEL-EXAMPLE.invalid"
+
+    class R:
+        returncode, stderr = 1, ""
+        stdout = "." * 180 + straddle_host  # host occupies indices 180-208, straddles 200
+
+    with pytest.raises(BackendError) as ei:
+        _claude(lambda *a, **k: R(), host=straddle_host).complete("x")
+    assert "HOST-SENTINEL" not in str(ei.value)
+
+
 def test_claudemax_redacts_before_truncating():
     # The [:200] lives at the call site, NOT in _scrub, so this MUST drive complete().
     # The host STRADDLES index 200 of proc.stderr (starts at 180): redact-then-slice
@@ -594,9 +625,9 @@ def test_claude_max_backend_from_the_seam_also_coalesces():
     assert make_backend("claude-max", "m", timeout=None).timeout > 0
 
 
-def test_claudemax_nonzero_exit_with_empty_stderr_still_says_something():
+def test_claudemax_nonzero_exit_with_both_streams_empty_still_says_something():
     """Observed in production: `BackendError: claude-max exit 1:` -- and nothing after
-    the colon, because the CLI exited non-zero writing nothing to stderr.
+    the colon, because the CLI exited non-zero writing nothing to either stream.
 
     The operator learns only that something failed. Assert on the DISCRIMINATING content
     (that the message carries guidance beyond the bare prefix), not merely that a
@@ -612,17 +643,45 @@ def test_claudemax_nonzero_exit_with_empty_stderr_still_says_something():
     msg = str(ei.value)
     assert "exit 1" in msg
     assert not msg.rstrip().endswith(":"), "message trails off after the colon"
-    assert "no stderr" in msg.lower(), "does not say the CLI reported nothing"
+    assert "either stream" in msg.lower(), "does not say the CLI reported nothing"
 
 
 def test_claudemax_nonzero_exit_still_surfaces_real_stderr():
-    """The empty-stderr guidance must not displace a real diagnostic when there is one."""
+    """The empty-stream guidance must not displace a real diagnostic when there is one."""
     class R:
         returncode, stdout, stderr = 2, "", "quota exceeded for this account"
     be = ClaudeMaxBackend("m", cmd_template=["claude"], runner=lambda *a, **k: R())
     with pytest.raises(BackendError) as ei:
         be.complete("x")
     assert "quota exceeded for this account" in str(ei.value)
+
+
+def test_claudemax_nonzero_exit_falls_back_to_stdout_when_stderr_is_empty():
+    """#115: production incident -- the claude CLI writes its OWN diagnostic to stdout
+    on a non-zero exit ("You've hit your weekly limit..."), not stderr. The prior code
+    only ever read proc.stderr here, so a real, actionable, self-explanatory cause was
+    discarded in favour of the generic "commonly contention or an expired session"
+    guidance -- which named the wrong two causes while the real one sat unread."""
+    class R:
+        returncode, stdout, stderr = (
+            1, "You've hit your weekly limit · resets 4am (UTC)", "")
+    be = ClaudeMaxBackend("m", cmd_template=["claude"], runner=lambda *a, **k: R())
+    with pytest.raises(BackendError) as ei:
+        be.complete("x")
+    assert "You've hit your weekly limit" in str(ei.value)
+
+
+def test_claudemax_nonzero_exit_prefers_stderr_over_stdout_when_both_present():
+    """stderr stays the FIRST-choice source: it's the conventional diagnostic
+    channel, and stdout is only a fallback for this CLI's specific quirk."""
+    class R:
+        returncode, stdout, stderr = 1, "stdout noise", "the real stderr diagnostic"
+    be = ClaudeMaxBackend("m", cmd_template=["claude"], runner=lambda *a, **k: R())
+    with pytest.raises(BackendError) as ei:
+        be.complete("x")
+    msg = str(ei.value)
+    assert "the real stderr diagnostic" in msg
+    assert "stdout noise" not in msg
 
 
 def test_the_seam_coalesces_for_a_factory_that_does_not(monkeypatch):
