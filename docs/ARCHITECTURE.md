@@ -609,7 +609,8 @@ every slug two or more notes claim rather than keeping the last twin — the sha
 `apply/select.py: select_one` and `track confirm` already use for an ambiguous
 `--lead`. It is PURE: it returns `(index, dropped)`, the second element mapping each
 dropped slug to its members, and the CALLER logs (through `ambiguous_slug_warnings`,
-so the four sites cannot drift into four wordings). Returning the grouping is what
+so the sites cannot drift into as many different wordings — five as of the fifth
+consumer below). Returning the grouping is what
 lets `select_all` and `track` stop rebuilding it. `select_all` walks notes rather
 than slugs, so it uses `dropped` only as a membership test, and SKIPS those notes
 with an `ambiguous:` reason naming both refs, which `preview_all` reports; dropping them silently would be the mirror

@@ -85,9 +85,9 @@ def select_all(vault, cfg, policy=StalenessPolicy()):
     failure -- a real application suppressed with nothing said -- and `preview_all` turns
     this list into the user's report."""
     notes = vault.read_leads({"shortlist"})
-    # index_by_slug is the shared verdict (track and `leads expire` take the same one), so
-    # the four call sites cannot drift into four different opinions about what ambiguous
-    # means. Only the second element is wanted here: this pass walks notes, not slugs.
+    # index_by_slug is the shared verdict (track, `leads expire`, and #109's triage/engine.py
+    # take the same one), so its call sites cannot drift into different opinions about what
+    # ambiguous means. Only the second element is wanted here: this pass walks notes, not slugs.
     _, dropped = index_by_slug(notes)
     for msg in ambiguous_slug_warnings("apply: shortlisted lead", dropped):
         _log.warning("%s", msg)
