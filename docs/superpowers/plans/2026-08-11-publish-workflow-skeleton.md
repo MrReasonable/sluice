@@ -305,6 +305,16 @@ with network, not the offline hermetic test suite's speed-optimized copy-tree bu
 `tests/test_packaging.py` — it should get `python -m build`'s normal isolated behavior (a fresh
 ephemeral build environment from the pinned `[build-system]` requirements).
 
+**CORRECTED post-implementation (CodeRabbit finding on PR #116): this reasoning was wrong.**
+`python -m build`'s isolated mode installs `[build-system].requires` (`setuptools`) UNVERIFIED
+at build time, bypassing the whole point of hash-locking `build`/`twine` in the same job. The
+shipped workflow runs `python -m build --no-isolation` against a hash-locked environment that
+now also pins `setuptools` — see `.github/build-requirements.txt`'s header and
+`docs/superpowers/specs/2026-08-10-publish-workflow-skeleton-design.md`'s matching correction
+for the full reasoning and the real-Linux verification. This snippet is left as the ORIGINAL
+Task 2 code (per this doc's own nature as a historical record, not a maintained spec); only the
+falsified prose claim above is corrected, not the embedded YAML.
+
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_release_publish_wiring.py -v`
@@ -432,7 +442,7 @@ Expected: the six new tests FAIL — `_job_directives("attest")` raises `ValueEr
 `attest` exists yet) for the first three; `test_build_and_attest_agree_on_the_artifact_name` and
 `test_attest_covers_the_whole_dist_directory` fail the same way via `_step_containing`.
 `test_workflow_wide_permissions_stay_read_only` PASSES already (nothing elevated exists yet) —
-expected, it's a regression guard for this task's own addition. All ten prior tests still PASS.
+expected, it's a regression guard for this task's own addition. All six prior tests still PASS.
 
 - [ ] **Step 3: Add the `attest` job**
 
@@ -461,7 +471,7 @@ of `release-please:` and `build:`, at 2-space indent):
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_release_publish_wiring.py -v`
-Expected: all sixteen tests PASS.
+Expected: all twelve tests PASS.
 
 - [ ] **Step 5: Full quality bar**
 

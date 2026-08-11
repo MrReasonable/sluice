@@ -85,6 +85,25 @@ def test_release_please_job_keeps_its_original_permissions():
     assert "attestations: write" not in block
 
 
+def test_release_please_job_exposes_the_release_sha_output():
+    block = _job_directives("release-please")
+    assert "sha: ${{ steps.release.outputs.sha }}" in block, (
+        "the release-please job's outputs no longer expose `sha` -- build would then check "
+        "out github.sha (the commit that triggered THIS run) rather than the commit "
+        "release-please actually tagged, which can diverge if a prior run failed after "
+        "release-please tagged but before build/attest ran"
+    )
+
+
+def test_build_checks_out_the_tagged_sha_not_the_trigger_commit():
+    step = _step_containing("build", "actions/checkout")
+    assert "ref: ${{ needs.release-please.outputs.sha }}" in step, (
+        "build's checkout no longer pins ref: to release-please's own sha output -- it would "
+        "silently fall back to github.sha, which is the commit that triggered this run and "
+        "can be a DIFFERENT commit than the one release-please just tagged"
+    )
+
+
 def test_build_job_depends_on_release_please():
     block = _job_directives("build")
     assert re.search(r"^\s*needs:\s*release-please\s*$", block, re.MULTILINE), (
@@ -111,6 +130,34 @@ def test_build_job_has_no_elevated_permissions():
 def test_build_job_runs_twine_check_strict():
     block = _job_directives("build")
     assert "twine check --strict" in block
+
+
+def test_build_job_installs_from_the_hash_locked_requirements_file():
+    block = _job_directives("build")
+    assert "pip install --require-hashes -r .github/build-requirements.txt" in block, (
+        "build no longer installs build/twine from the hash-locked requirements file -- an "
+        "unpinned `pip install build twine` would let a compromised release of either package "
+        "execute during CI, in the job whose output attest then signs"
+    )
+
+
+def test_build_job_actually_builds():
+    block = _job_directives("build")
+    assert re.search(r"^\s*-\s*run:\s*python -m build\b", block, re.MULTILINE), (
+        "build no longer runs `python -m build` -- twine check --strict would then run "
+        "against a stale or missing dist/, with nothing else pinning that the build step exists"
+    )
+
+
+def test_build_job_builds_without_isolation():
+    block = _job_directives("build")
+    assert re.search(r"^\s*-\s*run:\s*python -m build --no-isolation\s*$", block, re.MULTILINE), (
+        "build no longer runs `python -m build --no-isolation` -- an isolated build installs "
+        "[build-system].requires (setuptools) UNVERIFIED at build time, from a fresh ephemeral "
+        "environment pip never applies --require-hashes to, bypassing the hash-lock this same "
+        "job just installed via pip install --require-hashes -r .github/build-requirements.txt "
+        "-- the whole point of that lock"
+    )
 
 
 def _workflow_wide_directives() -> str:
@@ -185,11 +232,24 @@ def test_attest_covers_the_whole_dist_directory():
     )
 
 
+def test_attest_downloads_to_the_path_it_scans():
+    download_step = _step_containing("attest", "actions/download-artifact")
+    subject_step = _step_containing("attest", "actions/attest-build-provenance")
+    download_path = re.search(r"path:\s*(\S+)", download_step)
+    assert download_path, "couldn't find path: in attest's download-artifact step"
+    assert f"subject-path: {download_path.group(1)}*" in subject_step, (
+        f"attest downloads to {download_path.group(1)!r} but its subject-path glob doesn't "
+        f"cover that same directory -- attest would silently find zero subjects"
+    )
+
+
 def test_workflow_wide_permissions_stay_read_only():
     block = _workflow_wide_directives()
-    assert "contents: read" in block
-    assert "id-token: write" not in block, (
-        "an elevated permission leaked into the workflow-wide block -- every job in this file "
-        "would silently inherit it, including release-please's own App-token-minting job"
+    idx = block.index("\npermissions:\n")
+    perm_block = block[idx + 1 :]
+    assert perm_block == "permissions:\n  contents: read", (
+        "the workflow-wide permissions block must be EXACTLY `contents: read` and nothing "
+        f"else -- an elevated or additional permission here would silently leak into every "
+        f"job in this file, including release-please's own App-token-minting job. Got: "
+        f"{perm_block!r}"
     )
-    assert "attestations: write" not in block
