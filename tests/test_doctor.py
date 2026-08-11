@@ -489,6 +489,34 @@ def test_enumerate_matches_operation_backend_wiring(monkeypatch, tmp_path):
         assert (f.host, f.claude_path) == ("", "claude"), subapp
 
 
+def test_enumerate_reflects_the_real_fallback_host_when_fallback_is_claude_max(monkeypatch):
+    """#117 follow-up (round-3 review of PR #114): `_make_fallback` now forwards
+    host/claude_path when the fallback role IS claude-max (a real remote-host install
+    can name claude-max as either role), so a real run built off `Sluice.backend()`
+    probes that host. `enumerate_targets`'s own spec list hardcoded ("", "claude") for
+    EVERY fallback unconditionally -- true before #117, stale the moment it shipped,
+    and the drift guard above never catches it because none of its three sub-app
+    fixtures configure fallback_backend="claude-max". Doctor exists specifically to
+    catch a silently-non-functional fallback before the primary dies; this is that
+    exact failure class, reintroduced in doctor's own enumeration."""
+    import dataclasses
+
+    from sluice.cv.config import load_cv_config
+    from sluice.track.config import load_track_config
+    from sluice.triage.config import load_triage_config
+
+    tri = dataclasses.replace(
+        load_triage_config(), primary_backend="deepseek",
+        fallback_backend="claude-max", claude_max_host="tri-fallback-host",
+        claude_max_path="tri-fallback-path")
+
+    targets = enumerate_targets(tri, load_cv_config(), load_track_config())
+    fallback = next(t for t in targets for u in t.uses
+                    if u.subapp == "triage" and u.role == "fallback")
+    assert (fallback.host, fallback.claude_path) == \
+        ("tri-fallback-host", "tri-fallback-path")
+
+
 # ── cmd_doctor / argparse (offline; live exit codes are covered via Sluice) ───
 from sluice.cli import main                    # noqa: E402
 

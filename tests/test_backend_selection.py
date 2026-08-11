@@ -248,3 +248,30 @@ def test_the_timeout_reaches_a_strictly_selected_fallback(key):
     """`--backend fallback` takes its own construction arm, which silently ignored the
     knob: it never called the builder the timeout had been threaded into."""
     assert _b("fallback", timeout=900).timeout == 900
+
+
+# ── #117: claude-max as the FALLBACK leg must still reach its own host/path ──
+
+def test_claude_max_host_reaches_the_fallback_leg_too(key):
+    """#117: production incident -- a claude-max fallback on a remote-host install was
+    always built with host="" (run locally), because _make_fallback's signature had no
+    host/claude_path parameters at all and never forwarded them, regardless of what
+    Sluice.backend() itself was called with. `doctor` reported it `dead` (CLI not on
+    PATH); a real run would hit the identical failure the moment primary needed it.
+
+    Same shape as test_the_timeout_reaches_the_fallback_leg_too above: threading a knob
+    into _make_primary alone passes every test that predates the OTHER leg getting it.
+    """
+    be = _b("auto", primary_name="deepseek", fallback_name="claude-max",
+           host="remote.example.invalid", claude_path="/opt/claude/bin/claude")
+    assert be.fallback.host == "remote.example.invalid"
+    assert be.fallback.claude_path == "/opt/claude/bin/claude"
+
+
+def test_claude_max_host_reaches_a_strictly_selected_fallback():
+    """`--backend fallback` takes its own construction arm (_make_fallback_strict),
+    which had the identical gap as _make_fallback above."""
+    be = _b("fallback", fallback_name="claude-max",
+           host="remote.example.invalid", claude_path="/opt/claude/bin/claude")
+    assert be.host == "remote.example.invalid"
+    assert be.claude_path == "/opt/claude/bin/claude"

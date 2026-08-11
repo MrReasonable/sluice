@@ -131,13 +131,26 @@ class DoctorReport:
         return 0
 
 
+def _fallback_host_path(fallback_backend, host, claude_path):
+    """(#117) `_make_fallback`/`_make_fallback_strict` forward host/claude_path to
+    EVERY fallback build now, unconditionally -- but they are only MEANINGFUL when
+    the fallback provider actually IS claude-max; every other factory ignores them.
+    Folding them into the dedup key regardless would needlessly split two sub-apps'
+    otherwise-identical per-token fallback (the common case) into separate probes, so
+    this mirrors runtime behaviour rather than the raw plumbing: real host/path when
+    claude-max plays fallback, the shared "", "claude" default otherwise."""
+    return (host, claude_path) if fallback_backend == "claude-max" else ("", "claude")
+
+
 def enumerate_targets(triage_cfg, cv_cfg, track_cfg) -> list:
     """Every sub-app × role backend, deduped by (provider, model, host, claude_path).
 
-    Apply is absent: it is offline by contract and has no backend. The fallback
-    leg carries host="" and claude_path="claude" because that is exactly how
-    `_make_fallback` builds it -- it does NOT forward the primary's host/path --
-    so doctor probes what a real run would actually build.
+    Apply is absent: it is offline by contract and has no backend. The fallback leg's
+    host/claude_path come from `_fallback_host_path` above -- real values when the
+    fallback provider IS claude-max (#117: a remote-host install may name claude-max
+    as either role, and `Sluice.backend()` threads the same config to both legs), the
+    shared "", "claude" default otherwise, so doctor probes what a real run actually
+    builds either way.
 
     Effort is deliberately NOT part of the dedup key: it changes cost/quality,
     not whether the backend works, so triage(medium)+cv(max) fold into one
@@ -149,13 +162,19 @@ def enumerate_targets(triage_cfg, cv_cfg, track_cfg) -> list:
         # (subapp, role, provider, model, host, claude_path)
         ("triage", "primary", triage_cfg.primary_backend, triage_cfg.claude_max_model,
          triage_cfg.claude_max_host, triage_cfg.claude_max_path),
-        ("triage", "fallback", triage_cfg.fallback_backend, triage_cfg.cheap_model, "", "claude"),
+        ("triage", "fallback", triage_cfg.fallback_backend, triage_cfg.cheap_model,
+         *_fallback_host_path(triage_cfg.fallback_backend, triage_cfg.claude_max_host,
+                              triage_cfg.claude_max_path)),
         ("cv", "primary", cv_cfg.primary_backend, cv_cfg.compose_model,
          cv_cfg.compose_host, cv_cfg.compose_claude_path),
-        ("cv", "fallback", cv_cfg.fallback_backend, cv_cfg.cheap_model, "", "claude"),
+        ("cv", "fallback", cv_cfg.fallback_backend, cv_cfg.cheap_model,
+         *_fallback_host_path(cv_cfg.fallback_backend, cv_cfg.compose_host,
+                              cv_cfg.compose_claude_path)),
         ("track", "primary", track_cfg.primary_backend, track_cfg.claude_max_model,
          track_cfg.claude_max_host, track_cfg.claude_max_path),
-        ("track", "fallback", track_cfg.fallback_backend, track_cfg.cheap_model, "", "claude"),
+        ("track", "fallback", track_cfg.fallback_backend, track_cfg.cheap_model,
+         *_fallback_host_path(track_cfg.fallback_backend, track_cfg.claude_max_host,
+                              track_cfg.claude_max_path)),
     ]
     by_key: dict = {}  # (provider, model, host, claude_path) -> BackendTarget, insertion-ordered
     for subapp, role, provider, model, host, claude_path in specs:
