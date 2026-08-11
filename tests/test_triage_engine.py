@@ -470,8 +470,9 @@ def test_a_backslash_in_a_resolved_company_does_not_kill_the_batch(tmp_path, tit
     # escape in its REPLACEMENT template and raising re.PatternError, which is not a
     # VaultConflict and so escaped engine.py's `except` -- is now fixed at the vault
     # layer (a callable replacement; see test_vault_rw.py). What is witnessed HERE is
-    # the surviving, independent reason resolve.py's `_safe` must still reject a
-    # backslash: a raw backslash inside the double-quoted YAML scalar the write produces
+    # the surviving, independent reason resolve.py's guard (`frontmatter_safe`, in
+    # core/vault.py) must still reject a backslash: a raw backslash inside the
+    # double-quoted YAML scalar the write produces
     # is a YAML escape, so `company: "Foo\Bar Ltd"` is a ScannerError in the candidate's
     # own note reader -- a lead written into a state a human cannot open, which no
     # amount of correctness at the vault layer would prevent.
@@ -690,6 +691,39 @@ def test_the_judge_reads_lead_fields_off_the_note_not_a_stale_cached_snapshot(tm
     assert f'"position": "{accept[0].title()}"' in prompt
     assert '"location": "remote"' in prompt
     assert '"role_type": "permanent"' in prompt
+
+
+def test_a_blank_note_field_is_shown_blank_not_backfilled_from_a_stale_cache_value(tmp_path, titles):
+    """#113: the same staleness bug #109 fixed for `lead_id`, one step further --
+    specifically on the correction path a human would take to fix bad data.
+
+    A human clearing a field on the note (e.g. blanking a wrong location for someone
+    to refill) must be seen as blank by the judge, not silently backfilled from a
+    STALE cached copy of what the field used to say. The `or`-fallback's own
+    justification ("so a blank note value falls back rather than blanking a
+    populated dossier field") does not hold: every one of these four dossier fields
+    IS the note's own value, re-derived -- never a fetched fact -- so what it falls
+    back to is a stale copy of the note's OWN prior value, not a complementary
+    source of truth."""
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    fields = [ln if not ln.startswith("location:") else 'location: ""'
+              for ln in _fields("Current Co", accept[0].title())]
+    _note(v, "lead.md", fields)
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.accept_titles = list(accept)
+
+    stale = _RecordingCache(dossier={
+        "company": "Current Co", "position": accept[0].title(), "location": "stale-city",
+        "role_type": "permanent", "jd": {"markdown": "j"}, "glassdoor": {},
+        "page_title": "", "structured_data": ""})
+    backend = _Backend()
+    eng.run(v, cfg, backend, stale, audit, statuses=("new",))
+
+    prompt = backend.prompts[0]
+    assert '"location": "stale-city"' not in prompt
+    assert '"location": ""' in prompt
 
 
 class _CompanyKeyedBackend:
