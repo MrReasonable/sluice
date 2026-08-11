@@ -18,10 +18,14 @@ class _Tab:
 
     def __init__(self, landed="https://jobs.invalid/x", body="JD BODY",
                  landed_result=_UNSET, title="", ld_json="",
-                 title_result=_UNSET, ld_json_result=_UNSET):
+                 title_result=_UNSET, ld_json_result=_UNSET, raise_on=()):
         self.landed, self.body, self.landed_result = landed, body, landed_result
         self.title, self.ld_json = title, ld_json
         self.title_result, self.ld_json_result = title_result, ld_json_result
+        # The probe sources (JS strings) whose `evaluate` RAISES rather than
+        # returning a malformed envelope -- the other half of "the injected
+        # Fetcher seam can fail", which *_result only models for a bad shape.
+        self.raise_on = set(raise_on)
         self.calls = []
 
     def create_tab(self, url):
@@ -30,6 +34,10 @@ class _Tab:
 
     def evaluate(self, tid, js):
         self.calls.append(("evaluate", js))
+        # Recorded BEFORE raising: the call really was made, and a test asserting
+        # the other probe still ran needs this one in the sequence too.
+        if js in self.raise_on:
+            raise RuntimeError("browser evaluate blew up")
         if js == "location.href":
             if self.landed_result is not _UNSET:
                 return self.landed_result
@@ -243,6 +251,65 @@ def test_an_unreadable_json_ld_degrades_to_blank(tmp_path, role, bad):
                                             "company": "Aye", "role": role})
     assert d["structured_data"] == ""
     assert d["jd"]["markdown"] == "JD BODY", "fetch must not be refused"
+
+
+def test_a_raising_page_title_probe_degrades_without_discarding_the_body(tmp_path, role):
+    """The failure mode the two shape tests above cannot reach.
+
+    `title_result=` models a probe that RETURNED something malformed. `c` is the
+    injected Fetcher seam, so `evaluate` is equally free to RAISE -- a browser JS
+    error, a timeout, a dropped connection. Unwrapped, that propagates out of the
+    whole `fetch` closure and throws away the JD body ALREADY read from this tab,
+    which is the opposite of the best-effort promise the code's own comment makes.
+    The JSON-LD assertion is the isolation half: one probe raising must not blank
+    the other, which a single try/ except around BOTH probes would do while leaving
+    every other assertion here green.
+    """
+    tab = _Tab(ld_json='{"@type": "JobPosting"}', raise_on=("document.title",))
+    d = _cache(tmp_path, tab).get_or_build({"url": "https://jobs.invalid/x",
+                                            "company": "Aye", "role": role})
+    assert d["page_title"] == ""
+    assert d["jd"]["markdown"] == "JD BODY", "the already-read body must survive"
+    assert d["structured_data"] == '{"@type": "JobPosting"}', \
+        "the other probe must still run, and succeed, after this one raised"
+    assert ("evaluate", _LD_JSON_JS) in tab.calls, "it must actually have been attempted"
+    assert ("close_tab", "tab-1") in tab.calls, "a raising probe must not leak the tab"
+
+
+def test_a_raising_json_ld_probe_degrades_without_discarding_the_body(tmp_path, role):
+    """The mirror of the test above -- isolation has to hold in both directions, and
+    the JSON-LD probe is the LAST statement in the try, so a fix that only wrapped
+    the first probe would leave this one still able to lose the body."""
+    title = "Staff Engineer at Example Co | Example Board"
+    tab = _Tab(title=title, raise_on=(_LD_JSON_JS,))
+    d = _cache(tmp_path, tab).get_or_build({"url": "https://jobs.invalid/x",
+                                            "company": "Aye", "role": role})
+    assert d["structured_data"] == ""
+    assert d["jd"]["markdown"] == "JD BODY", "the already-read body must survive"
+    assert d["page_title"] == title, "the earlier probe's value must not be discarded"
+    assert ("close_tab", "tab-1") in tab.calls, "a raising probe must not leak the tab"
+
+
+def test_both_probes_raising_still_yields_the_body(tmp_path, role):
+    tab = _Tab(raise_on=("document.title", _LD_JSON_JS))
+    d = _cache(tmp_path, tab).get_or_build({"url": "https://jobs.invalid/x",
+                                            "company": "Aye", "role": role})
+    assert d["jd"]["markdown"] == "JD BODY"
+    assert d["page_title"] == "" and d["structured_data"] == ""
+
+
+def test_a_raising_probe_is_logged_rather_than_swallowed_silently(tmp_path, role, caplog):
+    """Degrading is right; degrading invisibly is not. Tier-2 resolution abstaining on
+    every lead reads the same whether the pages carry no metadata or the probe never
+    completed, and only the second is an operator's problem. The wording assertions are
+    the pair to the two log-wording tests below: "failed"/"refused" belong to `_refuse`,
+    and a probe that degrades has neither failed the fetch nor refused anything."""
+    tab = _Tab(raise_on=("document.title",))
+    with caplog.at_level("WARNING"):
+        _cache(tmp_path, tab).get_or_build({"url": "https://jobs.invalid/x",
+                                            "company": "Aye", "role": role})
+    assert "page_title" in caplog.text
+    assert "failed" not in caplog.text and "refused" not in caplog.text
 
 
 def test_a_transport_failure_logs_as_failed_not_refused(tmp_path, role, caplog):
