@@ -1045,7 +1045,19 @@ class Vault:
         it from the benign already-current no-op this method already reports as False.
         Generalised over field NAMES rather than hardcoded to `company` for the same reason
         `require_status` takes a set: the next unmediated-external-content writer needs the
-        same guard, and a second write function would be a second CodeQL sink."""
+        same guard, and a second write function would be a second CodeQL sink.
+
+        Both guards assume a well-formed note: `require_status`/`require_blank` read via
+        `_fm_value` (FIRST occurrence of `key:`), while `note.fm` -- what a caller's own
+        blank/status check runs against before ever calling this method -- is built via
+        `_fm_dict` (LAST occurrence wins on a duplicate key). `_set_fm` cannot itself create a
+        duplicate (it replaces the first match or appends if absent), so this only matters for
+        a hand-edited note carrying the same key twice. Traced for every 2-occurrence
+        combination: the caller's own pre-check (via `note.fm`) always runs first and already
+        gates on the SAME field this method re-checks, so the two functions' disagreement is
+        never reachable as a silent overwrite through today's single call site -- the worst
+        outcome is a write correctly refused. Not a guarantee for any FUTURE call site that
+        checks a field this method does not also gate on."""
         def transform(text: str) -> str:
             inner, body = _split_frontmatter(text)
             if inner is None:

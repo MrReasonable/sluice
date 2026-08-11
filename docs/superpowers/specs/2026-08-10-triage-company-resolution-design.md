@@ -107,6 +107,15 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
 
 And inside the existing `for note in notes:` loop:
 
+**Superseded during implementation (post-round-3, found in `/review-pr`):** the `update_fields`
+call below shows only `require_status`. The shipped code also passes `require_blank={"company"}`
+— a new, generalized `Vault.update_fields` parameter (added to the `Store` protocol contract too)
+closing a second race this same tier-2 fetch widens: a human editing the note's `company` field by
+hand during the multi-second page visit could otherwise be silently overwritten by the scraped
+value once the fetch completes. `require_status` alone does not cover this — it re-reads `status`,
+not `company`. See `docs/ARCHITECTURE.md`'s write-contract section for the shipped shape; this
+spec's code sketch is left as originally approved rather than rewritten to match.
+
 ```python
 company = (note.fm.get("company") or "").strip()
 decision, reason = classify(note.fm, cfg)
