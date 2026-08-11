@@ -32,7 +32,13 @@ def apply_classification(vault, note, decision, reason) -> str:
         note.ref, {"status": new_status},
         append_note=f"{tag} {decision}: {reason}".strip(), note_tag=tag,
         require_status=frozenset(_status.TRIAGE_OWNED))
-    return "applied" if wrote else "skipped-race"
+    # #118: `wrote=False` here is always a genuine no-op, never a race -- either
+    # require_status refused on a fresh re-read (the lead already left TRIAGE_OWNED,
+    # someone got there first) or the write was a byte-identical rewrite (the value
+    # was already current, e.g. a same-day re-triage). A REAL content collision raises
+    # VaultConflict instead, caught separately one level up in triage/engine.py.
+    # "unchanged" either way, not a failure.
+    return "applied" if wrote else "unchanged"
 
 
 def apply_verdict(vault, note, verdict, dossier) -> str:
@@ -60,4 +66,4 @@ def apply_verdict(vault, note, verdict, dossier) -> str:
     # round trip.
     wrote = vault.update_fields(note.ref, fields, append_note=note_text.strip(), note_tag=tag,
                                 require_status=frozenset(_status.TRIAGE_OWNED))
-    return "applied" if wrote else "skipped-race"
+    return "applied" if wrote else "unchanged"  # #118: symmetric with apply_classification above
