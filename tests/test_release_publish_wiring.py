@@ -83,3 +83,31 @@ def test_release_please_job_keeps_its_original_permissions():
     assert "contents: read" in block
     assert "id-token: write" not in block
     assert "attestations: write" not in block
+
+
+def test_build_job_depends_on_release_please():
+    block = _job_directives("build")
+    assert re.search(r"^\s*needs:\s*release-please\s*$", block, re.MULTILINE), (
+        "build's needs: is no longer exactly release-please"
+    )
+
+
+def test_build_job_is_gated_on_release_created():
+    block = _job_directives("build")
+    assert "if: needs.release-please.outputs.release_created == 'true'" in block, (
+        "build no longer gates on release-please's release_created output via an explicit "
+        "string comparison -- GitHub Actions treats any non-empty string (including the "
+        "literal 'false') as truthy in an if:, so a bare truthiness check would fail open"
+    )
+
+
+def test_build_job_has_no_elevated_permissions():
+    block = _job_directives("build")
+    assert "contents: read" in block
+    assert "id-token: write" not in block
+    assert "attestations: write" not in block
+
+
+def test_build_job_runs_twine_check_strict():
+    block = _job_directives("build")
+    assert "twine check --strict" in block
