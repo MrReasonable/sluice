@@ -823,3 +823,33 @@ def test_two_kept_leads_at_one_slug_are_both_refused_and_reported(tmp_path, titl
     assert "twin" in failure
     for ref in (n.ref for n in after if n.slug == "twin"):
         assert str(ref) in failure, failure
+
+
+class _MisechoingBackend:
+    """A judge that returns a verdict for a lead_id no dossier in the batch carries --
+    the shape a real model produces when it paraphrases a prose slug (collapses
+    whitespace, swaps a dash) rather than echoing it byte-for-byte, now that lead_id
+    is a slug instead of an opaque hash."""
+    last_backend = "primary"
+
+    def complete(self, prompt):
+        return json.dumps([{"lead_id": "a slug nothing in this batch carries",
+                            "verdict": "shortlist", "relevance_score": 80}])
+
+
+def test_a_verdict_for_an_unmatched_lead_id_is_reported_not_silently_dropped(tmp_path, titles):
+    accept, _ = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "solo.md", _fields("Solo Co", accept[0].title()))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.accept_titles = list(accept)
+
+    report = eng.run(v, cfg, _MisechoingBackend(), _cache(tmp_path), audit,
+                     statuses=("new",))
+
+    after = v.read_leads()[0]
+    assert after.status == "new", "no note matches the mis-echoed id, so none is written"
+    assert report.judged == 1, "the verdict was still produced -- only routing it failed"
+    assert len(report.failures) == 1, report.failures
+    assert "no note matches" in report.failures[0]

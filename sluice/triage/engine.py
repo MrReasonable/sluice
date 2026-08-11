@@ -256,6 +256,14 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
         for verdict in verdicts:
             note = note_by_id.get(verdict.get("lead_id"))
             if note is None:
+                # `lead_id` is now the note's slug -- prose, not an opaque hash -- so a
+                # model that paraphrases it (collapses whitespace, swaps a dash) produces
+                # a verdict this run can never match back to a note. Silently continuing
+                # here would make that read as a healthy no-op (judged=N, failures=0,
+                # exit 0) instead of the lost verdict it is.
+                report.failures.append(
+                    f"judge {verdict.get('lead_id')!r}: no note matches this lead_id "
+                    "(the model likely paraphrased the echoed slug)")
                 continue
             dossier = by_id.get(verdict["lead_id"], {})
             if dry_run:
