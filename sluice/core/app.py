@@ -506,12 +506,36 @@ class Sluice:
                     # a source that omits a page title or JSON-LD is common and not a
                     # transport failure, so a non-string probe result degrades to ""
                     # rather than refusing the whole (otherwise-good) dossier fetch.
-                    title_res = c.evaluate(tid, "document.title")
-                    got_title = title_res.get("result") if isinstance(title_res, dict) else None
-                    page_title = got_title if isinstance(got_title, str) else ""
-                    ld_res = c.evaluate(tid, _LD_JSON_JS)
-                    got_ld = ld_res.get("result") if isinstance(ld_res, dict) else None
-                    structured_data = got_ld if isinstance(got_ld, str) else ""
+                    def _probe(label: str, js: str) -> str:
+                        """One best-effort metadata probe, degrading to "" two ways.
+
+                        A malformed RESULT SHAPE was the only degradation the first
+                        draft handled, which made the promise above true of exactly
+                        half the failure modes: `c` is the injected Fetcher seam, so
+                        `evaluate` is free to RAISE (a browser JS error, a timeout, a
+                        dropped connection). An unwrapped raise propagates out of
+                        `fetch` entirely and discards the JD body ALREADY read from
+                        this tab -- the whole dossier lost over a field nothing is
+                        required to have. Each probe is wrapped on its own so one
+                        raising cannot blank the other.
+                        """
+                        try:
+                            res = c.evaluate(tid, js)
+                        except Exception:
+                            # Degrading, but not silently: tier-2 abstaining on every
+                            # lead looks identical whether the pages carry no metadata
+                            # or the probe never completed, and only one of those is
+                            # an operator's problem. Worded to avoid "failed" and
+                            # "refused" -- _refuse owns that pair, and two tests read
+                            # the log for exactly that contrast.
+                            _log.warning("dossier probe errored (%s) host=%s, degrading to blank",
+                                         label, pre.host or "?")
+                            return ""
+                        got = res.get("result") if isinstance(res, dict) else None
+                        return got if isinstance(got, str) else ""
+
+                    page_title = _probe("page_title", "document.title")
+                    structured_data = _probe("structured_data", _LD_JSON_JS)
                 finally:
                     c.close_tab(tid)
             return {"jd": {"markdown": md or ""}, "glassdoor": {},
