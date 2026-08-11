@@ -89,7 +89,8 @@ def _urlopen(url, data, headers, timeout):
 def _redact(text: str, secrets: dict[str, str]) -> str:
     """Replace each sensitive value with a label, so a backend error keeps its
     diagnostic shape without disclosing the host or an absolute path -- both reach
-    proc.stderr on an ssh/exec failure (and str(a runner exception)) and fan out to
+    proc.stderr on an ssh/exec failure (and str(a runner exception)), or proc.stdout
+    as the fallback diagnostic source on a non-zero exit (#115), and fan out to
     WARNING logs (FallbackBackend, judge) and the doctor health report.
 
     Matching is TOKEN-AWARE: a value is replaced only where it stands as a whole token
@@ -250,13 +251,24 @@ class ClaudeMaxBackend:
             #
             # `.strip()` before the test, not just truthiness: whitespace-only stderr renders
             # identically to empty and must take the same branch.
+            #
+            # stdout is the FALLBACK source, not the first choice: stderr is the
+            # conventional diagnostic channel, and this CLI's own quirk is what makes
+            # stdout worth checking at all. #115 (production): a non-zero exit from a
+            # genuine, mundane cause ("You've hit your weekly limit") wrote NOTHING to
+            # stderr and the whole message to stdout -- so the generic fallback below
+            # fired instead, actively naming the wrong two causes (contention, an expired
+            # session) while the real one sat unread in the stream this branch never read.
             detail = self._scrub(proc.stderr).strip()[:200]
+            if not detail:
+                detail = self._scrub(proc.stdout).strip()[:200]
             raise BackendError(
                 f"claude-max exit {proc.returncode}: " + (detail or
-                "the CLI exited non-zero and wrote no stderr, so there is no diagnostic to "
-                "report. Commonly contention (concurrent invocations against one host) or "
-                "an expired CLI session; retry the lead on its own, and if it persists run "
-                "the CLI by hand on that host to see it interactively."))
+                "the CLI exited non-zero and wrote nothing on either stream, so there is "
+                "no diagnostic to report. Commonly contention (concurrent invocations "
+                "against one host) or an expired CLI session; retry the lead on its own, "
+                "and if it persists run the CLI by hand on that host to see it "
+                "interactively."))
         text = proc.stdout.strip()
         # Exit 0 with no text is a FAILED call wearing a successful one's clothes. Both
         # siblings already refuse it (OpenAiCompatibleBackend, AnthropicBackend); claude-max
