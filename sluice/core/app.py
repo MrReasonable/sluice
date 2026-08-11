@@ -219,7 +219,7 @@ def _make_primary(name, model, *, effort, host, claude_path, timeout=None):
                         timeout=timeout)
 
 
-def _make_fallback(name, model, *, timeout=None):
+def _make_fallback(name, model, *, host, claude_path, timeout=None):
     """Build the fallback leg, or None when its credentials are absent.
 
     A missing key is not fatal: running primary-only (a claude-max setup with no
@@ -228,7 +228,14 @@ def _make_fallback(name, model, *, timeout=None):
     loudly at build time rather than letting it surface as a 401 at the exact
     moment the primary goes down. When the fallback is explicitly *selected*
     (`--backend fallback`) there is nothing to degrade to, so make_backend's
-    missing-key error is allowed to propagate; see Sluice.backend."""
+    missing-key error is allowed to propagate; see Sluice.backend.
+
+    `host`/`claude_path` (#117): claude-max is a legitimate name for EITHER role, and
+    there is one `claude_max_host`/`claude_max_path` pair per sub-app config regardless
+    of which role it plays -- so Sluice.backend() threads the same values it gives
+    _make_primary through here too. Harmless for every other provider: make_backend
+    passes claude_host/claude_path to every factory, and only ClaudeMaxBackend reads
+    them (see _make_primary, which already does this unconditionally)."""
     from sluice.core.backends import make_backend
     api_key, base_url = _provider_creds(name)
     if name in _PROVIDER_ENV and not api_key:
@@ -237,13 +244,15 @@ def _make_fallback(name, model, *, timeout=None):
             "fallback -- a primary failure will now fail the run",
             name, _PROVIDER_ENV[name][0])
         return None
-    return make_backend(name, model, api_key=api_key, base_url=base_url, timeout=timeout)
+    return make_backend(name, model, api_key=api_key, base_url=base_url, timeout=timeout,
+                        claude_host=host, claude_path=claude_path)
 
 
-def _make_fallback_strict(name, model, *, timeout=None):
+def _make_fallback_strict(name, model, *, host, claude_path, timeout=None):
     from sluice.core.backends import make_backend
     api_key, base_url = _provider_creds(name)
-    return make_backend(name, model, api_key=api_key, base_url=base_url, timeout=timeout)
+    return make_backend(name, model, api_key=api_key, base_url=base_url, timeout=timeout,
+                        claude_host=host, claude_path=claude_path)
 
 
 class Sluice:
@@ -357,12 +366,14 @@ class Sluice:
             return self._overrides[_BACKEND_SEAM]
         if role == "fallback":
             # Explicitly asked for it, so a missing key is fatal, not degradable.
-            return _make_fallback_strict(fallback_name, fallback_model, timeout=timeout)
+            return _make_fallback_strict(fallback_name, fallback_model, host=host,
+                                         claude_path=claude_path, timeout=timeout)
         primary = _make_primary(primary_name, primary_model, effort=effort, host=host,
                                 claude_path=claude_path, timeout=timeout)
         if role == "primary":
             return primary
-        fallback = _make_fallback(fallback_name, fallback_model, timeout=timeout)
+        fallback = _make_fallback(fallback_name, fallback_model, host=host,
+                                  claude_path=claude_path, timeout=timeout)
         return FallbackBackend(primary, fallback) if fallback else primary
 
     def staleness(self, *, include_stale: bool = False):
