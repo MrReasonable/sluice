@@ -44,3 +44,16 @@ def test_noise_word_flips_a_verdict():
     fm = {"url": "", "location": "aaa"}
     assert same_opportunity(fm, _lead(url="", location="bbb"), frozenset()) == DIFFERENT
     assert same_opportunity(fm, _lead(url="", location="bbb"), frozenset({"aaa"})) == UNKNOWN
+
+
+def test_bare_remote_versus_a_named_location_is_unknown_not_different():
+    # #119: this is the WRITE-path consumer of the same fix (see test_leads_location.py for
+    # the _compare_locations unit tests, and test_leads_cluster.py for the read-path #5
+    # dedupe-proposal consumer). Vault._reconcile turns a same_opportunity UNKNOWN verdict
+    # into "merge" (last_seen bump only), not a second note -- so a bare-Remote scrape landing
+    # on an existing named-location note now merges at INGEST time rather than minting a
+    # duplicate a human would later have to notice via `leads dedupe`.
+    fm = {"url": "", "location": "aaa"}
+    assert same_opportunity(fm, _lead(url="", location="Remote"), frozenset()) == UNKNOWN
+    assert same_opportunity({"url": "", "location": "Remote"},
+                            _lead(url="", location="aaa"), frozenset()) == UNKNOWN
