@@ -213,7 +213,10 @@ def test_from_dossier_finds_a_jobposting_inside_a_later_blocks_graph():
     # @type and abstains.
     d = {"page_title": "", "structured_data": json.dumps([
         {"@type": "Organization", "name": "Example Board"},
-        {"@context": "https://schema.org", "@graph": [
+        # `@context` is carried only for shape realism -- `_iter_nodes` never reads
+        # it (it looks at `@graph` and `@type`), so the value is a placeholder rather
+        # than the real vocabulary URL, per this suite's no-real-URLs rule.
+        {"@context": "https://schema.invalid", "@graph": [
             {"@type": "WebPage"},
             {"@type": "JobPosting", "hiringOrganization": {"name": "Example Co"}},
         ]},
