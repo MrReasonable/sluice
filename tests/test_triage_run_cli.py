@@ -1,7 +1,7 @@
 """#112: `sluice triage run` at the CLI layer -- cmd_triage_run must surface the actual
 triage.engine failure MESSAGES on stderr, not just their count. `report.failures` already
-carries actionable strings (dossier fetch errors, judge/lead_id mismatches, company-resolve
-and apply-race conflicts); a bare `failures=N` gives a user no way to act on them short of
+carries actionable strings (dossier fetch errors, judge/lead_id mismatches, and
+company-resolve conflicts); a bare `failures=N` gives a user no way to act on them short of
 re-running under a debugger."""
 from sluice.cli import _build_parser, cmd_triage_run
 from sluice.core.app import Sluice

@@ -512,7 +512,11 @@ def test_apply_classification_race_produces_no_persisted_audit_entry(tmp_path, t
     after = v.read_leads()[0]
     assert after.status == "applied"                       # the vault clobber is stopped
     assert report.counts["skipped"] >= 1
-    assert any("apply-race" in f for f in report.failures)
+    # #118: this is a genuine no-op (require_status refused, nothing lost), not a
+    # failure -- a real content race would raise VaultConflict instead, a separate,
+    # already-correctly-reported path (`report.failures.append(f"apply {note.ref}: {e}")`
+    # above).
+    assert report.failures == []
     assert audit.read_recent(30) == []                      # no false persisted entry
 
 
@@ -589,7 +593,9 @@ def test_apply_verdict_race_produces_no_persisted_audit_entry(tmp_path, titles, 
     after = v.read_leads()[0]
     assert after.status == "applied"
     assert report.counts["skipped"] >= 1
-    assert any("apply-race" in f for f in report.failures)
+    # #118: same reasoning as the classify-pass test above -- a benign no-op, not a
+    # failure.
+    assert report.failures == []
     assert audit.read_recent(30) == []
 
 
