@@ -3,15 +3,23 @@ Declarative extractor JS + an example search (override via config).
 
 `company_from_url` (#109) is a tier-1, free URL-pattern extractor: a Wellfound
 job/company URL carries the hiring company as a `/company/<slug>/...` path
-segment, delimited by the literal `/company/` segment on one side and the next
-`/` (or end of string) on the other -- unambiguous, so this abstains (returns
-None) for any URL shape that does not carry that segment, rather than guess a
-split point. Verified against a real `job-sluice ingest test-source wellfound
---raw` capture, not committed from the illustrative pattern alone: real company
-cards link to a BARE `/company/<slug>` with no trailing path at all (the
-end-of-string boundary), and real job-posting cards link to
-`/jobs/<id>-<title-slug>` with no `/company/` segment whatsoever, so they
-correctly abstain rather than needing a split.
+segment, delimited by the literal `/company/` segment on one side and a real
+URL boundary -- `/`, `?`, `#`, or end of string -- on the other. Unambiguous, so
+this abstains (returns None) for any URL shape that does not carry that segment,
+rather than guess a split point. Verified against a real `job-sluice ingest
+test-source wellfound --raw` capture, not committed from the illustrative
+pattern alone: real company cards link to a BARE `/company/<slug>` with no
+trailing path at all (the end-of-string boundary), and real job-posting cards
+link to `/jobs/<id>-<title-slug>` with no `/company/` segment whatsoever, so
+they correctly abstain rather than needing a split.
+
+The trailing `(?=[/?#]|$)` is what makes "delimited" true rather than merely
+intended. Without it the slug's `[a-z0-9-]+` simply stops at the first character
+it cannot consume and the match SUCCEEDS anyway, so a URL whose segment does not
+end where the slug does -- `/company/example-co.invalid` -- would yield
+"Example Co" from a host this extractor has no claim over. Abstaining is the
+only safe answer for a shape the capture never showed: tier 2 is still there,
+and a wrong tier-1 name is written to the lead as if it were proven.
 """
 import re
 
@@ -20,7 +28,8 @@ from sluice.ingest.sources import register
 
 _JS = """(()=>{const r=[];document.querySelectorAll('a[href*="/company/"], a[href*="/jobs/"]').forEach(a=>{const t=a.querySelector('h2,h3,div[class*="title"]')?.textContent?.trim()||a.textContent.trim();const p=a.closest('div,li');const co=p?.querySelector('div[class*="company"], span[class*="company"]')?.textContent?.trim()||'';if(t&&t.length>3&&!r.find(x=>x.title===t))r.push({title:t,company:co,location:'',link:a.href,salary:''})});return r.slice(0,15)})()"""
 
-_COMPANY_URL_RE = re.compile(r"^https?://(?:www\.)?wellfound\.com/company/([a-z0-9-]+)")
+_COMPANY_URL_RE = re.compile(
+    r"^https?://(?:www\.)?wellfound\.com/company/([a-z0-9-]+)(?=[/?#]|$)")
 
 
 class WellfoundSource(BrowserListSource):
