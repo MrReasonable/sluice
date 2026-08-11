@@ -116,35 +116,37 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
                 # conflict. continue skips the counting/audit below for this lead.
                 report.failures.append(f"apply {note.ref}: {e}")
                 continue
-        if outcome == "skipped-race":
-            # #109 round 3 (arch3-001/inv3-001): apply_classification's own
-            # require_status guard already stopped the vault write -- this closes
-            # the remaining gap, a PERSISTED audit-log entry claiming a decision
-            # that never actually applied, which render_rejected_note would
-            # otherwise render into a human-facing summary as if it had.
-            report.failures.append(
-                f"apply-race {note.ref}: the {decision} write did not land (status "
-                "changed, the value was already current, or the status is not one "
-                "triage owns)")
-        key = "skipped" if outcome in ("skipped", "skipped-race") else (
+        # #109 round 3 (arch3-001/inv3-001) established `unchanged` (named
+        # `skipped-race` before #118) as its own outcome distinct from `skipped`:
+        # apply_classification's require_status guard stopping the vault write closes
+        # a gap, a PERSISTED audit-log entry claiming a decision that never actually
+        # applied, which render_rejected_note would otherwise render into a
+        # human-facing summary as if it had. #118: it is NEVER actually a race --
+        # apply_classification's own docstring/comment now says so, and a real content
+        # collision raises VaultConflict instead (caught above, a separate, already
+        # correctly `report.failures`-reported path) -- so it does NOT belong in
+        # report.failures. It is grouped with `skipped` below purely for counting/audit
+        # purposes, which is unrelated to whether it is a failure.
+        key = "skipped" if outcome in ("skipped", "unchanged") else (
             "dismiss" if decision == "reject" else "needs_review")
         report.counts[key] = report.counts.get(key, 0) + 1
         # BOTH skip outcomes, grouped exactly as `key` above groups them, because they
         # have the identical shape: a decision was computed and NO write happened.
-        # `skipped-race` is #109's own (the fresh-status re-read refused); plain
-        # `skipped` is the pre-existing one (apply.py's _guarded() refused, because the
-        # lead has already left TRIAGE_OWNED -- it is `applied`, `offer`, ...). The
-        # argument that excludes the first excludes the second unchanged: a persisted
-        # audit line claiming a decision that never applied, which render_rejected_note
-        # would put in front of a human as if it had. Both are still COUNTED (`key`
-        # above): a skip is reported, just not audited as a decision.
+        # `unchanged` is #109's own (the fresh-status re-read refused, or the value was
+        # already current); plain `skipped` is the pre-existing one (apply.py's
+        # _guarded() refused, because the lead has already left TRIAGE_OWNED -- it is
+        # `applied`, `offer`, ...). The argument that excludes the first excludes the
+        # second unchanged: a persisted audit line claiming a decision that never
+        # applied, which render_rejected_note would put in front of a human as if it
+        # had. Both are still COUNTED (`key` above): a skip is reported, just not
+        # audited as a decision.
         #
         # dry_run forces `skipped` at both sites too, so under dry_run _audit is now
         # never called at all. `_audit`'s own `if not dry_run` and the `not dry_run`
         # on the render gate below are kept regardless: neither site's correctness
         # should depend on a fact established 100 lines away, and a future outcome
         # value that reaches _audit under dry_run must still write nothing.
-        if outcome not in ("skipped", "skipped-race"):
+        if outcome not in ("skipped", "unchanged"):
             _audit({"ts": today, "slug": note.slug,
                     "company": note.fm.get("company", ""), "role": note.fm.get("role", ""),
                     "url": note.fm.get("url", ""), "stage": "classify",
@@ -281,17 +283,14 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
                     # Symmetric with the classify-pass site above.
                     report.failures.append(f"apply {note.ref}: {e}")
                     continue
-            if outcome == "skipped-race":
-                # Symmetric with the classify-pass site above.
-                report.failures.append(
-                    f"apply-race {note.ref}: the verdict write did not land (status "
-                    "changed, the value was already current, or the status is not one "
-                    "triage owns)")
-            key = "skipped" if outcome in ("skipped", "skipped-race") else _status.normalize(
+            # Symmetric with the classify-pass site above, including #118: `unchanged`
+            # is grouped with `skipped` for counting/audit purposes only -- it is never
+            # reported in report.failures, since it is reachable only via a benign
+            # require_status no-op, never a real content collision.
+            key = "skipped" if outcome in ("skipped", "unchanged") else _status.normalize(
                 verdict.get("verdict", ""))
             report.counts[key] = report.counts.get(key, 0) + 1
-            # Symmetric with the classify-pass site above, both outcomes and both reasons.
-            if outcome not in ("skipped", "skipped-race"):
+            if outcome not in ("skipped", "unchanged"):
                 _audit({"ts": today, "slug": verdict["lead_id"],
                         "company": note.fm.get("company", ""),
                         "role": note.fm.get("role", ""), "url": note.fm.get("url", ""),
