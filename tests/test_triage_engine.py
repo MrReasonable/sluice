@@ -11,11 +11,28 @@ from sluice.triage.engine import run
 import sluice.triage.engine as eng
 
 
-def _note(v, name, fm_lines):
-    leads = os.path.join(v.dir, "Job Applications", "Job Leads")
+def _note(v, name, fm_lines, *, subdir=""):
+    # `subdir` files the note in a folder under Job Leads, which the scan walks
+    # recursively (#1). That is the only way to seat one FILENAME -- and so one
+    # store-issued slug -- on two notes, since a single directory cannot hold two.
+    leads = os.path.join(v.dir, "Job Applications", "Job Leads", subdir)
     os.makedirs(leads, exist_ok=True)
     open(os.path.join(leads, name), "w").write(
         "---\n" + "\n".join(fm_lines) + "\n---\n# body\n")
+
+
+# The judge's per-dossier id line, as the doubles below read it back. The id is the REST
+# OF THE LINE: `lead_id` is the note's store-issued slug, and a real slug is a note
+# FILENAME -- `Example Ltd - Example Role`, spaces and all. A `(\S+)` here captured only
+# the first token, and an unmatched lead_id is dropped SILENTLY by the engine (a
+# `continue`), so a double that mis-parsed it would report a run that judged nothing as a
+# run with nothing to judge. The vault's `_sanitize` maps the C0 controls out of every name
+# it issues, so one LINE is always the whole id.
+#
+# `[^\n]`, not `.`: `_CompanyKeyedBackend` below compiles this into a pattern it runs with
+# re.S, where `.` matches newlines too and a greedy `(.+)` swallowed the rest of the prompt.
+# Spelling the exclusion out keeps the id one line whatever flags a caller adds.
+_DOSSIER_ID = r"Dossier \d+ lead_id: ([^\n]+)"
 
 
 class _Backend:
@@ -33,17 +50,22 @@ class _Backend:
 
     def complete(self, prompt):
         self.prompts.append(prompt)
-        ids = re.findall(r"Dossier \d+ lead_id: (\S+)", prompt)
+        ids = re.findall(_DOSSIER_ID, prompt)
         return json.dumps([{"lead_id": i, "verdict": "shortlist",
                             "relevance_score": 80} for i in ids])
 
 
-def _fields(company, role, status="new"):
+def _fields(company, role, status="new", *, url="https://x/y"):
     # location "remote" matches TriageConfig's neutral default
     # target_locations=["remote"], so these engine-flow tests don't depend
     # on a specific geo preference.
+    #
+    # `url` defaults to the one every caller shared before it was a parameter, so two
+    # notes built by this helper collide on `DossierCache.cache_key`'s url hash unless a
+    # caller says otherwise -- which the two-lead identity tests below rely on in BOTH
+    # directions, one taking the default and one overriding it.
     return [f'company: "{company}"', f'role: "{role}"', 'location: "remote"',
-            'salary: ""', 'role_type: "permanent"', 'url: "https://x/y"',
+            'salary: ""', 'role_type: "permanent"', f'url: "{url}"',
             f"status: {status}", "score: 0", 'glassdoor_rating: ""',
             'culture_flags: ""', 'relevance_notes: ""']
 
@@ -135,7 +157,7 @@ class _CapturingBackend:
         self.prompts = []
     def complete(self, prompt):
         self.prompts.append(prompt)
-        ids = re.findall(r"Dossier \d+ lead_id: (\S+)", prompt)
+        ids = re.findall(_DOSSIER_ID, prompt)
         return json.dumps([{"lead_id": i, "verdict": "research",
                             "relevance_score": 65} for i in ids])
 
@@ -668,3 +690,136 @@ def test_the_judge_reads_lead_fields_off_the_note_not_a_stale_cached_snapshot(tm
     assert f'"position": "{accept[0].title()}"' in prompt
     assert '"location": "remote"' in prompt
     assert '"role_type": "permanent"' in prompt
+
+
+class _CompanyKeyedBackend:
+    """Verdicts keyed on the COMPANY the dossier carries, not on position in the batch.
+
+    The identity defect the tests below pin is invisible to `_Backend`'s uniform
+    "shortlist for everyone": a verdict routed to the wrong note carries the same value
+    as the one that belonged there, so every status still lands where it would have.
+    Differing per company is what makes a misroute observable at all -- and keying on the
+    company TEXT rather than on `lead_id` is deliberate, since `lead_id` is the field
+    under test and a double that trusted it could not witness a collision in it."""
+    last_backend = "primary"
+
+    def __init__(self, by_company):
+        self.by_company = by_company
+        self.prompts = []
+
+    def complete(self, prompt):
+        self.prompts.append(prompt)
+        out = []
+        for lead_id, blob in re.findall(
+                _DOSSIER_ID + r"\n```json\n(.*?)\n```", prompt, re.S):
+            company = json.loads(blob).get("company", "")
+            out.append({"lead_id": lead_id, "verdict": self.by_company[company],
+                        "relevance_score": 70})
+        return json.dumps(out)
+
+
+def test_two_leads_sharing_one_url_each_get_their_own_verdict(tmp_path, titles):
+    """Two DIFFERENT leads at one url -- a re-scrape not yet deduped, or a cross-post --
+    must not have their verdicts swapped or dropped.
+
+    `DossierCache.cache_key` hashes the url (#109), which is right for its actual job:
+    two leads at one page SHOULD share one cache entry rather than fetch the page twice.
+    What was wrong is that `get_or_build` then stamped that STORAGE key into the dossier's
+    own `lead_id`, and the enrich pass keyed judge-round-trip IDENTITY on it -- so both
+    leads were presented to the judge under one id, both verdicts came back wearing it,
+    and `note_by_id`/`by_id` resolved both to whichever note was inserted LAST. One lead
+    took the other's verdict; the other took none. Nothing raised."""
+    accept, _ = titles
+    v = Vault(str(tmp_path / "vault"))
+    # One url (_fields hardcodes it), two companies. The same accepted title on both so
+    # each clears the pre-gate and reaches the judge, which is where the identity is used.
+    _note(v, "alpha.md", _fields("Alpha Co", accept[0].title()))
+    _note(v, "beta.md", _fields("Beta Co", accept[0].title()))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.accept_titles = list(accept)
+
+    backend = _CompanyKeyedBackend({"Alpha Co": "dismiss", "Beta Co": "shortlist"})
+    report = eng.run(v, cfg, backend, _cache(tmp_path), audit, statuses=("new",))
+
+    after = v.read_leads()
+    assert {n.fm["url"] for n in after} == {"https://x/y"}, \
+        "the shared url is this test's premise; _fields no longer supplies one"
+    assert {n.fm["company"]: n.status for n in after} == \
+        {"Alpha Co": "dismiss", "Beta Co": "shortlist"}
+    assert report.judged == 2
+    assert report.failures == []
+
+
+def test_two_leads_with_different_urls_each_get_their_own_verdict(tmp_path, titles):
+    """The ordinary case, as a regression check on the fix above: distinct urls, distinct
+    cache entries, and distinct slugs. It passed before the identity change and must keep
+    passing after it -- a fix that routed by something CONSTANT per run would satisfy the
+    collision test above (both notes named in one failure) while breaking every normal
+    multi-lead run, and nothing else in this file judges two leads with differing
+    verdicts."""
+    accept, _ = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "alpha.md", _fields("Alpha Co", accept[0].title(), url="https://x/1"))
+    _note(v, "beta.md", _fields("Beta Co", accept[0].title(), url="https://x/2"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.accept_titles = list(accept)
+
+    backend = _CompanyKeyedBackend({"Alpha Co": "dismiss", "Beta Co": "shortlist"})
+    report = eng.run(v, cfg, backend, _cache(tmp_path), audit, statuses=("new",))
+
+    after = v.read_leads()
+    assert {n.fm["url"] for n in after} == {"https://x/1", "https://x/2"}
+    assert {n.fm["company"]: n.status for n in after} == \
+        {"Alpha Co": "dismiss", "Beta Co": "shortlist"}
+    assert report.judged == 2
+    assert report.failures == []
+
+
+def test_two_kept_leads_at_one_slug_are_both_refused_and_reported(tmp_path, titles):
+    """The residual non-uniqueness in the identity the fix above moved to.
+
+    `note.slug` is unique BY CONSTRUCTION on a flat store -- one directory cannot hold two
+    files at one basename -- but a recursive scan (#1) lets a human seat that name in two
+    folders, and then keying on it has the same last-twin-wins defect the url hash had.
+    So this takes the verdict every other consumer takes: index_by_slug DROPS both twins
+    rather than picking one, and the run says so. Both halves are asserted, because
+    dropping in silence is the mirror failure -- a lead gone from the run with nothing a
+    human could act on.
+
+    A third, unambiguous lead is judged in the same run: the refusal is scoped to the
+    twins and must not cost the batch."""
+    accept, _ = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "twin.md", _fields("Alpha Co", accept[0].title(), url="https://x/1"),
+          subdir="folder-a")
+    _note(v, "twin.md", _fields("Beta Co", accept[0].title(), url="https://x/2"),
+          subdir="folder-b")
+    _note(v, "solo.md", _fields("Gamma Co", accept[0].title(), url="https://x/3"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.accept_titles = list(accept)
+
+    backend = _CompanyKeyedBackend({"Alpha Co": "dismiss", "Beta Co": "shortlist",
+                                    "Gamma Co": "shortlist"})
+    report = eng.run(v, cfg, backend, _cache(tmp_path), audit, statuses=("new",))
+
+    after = v.read_leads()
+    assert len(after) == 3, "the twins are both READ; it is acting on them that is refused"
+    assert {n.slug for n in after} == {"twin", "solo"}, \
+        "the two twins must really share one store-issued slug"
+    statuses = {n.fm["company"]: n.status for n in after}
+    # Neither twin judged -- not the wrong one, and not one of them arbitrarily either.
+    assert statuses["Alpha Co"] == "new"
+    assert statuses["Beta Co"] == "new"
+    assert statuses["Gamma Co"] == "shortlist"      # the batch still ran
+    assert report.judged == 1
+
+    # Reported, and naming the two FILES rather than the slug they share: repeating the
+    # slug names nothing a human can act on, whereas the refs are what they rename.
+    assert len(report.failures) == 1, report.failures
+    failure = report.failures[0]
+    assert "twin" in failure
+    for ref in (n.ref for n in after if n.slug == "twin"):
+        assert str(ref) in failure, failure
