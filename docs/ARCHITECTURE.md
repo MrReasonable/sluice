@@ -629,6 +629,25 @@ one. The row carries no `--to applied`: `confirm` resolves a lead by slug, and t
 slug is the one that resolves to two notes. It names the two notes to rename or
 merge, and re-surfaces every run until that happens.
 
+A FIFTH consumer, `triage/engine.py`'s enrich pass, reached the same defect by a
+different route and needed the recursive scan for none of it. It did not key on
+`note.slug` at all: the judge round trip is keyed on the dossier's `lead_id`, and
+`DossierCache.get_or_build` stamped that field from `cache_key` — a hash of the URL, so
+that two leads at one page share one cache entry rather than fetch it twice. That is
+right for STORAGE and is the saving `cache_key` exists for; it is wrong for IDENTITY.
+Two not-yet-deduped leads at one url (a re-scrape, a cross-post) were presented to the
+judge under one id, both verdicts came back wearing it, and `note_by_id`/`by_id`
+resolved each to whichever note was inserted last — one lead took the other's verdict,
+the other took none, silently. The judge's copy of the dossier now overrides `lead_id`
+to `note.slug`, alongside the four lead fields it already re-derives there, so the
+on-disk cache entry and `cache_key` are untouched; that also makes the judge-stage audit
+line's `slug` field hold a real slug, which it never did. Keying on the slug then brings
+the bounded-uniqueness problem with it, so the pass takes `index_by_slug`'s verdict on
+the twins like the other four, over the KEPT set rather than the whole read (a twin the
+classify pass rejected cannot be misrouted — that write goes through `note.ref`), and
+appends the shared `ambiguous_slug_warnings` line to `TriageReport.failures` rather than
+only logging it, since a lead dropped from the run in silence is the mirror failure.
+
 `read_leads` returns both twins — dropping one would take a lead out of the write
 path's lookup too, and the next scrape would re-create it — and warns, naming both
 paths. That warning is deduped per store on `(slug, refs)`, on the discipline the

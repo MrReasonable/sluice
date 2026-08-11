@@ -11,11 +11,17 @@ only its write is skipped. no_llm runs classify + (tier-1-only) resolve + apply
 + audit only. Every lead already in the application lifecycle is skipped by the
 apply layer, so triage never clobbers human state -- and a skipped lead is
 audited nowhere, because no decision of ours landed on it.
+
+A verdict is routed back to its note by the dossier's `lead_id`, which the enrich
+pass sets to the store-issued `note.slug` -- NOT the cache's storage key, which is
+a url hash two leads at one page deliberately share. Two kept leads at one slug are
+refused outright and reported, on `index_by_slug`'s shared verdict; see there.
 """
 from dataclasses import dataclass, field
 from datetime import date
 
 from sluice.core import status as _status
+from sluice.core.leads import ambiguous_slug_warnings, index_by_slug
 from sluice.core.log import get_logger
 from sluice.core.protocols import VaultConflict
 from sluice.triage import resolve
@@ -148,7 +154,41 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
     if keeps and not no_llm:
         dossiers = []
         note_by_id = {}
+        # The judge round trip is keyed on the dossier's `lead_id` -- it is what the prompt
+        # labels each dossier with and what every verdict comes back wearing -- so that field
+        # has to be UNIQUE PER NOTE. `DossierCache.cache_key`, which get_or_build stamps into
+        # it, is not: it hashes the url so that two leads at one page share ONE cache entry,
+        # which is exactly the double-fetch saving it exists for and is right for STORAGE.
+        # Two not-yet-deduped leads at one url (a re-scrape, a cross-post) therefore reached
+        # the judge under one id, came back as two verdicts wearing it, and both dicts here
+        # resolved every one of them to whichever note was inserted LAST: one lead silently
+        # took the other's verdict, the other took none, and nothing raised. So `lead_id` is
+        # overridden to `note.slug` below -- the store-issued per-note identity (see
+        # core/protocols.py:LeadNote) -- while cache_key keeps its own job unchanged.
+        #
+        # That identity's uniqueness is BOUNDED rather than absolute: the vault's slug is the
+        # note filename, and a recursive scan (#1) lets a human seat one filename in two
+        # directories. index_by_slug is the one sanctioned way to key on it -- track, cv,
+        # `apply`'s batch path and `leads expire` all take the same verdict -- and it DROPS
+        # both twins rather than picking one, which is the same never-silently-misroute rule
+        # this whole block is about. Reported as well as skipped: a lead that vanishes from
+        # the run with nothing said is the mirror failure.
+        #
+        # Over `keeps`, not `notes`: the set at risk is the one presented to the judge in one
+        # batch. A twin the classify pass rejected never reaches here, and its own write went
+        # through `note.ref`, which is unique whatever the slug does -- so refusing the KEPT
+        # twin on its account would drop a lead nothing could have misrouted.
+        _, ambiguous = index_by_slug(keeps)
+        for msg in ambiguous_slug_warnings("triage: kept lead", ambiguous):
+            _log.warning("%s", msg)
+            report.failures.append(msg)
         for note in keeps:
+            if note.slug in ambiguous:
+                # BEFORE get_or_build, on the same reasoning apply/select.py and cv/engine.py
+                # give for placing it before their own eligibility checks: what is wrong is
+                # the IDENTITY, which no later check inspects -- and a twin must not even be
+                # FETCHED for a judgment that could not be routed back to it.
+                continue
             try:
                 d = dossier_cache.get_or_build(note.fm)
             except Exception as e:
@@ -173,12 +213,31 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
             # written back: the cached JSON stays a faithful record of what was fetched.
             # `or` per field so a blank note value falls back rather than blanking a
             # populated dossier field.
+            #
+            # `lead_id` rides the same override for the same reason one step further out:
+            # the cache stamped its STORAGE key there, and identity is not storage. It is
+            # unconditional, with no `or` fallback -- the cached value is precisely what is
+            # wrong, and the store contract guarantees a non-empty slug for every note it
+            # returns, so there is nothing to fall back to and nothing to fall back FOR.
+            # Every consumer downstream of this line -- the judge prompt, note_by_id, by_id
+            # -- therefore sees the slug and not the url hash.
             d = {**d,
+                 "lead_id": note.slug,
                  "company": note.fm.get("company", "") or d.get("company", ""),
                  "position": note.fm.get("role", "") or d.get("position", ""),
                  "location": note.fm.get("location", "") or d.get("location", ""),
                  "role_type": note.fm.get("role_type", "") or d.get("role_type", "")}
             dossiers.append(d)
+            # Read back off `d`, never written as `note_by_id[note.slug]`, so this map and
+            # the id the judge is actually shown cannot drift apart: whatever ends up in the
+            # dossier's `lead_id` field one line above is what a verdict comes back with, and
+            # what this has to be keyed on. (It also keeps the shape out of
+            # tests/test_slug_indexing_discipline.py's sweep for a `.slug`-keyed subscript
+            # assignment -- which would be a false positive here, index_by_slug having
+            # already refused every twin, but is a warning worth heeding rather than
+            # exempting: that sweep only matches a PLAIN `.slug`, so this line was invisible
+            # to it either way and the collision it now cannot have went unseen for exactly
+            # that reason.)
             note_by_id[d["lead_id"]] = note
         # Compose the judge prompt from the candidate's vault-sourced criteria
         # (their editable source of truth), falling back to the baked-in default
@@ -188,6 +247,11 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
                          system_prompt=system_prompt)
         report.judged = len(verdicts)
         report.backend = getattr(backend, "last_backend", None)
+        # A bare comprehension, and safe as one only because of the two facts above: every
+        # `lead_id` in `dossiers` is a `note.slug`, and no two notes reaching this line share
+        # one -- `keeps` holds each note once (read_leads yields one LeadNote per path) and
+        # index_by_slug removed every slug two of them claimed. Take either away and this
+        # silently keeps the last twin again, which is the whole defect.
         by_id = {d["lead_id"]: d for d in dossiers}
         for verdict in verdicts:
             note = note_by_id.get(verdict.get("lead_id"))

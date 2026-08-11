@@ -27,7 +27,14 @@ _CV = "Compose a tailored CV for"                        # cv/compose.py:build_p
 _AUDIT = "You are auditing a CV for fabrication."        # cv/audit.py:build_audit_prompt
 _TRACK = "You track a job seeker's live applications."   # track/classify.py:build_prompt
 
-_DOSSIER_ID_RE = re.compile(r"Dossier \d+ lead_id: (\S+)")
+# The id is the REST OF THE LINE, not the first whitespace-free run. `lead_id` is the
+# note's store-issued slug, and a real slug is a note FILENAME -- `Example Ltd - Example
+# Role`, spaces and all. `(\S+)` captured `Example` and every verdict then failed to match
+# the dossier it came from, which the engine drops SILENTLY (an unmatched lead_id is a
+# `continue`), so the run simply judged nothing. The vault's `_sanitize` maps the C0
+# controls out of any name it issues, so one LINE is always the whole id -- spelled
+# `[^\n]` rather than `.` so it stays one line under a DOTALL flag too.
+_DOSSIER_ID_RE = re.compile(r"Dossier \d+ lead_id: ([^\n]+)")
 # The company is the tail of the interpolated first line; `.+ at` is greedy so
 # it binds the LAST " at ", not one inside a role title.
 _CV_COMPANY_RE = re.compile(r"^Compose a tailored CV for .+ at (.+)\.\s*$")
