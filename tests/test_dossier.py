@@ -84,7 +84,11 @@ def test_get_or_build_captures_page_title_and_structured_data(tmp_path):
 
 def test_get_or_build_loads_a_legacy_cached_dossier_missing_the_new_fields(tmp_path):
     # A pre-#109 cache entry never wrote page_title/structured_data at all.
-    legacy = {"schema_version": 2, "lead_id": "legacy-co-role", "company": "Legacy",
+    # "legacy" is the SEMANTIC label here (the era the entry was written in), which
+    # is why it stays in the test and lead_id names -- but it is also a real firm's
+    # name, so the company VALUE takes the suite's `Example …` placeholder form.
+    legacy = {"schema_version": 2, "lead_id": "legacy-co-role",
+             "company": "Example Legacy Co",
              "position": "Role", "location": "", "role_type": "",
              "lead_snapshot": {}, "jd": {"markdown": ""}, "glassdoor": {},
              "built_at": datetime(2026, 7, 7).isoformat()}
@@ -93,5 +97,5 @@ def test_get_or_build_loads_a_legacy_cached_dossier_missing_the_new_fields(tmp_p
                       fetcher=lambda lead: {"jd": {}, "glassdoor": {}},
                       clock=_clock(datetime(2026, 7, 8)))
     d = dc.get_or_build({"lead_id": "legacy-co-role"})
-    assert d["company"] == "Legacy"
+    assert d["company"] == "Example Legacy Co"
     assert d.get("page_title") is None    # never written; get_or_build must not raise
