@@ -211,22 +211,28 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
             #
             # Re-derived here, where the dossier is handed to the judge, rather than
             # written back: the cached JSON stays a faithful record of what was fetched.
-            # `or` per field so a blank note value falls back rather than blanking a
-            # populated dossier field.
+            # Unconditional, same as `lead_id` below: by this point every one of these
+            # four dossier fields IS the note's own value, re-derived -- never a fetched
+            # fact (the only genuinely fetched dossier fields are
+            # jd/glassdoor/page_title/structured_data) -- so a blank note value has
+            # nothing correct to fall back to. An `or` here would silently backfill a
+            # human's deliberate blank (e.g. clearing a wrong location for someone to
+            # refill) from a stale cached copy of what the field used to say -- the same
+            # staleness bug fixed for `lead_id` below, just reached from the correction
+            # path a human would actually take (#113).
             #
             # `lead_id` rides the same override for the same reason one step further out:
-            # the cache stamped its STORAGE key there, and identity is not storage. It is
-            # unconditional, with no `or` fallback -- the cached value is precisely what is
-            # wrong, and the store contract guarantees a non-empty slug for every note it
-            # returns, so there is nothing to fall back to and nothing to fall back FOR.
-            # Every consumer downstream of this line -- the judge prompt, note_by_id, by_id
-            # -- therefore sees the slug and not the url hash.
+            # the cache stamped its STORAGE key there, and identity is not storage. The
+            # store contract guarantees a non-empty slug for every note it returns, so
+            # there is nothing to fall back to and nothing to fall back FOR. Every
+            # consumer downstream of this line -- the judge prompt, note_by_id, by_id --
+            # therefore sees the slug and not the url hash.
             d = {**d,
                  "lead_id": note.slug,
-                 "company": note.fm.get("company", "") or d.get("company", ""),
-                 "position": note.fm.get("role", "") or d.get("position", ""),
-                 "location": note.fm.get("location", "") or d.get("location", ""),
-                 "role_type": note.fm.get("role_type", "") or d.get("role_type", "")}
+                 "company": note.fm.get("company", ""),
+                 "position": note.fm.get("role", ""),
+                 "location": note.fm.get("location", ""),
+                 "role_type": note.fm.get("role_type", "")}
             dossiers.append(d)
             # Read back off `d`, never written as `note_by_id[note.slug]`, so this map and
             # the id the judge is actually shown cannot drift apart: whatever ends up in the
