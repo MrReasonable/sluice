@@ -93,3 +93,23 @@ def test_wellfound_company_from_url_abstains_without_a_company_segment():
 def test_wellfound_company_from_url_abstains_on_an_empty_url():
     src = sources.get("wellfound")
     assert src.company_from_url("") is None
+
+
+def test_wellfound_company_from_url_abstains_when_the_slug_does_not_end_at_a_boundary():
+    # `[a-z0-9-]+` stops at the first character it cannot consume, and without the
+    # trailing `(?=[/?#]|$)` the match SUCCEEDS there regardless of what follows --
+    # so a path segment that merely STARTS like a slug yielded a confident
+    # "Example Co" for a URL that names something else entirely. Tier 1 writes its
+    # answer to the lead as proven, so a shape the real capture never showed must
+    # abstain and leave the work to tier 2, not guess where the slug ended.
+    src = sources.get("wellfound")
+    assert src.company_from_url("https://wellfound.com/company/example-co.invalid") is None
+
+
+@pytest.mark.parametrize("boundary", ["/", "/jobs/2837465-staff-engineer", "?ref=x", "#top"])
+def test_wellfound_company_from_url_matches_at_every_real_boundary(boundary):
+    # The paired positive control: the assertion above must be rejecting the
+    # non-boundary suffix specifically, not everything that follows a slug.
+    src = sources.get("wellfound")
+    assert src.company_from_url(f"https://wellfound.com/company/example-co{boundary}") \
+        == "Example Co"
