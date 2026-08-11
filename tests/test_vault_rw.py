@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from sluice.core.vault import Vault, _set_fm
+from sluice.core.vault import Vault, _set_fm, frontmatter_safe
 
 
 def _write_note(vault, name, fm_lines, body="body\n"):
@@ -70,8 +70,8 @@ def test_set_fm_writes_a_backslash_literal_verbatim(literal, expected):
     """_set_fm's replacement must be a CALLABLE: re.sub interprets escapes in a string
     replacement template, so every literal above was rewritten on its way through.
 
-    This is the layer that can fix it once for every caller. `triage/resolve.py`'s
-    `_safe` still rejects a backslash, but for the INDEPENDENT reason that a raw
+    This is the layer that can fix it once for every caller. `frontmatter_safe`
+    still rejects a backslash, but for the INDEPENDENT reason that a raw
     backslash inside a double-quoted YAML scalar is a YAML escape -- a different
     failure, in a different reader, that this function cannot see."""
     assert _set_fm('company: ""\nstatus: new', "company", literal) == \
@@ -85,6 +85,24 @@ def test_set_fm_leaves_an_ordinary_quoted_literal_byte_identical():
     assert _set_fm(inner, "glassdoor_rating", '"3.9"') == \
         'company: "Acme"\nglassdoor_rating: "3.9"\nstatus: new'
     assert _set_fm(inner, "culture_flags", '"a, b"') == inner + '\nculture_flags: "a, b"'
+
+
+@pytest.mark.parametrize("unsafe", ['Example "Co"', "Example\nCo", "Example\rCo",
+                                    "Example\\Co", "Example\x0bCo"])
+def test_frontmatter_safe_rejects_a_structural_or_unprintable_character(unsafe):
+    # #111: the guard resolve.py's `_safe` used for a scraped company name, generalized
+    # so every `_set_fm` caller writing unmediated external content (a parsed email link,
+    # a CLI-supplied URL) can reject the same class before it reaches a quoted scalar.
+    assert frontmatter_safe(unsafe) is None
+
+
+@pytest.mark.parametrize("blank", ["", "   ", None])
+def test_frontmatter_safe_rejects_blank_or_whitespace_only(blank):
+    assert frontmatter_safe(blank) is None
+
+
+def test_frontmatter_safe_returns_an_ordinary_value_unchanged():
+    assert frontmatter_safe("https://example.invalid/x") == "https://example.invalid/x"
 
 
 def test_normalize_all_statuses(tmp_path):

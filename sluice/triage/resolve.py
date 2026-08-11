@@ -7,21 +7,7 @@ worse than staying blank."""
 import json
 import re
 
-# The two PRINTABLE characters that are still structural, so `_safe`'s `str.isprintable()`
-# clause cannot speak to them. Both are structural INSIDE the double-quoted scalar
-# `core/vault.py`'s `_set_fm` writes (`company: "<value>"`). Measured against PyYAML
-# 6.0.3, standing in for the YAML parser a note is really read with once it leaves
-# sluice -- an editor's, a script's -- as opposed to sluice's own line-based `_fm_dict`,
-# which sees neither:
-#   `"`   closes the scalar early -- `company: "Foo"Bar"` is a ParserError.
-#   `\`   opens a YAML escape sequence. `"Foo\Bar Ltd"` is a ScannerError (unknown
-#         escape), and the sequences that happen to be VALID are the worse arm, not the
-#         better one: `"Foo\nBar"` parses to a real newline INSIDE the value, so what a
-#         human reads back is silently not what the board published.
-# `\n`/`\r` deliberately do NOT appear here: `str.isprintable()` already rejects them
-# along with the rest of the C0/C1 class, and listing them twice would leave two entries
-# no mutation of this tuple could ever redden.
-_UNSAFE_CHARS = ('"', "\\")
+from sluice.core.vault import frontmatter_safe
 
 # Anchored full-string, deliberately narrow: a page_title that merely CONTAINS
 # "at"/"hiring" without this exact shape must abstain, not guess a company from a
@@ -115,36 +101,13 @@ def _from_dossier(dossier: dict) -> str | None:
 def resolve_company(fm: dict, get_source, dossier_cache, *,
                     no_llm: bool, company_resolve_fetch: bool = False) -> str | None:
     """Tier 1 then tier 2, first confident match wins. Returns None -- never a guess --
-    when both abstain, INCLUDING when a candidate contains a frontmatter-structural
-    character. `get_source` is `sluice.ingest.sources.get` (or None, meaning tier 1
-    always abstains), injected so this stays testable without importing the real
-    registry."""
-    def _safe(candidate):
-        # Four rejections, none of which subsumes the next:
-        #  * falsy          -- both tiers' own abstain (None, or ""); also the None-guard
-        #                      the two attribute calls below need.
-        #  * all-whitespace -- PRINTABLE, so isprintable() waves it through, and truthy,
-        #                      so the extractor's own `or None` does too. wellfound.py's
-        #                      `slug.replace("-", " ").title()` returns "   " for a
-        #                      `/company/---` path segment. Checked on a COPY: the written
-        #                      value stays exactly what the board published.
-        #  * not printable  -- False for every C0/C1 control character, U+0085 NEL, and
-        #                      every Zl/Zp separator: the class that survives sluice's OWN
-        #                      frontmatter parser (`_fm_dict`/`_fm_value` split on "\n"
-        #                      specifically and match `(?m)`) but that a real YAML parser
-        #                      either refuses outright or, for NEL, silently folds to a
-        #                      space (measured: PyYAML 6.0.3). Reachable from ordinary
-        #                      well-formed input -- a legal
-        #                      `{"hiringOrganization":{"name":"Example\x0bCo"}}` is a
-        #                      string `_hiring_org_from_jsonld` returns intact. It also
-        #                      rejects non-ASCII whitespace (NBSP from an `&nbsp;`), which
-        #                      is an abstain rather than a mangle -- the direction this
-        #                      whole module errs in by design.
-        #  * _UNSAFE_CHARS  -- printable, but structural inside the quoted scalar; see there.
-        if not candidate or not candidate.strip() or not candidate.isprintable():
-            return None
-        return None if any(c in candidate for c in _UNSAFE_CHARS) else candidate
-
+    when both abstain, INCLUDING when a candidate fails `frontmatter_safe`
+    (falsy, all-whitespace, unprintable, or a frontmatter-structural character; the
+    all-whitespace case is reachable here specifically: wellfound.py's
+    `slug.replace("-", " ").title()` returns "   " for a `/company/---` path segment,
+    which is PRINTABLE and truthy, so only the guard's own `.strip()` clause catches
+    it). `get_source` is `sluice.ingest.sources.get` (or None, meaning tier 1 always
+    abstains), injected so this stays testable without importing the real registry."""
     url = fm.get("url") or ""
     src_id = fm.get("source") or ""
     if get_source is not None and url and src_id:
@@ -155,11 +118,11 @@ def resolve_company(fm: dict, get_source, dossier_cache, *,
         extractor = getattr(source, "company_from_url", None)
         if extractor:
             try:
-                hit = _safe(extractor(url))
+                hit = frontmatter_safe(extractor(url))
             except Exception:
                 hit = None  # a per-source extractor is newly-authored, hand-maintained regex
                             # code running against live scraped URLs -- exactly the untrusted
-                            # input class the _safe guard exists for. One source's bug on one
+                            # input class frontmatter_safe exists for. One source's bug on one
                             # unanticipated URL shape must not crash the whole triage run.
             if hit:
                 return hit
@@ -167,11 +130,11 @@ def resolve_company(fm: dict, get_source, dossier_cache, *,
         return None
     try:
         dossier = dossier_cache.get_or_build(fm)
-        return _safe(_from_dossier(dossier))
+        return frontmatter_safe(_from_dossier(dossier))
     except Exception:
         return None  # a failed fetch just means "couldn't resolve" -- fall through to
                      # classify()'s existing needs_review branch, not a fatal per-lead error.
-                     # Widened to also cover _from_dossier/_safe: tier 2 reads live,
+                     # Widened to also cover _from_dossier/frontmatter_safe: tier 2 reads live,
                      # board-authored JSON-LD and page titles with NO schema enforcement at
                      # read time -- hiringOrganization.name can be a list/dict/number/bool
                      # instead of a string (making _hiring_org_from_jsonld's own .strip()
