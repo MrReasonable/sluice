@@ -2232,13 +2232,42 @@ def _set_fm(inner: str, key: str, literal: str) -> str:
     scalar it hands over, because this layer cannot tell a wrapping quote from an
     embedded one: a blanket character check here would reject the quotes every
     existing quoted caller (`glassdoor_rating`, `culture_flags`) relies on. A
-    caller writing unmediated external content (e.g. #109's resolved company,
-    pulled from a scraped page's title or JSON-LD) therefore still needs its own
-    pre-quote guard; see `triage/resolve.py`'s `_safe`."""
+    caller writing unmediated external content (a scraped page, a parsed email, a
+    CLI value that may have been pasted rather than typed) therefore still needs
+    its own pre-quote guard; see `frontmatter_safe` below."""
     pat = rf"(?m)^\s*{re.escape(key)}\s*:.*$"
     if re.search(pat, inner):
         return re.sub(pat, lambda _m: f"{key}: {literal}", inner, count=1)
     return f"{inner}\n{key}: {literal}" if inner else f"{key}: {literal}"
+
+
+_FRONTMATTER_UNSAFE_CHARS = ('"', "\\")
+
+
+def frontmatter_safe(candidate: str | None) -> str | None:
+    """Whether `candidate` may be quoted and written verbatim as a frontmatter
+    scalar via `_set_fm` (`key: "<candidate>"`): returns it unchanged when safe,
+    `None` (abstain, never guess or mangle) otherwise.
+
+    Three independent rejections:
+     * falsy / all-whitespace -- nothing worth writing.
+     * not printable -- `str.isprintable()` rejects the C0/C1 control class,
+       U+0085 NEL, and every Zl/Zp separator: characters sluice's own line-based
+       `_fm_dict`/`_fm_value` (split on "\\n", `(?m)`) never sees, but a real YAML
+       parser reading the note back either refuses outright or (for NEL) silently
+       folds to a space. Measured against PyYAML 6.0.3.
+     * `"`/`\\` -- structural inside the double-quoted scalar `_set_fm`'s callers
+       write: `"` closes the scalar early (`ParserError`); `\\` opens a YAML
+       escape sequence -- some sequences raise (`ScannerError`), others (`\\n`)
+       silently become a real newline inside the value.
+
+    Every `_set_fm` caller writing unmediated external content needs this first:
+    `_set_fm` itself cannot tell a wrapping quote from an embedded one, so a
+    blanket check inside it would reject the quotes every quoted caller relies
+    on (see `_set_fm`'s docstring)."""
+    if not candidate or not candidate.strip() or not candidate.isprintable():
+        return None
+    return None if any(c in candidate for c in _FRONTMATTER_UNSAFE_CHARS) else candidate
 
 
 def _archived_from(inner: str | None) -> str | None:
