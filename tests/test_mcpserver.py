@@ -6,6 +6,7 @@ slug format could pass here while the shipped command matches nothing).
 """
 import dataclasses
 
+import sluice.mcpserver as mcpserver_mod
 from sluice.core.app import Sluice
 from sluice.core.config import Config
 from sluice.core.leads import Lead
@@ -62,6 +63,17 @@ def test_list_leads_filters_by_status(tmp_path):
     assert out["leads"][0]["status"] == "shortlist"
 
 
+def test_list_leads_accepts_a_non_canonical_status_alias_like_the_rest_of_the_cli(tmp_path):
+    # "dismissed" is a real alias sluice/core/status.py's _ALIASES normalizes to the
+    # canonical "dismiss" -- sluice/core/vault.py's read_leads already accepts it via
+    # the same normalize() call, so list_leads rejecting it would be a real divergence
+    # from what the rest of the CLI accepts (minor finding #4).
+    _seed(tmp_path, status="dismiss", title="Example Role", url="https://example.invalid/1")
+    out = list_leads(_app(tmp_path), statuses=["dismissed"])
+    assert out["count"] == 1
+    assert out["leads"][0]["status"] == "dismiss"
+
+
 def test_list_leads_rejects_an_unknown_status_naming_the_valid_set(tmp_path):
     try:
         list_leads(_app(tmp_path), statuses=["not-a-real-status"])
@@ -69,6 +81,17 @@ def test_list_leads_rejects_an_unknown_status_naming_the_valid_set(tmp_path):
     except ValueError as e:
         assert "not-a-real-status" in str(e)
         assert "shortlist" in str(e)  # a real canonical status, proving the valid set is named
+
+
+def test_list_leads_unknown_status_error_names_every_bad_status_not_just_the_first(tmp_path):
+    try:
+        list_leads(_app(tmp_path), statuses=["nope-one", "nope-two"])
+        assert False, "expected a ValueError"
+    except ValueError as e:
+        # deferred-minor #6: `unknown` is the full sorted set of bad statuses -- the
+        # message must name ALL of them, not just unknown[0].
+        assert "nope-one" in str(e)
+        assert "nope-two" in str(e)
 
 
 def test_list_leads_limit_truncates_and_reports_truncated(tmp_path):
@@ -87,6 +110,26 @@ def test_list_leads_no_limit_returns_everything_untruncated(tmp_path):
     out = list_leads(_app(tmp_path))
     assert out["count"] == 2
     assert out["truncated"] is False
+
+
+def test_list_leads_negative_limit_raises_rather_than_reporting_a_false_truncated(tmp_path):
+    # minor finding #5: `limit is not None and len(notes) > limit` is True for a
+    # negative limit even against an EMPTY store, which is a wrong `truncated` flag,
+    # not a real truncation. Raise loudly instead, the same way an unknown status does.
+    try:
+        list_leads(_app(tmp_path), limit=-1)
+        assert False, "expected a ValueError"
+    except ValueError as e:
+        assert "-1" in str(e)
+
+
+def test_list_leads_empty_statuses_list_falls_through_to_no_filter(tmp_path):
+    # deferred-minor #7: `if statuses:` is falsy for `[]`, so an explicit empty list
+    # behaves identically to `None` -- the entire backlog, not zero leads. Pinned as
+    # intentional (matches None's "no filter" semantics) rather than left unrecorded.
+    _seed(tmp_path, status="shortlist", title="Example Role", url="https://example.invalid/1")
+    out = list_leads(_app(tmp_path), statuses=[])
+    assert out["count"] == 1
 
 
 def test_list_leads_surfaces_the_cv_flags(tmp_path):
@@ -168,19 +211,29 @@ def test_health_wraps_health_report_as_asdict_sources(tmp_path):
 # for the full argument.
 
 def test_mcp_imported_nowhere_outside_build_server():
-    """The AST sweep: every mcp-named Import/ImportFrom node in sluice/cli.py and
-    sluice/mcpserver.py must be a DESCENDANT of build_server()'s own FunctionDef --
-    not merely "build_server's body contains at least one such node" (a stray
+    """The AST sweep, REPO-WIDE: every mcp-named Import/ImportFrom node in EVERY
+    .py file under sluice/ must be a DESCENDANT of build_server()'s own FunctionDef
+    -- not merely "build_server's body contains at least one such node" (a stray
     top-level `import mcp` sitting ALONGSIDE a correctly-guarded one must still fail
-    this)."""
+    this) -- and only sluice/mcpserver.py itself gets that exemption at all; every
+    other file must carry ZERO mcp-named imports anywhere.
+
+    Widened per important finding #2 of the final whole-branch review: the actual
+    rule (.rulesync/rules/CLAUDE.md) is repo-wide -- "nothing outside `job-sluice
+    mcp serve` may cause it to load; a bare install never imports it" -- not "only
+    cli.py and mcpserver.py". A future `from mcp import ...` dropped into some other
+    sluice/ module would have passed the old two-file sweep silently; this one
+    still catches it. Node-classification logic (Import/ImportFrom detection,
+    mcp-name matching, build_server-subtree allowlisting) is unchanged from the
+    original two-file version -- only WHICH FILES get swept changed."""
     import ast
-    import inspect
+    import pathlib
 
-    import sluice.cli as cli_mod
-    import sluice.mcpserver as mcpserver_mod
+    repo_root = pathlib.Path(__file__).resolve().parents[1]
+    sluice_dir = repo_root / "sluice"
+    mcpserver_path = sluice_dir / "mcpserver.py"
 
-    def _bad_mcp_imports(module, allowed_func_name=None):
-        tree = ast.parse(inspect.getsource(module))
+    def _bad_mcp_imports(tree, allowed_func_name=None):
         allowed_ids = set()
         if allowed_func_name is not None:
             for node in ast.walk(tree):
@@ -201,10 +254,22 @@ def test_mcp_imported_nowhere_outside_build_server():
                         bad.append(name)
         return bad
 
-    assert _bad_mcp_imports(cli_mod) == [], "sluice/cli.py must carry no mcp import"
-    assert _bad_mcp_imports(mcpserver_mod, allowed_func_name="build_server") == [], (
-        "sluice/mcpserver.py must import mcp only inside build_server()'s own "
-        "function body (directly, or via a helper nested inside it)")
+    checked = 0
+    for path in sorted(sluice_dir.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        checked += 1
+        if path == mcpserver_path:
+            bad = _bad_mcp_imports(tree, allowed_func_name="build_server")
+            assert bad == [], (
+                "sluice/mcpserver.py must import mcp only inside build_server()'s "
+                "own function body (directly, or via a helper nested inside it)")
+        else:
+            bad = _bad_mcp_imports(tree)
+            assert bad == [], f"{path} must carry no mcp import at all: {bad!r}"
+    # SCOPE, not just non-empty -- a broken/empty glob would pass this test vacuously.
+    # sluice/ carries 100+ .py files as of #105; 50 is a conservative floor, matching
+    # tests/test_docs_claims.py's own sluice/-wide sweep's floor.
+    assert checked >= 50, f"the sweep read only {checked} files under sluice/"
 
 
 def test_cmd_mcp_serve_degrades_to_rc2_when_mcp_is_absent(monkeypatch, capsys):
@@ -229,3 +294,47 @@ def test_cmd_mcp_serve_degrades_to_rc2_when_mcp_is_absent(monkeypatch, capsys):
     args = _build_parser().parse_args(["mcp", "serve"])
     assert cmd_mcp_serve(args, Config()) == 2
     assert "job-sluice[mcp]" in capsys.readouterr().err
+
+
+# ── serve() coverage (important finding #1) ───────────────────────────────────
+#
+# Neither of the two tests above exercises `serve()` itself: `build_server()` is
+# covered directly (import-guard tests above) and via the SDK's in-memory Client
+# (tests/functional/test_mcp_contract.py), and cmd_mcp_serve's FAILURE path (mcp
+# absent) is covered above -- but nothing asserted `serve()` actually calls
+# `.run("stdio")`, nor that cmd_mcp_serve's SUCCESS path returns 0. A typo'd
+# transport literal (e.g. "studio") would raise `ValueError: Unknown transport:
+# studio`, which sluice/cli.py's broad `except ValueError` around main()'s whole
+# dispatch converts into an ordinary-looking `job-sluice: Unknown transport:
+# studio` / rc 2 -- indistinguishable from a malformed-config usage error, on the
+# one command whose entire job is starting a server.
+
+def test_serve_builds_the_server_and_runs_it_over_stdio(monkeypatch):
+    """`serve()`'s only two responsibilities: build once via `build_server()`, then
+    run the result over the LITERAL string "stdio" -- not some other transport a
+    typo could introduce. `build_server` is monkeypatched to a recorder so this
+    never touches the real `mcp` package or blocks on a real `.run()`."""
+    calls = []
+
+    class _FakeMcpServer:
+        def run(self, transport):
+            calls.append(transport)
+
+    monkeypatch.setattr(mcpserver_mod, "build_server", lambda config: _FakeMcpServer())
+    mcpserver_mod.serve(object())
+    assert calls == ["stdio"]
+
+
+def test_cmd_mcp_serve_returns_0_on_the_success_path(monkeypatch):
+    """Complements test_cmd_mcp_serve_degrades_to_rc2_when_mcp_is_absent above,
+    which only covers the McpNotInstalled failure path. `mcpserver.serve` itself is
+    monkeypatched (rather than `build_server`) because `cmd_mcp_serve` calls
+    `mcpserver.serve(config)` directly -- the point here is proving cmd_mcp_serve's
+    own success-path return value, not re-proving serve()'s internals (covered by
+    the test directly above)."""
+    from sluice.cli import _build_parser, cmd_mcp_serve
+    from sluice.core.config import Config
+
+    monkeypatch.setattr(mcpserver_mod, "serve", lambda config: None)
+    args = _build_parser().parse_args(["mcp", "serve"])
+    assert cmd_mcp_serve(args, Config()) == 0

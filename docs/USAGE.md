@@ -233,9 +233,10 @@ No flags. Runs sluice as a Model Context Protocol server over stdio, so an agent
 or otherwise) can call `list_leads`/`get_lead`/`doctor`/`health` directly instead of shelling
 out to the CLI and parsing its stdout. Read-only for now -- see
 [`docs/ARCHITECTURE.md`](ARCHITECTURE.md)'s surface/adapter section. Needs
-`pip install -e '.[mcp]'`; if the `mcp` package is not installed, exits 2 (`job-sluice: the
-'mcp' package is not installed -- run pip install job-sluice[mcp]`) rather than a traceback.
-Blocks for the life of the process once started; there is no `--dry-run`.
+`pip install -e '.[mcp]'`; if the `mcp` package is not installed, exits 2 with a stderr message
+naming `job-sluice[mcp]` as the extra to install (see `sluice/mcpserver.py`'s
+`McpNotInstalled`) rather than a traceback. Blocks for the life of the process once started;
+there is no `--dry-run`.
 
 ## `job-sluice init`
 

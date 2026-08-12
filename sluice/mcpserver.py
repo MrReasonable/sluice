@@ -12,7 +12,7 @@ import dataclasses
 
 from sluice.core.app import Sluice
 from sluice.core.leads import slug_matches
-from sluice.core.status import CANONICAL
+from sluice.core.status import CANONICAL, normalize
 
 
 class McpNotInstalled(RuntimeError):
@@ -23,16 +23,30 @@ class McpNotInstalled(RuntimeError):
 
 
 def list_leads(sluice: Sluice, statuses: list | None = None, limit: int | None = None) -> dict:
-    """Every lead matching `statuses` (or every lead, unfiltered), as a curated
-    per-lead summary -- never the full frontmatter or body, so a large backlog
-    cannot flood one response. Raises ValueError, naming the valid set, on an
-    unrecognized status -- never silently returns [] for a typo."""
+    """Every lead matching `statuses` (or every lead, unfiltered -- including when
+    `statuses` is an explicit empty list, same as `None`; this is deliberate
+    `if statuses:` truthiness, not a bug), as a curated per-lead summary -- never
+    the full frontmatter or body, so a large backlog cannot flood one response.
+
+    `statuses` is normalized via `sluice.core.status.normalize` before validation
+    and before filtering, the same normalization `sluice.core.vault.Vault.read_leads`
+    already applies to every note's own status -- so an alias like "dismissed" or
+    "Shortlist" is accepted here exactly like the rest of the CLI accepts it.
+    Raises ValueError, naming the full set of bad values, on any status that is
+    still unrecognized after normalization -- never silently returns [] for a typo.
+
+    `limit`, if given, must be non-negative -- a negative limit raises rather than
+    silently reporting a `truncated: True` against nothing actually truncated."""
+    if limit is not None and limit < 0:
+        raise ValueError(f"limit must be >= 0, got {limit!r}")
+    normalized = None
     if statuses:
-        unknown = sorted(set(statuses) - CANONICAL)
+        normalized = {normalize(s) for s in statuses}
+        unknown = sorted(normalized - CANONICAL)
         if unknown:
             raise ValueError(
-                f"unknown status {unknown[0]!r} (expected one of {sorted(CANONICAL)})")
-    notes = sluice.store().read_leads(set(statuses) if statuses else None)
+                f"unknown statuses {unknown!r} (expected one of {sorted(CANONICAL)})")
+    notes = sluice.store().read_leads(normalized)
     truncated = limit is not None and len(notes) > limit
     if limit is not None:
         notes = notes[:limit]
@@ -49,10 +63,13 @@ def list_leads(sluice: Sluice, statuses: list | None = None, limit: int | None =
 
 
 def get_lead(sluice: Sluice, lead: str) -> dict:
-    """Resolve `lead` by substring match over every lead (not status-scoped), the
-    same rule `cv`/`apply` use for `--lead`. Never guesses an identity: zero matches
-    -> not_found, two-or-more -> ambiguous (candidates named, nothing picked),
-    exactly one -> the full frontmatter + body (the single-lead detail view)."""
+    """Resolve `lead` by substring match via `core.leads.slug_matches`, the same
+    substring-matching helper `cv`/`apply` use for `--lead` (though unlike them,
+    this searches every lead regardless of status -- `cv`/`apply` scope their own
+    `--lead` resolution to `{"shortlist"}` first; this does not). Never guesses an
+    identity: zero matches -> not_found, two-or-more -> ambiguous (candidates
+    named, nothing picked), exactly one -> the full frontmatter + body (the
+    single-lead detail view)."""
     notes = [n for n in sluice.store().read_leads() if slug_matches(n, lead)]
     if not notes:
         return {"outcome": "not_found"}
@@ -65,9 +82,12 @@ def get_lead(sluice: Sluice, lead: str) -> dict:
 def doctor(sluice: Sluice, offline: bool = True) -> dict:
     """Preflight backends, renderer, store artefacts and gate posture. Offline by
     default: an agent calling this tool casually must not trigger unbudgeted live
-    spend. `exit_code` is `DoctorReport.exit_code(strict=False)`, the CLI's own
-    default -- the full report is already in the response, so an agent can apply
-    its own strictness policy over the raw checks."""
+    spend. Passing `offline=False` makes a REAL live round-trip against every
+    configured backend -- real network calls, real cost/latency, possibly an SSH
+    hop for a remote claude-max host -- not a config-only check. `exit_code` is
+    `DoctorReport.exit_code(strict=False)`, the CLI's own default -- the full
+    report is already in the response, so an agent can apply its own strictness
+    policy over the raw checks."""
     report = sluice.doctor(offline=offline)
     out = dataclasses.asdict(report)
     out["exit_code"] = report.exit_code(strict=False)
@@ -89,7 +109,7 @@ def build_server(config):
     `Sluice(config)` is built ONCE, matching how every `cmd_*` in cli.py builds
     exactly one `Sluice(config)` per invocation. Unlike a one-shot CLI command,
     `mcp serve` is long-running: an edited `sluice.yaml` is picked up only on the
-    next restart, not live. Whether FastMCP's stdio transport can dispatch
+    next restart, not live. Whether MCPServer's stdio transport can dispatch
     overlapping tool calls against this one shared `Sluice` is not verified here;
     believed benign for this read-only slice (see the design doc's Architecture
     section) but not an assumption a future write-tools slice may inherit for
@@ -116,7 +136,10 @@ def build_server(config):
 
     @mcp_server.tool(name="doctor")
     def doctor_tool(offline: bool = True) -> dict:
-        """Preflight backends, renderer, store artefacts and gate posture."""
+        """Preflight backends, renderer, store artefacts and gate posture. offline
+        defaults to True; passing offline=False makes a REAL live round-trip
+        against every configured backend (network calls, real cost/latency,
+        possibly an SSH hop for a remote claude-max host)."""
         return doctor(sluice, offline=offline)
 
     @mcp_server.tool(name="health")
