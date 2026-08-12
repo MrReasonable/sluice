@@ -599,8 +599,71 @@ def test_every_gated_path_is_also_gitignored():
         # `!/.claude/settings.json`'s re-include silently inert -- git will not look inside a
         # directory excluded that way. `dir/*` is therefore an equally valid witness that a
         # gated prefix is gitignored, alongside the plain `dir/` shape every other entry uses.
-        assert bare in rules or f"{bare}/*" in rules, \
-            f"{path} is gated but NOT gitignored -- they must agree"
+        # Scoped to FORBIDDEN_PREFIXES specifically, not offered to every gated path: a
+        # single-file exact entry or an unanchored component has no reason to ever be
+        # gitignored via a `name/*` glob, and accepting one there would let a coincidental,
+        # nonsensical rule (`CLAUDE.md/*`, say) satisfy the check in place of the real one.
+        accepted = {bare, f"{bare}/*"} if path in FORBIDDEN_PREFIXES else {bare}
+        assert rules & accepted, f"{path} is gated but NOT gitignored -- they must agree"
+
+
+def test_the_claude_negation_shape_is_witnessed_through_gits_own_engine():
+    """The cross-check above compares parsed RULE LINES; it does not run git's ignore-pattern
+    engine at all, so its verdict can agree with a `.gitignore` shape git itself would resolve
+    differently. That is exactly the "a pattern consumed by two engines must be asserted
+    through the engine that RUNS it" trap this file's own module docstring already names for
+    `git grep -E` vs Python's `re` -- recurring here for git's ignore engine vs this suite's
+    Python-level `_is_forbidden`.
+
+    Reverting `.gitignore`'s `/.claude/*` + `!/.claude/settings.json` shape back to a bare
+    `/.claude/` (the pre-branch form) was measured to leave every OTHER assertion in this
+    file green: the line-comparison cross-check above accepts the bare form by design (most
+    entries use it), and `_TRACKED_EXCEPTIONS` is a hand-maintained Python constant that never
+    reads `.gitignore` at all. Only `git check-ignore`, run against the real file, can tell
+    the two shapes apart -- so this is the one test asserting the load-bearing claim
+    `.gitignore`'s own comment makes, through the tool that actually enforces it.
+    """
+
+    def _ignored(path: str) -> bool:
+        # `--no-index` is load-bearing, not incidental: WITHOUT it, `git check-ignore`
+        # special-cases anything already in the INDEX and reports "not ignored" no matter
+        # what `.gitignore` says -- measured, it reports `.claude/settings.json` as
+        # not-ignored even against a bare `/.claude/` mutant, because the file is tracked.
+        # That is exactly the wrong question here: the property this test defends is what
+        # happens if the file becomes untracked again (a bad `git rm --cached`, a rebase) --
+        # the scenario `.gitignore`'s own comment names -- and `--no-index` is what evaluates
+        # the pattern in that isolation, the same way a scratch/untracked probe would.
+        # Exit 0 = ignored, 1 = not ignored, anything else = the check itself failed to run
+        # and must not be read as either -- the same fail-closed shape as `_git` above.
+        proc = subprocess.run(
+            ["git", "check-ignore", "--no-index", "--", path], cwd=REPO,
+            capture_output=True, text=True, timeout=30,
+        )
+        assert proc.returncode in (0, 1), (
+            f"git check-ignore on {path!r} exited {proc.returncode}, neither ignored nor "
+            f"not-ignored -- the check could not run and must not pass silently: "
+            f"{proc.stderr.strip()[:200]}"
+        )
+        return proc.returncode == 0
+
+    assert not _ignored(".claude/settings.json"), (
+        "git's own ignore engine reports .claude/settings.json as IGNORED. If the negation "
+        "shape regressed to a bare /.claude/, this is exactly how it would fail: an "
+        "accidental untracking (a bad `git rm --cached`, a rebase) could never be undone, "
+        "because .gitignore would refuse to let the file back in."
+    )
+    for still_forbidden in (
+        ".claude/agents/reviewer.md",
+        ".claude/skills/review-pr/SKILL.md",
+        ".claude/worktrees/x/y",
+        ".claude/scheduled_tasks.lock",
+        ".claude/settings.local.json",
+    ):
+        assert _ignored(still_forbidden), (
+            f"git's own ignore engine does NOT report {still_forbidden} as ignored -- the "
+            "`/.claude/*` wildcard must still cover everything else under .claude/, or the "
+            "negation has widened past the one deliberate exception"
+        )
 
 
 def test_the_gate_covers_every_generated_output_gitignore_covers():

@@ -66,6 +66,14 @@ def main(argv: list[str]) -> int:
     except (OSError, ValueError) as exc:
         print(f"{path} could not be read as JSON, leaving it untouched: {exc}", file=sys.stderr)
         return 0
+    if not isinstance(document, dict):
+        # Valid JSON, wrong shape (a list, a string, a number...). `strip_hooks` calls
+        # `.items()` unconditionally and would crash on any of those -- same posture as the
+        # malformed-JSON case above: this step doesn't own the content, so it leaves it
+        # untouched rather than aborting the pipeline over something a downstream guard
+        # (`guard_emitted_outputs.py`) is what actually judges.
+        print(f"{path} is not a JSON object, leaving it untouched.", file=sys.stderr)
+        return 0
     stripped = strip_hooks(document)
     if stripped == document:
         return 0
