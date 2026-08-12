@@ -9,6 +9,11 @@
           "matcher": "Bash",
           "type": "command",
           "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/guard_no_bypass.py\""
+        },
+        {
+          "matcher": "Bash",
+          "type": "command",
+          "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/guard_reviewer_egress.py\""
         }
       ]
     }

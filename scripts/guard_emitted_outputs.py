@@ -48,25 +48,37 @@ from pathlib import Path
 
 # The one path Claude Code reads. A command anywhere else in the file never runs.
 _HOOK_EVENT = "PreToolUse"
-_REQUIRED_COMMAND = "guard_no_bypass.py"
+# #102 added `guard_reviewer_egress.py` beside the pre-existing `guard_no_bypass.py`, sharing
+# the `Bash` matcher. Both are load-bearing gates, so both are checked here the same way --
+# see the per-guard tests in `tests/test_guard_emitted_outputs.py` for why one script checking
+# two independent guards is not the "opening files" scope-creep this module's docstring warns
+# against: it is still exactly the same bounded question ("does a command invoking THIS guard
+# sit at the one path Claude Code reads?"), asked twice.
+_REQUIRED_COMMANDS = ("guard_no_bypass.py", "guard_reviewer_egress.py")
 # Claude Code executes an entry only when its `type` says so.
 _COMMAND_TYPE = "command"
+
 
 # The guard invocation, pinned either side of the one part that legitimately varies. Claude Code
 # expands `$CLAUDE_PROJECT_DIR` at run time and rulesync writes it through literally, but a tree
 # carrying a resolved absolute path there would still be correct, so the middle is tolerated.
 #
 # BOTH ENDS ARE LOAD-BEARING, and each has its own test. Without the TAIL, any `python3 "…"`
-# passes and the check stops being bound to the no-bypass guard at all. Without the HEAD,
+# passes and the check stops being bound to a specific guard at all. Without the HEAD,
 # `echo "$CLAUDE_PROJECT_DIR/scripts/guard_no_bypass.py"` passes and runs nothing -- the
 # inert-guard state this script exists to reject, reproduced inside the check for it.
-# `tests/test_hooks_wiring.py` pins the SOURCE command byte-exactly for the same reason; these
-# two constants are its counterpart on the emitted artifact.
+# `tests/test_hooks_wiring.py` pins the SOURCE commands byte-exactly for the same reason; this
+# function is its counterpart on the emitted artifact.
 #
 # WHY NOT BYTE-EXACT EQUALITY. That would red a legitimate tree the moment the interpreter path or
 # the project-dir spelling changed, which is a re-verification prompt, not a defect.
-_COMMAND_HEAD = 'python3 "'
-_COMMAND_TAIL = f'/scripts/{_REQUIRED_COMMAND}"'
+def is_guard_command(command: str, script_name: str) -> bool:
+    """Does `command` actually INVOKE the guard named `script_name`, rather than merely name it?
+
+    Pure. `script_name` is explicit, not defaulted, so a caller cannot silently check the wrong
+    guard by forgetting an argument.
+    """
+    return command.startswith('python3 "') and command.endswith(f'/scripts/{script_name}"')
 
 
 def hook_commands(settings: dict) -> list[str]:
@@ -81,11 +93,6 @@ def hook_commands(settings: dict) -> list[str]:
         for hook in matcher.get("hooks", [])
         if hook.get("type") == _COMMAND_TYPE
     ]
-
-
-def is_guard_command(command: str) -> bool:
-    """Does this string actually INVOKE the no-bypass guard, rather than merely name it? Pure."""
-    return command.startswith(_COMMAND_HEAD) and command.endswith(_COMMAND_TAIL)
 
 
 def _names(directory: Path, *, dirs: bool) -> set[str] | None:
@@ -137,15 +144,15 @@ def violations(root: Path) -> list[str]:
 
 
 def _hook_violations(root: Path) -> list[str]:
-    """Every reason the emitted settings.json would leave the no-bypass guard inert."""
+    """Every reason the emitted settings.json would leave one of `_REQUIRED_COMMANDS` inert."""
     settings_path = root / ".claude" / "settings.json"
     if not settings_path.is_file():
         # Re-measured on the pinned version: a hooks.json missing its top-level `hooks` record
         # emits CLAUDE.md, AGENTS.md and .claude/ but no settings.json at all -- a near-complete
-        # tree missing only the guard. Absence is the failure, not a reason to skip the check.
+        # tree missing only the guards. Absence is the failure, not a reason to skip the check.
         return [
             f"{settings_path} was not emitted at all. rulesync wrote the rest of the tree, so "
-            "this is a dropped hook rather than a failed run: the no-bypass guard would ship "
+            "this is a dropped hook rather than a failed run: every Bash guard would ship "
             "INERT. Re-verify .rulesync/hooks.json against this rulesync version's schema."
         ]
 
@@ -157,23 +164,26 @@ def _hook_violations(root: Path) -> list[str]:
         return [f"{settings_path} could not be read as JSON: {exc}"]
 
     commands = hook_commands(settings)
-    if any(is_guard_command(command) for command in commands):
-        return []
-
-    mentions = [command for command in commands if _REQUIRED_COMMAND in command]
-    detail = (
-        f"a command at that path only MENTIONS the guard without invoking it: {mentions}"
-        if mentions
-        else f"commands found at that path: {commands}"
-    )
-    return [
-        f"no command invoking {_REQUIRED_COMMAND} sits under hooks.{_HOOK_EVENT}[*].hooks[*]"
-        f".command with type {_COMMAND_TYPE!r}.\n  {detail}\n"
-        "Either the command was dropped, or this rulesync version nests hooks somewhere else. "
-        "Both ship the no-bypass guard INERT -- Claude Code reads that path and nothing else, so "
-        "a command sitting elsewhere in the file never runs. Re-verify .rulesync/hooks.json "
-        "against this rulesync version's hook schema before touching anything else."
-    ]
+    found: list[str] = []
+    for required in _REQUIRED_COMMANDS:
+        if any(is_guard_command(command, required) for command in commands):
+            continue
+        mentions = [command for command in commands if required in command]
+        detail = (
+            f"a command at that path only MENTIONS the guard without invoking it: {mentions}"
+            if mentions
+            else f"commands found at that path: {commands}"
+        )
+        found.append(
+            f"no command invoking {required} sits under hooks.{_HOOK_EVENT}[*].hooks[*]"
+            f".command with type {_COMMAND_TYPE!r}.\n  {detail}\n"
+            "Either the command was dropped, or this rulesync version nests hooks somewhere "
+            f"else. Both ship the {required} guard INERT -- Claude Code reads that path and "
+            "nothing else, so a command sitting elsewhere in the file never runs. Re-verify "
+            ".rulesync/hooks.json against this rulesync version's hook schema before touching "
+            "anything else."
+        )
+    return found
 
 
 def main(argv: list[str]) -> int:
