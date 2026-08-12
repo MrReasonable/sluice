@@ -177,6 +177,35 @@ def test_triage_threads_get_source_into_engine_run(tmp_path, monkeypatch):
     assert seen["get_source"] is sources.get
 
 
+def test_triage_threads_the_resolve_backend_into_engine_run(tmp_path, monkeypatch):
+    """#120 whole-branch review: mutating `engine.run(..., resolve_backend=...)`
+    (app.py) to `resolve_backend=None` currently survives the full suite unchanged
+    -- meaning a future edit that silently drops or breaks this threading would
+    leave tier 3 dark in production (config on, resolved/llm_calls all zero) with
+    an all-green test suite. Distinct sentinels per role so the judge's backend and
+    the resolution backend cannot be confused for each other by accident."""
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    monkeypatch.setenv("TRIAGE_AUDIT", str(tmp_path / "a.jsonl"))
+    monkeypatch.setenv("DOSSIER_DIR", str(tmp_path / "d"))
+    _triage_llm_config(tmp_path, monkeypatch)
+    app = Sluice(Config())
+    judge_sentinel = object()
+    resolve_sentinel = object()
+    monkeypatch.setattr(
+        app, "backend",
+        lambda role, **kw: resolve_sentinel if role == "fallback" else judge_sentinel)
+    seen = {}
+    def fake_run(vault, cfg, backend, cache, audit, **kw):
+        seen["judge_backend"] = backend
+        seen.update(kw)
+        from sluice.triage.engine import TriageReport
+        return TriageReport()
+    monkeypatch.setattr("sluice.triage.engine.run", fake_run)
+    app.triage(backend_role="primary")
+    assert seen["judge_backend"] is judge_sentinel
+    assert seen["resolve_backend"] is resolve_sentinel
+
+
 def test_compose_cv_unknown_lead_returns_empty(tmp_path, monkeypatch):
     monkeypatch.setenv("VAULT_DIR", str(tmp_path))
     app = Sluice(Config())

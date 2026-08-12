@@ -1006,6 +1006,80 @@ def test_a_tier3_resolution_is_audited_and_never_reaches_the_rejected_leads_note
     assert "Resolved Co" not in note_body
 
 
+class _EmptyVerdictBackend:
+    """A judge backend that IS called but returns no verdicts. Lets a test drive a
+    resolved lead all the way through the enrich+judge block -- proving tier 3's own
+    audit list is what keeps the note-render trigger quiet, not merely an empty
+    `keeps` list -- while guaranteeing nothing from the judge stage ever reaches
+    `_audit`."""
+    last_backend = "primary"
+    def complete(self, prompt):
+        return "[]"
+
+
+def test_a_tier3_resolution_never_triggers_the_rejected_leads_note(tmp_path, titles):
+    """#120 whole-branch review: resolve_audit_entries is a SEPARATE list from
+    audit_entries specifically so a resolve-only run does not start rewriting
+    "Rejected Leads Audit.md" on a run that previously never touched it. The
+    existing test above pins the rendered note's CONTENT (resolve entries excluded
+    via _is_reject); this pins whether render_rejected_note is CALLED AT ALL --
+    merging the two lists back together would survive that content-only check (an
+    empty-rejects note still renders fine) but would start writing a file this run
+    never wrote before."""
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "blank.md", _blank_fields(accept[0].title(), source="ex-board"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.company_resolve_fetch = True
+    cfg.company_resolve_llm = True
+    resolve_backend = _ResolveBackend(["Resolved Co"])
+    cache = _RecordingCache(dossier=_LLM_DOSSIER)
+
+    run(v, cfg, _EmptyVerdictBackend(), cache, audit, statuses=("new",),
+       get_source=None, resolve_backend=resolve_backend)
+
+    after = v.read_leads()[0]
+    assert after.fm["company"] == "Resolved Co"          # the resolution really landed
+    note_path = os.path.join(v.dir, cfg.rejected_note)
+    assert not os.path.exists(note_path), \
+        "a resolve-only run must never render the rejected-leads note"
+
+
+def test_the_circuit_breaker_only_counts_consecutive_errors_not_cumulative(tmp_path, titles):
+    """#120 whole-branch review: the breaker resets `_llm_consecutive_errors` to 0
+    whenever a tier-3 attempt does NOT end in llm_error (a hit or an abstain both
+    reset it). Deleting that reset -- making the counter cumulative instead of
+    consecutive -- currently survives the full suite. This interleaves 3 TOTAL
+    errors across 5 leads with a real hit and a real abstain breaking up any run of
+    3-in-a-row: a cumulative counter would trip the breaker on the 3rd error
+    (skipping the 5th lead's attempt entirely), while a correct consecutive counter
+    never reaches 3 in a row and every lead gets attempted. The breaker's own
+    message says "3 CONSECUTIVE backend errors" -- this is what keeps that claim
+    true."""
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    for i in range(5):
+        _note(v, f"blank{i}.md", _blank_fields(accept[0].title(), source="ex-board",
+                                                url=f"https://x/{i}"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.company_resolve_fetch = True
+    cfg.company_resolve_llm = True
+    resolve_backend = _ResolveBackend([
+        BackendError("down"), "Example Co", BackendError("down"),
+        BackendError("down"), "NONE"])
+    cache = _RecordingCache(dossier=_LLM_DOSSIER)
+
+    report = run(v, cfg, _Backend(), cache, audit, statuses=("new",),
+                get_source=None, resolve_backend=resolve_backend)
+
+    assert len(resolve_backend.calls) == 5, "every lead must get a tier-3 attempt"
+    assert report.llm_calls == 5
+    assert not any("tier 3 disabled" in f for f in report.failures), \
+        "3 SCATTERED errors must never trip the consecutive-errors breaker"
+
+
 def test_a_dry_run_tier3_resolution_is_counted_but_writes_neither_company_nor_audit_line(
         tmp_path, titles):
     accept, reject = titles
