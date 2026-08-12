@@ -267,6 +267,39 @@ def test_resolution_never_attempted_for_a_lead_classify_would_reject_anyway(tmp_
     assert v.read_leads()[0].status == "dismiss"
 
 
+def test_resolution_never_attempted_for_a_lead_whose_status_triage_does_not_own(
+        tmp_path, titles):
+    # #120 local pre-push review: the classify-pass gate had no check that the
+    # lead's CURRENT status is one triage owns. Under the default `--status
+    # new,research` invocation this never matters (both are inside TRIAGE_OWNED)
+    # -- but an explicit `--status` sweep that also covers a status OUTSIDE
+    # TRIAGE_OWNED (e.g. an application-owned "offer") could otherwise trigger a
+    # real page fetch and/or a real LLM call for a write the existing
+    # require_status guard below would refuse anyway. A wasted-cost gap, not a
+    # safety gap -- but there is no reason to pay for a fetch/call whose result is
+    # guaranteed to be discarded.
+    accept, _reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "owned.md", _blank_fields(accept[0].title(), url="https://x/owned",
+                                       status="needs_review"))
+    _note(v, "outside.md", _blank_fields(accept[0].title(), url="https://x/outside",
+                                         status="offer"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.company_resolve_fetch = True
+    cache = _RecordingCache()
+
+    eng.run(v, cfg, _Backend(), cache, audit, statuses=("needs_review", "offer"),
+           get_source=_get_source({}))
+
+    # Only the TRIAGE_OWNED-status lead's resolution is attempted at all: the
+    # dossier cache (tier 2's own fetch, and the gate tier 3 sits behind) is never
+    # touched for the "offer"-status lead, while it IS touched -- exactly once --
+    # for the "needs_review"-status one.
+    assert len(cache.calls) == 1
+    assert cache.calls[0]["url"] == "https://x/owned"
+
+
 def test_tier1_resolution_reclassifies_to_dismiss_on_reject_companies(tmp_path, titles):
     accept, reject = titles
     v = Vault(str(tmp_path / "vault"))

@@ -22,10 +22,8 @@ effectively nothing on the other nine boards, because real job-board titles rare
 of the two exact regex shapes. Handing the *same already-fetched* `page_title`/`structured_data`
 to the already-configured cheap backend (`deepseek-v4-flash`, already the install's
 `fallback_backend`) with a plain, abstain-biased prompt resolved **32 of 107 attempted**,
-spot-checked correct (`ClickStack` → `ClickHouse`; a CMU-titled listing → `Carnegie Mellon
-University`; several more against Twilio, Freetrade, Maven Clinic, Doximity, BP Energy), with
-the rest correctly abstaining `NONE` — the same discipline the existing tiers already apply, not
-a looser bar.
+spot-checked correct, with the rest correctly abstaining `NONE` — the same discipline the
+existing tiers already apply, not a looser bar.
 
 Two measurement caveats carried forward, not designed away:
 - 32/107 was measured **without** the JD body and **without** the JSON-LD candidate extraction
@@ -63,9 +61,9 @@ Two measurement caveats carried forward, not designed away:
 
 4. **No grounding requirement.** An accepted answer does not have to appear verbatim in the
    evidence sent. Reading context past an exact string match is the entire reason to add an LLM
-   tier — the measured spot-check includes inference hits (a CMU-titled listing resolving to its
-   expansion; an MI6-adjacent listing resolving to the agency's full name) that a substring check
-   would discard. Blast radius is bounded a different way: see §Guards.
+   tier — the measured spot-check includes inference hits (an abbreviated or acronym-titled
+   listing resolving to its full name) that a substring check would discard. Blast radius is
+   bounded a different way: see §Guards.
 
 5. **Telemetry: tier provenance, per-tier counts, one audit entry per resolution, printed by the
    CLI.** `resolve.py` today emits nothing at all — no logger, no counter, no audit line. A tier
