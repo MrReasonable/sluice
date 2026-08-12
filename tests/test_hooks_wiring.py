@@ -75,12 +75,15 @@ def test_the_hook_is_scoped_to_claudecode_only():
     ]
 
 
-def test_exactly_one_definition_is_wired():
+def test_exactly_two_definitions_are_wired():
     """The inert state this file exists to catch is `preToolUse: []`, and an empty list
     makes every `for definition in ...` assertion below vacuously true. Pin the count so
-    the emptiness is caught by an assertion rather than by an incidental IndexError.
+    the emptiness is caught by an assertion rather than by an incidental IndexError. Two,
+    not one, since #102 added `guard_reviewer_egress.py` alongside `guard_no_bypass.py` --
+    both share the `Bash` matcher, and Claude Code runs every matching hook, not just the
+    first.
     """
-    assert len(_definitions()) == 1
+    assert len(_definitions()) == 2
 
 
 def test_each_definition_is_flat_not_claude_codes_nested_shape():
@@ -94,13 +97,26 @@ def test_each_definition_is_flat_not_claude_codes_nested_shape():
         assert "hooks" not in definition
 
 
-def test_the_hook_runs_the_guard_on_bash_and_the_guard_exists():
-    definition = _definitions()[0]
-    assert definition["matcher"] == "Bash"
-    # Pin the command EXACTLY, not by substring: `echo scripts/guard_no_bypass.py` contains
+def test_each_hook_runs_its_guard_on_bash_and_the_guard_exists():
+    """Matched by COMMAND, not by index -- a third hook landing at index 0 or 1 must not
+    silently un-pin either existing one, the same reasoning `test_each_definition...` above
+    already applies to shape.
+    """
+    definitions = _definitions()
+    expected = {
+        'python3 "$CLAUDE_PROJECT_DIR/scripts/guard_no_bypass.py"': "guard_no_bypass.py",
+        'python3 "$CLAUDE_PROJECT_DIR/scripts/guard_reviewer_egress.py"': (
+            "guard_reviewer_egress.py"
+        ),
+    }
+    # Pin each command EXACTLY, not by substring: `echo scripts/guard_no_bypass.py` contains
     # the path and runs nothing. The quoting matters too -- `$CLAUDE_PROJECT_DIR` expands to
     # a path that may contain spaces.
-    assert definition["command"] == 'python3 "$CLAUDE_PROJECT_DIR/scripts/guard_no_bypass.py"'
+    commands = {definition["command"] for definition in definitions}
+    assert commands == set(expected)
+    for definition in definitions:
+        assert definition["matcher"] == "Bash"
     # A command pointing at a missing script would still generate cleanly, and CPython's
     # exit 2 for "cannot open file" would even look like a block.
-    assert (ROOT / "scripts" / "guard_no_bypass.py").is_file()
+    for script_name in expected.values():
+        assert (ROOT / "scripts" / script_name).is_file()

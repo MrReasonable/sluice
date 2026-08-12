@@ -27,6 +27,7 @@ import pytest
 from scripts.guard_emitted_outputs import hook_commands, is_guard_command, main, violations
 
 GUARD = 'python3 "$CLAUDE_PROJECT_DIR/scripts/guard_no_bypass.py"'
+EGRESS_GUARD = 'python3 "$CLAUDE_PROJECT_DIR/scripts/guard_reviewer_egress.py"'
 SCRIPT = Path(__file__).parent.parent / "scripts" / "guard_emitted_outputs.py"
 
 # Distinguishes "no command key" from "an empty command": different emitted documents, and only
@@ -35,9 +36,13 @@ SCRIPT = Path(__file__).parent.parent / "scripts" / "guard_emitted_outputs.py"
 OMIT = object()
 
 
-def _tree(root: Path, *, command=GUARD, settings=True, event="PreToolUse", hook_type="command",
-          agents=("a", "b"), skills=("s",)):
-    """A synthetic emitted tree. Sources and emitted names agree unless a test diverges them."""
+def _tree(root: Path, *, commands=(GUARD, EGRESS_GUARD), settings=True, event="PreToolUse",
+          hook_type="command", agents=("a", "b"), skills=("s",)):
+    """A synthetic emitted tree. Sources and emitted names agree unless a test diverges them.
+
+    `commands` defaults to BOTH real guards, matching the real emitted tree: a faithful tree
+    must carry both, not just the one this file used to check.
+    """
     (root / ".claude").mkdir(parents=True)
     (root / ".rulesync" / "subagents").mkdir(parents=True)
     (root / ".claude" / "agents").mkdir(parents=True)
@@ -48,10 +53,13 @@ def _tree(root: Path, *, command=GUARD, settings=True, event="PreToolUse", hook_
         (root / ".rulesync" / "skills" / name).mkdir(parents=True)
         (root / ".claude" / "skills" / name).mkdir(parents=True)
     if settings:
-        hook = {"type": hook_type}
-        if command is not OMIT:
-            hook["command"] = command
-        doc = {"hooks": {event: [{"matcher": "Bash", "hooks": [hook]}]}}
+        hooks = []
+        for command in commands:
+            hook = {"type": hook_type}
+            if command is not OMIT:
+                hook["command"] = command
+            hooks.append(hook)
+        doc = {"hooks": {event: [{"matcher": "Bash", "hooks": hooks}]}}
         (root / ".claude" / "settings.json").write_text(json.dumps(doc), encoding="utf-8")
     return root
 
@@ -95,9 +103,10 @@ def test_a_command_less_hook_is_a_violation(tmp_path, command):
     BOTH shapes, because they are not the same emitted document: mutating the guard's
     `hook.get("command", "")` to `hook["command"]` survives the empty-string case green and
     raises on the missing-key one, so the absent key -- the shape `.rulesync/hooks.json`
-    describes -- was going unasserted.
+    describes -- was going unasserted. The OTHER guard stays correct, so this also proves the
+    check is PER-GUARD: a faithful second hook must not paper over a broken first one.
     """
-    assert violations(_tree(tmp_path, command=command)) != []
+    assert violations(_tree(tmp_path, commands=(command, EGRESS_GUARD))) != []
 
 
 def test_a_command_that_only_MENTIONS_the_guard_does_not_satisfy_it(tmp_path):
@@ -106,18 +115,24 @@ def test_a_command_that_only_MENTIONS_the_guard_does_not_satisfy_it(tmp_path):
     A substring test accepts it: the inert-guard state reproduced inside the check for inert
     guards. This is what the HEAD half of the command pin buys.
     """
-    root = _tree(tmp_path, command='echo "$CLAUDE_PROJECT_DIR/scripts/guard_no_bypass.py"')
+    root = _tree(
+        tmp_path,
+        commands=('echo "$CLAUDE_PROJECT_DIR/scripts/guard_no_bypass.py"', EGRESS_GUARD),
+    )
     assert any("only MENTIONS the guard" in v for v in violations(root))
 
 
 def test_a_command_running_some_OTHER_script_does_not_satisfy_it(tmp_path):
     """What the TAIL half buys, and nothing else did.
 
-    Deleting `command.endswith(_COMMAND_TAIL)` left the whole suite green: every other case here
-    has the right head, so without this the check accepts any `python3 "…"` at all and stops
-    being bound to the no-bypass guard.
+    Deleting the tail check left the whole suite green: every other case here has the right
+    head, so without this the check accepts any `python3 "…"` at all and stops being bound to
+    a specific guard.
     """
-    root = _tree(tmp_path, command='python3 "$CLAUDE_PROJECT_DIR/scripts/something_else.py"')
+    root = _tree(
+        tmp_path,
+        commands=('python3 "$CLAUDE_PROJECT_DIR/scripts/something_else.py"', EGRESS_GUARD),
+    )
     assert violations(root) != []
 
 
@@ -128,6 +143,21 @@ def test_a_hook_of_another_type_does_not_satisfy_the_guard(tmp_path):
     nothing runs. A check ignoring `type` would call this tree faithful.
     """
     assert violations(_tree(tmp_path, hook_type="prompt")) != []
+
+
+def test_the_reviewer_egress_guard_is_checked_independently(tmp_path):
+    """The no-bypass guard being present and correct must not paper over the egress guard
+    being missing -- the two are independent gates (#102), checked independently.
+    """
+    root = _tree(
+        tmp_path,
+        commands=(GUARD, 'python3 "$CLAUDE_PROJECT_DIR/scripts/something_else.py"'),
+    )
+    found = violations(root)
+    assert any("guard_reviewer_egress.py" in v for v in found)
+    assert not any(
+        "no command invoking guard_no_bypass.py" in v for v in found
+    ), "the correct guard_no_bypass.py hook must not be reported as missing"
 
 
 def test_hook_commands_reads_only_the_one_path_and_type():
@@ -141,10 +171,20 @@ def test_hook_commands_reads_only_the_one_path_and_type():
 
 
 def test_is_guard_command_needs_both_ends():
-    """Each end pinned separately, so a mutant deleting either is caught here too."""
-    assert is_guard_command(GUARD)
-    assert not is_guard_command('echo "$CLAUDE_PROJECT_DIR/scripts/guard_no_bypass.py"')
-    assert not is_guard_command('python3 "$CLAUDE_PROJECT_DIR/scripts/other.py"')
+    """Each end pinned separately, so a mutant deleting either is caught here too. Checked for
+    BOTH guard scripts, since `script_name` is now an explicit argument rather than a shared
+    constant -- a mutant hardcoding the wrong script name would pass one and fail the other.
+    """
+    assert is_guard_command(GUARD, "guard_no_bypass.py")
+    assert not is_guard_command(
+        'echo "$CLAUDE_PROJECT_DIR/scripts/guard_no_bypass.py"', "guard_no_bypass.py"
+    )
+    assert not is_guard_command(
+        'python3 "$CLAUDE_PROJECT_DIR/scripts/other.py"', "guard_no_bypass.py"
+    )
+    assert is_guard_command(EGRESS_GUARD, "guard_reviewer_egress.py")
+    assert not is_guard_command(GUARD, "guard_reviewer_egress.py")
+    assert not is_guard_command(EGRESS_GUARD, "guard_no_bypass.py")
 
 
 def test_a_renamed_agent_is_caught_though_the_COUNT_is_unchanged(tmp_path):
