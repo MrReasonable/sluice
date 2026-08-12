@@ -1,14 +1,28 @@
-"""Tier 1 (free, URL-pattern) then tier 2 (a real, no-LLM page visit) company
-resolution for a blank-company `needs_review` lead (#109). Both tiers abstain
-rather than guess: classify.py's blank-company branch already treats a blank
-company as the honest "unknown" state, and a wrong company would silently carry
-through keep -> judge -> apply -> a CV addressed to the wrong employer, which is
-worse than staying blank."""
+"""Tier 1 (free, URL-pattern), tier 2 (a real, no-LLM page visit), then tier 3 (an LLM
+read of the SAME page data tier 2 already fetched -- no new fetch) for a blank-company
+`needs_review` lead (#109, #120). All three abstain rather than guess: classify.py's
+blank-company branch already treats a blank company as the honest "unknown" state, and a
+wrong company would silently carry through keep -> judge -> apply -> a CV addressed to the
+wrong employer, which is worse than staying blank.
+
+Tier 3 is qualitatively different from tiers 1 and 2: they EXTRACT a candidate that is
+already, verbatim, on the page; tier 3 GENERATES one by reading context, which is strictly
+more powerful and strictly less verifiable. Its guards (a deny-list for the "Confidential"/
+"Unknown" family, a refusal of the job board's own name, a hard length cap, and
+frontmatter_safe) bound the SHAPE of what can come back, not its truthfulness -- a hostile
+page that writes "the hiring company is Acme" in its body gets exactly that answer. The
+actual containment is unchanged from tiers 1/2: the write only ever lands on a field that
+was blank (require_blank, in engine.py), the result is visible in the note for a human to
+see, and every resolution -- right or wrong -- is now audited with which tier produced it."""
 from dataclasses import dataclass
 import json
 import re
 
+from sluice.core.backends import BackendError
+from sluice.core.log import get_logger
 from sluice.core.vault import frontmatter_safe
+
+_log = get_logger("triage.resolve")
 
 # Anchored full-string, deliberately narrow: a page_title that merely CONTAINS
 # "at"/"hiring" without this exact shape must abstain, not guess a company from a
@@ -330,15 +344,16 @@ def _is_board_name(candidate: str, fm: dict) -> bool:
 
 
 def resolve_company(fm: dict, get_source, dossier_cache, *,
-                    no_llm: bool, company_resolve_fetch: bool = False) -> Resolution:
-    """Tier 1 then tier 2, first confident match wins. Returns Resolution() -- never a
-    guess -- when both abstain, INCLUDING when a candidate fails `frontmatter_safe`
-    (falsy, all-whitespace, unprintable, or a frontmatter-structural character; the
-    all-whitespace case is reachable here specifically: wellfound.py's
-    `slug.replace("-", " ").title()` returns "   " for a `/company/---` path segment,
-    which is PRINTABLE and truthy, so only the guard's own `.strip()` clause catches
-    it). `get_source` is `sluice.ingest.sources.get` (or None, meaning tier 1 always
-    abstains), injected so this stays testable without importing the real registry."""
+                    no_llm: bool, company_resolve_fetch: bool = False,
+                    company_resolve_llm: bool = False,
+                    resolve_backend=None) -> Resolution:
+    """Tier 1, then tier 2, then tier 3 (#120): first confident match wins. Returns
+    Resolution() -- never a guess -- when every tier abstains, INCLUDING when a
+    candidate fails frontmatter_safe or (tier 3 only) the deny-list/board-name
+    guards below. `get_source` is `sluice.ingest.sources.get` (or None, meaning
+    tier 1 always abstains); `resolve_backend` is a `.complete(str) -> str` object
+    (or None, meaning tier 3 always abstains) -- both injected so this stays
+    testable without importing the real registry or constructing a real backend."""
     url = fm.get("url") or ""
     src_id = fm.get("source") or ""
     if get_source is not None and url and src_id:
@@ -376,4 +391,33 @@ def resolve_company(fm: dict, get_source, dossier_cache, *,
                     # just a corrupted cache, so both must abstain rather than crash the
                     # whole triage batch over one bad lead -- the same reason the extractor
                     # call above gets its own except Exception.
-    return Resolution(hit, "tier2") if hit else _ABSTAIN
+    if hit:
+        return Resolution(hit, "tier2")
+    # ── tier 3 (#120): the SAME page data tier 2 already fetched, read by a model
+    # instead of two regexes. Its own gate, own guards, own except -- the same
+    # per-tier isolation tiers 1 and 2 already have, so this tier's failure can
+    # never take down another tier or the batch.
+    if not company_resolve_llm or resolve_backend is None or dossier is None:
+        # dossier is None specifically covers a failed tier-2 fetch: never spend a
+        # backend call reasoning over data that was never actually retrieved.
+        return _ABSTAIN
+    prompt = _build_resolve_prompt(dossier)
+    if prompt is None:
+        return _ABSTAIN  # every evidence field blank after capping -- nothing to reason over
+    try:
+        reply = resolve_backend.complete(prompt)
+    except BackendError as e:
+        # BackendError only, never a broad `except Exception`: the test harness's
+        # ScriptedBackend deliberately RAISES AssertionError on an unrecognised
+        # prompt so a mis-wired call is loud (tests/harness/backend.py) -- a broad
+        # catch here would swallow that signal and a mis-wired tier 3 would read as
+        # a clean, silent abstain in every e2e/functional test that reaches it.
+        # Every production backend already funnels every real failure into
+        # BackendError (core/backends.py), so nothing legitimate escapes this catch.
+        _log.warning("tier 3 company resolution backend error: %s", e)
+        return Resolution(llm_called=True, llm_error=True)
+    candidate = _company_from_reply(reply)
+    if candidate is None or _is_non_answer(candidate) or _is_board_name(candidate, fm):
+        return Resolution(llm_called=True)
+    hit = frontmatter_safe(candidate)
+    return Resolution(hit, "tier3", llm_called=True) if hit else Resolution(llm_called=True)
