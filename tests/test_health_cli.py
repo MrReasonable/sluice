@@ -25,7 +25,10 @@ def test_cmd_health_prints_one_line_per_source_with_baseline_and_recent(capsys):
     assert cmd_health(args, Config()) == 0
 
     lines = {ln.split()[0]: ln for ln in capsys.readouterr().out.splitlines()}
-    assert "baseline=5" in lines[first]
-    assert "recent=[5]" in lines[first]
+    # Exact-line equality for byte-identical output validation: check the primary source
+    # with the exact format {id:16} baseline={baseline:.0f} recent={recent}{flag}
+    assert lines[first] == f"{first:16} baseline=5 recent=[5]"
+    # Substring check for RETIRE flag presence/absence: this is meaningfully falsifiable
+    # as a presence/absence check even though it's not exact-line equality
     assert "RETIRE" not in lines[first]
     assert "RETIRE" in lines[second]
