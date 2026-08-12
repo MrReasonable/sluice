@@ -374,6 +374,28 @@ def test_the_job_uses_the_locked_binary_not_npx():
     assert text.index("npm ci --ignore-scripts") < text.index("guard_rulesync_drift.py")
 
 
+def test_the_stale_hooks_reset_runs_before_generation():
+    """`.claude/settings.json` is the one rulesync output this repo tracks, so a checkout
+    always supplies a copy before `npm run rulesync` runs. Without clearing its `hooks` key
+    first, a copy that already matches gets silently SKIPPED by rulesync and omitted from its
+    summary -- breaking `guard_rulesync_drift.py`'s exact count on every healthy run -- and a
+    genuinely broken generate would leave that stale-but-valid copy in place for
+    `guard_emitted_outputs.py` to wrongly pass. `scripts/reset_tracked_hooks.py`'s own
+    docstring has the measured chain; this pins only that the job actually calls it, and calls
+    it early enough to matter.
+    """
+    block = _job_directives("rulesync")
+    assert "scripts/reset_tracked_hooks.py" in block, (
+        "the rulesync job no longer clears .claude/settings.json's hooks key before "
+        "generating -- a tracked copy that already matches will be silently skipped, and "
+        "'hooks' will drop out of rulesync's summary entirely"
+    )
+    assert block.index("scripts/reset_tracked_hooks.py") < block.index("npm run rulesync"), (
+        "the reset must run BEFORE generation: clearing hooks after rulesync has already "
+        "skipped rewriting them does nothing"
+    )
+
+
 def _npm_ci_flags(text: str) -> list[str]:
     """The flag string of every `npm ci` in `text`, whitespace-normalised."""
     return [" ".join(match.group("flags").split()) for match in _NPM_CI.finditer(text)]

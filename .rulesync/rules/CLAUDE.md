@@ -574,7 +574,23 @@ consistently engineers out; see `_select_backend`'s guard in `cli.py`.
   other three do. Route new implementations through those seams (a self-registering module) rather than
   around them.
 - `.rulesync/` is canonical. `CLAUDE.md`, `AGENTS.md`, `.claude/` and the other AI-tool outputs are
-  generated and gitignored; edit the source, then regenerate.
+  generated and gitignored; edit the source, then regenerate. **`.claude/settings.json` is the one
+  deliberate exception, tracked rather than gitignored:** Claude Code's own `enabledPlugins` key
+  (written by `/plugin marketplace add`, never by rulesync) lives in the same shared file rulesync's
+  `hooks` feature writes, and tracking it is the only way a plugin enable reaches every worktree and
+  contributor rather than staying one machine's private config. rulesync's hooks writer merges
+  additively, so the two coexist; `.gitignore` carries the `/.claude/*` + `!/.claude/settings.json`
+  shape this requires (a bare `/.claude/` would make the re-include inert), and
+  `tests/test_no_leaked_files.py`'s `.claude/` prefix gate carves out exactly this one path by name
+  -- every other path under `.claude/` (agents/, skills/, worktrees/, scheduled_tasks.lock) stays as
+  forbidden as before. Tracking it also means a CI checkout always supplies a copy before generation
+  runs, which defeats two things a purely-gitignored file relies on being absent for:
+  `guard_rulesync_drift.py`'s exact hook count (rulesync silently SKIPS rewriting a file that
+  already matches, dropping `hooks` from its summary rather than reporting it as zero) and
+  `guard_emitted_outputs.py`'s structural check (a stale-but-valid copy would survive a genuinely
+  broken generate run undetected). `scripts/reset_tracked_hooks.py` runs before `npm run rulesync`
+  in CI and clears just the `hooks` key -- the one part rulesync owns -- restoring both guarantees
+  without discarding `enabledPlugins`; its docstring has the measured chain end to end.
 - **`README.md` and everything under `docs/`, plus `CONTRIBUTING.md`/`SECURITY.md`, are the
   opposite of the point above: tracked, hand-written, human-facing documentation, not generated
   outputs.** Edit them directly; there is no source-of-truth file to regenerate them from, the way
