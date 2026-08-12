@@ -105,11 +105,11 @@ preferences belong in your config and your vault, never in a commit.
 ## Dependencies
 
 `sluice/` is standard-library only, apart from `pyyaml`. The exceptions —
-`jinja2`/`weasyprint` (the `render` extra), the Google client libraries (`google`), and
-`argcomplete` (`completion`) — are all lazily and defensively imported, so a bare install never
-needs them. Don't add a new runtime dependency without a deliberate decision recorded in
-`.rulesync/rules/CLAUDE.md`'s dependency section, matching how the existing ones are justified
-there.
+`jinja2`/`weasyprint` (the `render` extra), the Google client libraries (`google`),
+`argcomplete` (`completion`), and `mcp` (`mcp`, for `job-sluice mcp serve`) — are all lazily
+and defensively imported, so a bare install never needs them. Don't add a new runtime
+dependency without a deliberate decision recorded in `.rulesync/rules/CLAUDE.md`'s dependency
+section, matching how the existing ones are justified there.
 
 ## Pull requests
 

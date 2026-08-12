@@ -340,8 +340,10 @@ need a programmatic API to drive, and `Sluice` is that API: it resolves the
 adapters AND drives the pipeline, so a surface no longer constructs a `Vault()`
 or a `Camofox()`, builds a backend, or duplicates the triage/compose/prep/record/
 track wiring itself. `cli.py` is now a thin shell over `Sluice` -- each command
-builds one, calls one method, and formats the result for the terminal -- so a web
-UI written today has nothing left in `cli.py` worth forking.
+builds one, calls one method, and formats the result for the terminal -- so a surface
+built today has nothing left in `cli.py` worth forking. `sluice/mcpserver.py` (#105)
+is the first one: a Model Context Protocol server exposing four read-only tools
+(`list_leads`, `get_lead`, `doctor`, `health`) over stdio.
 
 `tests/conformance/test_store_contract.py` is parameterised over every registered
 store and asserts never-clobber (a re-scrape touches only `last_seen`, and that

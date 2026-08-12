@@ -153,3 +153,79 @@ def test_health_wraps_health_report_as_asdict_sources(tmp_path):
     app = Sluice(Config(), store=Vault(str(tmp_path)))
     out = health(app)
     assert out == {"sources": [dataclasses.asdict(s) for s in app.health_report()]}
+
+
+# ── import-guard tests (item 3 of the design's Testing section) ──────────────
+#
+# These prove DIFFERENT things about the same overall property ("mcp leaks nowhere
+# outside build_server()"), despite sounding redundant. An executed reproduction
+# during plan review proved the runtime guard below CANNOT detect a stray top-level
+# `mcp` import once an earlier test in THIS FILE has already imported
+# `sluice.mcpserver` unguarded (which every test above does) -- by the time the
+# runtime guard's patch is installed, the stray import already ran and succeeded,
+# invisibly. The AST sweep is the SOLE test that can catch that. See
+# docs/superpowers/specs/2026-08-12-mcp-server-design.md's Testing section, item 3,
+# for the full argument.
+
+def test_mcp_imported_nowhere_outside_build_server():
+    """The AST sweep: every mcp-named Import/ImportFrom node in sluice/cli.py and
+    sluice/mcpserver.py must be a DESCENDANT of build_server()'s own FunctionDef --
+    not merely "build_server's body contains at least one such node" (a stray
+    top-level `import mcp` sitting ALONGSIDE a correctly-guarded one must still fail
+    this)."""
+    import ast
+    import inspect
+
+    import sluice.cli as cli_mod
+    import sluice.mcpserver as mcpserver_mod
+
+    def _bad_mcp_imports(module, allowed_func_name=None):
+        tree = ast.parse(inspect.getsource(module))
+        allowed_ids = set()
+        if allowed_func_name is not None:
+            for node in ast.walk(tree):
+                if isinstance(node, ast.FunctionDef) and node.name == allowed_func_name:
+                    allowed_ids = {id(n) for n in ast.walk(node)}
+                    break
+        bad = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""]
+            else:
+                continue
+            for name in names:
+                if name == "mcp" or name.startswith("mcp."):
+                    if id(node) not in allowed_ids:
+                        bad.append(name)
+        return bad
+
+    assert _bad_mcp_imports(cli_mod) == [], "sluice/cli.py must carry no mcp import"
+    assert _bad_mcp_imports(mcpserver_mod, allowed_func_name="build_server") == [], (
+        "sluice/mcpserver.py must import mcp only inside build_server()'s own "
+        "function body (directly, or via a helper nested inside it)")
+
+
+def test_cmd_mcp_serve_degrades_to_rc2_when_mcp_is_absent(monkeypatch, capsys):
+    """The runtime guard: `mcp` genuinely absent (not merely `sys.modules["mcp"] =
+    None`, which a reproduction during plan review proved silently no-ops once `mcp`
+    is a genuine test-extra dependency cached elsewhere in the same session) must
+    degrade `cmd_mcp_serve` to an rc-2 usage error, never an uncaught traceback."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _raise_for_mcp(name, *args, **kwargs):
+        if name == "mcp" or name.startswith("mcp."):
+            raise ImportError(f"simulated: {name} not installed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _raise_for_mcp)
+
+    from sluice.cli import _build_parser, cmd_mcp_serve
+    from sluice.core.config import Config
+
+    args = _build_parser().parse_args(["mcp", "serve"])
+    assert cmd_mcp_serve(args, Config()) == 2
+    assert "job-sluice[mcp]" in capsys.readouterr().err
