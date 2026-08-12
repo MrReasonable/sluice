@@ -88,6 +88,18 @@ class DedupeCluster:
     flagged_losers: list   # losers carrying a CV/sign-off hold or an application-owned status
 
 
+@dataclass
+class SourceHealth:
+    """One source's health, as `job-sluice health` and the MCP `health` tool both
+    report it. Mirrors `cmd_health`'s prior inline read -- now the single
+    implementation both share (#105)."""
+    id: str
+    kind: str
+    baseline: float
+    recent: list        # health.counts(id)
+    should_retire: bool
+
+
 class StoreHasNoLayout(RuntimeError):
     """The configured store has no folder layout, so `leads reconcile` has nothing to do.
 
@@ -299,6 +311,12 @@ class Sluice:
         # seam: a registry entry is reachable from config, so a seam-resolved
         # resolver would put an off switch for the SSRF guard under a YAML key.
         self._resolve_host = resolve_host
+        # Cached per seam for the process's WHOLE lifetime (see _resolve) -- correct only
+        # because every adapter factory _resolve can currently reach (vault, camofox) has
+        # no construction-time side effects. A one-shot CLI invocation never exercised
+        # that fact; a long-lived caller (`mcp serve`, sluice/mcpserver.py) depends on it.
+        # A future adapter factory with a construction-time side effect must either stay
+        # free of one or revisit this cache.
         self._cache: dict = {}
 
     # ── adapter resolution ───────────────────────────────────────────────────
@@ -854,6 +872,23 @@ class Sluice:
         report -- the same report-first shape as `dedupe_report`/`expire_report`, where a mistyped
         invocation prints a list rather than moving a hundred notes."""
         return self._layout_store()(apply=apply)
+
+    def health_report(self) -> list:
+        """The per-source health REPORT `job-sluice health` and the MCP `health` tool
+        both show -- sorted by source id, mirroring `dedupe_report`/`expire_report`/
+        `reconcile_report`'s report-idiom. Changes nothing.
+
+        `cmd_list_sources --health` (cli.py) still constructs its own `HealthStore()`
+        and walks the registry independently: it also needs enabled/disabled overlay
+        state this method does not compute, considered and deliberately not folded in
+        here (#105)."""
+        from sluice.core.health import HealthStore
+        from sluice.ingest import sources as registry
+        health = HealthStore()
+        return [SourceHealth(id=src.id, kind=src.kind, baseline=health.baseline(src.id),
+                             recent=health.counts(src.id),
+                             should_retire=health.should_retire(src.id))
+                for src in sorted(registry.all_sources(), key=lambda s: s.id)]
 
     def triage(self, *, statuses=("new", "research"), limit=None, dry_run=False,
                no_llm=False, backend_role="auto"):
