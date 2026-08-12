@@ -648,7 +648,6 @@ def test_tier3_candidate_with_a_structural_character_is_rejected(unsafe):
     assert got.company is None
 
 
-@pytest.mark.skip(reason="tests/harness/backend.py doesn't export _RESOLVE until Task 7")
 def test_the_scripted_backends_resolve_prefix_still_matches_the_real_prompt():
     from tests.harness.backend import _RESOLVE
     prompt = resolve._build_resolve_prompt(_NONEMPTY_DOSSIER)
