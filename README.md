@@ -298,7 +298,7 @@ now -- see [`docs/ARCHITECTURE.md`](https://github.com/MrReasonable/sluice/blob/
 
 Register it with Claude Code:
 
-```
+```bash
 claude mcp add job-sluice -- job-sluice mcp serve
 ```
 

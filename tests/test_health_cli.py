@@ -24,7 +24,7 @@ def test_cmd_health_prints_one_line_per_source_with_baseline_and_recent(capsys):
     args = _build_parser().parse_args(["health"])
     assert cmd_health(args, Config()) == 0
 
-    lines = {ln.split()[0]: ln for ln in capsys.readouterr().out.splitlines()}
+    lines = {ln.split()[0]: ln for ln in capsys.readouterr().out.splitlines() if ln.split()}
     # Exact-line equality for byte-identical output validation: check the primary source
     # with the exact format {id:16} baseline={baseline:.0f} recent={recent}{flag}
     assert lines[first] == f"{first:16} baseline=5 recent=[5]"
