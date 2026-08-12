@@ -363,6 +363,30 @@ def test_org_candidates_on_blank_input_returns_empty():
     assert resolve._org_candidates("") == []
 
 
+def test_org_candidates_on_an_adversarially_deep_payload_returns_empty_not_raises():
+    # Same reasoning as test_an_adversarially_nested_payload_abstains_rather_than_
+    # blowing_the_stack above (json.loads' own recursion ceiling varies by
+    # interpreter version, so this nests in Python rather than parsing a JSON
+    # string), but pinning _org_candidates' OWN except clause: it only caught
+    # (ValueError, TypeError) before this fix, so RecursionError went straight
+    # through uncaught -- an adversarially deep board-authored payload would crash
+    # the whole triage batch reasoning over tier 3's evidence, not just abstain.
+    payload = _wrap_in_lists(_JOBPOSTING, 1500)
+    assert resolve._org_candidates(json.dumps(payload)) == []
+
+
+def test_text_with_a_lone_surrogate_does_not_raise():
+    # A lone (unpaired) UTF-16 surrogate: JSON's own `json` module tolerantly
+    # reads/writes this even though the JSON spec disallows it, so it can round-trip
+    # through the dossier cache intact and reach _text as an ordinary Python str.
+    # str.encode("utf-8") defaults to errors="strict" and RAISES UnicodeEncodeError
+    # on exactly this -- _text's own docstring claims it degrades rather than
+    # raises, which was false before this fix.
+    value = "Example \ud800 Co"
+    got = resolve._text(value, 300)
+    assert isinstance(got, str)
+
+
 def test_build_resolve_prompt_carries_title_candidates_and_jd():
     d = {"page_title": "Senior Engineer | Example Board",
         "structured_data": json.dumps({"@type": "Organization", "name": "Example Co"}),
@@ -476,17 +500,18 @@ def test_is_board_name_accepts_a_real_employer_name():
 
 def test_is_board_name_known_limitation_does_not_catch_a_multi_word_board_name():
     """Documents (pins, does NOT attempt to fix) a known, deliberately accepted gap
-    in _is_board_name -- see its own docstring for the full rationale. The guard is
-    an EXACT match against the source id or the host's second-level label, so a
+    in _is_board_name -- see its own docstring for the full rationale. The guard is an
+    EXACT match against the source id or the host's second-level label, so a
     multi-word board name whose human-readable form doesn't match its slug
-    ("We Work Remotely" against a "weworkremotely" source/host) is NOT caught.
+    ("Example Remote Board" against an "exampleremoteboard" source/host) is NOT
+    caught.
     Normalizing punctuation/spaces before comparing was considered and rejected:
     it would also reject a CORRECT answer whenever a real employer's own careers
     page happens to be hosted at a domain containing their own name. This test
     exists to make the gap visible and INTENTIONAL to a future reader, not to
     invite a narrow normalization fix made without the same design consideration."""
-    fm = {"url": "https://weworkremotely.invalid/x", "source": "weworkremotely"}
-    assert resolve._is_board_name("We Work Remotely", fm) is False
+    fm = {"url": "https://exampleremoteboard.invalid/x", "source": "exampleremoteboard"}
+    assert resolve._is_board_name("Example Remote Board", fm) is False
 
 
 # ── tier 3 wired into resolve_company ──────────────────────────────────────────
@@ -639,6 +664,27 @@ def test_a_backend_error_in_tier3_abstains_rather_than_propagating():
     assert got.company is None
     assert got.llm_called is True
     assert got.llm_error is True
+
+
+def test_a_non_backend_error_in_tier3_propagates_rather_than_being_swallowed():
+    # THE test that actually distinguishes resolve.py's narrow `except BackendError`
+    # from a broad `except Exception` -- mutation-verified: widening the tier-3
+    # except clause to `except Exception` left the ENTIRE prior suite green, which
+    # means nothing proved the distinction mattered before this test existed.
+    # tests/harness/backend.py's ScriptedBackend deliberately raises AssertionError
+    # (never BackendError) on an unrecognised prompt specifically so a mis-wired
+    # tier-3 call is LOUD in every e2e/functional test that reaches it -- this
+    # mirrors that exact failure shape directly. Must go RED if the except clause
+    # is ever widened past BackendError.
+    class _MiswiredBackend:
+        def complete(self, prompt):
+            raise AssertionError("resolve backend double: no more scripted replies")
+
+    cache = _RecordingCache(dossier=_NONEMPTY_DOSSIER)
+    with pytest.raises(AssertionError):
+        resolve.resolve_company(_LLM_FM, None, cache, no_llm=False,
+                                company_resolve_fetch=True, company_resolve_llm=True,
+                                resolve_backend=_MiswiredBackend())
 
 
 def test_tier3_makes_exactly_one_backend_call_and_never_retries():

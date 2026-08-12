@@ -892,19 +892,20 @@ class Sluice:
         # nothing and said nothing. The loader resolves it (env -> config key -> the
         # per-system state root), and that one value is what everything uses.
         audit = AuditLog(tcfg.audit_jsonl)
-        backend = None if no_llm else self.backend(
-            backend_role, primary_name=tcfg.primary_backend,
-            primary_model=tcfg.claude_max_model, effort=tcfg.claude_max_effort,
-            host=tcfg.claude_max_host, claude_path=tcfg.claude_max_path,
-            fallback_name=tcfg.fallback_backend, fallback_model=tcfg.cheap_model)
+        # Shared by both self.backend() calls below -- the judge's (whatever role the
+        # caller picked) and tier 3's resolution backend (always pinned to
+        # "fallback", #120) -- so the two calls differ only in the role string, not
+        # in a hand-copied kwarg list that could silently drift apart between them.
+        _common = dict(
+            primary_name=tcfg.primary_backend, primary_model=tcfg.claude_max_model,
+            effort=tcfg.claude_max_effort, host=tcfg.claude_max_host,
+            claude_path=tcfg.claude_max_path, fallback_name=tcfg.fallback_backend,
+            fallback_model=tcfg.cheap_model)
+        backend = None if no_llm else self.backend(backend_role, **_common)
         resolve_backend = None
         if not no_llm and tcfg.company_resolve_llm:
             try:
-                resolve_backend = self.backend(
-                    "fallback", primary_name=tcfg.primary_backend,
-                    primary_model=tcfg.claude_max_model, effort=tcfg.claude_max_effort,
-                    host=tcfg.claude_max_host, claude_path=tcfg.claude_max_path,
-                    fallback_name=tcfg.fallback_backend, fallback_model=tcfg.cheap_model)
+                resolve_backend = self.backend("fallback", **_common)
             except BackendError as e:
                 _log.warning(
                     "company resolution's tier-3 backend unavailable, tier 3 disabled "
