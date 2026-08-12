@@ -65,7 +65,8 @@ sweep keyed on list defaults.
 | `cheap_model` | `"deepseek-v4-flash"` | the fallback role's model |
 | `claude_max_host` / `claude_max_path` | `""` / `"claude"` | empty host runs `claude_max_path` locally; set a host to shell it over SSH. A leading `-` in either is refused (argument-injection guard) |
 | `route_borderline` | `false` | rejects non-bool values (see `lead_ttl_days` above for why) |
-| `company_resolve_fetch` | `false` | opt-in: lets a blank-company `needs_review` lead trigger a real (no-LLM) page visit to try to identify the employer from the page itself; off by default so an unconfigured install never opens a browser tab it wasn't asked to. Rejects non-bool values, same reasoning as `lead_ttl_days` above |
+| `company_resolve_fetch` | `false` | opt-in: lets a blank-company `needs_review` lead trigger a real (no-LLM) page visit to try to identify the employer from the page itself, feeding tiers 2 AND (if also enabled) 3 below; off by default so an unconfigured install never opens a browser tab it wasn't asked to. Rejects non-bool values, same reasoning as `lead_ttl_days` above |
+| `company_resolve_llm` | `false` | opt-in: tier 3 of the same resolution, an LLM read of the page data tier 2 already fetched (no second visit) when tiers 1 and 2 abstain. Always runs on the **fallback** role's cheap model (`fallback_backend`/`cheap_model`) regardless of `--backend`, since it is bulk extraction rather than judgement. **Requires `company_resolve_fetch: true`** — set alone the loader raises, because tier 3 reads what tier 2 fetches and could never fire. Off under `--no-llm`. Rejects non-bool values, same reasoning as `lead_ttl_days` above |
 
 ## `cv:`
 

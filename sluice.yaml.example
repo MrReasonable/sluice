@@ -117,6 +117,14 @@ triage:
   # against arbitrary third-party sites the moment it upgrades -- the same
   # opt-in-only posture as lead_ttl_days/lead_layout above.
   # company_resolve_fetch: true   # <- uncomment to opt in
+  # Off by default (#120): tier 3 of the same resolution. When tiers 1 and 2 both come up
+  # empty, the page data tier 2 ALREADY fetched (no second page visit) is handed to the
+  # CHEAP backend -- fallback_backend/cheap_model, regardless of what --backend says --
+  # with an abstain-biased prompt that answers NONE unless the page settles who the
+  # employer is. One small LLM call per unresolved lead, so it is opt-in like the fetch
+  # above. Requires company_resolve_fetch: true; set alone, the loader RAISES rather than
+  # leaving a knob that could never fire.
+  # company_resolve_llm: true   # <- uncomment to opt in (needs company_resolve_fetch too)
   contract_floor_gbp_day: 450     # illustrative; set your own (0 = no floor)
   perm_floor_gbp: 90000          # illustrative; set your own (0 = no floor)
   primary_backend: claude-max
