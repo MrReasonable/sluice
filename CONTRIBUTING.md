@@ -6,7 +6,7 @@
 git clone https://github.com/MrReasonable/sluice.git
 cd sluice
 npm ci --ignore-scripts && npm run rulesync   # populates CLAUDE.md, AGENTS.md, .claude/ — all gitignored
-pip install -e ".[test]"                      # pytest, pytest-cov, faker, jinja2, setuptools + build
+pip install -e ".[test]"                      # pytest, pytest-cov, faker, jinja2, mcp, setuptools + build
 ```
 
 `.rulesync/rules/CLAUDE.md` is the **canonical** source for the detailed engineering rules
