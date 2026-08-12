@@ -23,13 +23,13 @@ SCRIPT = Path(__file__).parent.parent / "scripts" / "reset_tracked_hooks.py"
 
 
 def test_strip_hooks_removes_the_hooks_key():
-    assert strip_hooks({"enabledPlugins": {"paad@paad": True}, "hooks": {"PreToolUse": []}}) == {
-        "enabledPlugins": {"paad@paad": True}
+    assert strip_hooks({"enabledPlugins": {"example-plugin@example-marketplace": True}, "hooks": {"PreToolUse": []}}) == {
+        "enabledPlugins": {"example-plugin@example-marketplace": True}
     }
 
 
 def test_strip_hooks_is_a_noop_without_a_hooks_key():
-    doc = {"enabledPlugins": {"paad@paad": True}}
+    doc = {"enabledPlugins": {"example-plugin@example-marketplace": True}}
     assert strip_hooks(doc) == doc
 
 
@@ -51,7 +51,7 @@ def test_strip_hooks_preserves_key_order_of_the_remaining_keys():
     of `strip_hooks`. `hooks` deliberately sits in the MIDDLE, with keys on both sides, so a
     mutant that merely preserves first/last position cannot pass by accident.
     """
-    doc = {"zebra": 1, "hooks": {}, "enabledPlugins": {"paad@paad": True}, "apple": 2}
+    doc = {"zebra": 1, "hooks": {}, "enabledPlugins": {"example-plugin@example-marketplace": True}, "apple": 2}
     assert list(strip_hooks(doc).keys()) == ["zebra", "enabledPlugins", "apple"]
 
 
@@ -59,12 +59,12 @@ def test_main_clears_hooks_but_preserves_enabled_plugins(tmp_path):
     settings = tmp_path / ".claude" / "settings.json"
     settings.parent.mkdir(parents=True)
     settings.write_text(
-        json.dumps({"enabledPlugins": {"paad@paad": True}, "hooks": {"PreToolUse": []}}),
+        json.dumps({"enabledPlugins": {"example-plugin@example-marketplace": True}, "hooks": {"PreToolUse": []}}),
         encoding="utf-8",
     )
     assert main([str(tmp_path)]) == 0
     assert json.loads(settings.read_text(encoding="utf-8")) == {
-        "enabledPlugins": {"paad@paad": True}
+        "enabledPlugins": {"example-plugin@example-marketplace": True}
     }
 
 
@@ -80,7 +80,7 @@ def test_main_is_a_noop_when_there_is_no_hooks_key(tmp_path):
     mtime -- and, if formatting ever drifted, its bytes -- change for no reason."""
     settings = tmp_path / ".claude" / "settings.json"
     settings.parent.mkdir(parents=True)
-    original = json.dumps({"enabledPlugins": {"paad@paad": True}})
+    original = json.dumps({"enabledPlugins": {"example-plugin@example-marketplace": True}})
     settings.write_text(original, encoding="utf-8")
     assert main([str(tmp_path)]) == 0
     assert settings.read_text(encoding="utf-8") == original
@@ -97,6 +97,19 @@ def test_main_leaves_malformed_json_untouched_rather_than_crashing(tmp_path):
     assert settings.read_text(encoding="utf-8") == "{ not json"
 
 
+def test_main_leaves_non_dict_json_untouched_rather_than_crashing(tmp_path):
+    """Valid JSON, wrong shape. `strip_hooks` calls `.items()` unconditionally, which raises
+    on a list/string/number -- same posture as the malformed-JSON case above: this step does
+    not own the content, so it must not crash the CI job over something a downstream guard is
+    what actually judges.
+    """
+    settings = tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps(["hooks", "not", "an", "object"]), encoding="utf-8")
+    assert main([str(tmp_path)]) == 0
+    assert json.loads(settings.read_text(encoding="utf-8")) == ["hooks", "not", "an", "object"]
+
+
 def test_main_defaults_to_the_current_directory(tmp_path, monkeypatch):
     settings = tmp_path / ".claude" / "settings.json"
     settings.parent.mkdir(parents=True)
@@ -110,7 +123,7 @@ def test_running_twice_is_idempotent(tmp_path):
     settings = tmp_path / ".claude" / "settings.json"
     settings.parent.mkdir(parents=True)
     settings.write_text(
-        json.dumps({"enabledPlugins": {"paad@paad": True}, "hooks": {"PreToolUse": []}}),
+        json.dumps({"enabledPlugins": {"example-plugin@example-marketplace": True}, "hooks": {"PreToolUse": []}}),
         encoding="utf-8",
     )
     assert main([str(tmp_path)]) == 0
