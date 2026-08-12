@@ -451,6 +451,7 @@ def cmd_triage_run(args, config) -> int:
                                    dry_run=args.dry_run, no_llm=args.no_llm,
                                    backend_role=args.backend)
     print(f"triage: {report.counts} judged={report.judged} "
+          f"resolved={report.resolved} llm_calls={report.llm_calls} "
           f"backend={report.backend} failures={len(report.failures)}", file=sys.stderr)
     for msg in report.failures:
         print(f"  {msg}", file=sys.stderr)

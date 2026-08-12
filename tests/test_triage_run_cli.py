@@ -78,3 +78,19 @@ def test_the_cli_reports_the_same_triage_config_error_via_doctor(tmp_path, monke
     assert rc == 2
     assert "Traceback" not in err
     assert "company_resolve_llm" in err
+
+
+def test_cmd_triage_run_prints_the_resolved_by_tier_counts_and_the_llm_call_count(
+        monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    report = TriageReport(counts={"keep": 0, "shortlist": 0, "research": 0, "dismiss": 0,
+                                  "needs_review": 0, "skipped": 0},
+                          judged=0, backend=None, failures=[],
+                          resolved={"tier1": 0, "tier2": 1, "tier3": 3}, llm_calls=9)
+    monkeypatch.setattr(Sluice, "triage", lambda self, **kw: report)
+
+    args = _build_parser().parse_args(["triage", "run", "--no-llm"])
+    assert cmd_triage_run(args, Config()) == 0
+    err = capsys.readouterr().err
+    assert "resolved={'tier1': 0, 'tier2': 1, 'tier3': 3}" in err
+    assert "llm_calls=9" in err

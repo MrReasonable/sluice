@@ -1,8 +1,9 @@
 """A backend that answers by prompt KIND.
 
-The four LLM call sites an e2e run touches -- triage judge, cv compose, cv audit,
-track classify -- each have a stable first line. `ScriptedBackend` dispatches on
-a PREFIX of the prompt's first line and RAISES on anything it does not recognise.
+The five LLM call sites an e2e run touches -- triage judge, triage tier-3 company
+resolution, cv compose, cv audit, track classify -- each have a stable first line.
+`ScriptedBackend` dispatches on a PREFIX of the prompt's first line and RAISES on
+anything it does not recognise.
 
 Two design points, both load-bearing:
 
@@ -20,12 +21,13 @@ Two design points, both load-bearing:
 import json
 import re
 
-# Stable first-line prefixes of the four call sites. cv-compose is a prefix
+# Stable first-line prefixes of the five call sites. cv-compose is a prefix
 # because its first line is fully interpolated (see module docstring).
 _TRIAGE = "You are the batched judgment stage"           # triage/prompt.py:_SCAFFOLD_INTRO
 _CV = "Compose a tailored CV for"                        # cv/compose.py:build_prompt
 _AUDIT = "You are auditing a CV for fabrication."        # cv/audit.py:build_audit_prompt
 _TRACK = "You track a job seeker's live applications."   # track/classify.py:build_prompt
+_RESOLVE = "You are the company-name resolution step"    # triage/resolve.py:_RESOLVE_PROMPT_HEAD
 
 # The id is the REST OF THE LINE, not the first whitespace-free run. `lead_id` is the
 # note's store-issued slug, and a real slug is a note FILENAME -- `Example Ltd - Example
@@ -44,7 +46,8 @@ class ScriptedBackend:
     last_backend = "primary"
 
     def __init__(self, *, cv_by_company=None, triage_verdicts=None,
-                 default_verdict="shortlist", track_response=None):
+                 default_verdict="shortlist", track_response=None,
+                 resolve_response=None):
         # {company: cv_text} -- keyed by COMPANY (parsed from the compose first
         # line), required for any company the CV hop composes for; a missing key
         # RAISES (a silent default CV would mask a mis-wired call). Keying by
@@ -58,6 +61,12 @@ class ScriptedBackend:
         # matched against the prompt (first hit wins) when one run sees several
         # emails. None -> a not_job answer, which reconcile skips.
         self.track_response = track_response
+        # The tier-3 resolve answer: a bare string (every resolve call gets it), or
+        # [(marker_substring, answer), ...] matched against the prompt (first hit
+        # wins) -- one run can resolve several leads, each needing its own answer.
+        # None -> RAISES on the first resolve call, never a silent "NONE" default:
+        # a mis-wired tier-3 call must not read as a clean abstain.
+        self.resolve_response = resolve_response
         self.prompts: list[str] = []
 
     def complete(self, prompt):
@@ -71,6 +80,8 @@ class ScriptedBackend:
             return self._audit()
         if first.startswith(_TRACK):
             return self._track(prompt)
+        if first.startswith(_RESOLVE):
+            return self._resolve(prompt)
         raise AssertionError(
             f"ScriptedBackend: unrecognised prompt (first line {first!r}). "
             "Add a handler rather than returning a silent default.")
@@ -109,3 +120,20 @@ class ScriptedBackend:
         if isinstance(resp, dict):
             return json.dumps(resp)
         return json.dumps({"lead": None, "type": "not_job", "confidence": 0.0})
+
+    def _resolve(self, prompt):
+        resp = self.resolve_response
+        if isinstance(resp, list):
+            for marker, answer in resp:
+                if marker in prompt:
+                    return answer
+            raise AssertionError(
+                f"ScriptedBackend: no scripted resolve answer matches this prompt "
+                f"(markers {[m for m, _ in resp]!r})")
+        if isinstance(resp, str):
+            return resp
+        raise AssertionError(
+            "ScriptedBackend: tier-3 company resolution was called but no "
+            "resolve_response was scripted. A silent 'NONE' default would let a "
+            "mis-wired call read as a clean abstain -- add one rather than "
+            "returning a silent default.")
