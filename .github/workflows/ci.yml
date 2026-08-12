@@ -103,6 +103,15 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: |
           set -euo pipefail
+          # `.claude/settings.json` is the one rulesync output this repo tracks (it also
+          # carries Claude Code's hand-authored `enabledPlugins` key), so the checkout always
+          # supplies a copy before generation runs. Clearing its `hooks` key first forces
+          # rulesync to rewrite that key fresh every run -- without it, a copy that already
+          # matches gets silently SKIPPED and omitted from the summary, breaking the exact
+          # count guard below; and a genuinely broken generate run would leave a stale but
+          # structurally-valid copy in place, defeating the emitted-content guard after it.
+          # scripts/reset_tracked_hooks.py's own docstring has the measured chain.
+          python3 scripts/reset_tracked_hooks.py .
           npm run rulesync | tee "$RUNNER_TEMP/rulesync-output.txt"
           python scripts/guard_rulesync_drift.py "$RUNNER_TEMP/rulesync-output.txt"
           # The one content assertion the drift guard structurally cannot make: it counts

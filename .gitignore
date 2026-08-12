@@ -76,7 +76,27 @@ dossiers/
 # again rather than of five-eighths of it.
 /CLAUDE.md
 /AGENTS.md
-/.claude/
+# `.claude/settings.json` is a DELIBERATE, narrow exception to "everything below is a build
+# artifact": Claude Code's own `enabledPlugins` key -- written by `/plugin marketplace add`,
+# never by rulesync -- lives in the SAME shared file rulesync's hooks feature writes to, and
+# tracking it is the only way a plugin enable reaches every worktree and contributor rather
+# than staying one machine's private config. rulesync's hooks writer merges additively
+# (verified by running it against a file already carrying `enabledPlugins`: unchanged), so
+# the two can coexist in one tracked file.
+#
+# `/.claude/*` -- NOT a bare `/.claude/` -- is load-bearing: git will not look inside a
+# directory excluded by a plain trailing-slash pattern, so a bare `/.claude/` makes the
+# re-include below silently inert. Everything ELSE under `.claude/` (agents/, skills/,
+# worktrees/, scheduled_tasks.lock) stays exactly as forbidden as before --
+# tests/test_no_leaked_files.py's `.claude/` prefix gate is unchanged and still covers them;
+# only this one path is carved out of it, explicitly, by name.
+#
+# Tracking this file also means a CI checkout always supplies a copy before `npm run
+# rulesync` runs. scripts/reset_tracked_hooks.py clears its `hooks` key first so rulesync is
+# always forced to rewrite that key fresh -- see that script's docstring for what breaks
+# without it.
+/.claude/*
+!/.claude/settings.json
 # Not written today, but REACHABLE, which is why it stays here rather than moving down: `-f '*'`
 # includes the `mcp` feature and `claudecode` supports it, so this file appears the moment
 # someone adds `.rulesync/mcp.json`.

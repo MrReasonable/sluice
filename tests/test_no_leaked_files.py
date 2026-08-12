@@ -257,9 +257,25 @@ def _probe_path(rule: str) -> str:
     return bare + "generated.md" if bare.endswith("/") else bare
 
 
+# The ONE path deliberately carved out of the `.claude/` prefix gate. `.claude/settings.json`
+# carries Claude Code's own `enabledPlugins` key (written by `/plugin marketplace add`, never
+# by rulesync) in the same shared file rulesync's hooks feature writes -- tracking it is the
+# only way a plugin enable reaches every worktree and contributor. .gitignore's matching
+# `!/.claude/settings.json` re-include and `scripts/reset_tracked_hooks.py`'s docstring have
+# the full chain, including what it costs the two rulesync CI guards and how that is repaid.
+# Checked BEFORE the prefix scan, never by editing FORBIDDEN_PREFIXES itself: `.claude/`
+# there still has to keep matching everything else under it -- agents/, skills/, worktrees/,
+# scheduled_tasks.lock -- by simple prefix, and a `.claude/*`-shaped entry there would break
+# that for all of them at once (see test_prefix_rules_are_root_anchored_and_component_rules_
+# are_not for the general form).
+_TRACKED_EXCEPTIONS = frozenset({".claude/settings.json"})
+
+
 def _is_forbidden(path: str) -> bool:
     if path in FORBIDDEN_EXACT:
         return True
+    if path in _TRACKED_EXCEPTIONS:
+        return False
     if any(path.startswith(p) for p in FORBIDDEN_PREFIXES):
         return True
     return any(part in FORBIDDEN_COMPONENTS for part in path.split("/"))
@@ -577,7 +593,14 @@ def test_every_gated_path_is_also_gitignored():
     gated = FORBIDDEN_EXACT + FORBIDDEN_PREFIXES + FORBIDDEN_COMPONENTS
     assert gated, "no paths gated: this test would pass without checking anything"
     for path in gated:
-        assert path.strip("/") in rules, f"{path} is gated but NOT gitignored -- they must agree"
+        bare = path.strip("/")
+        # `.claude/` is gitignored as `/.claude/*`, not a bare `/.claude/`: a plain
+        # trailing-slash directory rule excludes the directory ENTRY itself, which would make
+        # `!/.claude/settings.json`'s re-include silently inert -- git will not look inside a
+        # directory excluded that way. `dir/*` is therefore an equally valid witness that a
+        # gated prefix is gitignored, alongside the plain `dir/` shape every other entry uses.
+        assert bare in rules or f"{bare}/*" in rules, \
+            f"{path} is gated but NOT gitignored -- they must agree"
 
 
 def test_the_gate_covers_every_generated_output_gitignore_covers():
@@ -651,8 +674,12 @@ def test_prefix_rules_are_root_anchored_and_component_rules_are_not():
     leaked personal data into this repo three times and `.npmrc` can carry a registry auth
     token, so both are caught at ANY depth.
     """
-    assert _is_forbidden(".claude/settings.json")
-    assert not _is_forbidden("docs/.claude/settings.json")
+    # `.claude/agents/...`, not `.claude/settings.json`: the latter is the one deliberate,
+    # separately-pinned exception (test_the_one_tracked_claude_path_is_narrowly_scoped below),
+    # and using it here would make this test pass or fail depending on that exception rather
+    # than on the root-anchoring property it exists to check.
+    assert _is_forbidden(".claude/agents/reviewer.md")
+    assert not _is_forbidden("docs/.claude/agents/reviewer.md")
     assert _is_forbidden("node_modules/rulesync/package.json")
     assert not _is_forbidden("tools/node_modules/rulesync/package.json")
 
@@ -660,6 +687,28 @@ def test_prefix_rules_are_root_anchored_and_component_rules_are_not():
     assert _is_forbidden("docs/deep/.memsearch/session.jsonl")
     assert _is_forbidden(".npmrc")
     assert _is_forbidden("tools/sub/.npmrc")
+
+
+def test_the_one_tracked_claude_path_is_narrowly_scoped():
+    """POSITIVE CONTROL for `_TRACKED_EXCEPTIONS`.
+
+    Mirrors `test_a_vault_written_into_the_checkout_is_refused`'s shape: the exception was
+    added with nothing exercising it, which is how a carve-out that matches nothing --
+    or, worse, everything -- survives unnoticed. `.claude/settings.json` itself must be
+    ALLOWED (that is the whole point: `enabledPlugins` reaching every worktree), but the
+    exception must not widen into a bare `.claude/` allowance -- every neighbouring path
+    that gave `.claude/` its FORBIDDEN_PREFIXES entry in the first place must stay refused,
+    including a path that merely starts with the same eight characters as the allowed file.
+    """
+    assert not _is_forbidden(".claude/settings.json")
+    assert _is_forbidden(".claude/agents/reviewer.md")
+    assert _is_forbidden(".claude/skills/review-pr/SKILL.md")
+    assert _is_forbidden(".claude/worktrees/mcp-server-105/sluice/__init__.py")
+    assert _is_forbidden(".claude/scheduled_tasks.lock")
+    # Same directory, same leading bytes as the allowed file, different name -- the exception
+    # is an exact match, not a prefix of its own.
+    assert _is_forbidden(".claude/settings.local.json")
+    assert _is_forbidden(".claude/settings.json.bak")
 
 
 def test_the_gate_fails_closed_when_git_fails():
