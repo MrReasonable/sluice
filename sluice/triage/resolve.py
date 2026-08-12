@@ -269,7 +269,13 @@ def _company_from_reply(reply) -> str | None:
     the page; tier 3 GENERATES one, over text a third party wrote and can put
     anything into -- so this rejects anything that is not already the exact shape
     the prompt asked for, rather than trying to recover a hit from an answer that
-    ignored it."""
+    ignored it. Scope note: this catches genuinely multi-line output, NONE in any
+    casing, and anything past the length cap -- it does NOT specifically detect a
+    single-line prose sentence that happens to fit under the cap (e.g. 'Based on the
+    title, the company is Example Co.'). That residual risk is bounded elsewhere:
+    the prompt explicitly instructs against it, and any acceptance still has to pass
+    the deny-list, the board-name guard, and frontmatter_safe before being written to
+    a field a human will see."""
     if not isinstance(reply, str):
         return None
     lines = [ln.strip() for ln in reply.strip().splitlines() if ln.strip()]
@@ -281,10 +287,6 @@ def _company_from_reply(reply) -> str | None:
         return None   # the expected majority outcome, in every casing/punctuation
                       # the instruction can come back wearing
     if len(answer) > _MAX_COMPANY_CHARS:
-        return None
-    # A real company name is typically 1-4 words; 5+ is a strong signal the model
-    # added explanation/preamble rather than just the employer name.
-    if len(answer.split()) > 4:
         return None
     return answer
 

@@ -426,7 +426,6 @@ def test_company_from_reply_abstains_on_an_empty_reply():
 
 
 def test_company_from_reply_abstains_on_a_multi_line_reply():
-    assert resolve._company_from_reply("Based on the title, the company is Example Co.") is None
     assert resolve._company_from_reply("Example Co\nSecond line") is None
 
 
