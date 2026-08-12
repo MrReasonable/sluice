@@ -82,13 +82,83 @@ def test_triage_threads_the_triage_config_into_the_backend(tmp_path, monkeypatch
     monkeypatch.setenv("TRIAGE_AUDIT", str(tmp_path / "a.jsonl"))
     monkeypatch.setenv("DOSSIER_DIR", str(tmp_path / "d"))
     app = Sluice(Config())
-    seen = {}
-    monkeypatch.setattr(app, "backend", lambda role, **kw: seen.update(role=role, **kw))
+    calls = []
+    # A LIST of calls, not a last-call-wins dict (#120): a second `self.backend()`
+    # call -- the gated tier-3 resolution backend, built after the judge's -- would
+    # otherwise silently overwrite a dict-shaped spy's `role` key and this
+    # assertion would keep passing for the WRONG reason. The list makes each
+    # call's own arguments inspectable regardless of how many `self.backend()`
+    # calls a future change adds.
+    monkeypatch.setattr(app, "backend", lambda role, **kw: calls.append((role, kw)))
     app.triage(backend_role="primary")
-    assert seen["role"] == "primary"
-    assert seen["primary_model"] == "claude-sonnet-4-5"   # triage uses claude_max_model
-    assert seen["effort"] == "medium"                     # ...and claude_max_effort
-    assert seen["fallback_model"] == "deepseek-v4-flash"  # ...and cheap_model for fallback
+    assert calls[0][0] == "primary"
+    assert calls[0][1]["primary_model"] == "claude-sonnet-4-5"   # triage uses claude_max_model
+    assert calls[0][1]["effort"] == "medium"                     # ...and claude_max_effort
+    assert calls[0][1]["fallback_model"] == "deepseek-v4-flash"  # ...and cheap_model for fallback
+    assert len(calls) == 1   # company_resolve_llm defaults to False -- no second call
+
+
+def _triage_llm_config(tmp_path, monkeypatch):
+    """Point SLUICE_CONFIG at a triage: block with both #120 resolution knobs on,
+    the same shape _track_config above uses for track's own seen_db/token_path."""
+    cfgp = tmp_path / "cfg.yaml"
+    cfgp.write_text("triage:\n  company_resolve_fetch: true\n  company_resolve_llm: true\n")
+    monkeypatch.setenv("SLUICE_CONFIG", str(cfgp))
+
+
+def test_triage_builds_no_resolution_backend_when_the_llm_tier_is_off(tmp_path, monkeypatch):
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    monkeypatch.setenv("TRIAGE_AUDIT", str(tmp_path / "a.jsonl"))
+    monkeypatch.setenv("DOSSIER_DIR", str(tmp_path / "d"))
+    app = Sluice(Config())
+    calls = []
+    monkeypatch.setattr(app, "backend", lambda role, **kw: calls.append((role, kw)) or None)
+    app.triage()      # company_resolve_llm defaults to False -- no config file at all
+    assert len(calls) == 1, "the LLM tier is off; only the judge backend should be built"
+
+
+def test_triage_builds_the_resolution_backend_on_the_fallback_role_whatever_backend_was_asked_for(
+        tmp_path, monkeypatch):
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    monkeypatch.setenv("TRIAGE_AUDIT", str(tmp_path / "a.jsonl"))
+    monkeypatch.setenv("DOSSIER_DIR", str(tmp_path / "d"))
+    _triage_llm_config(tmp_path, monkeypatch)
+    app = Sluice(Config())
+    calls = []
+    monkeypatch.setattr(app, "backend", lambda role, **kw: calls.append((role, kw)) or None)
+    app.triage(backend_role="primary")
+    assert [role for role, kw in calls] == ["primary", "fallback"]
+    assert calls[1][1]["fallback_model"] == "deepseek-v4-flash"   # cheap_model, always
+
+
+def test_no_llm_threads_no_resolution_backend_into_the_engine(tmp_path, monkeypatch):
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    monkeypatch.setenv("TRIAGE_AUDIT", str(tmp_path / "a.jsonl"))
+    monkeypatch.setenv("DOSSIER_DIR", str(tmp_path / "d"))
+    _triage_llm_config(tmp_path, monkeypatch)     # the knob is ON...
+    app = Sluice(Config())
+    called = []
+    monkeypatch.setattr(app, "backend", lambda *a, **k: called.append(k) or None)
+    report = app.triage(no_llm=True)              # ...but --no-llm wins
+    assert called == [], "no_llm must not construct ANY backend, judge or resolution"
+    assert hasattr(report, "resolved")
+
+
+def test_a_resolution_backend_that_fails_to_construct_degrades_rather_than_crashes(
+        tmp_path, monkeypatch):
+    from sluice.core.backends import BackendError
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    monkeypatch.setenv("TRIAGE_AUDIT", str(tmp_path / "a.jsonl"))
+    monkeypatch.setenv("DOSSIER_DIR", str(tmp_path / "d"))
+    _triage_llm_config(tmp_path, monkeypatch)
+    app = Sluice(Config())
+    def _backend(role, **kw):
+        if role == "fallback":
+            raise BackendError("no api key")
+        return None       # the judge role succeeds
+    monkeypatch.setattr(app, "backend", _backend)
+    report = app.triage()      # must not raise
+    assert hasattr(report, "counts")
 
 
 def test_triage_threads_get_source_into_engine_run(tmp_path, monkeypatch):
