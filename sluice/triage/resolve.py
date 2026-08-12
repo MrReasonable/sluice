@@ -67,10 +67,14 @@ class Resolution:
 _ABSTAIN = Resolution()
 
 
-# ── tier 3 (#120): named caps, all measured in BYTES (len(s.encode("utf-8")), not
-# len(s)) -- a CJK-heavy board's byte length can run several times its character
-# count, and these caps exist to bound one LLM request's size and cost. Each is a
-# module constant, not an inlined literal, for the same reason _MAX_DEPTH is: a
+# ── tier 3 (#120): named caps that bound one LLM request's size and cost. Only
+# _TITLE_LIMIT and _JD_LIMIT are measured in BYTES (len(s.encode("utf-8")), not
+# len(s)) -- both go through the `_text` helper below, which byte-slices for
+# exactly the reason each explains: a CJK-heavy board's byte length can run
+# several times its character count. The other three are NOT byte measures --
+# see each constant's own comment for what it actually counts (a character
+# slice, a character count via len(), and a plain item count). Each is a module
+# constant, not an inlined literal, for the same reason _MAX_DEPTH is: a
 # boundary test binds to the NAME, so the cap can change later without the test
 # silently drifting out of sync with it.
 
@@ -334,7 +338,24 @@ def _is_board_name(candidate: str, fm: dict) -> bool:
     emit a site-wide Organization JSON-LD node ahead of the page's own JobPosting
     node (see test_from_dossier_finds_a_jobposting_that_is_not_the_first_block
     above, built against exactly that shape). A grounded, plausible, WRONG answer
-    that no string-safety guard catches."""
+    that no string-safety guard catches.
+
+    Known limitation, deliberately not fixed here: this is an EXACT match against
+    the source id or the host's second-level label, after case-folding -- it
+    catches a single-token board name (`Wellfound` against `wellfound.com`) but
+    NOT a multi-word board name whose human-readable form doesn't match its slug
+    (`We Work Remotely` against `weworkremotely.invalid`, or `Example Board`
+    against `example-board.invalid`). Deliberately not normalized further:
+    stripping punctuation/spaces before comparing would also reject a CORRECT
+    answer whenever a real employer's own careers page happens to be hosted at a
+    domain containing their own name (e.g. `careers.acme-corp.invalid` correctly
+    resolving to `Acme Corp`) -- a common real pattern for a self-hosted careers
+    page. Given this module's abstain-over-guess posture, the narrower,
+    well-understood gap here is the safer choice over a new unreviewed
+    false-positive class. The residual risk of a missed multi-word board name is
+    bounded by the deny-list, frontmatter_safe, require_blank's visibility, and
+    the per-resolution audit trail -- the same containment story the module
+    docstring already states for prompt injection in general."""
     folded = candidate.strip().casefold()
     src_id = (fm.get("source") or "").strip().casefold()
     if src_id and folded == src_id:
@@ -397,9 +418,18 @@ def resolve_company(fm: dict, get_source, dossier_cache, *,
     # instead of two regexes. Its own gate, own guards, own except -- the same
     # per-tier isolation tiers 1 and 2 already have, so this tier's failure can
     # never take down another tier or the batch.
-    if not company_resolve_llm or resolve_backend is None or dossier is None:
-        # dossier is None specifically covers a failed tier-2 fetch: never spend a
-        # backend call reasoning over data that was never actually retrieved.
+    if not company_resolve_llm or resolve_backend is None or not isinstance(dossier, dict):
+        # `not isinstance(dossier, dict)` (not just `dossier is None`) covers two
+        # cases: a failed tier-2 fetch, where `dossier` never got assigned past its
+        # `None` initializer, AND a cache hit whose JSON top level is a list, string,
+        # or number -- DossierCache.get_or_build does a bare json.loads() on a cache
+        # hit with no type check, so a hand-edited or otherwise malformed cache file
+        # can hand back exactly that. Either way `dossier` reaches here non-dict, and
+        # `_build_resolve_prompt(dossier)` below calls `.get(...)` on it OUTSIDE any
+        # try/except -- an AttributeError there would propagate out of resolve_company
+        # entirely and, since engine.run has no try around this call, take down the
+        # WHOLE triage batch over one bad cache entry. Never spend a backend call
+        # reasoning over data that was never actually retrieved (or wasn't a dossier).
         return _ABSTAIN
     prompt = _build_resolve_prompt(dossier)
     if prompt is None:

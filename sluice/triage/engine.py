@@ -84,6 +84,11 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
     # resolved companies (rejected nothing) does not start re-rendering "Rejected
     # Leads Audit.md" on a path that previously never touched it -- see the render
     # trigger at the bottom of this function, which checks audit_entries only.
+    # Deliberately write-only/unread by this function -- _resolve_audit appends to
+    # it and to the durable `audit` log, but nothing here ever reads it back. Do
+    # not "simplify" this by merging it into audit_entries: that merge is exactly
+    # what test_a_tier3_resolution_never_triggers_the_rejected_leads_note pins
+    # against, since it would make render_rejected_note fire on a resolve-only run.
     resolve_audit_entries = []
 
     def _audit(entry):

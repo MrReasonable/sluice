@@ -474,6 +474,21 @@ def test_is_board_name_accepts_a_real_employer_name():
     assert resolve._is_board_name("Example Co", fm) is False
 
 
+def test_is_board_name_known_limitation_does_not_catch_a_multi_word_board_name():
+    """Documents (pins, does NOT attempt to fix) a known, deliberately accepted gap
+    in _is_board_name -- see its own docstring for the full rationale. The guard is
+    an EXACT match against the source id or the host's second-level label, so a
+    multi-word board name whose human-readable form doesn't match its slug
+    ("We Work Remotely" against a "weworkremotely" source/host) is NOT caught.
+    Normalizing punctuation/spaces before comparing was considered and rejected:
+    it would also reject a CORRECT answer whenever a real employer's own careers
+    page happens to be hosted at a domain containing their own name. This test
+    exists to make the gap visible and INTENTIONAL to a future reader, not to
+    invite a narrow normalization fix made without the same design consideration."""
+    fm = {"url": "https://weworkremotely.invalid/x", "source": "weworkremotely"}
+    assert resolve._is_board_name("We Work Remotely", fm) is False
+
+
 # ── tier 3 wired into resolve_company ──────────────────────────────────────────
 
 def _backend(replies):
@@ -581,6 +596,26 @@ def test_a_failed_dossier_fetch_never_spends_an_llm_call():
     assert got.company is None
     assert got.llm_called is False
     assert backend.calls == []
+
+
+def test_a_non_dict_dossier_abstains_rather_than_raising():
+    """#120 whole-branch review: DossierCache.get_or_build does a bare json.loads()
+    on a cache hit with no type check, so a cache file whose JSON top level is a
+    list, string, or number returns that value verbatim. Such a `dossier` is not
+    None, so it survives tier 2's own `except Exception` (it was already assigned
+    before `_from_dossier`'s AttributeError fires) and, pre-fix, reached
+    `_build_resolve_prompt(dossier)` OUTSIDE any try/except -- where `dossier.get`
+    raises AttributeError. engine.run has no try around resolve_company, so that
+    would kill the WHOLE triage batch over one malformed cache entry, directly
+    contradicting this tier's own "failure can never take down the batch" promise.
+    The gate must abstain on ANY non-dict, not just None."""
+    cache = _RecordingCache(dossier=["not", "a", "dict"])
+    backend = _backend([])
+    got = resolve.resolve_company(_LLM_FM, None, cache, no_llm=False,
+                                  company_resolve_fetch=True, company_resolve_llm=True,
+                                  resolve_backend=backend)
+    assert got.company is None
+    assert backend.calls == [], "must never spend a backend call reasoning over garbage evidence"
 
 
 def test_blank_evidence_never_spends_an_llm_call():
