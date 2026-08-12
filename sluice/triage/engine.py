@@ -1,16 +1,19 @@
 """Triage orchestrator: load -> classify -> resolve -> enrich -> judge -> apply -> audit.
 
-Deterministic classify resolves the obvious cases for free (no dossier, no LLM).
-A lead classify() leaves at blank-company needs_review gets ONE resolution
-attempt (#109): a free URL-pattern tier 1, then -- opt-in via
-cfg.company_resolve_fetch -- a real, no-LLM page-visit tier 2, reusing the same
-fetch/cache the enrich pass needs anyway. Only the kept, ambiguous leads are
-enriched and judged. dry_run computes and reports but writes nothing (no vault
-edits, no audit lines) -- resolution's COMPUTATION still runs under dry_run,
-only its write is skipped. no_llm runs classify + (tier-1-only) resolve + apply
-+ audit only. Every lead already in the application lifecycle is skipped by the
-apply layer, so triage never clobbers human state -- and a skipped lead is
-audited nowhere, because no decision of ours landed on it.
+Deterministic classify resolves the obvious cases for free (no dossier, no LLM). A lead
+classify() leaves at blank-company needs_review gets ONE resolution attempt: a free
+URL-pattern tier 1 (#109), then -- opt-in via cfg.company_resolve_fetch -- a real, no-LLM
+page-visit tier 2 (#109), reusing the same fetch/cache the enrich pass needs anyway, then
+-- opt-in via cfg.company_resolve_llm, and only when a resolve_backend was threaded in --
+tier 3 (#120), an LLM read of the SAME page data tier 2 already fetched, on a SEPARATE
+backend from the judge's (always the cheap "fallback" role, built in Sluice.triage()).
+Only the kept, ambiguous leads are enriched and judged. dry_run computes and reports but
+writes nothing (no vault edits, no audit lines) -- resolution's COMPUTATION still runs
+under dry_run, including a real tier-3 backend call, only its WRITE is skipped. no_llm
+runs classify + (tier-1-only) resolve + apply + audit only -- no backend of any kind is
+ever built. Every lead already in the application lifecycle is skipped by the apply layer,
+so triage never clobbers human state -- and a skipped lead is audited nowhere, because no
+decision of ours landed on it.
 
 A verdict is routed back to its note by the dossier's `lead_id`, which the enrich
 pass sets to the store-issued `note.slug` -- NOT the cache's storage key, which is
@@ -33,6 +36,15 @@ from sluice.triage.prompt import build_system_prompt_from
 
 _log = get_logger("triage.engine")
 
+# #120: after this many CONSECUTIVE tier-3 backend errors in one run, stop
+# attempting tier 3 for the REST of this run. 107 candidate leads x
+# resolve_backend's own timeout (DEFAULT_TIMEOUT=300s, core/backends.py) is up to
+# ~9 hours if the backend is simply down -- this bounds that to
+# _LLM_BREAKER_THRESHOLD failed attempts, reported ONCE, with every remaining
+# candidate lead abstaining through resolve_company's OWN existing
+# "resolve_backend is None" gate rather than a second gate here.
+_LLM_BREAKER_THRESHOLD = 3
+
 
 @dataclass
 class TriageReport:
@@ -42,11 +54,24 @@ class TriageReport:
     judged: int = 0
     backend: str | None = None
     failures: list = field(default_factory=list)
+    # #120: which tier actually filled a blank company, counted only where the
+    # write LANDED (or would have, under dry_run) -- the same discipline `_audit`
+    # already applies to a classify decision, and for the identical reason: a count
+    # that includes a write the vault refused claims a resolution that never
+    # actually happened. `llm_calls` counts every tier-3 ATTEMPT (hit, guard-
+    # rejected, NONE, or a backend error) -- the abstain rate is what tells an
+    # operator the tier's real cost per lead it actually recovers. Both are NEW
+    # fields, not new rows inside `counts`: counts rows are lead OUTCOMES
+    # (keep/shortlist/...) that cmd_triage_run prints and notify() sends to
+    # Telegram verbatim -- mixing resolution PROVENANCE into that dict would make
+    # its rows stop summing to the lead total a human reads in a phone notification.
+    resolved: dict = field(default_factory=lambda: {"tier1": 0, "tier2": 0, "tier3": 0})
+    llm_calls: int = 0
 
 
 def run(vault, cfg, backend, dossier_cache, audit, *,
         statuses=("new", "research"), limit=None, dry_run=False, no_llm=False,
-        get_source=None):
+        get_source=None, resolve_backend=None):
     report = TriageReport()
     today = date.today().isoformat()
     notes = vault.read_leads(set(statuses))
@@ -55,24 +80,53 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
 
     keeps = []          # notes that pass the pre-gate, headed for enrich + judge
     audit_entries = []
+    # #120: tier 3's own audit trail, kept OUT of audit_entries so a run that only
+    # resolved companies (rejected nothing) does not start re-rendering "Rejected
+    # Leads Audit.md" on a path that previously never touched it -- see the render
+    # trigger at the bottom of this function, which checks audit_entries only.
+    resolve_audit_entries = []
 
     def _audit(entry):
         audit_entries.append(entry)
         if not dry_run:
             audit.append(entry)
 
-    # ── classify pass (free unless resolution's tier 2 visits a page) ──
+    def _resolve_audit(entry):
+        resolve_audit_entries.append(entry)
+        if not dry_run:
+            audit.append(entry)
+
+    _llm_consecutive_errors = 0
+    _llm_breaker_tripped = False
+
+    # ── classify pass (free unless resolution's tier 2 visits a page, or tier 3 spends a call) ──
     for note in notes:
         company = (note.fm.get("company") or "").strip()
         decision, reason = classify(note.fm, cfg)
-        # #109: resolution attempted only for classify()'s OWN blank-company
+        # #109/#120: resolution attempted only for classify()'s OWN blank-company
         # needs_review branch, never ahead of its existing title/location/pay
         # rejects (which don't depend on company at all) -- so a lead classify
-        # would reject regardless never triggers a tier-2 page visit.
+        # would reject regardless never triggers a tier-2 page visit or a tier-3
+        # LLM call.
         if decision == "needs_review" and not company:
             res = resolve.resolve_company(
-                note.fm, get_source, dossier_cache,
-                no_llm=no_llm, company_resolve_fetch=cfg.company_resolve_fetch)
+                note.fm, get_source, dossier_cache, no_llm=no_llm,
+                company_resolve_fetch=cfg.company_resolve_fetch,
+                company_resolve_llm=cfg.company_resolve_llm,
+                resolve_backend=None if _llm_breaker_tripped else resolve_backend)
+            if res.llm_called:
+                report.llm_calls += 1        # the spend happened whatever the outcome
+                if res.llm_error:
+                    _llm_consecutive_errors += 1
+                    if (not _llm_breaker_tripped
+                            and _llm_consecutive_errors >= _LLM_BREAKER_THRESHOLD):
+                        _llm_breaker_tripped = True
+                        report.failures.append(
+                            f"company-resolve tier3: {_LLM_BREAKER_THRESHOLD} "
+                            "consecutive backend errors -- tier 3 disabled for the "
+                            "rest of this run")
+                else:
+                    _llm_consecutive_errors = 0
             resolved = res.company
             if resolved:
                 wrote = False
@@ -80,12 +134,13 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
                     try:
                         # require_blank, alongside require_status: this decision ("company
                         # is blank, so filling it in is safe") was made from the read_leads
-                        # snapshot, and tier 2 spends SECONDS on a real page load before
-                        # getting here. A human typing the company into Obsidian in that
-                        # window must win -- never-clobber -- so the blankness check has to
-                        # be a FRESH re-read inside the CAS transform, exactly like
-                        # require_status beside it. A caller-side check on `company` above
-                        # is stale by construction and would be an equivalent mutant.
+                        # snapshot, and tier 2/3 spend SECONDS on a real page load or an LLM
+                        # round trip before getting here. A human typing the company into
+                        # Obsidian in that window must win -- never-clobber -- so the
+                        # blankness check has to be a FRESH re-read inside the CAS
+                        # transform, exactly like require_status beside it. A caller-side
+                        # check on `company` above is stale by construction and would be an
+                        # equivalent mutant.
                         wrote = vault.update_fields(
                             note.ref, {"company": f'"{resolved}"'},
                             require_status=frozenset(_status.TRIAGE_OWNED),
@@ -100,6 +155,12 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
                                 "status is not one triage owns)")
                 if wrote or dry_run:
                     note.fm["company"] = resolved
+                    report.resolved[res.tier] = report.resolved.get(res.tier, 0) + 1
+                    _resolve_audit({"ts": today, "slug": note.slug, "company": resolved,
+                                    "role": note.fm.get("role", ""),
+                                    "url": note.fm.get("url", ""), "stage": "resolve",
+                                    "tier": res.tier,
+                                    "reason": "blank company resolved from the posting"})
                     decision, reason = classify(note.fm, cfg)
         if decision == "keep":
             report.counts["keep"] += 1
