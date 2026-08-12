@@ -867,10 +867,20 @@ class Sluice:
         (cv, apply) have their own `*Config` with their own field names, so this
         mapping is NOT shared and belongs in this method, not in `Sluice.backend`.
 
+        #120: a SECOND backend, built independently of `backend_role`, is threaded
+        in as `resolve_backend` when `company_resolve_llm` is on -- tier 3 is bulk
+        extraction over the whole needs_review backlog, not judgement, so it stays
+        pinned to the cheap "fallback" role even when a user picked `--backend
+        primary` for the JUDGE. Its own try/except: `role="fallback"` is STRICT
+        (raises rather than degrading on a missing key), and a best-effort
+        enhancement must not be able to fail a run whose classify+apply path is
+        otherwise fully deterministic.
+
         Also threads `sources.get` (#109) into `triage.engine.run` as `get_source`,
         the same lazy, inside-the-method import `ingest()` already uses for
         `ingest.base`/`ingest.engine` -- `triage/` itself never imports
         `sluice.ingest` directly."""
+        from sluice.core.backends import BackendError
         from sluice.ingest import sources
         from sluice.triage.audit import AuditLog
         from sluice.triage.config import load_triage_config
@@ -887,10 +897,23 @@ class Sluice:
             primary_model=tcfg.claude_max_model, effort=tcfg.claude_max_effort,
             host=tcfg.claude_max_host, claude_path=tcfg.claude_max_path,
             fallback_name=tcfg.fallback_backend, fallback_model=tcfg.cheap_model)
+        resolve_backend = None
+        if not no_llm and tcfg.company_resolve_llm:
+            try:
+                resolve_backend = self.backend(
+                    "fallback", primary_name=tcfg.primary_backend,
+                    primary_model=tcfg.claude_max_model, effort=tcfg.claude_max_effort,
+                    host=tcfg.claude_max_host, claude_path=tcfg.claude_max_path,
+                    fallback_name=tcfg.fallback_backend, fallback_model=tcfg.cheap_model)
+            except BackendError as e:
+                _log.warning(
+                    "company resolution's tier-3 backend unavailable, tier 3 disabled "
+                    "this run: %s", e)
         cache = self.dossier_cache(self._dossier_dir(), tcfg.ttl_days)
         return _triage_run(self.store(), tcfg, backend, cache, audit,
                            statuses=tuple(statuses), limit=limit,
-                           dry_run=dry_run, no_llm=no_llm, get_source=sources.get)
+                           dry_run=dry_run, no_llm=no_llm, get_source=sources.get,
+                           resolve_backend=resolve_backend)
 
     def compose_cv(self, *, lead=None, all_shortlist=False, limit=None, dry_run=False,
                     no_serve=False, backend_role="auto", include_stale=False):
