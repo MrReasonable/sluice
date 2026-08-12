@@ -24,6 +24,11 @@ producing a false persisted audit-log entry.
 ## Global Constraints
 
 - **No LLM-based company guessing.** Both tiers are deterministic extraction, never inference.
+  (Superseded by #120, 2026-08-12: a third, LLM-backed tier was added on top of
+  these two, gated behind its own `company_resolve_llm` knob. The constraint above
+  accurately describes #109 as shipped; see
+  `docs/superpowers/specs/2026-08-12-triage-company-resolution-llm-tier-design.md`
+  for what changed and why.)
 - **Abstain over guess, everywhere.** A candidate that fails validation, or either tier missing,
   returns `None` — never a fabricated or low-confidence company name.
 - **`classify()`'s signature and purity contract are untouched** — no `dossier_cache`, `sources`,
