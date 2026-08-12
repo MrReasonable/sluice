@@ -308,3 +308,168 @@ def test_from_dossier_both_absent_returns_none():
 def test_from_dossier_malformed_jsonld_returns_none_not_raises():
     d = {"structured_data": "{not valid json", "page_title": ""}
     assert resolve._from_dossier(d) is None
+
+
+# ── tier 3 (#120): pure functions, tested standalone before they're wired in ──
+
+def test_org_candidates_reads_hiring_org_publisher_and_author_names():
+    raw = json.dumps([
+        {"@type": "JobPosting",
+         "hiringOrganization": {"name": "Example Co"},
+         "publisher": {"name": "Example Board"},
+         "author": {"name": "Example Poster"}},
+    ])
+    got = resolve._org_candidates(raw)
+    assert got == ["Example Co", "Example Board", "Example Poster"]
+
+
+def test_org_candidates_reads_a_bare_organization_typed_node():
+    raw = json.dumps([{"@type": "Organization", "name": "Example Co"}])
+    assert resolve._org_candidates(raw) == ["Example Co"]
+
+
+def test_org_candidates_drops_duplicates_preserving_first_order():
+    raw = json.dumps([
+        {"@type": "JobPosting", "hiringOrganization": {"name": "Example Co"},
+         "publisher": {"name": "Example Co"}},
+    ])
+    assert resolve._org_candidates(raw) == ["Example Co"]
+
+
+def test_org_candidates_caps_at_the_limit():
+    nodes = [{"@type": "Organization", "name": f"Example Co {i}"}
+            for i in range(resolve._CANDIDATE_LIMIT + 5)]
+    got = resolve._org_candidates(json.dumps(nodes))
+    assert len(got) == resolve._CANDIDATE_LIMIT
+
+
+def test_org_candidates_truncates_a_name_at_the_char_cap():
+    long_name = "E" * (resolve._CANDIDATE_CHARS + 20)
+    raw = json.dumps([{"@type": "Organization", "name": long_name}])
+    got = resolve._org_candidates(raw)
+    assert len(got[0]) == resolve._CANDIDATE_CHARS
+
+
+def test_org_candidates_ignores_a_non_string_name():
+    raw = json.dumps([{"@type": "Organization", "name": ["not", "a", "string"]}])
+    assert resolve._org_candidates(raw) == []
+
+
+def test_org_candidates_on_malformed_json_returns_empty_not_raises():
+    assert resolve._org_candidates("{not valid json") == []
+
+
+def test_org_candidates_on_blank_input_returns_empty():
+    assert resolve._org_candidates("") == []
+
+
+def test_build_resolve_prompt_carries_title_candidates_and_jd():
+    d = {"page_title": "Senior Engineer | Example Board",
+        "structured_data": json.dumps({"@type": "Organization", "name": "Example Co"}),
+        "jd": {"markdown": "We build things at Example Co."}}
+    prompt = resolve._build_resolve_prompt(d)
+    assert "Senior Engineer | Example Board" in prompt
+    assert "Example Co" in prompt
+    assert "We build things at Example Co." in prompt
+
+
+def test_build_resolve_prompt_first_line_is_fixed():
+    d = {"page_title": "Anything", "structured_data": "", "jd": {}}
+    prompt = resolve._build_resolve_prompt(d)
+    assert prompt.startswith(resolve._RESOLVE_PROMPT_HEAD.splitlines()[0])
+
+
+def test_build_resolve_prompt_returns_none_when_everything_is_blank():
+    assert resolve._build_resolve_prompt({"page_title": "", "structured_data": "", "jd": {}}) is None
+
+
+def test_build_resolve_prompt_tolerates_a_missing_jd_key():
+    d = {"page_title": "Something", "structured_data": ""}
+    assert resolve._build_resolve_prompt(d) is not None
+
+
+def test_build_resolve_prompt_tolerates_a_non_dict_jd():
+    d = {"page_title": "Something", "structured_data": "", "jd": "not a dict"}
+    assert resolve._build_resolve_prompt(d) is not None
+
+
+def test_build_resolve_prompt_caps_the_title_at_its_limit():
+    sentinel = "SENTINEL_PAST_CAP"
+    title = "A" * resolve._TITLE_LIMIT + sentinel
+    d = {"page_title": title, "structured_data": "", "jd": {}}
+    assert sentinel not in resolve._build_resolve_prompt(d)
+
+
+def test_build_resolve_prompt_caps_the_jd_at_its_limit():
+    sentinel = "SENTINEL_PAST_CAP"
+    jd = "A" * resolve._JD_LIMIT + sentinel
+    d = {"page_title": "", "structured_data": "", "jd": {"markdown": jd}}
+    assert sentinel not in resolve._build_resolve_prompt(d)
+
+
+def test_company_from_reply_accepts_a_clean_one_line_answer():
+    assert resolve._company_from_reply("Example Co") == "Example Co"
+
+
+def test_company_from_reply_strips_surrounding_whitespace():
+    assert resolve._company_from_reply("  Example Co  \n") == "Example Co"
+
+
+@pytest.mark.parametrize("reply", ["NONE", "none", "None.", " NONE \n", "none!"])
+def test_company_from_reply_abstains_on_none_in_any_casing_or_punctuation(reply):
+    assert resolve._company_from_reply(reply) is None
+
+
+def test_company_from_reply_abstains_on_an_empty_reply():
+    assert resolve._company_from_reply("") is None
+    assert resolve._company_from_reply("   \n  ") is None
+
+
+def test_company_from_reply_abstains_on_a_multi_line_reply():
+    assert resolve._company_from_reply("Based on the title, the company is Example Co.") is None
+    assert resolve._company_from_reply("Example Co\nSecond line") is None
+
+
+def test_company_from_reply_abstains_on_a_non_string_reply():
+    assert resolve._company_from_reply(None) is None
+    assert resolve._company_from_reply(123) is None
+
+
+def test_company_from_reply_accepts_an_answer_at_the_length_cap():
+    answer = "E" * resolve._MAX_COMPANY_CHARS
+    assert resolve._company_from_reply(answer) == answer
+
+
+def test_company_from_reply_rejects_an_answer_one_character_past_the_length_cap():
+    answer = "E" * (resolve._MAX_COMPANY_CHARS + 1)
+    assert resolve._company_from_reply(answer) is None
+
+
+@pytest.mark.parametrize("candidate", [
+    "Confidential", "confidential.", "CONFIDENTIAL", "Undisclosed", "Unknown", "N/A",
+    "Not Disclosed", "Private", "Private Company", "Stealth", "Stealth Startup",
+    "Various", "Various Clients", "Client", "The Client", "Our Client",
+    "Recruitment Agency", "Recruiter", "Agency",
+])
+def test_is_non_answer_catches_the_deny_list_in_any_casing(candidate):
+    assert resolve._is_non_answer(candidate) is True
+
+
+def test_is_non_answer_accepts_a_real_company_name():
+    assert resolve._is_non_answer("Example Co") is False
+
+
+def test_is_board_name_refuses_the_leads_own_source_id():
+    fm = {"url": "https://jobs.example-invalid.test/x", "source": "examplecareers"}
+    assert resolve._is_board_name("examplecareers", fm) is True
+    assert resolve._is_board_name("ExampleCareers", fm) is True
+
+
+def test_is_board_name_refuses_the_leads_url_host_label():
+    fm = {"url": "https://boards.example-careers.invalid/x", "source": "other-id"}
+    assert resolve._is_board_name("example-careers", fm) is True
+
+
+def test_is_board_name_accepts_a_real_employer_name():
+    fm = {"url": "https://boards.example-careers.invalid/x", "source": "example-careers"}
+    assert resolve._is_board_name("Example Co", fm) is False
