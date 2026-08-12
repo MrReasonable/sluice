@@ -90,12 +90,12 @@ def _claimed_pairs(text: str) -> set:
 def test_the_command_tree_walk_is_not_vacuous():
     """SCOPE guard, ahead of everything below: a broken walk (e.g. `_build_parser` changing
     shape so `_SubParsersAction` is never found) would make every assertion below pass over an
-    empty tree. Pin real structure, not just non-emptiness -- 9 known top-level groups and a
+    empty tree. Pin real structure, not just non-emptiness -- 10 known top-level groups and a
     floor on the total subcommand count across them.
     """
     tree = _command_tree()
     assert set(tree) == {
-        "ingest", "triage", "cv", "apply", "track", "leads", "health", "init", "doctor"}, (
+        "ingest", "triage", "cv", "apply", "track", "leads", "health", "mcp", "init", "doctor"}, (
         f"the walk found {sorted(tree)} -- a group was added, renamed, or removed; if that is "
         f"intentional, docs/USAGE.md and this set both need updating")
     total_subs = sum(len(v) for v in tree.values() if v is not None)

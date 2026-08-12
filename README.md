@@ -58,10 +58,11 @@ backend clients, the shared status vocabulary, the dedup database, and the
 resilience helpers (retry, timeout, rate-limit) that every stage wraps its
 I/O in.
 
-Four more command groups sit alongside the pipeline rather than inside it: `job-sluice init`
+Five more command groups sit alongside the pipeline rather than inside it: `job-sluice init`
 (scaffold a config), `job-sluice doctor` (preflight everything below before you spend an LLM
-call finding out it's broken), `job-sluice health` (per-source scrape state), and
-`job-sluice leads` (dedupe/expire/reconcile maintenance passes). See [Commands](#commands) for
+call finding out it's broken), `job-sluice health` (per-source scrape state), `job-sluice leads`
+(dedupe/expire/reconcile maintenance passes), and `job-sluice mcp` (a Model Context Protocol
+server, so an agent can drive sluice directly). See [Commands](#commands) for
 the full list, and [`docs/ARCHITECTURE.md`](https://github.com/MrReasonable/sluice/blob/main/docs/ARCHITECTURE.md) for the module-by-module
 detail.
 
@@ -272,7 +273,7 @@ for what a `dead`/`degraded` line means and how to fix it. In outline:
 
 ## Commands
 
-Nine top-level command groups. Full flag reference, exit codes, and which
+Ten top-level command groups. Full flag reference, exit codes, and which
 stream each command writes to: [`docs/USAGE.md`](https://github.com/MrReasonable/sluice/blob/main/docs/USAGE.md).
 
 | Command | Purpose |
@@ -286,6 +287,20 @@ stream each command writes to: [`docs/USAGE.md`](https://github.com/MrReasonable
 | `job-sluice track` | reconcile the funnel from email + calendar signals (`run`, `confirm`, `dismiss`) |
 | `job-sluice leads` | maintenance passes -- report by default, write only when told (`dedupe`, `expire`, `reconcile`) |
 | `job-sluice health` | per-source scrape baseline + retire state |
+| `job-sluice mcp` | run a Model Context Protocol server over stdio, for an agent to drive sluice directly (`serve`) |
+
+## MCP server
+
+`job-sluice mcp serve` runs sluice as a Model Context Protocol server over stdio, so
+an agent (Claude Code or otherwise) can call `list_leads`/`get_lead`/`doctor`/`health`
+directly instead of shelling out to the CLI and parsing its stdout. Read-only for
+now -- see [`docs/ARCHITECTURE.md`](https://github.com/MrReasonable/sluice/blob/main/docs/ARCHITECTURE.md)'s surface/adapter section. Needs `pip install -e '.[mcp]'`.
+
+Register it with Claude Code:
+
+```
+claude mcp add job-sluice -- job-sluice mcp serve
+```
 
 ## Rendering prerequisites (`cv.renderer: template` only)
 

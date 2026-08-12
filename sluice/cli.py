@@ -6,6 +6,7 @@ distribution and the command are both `job-sluice`; the import package stays `sl
   job-sluice ingest test-source ID [--raw]      run ONE source live (fixture capture)
   job-sluice ingest enable|disable ID           persist an operator on/off override
   job-sluice health                             per-source baseline + retire state
+  job-sluice mcp serve                          run the MCP server (stdio transport)
   job-sluice doctor [--offline] [--strict]      preflight backends + renderer/store/gates
 
 `run` and `test-source` drive the live Camofox session; the rest are offline.
@@ -908,6 +909,18 @@ def cmd_init(args, config, *, asker=None) -> int:
     return 1 if failed else 0
 
 
+# ── mcp ───────────────────────────────────────────────────────────────────────
+def cmd_mcp_serve(args, config) -> int:
+    from sluice import mcpserver
+
+    try:
+        mcpserver.serve(config)
+    except mcpserver.McpNotInstalled as exc:
+        print(f"job-sluice: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
 # ── doctor ────────────────────────────────────────────────────────────────────
 def cmd_doctor(args, config) -> int:
     from sluice.core.app import Sluice
@@ -1161,6 +1174,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     health = top.add_parser("health", help="per-source baseline + retire state")
     health.set_defaults(func=cmd_health)
+
+    mcp_group = top.add_parser("mcp", help="Model Context Protocol server").add_subparsers(
+        dest="cmd", required=True)
+    mcp_serve = mcp_group.add_parser("serve", help="run the MCP server (stdio transport)")
+    mcp_serve.set_defaults(func=cmd_mcp_serve)
 
     init = top.add_parser("init", help="scaffold a config and a Judging Profile")
     init.add_argument("--vault", help="your Obsidian vault directory")

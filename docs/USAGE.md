@@ -12,7 +12,7 @@ fails the build if this page falls out of sync with it.
 `job-sluice --version` prints the installed version and exits 0; it works without a
 subcommand.
 
-Nine top-level command groups. `main()` loads the config before dispatching to any command,
+Ten top-level command groups. `main()` loads the config before dispatching to any command,
 so a retired or malformed key fails identically for all of them: `job-sluice: <message>` to
 stderr, exit code `2`, no traceback. That is deliberate rather than incidental — a clean usage
 error, not a crash, is what lets you actually read what's wrong and re-run `init` or `doctor`
@@ -224,6 +224,18 @@ support at all.
 
 No flags. Per-source scrape baseline and retire state, one line each:
 `<id> baseline=<N> recent=<counts>[ RETIRE]`. Fully offline. Exit 0 always.
+
+## `job-sluice mcp`
+
+### `job-sluice mcp serve`
+
+No flags. Runs sluice as a Model Context Protocol server over stdio, so an agent (Claude Code
+or otherwise) can call `list_leads`/`get_lead`/`doctor`/`health` directly instead of shelling
+out to the CLI and parsing its stdout. Read-only for now -- see
+[`docs/ARCHITECTURE.md`](ARCHITECTURE.md)'s surface/adapter section. Needs
+`pip install -e '.[mcp]'`; if the `mcp` package is not installed, exits 2 (`job-sluice: the
+'mcp' package is not installed -- run pip install job-sluice[mcp]`) rather than a traceback.
+Blocks for the life of the process once started; there is no `--dry-run`.
 
 ## `job-sluice init`
 

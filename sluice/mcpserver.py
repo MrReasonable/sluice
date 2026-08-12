@@ -77,3 +77,56 @@ def doctor(sluice: Sluice, offline: bool = True) -> dict:
 def health(sluice: Sluice) -> dict:
     """Per-source scrape baseline + retire state, sorted by source id."""
     return {"sources": [dataclasses.asdict(s) for s in sluice.health_report()]}
+
+
+def build_server(config):
+    """Build one `Sluice(config)`, register the four tools against it, and return
+    the constructed (NOT yet running) MCPServer. `mcp` is imported HERE and nowhere
+    else -- see the module docstring. `serve()` below is the live-process entry
+    point; tests reach this function directly (via the SDK's in-memory `Client`)
+    so they never have to block on `.run()`.
+
+    `Sluice(config)` is built ONCE, matching how every `cmd_*` in cli.py builds
+    exactly one `Sluice(config)` per invocation. Unlike a one-shot CLI command,
+    `mcp serve` is long-running: an edited `sluice.yaml` is picked up only on the
+    next restart, not live. Whether FastMCP's stdio transport can dispatch
+    overlapping tool calls against this one shared `Sluice` is not verified here;
+    believed benign for this read-only slice (see the design doc's Architecture
+    section) but not an assumption a future write-tools slice may inherit for
+    free."""
+    try:
+        from mcp.server.mcpserver import MCPServer
+    except ImportError as e:
+        raise McpNotInstalled(
+            "the 'mcp' package is not installed -- run `pip install job-sluice[mcp]`"
+        ) from e
+
+    sluice = Sluice(config)
+    mcp_server = MCPServer("sluice")
+
+    @mcp_server.tool(name="list_leads")
+    def list_leads_tool(statuses: list[str] | None = None, limit: int | None = None) -> dict:
+        """List leads, optionally filtered by status and capped by limit."""
+        return list_leads(sluice, statuses=statuses, limit=limit)
+
+    @mcp_server.tool(name="get_lead")
+    def get_lead_tool(lead: str) -> dict:
+        """Look up one lead by a substring of its company, role or store slug."""
+        return get_lead(sluice, lead)
+
+    @mcp_server.tool(name="doctor")
+    def doctor_tool(offline: bool = True) -> dict:
+        """Preflight backends, renderer, store artefacts and gate posture."""
+        return doctor(sluice, offline=offline)
+
+    @mcp_server.tool(name="health")
+    def health_tool() -> dict:
+        """Per-source scrape baseline + retire state."""
+        return health(sluice)
+
+    return mcp_server
+
+
+def serve(config) -> None:
+    """Run the MCP server over stdio for the rest of the process's life."""
+    build_server(config).run("stdio")

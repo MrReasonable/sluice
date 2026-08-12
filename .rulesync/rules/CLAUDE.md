@@ -482,8 +482,15 @@ selecting the retired `weasyprint` renderer name now raises via `plugins._RETIRE
 `argcomplete.autocomplete(parser)` is itself a no-op unless a shell's completion hook has set
 `_ARGCOMPLETE`, so importing it costs nothing on an ordinary invocation, and its `.completer`
 callbacks (see `_complete_source_id`/`_complete_status`) must never raise, since an exception
-there breaks the user's shell on every TAB press, not just the one command. HTTP goes through
-`urllib`, not `requests`. Do not add a runtime dependency without a deliberate decision. The rule
+there breaks the user's shell on every TAB press, not just the one command.
+
+And `mcp`, imported lazily inside `build_server()`'s own function body in
+`sluice/mcpserver.py` (never at module scope, and nowhere in `cli.py` at all) behind
+the `mcp` extra -- it pulls in an async/network stack (uvicorn, starlette, anyio,
+pydantic, ...) meaningfully heavier than a config-file parser, so nothing outside
+`job-sluice mcp serve` may cause it to load; a bare install never imports it.
+
+HTTP goes through `urllib`, not `requests`. Do not add a runtime dependency without a deliberate decision. The rule
 binds `sluice/` -- what ships to a user. The root `package.json` is not an exception to it: it
 pins the Node-based `rulesync` CLI that regenerates `.rulesync/`'s AI-tool outputs, a CI-only
 dev-time tool that never ships in the package and nothing a user installing `job-sluice` ever
@@ -495,7 +502,11 @@ install the very `jinja2`/`weasyprint`, Google, and `argcomplete` imports named 
 ALSO sits in `test` (deliberately -- see Commands above, so a shipped-template test runs for real
 in CI rather than skipping the way an earlier `weasyprint` importorskip once did), but being in
 two extras at once does not move it out of the rule: it is still `render` that puts it firmly
-inside, exactly like `weasyprint`. The line is whether a user's install can end up executing it.
+inside, exactly like `weasyprint`. `mcp` sits in BOTH `mcp` and `test` for the identical reason --
+CI installs only `[test]`, and `tests/functional/test_mcp_contract.py` needs the real package to
+drive it for real rather than skip itself. Being in two extras does not move it out of the rule
+either: it is still `mcp` that puts it firmly inside. The line is whether a user's install can end
+up executing it.
 
 **Fail loudly at construction.** An unknown backend/adapter name raises and lists the valid names
 rather than falling through to a default. A quiet wrong default is the bug class this codebase most
