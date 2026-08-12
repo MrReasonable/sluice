@@ -1200,9 +1200,11 @@ def main(argv=None) -> int:
         # company_resolve_llm cross-field check, and the pre-existing quoted-bool check every
         # *Config loader already shares) previously escaped THIS except entirely and surfaced as a
         # raw traceback instead of the identical "job-sluice: <message>" / exit 2 shape a malformed
-        # ROOT config key already gets. Every ValueError this widening now also catches was already
-        # a usage-error class raise (config or argument validation), never an internal invariant
-        # violation, so nothing here should have been showing a developer traceback anyway.
+        # ROOT config key already gets. All REACHABLE ValueError sites in this dispatch path are
+        # usage-error class raises (config or argument validation) — unreachable internal-invariant
+        # guards exist too (paths.py:307's kind check, track_dismiss's selector guard) but cannot
+        # currently fire from any live call site, so the widening's real-world effect is purely
+        # improving UX for config errors that previously escaped as raw tracebacks.
         print(f"job-sluice: {exc}", file=sys.stderr)
         return 2
 
