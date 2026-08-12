@@ -76,13 +76,18 @@ Classify leads.
 |---|---|---|
 | `--status` | `new,research` | comma-separated statuses to consider |
 | `--limit` | none | cap the number processed |
-| `--backend` | `auto` | `auto`, `primary`, `fallback` (`claude-max`/`deepseek` are deprecated role aliases) |
-| `--no-llm` | off | deterministic rules only; touches no backend at all |
+| `--backend` | `auto` | `auto`, `primary`, `fallback` (`claude-max`/`deepseek` are deprecated role aliases). Selects the JUDGE's backend only -- tier-3 company resolution (`triage.company_resolve_llm`) always runs on the cheap `fallback` role regardless of this flag |
+| `--no-llm` | off | deterministic rules only; touches no backend at all, judge or resolution |
 
 Deterministic rules resolve obvious cases; ambiguous leads go to the LLM judge (skipped
-entirely under `--no-llm`). Never touches a lead already in the application lifecycle.
-Prints `job-sluice triage: <counts> judged=<N> backend=<name> failures=<N>` to stderr and
-Telegram-notifies. Exit 0 always.
+entirely under `--no-llm`). A blank-company `needs_review` lead gets one resolution
+attempt first: a free URL-pattern tier 1, an opt-in real page-visit tier 2
+(`triage.company_resolve_fetch`), then an opt-in LLM read of that SAME page data, tier 3
+(`triage.company_resolve_llm`). Never touches a lead already in the application
+lifecycle. `--dry-run` still COMPUTES every resolution tier -- including a real tier-3
+backend call, which is billed -- only the vault write and audit line are skipped.
+Prints `job-sluice triage: <counts> judged=<N> resolved=<by-tier counts> llm_calls=<N>
+backend=<name> failures=<N>` to stderr and Telegram-notifies. Exit 0 always.
 
 ### `job-sluice triage normalize-status [--dry-run]`
 
