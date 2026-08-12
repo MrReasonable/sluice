@@ -127,8 +127,9 @@ Shared by every sub-app:
   reporting, per-lead dossier assembly (`DossierCache`, keyed on a stable url
   hash rather than the company/role slug so a #109 mid-run company mutation
   does not double-fetch; also captures `page_title`/`structured_data` for
-  triage's tier-2 company resolution, excluded from what `slim()` sends the
-  judge), the source-agnostic `Lead` model, logging, and the relevance gate.
+  triage's tier-2 AND tier-3 company resolution, both excluded from what
+  `slim()` sends the judge), the source-agnostic `Lead` model, logging, and
+  the relevance gate.
   Re-keying `cache_key` makes every dossier cached before this version
   unreachable, so expect one full re-fetch on the first triage or cv run after
   upgrading -- bounded, not data loss, since the default `ttl_days: 7` would
@@ -175,17 +176,19 @@ whichever neighbour it was written next to:
    deterministically, for free; only kept, ambiguous leads are enriched
    and sent to an LLM judge (`judge.py`, `prompt.py`, over `core.backends`).
    A lead classify() leaves at blank-company `needs_review` gets one
-   resolution attempt (`resolve.py`, #109) before that -- a free
-   URL-pattern tier 1, then an opt-in, no-LLM page-visit tier 2 -- so
-   "for free" no longer describes the WHOLE classify pass unconditionally:
-   a blank-company lead can trigger a real (still non-LLM) page visit when
-   `triage.company_resolve_fetch` is on. `apply.py` writes verdicts back,
-   skipping any lead already in the application lifecycle (its own writes,
-   and the new resolution write, are all `require_status`-guarded against
-   a lead entering that lifecycle mid-run); `audit.py` logs every decision
-   that actually landed -- a lead whose write was refused (already
-   application-owned, or a status change mid-run) is logged nowhere, so the
-   audit never claims a decision that was not applied.
+   resolution attempt (`resolve.py`, #109/#120) before that: a free
+   URL-pattern tier 1, an opt-in, no-LLM page-visit tier 2, then -- also
+   opt-in, and only when tier 1/2 abstain -- an LLM read of that SAME
+   page data, tier 3, on a SEPARATE backend from the judge's (always the
+   cheap "fallback" role, regardless of `--backend`) -- so "for free" no
+   longer describes the WHOLE classify pass unconditionally: a
+   blank-company lead can trigger a real page visit when
+   `triage.company_resolve_fetch` is on, and an LLM call when
+   `triage.company_resolve_llm` is also on. `apply.py` writes verdicts
+   back, skipping any lead already in the application lifecycle (its own
+   writes, and the new resolution write, are all `require_status`-guarded
+   against a lead entering that lifecycle mid-run); `audit.py` logs every
+   decision
 3. **cv** (`sluice/cv/`): select verified source material, bundle it into
    a closed set, compose a tailored CV against that bundle (an LLM call
    over `core.backends`), validate it against a fabrication gate (a hard
