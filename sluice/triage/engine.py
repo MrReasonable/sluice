@@ -112,8 +112,18 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
         # needs_review branch, never ahead of its existing title/location/pay
         # rejects (which don't depend on company at all) -- so a lead classify
         # would reject regardless never triggers a tier-2 page visit or a tier-3
-        # LLM call.
-        if decision == "needs_review" and not company:
+        # LLM call. Also gated on the lead's CURRENT status being one triage owns:
+        # the write below is already correctly guarded by
+        # `require_status=frozenset(_status.TRIAGE_OWNED)`, so a lead read in under
+        # an explicit `--status <other>` (e.g. a deliberate `--status needs_review`
+        # backlog sweep that also happens to cover an application-owned status, or
+        # any status outside TRIAGE_OWNED) could otherwise trigger a real page fetch
+        # and/or a real LLM call for a write that could never actually land anyway.
+        # A cost gap, not a safety gap -- the write guard already protects the
+        # vault -- but there is no reason to pay for a fetch/call whose result is
+        # guaranteed to be discarded.
+        if (decision == "needs_review" and not company
+                and note.status in _status.TRIAGE_OWNED):
             res = resolve.resolve_company(
                 note.fm, get_source, dossier_cache, no_llm=no_llm,
                 company_resolve_fetch=cfg.company_resolve_fetch,

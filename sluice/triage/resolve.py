@@ -206,7 +206,12 @@ def _org_candidates(raw: str) -> list:
         return []
     try:
         data = json.loads(raw)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
+        # RecursionError alongside the parse errors: an adversarially deep JSON
+        # payload can blow json.loads' own recursion ceiling (varies by interpreter
+        # version). Mirrors _hiring_org_from_jsonld's identical pattern on the
+        # identical raw string earlier in the same call chain -- not a NEW crash
+        # surface tier 3 introduces, but cheap and consistent to close here too.
         return []
     seen = set()
     out = []
@@ -256,10 +261,19 @@ def _text(value, limit: int) -> str:
     characters). Non-str degrades to "" rather than raising: page_title and jd are
     read off a cached JSON blob a hand edit or a pre-#109 cache entry can have left
     in any shape at all, and this runs where tier 3's own gate must not itself be
-    the reason the tier fires or fails."""
+    the reason the tier fires or fails.
+
+    `errors="ignore"` on the ENCODE side too, not just the decode: Python's `json`
+    module tolerantly reads/writes a lone (unpaired) UTF-16 surrogate codepoint even
+    though the JSON spec disallows one, so a str carrying one can round-trip through
+    the dossier cache intact. `str.encode("utf-8")` defaults to `errors="strict"` and
+    RAISES UnicodeEncodeError on exactly that codepoint -- which, uncaught here, would
+    propagate out of `_build_resolve_prompt` (called from `resolve_company` with no
+    surrounding try/except) and crash the whole triage batch over one malformed
+    cached field, not just abstain on it."""
     if not isinstance(value, str):
         return ""
-    return value.encode("utf-8")[:limit].decode("utf-8", errors="ignore")
+    return value.encode("utf-8", errors="ignore")[:limit].decode("utf-8", errors="ignore")
 
 
 def _build_resolve_prompt(dossier: dict) -> str | None:
@@ -344,8 +358,8 @@ def _is_board_name(candidate: str, fm: dict) -> bool:
     the source id or the host's second-level label, after case-folding -- it
     catches a single-token board name (`Wellfound` against `wellfound.com`) but
     NOT a multi-word board name whose human-readable form doesn't match its slug
-    (`We Work Remotely` against `weworkremotely.invalid`, or `Example Board`
-    against `example-board.invalid`). Deliberately not normalized further:
+    (`Example Remote Board` against `exampleremoteboard.invalid`, or `Example
+    Board` against `example-board.invalid`). Deliberately not normalized further:
     stripping punctuation/spaces before comparing would also reject a CORRECT
     answer whenever a real employer's own careers page happens to be hosted at a
     domain containing their own name (e.g. `careers.acme-corp.invalid` correctly

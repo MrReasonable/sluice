@@ -111,14 +111,14 @@ def load_triage_config(path: str | None = None) -> TriageConfig:
                     f'it is a STRING -- and "false" is truthy in Python, so the knob '
                     f"would be switched ON by the value meant to switch it off.")
             setattr(cfg, k, v)
-    # #120: unconditional (not inside the `if path...` block above), so this also
-    # catches a hand-constructed TriageConfig()... no -- it must run on every LOAD,
-    # whether or not a config file set either key, since the DEFAULT state
-    # (both False) must pass trivially and a file that sets ONLY company_resolve_llm
-    # (leaving company_resolve_fetch at its own False default) must still be caught.
-    # Placed after the overlay loop because it needs both keys' FINAL values, and
-    # PyYAML yields a mapping's keys in file order -- a check placed inside the loop
-    # would pass or fail depending on which key happened to come first in the file.
+    # #120: unconditional (not inside the `if path...` block above) because it must
+    # run on every LOAD, whether or not a config FILE was present -- the DEFAULT
+    # state (both False) has to pass trivially, and a file that sets ONLY
+    # company_resolve_llm (leaving company_resolve_fetch at its own False default)
+    # must still be caught. Placed after the overlay loop because it needs both
+    # keys' FINAL values, and PyYAML yields a mapping's keys in file order -- a
+    # check placed inside the loop would pass or fail depending on which key
+    # happened to come first in the file.
     #
     # This is not what makes tier 3 SAFE -- resolve.py's tier-3 block sits after the
     # existing `if no_llm or not company_resolve_fetch or not url: return` early

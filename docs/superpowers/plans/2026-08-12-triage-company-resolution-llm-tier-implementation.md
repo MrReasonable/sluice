@@ -35,7 +35,7 @@ absent.
   when `no_llm` is true.
 - Never-clobber: any vault write this feature makes must go through the same
   `require_blank`/`require_status` CAS path tiers 1/2 already use.
-- Run `ruff check sluice tests` and `python -m pytest` at the end of every task; both must be
+- Run `.venv/bin/ruff check sluice tests` and `.venv/bin/python -m pytest` at the end of every task; both must be
   clean before committing.
 
 ---
@@ -121,7 +121,7 @@ def test_the_example_config_ships_company_resolve_llm_commented():
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `python -m pytest tests/test_sluice_neutral_defaults.py -k company_resolve_llm -v`
+Run: `.venv/bin/python -m pytest tests/test_sluice_neutral_defaults.py -k company_resolve_llm -v`
 Expected: FAIL — `AttributeError: 'TriageConfig' object has no attribute 'company_resolve_llm'`
 (or, for the last test, the example config does not yet mention the key).
 
@@ -176,7 +176,7 @@ line), add:
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `python -m pytest tests/test_sluice_neutral_defaults.py -k company_resolve_llm -v`
+Run: `.venv/bin/python -m pytest tests/test_sluice_neutral_defaults.py -k company_resolve_llm -v`
 Expected: 5 of 6 PASS; `test_the_example_config_ships_company_resolve_llm_commented` still
 FAILs (the example file doesn't mention the key yet — fixed next step).
 
@@ -206,7 +206,7 @@ no longer implies resolution as a whole is LLM-free, and add a new row directly 
 
 - [ ] **Step 6: Run the full config test suite**
 
-Run: `python -m pytest tests/test_sluice_neutral_defaults.py tests/test_config_example.py tests/test_triage_config.py -v`
+Run: `.venv/bin/python -m pytest tests/test_sluice_neutral_defaults.py tests/test_config_example.py tests/test_triage_config.py -v`
 Expected: all PASS.
 
 - [ ] **Step 7: Widen `main()`'s error handling and write its tests**
@@ -268,7 +268,7 @@ def test_the_cli_reports_the_same_triage_config_error_via_doctor(tmp_path, monke
 
 - [ ] **Step 8: Run the new CLI tests to verify they fail**
 
-Run: `python -m pytest tests/test_triage_run_cli.py -k subapp_config -v`
+Run: `.venv/bin/python -m pytest tests/test_triage_run_cli.py -k subapp_config -v`
 Expected: FAIL — a raw traceback / non-2 exit propagates out of `main()`.
 
 - [ ] **Step 9: Widen `main()`'s dispatch wrap**
@@ -304,12 +304,12 @@ def main(argv=None) -> int:
 
 - [ ] **Step 10: Run the tests to verify they pass, then the full config-area suite**
 
-Run: `python -m pytest tests/test_triage_run_cli.py tests/test_config_retired_locations.py tests/test_doctor.py -v`
+Run: `.venv/bin/python -m pytest tests/test_triage_run_cli.py tests/test_config_retired_locations.py tests/test_doctor.py -v`
 Expected: all PASS.
 
 - [ ] **Step 11: Full quality gate and commit**
 
-Run: `ruff check sluice tests && python -m pytest`
+Run: `.venv/bin/ruff check sluice tests && .venv/bin/python -m pytest`
 Expected: clean.
 
 ```bash
@@ -522,7 +522,7 @@ def test_tier1_candidate_that_is_only_whitespace_is_rejected(blank):
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `python -m pytest tests/test_triage_resolve.py -v`
+Run: `.venv/bin/python -m pytest tests/test_triage_resolve.py -v`
 Expected: FAIL — `AttributeError: 'str' object has no attribute 'company'` (or `'NoneType'
 object has no attribute 'company'`) on every updated test.
 
@@ -646,14 +646,14 @@ to change yet.)
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `python -m pytest tests/test_triage_resolve.py tests/test_triage_engine.py -v`
+Run: `.venv/bin/python -m pytest tests/test_triage_resolve.py tests/test_triage_engine.py -v`
 Expected: all PASS. (`test_triage_engine.py` needs no edits — it asserts on
 `report.counts`/`after.fm["company"]`/`report.failures`, never on `Resolution` directly,
 so re-deriving the same string through `.company` is invisible to it.)
 
 - [ ] **Step 6: Full quality gate and commit**
 
-Run: `ruff check sluice tests && python -m pytest`
+Run: `.venv/bin/ruff check sluice tests && .venv/bin/python -m pytest`
 Expected: clean.
 
 ```bash
@@ -863,7 +863,7 @@ def test_is_board_name_accepts_a_real_employer_name():
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `python -m pytest tests/test_triage_resolve.py -k "org_candidates or build_resolve_prompt or company_from_reply or is_non_answer or is_board_name" -v`
+Run: `.venv/bin/python -m pytest tests/test_triage_resolve.py -k "org_candidates or build_resolve_prompt or company_from_reply or is_non_answer or is_board_name" -v`
 Expected: FAIL — `AttributeError: module 'sluice.triage.resolve' has no attribute
 '_org_candidates'` (and similarly for each new symbol).
 
@@ -1078,12 +1078,12 @@ def _is_board_name(candidate: str, fm: dict) -> bool:
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `python -m pytest tests/test_triage_resolve.py -v`
+Run: `.venv/bin/python -m pytest tests/test_triage_resolve.py -v`
 Expected: all PASS.
 
 - [ ] **Step 5: Full quality gate and commit**
 
-Run: `ruff check sluice tests && python -m pytest`
+Run: `.venv/bin/ruff check sluice tests && .venv/bin/python -m pytest`
 Expected: clean.
 
 ```bash
@@ -1310,7 +1310,7 @@ def test_the_scripted_backends_resolve_prefix_still_matches_the_real_prompt():
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `python -m pytest tests/test_triage_resolve.py -k tier3 -v`
+Run: `.venv/bin/python -m pytest tests/test_triage_resolve.py -k tier3 -v`
 Expected: FAIL — `TypeError: resolve_company() got an unexpected keyword argument
 'company_resolve_llm'`. `test_the_scripted_backends_resolve_prefix_still_matches_the_real_prompt`
 is skipped, not failed (it depends on `tests/harness/backend.py`'s `_RESOLVE`, added in
@@ -1440,12 +1440,12 @@ def resolve_company(fm: dict, get_source, dossier_cache, *,
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `python -m pytest tests/test_triage_resolve.py -k tier3 -v`
+Run: `.venv/bin/python -m pytest tests/test_triage_resolve.py -k tier3 -v`
 Expected: all PASS except the still-commented-out `_RESOLVE` import test.
 
 - [ ] **Step 5: Full quality gate and commit**
 
-Run: `ruff check sluice tests && python -m pytest`
+Run: `.venv/bin/ruff check sluice tests && .venv/bin/python -m pytest`
 Expected: clean.
 
 ```bash
@@ -1703,7 +1703,7 @@ def test_the_circuit_breaker_stops_tier3_after_3_consecutive_backend_errors_and_
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `python -m pytest tests/test_triage_engine.py -k "tier3 or circuit_breaker" -v`
+Run: `.venv/bin/python -m pytest tests/test_triage_engine.py -k "tier3 or circuit_breaker" -v`
 Expected: FAIL — `TypeError: run() got an unexpected keyword argument 'resolve_backend'`.
 
 - [ ] **Step 3: Update `TriageReport` and `run`'s signature**
@@ -1932,13 +1932,13 @@ refused outright and reported, on `index_by_slug`'s shared verdict; see there.
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
-Run: `python -m pytest tests/test_triage_engine.py -v`
+Run: `.venv/bin/python -m pytest tests/test_triage_engine.py -v`
 Expected: all PASS, including every pre-existing test (no other test in this file passes
 `resolve_backend`, so it defaults to `None` and behaves exactly as before).
 
 - [ ] **Step 7: Full quality gate and commit**
 
-Run: `ruff check sluice tests && python -m pytest`
+Run: `.venv/bin/ruff check sluice tests && .venv/bin/python -m pytest`
 Expected: clean.
 
 ```bash
@@ -2069,7 +2069,7 @@ def test_triage_threads_the_triage_config_into_the_backend(tmp_path, monkeypatch
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `python -m pytest tests/test_app_operations.py -k "resolution_backend or fallback_role or no_llm_threads" -v`
+Run: `.venv/bin/python -m pytest tests/test_app_operations.py -k "resolution_backend or fallback_role or no_llm_threads" -v`
 Expected: FAIL — `TypeError: <lambda>() takes 1 positional argument but 2 were given` (or
 similar), since `Sluice.triage()` calls `self.backend` only once today.
 
@@ -2141,12 +2141,12 @@ In `sluice/core/app.py`, replace the `triage` method (lines 858-893):
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `python -m pytest tests/test_app_operations.py -v`
+Run: `.venv/bin/python -m pytest tests/test_app_operations.py -v`
 Expected: all PASS.
 
 - [ ] **Step 5: Full quality gate and commit**
 
-Run: `ruff check sluice tests && python -m pytest`
+Run: `.venv/bin/ruff check sluice tests && .venv/bin/python -m pytest`
 Expected: clean.
 
 ```bash
@@ -2194,7 +2194,7 @@ decorator directly above
 
 - [ ] **Step 2: Run it to verify it fails**
 
-Run: `python -m pytest tests/test_triage_resolve.py -k resolve_prefix -v`
+Run: `.venv/bin/python -m pytest tests/test_triage_resolve.py -k resolve_prefix -v`
 Expected: FAIL — `ImportError: cannot import name '_RESOLVE' from 'tests.harness.backend'`.
 
 - [ ] **Step 3: Add `_RESOLVE` and the handler to `ScriptedBackend`**
@@ -2281,7 +2281,7 @@ Add the handler method, after `_track`:
 
 - [ ] **Step 4: Run the drift-pin test to verify it passes**
 
-Run: `python -m pytest tests/test_triage_resolve.py -k resolve_prefix -v`
+Run: `.venv/bin/python -m pytest tests/test_triage_resolve.py -k resolve_prefix -v`
 Expected: PASS.
 
 - [ ] **Step 5: Write the failing CLI print test**
@@ -2307,7 +2307,7 @@ def test_cmd_triage_run_prints_the_resolved_by_tier_counts_and_the_llm_call_coun
 
 - [ ] **Step 6: Run it to verify it fails**
 
-Run: `python -m pytest tests/test_triage_run_cli.py -k resolved_by_tier -v`
+Run: `.venv/bin/python -m pytest tests/test_triage_run_cli.py -k resolved_by_tier -v`
 Expected: FAIL — `AssertionError` (the substring is absent from the printed line).
 
 - [ ] **Step 7: Update the print line**
@@ -2322,7 +2322,7 @@ In `sluice/cli.py`, replace `cmd_triage_run`'s print statement (lines 453-454):
 
 - [ ] **Step 8: Run the test to verify it passes**
 
-Run: `python -m pytest tests/test_triage_run_cli.py -v`
+Run: `.venv/bin/python -m pytest tests/test_triage_run_cli.py -v`
 Expected: all PASS.
 
 - [ ] **Step 9: Update `docs/USAGE.md`**
@@ -2352,7 +2352,7 @@ backend=<name> failures=<N>` to stderr and Telegram-notifies. Exit 0 always.
 
 - [ ] **Step 10: Full quality gate and commit**
 
-Run: `ruff check sluice tests && python -m pytest`
+Run: `.venv/bin/ruff check sluice tests && .venv/bin/python -m pytest`
 Expected: clean.
 
 ```bash
@@ -2449,10 +2449,10 @@ directly after that sentence on the same line or as an immediately following not
 
 - [ ] **Step 4: Full-suite verification**
 
-Run: `ruff check sluice tests`
+Run: `.venv/bin/ruff check sluice tests`
 Expected: clean.
 
-Run: `python -m pytest -q`
+Run: `.venv/bin/python -m pytest -q`
 Expected: all tests pass, zero failures, zero errors.
 
 Run: `grep -rn "no-LLM\|no LLM\|non-LLM" docs/ARCHITECTURE.md sluice/triage/resolve.py sluice/triage/engine.py`
