@@ -63,3 +63,37 @@ def test_error_run_counts_as_dead(tmp_path):
     for _ in range(3):
         h.record("s", 0, {"error": "boom"})
     assert h.should_retire("s", threshold=3)
+
+
+def test_health_report_reflects_the_real_registry_sorted_by_id(tmp_path):
+    """AT LEAST TWO real sources, so the sort claim is falsifiable -- with one element,
+    a sorted list and an unsorted list are byte-identical and this would pass vacuously
+    even with the sort call deleted."""
+    from sluice.core.app import Sluice
+    from sluice.core.config import Config
+    from sluice.ingest import sources as registry
+
+    ids = sorted(s.id for s in registry.all_sources())
+    assert len(ids) >= 2, "the real source registry enumerated fewer than two sources"
+    first, second = ids[0], ids[-1]
+
+    # HealthStore() resolves via SLUICE_HEALTH, sandboxed into tmp_path by the autouse
+    # _pin_paths fixture in tests/conftest.py -- no explicit path needed.
+    h = HealthStore()
+    h.record(first, 5)
+    h.record(second, 0)
+    h.record(second, 0)
+    h.record(second, 0)  # three zero runs -> should_retire
+
+    report = Sluice(Config()).health_report()
+    got = [s for s in report if s.id in (first, second)]
+    assert [s.id for s in got] == sorted(s.id for s in got), \
+        "health_report() must be sorted by source id"
+
+    by_id = {s.id: s for s in report}
+    assert by_id[first].baseline == 5.0
+    assert by_id[first].recent == [5]
+    assert by_id[first].should_retire is False
+    assert by_id[second].should_retire is True
+    assert all(isinstance(s.kind, str) and s.kind for s in report), \
+        "every SourceHealth must carry its source's real kind"
