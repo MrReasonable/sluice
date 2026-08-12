@@ -472,3 +472,184 @@ def test_is_board_name_refuses_the_leads_url_host_label():
 def test_is_board_name_accepts_a_real_employer_name():
     fm = {"url": "https://boards.example-careers.invalid/x", "source": "example-careers"}
     assert resolve._is_board_name("Example Co", fm) is False
+
+
+# ── tier 3 wired into resolve_company ──────────────────────────────────────────
+
+def _backend(replies):
+    """A resolve_backend double: `replies` is consumed in order. A BackendError
+    INSTANCE is raised, not returned; anything else is returned as the reply.
+    Exhausting the list raises AssertionError -- a mis-counted fixture must fail
+    loudly, not silently return an abstain that reads as a real one."""
+    from sluice.core.backends import BackendError as _BE
+
+    class _Backend:
+        def __init__(self):
+            self._replies = list(replies)
+            self.calls = []
+
+        def complete(self, prompt):
+            self.calls.append(prompt)
+            if not self._replies:
+                raise AssertionError("resolve backend double: no more scripted replies")
+            reply = self._replies.pop(0)
+            if isinstance(reply, _BE):
+                raise reply
+            return reply
+    return _Backend()
+
+
+_LLM_FM = {"url": "https://example.invalid/jobs/1", "source": "example-board"}
+_NONEMPTY_DOSSIER = {"page_title": "Senior Engineer | Example Board", "structured_data": ""}
+
+
+def test_tier3_names_the_company_when_both_earlier_tiers_abstain():
+    cache = _RecordingCache(dossier=_NONEMPTY_DOSSIER)
+    backend = _backend(["Example Co"])
+    got = resolve.resolve_company(_LLM_FM, None, cache, no_llm=False,
+                                  company_resolve_fetch=True, company_resolve_llm=True,
+                                  resolve_backend=backend)
+    assert got.company == "Example Co"
+    assert got.tier == "tier3"
+    assert got.llm_called is True
+    assert got.llm_error is False
+    assert len(backend.calls) == 1
+
+
+def test_a_tier2_hit_never_spends_an_llm_call():
+    cache = _RecordingCache(dossier={
+        "structured_data": '{"@type": "JobPosting", "hiringOrganization": {"name": "Example Co"}}',
+        "page_title": ""})
+    backend = _backend([])
+    got = resolve.resolve_company(_LLM_FM, None, cache, no_llm=False,
+                                  company_resolve_fetch=True, company_resolve_llm=True,
+                                  resolve_backend=backend)
+    assert got.tier == "tier2"
+    assert got.llm_called is False
+    assert backend.calls == []
+
+
+def test_a_tier1_hit_never_spends_an_llm_call():
+    src = _source(company_from_url=lambda url: "Example Co")
+    cache = _RecordingCache()
+    backend = _backend([])
+    got = resolve.resolve_company(_LLM_FM, _get_source({"example-board": src}), cache,
+                                  no_llm=False, company_resolve_fetch=True,
+                                  company_resolve_llm=True, resolve_backend=backend)
+    assert got.tier == "tier1"
+    assert got.llm_called is False
+    assert backend.calls == []
+
+
+def test_company_resolve_llm_off_never_calls_the_backend():
+    cache = _RecordingCache(dossier=_NONEMPTY_DOSSIER)
+    backend = _backend([])
+    got = resolve.resolve_company(_LLM_FM, None, cache, no_llm=False,
+                                  company_resolve_fetch=True, company_resolve_llm=False,
+                                  resolve_backend=backend)
+    assert got.company is None
+    assert got.llm_called is False
+    assert backend.calls == []
+
+
+def test_a_missing_resolve_backend_leaves_tier3_off_without_raising():
+    cache = _RecordingCache(dossier=_NONEMPTY_DOSSIER)
+    got = resolve.resolve_company(_LLM_FM, None, cache, no_llm=False,
+                                  company_resolve_fetch=True, company_resolve_llm=True,
+                                  resolve_backend=None)
+    assert got.company is None
+    assert got.llm_called is False
+
+
+def test_no_llm_never_reaches_tier3():
+    cache = _RecordingCache(dossier=_NONEMPTY_DOSSIER)
+    backend = _backend([])
+    got = resolve.resolve_company(_LLM_FM, None, cache, no_llm=True,
+                                  company_resolve_fetch=True, company_resolve_llm=True,
+                                  resolve_backend=backend)
+    assert got.company is None
+    assert got.llm_called is False
+    assert backend.calls == []
+
+
+def test_a_failed_dossier_fetch_never_spends_an_llm_call():
+    cache = _RecordingCache(raises=RuntimeError("boom"))
+    backend = _backend([])
+    got = resolve.resolve_company(_LLM_FM, None, cache, no_llm=False,
+                                  company_resolve_fetch=True, company_resolve_llm=True,
+                                  resolve_backend=backend)
+    assert got.company is None
+    assert got.llm_called is False
+    assert backend.calls == []
+
+
+def test_blank_evidence_never_spends_an_llm_call():
+    cache = _RecordingCache(dossier={"page_title": "", "structured_data": ""})
+    backend = _backend([])
+    got = resolve.resolve_company(_LLM_FM, None, cache, no_llm=False,
+                                  company_resolve_fetch=True, company_resolve_llm=True,
+                                  resolve_backend=backend)
+    assert got.company is None
+    assert got.llm_called is False
+    assert backend.calls == []
+
+
+def test_a_backend_error_in_tier3_abstains_rather_than_propagating():
+    from sluice.core.backends import BackendError
+    cache = _RecordingCache(dossier=_NONEMPTY_DOSSIER)
+    backend = _backend([BackendError("down")])
+    got = resolve.resolve_company(_LLM_FM, None, cache, no_llm=False,
+                                  company_resolve_fetch=True, company_resolve_llm=True,
+                                  resolve_backend=backend)
+    assert got.company is None
+    assert got.llm_called is True
+    assert got.llm_error is True
+
+
+def test_tier3_makes_exactly_one_backend_call_and_never_retries():
+    # A regression pin, not a mutation-killed test: there is no retry construct to
+    # delete, so this only guards against one being ADDED later.
+    cache = _RecordingCache(dossier=_NONEMPTY_DOSSIER)
+    backend = _backend(["not a single clean line\nof output"])
+    got = resolve.resolve_company(_LLM_FM, None, cache, no_llm=False,
+                                  company_resolve_fetch=True, company_resolve_llm=True,
+                                  resolve_backend=backend)
+    assert got.company is None
+    assert len(backend.calls) == 1
+
+
+def test_tier3_refuses_a_deny_listed_answer():
+    cache = _RecordingCache(dossier=_NONEMPTY_DOSSIER)
+    backend = _backend(["Confidential"])
+    got = resolve.resolve_company(_LLM_FM, None, cache, no_llm=False,
+                                  company_resolve_fetch=True, company_resolve_llm=True,
+                                  resolve_backend=backend)
+    assert got.company is None
+    assert got.llm_called is True
+
+
+def test_tier3_refuses_the_leads_own_source_id_as_an_answer():
+    fm = {"url": "https://example.invalid/jobs/1", "source": "example-board"}
+    cache = _RecordingCache(dossier=_NONEMPTY_DOSSIER)
+    backend = _backend(["example-board"])
+    got = resolve.resolve_company(fm, None, cache, no_llm=False,
+                                  company_resolve_fetch=True, company_resolve_llm=True,
+                                  resolve_backend=backend)
+    assert got.company is None
+
+
+@pytest.mark.parametrize("unsafe", _UNSAFE_COMPANIES)
+def test_tier3_candidate_with_a_structural_character_is_rejected(unsafe):
+    cache = _RecordingCache(dossier=_NONEMPTY_DOSSIER)
+    backend = _backend([unsafe])
+    got = resolve.resolve_company(_LLM_FM, None, cache, no_llm=False,
+                                  company_resolve_fetch=True, company_resolve_llm=True,
+                                  resolve_backend=backend)
+    assert got.company is None
+
+
+@pytest.mark.skip(reason="tests/harness/backend.py doesn't export _RESOLVE until Task 7")
+def test_the_scripted_backends_resolve_prefix_still_matches_the_real_prompt():
+    from tests.harness.backend import _RESOLVE
+    prompt = resolve._build_resolve_prompt(_NONEMPTY_DOSSIER)
+    assert prompt.startswith(_RESOLVE)
