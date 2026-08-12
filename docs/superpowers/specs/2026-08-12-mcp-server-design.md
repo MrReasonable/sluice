@@ -34,7 +34,7 @@ routing rule below is proven out in review.
 
 3. **`list_leads` takes `statuses` and `limit`.** The closest existing primitive,
    `Store.read_leads(statuses: set | None)`, returns everything matching in one call with no cap.
-   Real backlogs run 200+ leads (measured: a 265-lead backlog elsewhere in this project's history).
+   Real backlogs can run into the hundreds of leads over a multi-month search.
    `list_leads(statuses=None, limit=None)` mirrors `read_leads`'s filter exactly and adds an
    opt-in `limit`/`truncated` pair, so an agent that already suspects a large backlog can cap a
    response deliberately and still be told whether it was cut off. `limit=None` (the default)
@@ -57,13 +57,16 @@ routing rule below is proven out in review.
    ImportError` guard genuinely lazy, per the Dependency section below): it builds one `Sluice`,
    constructs `FastMCP(...)`, and defines a thin, real, `@mcp_server.tool()`-decorated wrapper
    *inside itself* for each tool — a normal nested function that closes over `sluice` and delegates
-   to the plain top-level function. This is deliberately NOT `functools.partial`/`functools.wraps`
-   composed onto the plain function and registered directly: `functools.wraps` sets `__wrapped__`
-   back to the original (unbound) function, and `inspect.signature` — which FastMCP's schema
-   inference relies on — follows `__wrapped__` by default, which would put `sluice` back into the
-   client-facing tool schema. A real nested function with its own explicit signature, type hints
-   and docstring has no such footgun and is the normal way FastMCP's own examples show a tool being
-   defined anyway.
+   to the plain top-level function. This is deliberately NOT `functools.partial` (optionally
+   combined with `functools.wraps`) composed onto the plain function and registered directly. Two
+   separate problems close off that path: a bare `functools.partial(list_leads, sluice)` correctly
+   hides `sluice` from `inspect.signature` — which FastMCP's schema inference relies on — but has
+   no `__name__`/`__doc__` of its own, so FastMCP can't infer the tool's name/description without
+   an explicit override; adding `functools.wraps(list_leads)` to fix THAT sets `__wrapped__` back
+   to the ORIGINAL (unbound) function, and `inspect.signature` follows `__wrapped__` by default,
+   putting `sluice` right back into the client-facing schema — the exact leak the bare partial
+   avoided. A real nested function with its own explicit signature, type hints and docstring has
+   neither problem and is the normal way FastMCP's own examples show a tool being defined anyway.
 
 5. **"Gate posture" is not a fifth tool.** The issue lists `list_leads`/`get_lead`/`doctor`/
    `health`/"gate posture" as the read-only surface. `Sluice.doctor()`'s own docstring already
@@ -89,8 +92,10 @@ Without this, that test either fails collection or gets "fixed" with `pytest.imp
 sweeping all of `tests/`) exists to catch, after it already recurred twice in this repo
 (weasyprint, then jinja2).
 
-Imported lazily **inside functions** (`cmd_mcp_serve` in `cli.py`, and the serve function in
-`sluice/mcpserver.py`), guarded `try/except ImportError` — matching `jinja2`/`weasyprint`'s
+`mcp` itself is imported in exactly ONE place: inside `serve()`'s own function body in
+`sluice/mcpserver.py` — not in `cmd_mcp_serve`, which only lazy-imports the `sluice.mcpserver`
+MODULE (zero `mcp` imports of its own) and catches the `ImportError` that propagates out of the
+`serve()` call. Guarded `try/except ImportError`, matching `jinja2`/`weasyprint`'s
 lazy-inside-function shape (not `yaml`'s module-scope-guarded shape), because `mcp` pulls in an
 async/network stack that is meaningfully heavier than a config-file parser and has no reason to
 load for any command that isn't `job-sluice mcp serve`. A bare `job-sluice` install never imports
@@ -109,9 +114,12 @@ other group in `cli.py` already uses:
 job-sluice mcp serve       run the MCP server (stdio transport)
 ```
 
-`cmd_mcp_serve(args, config)` lazy-imports `sluice.mcpserver`, calls `sluice.mcpserver.serve(config)`.
-A missing `mcp` extra is caught as `ImportError` at this one site and turned into an rc-2 usage
-error naming `pip install job-sluice[mcp]` — the same shape `load_config`'s existing malformed-config
+`cmd_mcp_serve(args, config)` lazy-imports `sluice.mcpserver` (an unguarded import — the module
+itself carries no `mcp` dependency of its own), then calls `sluice.mcpserver.serve(config)` INSIDE
+a `try/except ImportError` — the `try` wraps the `serve(config)` call, not the module import above
+it, since that call is the only place the real `ImportError` can originate (see the Dependency
+section). A missing `mcp` extra is caught there and turned into an rc-2 usage error naming
+`pip install job-sluice[mcp]` — the same shape `load_config`'s existing malformed-config
 `ValueError` already gets, never a raw traceback.
 
 ## Architecture
@@ -141,7 +149,13 @@ exactly one `Sluice(config)` per invocation, not one per operation. Unlike a one
 invocation, `mcp serve` is long-running, and `Sluice`'s adapter cache (`self._cache` in
 `_resolve`) lives for the process's whole lifetime: an edited `sluice.yaml` is picked up only on
 the next `mcp serve` restart, not live — worth stating explicitly since it never came up for a
-one-shot CLI command.
+one-shot CLI command. Concurrency is the other new dimension a long-lived process introduces:
+whether FastMCP's stdio transport can dispatch overlapping tool calls against this one shared
+`Sluice` is not verified here. Believed benign for THIS slice regardless of the answer — every
+tool is a pure read with no cross-call state, and `_resolve`'s cache is idempotent to rebuild even
+if two calls raced to populate it — but this is exactly the assumption the deferred write-tools
+slice cannot inherit for free, and should verify FastMCP's actual dispatch model rather than
+assume it.
 
 ### `Sluice.health_report()` (new, `core/app.py`)
 
@@ -172,6 +186,11 @@ itself. `cmd_list_sources --health` (`cli.py:148-159`) still constructs its own 
 and walks the registry independently — considered and deliberately deferred rather than folded in
 here, since it also needs enabled/disabled overlay state that `health_report()` doesn't compute;
 not this slice's problem to solve.
+
+`cmd_health` currently has no test at the CLI level — `tests/test_health.py` tests `HealthStore`
+directly, not the command — so this refactor needs one: a test asserting `cmd_health`'s printed
+output is unchanged before/after routing through `health_report()`, not just that `health_report()`
+itself returns the right shape.
 
 ### The four tools (`sluice/mcpserver.py`)
 
@@ -252,23 +271,35 @@ Three layers, mirroring this codebase's existing layer split:
    into the real functions. No subprocess, no stdio, no network. The exact `Client` API (whether
    `raise_exceptions` exists on the pinned SDK version, whether the older
    `create_connected_server_and_client_session` helper is really gone) is taken from the SDK's
-   hosted docs, not yet executed against an installed package — verify it against the actual `mcp`
-   version this repo pins before locking this test's shape; do not carry the docs read forward as
-   verified.
+   hosted docs, not yet executed against an installed package, and the `mcp = ["mcp"]` extra
+   above carries no version pin — spot-check the `Client` API against whatever version
+   `pip install -e ".[test]"` actually resolves, note the confirmed shape (or pin a version) in
+   this plan before locking the test's shape; do not carry the docs read forward as verified.
 
 3. **Two guard tests in `tests/test_mcpserver.py`, NOT modeled on `test_cli_completion.py`'s
    shape.** That shape relies on `argcomplete` being imported at `cli.py`'s MODULE scope, so a test
    can monkeypatch the `cli.argcomplete` attribute to simulate absence. Under decision #4's
    fully-lazy-inside-`serve()` shape, `sluice/mcpserver.py` has no module-level `mcp` attribute to
    patch, so a different technique is needed:
-   - `monkeypatch.setitem(sys.modules, "mcp", None)` before calling `serve(config)` (or
-     `cmd_mcp_serve`), forcing the real `from mcp.server.fastmcp import FastMCP` line to raise
-     `ImportError` without actually uninstalling the package — the standard technique for
-     simulating an absent optional import. Asserts `cmd_mcp_serve` degrades to the rc-2 usage
-     error, never an uncaught traceback.
-   - A static/AST sweep (the same technique `test_no_test_module_uses_importorskip` already uses)
-     asserting `sluice/mcpserver.py` and `sluice/cli.py` carry no `mcp` import outside `serve()`'s
-     own function body — the same hermeticity property `test_hermeticity.py` polices for network,
+   - Patches `builtins.__import__` (NOT `sys.modules`) to raise `ImportError` for any name equal
+     to or starting with `mcp`, before calling `cmd_mcp_serve`/`serve(config)`. A `sys.modules`
+     sentinel trick (`monkeypatch.setitem(sys.modules, "mcp", None)`) was tried and rejected: once
+     `mcp` is a genuine `test`-extra dependency (per the Dependency section, needed for layer 2's
+     real import), `mcp.server.fastmcp` gets cached under its full dotted name somewhere in the
+     same pytest session — CPython's import machinery resolves an already-cached full dotted name
+     directly, without ever re-checking the parent package's sentinel, so `sys.modules["mcp"] =
+     None` silently fails to raise once that caching has happened, with test EXECUTION ORDER (not
+     the technique) deciding whether it fires. This was reproduced with a stdlib stand-in
+     (`xml.etree.ElementTree`), not assumed. Patching `__import__` intercepts BEFORE any cache
+     lookup, so it raises unconditionally regardless of what else has been imported in the
+     session. Asserts `cmd_mcp_serve` degrades to the rc-2 usage error, never an uncaught
+     traceback — mutation-tested (delete the `except ImportError` branch, confirm the test goes
+     red) once implemented, not trusted on read-through, given how easily the rejected technique
+     silently no-oped.
+   - A static/AST sweep (the same technique `test_no_test_module_uses_importorskip` already uses),
+     stated per file since `serve()` only exists in one of them: `sluice/cli.py` carries no `mcp`
+     import anywhere; `sluice/mcpserver.py` carries no `mcp` import outside `serve()`'s own
+     function body — the same hermeticity property `test_hermeticity.py` polices for network,
      proven structurally rather than trusted to hold because nobody's added one yet.
 
 ## Docs
@@ -294,7 +325,8 @@ Three layers, mirroring this codebase's existing layer split:
   contract test); a bare, non-test install never imports it.
 - `.rulesync/rules/CLAUDE.md`'s stdlib-only rule documents the `mcp` exception.
 - `Sluice.health_report()` exists; `cmd_health` calls it instead of duplicating `HealthStore`/
-  registry construction.
+  registry construction, and a test confirms `cmd_health`'s printed output is unchanged by the
+  refactor.
 - `README.md` and `docs/ARCHITECTURE.md`'s surface/adapter section are updated in this same PR.
 - All three test layers pass, including the two guard tests in `tests/test_mcpserver.py`
   confirming `mcp` is importable nowhere outside `serve()`'s own function body, both structurally
@@ -323,3 +355,15 @@ Three layers, mirroring this codebase's existing layer split:
   the layer-3 test file named, `list_leads`'s truncation rationale reworded to match its actual
   default behaviour, and one-sentence notes added on config-restart semantics and the deferred
   `list-sources`/`health_report` duplication.
+- 2026-08-12: Revised after a second `/review-plan` (5 reviewers: 1 Critical, 1 High, 4 Medium,
+  2 Low). The Critical was empirically-executed, not merely argued: the layer-3 guard test's
+  `sys.modules["mcp"] = None` technique was reproduced (with a stdlib stand-in) to silently no-op
+  once `mcp.server.fastmcp` is cached elsewhere in the same pytest session — which the previous
+  round's own fix (adding `mcp` to `test`) guarantees will happen — replaced with an
+  `__import__`-patching technique that doesn't depend on cache state. The High was a leftover
+  self-inconsistency from the previous revision: the Dependency section still described `mcp` as
+  imported at two sites after decision #4 was fixed to say one. Folded in: the "265-lead backlog"
+  rationale reworded to drop a real number from this project's own private history; the
+  functools.partial/wraps rationale corrected (partial alone doesn't leak the signature; wraps
+  does); a `cmd_health` regression-test requirement added; a concurrency caveat added beside the
+  config-restart note; the layer-2 SDK-API verification note tightened.
