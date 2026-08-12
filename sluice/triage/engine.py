@@ -70,9 +70,10 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
         # rejects (which don't depend on company at all) -- so a lead classify
         # would reject regardless never triggers a tier-2 page visit.
         if decision == "needs_review" and not company:
-            resolved = resolve.resolve_company(
+            res = resolve.resolve_company(
                 note.fm, get_source, dossier_cache,
                 no_llm=no_llm, company_resolve_fetch=cfg.company_resolve_fetch)
+            resolved = res.company
             if resolved:
                 wrote = False
                 if not dry_run:

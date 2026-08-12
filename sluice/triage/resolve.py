@@ -4,6 +4,7 @@ rather than guess: classify.py's blank-company branch already treats a blank
 company as the honest "unknown" state, and a wrong company would silently carry
 through keep -> judge -> apply -> a CV addressed to the wrong employer, which is
 worse than staying blank."""
+from dataclasses import dataclass
 import json
 import re
 
@@ -22,6 +23,34 @@ _TITLE_PATTERNS = (
 # rather than inlined so the boundary test can be written AGAINST the cap instead of
 # against a copied literal that would drift silently the day this number changes.
 _MAX_DEPTH = 6
+
+
+@dataclass(frozen=True)
+class Resolution:
+    """The outcome of one resolve_company call. `company` is None exactly when `tier`
+    is None -- both together mean "every tier abstained". `llm_called`/`llm_error`
+    track tier 3's OWN cost separately from whether it produced an accepted answer
+    (added now, used starting in a later task): the feature's whole justification is
+    "32 of 107 ATTEMPTED", so a report of the 32 hits alone would hide the 107-call
+    spend behind them, and `llm_error` is what lets the caller notice CONSECUTIVE
+    backend failures rather than ordinary NONE abstains.
+
+    Deliberately NOT a bare (str | None, str | None) tuple: `if resolved:` on a
+    non-empty 2-tuple is unconditionally True regardless of its contents, so the one
+    production caller (engine.py) would take the WRITE branch on an abstain and put
+    the tuple's own repr into vault frontmatter. A dataclass instance is also always
+    truthy, but the mistake this guards against is a caller writing `if resolved:`
+    and reading `.company` off it directly -- which the existing suite already pins
+    hard: several tests assert `after.fm["company"] == ""`, and a caller that
+    regressed to writing a Resolution's own repr into that field would go loudly red
+    there, not silently pass."""
+    company: str | None = None
+    tier: str | None = None       # "tier1" | "tier2" | "tier3"; None iff company is
+    llm_called: bool = False      # tier 3 spent a call THIS ATTEMPT, hit or abstain
+    llm_error: bool = False       # ...and specifically because backend.complete() raised
+
+
+_ABSTAIN = Resolution()
 
 
 def _iter_nodes(data, depth: int = 0):
@@ -99,9 +128,9 @@ def _from_dossier(dossier: dict) -> str | None:
 
 
 def resolve_company(fm: dict, get_source, dossier_cache, *,
-                    no_llm: bool, company_resolve_fetch: bool = False) -> str | None:
-    """Tier 1 then tier 2, first confident match wins. Returns None -- never a guess --
-    when both abstain, INCLUDING when a candidate fails `frontmatter_safe`
+                    no_llm: bool, company_resolve_fetch: bool = False) -> Resolution:
+    """Tier 1 then tier 2, first confident match wins. Returns Resolution() -- never a
+    guess -- when both abstain, INCLUDING when a candidate fails `frontmatter_safe`
     (falsy, all-whitespace, unprintable, or a frontmatter-structural character; the
     all-whitespace case is reachable here specifically: wellfound.py's
     `slug.replace("-", " ").title()` returns "   " for a `/company/---` path segment,
@@ -125,22 +154,24 @@ def resolve_company(fm: dict, get_source, dossier_cache, *,
                             # input class frontmatter_safe exists for. One source's bug on one
                             # unanticipated URL shape must not crash the whole triage run.
             if hit:
-                return hit
+                return Resolution(hit, "tier1")
     if no_llm or not company_resolve_fetch or not url:
-        return None
+        return _ABSTAIN
+    dossier = None
     try:
         dossier = dossier_cache.get_or_build(fm)
-        return frontmatter_safe(_from_dossier(dossier))
+        hit = frontmatter_safe(_from_dossier(dossier))
     except Exception:
-        return None  # a failed fetch just means "couldn't resolve" -- fall through to
-                     # classify()'s existing needs_review branch, not a fatal per-lead error.
-                     # Widened to also cover _from_dossier/frontmatter_safe: tier 2 reads live,
-                     # board-authored JSON-LD and page titles with NO schema enforcement at
-                     # read time -- hiringOrganization.name can be a list/dict/number/bool
-                     # instead of a string (making _hiring_org_from_jsonld's own .strip()
-                     # raise AttributeError), and a hand-edited or pre-#109 cache entry can
-                     # carry a non-string page_title (making re.Pattern.match() raise
-                     # TypeError). Both are reachable through ordinary tier-2 operation, not
-                     # just a corrupted cache, so both must abstain rather than crash the
-                     # whole triage batch over one bad lead -- the same reason the extractor
-                     # call above gets its own except Exception.
+        hit = None  # a failed fetch just means "couldn't resolve" -- fall through to
+                    # classify()'s existing needs_review branch, not a fatal per-lead error.
+                    # Widened to also cover _from_dossier/frontmatter_safe: tier 2 reads live,
+                    # board-authored JSON-LD and page titles with NO schema enforcement at
+                    # read time -- hiringOrganization.name can be a list/dict/number/bool
+                    # instead of a string (making _hiring_org_from_jsonld's own .strip()
+                    # raise AttributeError), and a hand-edited or pre-#109 cache entry can
+                    # carry a non-string page_title (making re.Pattern.match() raise
+                    # TypeError). Both are reachable through ordinary tier-2 operation, not
+                    # just a corrupted cache, so both must abstain rather than crash the
+                    # whole triage batch over one bad lead -- the same reason the extractor
+                    # call above gets its own except Exception.
+    return Resolution(hit, "tier2") if hit else _ABSTAIN
