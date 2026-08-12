@@ -254,12 +254,11 @@ def cmd_leads_reconcile(args, config) -> int:
 
 
 def cmd_health(args, config) -> int:
-    health = HealthStore()
-    for src in sorted(registry.all_sources(), key=lambda s: s.id):
-        counts = health.counts(src.id)
-        flag = " RETIRE" if health.should_retire(src.id) else ""
-        print(f"{src.id:16} baseline={health.baseline(src.id):.0f} "
-              f"recent={counts}{flag}")
+    from sluice.core.app import Sluice
+
+    for src in Sluice(config).health_report():
+        flag = " RETIRE" if src.should_retire else ""
+        print(f"{src.id:16} baseline={src.baseline:.0f} recent={src.recent}{flag}")
     return 0
 
 
