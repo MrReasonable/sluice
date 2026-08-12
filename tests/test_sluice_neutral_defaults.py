@@ -456,6 +456,60 @@ def test_the_example_config_ships_company_resolve_fetch_commented():
         "company_resolve_fetch must ship COMMENTED, not active"
 
 
+# ── #120: tier-3's own opt-in gate, and its dependency on tier 2's ────────────
+# company_resolve_llm needs its own guard for the same reason company_resolve_fetch
+# does above -- an unconfigured install must never start spending LLM calls the
+# moment it upgrades -- PLUS a cross-field check, because tier 3 reads the page
+# data only company_resolve_fetch causes to be fetched: turning tier 3 on alone
+# would be a knob that can never fire, which this loader treats as a construction
+# error the same way it already does for a retired key.
+
+def test_company_resolve_llm_dataclass_default_is_off():
+    assert TriageConfig().company_resolve_llm is False
+
+
+def test_company_resolve_llm_loader_default_is_off(tmp_path, monkeypatch):
+    monkeypatch.delenv("SLUICE_CONFIG", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert load_triage_config(None).company_resolve_llm is False
+
+
+def test_a_quoted_false_does_not_silently_enable_company_resolve_llm(tmp_path):
+    p = tmp_path / "sluice.yaml"
+    p.write_text('triage:\n  company_resolve_fetch: true\n'
+                 '  company_resolve_llm: "false"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="company_resolve_llm"):
+        load_triage_config(str(p))
+
+
+def test_company_resolve_llm_without_the_fetch_knob_raises_rather_than_shipping_an_inert_knob(
+        tmp_path):
+    p = tmp_path / "sluice.yaml"
+    p.write_text("triage:\n  company_resolve_llm: true\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="company_resolve_fetch"):
+        load_triage_config(str(p))
+
+
+def test_both_resolution_knobs_together_load_cleanly(tmp_path):
+    # The paired falsifier for the test above: a guard that refused EVERY value
+    # would be indistinguishable from the knob being dead.
+    p = tmp_path / "sluice.yaml"
+    p.write_text("triage:\n  company_resolve_fetch: true\n"
+                 "  company_resolve_llm: true\n", encoding="utf-8")
+    cfg = load_triage_config(str(p))
+    assert cfg.company_resolve_fetch is True
+    assert cfg.company_resolve_llm is True
+
+
+def test_the_example_config_ships_company_resolve_llm_commented():
+    import yaml
+    text = _EXAMPLE_PATH.read_text(encoding="utf-8")
+    assert "company_resolve_llm:" in text, "company_resolve_llm must be documented at all"
+    doc = yaml.safe_load(text) or {}
+    assert "company_resolve_llm" not in (doc.get("triage") or {}), \
+        "company_resolve_llm must ship COMMENTED, not active"
+
+
 # ── #80: the example config must ship no machine-specific path ───────────────
 
 # `key: value` on a line that may be commented out, or a block-sequence item (`- value`).

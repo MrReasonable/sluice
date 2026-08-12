@@ -66,6 +66,15 @@ class TriageConfig:
     # abstain-by-default posture as lead_ttl_days/lead_layout. Tier 1 (free,
     # URL-pattern-only) is unaffected by this knob and always runs.
     company_resolve_fetch: bool = False
+    # Off by default (#120): gates tier 3, which hands the page data tier 2 already
+    # fetched (no second page visit) to the CHEAP backend instead of two regexes.
+    # A SIBLING of company_resolve_fetch, not a widening of it: the two buy different
+    # things with different currencies -- the fetch spends a real page load, this
+    # spends money -- so an install that already opted into the free-network page
+    # visit must not silently start paying for LLM calls the moment it upgrades.
+    # STRICTLY narrower than company_resolve_fetch; see load_triage_config's
+    # cross-field check below.
+    company_resolve_llm: bool = False
 
 
 def load_triage_config(path: str | None = None) -> TriageConfig:
@@ -102,6 +111,29 @@ def load_triage_config(path: str | None = None) -> TriageConfig:
                     f'it is a STRING -- and "false" is truthy in Python, so the knob '
                     f"would be switched ON by the value meant to switch it off.")
             setattr(cfg, k, v)
+    # #120: unconditional (not inside the `if path...` block above), so this also
+    # catches a hand-constructed TriageConfig()... no -- it must run on every LOAD,
+    # whether or not a config file set either key, since the DEFAULT state
+    # (both False) must pass trivially and a file that sets ONLY company_resolve_llm
+    # (leaving company_resolve_fetch at its own False default) must still be caught.
+    # Placed after the overlay loop because it needs both keys' FINAL values, and
+    # PyYAML yields a mapping's keys in file order -- a check placed inside the loop
+    # would pass or fail depending on which key happened to come first in the file.
+    #
+    # This is not what makes tier 3 SAFE -- resolve.py's tier-3 block sits after the
+    # existing `if no_llm or not company_resolve_fetch or not url: return` early
+    # exit, so it structurally cannot fire without the fetch regardless of this
+    # check. It exists because a config that claims a feature is on while it can
+    # never run is the same "declared and read by nothing" class
+    # refuse_retired_dossier_dir already guards against for a retired key -- fail
+    # loudly at construction, this file's house style.
+    if cfg.company_resolve_llm and not cfg.company_resolve_fetch:
+        raise ValueError(
+            "triage.company_resolve_llm is on but triage.company_resolve_fetch is off. "
+            "Tier 3 reads the page data tier 2 fetches, so on its own it can never "
+            "fire: the knob would be silently inert, every blank-company lead would "
+            "stay unresolved, and the config would say otherwise. Set "
+            "company_resolve_fetch: true as well, or turn company_resolve_llm off.")
     # AFTER the loop, so `audit_jsonl: ""` in a config file resolves rather than
     # escaping as the empty string the loop just set.
     cfg.audit_jsonl = resolve(env_var="TRIAGE_AUDIT", config_value=cfg.audit_jsonl,
