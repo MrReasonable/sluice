@@ -145,6 +145,19 @@ def _is_generated_relpath(rel_parts: tuple) -> bool:
     """
     if any(part in {".git", ".venv", "node_modules", "__pycache__"} for part in rel_parts):
         return True
+    # A Claude Code worktree (`.claude/worktrees/<name>/`) is a FULL nested checkout of this
+    # repo -- gitignored (.gitignore's `/.claude/*` rule) but walked anyway by `rglob`, the
+    # exact `build`/`dist` shape above one level deeper. Reproduced for real:
+    # `.claude/worktrees/mcp-server-105/sluice/__init__.py` is a byte-copy of the tracked
+    # file, marker and all, and `extra-files` has no reason to ever name a worktree-specific
+    # path. Matched as an adjacent pair ANYWHERE in rel_parts, not root-scoped like
+    # build/dist: unlike those two plausible parent-workspace names, `.claude` is not a name
+    # real tracked source would ever use as a path component, so there is no legitimate
+    # nested file this could wrongly exclude -- and matching anywhere (not just at index 0)
+    # also covers a worktree created from inside another worktree, nested one level deeper
+    # still.
+    if any(rel_parts[i : i + 2] == (".claude", "worktrees") for i in range(len(rel_parts) - 1)):
+        return True
     return rel_parts[:1] in (("build",), ("dist",))
 
 
@@ -196,6 +209,29 @@ def test_a_repo_root_named_build_does_not_blind_the_whole_sweep():
     assert not _is_generated_relpath(("sluice", "cv", "build_bundle_helpers.py")), (
         "a tracked file merely CONTAINING 'build' in its name was wrongly excluded"
     )
+
+
+def test_a_nested_claude_code_worktree_does_not_get_swept():
+    """A Claude Code worktree (`.claude/worktrees/<name>/`) is a full nested checkout of
+    this repo, gitignored but walked anyway by `rglob` -- reproduced for real on this
+    machine: `.claude/worktrees/mcp-server-105/sluice/__init__.py` carries the same marker
+    as the tracked file and permanently failed this sweep until excluded, since
+    `extra-files` has no reason to ever name a worktree-specific path.
+    """
+    assert _is_generated_relpath(
+        (".claude", "worktrees", "mcp-server-105", "sluice", "__init__.py")
+    )
+    # Matched anywhere, not root-scoped: a worktree created FROM another worktree nests
+    # one level deeper still.
+    assert _is_generated_relpath(
+        ("sub", ".claude", "worktrees", "x", "sluice", "__init__.py")
+    )
+    # The pair must be ADJACENT and in this order -- `.claude/settings.json` (this repo's
+    # one tracked exception under `.claude/`) and a coincidental `worktrees` directory with
+    # no `.claude` immediately above it are ordinary tracked-or-real paths, not excluded.
+    assert not _is_generated_relpath((".claude", "settings.json"))
+    assert not _is_generated_relpath(("worktrees", ".claude", "x"))
+    assert not _is_generated_relpath(("some", "worktrees", "dir"))
 
 
 def test_extra_files_names_every_file_carrying_the_marker():
