@@ -43,6 +43,18 @@ def test_strip_hooks_does_not_mutate_its_argument():
     assert "hooks" in doc, "strip_hooks must return a new dict, not mutate the caller's"
 
 
+def test_strip_hooks_preserves_key_order_of_the_remaining_keys():
+    """The module docstring's fixed-point claim ("rulesync APPENDS the key it writes rather
+    than preserving original position, so the opposite order would never reach a stable fixed
+    point") is about ORDER, not just membership. `==` on two dicts ignores order, so every
+    other test here would stay green under a sort-based or otherwise order-scrambling rewrite
+    of `strip_hooks`. `hooks` deliberately sits in the MIDDLE, with keys on both sides, so a
+    mutant that merely preserves first/last position cannot pass by accident.
+    """
+    doc = {"zebra": 1, "hooks": {}, "enabledPlugins": {"paad@paad": True}, "apple": 2}
+    assert list(strip_hooks(doc).keys()) == ["zebra", "enabledPlugins", "apple"]
+
+
 def test_main_clears_hooks_but_preserves_enabled_plugins(tmp_path):
     settings = tmp_path / ".claude" / "settings.json"
     settings.parent.mkdir(parents=True)

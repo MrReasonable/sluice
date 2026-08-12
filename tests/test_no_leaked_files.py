@@ -711,6 +711,28 @@ def test_the_one_tracked_claude_path_is_narrowly_scoped():
     assert _is_forbidden(".claude/settings.json.bak")
 
 
+def test_the_tracked_settings_file_orders_enabled_plugins_before_hooks():
+    """The fixed-point claim `scripts/reset_tracked_hooks.py`'s docstring makes -- and
+    `.gitignore` and `.rulesync/rules/CLAUDE.md` repeat -- as prose, pinned as an executable
+    check instead: rulesync's hooks writer APPENDS the key it writes rather than preserving
+    the file's original position, so `enabledPlugins` must sit BEFORE `hooks` in the committed
+    file, or repeated `strip hooks -> npm run rulesync` cycles never reach a byte-identical
+    fixed point and `.github/workflows/ci.yml`'s `git status --porcelain` check reds on every
+    run. Without this, a reorder (a hand edit, an editor's "sort keys on save") would surface
+    only after a full npm/rulesync round-trip in CI, as a bare porcelain diff with nothing
+    pointing back to the reason -- exactly the "prose is not a check" gap this repo's own
+    CLAUDE.md warns about.
+    """
+    text = (REPO / ".claude" / "settings.json").read_text(encoding="utf-8")
+    assert text.index('"enabledPlugins"') < text.index('"hooks"'), (
+        "the tracked .claude/settings.json now orders `hooks` before `enabledPlugins`. "
+        "rulesync's hooks writer appends the key it writes rather than preserving original "
+        "position, so this order is the only one where repeated regeneration reaches a "
+        "stable fixed point -- restore enabledPlugins first or the rulesync CI job's "
+        "git-status-porcelain check will red on every run."
+    )
+
+
 def test_the_gate_fails_closed_when_git_fails():
     """The bug CodeRabbit found in v1: a failing subprocess produced empty output, so the gate
     passed having checked nothing."""
