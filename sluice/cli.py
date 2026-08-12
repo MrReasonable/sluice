@@ -1188,13 +1188,23 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     try:
         config = load_config()
+        return args.func(args, config)
     except ValueError as exc:
         # A retired or malformed config key is a USAGE error, not a crash. It reached the user as a
         # raw traceback, and the command it blocked hardest was `job-sluice init` -- the one that would
         # have written them a correct config -- plus `doctor`, which exists to diagnose exactly this.
+        #
+        # #120: widened from wrapping only load_config() to wrapping the whole dispatch. Every
+        # sub-app config (triage/cv/track/apply) is loaded LAZILY, inside its own Sluice.* method,
+        # not here -- so a malformed triage:/cv:/track: block (this round's own
+        # company_resolve_llm cross-field check, and the pre-existing quoted-bool check every
+        # *Config loader already shares) previously escaped THIS except entirely and surfaced as a
+        # raw traceback instead of the identical "job-sluice: <message>" / exit 2 shape a malformed
+        # ROOT config key already gets. Every ValueError this widening now also catches was already
+        # a usage-error class raise (config or argument validation), never an internal invariant
+        # violation, so nothing here should have been showing a developer traceback anyway.
         print(f"job-sluice: {exc}", file=sys.stderr)
         return 2
-    return args.func(args, config)
 
 
 if __name__ == "__main__":
