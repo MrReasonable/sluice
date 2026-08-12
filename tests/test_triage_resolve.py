@@ -47,7 +47,8 @@ def test_tier1_hit_never_calls_the_dossier_cache():
     cache = _RecordingCache()
     got = resolve.resolve_company(FM, _get_source({"example-board": src}), cache,
                                   no_llm=False, company_resolve_fetch=True)
-    assert got == "Example Co"
+    assert got.company == "Example Co"
+    assert got.tier == "tier1"
     assert cache.calls == 0
 
 
@@ -56,14 +57,14 @@ def test_tier1_miss_falls_through_to_tier2():
     cache = _RecordingCache(dossier={"page_title": "", "structured_data": ""})
     got = resolve.resolve_company(FM, _get_source({"example-board": src}), cache,
                                   no_llm=False, company_resolve_fetch=True)
-    assert got is None
+    assert got.company is None
     assert cache.calls == 1
 
 
 def test_both_tiers_miss_returns_none():
     cache = _RecordingCache(dossier={"page_title": "", "structured_data": ""})
     got = resolve.resolve_company(FM, None, cache, no_llm=False, company_resolve_fetch=True)
-    assert got is None
+    assert got.company is None
 
 
 def test_get_source_none_skips_tier1_unconditionally():
@@ -71,7 +72,8 @@ def test_get_source_none_skips_tier1_unconditionally():
         "structured_data": '{"@type": "JobPosting", "hiringOrganization": {"name": "Example Co"}}',
         "page_title": ""})
     got = resolve.resolve_company(FM, None, cache, no_llm=False, company_resolve_fetch=True)
-    assert got == "Example Co"       # tier 2 still runs; only tier 1 is unconditionally skipped
+    assert got.company == "Example Co"       # tier 2 still runs; only tier 1 is unconditionally skipped
+    assert got.tier == "tier2"
     assert cache.calls == 1
 
 
@@ -80,7 +82,7 @@ def test_no_llm_never_calls_the_dossier_cache_even_on_a_tier1_miss():
     cache = _RecordingCache()
     got = resolve.resolve_company(FM, _get_source({"example-board": src}), cache,
                                   no_llm=True, company_resolve_fetch=True)
-    assert got is None
+    assert got.company is None
     assert cache.calls == 0
 
 
@@ -89,7 +91,7 @@ def test_company_resolve_fetch_false_never_calls_the_dossier_cache():
     cache = _RecordingCache()
     got = resolve.resolve_company(FM, _get_source({"example-board": src}), cache,
                                   no_llm=False, company_resolve_fetch=False)
-    assert got is None
+    assert got.company is None
     assert cache.calls == 0
 
 
@@ -97,13 +99,13 @@ def test_unknown_source_id_abstains_rather_than_raising():
     cache = _RecordingCache(dossier={"page_title": "", "structured_data": ""})
     got = resolve.resolve_company(FM, _get_source({}), cache, no_llm=False,
                                   company_resolve_fetch=True)
-    assert got is None
+    assert got.company is None
 
 
 def test_dossier_fetch_exception_abstains_rather_than_propagating():
     cache = _RecordingCache(raises=RuntimeError("boom"))
     got = resolve.resolve_company(FM, None, cache, no_llm=False, company_resolve_fetch=True)
-    assert got is None
+    assert got.company is None
 
 
 def test_extractor_exception_abstains_rather_than_propagating():
@@ -111,7 +113,7 @@ def test_extractor_exception_abstains_rather_than_propagating():
     cache = _RecordingCache(dossier={"page_title": "", "structured_data": ""})
     got = resolve.resolve_company(FM, _get_source({"example-board": src}), cache,
                                   no_llm=False, company_resolve_fetch=True)
-    assert got is None
+    assert got.company is None
     assert cache.calls == 1    # tier 1's crash must not stop tier 2 from being attempted
 
 
@@ -123,7 +125,7 @@ def test_jsonld_hiring_org_name_non_string_abstains_rather_than_raising():
         "structured_data": '{"@type": "JobPosting", "hiringOrganization": {"name": ["Example Co"]}}',
         "page_title": ""})
     got = resolve.resolve_company(FM, None, cache, no_llm=False, company_resolve_fetch=True)
-    assert got is None
+    assert got.company is None
 
 
 def test_dossier_page_title_non_string_abstains_rather_than_raising():
@@ -131,7 +133,7 @@ def test_dossier_page_title_non_string_abstains_rather_than_raising():
     # makes re.Pattern.match() raise TypeError if uncaught.
     cache = _RecordingCache(dossier={"structured_data": "", "page_title": 12345})
     got = resolve.resolve_company(FM, None, cache, no_llm=False, company_resolve_fetch=True)
-    assert got is None
+    assert got.company is None
 
 
 # The last five are the class sluice's OWN frontmatter parser cannot see: `_fm_dict`/
@@ -155,7 +157,7 @@ def test_tier1_candidate_with_a_structural_character_is_rejected(unsafe):
     cache = _RecordingCache()
     got = resolve.resolve_company(FM, _get_source({"example-board": src}), cache,
                                   no_llm=False, company_resolve_fetch=True)
-    assert got is None
+    assert got.company is None
 
 
 @pytest.mark.parametrize("unsafe", _UNSAFE_COMPANIES)
@@ -165,7 +167,7 @@ def test_tier2_candidate_with_a_structural_character_is_rejected(unsafe):
         "structured_data": json.dumps({"@type": "JobPosting",
                                        "hiringOrganization": {"name": unsafe}})})
     got = resolve.resolve_company(FM, None, cache, no_llm=False, company_resolve_fetch=True)
-    assert got is None
+    assert got.company is None
 
 
 @pytest.mark.parametrize("blank", ["   ", " "])
@@ -184,7 +186,7 @@ def test_tier1_candidate_that_is_only_whitespace_is_rejected(blank):
     cache = _RecordingCache()
     got = resolve.resolve_company(FM, _get_source({"example-board": src}), cache,
                                   no_llm=False, company_resolve_fetch=True)
-    assert got is None
+    assert got.company is None
 
 
 def test_from_dossier_reads_jobposting_jsonld():
