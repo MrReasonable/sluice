@@ -8,6 +8,8 @@ from sluice.triage.config import TriageConfig
 from sluice.core.dossier import DossierCache
 from sluice.triage.audit import AuditLog
 from sluice.triage.engine import run
+from sluice.core.backends import BackendError
+from sluice.triage.audit import render_rejected_note
 import sluice.triage.engine as eng
 
 
@@ -893,3 +895,209 @@ def test_a_verdict_for_an_unmatched_lead_id_is_reported_not_silently_dropped(tmp
     assert report.judged == 1, "the verdict was still produced -- only routing it failed"
     assert len(report.failures) == 1, report.failures
     assert "no note matches" in report.failures[0]
+
+
+# ── tier 3 (#120): engine-level wiring ─────────────────────────────────────────
+
+class _ResolveBackend:
+    """A resolve_backend double: `replies` is consumed in order. A BackendError
+    INSTANCE is raised, not returned. Exhausting the list raises AssertionError --
+    a mis-counted fixture must fail loudly, not silently read as a real abstain."""
+    def __init__(self, replies):
+        self._replies = list(replies)
+        self.calls = []
+
+    def complete(self, prompt):
+        self.calls.append(prompt)
+        if not self._replies:
+            raise AssertionError("ResolveBackend: no more scripted replies")
+        reply = self._replies.pop(0)
+        if isinstance(reply, BackendError):
+            raise reply
+        return reply
+
+
+_LLM_DOSSIER = {"page_title": "Senior Engineer | Example Board", "structured_data": ""}
+
+
+def test_tier3_resolution_writes_the_company_and_is_counted_under_its_own_tier(
+        tmp_path, titles):
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "blank.md", _blank_fields(accept[0].title(), source="ex-board"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.company_resolve_fetch = True
+    cfg.company_resolve_llm = True
+    resolve_backend = _ResolveBackend(["Resolved Co"])
+    cache = _RecordingCache(dossier=_LLM_DOSSIER)
+
+    report = run(v, cfg, _Backend(), cache, audit, statuses=("new",),
+                get_source=None, resolve_backend=resolve_backend)
+
+    after = v.read_leads()[0]
+    assert after.fm["company"] == "Resolved Co"
+    assert report.resolved == {"tier1": 0, "tier2": 0, "tier3": 1}
+    assert report.llm_calls == 1
+
+
+def test_the_judge_backend_is_never_used_for_company_resolution(tmp_path, titles):
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "blank.md", _blank_fields(accept[0].title(), source="ex-board"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.company_resolve_fetch = True
+    cfg.company_resolve_llm = True
+    judge_backend = _Backend()
+    resolve_backend = _ResolveBackend(["Resolved Co"])
+    cache = _RecordingCache(dossier=_LLM_DOSSIER)
+
+    run(v, cfg, judge_backend, cache, audit, statuses=("new",),
+       get_source=None, resolve_backend=resolve_backend)
+
+    assert len(resolve_backend.calls) == 1
+    assert resolve_backend.calls[0].startswith("You are the company-name resolution step")
+    assert len(judge_backend.prompts) == 1
+    assert judge_backend.prompts[0].startswith("You are the batched judgment stage")
+
+
+def test_tier3_calls_are_counted_even_when_the_model_abstains(tmp_path, titles):
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "blank1.md", _blank_fields(accept[0].title(), source="ex-board", url="https://x/1"))
+    _note(v, "blank2.md", _blank_fields(accept[0].title(), source="ex-board", url="https://x/2"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.company_resolve_fetch = True
+    cfg.company_resolve_llm = True
+    resolve_backend = _ResolveBackend(["NONE", "NONE"])
+    cache = _RecordingCache(dossier=_LLM_DOSSIER)
+
+    report = run(v, cfg, None, cache, audit, statuses=("new",),
+                get_source=None, resolve_backend=resolve_backend)
+
+    assert report.llm_calls == 2
+    assert report.resolved == {"tier1": 0, "tier2": 0, "tier3": 0}
+
+
+def test_a_tier3_resolution_is_audited_and_never_reaches_the_rejected_leads_note(
+        tmp_path, titles):
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "blank.md", _blank_fields(accept[0].title(), source="ex-board"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.company_resolve_fetch = True
+    cfg.company_resolve_llm = True
+    resolve_backend = _ResolveBackend(["Resolved Co"])
+    cache = _RecordingCache(dossier=_LLM_DOSSIER)
+
+    run(v, cfg, _Backend(), cache, audit, statuses=("new",),
+       get_source=None, resolve_backend=resolve_backend)
+
+    entries = audit.read_recent(30)
+    resolve_entries = [e for e in entries if e.get("stage") == "resolve"]
+    assert len(resolve_entries) == 1
+    assert resolve_entries[0]["tier"] == "tier3"
+    assert resolve_entries[0]["company"] == "Resolved Co"
+
+    note_body = render_rejected_note(v, entries, cfg.rejected_note)
+    assert "Resolved Co" not in note_body
+
+
+def test_a_dry_run_tier3_resolution_is_counted_but_writes_neither_company_nor_audit_line(
+        tmp_path, titles):
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "blank.md", _blank_fields(accept[0].title(), source="ex-board"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.company_resolve_fetch = True
+    cfg.company_resolve_llm = True
+    resolve_backend = _ResolveBackend(["Resolved Co"])
+    cache = _RecordingCache(dossier=_LLM_DOSSIER)
+
+    report = run(v, cfg, _Backend(), cache, audit, statuses=("new",), dry_run=True,
+                get_source=None, resolve_backend=resolve_backend)
+
+    assert report.resolved["tier3"] == 1
+    assert report.llm_calls == 1
+    after = v.read_leads()[0]
+    assert after.fm["company"] == ""                    # no vault write under dry_run
+    assert not os.path.exists(str(tmp_path / "audit.jsonl"))   # no audit line either
+
+
+def test_a_tier3_resolution_whose_write_was_refused_is_neither_counted_nor_audited(
+        tmp_path, titles, monkeypatch):
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "blank.md", _blank_fields(accept[0].title(), source="ex-board"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.company_resolve_fetch = True
+    cfg.company_resolve_llm = True
+    resolve_backend = _ResolveBackend(["Resolved Co"])
+    cache = _RecordingCache(dossier=_LLM_DOSSIER)
+
+    real = v.update_fields
+    calls = {"n": 0}
+    def racer(ref, fields, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            real(ref, {"company": '"Human Typed Co"'})   # a human edits it mid-run
+        return real(ref, fields, **kw)
+    monkeypatch.setattr(v, "update_fields", racer)
+
+    report = run(v, cfg, _Backend(), cache, audit, statuses=("new",),
+                get_source=None, resolve_backend=resolve_backend)
+
+    after = v.read_leads()[0]
+    assert after.fm["company"] == "Human Typed Co"      # the concurrent write survives
+    assert report.resolved == {"tier1": 0, "tier2": 0, "tier3": 0}
+    assert any("company-resolve" in f for f in report.failures)
+    entries = audit.read_recent(30)
+    assert not any(e.get("stage") == "resolve" for e in entries)
+
+
+def test_the_engine_leaves_tier3_off_when_no_resolve_backend_was_threaded(tmp_path, titles):
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "blank.md", _blank_fields(accept[0].title(), source="ex-board"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.company_resolve_fetch = True
+    cfg.company_resolve_llm = True     # the knob is ON...
+    cache = _RecordingCache(dossier=_LLM_DOSSIER)
+
+    report = run(v, cfg, None, cache, audit, statuses=("new",), no_llm=True,
+                get_source=None, resolve_backend=None)   # ...but no backend was built
+
+    assert report.resolved == {"tier1": 0, "tier2": 0, "tier3": 0}
+    assert report.llm_calls == 0
+
+
+def test_the_circuit_breaker_stops_tier3_after_3_consecutive_backend_errors_and_reports_once(
+        tmp_path, titles):
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    for i in range(4):
+        _note(v, f"blank{i}.md", _blank_fields(accept[0].title(), source="ex-board",
+                                                url=f"https://x/{i}"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.company_resolve_fetch = True
+    cfg.company_resolve_llm = True
+    # Only 3 replies scripted for 4 candidate leads -- a 4th call would raise
+    # AssertionError from the double itself, which IS the proof the breaker
+    # stopped calling it rather than merely returning fewer hits.
+    resolve_backend = _ResolveBackend([BackendError("down")] * 3)
+    cache = _RecordingCache(dossier=_LLM_DOSSIER)
+
+    report = run(v, cfg, None, cache, audit, statuses=("new",),
+                get_source=None, resolve_backend=resolve_backend)
+
+    assert len(resolve_backend.calls) == 3
+    assert report.llm_calls == 3
+    assert sum(1 for f in report.failures if "tier 3 disabled" in f) == 1
+    assert report.resolved == {"tier1": 0, "tier2": 0, "tier3": 0}
