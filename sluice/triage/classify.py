@@ -36,7 +36,7 @@ _MONEY_RE = re.compile(
 # £35k floor REJECTS a role paying up to £40k -- fails-closed, the expensive direction. A
 # bare number is money when it is the tail of a range whose head was money.
 _RANGE_TAIL_RE = re.compile(
-    r"\s*(?:-|\u2013|\u2014|to)\s*(\d[\d,]*(?:\.\d+)?)\s*([kK])?\b", re.I)
+    r"\s*(?:-|–|—|to)\s*(\d[\d,]*(?:\.\d+)?)\s*([kK])?\b", re.I)
 
 # Below these, a parse is not a real offer -- it is a mis-parse. Abstain rather than
 # reject: a wrong reject bins a lead the user never sees, the expensive direction.
@@ -90,6 +90,45 @@ def _salary_ceiling(s: str) -> int | None:
     return max(amounts) if amounts else None
 
 
+# #128: a WORD-BOUNDARY match, not `pat in text`. Plain substring containment treats
+# "engineer" as present inside "engineering" -- a strict character-for-character
+# prefix -- so every reject pattern ending in "engineer" (machine learning engineer,
+# security engineer, mobile engineer, staff engineer, solutions engineer, sales
+# engineer, network engineer, project engineer, ...) silently matched inside a role
+# that was actually titled "... Engineering Manager" or "... Engineering Lead": a
+# different word, wearing the first 8 letters of "engineer" as a coincidence of
+# English spelling, not a real match. The accept-list override did not save these
+# either -- it only excuses a reject pattern that is ITSELF a substring of the
+# matched accept phrase, and "security engineer" is not a substring of "engineering
+# manager", so a role carrying BOTH an accepted title and this collision still got
+# killed. Real leads lost to this before ever reaching the LLM judge: "Ads Conversion
+# Modeling, Machine Learning Engineering Manager", "Software Security Engineering
+# Manager, Secure Frameworks", "mobile engineering manager", "Staff Engineering Lead".
+# Same shape independently affects the bare `vp` pattern, which currently matches
+# inside "svp" for the identical reason.
+#
+# `\b` requires a transition between a \w character and a non-\w one (or a string
+# edge), so `\bengineer\b` fails to match inside "engineering": the "r" ending
+# "engineer" and the "i" starting "ing" are both word characters, with no boundary
+# between them. A genuine standalone "Senior Software Engineer" is unaffected --
+# "engineer" there is followed by a space or end-of-string, both real boundaries.
+#
+# `\b` itself breaks for a PATTERN that starts or ends in a non-word character --
+# "c++", "c#", "sr.", ".net" -- because `\b` requires a WORD-to-non-word transition,
+# and a pattern edge that is already non-word (the second "+" in "c++", the "."
+# in "sr.") can never be one side of that transition. `\bc\+\+\b` verified live to
+# fail against "C++ Developer": the boundary before "c" holds (space -> word), but
+# there is no boundary after the second "+" (non-word "+" next to non-word " ").
+# Lookaround assertions check ABSENCE of an adjacent word character on each side
+# instead of a transition, so they hold regardless of which side of the pattern is
+# itself non-word -- verified live to match all four cases above, and confirmed to
+# still refuse "engineer" inside "engineering" and "vp" inside "svp" identically to
+# the `\b` form (there the pattern's own edges are word characters, so both forms
+# agree).
+def _word_match(pat: str, text: str) -> bool:
+    return re.search(r"(?<!\w)" + re.escape(pat) + r"(?!\w)", text) is not None
+
+
 def classify(lead: dict, cfg) -> tuple[str, str]:
     role = (lead.get("role") or "").lower()
     company = (lead.get("company") or "").strip()
@@ -105,10 +144,10 @@ def classify(lead: dict, cfg) -> tuple[str, str]:
     # an accept token AND an unrelated disqualifier ("<accepted role> / <rejected
     # role>"), and those mixed titles are exactly what the gate exists to catch.
     # A blanket accept-wins rule let every one of them through.
-    matched_accepts = [t for t in cfg.accept_titles if t in role]
+    matched_accepts = [t for t in cfg.accept_titles if _word_match(t, role)]
 
     for pat in cfg.reject_titles:
-        if pat in role and not any(pat in acc for acc in matched_accepts):
+        if _word_match(pat, role) and not any(_word_match(pat, acc) for acc in matched_accepts):
             return "reject", f"Role not a fit: {pat}"
 
     if any(c in company.lower() for c in cfg.reject_companies):
