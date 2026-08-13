@@ -1,3 +1,5 @@
+import pytest
+
 from sluice.triage.classify import classify
 from sluice.triage.config import TriageConfig
 
@@ -240,3 +242,69 @@ def test_classify_signature_never_gains_a_side_effecting_dependency():
     assert params == {"lead", "cfg"}, (
         "classify() must stay pure -- no dossier_cache, sources, or fetcher "
         "parameter, per its own docstring's no-dossier/no-LLM contract")
+
+
+# ── #128: reject/accept matching is word-boundary, not plain substring ────────
+
+def test_reject_pattern_does_not_match_inside_a_longer_word(titles):
+    # "engineer" is a strict character-for-character prefix of "engineering", so a
+    # plain `pat in role` substring check treated "security engineer" as present
+    # inside "Security Engineering Manager" -- a genuinely different, unrelated
+    # word. Word-boundary matching must not fire here.
+    cfg = _cfg(titles)
+    cfg.reject_titles = ["security engineer"]
+    cfg.accept_titles = []
+    assert classify(L(titles, role="Security Engineering Manager"), cfg)[0] == "keep"
+
+
+def test_reject_pattern_still_matches_as_a_standalone_word(titles):
+    # The fix must not over-correct: a genuine standalone occurrence (followed by a
+    # real word boundary -- space or end of string) still rejects.
+    cfg = _cfg(titles)
+    cfg.reject_titles = ["security engineer"]
+    cfg.accept_titles = []
+    assert classify(L(titles, role="Senior Security Engineer"), cfg)[0] == "reject"
+
+
+def test_word_boundary_fix_lets_a_genuine_accept_title_through(titles):
+    # Real leads lost to this: a role carrying BOTH a genuine accepted title
+    # ("engineering manager") and an unrelated reject pattern that only collided
+    # via the engineer/engineering prefix ("machine learning engineer") must be
+    # kept, not silently killed before the LLM judge ever sees it.
+    cfg = _cfg(titles)
+    cfg.accept_titles = ["engineering manager"]
+    cfg.reject_titles = ["machine learning engineer"]
+    verdict, _ = classify(
+        L(titles, role="Ads Conversion Modeling, Machine Learning Engineering Manager"), cfg)
+    assert verdict == "keep"
+
+
+def test_reject_pattern_does_not_match_inside_a_longer_acronym(titles):
+    # Same shape, a different pair: bare "vp" must not match inside "svp" -- there
+    # is no boundary between the "s" and the "v".
+    cfg = _cfg(titles)
+    cfg.reject_titles = ["vp"]
+    cfg.accept_titles = []
+    assert classify(L(titles, role="SVP of Engineering"), cfg)[0] == "keep"
+    # ...but a standalone "VP" is still caught.
+    assert classify(L(titles, role="VP of Engineering"), cfg)[0] == "reject"
+
+
+# A configured pattern that itself starts or ends in a non-word character (the "+"
+# in "c++", the "." in "sr.") breaks plain `\b`: a boundary requires a word/non-word
+# TRANSITION, and a pattern edge that is already non-word can never supply one side
+# of it. `\bc\+\+\b` never matches "C++ Developer" -- verified live before fixing --
+# because there is no boundary between the trailing "+" and the following space
+# (non-word next to non-word). Each case below would silently never reject/accept
+# before this fix, with no error and no signal that the pattern was inert.
+@pytest.mark.parametrize("pat,role", [
+    ("c++", "C++ Developer"),
+    ("c#", "C# Retail Merchandiser"),
+    ("sr.", "Sr. Director, Product Management"),
+    (".net", "Backend Developer (.NET)"),
+])
+def test_reject_pattern_with_punctuation_still_matches_a_standalone_occurrence(titles, pat, role):
+    cfg = _cfg(titles)
+    cfg.reject_titles = [pat]
+    cfg.accept_titles = []
+    assert classify(L(titles, role=role), cfg)[0] == "reject"
