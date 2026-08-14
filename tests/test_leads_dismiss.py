@@ -80,6 +80,18 @@ def test_refused_signoff_hold_names_the_remedy_lead(tmp_path):
     assert "status: dismiss" not in text
 
 
+def test_note_appended_is_false_when_status_changes_but_the_tag_was_already_present(tmp_path):
+    """The composite's OTHER half: tag_absent_at_snapshot alone isn't enough --
+    if the tag is already present (e.g. a custom note_tag reused) but status
+    still moves shortlist->dismiss, wrote=True (a real content change, status
+    itself moved) while note_appended must stay False (nothing was actually
+    appended -- the tag was already there)."""
+    slug = _seed(tmp_path, status="shortlist", relevance_notes="[dismiss FIXED] already there")
+    result = _app(tmp_path).dismiss_lead(lead=slug, reason="no fit", note_tag="[dismiss FIXED]")
+    assert result.outcome == "dismissed"
+    assert result.note_appended is False
+
+
 def test_same_day_repeat_is_unchanged_and_note_appended_is_false(tmp_path):
     slug = _seed(tmp_path, status="shortlist")
     app = _app(tmp_path)
