@@ -20,6 +20,7 @@ import os
 import re
 import stat
 import tempfile
+import threading
 from datetime import date
 
 from sluice.core import status as _status
@@ -2252,6 +2253,44 @@ def _atomic_write(path: str, text: str) -> None:
         raise
 
 
+_write_locks: dict[str, threading.Lock] = {}
+_write_locks_guard = threading.Lock()
+
+
+def _lock_for(path: str) -> threading.Lock:
+    """One process-lifetime lock per resolved path (#131): closes the
+    INTRA-process race _cas_write's own recheck cannot catch on its own --
+    two threads in the SAME process can both pass "unchanged since capture"
+    before either commits, so both report a successful write while only the
+    LAST os.replace actually lands, silently discarding the other's
+    transform. Reproduced 100% of 200 rounds under a synchronized
+    threading.Barrier before this fix.
+
+    Deliberately per-PATH, not one global lock: two writers to DIFFERENT
+    notes must never contend, only two racing the SAME note.
+
+    Deliberately in-memory, not a file-based advisory lock: this closes only
+    the NEW intra-process gap #131's long-lived, genuinely multi-threaded
+    `mcp serve` process introduces (MCPServer dispatches sync tool calls to
+    separate worker threads, confirmed empirically) -- it does not attempt
+    to protect against a DIFFERENT PROCESS (a human editing the note by hand
+    in Obsidian, a second CLI invocation), which is #16's own already-
+    accepted external risk, unchanged by this fix and still caught (when the
+    race is sustained) by the existing VaultConflict-after-retries path. An
+    in-memory lock needs no stale-lock recovery -- a crashed process simply
+    drops it -- which a file-based lock would need and which is exactly the
+    kind of cross-platform, crash-recovery design surface this fix
+    deliberately stays out of.
+
+    The registry grows by one entry per unique path ever written for the
+    life of the process; for a personal job-vault's note count (hundreds,
+    not millions) this is not worth adding eviction for."""
+    resolved = os.path.abspath(path)
+    with _write_locks_guard:
+        lock = _write_locks.setdefault(resolved, threading.Lock())
+    return lock
+
+
 def _cas_write(path: str, transform, *, retries: int = _RMW_RACE_RETRIES) -> bool:
     """Apply a surgical edit under compare-and-set. `transform(current_text) -> new_text`
     is re-derived from the CURRENT bytes each iteration. Commit (atomic replace) only if
@@ -2265,17 +2304,31 @@ def _cas_write(path: str, transform, *, retries: int = _RMW_RACE_RETRIES) -> boo
     made against the stale capture. Without it, a presence/absence transform (e.g.
     append-if-tag-absent) that reads as a no-op against the STALE text (tag present at
     capture) but is NOT a no-op against the LIVE text (a racer concurrently removed the
-    tag) would silently return False and drop the needed edit."""
-    for _ in range(retries):
-        text = _read(path)
-        new = transform(text)
-        if _read(path) != text:
-            continue  # changed under us since capture -> re-derive from the fresh content
-        if new == text:
-            return False  # genuine no-op on the CURRENT content
-        _atomic_write(path, new)
-        return True
-    raise VaultConflict(path)
+    tag) would silently return False and drop the needed edit.
+
+    Serialized per-path via _lock_for (#131): held across the WHOLE call, not
+    per-retry-attempt, so two IN-PROCESS threads can never both be inside the
+    read-transform-recheck-write cycle for the same path at once -- see
+    _lock_for's own docstring for why this is in-memory and per-path, and
+    what it does and does not protect against.
+
+    `transform` MUST be pure text -> text and MUST NOT call back into any
+    store write method for the same path: the lock is a plain (non-reentrant)
+    Lock, so a nested call deadlocks. An RLock is deliberately NOT used --
+    it would let a nested write satisfy its own freshness check inside an
+    outer transaction and silently defeat the CAS invariant this exists for."""
+    lock = _lock_for(path)
+    with lock:
+        for _ in range(retries):
+            text = _read(path)
+            new = transform(text)
+            if _read(path) != text:
+                continue  # changed under us since capture -> re-derive from the fresh content
+            if new == text:
+                return False  # genuine no-op on the CURRENT content
+            _atomic_write(path, new)
+            return True
+        raise VaultConflict(path)
 
 
 def _split_frontmatter(text: str) -> tuple[str | None, str]:
