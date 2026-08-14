@@ -303,12 +303,17 @@ Blocks for the life of the process once started; there is no `--dry-run`.
 - `create_lead(title, company, url, location="", salary="", job_type="",
   source="manual")` -- create a new lead note directly, for a job a human found
   that no scanner ingested. Lands at `status: new`; `job-sluice triage run`
-  promotes it from there. Reports `upsert`'s own outcome vocabulary verbatim: two
-  leads sharing company+title (even with different urls) collide onto ONE note, so
-  a second call at the same identity returns `updated` when the incoming url (or,
-  absent a url match, the location) proves the same posting, or `merged` when
-  neither does (inconclusive evidence) -- either way only `last_seen` is bumped,
-  the new url/salary/location NOT recorded.
+  promotes it from there. Reports `upsert`'s own outcome vocabulary verbatim:
+  identity is company+title, and a second call at that same identity bumps
+  `last_seen` ONLY, reported as `updated` when the incoming url (or, absent a
+  url match, the location) proves the same posting, or `merged` when neither
+  does (inconclusive evidence -- e.g. a blank-url lead whose location is
+  blank, or is compared against a note whose own location is blank) -- UNLESS
+  the two locations are proven DIFFERENT (two non-blank, non-overlapping
+  locations), in which case the call creates a genuinely NEW note instead
+  (`created` again -- a second real note at the same company+title). Both
+  `updated` and `merged` are a bare `last_seen` bump; the new
+  url/salary/location is NOT recorded either way.
 
 `--write` is a per-registration trust decision about one MCP client: every existing
 read-only registration is unaffected, and a read-only server's `tools/list`
