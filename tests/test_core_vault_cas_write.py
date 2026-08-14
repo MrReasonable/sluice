@@ -4,9 +4,10 @@
 racing the SAME path through _cas_write directly -- no mocking of the write
 layer, mirrors tests/conformance/test_store_contract.py's own proven technique
 for the analogous create-path race."""
+import os
 import threading
 
-from sluice.core.vault import _cas_write
+from sluice.core.vault import _cas_write, _lock_for
 
 
 def test_cas_write_serializes_two_racing_threads_so_neither_write_is_silently_lost(tmp_path):
@@ -84,6 +85,23 @@ def test_cas_write_serializes_two_racing_threads_so_neither_write_is_silently_lo
                     f"being reported (results={results})")
 
 
+def test_lock_for_resolves_a_symlink_to_the_same_lock_as_its_real_target(tmp_path):
+    """Minor #4 (final whole-branch review): _lock_for used os.path.abspath,
+    where this SAME module deliberately uses os.path.realpath elsewhere for the
+    identical reason (a symlink INSIDE the store). abspath normalizes text but
+    not symlinks, so two DIFFERENT textual paths to the SAME real file would
+    silently get two different lock objects -- reintroducing the race this lock
+    exists to close. A symlinked path and its real target must resolve to the
+    ONE SAME lock object (identity, not equality -- two distinct Lock instances
+    would still let two threads enter their critical sections concurrently)."""
+    real_path = tmp_path / "note.md"
+    real_path.write_text("BASE")
+    link_path = tmp_path / "link.md"
+    os.symlink(real_path, link_path)
+
+    assert _lock_for(str(real_path)) is _lock_for(str(link_path))
+
+
 def test_cas_write_still_returns_false_on_a_genuine_no_op(tmp_path):
     """The lock must not change _cas_write's existing no-op/return-False
     semantics for the ordinary, uncontended case."""
@@ -97,33 +115,42 @@ def test_cas_write_still_returns_false_on_a_genuine_no_op(tmp_path):
 
 def test_cas_write_different_paths_do_not_serialize_against_each_other(tmp_path):
     """A lock scoped per-path, not global: two threads writing DIFFERENT files
-    concurrently must both complete without waiting on each other. Asserted via
-    a wall-clock bound loose enough to be robust but tight enough to catch an
-    accidentally-global lock (which would make this test take >= 2x as long as
-    two back-to-back sequential calls with an artificial delay)."""
-    import time
+    concurrently must both complete without waiting on each other.
 
+    Asserted deterministically (Minor #5, final whole-branch review) via a
+    shared threading.Barrier(2, timeout=5) waited on INSIDE each transform --
+    the prior version asserted a wall-clock bound instead (`elapsed < 0.35`),
+    which had already flaked once under full-suite load (this session's own
+    Task 9 ledger), plus a dead `entered_critical_section` list appended to but
+    never asserted on. Under a correctly per-path lock, both threads reach and
+    release the barrier together (they are on DIFFERENT paths and never
+    contend), so `barrier.wait()` returns normally for both. Under an
+    accidentally-global lock, the second thread could never enter its
+    transform while the first holds the lock, so its `barrier.wait()` would
+    raise BrokenBarrierError on timeout -- which this test asserts never
+    happens, rather than inferring it from wall-clock timing."""
     path_a = str(tmp_path / "a.txt")
     path_b = str(tmp_path / "b.txt")
     for p in (path_a, path_b):
         with open(p, "w") as f:
             f.write("BASE")
 
-    barrier = threading.Barrier(2)
-    entered_critical_section = []
+    barrier = threading.Barrier(2, timeout=5)
+    errors = []
 
-    def slow_transform_factory(tag):
+    def transform_factory(tag):
         def transform(text):
-            entered_critical_section.append(tag)
-            time.sleep(0.2)
+            barrier.wait()   # raises BrokenBarrierError if the OTHER thread
+                             # never gets here -- e.g. stuck behind a global lock
             return text + f"-{tag}"
         return transform
 
     def worker(path, tag):
-        barrier.wait()
-        _cas_write(path, slow_transform_factory(tag))
+        try:
+            _cas_write(path, transform_factory(tag))
+        except threading.BrokenBarrierError as e:
+            errors.append((tag, e))
 
-    start = time.monotonic()
     threads = [
         threading.Thread(target=worker, args=(path_a, "A")),
         threading.Thread(target=worker, args=(path_b, "B")),
@@ -132,8 +159,12 @@ def test_cas_write_different_paths_do_not_serialize_against_each_other(tmp_path)
         t.start()
     for t in threads:
         t.join()
-    elapsed = time.monotonic() - start
 
-    assert elapsed < 0.35, (
-        f"two DIFFERENT paths took {elapsed:.2f}s -- a per-path lock should let "
-        f"them run concurrently (~0.2s total), not serialize (~0.4s)")
+    assert errors == [], (
+        f"a per-path lock should let two DIFFERENT paths' transforms run "
+        f"concurrently, but {[tag for tag, _ in errors]} timed out waiting on "
+        f"the shared barrier -- consistent with an accidentally-global lock")
+    with open(path_a) as f:
+        assert f.read() == "BASE-A"
+    with open(path_b) as f:
+        assert f.read() == "BASE-B"
