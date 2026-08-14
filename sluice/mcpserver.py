@@ -13,7 +13,10 @@ enforced and proven.
 """
 import dataclasses
 import hashlib
+import hmac
 import json
+import secrets
+from typing import Literal
 
 from sluice.core.app import Sluice
 from sluice.core.leads import (
@@ -170,8 +173,13 @@ def dismiss_lead(sluice: Sluice, lead: str, reason: str, note_tag: str | None = 
         # Sluice.dismiss_lead's own DismissResult carries no message field for this
         # outcome (see its docstring's require_blank comment) -- the remedy text is
         # this tool's own responsibility to construct, not something to relay.
+        # json.dumps, not Python repr (Minor #10, final whole-branch review): a
+        # `'...'` (repr) string sitting next to a lowercase `true` (JSON literal)
+        # is neither valid Python nor valid JSON and is not directly
+        # copy-pasteable -- json.dumps gives a consistently double-quoted,
+        # correctly-escaped string in the same example.
         out["detail"] = (f"resolve the sign-off hold first: "
-                         f"cv_signoff(lead={result.slug!r}, discard=true)")
+                         f"cv_signoff(lead={json.dumps(result.slug)}, discard=true)")
     return out
 
 
@@ -193,6 +201,15 @@ def apply_record(sluice: Sluice, lead: str, ats: str | None = None, url: str | N
         # record_one's own "ambiguous: <ref> | <ref>" reason carries REFS
         # (select_one's presentation shape), not slugs -- re-resolve by slug for the
         # shared vocabulary (decision 15) rather than parse a CLI-facing string.
+        #
+        # This re-resolution is `sluice.apply.select.resolve`'s exact body
+        # (`[n for n in vault.read_leads({"shortlist"}) if slug_matches(n, slug)]`),
+        # inlined rather than imported -- DELIBERATELY (deferred item #5, final
+        # whole-branch review), not an oversight: the isolation sweep
+        # (`tests/test_mcpserver.py`'s `_isolation_violations`) confines
+        # mcpserver.py to `sluice.core.{app,leads,status}` only, so importing
+        # `sluice.apply.select` here would violate that boundary. Must be kept
+        # in sync with `select.resolve`'s own scope by hand if that ever changes.
         notes = [n for n in sluice.store().read_leads({"shortlist"}) if slug_matches(n, lead)]
         return {"outcome": "ambiguous", "candidates": sorted(n.slug for n in notes)}
     if not out["ok"]:
@@ -205,20 +222,54 @@ def apply_record(sluice: Sluice, lead: str, ats: str | None = None, url: str | N
     return result
 
 
+# Mixed into every _confirm_token hash below (Minor #7, final whole-branch
+# review): against the adversarial-agent threat model this whole feature is
+# designed for, an UNKEYED sha256(json.dumps(...)) is forgeable -- pending_cv
+# and the flagged claims are both readable via get_lead, so an agent capable
+# of computing a sha256 hash could construct a valid confirm_token WITHOUT
+# ever making the real first cv_signoff call, defeating the "requires a
+# second, separately-surfaced tool call" design intent entirely. Generated
+# ONCE per process (module scope, like `_write_locks`'s per-process registry
+# in core/vault.py) -- deterministic and comparable within one running
+# server's lifetime is all decision 13's two-call handshake actually needs,
+# since both calls happen against the same process.
+_CONFIRM_TOKEN_SECRET = secrets.token_bytes(16)
+
+
 def _confirm_token(slug: str, pending: str, claims: list) -> str:
-    """A hash of the canonical (slug, pending_cv, claims) tuple (#131 decision 13) --
-    opaque to the caller, deterministic, so a second call passing it back can be
-    validated without the server persisting any state between calls. Computed
-    identically on the encode side (building a needs_confirmation/stale_confirmation
-    response) and the decode side (`cv_signoff`'s own `_capture` closure below) -- the
-    two must never drift into two different orderings or encodings of the same tuple,
-    or a legitimate second call could be rejected as stale, or worse, a changed tuple
-    could hash to the same token by coincidence of a differently-ordered encoding."""
+    """A KEYED hash of the canonical (slug, pending_cv, claims) tuple (#131
+    decision 13) -- opaque to the caller, deterministic within this process, so
+    a second call passing it back can be validated without the server
+    persisting any state between calls. Computed identically on the encode side
+    (building a needs_confirmation/stale_confirmation response) and the decode
+    side (`cv_signoff`'s own `_capture` closure below) -- the two must never
+    drift into two different orderings or encodings of the same tuple, or a
+    legitimate second call could be rejected as stale, or worse, a changed
+    tuple could hash to the same token by coincidence of a differently-ordered
+    encoding. Keyed with `_CONFIRM_TOKEN_SECRET` via `hmac` (not a hand-rolled
+    `sha256(key + message)`, which is its own home-made MAC construction and
+    carries prefix/length-extension concerns `hmac` exists to remove) so the
+    token cannot be forged by a caller who can merely compute a sha256 -- see
+    that constant's own comment."""
     canonical = json.dumps([slug, pending, claims], sort_keys=True)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return hmac.new(_CONFIRM_TOKEN_SECRET, canonical.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
-def cv_run(sluice: Sluice, lead: str, backend: str = "auto") -> dict:
+# The exact value set Sluice.backend() accepts (sluice/core/app.py's
+# _BACKEND_ROLES + _BACKEND_ALIASES) -- mirrors cli.py's own _BACKEND_CHOICES,
+# which constrains argparse's `--backend` the identical way for the identical
+# reason. Typing cv_run's `backend` parameter with this (Minor #9, final
+# whole-branch review) puts the same constraint into the MCP tool's
+# client-facing JSON schema (an `enum`), rather than leaving an invalid value
+# to surface only as a runtime BackendError. A THIRD hand-synced copy of the
+# same choice set, not an import of either existing one: cli.py already
+# accepts this cost for the same reason (a bare literal is not worth crossing
+# a module boundary for) -- MUST stay in sync with Sluice._BACKEND_ROLES/
+# _BACKEND_ALIASES and cli.py's _BACKEND_CHOICES by hand if either changes.
+_BackendRole = Literal["auto", "primary", "fallback", "claude-max", "deepseek"]
+
+
+def cv_run(sluice: Sluice, lead: str, backend: _BackendRole = "auto") -> dict:
     """Compose (and render) a CV for ONE shortlisted lead via Sluice.compose_cv --
     the ONLY route past cv/engine.py's fabrication gate (decision 2). Always a REAL
     (non-dry-run) compose: this tool's contract deliberately excludes `dry_run`
@@ -294,7 +345,15 @@ def cv_signoff(sluice: Sluice, lead: str, discard: bool = False,
             return True
         if confirm_token is None:
             return False
-        return confirm_token == _confirm_token(slug, pending, claims)
+        # hmac.compare_digest raises TypeError on a non-ASCII str -- it treats str
+        # inputs as sequences of code points, not bytes, and cannot do that in
+        # constant time for anything outside ASCII. A caller (an MCP client, so
+        # untrusted) can send any string here, and this compares against a hex
+        # digest, which is always ASCII -- a non-ASCII confirm_token can never
+        # match, so it is a plain mismatch, not something worth raising over.
+        if not confirm_token.isascii():
+            return False
+        return hmac.compare_digest(confirm_token, _confirm_token(slug, pending, claims))
 
     result = sluice.sign_off_cv(lead=lead, accept=not discard, confirm=_capture)
 
@@ -346,6 +405,17 @@ def cv_signoff(sluice: Sluice, lead: str, discard: bool = False,
         if claims:
             out["claims"] = claims
             out["content_warning"] = _CV_SIGNOFF_CONTENT_WARNING
+    if result.outcome == "stale":
+        # A genuine store-level CAS race (require_pending's re-read, inside
+        # Vault.sign_off's transform, did not match) -- distinct from the
+        # token-level "stale_confirmation" above, which never reaches the
+        # store at all. Unlike its needs_confirmation/stale_confirmation
+        # siblings this outcome carried no explanation (Minor #8, final
+        # whole-branch review): nothing was written, and a fresh call
+        # re-resolves and re-captures current state, exactly like those two.
+        out["detail"] = ("nothing was written -- the pending CV changed since "
+                         "this call resolved the lead; call cv_signoff again "
+                         "to re-resolve and re-capture the current state")
     return out
 
 
@@ -353,15 +423,17 @@ def create_lead(sluice: Sluice, title: str, company: str, url: str, location: st
                 salary: str = "", job_type: str = "", source: str = "manual") -> dict:
     """Create a new lead note directly -- for a job a human found that no scanner
     ingested (decision 9-12). Reports Sluice.create_lead's six-member outcome
-    vocabulary VERBATIM -- never a bare "created" -- since two leads sharing
-    company+title collide onto ONE note: the SECOND call returns "updated" when
-    the incoming url (or, absent a url match, the location) proves the same
-    posting, or "merged" when neither does (inconclusive evidence -- e.g. a
-    blank-url lead whose location is blank, or is compared against a note whose
-    own location is blank; two non-blank, non-overlapping locations are proven
-    DIFFERENT instead, and create a new note rather than merging). Both "updated"
-    and "merged" are a bare last_seen bump, with the incoming url/salary/location
-    NOT recorded. Raises ValueError naming every unsafe/invalid field.
+    vocabulary VERBATIM -- never a bare "created". Identity is company+title: a
+    SECOND call at that same identity bumps last_seen ONLY, reported as
+    "updated" when the incoming url (or, absent a url match, the location)
+    proves the same posting, or "merged" when neither does (inconclusive
+    evidence -- e.g. a blank-url lead whose location is blank, or is compared
+    against a note whose own location is blank) -- UNLESS the two locations are
+    proven DIFFERENT (two non-blank, non-overlapping locations), in which case
+    this call creates a genuinely NEW note instead ("created" again -- a second
+    real note at the same company+title). Both "updated" and "merged" are a bare
+    last_seen bump, with the incoming url/salary/location NOT recorded. Raises
+    ValueError naming every unsafe/invalid field.
     Does not touch seen.db (decision 11) -- a later genuine scrape of the same
     posting is not silently skipped by this manual entry. Lands at status=new;
     job-sluice triage run promotes it from there -- no `status` parameter on this
@@ -377,15 +449,15 @@ def create_lead(sluice: Sluice, title: str, company: str, url: str, location: st
         out["slug"] = result.slug
     _DETAIL = {
         "updated": "a lead already exists at this company+title -- only last_seen "
-                  "was bumped; the url/salary/location you passed were NOT recorded",
+                   "was bumped; the url/salary/location you passed were NOT recorded",
         "merged": "a lead already exists at this company+title -- only last_seen "
-                 "was bumped; the url/salary/location you passed were NOT recorded",
+                  "was bumped; the url/salary/location you passed were NOT recorded",
         "refused": "the note could not be created (a blank identity, a name "
-                  "collision, or a create race) -- nothing was written",
+                   "collision, or a create race) -- nothing was written",
         "merged_away": "a matching archived note already covers this exact url -- "
-                       "nothing new was written",
+                        "nothing new was written",
         "merged_away_unproven": "an archived note looks like a possible match on "
-                                "weaker evidence -- nothing new was written",
+                                 "weaker evidence -- nothing new was written",
     }
     if result.outcome in _DETAIL:
         out["detail"] = _DETAIL[result.outcome]
@@ -472,7 +544,7 @@ def build_server(config, write: bool = False):
             return apply_record(sluice, lead, ats=ats, url=url)
 
         @mcp_server.tool(name="cv_run")
-        def cv_run_tool(lead: str, backend: str = "auto") -> dict:
+        def cv_run_tool(lead: str, backend: _BackendRole = "auto") -> dict:
             """Compose and render a CV for one shortlisted lead. The composed text
             itself is never returned, only violations/audit_flags/served/
             dossier_failed."""

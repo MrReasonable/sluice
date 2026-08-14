@@ -221,6 +221,13 @@ def test_tools_list_under_write_true_returns_all_nine_with_exact_schemas():
     assert "note_tag" not in by_name["dismiss_lead"].input_schema["properties"]
     assert set(by_name["apply_record"].input_schema["properties"]) == {"lead", "ats", "url"}
     assert set(by_name["cv_run"].input_schema["properties"]) == {"lead", "backend"}
+    # Minor #9 (final whole-branch review): `backend` was an unconstrained str,
+    # so an invalid value surfaced only as a runtime BackendError -- typing it
+    # Literal[...] (mirroring Sluice._BACKEND_ROLES/_BACKEND_ALIASES, the exact
+    # set cli.py's own --backend argparse `choices` already constrains to) puts
+    # the same constraint into the client-facing schema as a genuine `enum`.
+    assert by_name["cv_run"].input_schema["properties"]["backend"]["enum"] == [
+        "auto", "primary", "fallback", "claude-max", "deepseek"]
     cv_signoff_props = set(by_name["cv_signoff"].input_schema["properties"])
     assert cv_signoff_props == {"lead", "discard", "confirm_token"}
     # decision 13: no default makes promote reachable by omission -- discard's own

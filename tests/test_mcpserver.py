@@ -4,6 +4,7 @@ notes are built through `Vault.upsert` so their slugs are REAL store-issued file
 matching `tests/test_leads_expire.py`'s own rationale for doing the same (a hand-written
 slug format could pass here while the shipped command matches nothing).
 """
+import ast
 import dataclasses
 import pathlib
 
@@ -797,6 +798,107 @@ def test_cv_signoff_tool_second_call_threads_require_pending_into_the_write(tmp_
     assert seen["require_pending"] == "CV_deadbeef.pdf (2026-08-14)"
 
 
+def test_cv_signoff_tool_vault_stale_outcome_carries_a_detail(tmp_path, monkeypatch):
+    """Minor #8 (final whole-branch review): the VAULT-level "stale" outcome
+    (require_pending's CAS check failing INSIDE Vault.sign_off's own transform --
+    distinct from the token-level "stale_confirmation" tested above, which never
+    reaches the store at all) used to return a bare {"outcome": "stale", "slug":
+    ...} with no explanation, unlike its needs_confirmation/stale_confirmation
+    siblings. Reproduced deterministically: Vault.sign_off is wrapped to
+    re-stamp pending_cv to a DIFFERENT value immediately before the real call
+    runs -- so the require_pending THIS confirm_token was bound to no longer
+    matches the FRESH content the store re-reads inside its own CAS transform."""
+    v = Vault(str(tmp_path))
+    slug = _seed(tmp_path, status="shortlist")
+    note = v.read_leads()[0]
+    v.hold_for_signoff(note.ref, pending="CV_first.pdf (2026-08-14)",
+                       claims='["claim one"]')
+    app = _app(tmp_path)
+    first = cv_signoff(app, slug)
+
+    real_sign_off = Vault.sign_off
+
+    def _racing_sign_off(self, ref, *, accept=True, require_pending=None):
+        self.hold_for_signoff(ref, pending="CV_second.pdf (2026-08-14)",
+                              claims='["claim two"]')   # simulated concurrent re-compose
+        return real_sign_off(self, ref, accept=accept, require_pending=require_pending)
+
+    monkeypatch.setattr(Vault, "sign_off", _racing_sign_off)
+    second = cv_signoff(app, slug, confirm_token=first["confirm_token"])
+    assert second["outcome"] == "stale"
+    assert second["slug"] == slug
+    assert "detail" in second and second["detail"]
+    text = pathlib.Path(Vault(str(tmp_path)).read_leads()[0].ref).read_text()
+    assert "tailored_cv:" not in text   # nothing promoted
+
+
+def test_confirm_token_is_keyed_and_not_forgeable_from_a_bare_sha256(tmp_path):
+    """Minor #7 (final whole-branch review): _confirm_token used to be an
+    UNKEYED sha256(json.dumps(...)) -- against the adversarial-agent threat
+    model this whole feature is designed for, pending_cv and the flagged claims
+    are both readable via get_lead, so an agent capable of computing a sha256
+    could construct a valid confirm_token WITHOUT ever making the real first
+    cv_signoff call. Proves the fix: replaying the OLD unkeyed formula against
+    the exact (slug, pending, claims) tuple the real needs_confirmation
+    response captured does NOT reproduce the real token, and that forged value
+    is correctly rejected as stale_confirmation (never promoted)."""
+    import hashlib
+    import json
+
+    v = Vault(str(tmp_path))
+    slug = _seed(tmp_path, status="shortlist")
+    note = v.read_leads()[0]
+    v.hold_for_signoff(note.ref, pending="CV_deadbeef.pdf (2026-08-14)",
+                       claims='["unsupported claim"]')
+    app = _app(tmp_path)
+    first = cv_signoff(app, slug)
+    real_token = first["confirm_token"]
+
+    forged = hashlib.sha256(
+        json.dumps([slug, first["pending_cv"], first["claims"]],
+                  sort_keys=True).encode("utf-8")).hexdigest()
+    assert forged != real_token
+
+    second = cv_signoff(app, slug, confirm_token=forged)
+    assert second["outcome"] == "stale_confirmation"
+    text = pathlib.Path(Vault(str(tmp_path)).read_leads()[0].ref).read_text()
+    assert "tailored_cv:" not in text   # the forged token never promoted anything
+
+
+def test_a_non_ascii_confirm_token_is_a_mismatch_not_a_crash(tmp_path):
+    """Round-2 review finding: hmac.compare_digest raises TypeError on a non-ASCII
+    str -- it cannot compare code points outside ASCII in constant time. An MCP
+    client is untrusted and can send any string as confirm_token, so this must
+    report a plain mismatch (stale_confirmation), never propagate a TypeError."""
+    v = Vault(str(tmp_path))
+    slug = _seed(tmp_path, status="shortlist")
+    note = v.read_leads()[0]
+    v.hold_for_signoff(note.ref, pending="CV_deadbeef.pdf (2026-08-14)",
+                       claims='["unsupported claim"]')
+    app = _app(tmp_path)
+    cv_signoff(app, slug)
+
+    second = cv_signoff(app, slug, confirm_token="café" * 16)
+    assert second["outcome"] == "stale_confirmation"
+    text = pathlib.Path(Vault(str(tmp_path)).read_leads()[0].ref).read_text()
+    assert "tailored_cv:" not in text
+
+
+# ── dismiss_lead remedy formatting ──────────────────────────────────────────
+
+def test_dismiss_lead_tool_refused_signoff_hold_remedy_is_valid_json_and_python(tmp_path):
+    """Minor #10 (final whole-branch review): the remedy string used to mix a
+    Python repr()-style single-quoted lead value with a lowercase JSON-literal
+    `true`, which is valid as neither pure Python nor pure JSON and is not
+    directly copy-pasteable. json.dumps(slug) makes the whole example a
+    consistent, double-quoted, correctly-escaped style."""
+    slug = _seed(tmp_path, status="shortlist", pending_cv='"CV_deadbeef.pdf (2026-08-14)"')
+    out = dismiss_lead(_app(tmp_path), slug, "no fit")
+    assert out["outcome"] == "refused_signoff_hold"
+    expected = f'cv_signoff(lead="{slug}", discard=true)'
+    assert expected in out["detail"]
+
+
 # ── create_lead ──────────────────────────────────────────────────────────────
 
 def test_create_lead_tool_reports_created_with_slug(tmp_path):
@@ -863,38 +965,109 @@ def test_create_lead_tool_refused_reports_no_slug(tmp_path):
 
 
 # ── isolation sweep (decision 2) ─────────────────────────────────────────────
+#
+# Widened per important finding #2 of the final whole-branch review: the ORIGINAL
+# sweep walked only `ast.ImportFrom` nodes and checked module names against an
+# allow-list, which missed two real violation shapes -- proven by running the
+# original sweep's exact logic against a synthetic module containing both:
+#
+#   1. `import sluice.core.vault as v` -- an `ast.Import` node, entirely
+#      invisible to a sweep that only walks `ast.ImportFrom`.
+#   2. A direct store-WRITE call, e.g. `sluice.store().update_fields(...)` --
+#      reachable with NO new import at all, since mcpserver.py already calls
+#      `sluice.store()` eight times for reads. An import-only sweep, however
+#      widened, can never catch this on its own.
+#
+# `_isolation_violations` is the ONE checker exercised three ways below: against
+# the REAL mcpserver.py source (must report nothing), and against two synthetic
+# snippets built to contain exactly one of the two gaps each (must report
+# exactly that one violation) -- proving the checker actually fires on what it
+# claims to catch, not merely that it passes vacuously against clean code.
 
-def test_mcpserver_imports_from_sluice_only_within_an_explicit_allow_list():
-    """The isolation sweep: sluice/mcpserver.py may import from `sluice.` ONLY the
-    names on this allow-list -- proving, structurally, that no write tool can reach
-    a lower-level write path (cv.engine, vault, apply.record) directly instead of
-    through a Sluice method. Asserts on SCOPE (>=N imported NAMES examined across
-    every `sluice.`-prefixed import statement, not just >=1 import statement), so
-    a broken matcher cannot pass vacuously -- mirrors the existing mcp-import
-    sweep's shape from #105. Counting individual `alias` nodes rather than
-    `ImportFrom` statements matters here: this module's final shape has only 3
-    such statements (`sluice.core.app`, `sluice.core.leads`, `sluice.core.status`)
-    but 7 names imported across them (Sluice; UNTRUSTED_SCRAPED_CONTENT_WARNING,
-    UNTRUSTED_DERIVED_CONTENT_WARNING, out_of_scope_verdict, slug_matches;
-    CANONICAL, TRIAGE_OWNED, normalize) -- counting statements alone would make
-    this assertion far too easy to satisfy vacuously with a near-empty file."""
-    import ast
-    import inspect
+_ISOLATION_ALLOWED_MODULES = frozenset({
+    "sluice.core.app", "sluice.core.leads", "sluice.core.status",
+})
 
-    ALLOWED = {
-        "sluice.core.app", "sluice.core.leads", "sluice.core.status",
-    }
-    tree = ast.parse(inspect.getsource(mcpserver_mod))
-    seen = 0
+# Every WRITE method on the Store protocol (sluice/core/protocols.py), read
+# directly off that Protocol rather than hand-guessed -- its read-only members
+# (read_leads, read_experience_entries, read_baseline, read_criteria; the
+# optional preflight hook) are deliberately excluded, since a read reaching
+# this deep is exactly what the module-allow-list above already permits via
+# Sluice's own store() access.
+_STORE_WRITE_METHODS = frozenset({
+    "upsert", "update_fields", "merge_cluster", "append_body_section",
+    "set_tailored_cv", "hold_for_signoff", "sign_off", "write_document",
+    "normalize_all_statuses",
+})
+
+
+def _isolation_violations(tree) -> list:
+    """Every isolation-boundary violation in `tree`: a `sluice.`-prefixed
+    import (via `import` OR `from ... import`) outside
+    `_ISOLATION_ALLOWED_MODULES`, or a call to a method named in
+    `_STORE_WRITE_METHODS` anywhere in the module."""
+    bad = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module and \
                 node.module.startswith("sluice."):
-            assert node.module in ALLOWED, (
-                f"sluice/mcpserver.py imported {node.module!r}, outside the "
-                f"allow-list {sorted(ALLOWED)} -- every write must route through a "
-                f"Sluice method, never a lower-level module directly")
-            seen += len(node.names)
+            if node.module not in _ISOLATION_ALLOWED_MODULES:
+                bad.append(f"from {node.module} import ...")
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith("sluice.") and \
+                        alias.name not in _ISOLATION_ALLOWED_MODULES:
+                    bad.append(f"import {alias.name}")
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                and node.func.attr in _STORE_WRITE_METHODS:
+            bad.append(f"call to .{node.func.attr}(...)")
+    return bad
+
+
+def test_mcpserver_imports_from_sluice_only_within_an_explicit_allow_list():
+    """The isolation sweep: sluice/mcpserver.py may import from `sluice.` ONLY the
+    modules in `_ISOLATION_ALLOWED_MODULES` (via either import form) and must
+    contain no direct call to a Store write method -- proving, structurally, that
+    no write tool can reach a lower-level write path (cv.engine, vault,
+    apply.record) directly instead of through a Sluice method. Asserts on SCOPE
+    too (>=N imported NAMES examined across every `sluice.`-prefixed
+    `ImportFrom` statement, not just >=1 import statement), so a broken matcher
+    cannot pass vacuously -- mirrors the existing mcp-import sweep's shape from
+    #105. Counting individual `alias` nodes rather than `ImportFrom` statements
+    matters here: this module's final shape has only 3 such statements
+    (`sluice.core.app`, `sluice.core.leads`, `sluice.core.status`) but 7 names
+    imported across them (Sluice; UNTRUSTED_SCRAPED_CONTENT_WARNING,
+    UNTRUSTED_DERIVED_CONTENT_WARNING, out_of_scope_verdict, slug_matches;
+    CANONICAL, TRIAGE_OWNED, normalize) -- counting statements alone would make
+    this assertion far too easy to satisfy vacuously with a near-empty file."""
+    import inspect
+
+    tree = ast.parse(inspect.getsource(mcpserver_mod))
+    bad = _isolation_violations(tree)
+    assert bad == [], (
+        f"sluice/mcpserver.py isolation-sweep violation(s): {bad!r} -- every "
+        f"write must route through a Sluice method, never a lower-level module "
+        f"import or a direct store-write call")
+    seen = sum(len(node.names) for node in ast.walk(tree)
+              if isinstance(node, ast.ImportFrom) and node.module
+              and node.module.startswith("sluice."))
     assert seen >= 5, "the sweep examined suspiciously few sluice. imports -- broken matcher?"
+
+
+def test_isolation_sweep_catches_a_bare_sluice_dotted_import():
+    """Mutation-proof #1 (important finding #2): `import sluice.core.vault as v`
+    is an `ast.Import` node, invisible to a sweep that only walks
+    `ast.ImportFrom` -- the ORIGINAL shape of this sweep."""
+    src = "import sluice.core.vault as v\n\ndef f():\n    return v.Vault('.')\n"
+    assert _isolation_violations(ast.parse(src)) == ["import sluice.core.vault"]
+
+
+def test_isolation_sweep_catches_a_direct_store_write_call_with_no_new_import():
+    """Mutation-proof #2 (important finding #2): mcpserver.py ALREADY
+    legitimately calls `sluice.store()` eight times for reads, so a write
+    reachable through it needs no new import at all -- an import-only sweep can
+    never catch this regardless of how wide its allow-list is."""
+    src = "def f(sluice):\n    return sluice.store().update_fields(None, {})\n"
+    assert _isolation_violations(ast.parse(src)) == ["call to .update_fields(...)"]
 
 
 # ── write-flag registration ──────────────────────────────────────────────────
