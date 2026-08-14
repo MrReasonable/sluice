@@ -24,7 +24,7 @@ def test_record_flips_shortlist_to_applied_and_stamps():
     text = pathlib.Path(note.ref).read_text()
     assert "status: applied" in text
     assert re.search(r"applied_date: \d{4}-\d\d-\d\d", text)
-    assert "ats: greenhouse" in text
+    assert 'ats: "greenhouse"' in text          # CHANGED: ats is now quoted, mirroring url (#131)
     assert "applied_cv: CV_deadbeef.pdf" in text
     assert 'applied_url: "https://x/apply"' in text
     assert "BODY" in text  # body preserved
@@ -87,3 +87,43 @@ def test_record_returns_conflict_on_vault_conflict(monkeypatch):
     out = rec.record(v, note, ApplyConfig(), ats="greenhouse", url="https://x/apply")
     assert out == {"ok": False, "reason": "conflict"}
     assert "status: applied" not in pathlib.Path(note.ref).read_text()  # untouched
+
+
+def test_record_drops_a_structural_ats_but_still_applies():
+    """#131 decision 8: mirrors #111's url guard exactly. resolved_ats defaults to
+    listing_host(the lead's own scraped url) even with no --ats flag, so this is
+    already reachable from scraped data today, not only a human-typed --ats."""
+    v = _lead(_SHORTLIST)
+    note = v.read_leads({"shortlist"})[0]
+    out = rec.record(v, note, ApplyConfig(), ats='greenhouse"; status: applied',
+                     url="https://x/apply")
+    assert out["ok"] is True
+    assert "ats" not in out["fields"]
+    assert out["ats_dropped"] is True
+    text = pathlib.Path(note.ref).read_text()
+    assert "status: applied" in text
+    assert 'greenhouse"; status: applied' not in text
+
+
+def test_record_does_not_flag_ats_dropped_when_ats_is_safe():
+    v = _lead(_SHORTLIST)
+    note = v.read_leads({"shortlist"})[0]
+    out = rec.record(v, note, ApplyConfig(), ats="greenhouse")
+    assert out["ok"] is True
+    assert "ats_dropped" not in out
+    assert out["fields"]["ats"] == "greenhouse"
+
+
+def test_record_require_status_refuses_when_the_note_left_shortlist_between_read_and_write():
+    """The CAS proof (#131 decision 8): can_apply's own check reads a SNAPSHOT
+    (note.status, resolved before this call) -- byte-identical to no guard at all
+    against a concurrent writer. require_status re-reads FRESH inside the CAS
+    transform. Simulated here by writing "applied" to disk directly, between when
+    `note` was resolved (still says "shortlist") and when record() writes."""
+    v = _lead(_SHORTLIST)
+    note = v.read_leads({"shortlist"})[0]   # STALE snapshot: still thinks it's shortlist
+    v.update_fields(note.ref, {"status": "applied"})   # a "concurrent" writer wins first
+    out = rec.record(v, note, ApplyConfig(), ats="greenhouse")
+    assert out == {"ok": False, "reason": "raced"}
+    text = pathlib.Path(note.ref).read_text()
+    assert "applied_date" not in text   # the stale write never landed
