@@ -351,17 +351,18 @@ def create_lead(sluice: Sluice, title: str, company: str, url: str, location: st
     """Create a new lead note directly -- for a job a human found that no scanner
     ingested (decision 9-12). Reports Sluice.create_lead's six-member outcome
     vocabulary VERBATIM -- never a bare "created" -- since two leads sharing
-    company+title collide onto ONE note: the SECOND call returns "updated", a bare
-    last_seen bump, with the incoming url/salary/location NOT recorded. Raises
-    ValueError naming every unsafe/invalid field. Does not touch seen.db (decision
-    11) -- a later genuine scrape of the same posting is not silently skipped by
-    this manual entry. Lands at status=new; job-sluice triage run promotes it from
-    there -- no `status` parameter on this tool (Out of scope). `title`/`company`/
-    `location`/`salary`/`job_type`/`source` are this tool's own parameter names,
-    matching Lead's field names -- Sluice.create_lead maps title -> frontmatter
-    `role` and job_type -> `role_type` internally, so a caller reading the note back
-    via get_lead is not surprised its fm says `role` where this tool took `title`.
-    Write tool."""
+    company+title collide onto ONE note: the SECOND call returns either "updated"
+    (same url, same posting proven) or "merged" (different url, inconclusive
+    evidence). Both are a bare last_seen bump, with the incoming url/salary/
+    location NOT recorded. Raises ValueError naming every unsafe/invalid field.
+    Does not touch seen.db (decision 11) -- a later genuine scrape of the same
+    posting is not silently skipped by this manual entry. Lands at status=new;
+    job-sluice triage run promotes it from there -- no `status` parameter on this
+    tool (Out of scope). `title`/`company`/`location`/`salary`/`job_type`/`source`
+    are this tool's own parameter names, matching Lead's field names -- Sluice.
+    create_lead maps title -> frontmatter `role` and job_type -> `role_type`
+    internally, so a caller reading the note back via get_lead is not surprised its
+    fm says `role` where this tool took `title`. Write tool."""
     result = sluice.create_lead(title=title, company=company, url=url, location=location,
                                 salary=salary, job_type=job_type, source=source)
     out = {"outcome": result.outcome}
