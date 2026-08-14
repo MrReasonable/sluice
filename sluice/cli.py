@@ -411,6 +411,33 @@ def cmd_leads_dedupe(args, config) -> int:
     return 0
 
 
+def cmd_leads_dismiss(args, config) -> int:
+    from sluice.core.app import Sluice
+
+    result = Sluice(config).dismiss_lead(lead=args.lead, reason=args.reason)
+    if result.outcome == "not_found":
+        print(f"leads dismiss: no lead matching '{args.lead}'", file=sys.stderr)
+        return 1
+    if result.outcome == "ambiguous":
+        print(f"leads dismiss: ambiguous: {len(result.candidates)} notes claim the slug "
+              f"'{args.lead}' ({' | '.join(result.candidates)}) -- rename or merge them "
+              f"first (job-sluice leads dedupe)", file=sys.stderr)
+        return 1
+    if result.outcome == "refused_signoff_hold":
+        print(f'leads dismiss: {result.slug}: refused (sign-off hold) -- resolve it '
+              f'first: job-sluice cv signoff --lead "{result.slug}" --discard',
+              file=sys.stderr)
+        return 1
+    if result.outcome == "refused_status":
+        print(f"leads dismiss: {result.slug}: refused (status={result.status})",
+              file=sys.stderr)
+        return 1
+    # dismissed | unchanged both print and exit 0 -- unchanged is a legitimate
+    # idempotent same-day-repeat outcome (decision 5), not a failure.
+    print(f"leads dismiss: {result.slug}: {result.outcome}", file=sys.stderr)
+    return 1 if result.outcome == "conflict" else 0
+
+
 def cmd_leads_expire(args, config) -> int:
     from sluice.core.app import Sluice
 
@@ -1287,6 +1314,12 @@ def _build_parser() -> argparse.ArgumentParser:
                          '--expire "Example Ltd - Example Role"')
     ex.add_argument("--json", action="store_true", help="machine-readable report")
     ex.set_defaults(func=cmd_leads_expire)
+
+    ds = leads.add_parser("dismiss", help="dismiss one lead by exact slug, with a reason")
+    ds.add_argument("--lead", required=True, metavar="SLUG",
+                    help='exact store-issued slug, e.g. --lead "Example Ltd - Example Role"')
+    ds.add_argument("--reason", required=True, help="why this lead is being dismissed")
+    ds.set_defaults(func=cmd_leads_dismiss)
 
     rc = leads.add_parser(
         "reconcile",
