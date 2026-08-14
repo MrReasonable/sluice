@@ -346,6 +346,44 @@ def cv_signoff(sluice: Sluice, lead: str, discard: bool = False,
     return out
 
 
+def create_lead(sluice: Sluice, title: str, company: str, url: str, location: str = "",
+                salary: str = "", job_type: str = "", source: str = "manual") -> dict:
+    """Create a new lead note directly -- for a job a human found that no scanner
+    ingested (decision 9-12). Reports Sluice.create_lead's six-member outcome
+    vocabulary VERBATIM -- never a bare "created" -- since two leads sharing
+    company+title collide onto ONE note: the SECOND call returns "updated", a bare
+    last_seen bump, with the incoming url/salary/location NOT recorded. Raises
+    ValueError naming every unsafe/invalid field. Does not touch seen.db (decision
+    11) -- a later genuine scrape of the same posting is not silently skipped by
+    this manual entry. Lands at status=new; job-sluice triage run promotes it from
+    there -- no `status` parameter on this tool (Out of scope). `title`/`company`/
+    `location`/`salary`/`job_type`/`source` are this tool's own parameter names,
+    matching Lead's field names -- Sluice.create_lead maps title -> frontmatter
+    `role` and job_type -> `role_type` internally, so a caller reading the note back
+    via get_lead is not surprised its fm says `role` where this tool took `title`.
+    Write tool."""
+    result = sluice.create_lead(title=title, company=company, url=url, location=location,
+                                salary=salary, job_type=job_type, source=source)
+    out = {"outcome": result.outcome}
+    if result.slug:
+        out["slug"] = result.slug
+    _DETAIL = {
+        "updated": "a lead already exists at this company+title -- only last_seen "
+                  "was bumped; the url/salary/location you passed were NOT recorded",
+        "merged": "a lead already exists at this company+title -- only last_seen "
+                 "was bumped; the url/salary/location you passed were NOT recorded",
+        "refused": "the note could not be created (a blank identity, a name "
+                  "collision, or a create race) -- nothing was written",
+        "merged_away": "a matching archived note already covers this exact url -- "
+                       "nothing new was written",
+        "merged_away_unproven": "an archived note looks like a possible match on "
+                                "weaker evidence -- nothing new was written",
+    }
+    if result.outcome in _DETAIL:
+        out["detail"] = _DETAIL[result.outcome]
+    return out
+
+
 def build_server(config):
     """Build one `Sluice(config)`, register the four tools against it, and return
     the constructed (NOT yet running) MCPServer. `mcp` is imported HERE and nowhere
