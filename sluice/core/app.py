@@ -29,7 +29,7 @@ an LLM backend just by existing. `sluice triage run --no-llm` still touches no b
 `sluice ingest list-sources` still touches no vault.
 """
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
 from sluice.core import plugins
@@ -106,6 +106,16 @@ class SourceHealth:
     # persisted in the health store; nothing ever read it back.
     broken_reason: "str | None" = None
     broken_runs: int = 0
+
+
+@dataclass
+class SignOffResult:
+    """Replaces sign_off_cv's former bare (slug, outcome) 2-tuple / None return
+    (#131 decision 15). candidates is populated only on outcome == 'ambiguous'."""
+    slug: str = ""
+    outcome: str = ""   # promoted | discarded | collision | stale | nothing | aborted
+                        # | not_found | ambiguous | conflict
+    candidates: list = field(default_factory=list)
 
 
 class StoreHasNoLayout(RuntimeError):
@@ -1082,58 +1092,60 @@ class Sluice:
             return [CvResult(notes[0].ref, "error",
                              dossier_failed=getattr(e, "dossier_failed", False))]
 
-    def sign_off_cv(self, *, lead, accept=True, confirm=None):
-        """Resolve a shortlisted lead by slug ONCE and resolve its #60 sign-off hold via the
-        store: accept -> promote pending_cv to the send-ready `tailored_cv` pointer;
+    def sign_off_cv(self, *, lead, accept=True, confirm=None, require_pending=None):
+        """Resolve a shortlisted lead by slug ONCE and resolve its #60 sign-off hold via
+        the store: accept -> promote pending_cv to the send-ready `tailored_cv` pointer;
         `accept=False` (discard) -> clear the markers, freeing a fresh compose.
 
-        `confirm`, when given, is called with (slug, pending_cv, claims) AFTER the lead is
-        resolved and BEFORE the store write -- so the CLI can show the flagged claims and
-        prompt while this method itself does no I/O; a falsey return aborts. Resolving once
-        and handing `note.ref` straight to the store means a separate peek and execute can
-        never diverge onto different substring matches (a real risk when a slug matches two
-        leads and the vault changes between reads).
+        `confirm`, when given, is called with (slug, pending_cv, claims) AFTER the lead
+        is resolved and BEFORE the store write -- so a caller can show the flagged
+        claims and decide while this method itself does no I/O; a falsey return
+        aborts. Resolving once and handing `note.ref` straight to the store means a
+        separate peek and execute can never diverge onto different substring matches.
 
-        Returns (slug, outcome) where outcome is the store's OWN verdict
-        (promoted|discarded|collision|nothing), 'aborted' (confirm declined), or 'conflict'
-        (a sustained write race, #16, never an unhandled traceback) -- or None if no lead
-        matched. One further outcome comes from THIS method rather than the store:
-        'ambiguous: <ref> | <ref>', naming the candidates in `select_one`'s exact shape, when
-        the fragment resolved to two or more notes. Its first element is then the string the
-        USER typed, not a note's slug -- there is no single note to take one from, which is
-        also how `expire` reports the same refusal."""
+        `require_pending` (#131 decision 13), when explicitly given, is passed straight
+        through to `store.sign_off` (mirroring `require_status`/`require_blank`'s
+        existing shape: caller-supplied value, compared against the FRESH read at
+        write time). When `confirm` is given and `require_pending` was NOT explicitly
+        overridden, this method derives it automatically from the SAME `pending_cv`
+        value the confirm callback just saw -- the snapshot at resolution time -- so
+        `Vault.sign_off`'s CAS transform can catch a race between resolution (plus any
+        I/O `confirm` performs -- an interactive human prompt, or an MCP client's own
+        round trip) and the write. This is the first sign-off-hold refusal in this
+        codebase to actually be CAS-fresh in every confirm-mediated path, not merely
+        the discard path.
+
+        Returns a SignOffResult. outcome is one of: not_found (no lead matched),
+        ambiguous (candidates carries the matching slugs), nothing (no pending_cv to
+        resolve), aborted (confirm declined), promoted | discarded | collision | stale
+        (the store's own verdict, threaded through verbatim), or conflict (a sustained
+        write race, #16, never an unhandled traceback)."""
         import json
 
         from sluice.core.leads import slug_matches
         from sluice.core.protocols import VaultConflict
         store = self.store()
         # Resolved over EVERY triage-owned status, not `shortlist` alone and not
-        # `_EXPIRABLE`. A held lead can legitimately leave shortlist -- `sluice triage run
-        # --status shortlist` re-judges it and may write `research`/`needs_review`/
+        # `_EXPIRABLE`. A held lead can legitimately leave shortlist -- `sluice triage
+        # run --status shortlist` re-judges it and may write `research`/`needs_review`/
         # `dismiss` -- and a narrower lookup then reports "no match" for a hold that
-        # demonstrably exists, leaving the pending CV unresolvable except by hand-editing
-        # frontmatter. `dismiss` is IN this set precisely because it is the one triage
-        # verdict that `_EXPIRABLE` omits (being expire's own destination), so reusing
-        # that constant here would have left the single most likely demotion stranded --
-        # the exact case the comment above names (#9).
+        # demonstrably exists. `dismiss` is IN this set precisely because it is the one
+        # triage verdict `_EXPIRABLE` omits (being expire's own destination) (#9).
         notes = [n for n in store.read_leads(frozenset(_status.TRIAGE_OWNED))
                  if slug_matches(n, lead)]
         if not notes:
-            return None
+            return SignOffResult(outcome="not_found")
         if len(notes) > 1:
-            # Same refusal as compose_cv's, for the same reason and one step further along:
-            # signing off the WRONG twin promotes a CV no human reviewed onto a lead they
-            # did not name, which is exactly the #60 latch's whole job. It does not weaken
-            # that latch -- an unambiguous fragment still promotes or discards as before,
-            # and this arm writes nothing, so the hold it refuses stays resolvable the
-            # moment the user names one note. Reported as a reason string carrying the
-            # candidate REFS (`apply/select.py:select_one`'s shape) rather than the bare
-            # word: the slugs may be equal, and the refs are what a human renames or merges.
-            return lead, "ambiguous: " + " | ".join(str(n.ref) for n in notes)
+            # decision 15: candidates is always a sorted slug list, matching get_lead's
+            # shape everywhere -- never the old " | "-joined ref string, which an MCP
+            # client would have to parse back into data, incorrectly, if a ref itself
+            # ever contained that substring.
+            return SignOffResult(outcome="ambiguous",
+                                 candidates=sorted(n.slug for n in notes))
         note = notes[0]
         pending = note.fm.get("pending_cv") or ""
         if not pending:
-            return note.slug, "nothing"
+            return SignOffResult(slug=note.slug, outcome="nothing")
         if confirm is not None:
             raw = note.fm.get("needs_signoff")
             claims = []
@@ -1144,12 +1156,27 @@ class Sluice:
                 except (ValueError, TypeError):
                     claims = [str(raw)]
             if not confirm(note.slug, pending, claims):
-                return note.slug, "aborted"
+                return SignOffResult(slug=note.slug, outcome="aborted")
+        effective_require_pending = require_pending
+        if effective_require_pending is None and confirm is not None:
+            effective_require_pending = pending
+        # require_pending is passed ONLY when set, mirroring update_fields's own
+        # require_status/require_blank call convention elsewhere in this class (e.g.
+        # the leads-expire call site) -- never as an explicit `require_pending=None`.
+        # A real Store's own default is already None, so this changes nothing for it;
+        # it is what keeps a pre-#131 test double or Store implementation that has not
+        # yet grown a `require_pending` parameter (this method's ordinary
+        # confirm=None callers, like the CLI's --discard/--yes flows, never need it)
+        # working unmodified.
+        kwargs = {"accept": accept}
+        if effective_require_pending is not None:
+            kwargs["require_pending"] = effective_require_pending
         try:
-            return note.slug, store.sign_off(note.ref, accept=accept)
+            outcome = store.sign_off(note.ref, **kwargs)
+            return SignOffResult(slug=note.slug, outcome=outcome)
         except VaultConflict as e:
             _log.warning("cv signoff for %s lost the write race: %s", note.ref, e)
-            return note.slug, "conflict"
+            return SignOffResult(slug=note.slug, outcome="conflict")
 
     def prep(self, *, lead=None, all_shortlist=False, limit=None, dry_run=False,
              include_stale=False):

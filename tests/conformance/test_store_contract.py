@@ -667,6 +667,31 @@ def test_sign_off_reports_each_outcome_and_never_clobbers(store_name, tmp_path, 
     assert "pending_cv" not in fm and "needs_signoff" not in fm
 
 
+def test_sign_off_require_pending_refuses_a_stale_confirmation_at_the_cas_layer(
+        store_name, tmp_path, monkeypatch):
+    """#131 decision 13: tested DIRECTLY at the Vault.sign_off layer, with NO
+    confirm-token layer anywhere in this call path -- the outer confirm-token
+    comparison (cv_signoff's own two-call flow) already catches a re-hold interleaved
+    BETWEEN two MCP calls; only a direct call here exercises require_pending's OWN
+    CAS-level guard, which would otherwise go completely unwitnessed by the described
+    test suite."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    from sluice.core.leads import Lead
+    lead = Lead(source="s", search="q", title="Example Role", company="Example Ltd",
+               url="https://example.invalid/1")
+    assert store.upsert(lead) == "created"
+    note = store.read_leads()[0]
+    store.hold_for_signoff(note.ref, pending="CV_deadbeef.pdf (2026-08-14)",
+                           claims='["unsupported claim"]')
+
+    outcome = store.sign_off(note.ref, accept=True,
+                             require_pending="CV_deadbeef.pdf (STALE-DOES-NOT-MATCH)")
+    assert outcome == "stale"
+    fresh = store.read_leads()[0]
+    assert fresh.fm.get("pending_cv", "") == "CV_deadbeef.pdf (2026-08-14)"   # untouched
+    assert "tailored_cv" not in fresh.fm
+
+
 # ── modify-write conflict (#16) ───────────────────────────────────────────────
 def test_a_sustained_write_conflict_refuses_rather_than_clobbers(store_name, tmp_path, monkeypatch):
     """The conflict OUTCOME is a contract property (§2a of the #16 design): a modify-write

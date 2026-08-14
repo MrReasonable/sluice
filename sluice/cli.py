@@ -583,39 +583,37 @@ def cmd_cv_signoff(args, config) -> int:
             return input(f"sign off {slug}? [y/N] ").strip().lower() in ("y", "yes")
 
     result = Sluice(config).sign_off_cv(lead=args.lead, accept=not args.discard, confirm=confirm)
-    if result is None:
+    if result.outcome == "not_found":
         print(f"cv signoff: no shortlist lead matching '{args.lead}'", file=sys.stderr)
         return 1
-    slug, outcome = result
-    # Split on the colon rather than comparing whole strings: the outcome carries the
-    # candidate refs after it (`ambiguous: <ref> | <ref>`), and a test that had to spell
-    # those out would pin a vault layout instead of the refusal. Non-zero because nothing
-    # was signed off -- the #60 hold is still held, and an exit 0 here would tell a script
-    # the CV is send-ready.
-    if outcome.split(":", 1)[0] == "ambiguous":
-        print(f"cv signoff: {outcome} -- retype a longer fragment than '{args.lead}'",
-              file=sys.stderr)
+    if result.outcome == "ambiguous":
+        # #131: candidates is now a slug list (decision 15), not the old joined-ref
+        # string -- a deliberate, stated wording change from the pre-#131 CLI output.
+        # sign_off_cv resolves by SUBSTRING (slug_matches), unlike dismiss_lead's exact
+        # match, so "retype a longer fragment" genuinely helps when candidates are
+        # DISTINCT slugs -- but when every candidate is the SAME slug (a collision from
+        # the recursive scan, #1), no fragment can ever distinguish them; only renaming
+        # or merging can (round-2 review finding).
+        remedy = ("rename or merge them first (job-sluice leads dedupe)"
+                 if len(set(result.candidates)) == 1
+                 else f"retype a longer fragment than '{args.lead}'")
+        print(f"cv signoff: ambiguous: {len(result.candidates)} notes match "
+              f"({' | '.join(result.candidates)}) -- {remedy}", file=sys.stderr)
         return 1
-    msg = {"nothing": "has nothing pending", "aborted": "aborted"}.get(outcome, outcome)
-    print(f"cv signoff: {slug} {msg}", file=sys.stderr)
-    # cmd_leads_expire's `_FAILED` rule, applied here: an outcome where the write did not
-    # happen exits non-zero, because the user named one lead and asked for one write.
-    # `conflict` is a sustained write race (#16) -- nothing was signed off and the #60 hold
-    # is still held. `nothing` is `no-match`'s shape one step further in: the named lead
-    # exists but carries no pending_cv, so exiting 0 would tell a script the CV is
-    # send-ready when the note may hold no tailored_cv at all.
+    msg = {"nothing": "has nothing pending", "aborted": "aborted",
+          "stale": "stale: confirmation no longer matches (something changed)"}.get(
+        result.outcome, result.outcome)
+    print(f"cv signoff: {result.slug} {msg}", file=sys.stderr)
+    # cmd_leads_expire's `_FAILED` rule, applied here: an outcome where the write did
+    # not happen exits non-zero, because the user named one lead and asked for one
+    # write. `conflict` is a sustained write race (#16). `nothing` is `no-match`'s
+    # shape one step further in. `stale` (#131) joins them: require_pending's fresh
+    # comparison failed, so nothing was signed off and the #60 hold is still held.
     # Deliberately NOT members, each for a reason the word alone does not give:
-    #   `collision` WROTE. Vault.sign_off's transform clears pending_cv + needs_signoff and
-    #     returns changed text, so _cas_write commits; what it kept is the tailored_cv that
-    #     appeared meanwhile. The hold is resolved and the lead IS send-ready -- the
-    #     postcondition a caller gates on holds, which is precisely what `nothing` lacks.
-    #   `aborted` wrote nothing, but the user declined the prompt themselves. The rule
-    #     targets a SILENT no-op; this one the user asked for and was shown.
-    # `ambiguous` is the same class and returns 1 above, separate only because its message
-    # names the candidate refs. As with expire's set, a new outcome is not free: add one to
-    # Store.sign_off without classifying it here and it exits 0 having signed nothing off.
-    _FAILED = {"nothing", "conflict"}
-    return 1 if outcome in _FAILED else 0
+    #   `collision` WROTE -- the hold is resolved and the lead IS send-ready.
+    #   `aborted` wrote nothing, but the user declined the prompt themselves.
+    _FAILED = {"nothing", "conflict", "stale"}
+    return 1 if result.outcome in _FAILED else 0
 
 
 # ── apply ────────────────────────────────────────────────────────────────────

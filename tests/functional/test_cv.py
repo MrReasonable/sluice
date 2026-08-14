@@ -232,6 +232,28 @@ def test_cv_signoff_conflict_returns_1(cli, monkeypatch):
     assert "pending_cv:" in text and "tailored_cv:" not in text   # hold intact, nothing sent
 
 
+def test_cv_signoff_stale_returns_1(cli, monkeypatch):
+    """`stale` exits 1: the same reasoning as `conflict` -- nothing was signed off,
+    the #60 hold is still held. Unlike `conflict` this is not reachable through the
+    ORDINARY CLI flow today (the CLI never sets require_pending), but cmd_cv_signoff's
+    rc-mapping/message code must still handle it correctly -- forced here the same
+    way test_cv_signoff_conflict_returns_1 forces `conflict`, since every other new
+    outcome in this design gets an explicit CLI-level test named."""
+    from sluice.core.vault import Vault
+
+    h, run = cli(backend=ScriptedBackend())
+    _seed_pending_lead(h.paths["vault"], "Example Foundry", "Staff Engineer")
+
+    def _always_stale(self, ref, *, accept=True, require_pending=None):
+        return "stale"
+
+    monkeypatch.setattr(Vault, "sign_off", _always_stale)
+    rc, _out, err = run(["cv", "signoff", "--lead", "example-foundry", "--yes"])
+    assert rc == 1 and "stale" in err
+    text = _lead_text(h.paths["vault"], "Example Foundry", "Staff Engineer")
+    assert "pending_cv:" in text and "tailored_cv:" not in text   # hold intact, nothing sent
+
+
 def test_cv_signoff_no_match_returns_1(cli):
     h, run = cli(backend=ScriptedBackend())
     rc, _out, err = run(["cv", "signoff", "--lead", "no-such-lead", "--yes"])
@@ -272,6 +294,31 @@ def test_cv_signoff_ambiguous_lead_refuses_and_returns_1(cli):
     assert "tailored_cv:" in promoted and "pending_cv:" not in promoted
     held = _lead_text(h.paths["vault"], "Example Foundry", "Senior Engineer")
     assert "pending_cv:" in held and "tailored_cv:" not in held
+
+
+def test_cv_signoff_ambiguous_collision_names_the_real_remedy(cli):
+    """Round-2 review finding: a genuine slug COLLISION (two notes at the SAME
+    basename, reachable only via the recursive scan, #1) is a DIFFERENT case from
+    the substring-ambiguity above -- sign_off_cv resolves by substring
+    (slug_matches), so "retype a longer fragment" only helps when candidates are
+    distinct slugs. When every candidate is the identical slug, no fragment can
+    ever disambiguate them; only renaming or merging can."""
+    h, run = cli(backend=ScriptedBackend())
+    leads = os.path.join(h.paths["vault"], "Job Applications", "Job Leads")
+    fm = ('---\ncompany: "Example Foundry"\nrole: "Staff Engineer"\nstatus: shortlist\n'
+         'url: "https://example.invalid/1"\n---\n# body\n')
+    for sub in ("Active", "Archive"):
+        d = os.path.join(leads, sub)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "Example Foundry - Staff Engineer.md"), "w",
+                  encoding="utf-8") as f:
+            f.write(fm)
+
+    rc, _out, err = run(["cv", "signoff", "--lead", "example-foundry", "--yes"])
+    assert rc == 1
+    assert "ambiguous" in err
+    assert "rename or merge them first" in err
+    assert "retype a longer fragment" not in err   # would be actively wrong here
 
 
 def test_cv_signoff_shows_raw_claim_when_needs_signoff_is_not_json(cli, monkeypatch):

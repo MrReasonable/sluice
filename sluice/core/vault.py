@@ -1316,19 +1316,27 @@ class Vault:
         _cas_write(ref, transform)
         return stamped[0]
 
-    def sign_off(self, ref, *, accept: bool = True) -> str:
+    def sign_off(self, ref, *, accept: bool = True, require_pending: str | None = None) -> str:
         """Resolve a #60 needs-signoff hold and report the OUTCOME derived from FRESH
-        content: 'promoted' | 'discarded' | 'collision' | 'nothing' (the way upsert
-        returns a verdict, so the caller never reconstructs it from a stale snapshot).
-        With pending_cv present: clear pending_cv + needs_signoff, then -- accept=False
-        -> 'discarded'; accept and tailored_cv ABSENT -> set tailored_cv = pending_cv,
-        'promoted'; accept but tailored_cv already PRESENT -> leave it (a real CV
-        appeared since -- a direct set_tailored_cv), 'collision'. No pending_cv ->
-        unchanged, 'nothing'. The tailored_cv check lives inside the transform (atomic
-        under CAS, mirroring set_tailored_cv(only_if_absent=...)), so the pointer is
-        never clobbered. The returned string is DISTINCT from _cas_write's
+        content: 'promoted' | 'discarded' | 'collision' | 'nothing' | 'stale' (the way
+        upsert returns a verdict, so the caller never reconstructs it from a stale
+        snapshot). With pending_cv present: clear pending_cv + needs_signoff, then --
+        accept=False -> 'discarded'; accept and tailored_cv ABSENT -> set tailored_cv =
+        pending_cv, 'promoted'; accept but tailored_cv already PRESENT -> leave it (a
+        real CV appeared since -- a direct set_tailored_cv), 'collision'. No pending_cv
+        -> unchanged, 'nothing'. The tailored_cv check lives inside the transform
+        (atomic under CAS, mirroring set_tailored_cv(only_if_absent=...)), so the
+        pointer is never clobbered. The returned string is DISTINCT from _cas_write's
         write-happened bool: the collision case WRITES (clears markers) yet is not
-        'promoted'. May raise VaultConflict (#16)."""
+        'promoted'. May raise VaultConflict (#16).
+
+        `require_pending` (#131 decision 13): when given, compared against the FRESH
+        pending_cv value INSIDE this transform -- a mismatch returns 'stale' and
+        writes nothing, joining the outcome vocabulary above. A note with NO
+        pending_cv still reports 'nothing', which is decided before this comparison
+        is reached. This is what makes a caller's confirm-token mechanism CAS-fresh: the
+        comparison happens against bytes read at WRITE time, on every CAS retry, never
+        against a snapshot the caller captured earlier."""
         outcome = ["nothing"]  # reset per transform run so a CAS retry reports the final branch
         def transform(text: str) -> str:
             outcome[0] = "nothing"
@@ -1338,6 +1346,9 @@ class Vault:
             pending = _fm_value(inner, "pending_cv")
             if not pending:
                 return text  # nothing to resolve -> _cas_write no-op
+            if require_pending is not None and pending != require_pending:
+                outcome[0] = "stale"
+                return text  # a mismatch is also a _cas_write no-op -- nothing written
             inner = _del_fm(inner, "pending_cv")
             inner = _del_fm(inner, "needs_signoff")
             if not accept:
