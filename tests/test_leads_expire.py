@@ -358,6 +358,8 @@ def test_a_held_lead_can_be_discharged_from_any_triage_status(tmp_path, status):
     slug = _seed(tmp_path, status=status, pending_cv="CV-2026.pdf",
                  needs_signoff='["a claim"]')
     got = _app(tmp_path).sign_off_cv(lead=slug, accept=False)
-    assert got == (slug, "discarded"), f"a held lead at status={status} was unreachable"
+    # #131: sign_off_cv now returns a SignOffResult, not a bare (slug, outcome) tuple.
+    assert (got.slug, got.outcome) == (slug, "discarded"), \
+        f"a held lead at status={status} was unreachable"
     fm = Vault(str(tmp_path)).read_leads()[0].fm
     assert "pending_cv" not in fm and "needs_signoff" not in fm
