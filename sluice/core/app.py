@@ -1302,8 +1302,27 @@ class Sluice:
         if wrote:
             return DismissResult(slug=note.slug, status="dismiss", outcome="dismissed",
                                  note_appended=note_appended)
-        fresh = next((n for n in store.read_leads(frozenset(_status.CANONICAL))
-                     if n.ref == note.ref), None)
+        # UNFILTERED: this read only DIAGNOSES a refusal, and a status filter would
+        # drop a note whose status drifted to a non-canonical value (`normalize`
+        # passes an unknown value through unchanged), making a genuine refused_status
+        # report as the benign `unchanged` -- the same mislabelling the ref-then-slug
+        # fallback below exists to prevent, arriving by a different route.
+        fresh_notes = store.read_leads()
+        fresh = next((n for n in fresh_notes if n.ref == note.ref), None)
+        if fresh is None:
+            # `ref` is a path, and it can have moved (e.g. a concurrent `leads
+            # reconcile --apply` relocated the note to its status-implied
+            # folder) in the window between this write attempt and this
+            # re-read -- without a fallback, that makes `fresh` None and the
+            # code below fall back to the STALE pre-write snapshot's status,
+            # so a genuine refused_status could incorrectly report as the
+            # more benign `unchanged` (Minor #11, final whole-branch review).
+            # ONE fallback re-resolution by slug (the basename, unaffected by
+            # a folder move) before giving up and using the stale snapshot --
+            # reusing the SAME `fresh_notes` read rather than a second store
+            # scan, so the two lookups can never disagree about WHEN they saw
+            # the vault.
+            fresh = next((n for n in fresh_notes if n.slug == note.slug), None)
         fresh_status = fresh.status if fresh is not None else note.status
         if fresh_status not in _DISMISSABLE_FROM:
             return DismissResult(slug=note.slug, status=fresh_status,
@@ -1342,9 +1361,18 @@ class Sluice:
         url/salary/location NOT recorded. Slug resolution is a post-write re-read
         matched on the store's own identity key (fm["company"] == company and
         fm["role"] == title), never on url (neither outcome means the incoming url
-        was written). "refused"/"merged_away"/"merged_away_unproven" are the only
-        outcomes that wrote nothing at all, so those are the only ones with no slug
-        to resolve.
+        was written). That key alone is not always enough to name ONE note: a
+        proven-different location can seat a second, separate note at the same
+        company+title (see "advance" in Vault._reconcile), so the re-read can find
+        more than one match. When it does, the match is narrowed further by
+        whether each candidate's OWN location compares non-DIFFERENT to the
+        incoming one (core.leads._compare_locations) -- the same evidence
+        _reconcile itself used to decide whether to advance -- and slug stays ""
+        if that still does not resolve to exactly one, matching the refuse-on-
+        ambiguity discipline `index_by_slug`/`select_one`/`sign_off_cv`/`expire`
+        already share: never an unverified `notes[0]` pick. "refused"/
+        "merged_away"/"merged_away_unproven" are the only outcomes that wrote
+        nothing at all, so those are the only ones with no slug to resolve.
 
         `search` is never persisted anywhere (verified by grep across sluice/: no
         reader of Lead.search exists outside _row_to_lead's own construction) -- this
@@ -1352,7 +1380,7 @@ class Sluice:
         nowhere. Calls store.upsert() directly, never VaultSink, so seen.db is
         untouched (decision 11) -- a later genuine scrape of the same posting is not
         silently skipped by this manual entry."""
-        from sluice.core.leads import Lead, is_http_url
+        from sluice.core.leads import DIFFERENT, Lead, _compare_locations, is_http_url
         from sluice.core.vault import frontmatter_safe
         fields = {"title": title, "company": company, "location": location,
                  "salary": salary, "job_type": job_type, "source": source}
@@ -1382,7 +1410,25 @@ class Sluice:
             return CreateLeadResult(outcome=outcome)
         notes = [n for n in store.read_leads()
                 if n.fm.get("company") == company and n.fm.get("role") == title]
-        slug = notes[0].slug if notes else ""
+        slug = ""
+        if len(notes) == 1:
+            slug = notes[0].slug
+        elif len(notes) > 1:
+            # Never guess an identity (final whole-branch review, Important #1):
+            # read_leads is unfiltered and not ordered by recency, so notes[0]
+            # can be a note THIS call never touched -- reproduced directly: a
+            # third create_lead call at a third distinct location returned the
+            # SECOND note's slug, not the third (freshly created) one. Narrow to
+            # the notes whose location does not compare DIFFERENT from the
+            # incoming one -- the same evidence _reconcile itself used to decide
+            # whether to advance to a location-suffixed candidate name -- and
+            # pick only if that narrows to EXACTLY one; otherwise leave slug
+            # blank, matching `index_by_slug`/`select_one`/`sign_off_cv`/
+            # `expire`'s shared refuse-on-ambiguity discipline.
+            candidates = [n for n in notes if _compare_locations(
+                n.fm.get("location", ""), location) != DIFFERENT]
+            if len(candidates) == 1:
+                slug = candidates[0].slug
         return CreateLeadResult(outcome=outcome, slug=slug)
 
     def prep(self, *, lead=None, all_shortlist=False, limit=None, dry_run=False,

@@ -111,3 +111,34 @@ def test_refused_returns_no_slug(tmp_path):
                                         url="https://example.invalid/1")
     assert result.outcome == "refused"
     assert result.slug == ""
+
+
+def test_a_fourth_call_at_a_fourth_distinct_location_resolves_its_own_slug_never_a_stale_one(tmp_path):
+    """Important #1 of the final whole-branch review: company+title alone can
+    resolve to MULTIPLE notes -- reachable via a run of proven-different
+    locations, each advancing past the last per Vault._reconcile's "advance"
+    verdict (a disjoint, non-remote location pair is proof of a DIFFERENT
+    posting, so each call below creates a genuinely separate note rather than
+    merging). Before the fix, `notes[0]` over an unfiltered, not-recency-ordered
+    read_leads() could return a note THIS call never touched -- reproduced
+    directly: a 3rd create_lead call returned the 2nd note's slug, not the 3rd
+    (freshly created) one. The fix narrows to the note whose OWN location does
+    not compare DIFFERENT from the incoming one (sluice.core.leads.
+    _compare_locations) before ever falling back to a blank slug."""
+    app = _app(tmp_path)
+    first = app.create_lead(title="Example Role", company="Example Ltd",
+                            url="https://example.invalid/1", location="London")
+    second = app.create_lead(title="Example Role", company="Example Ltd",
+                             url="https://example.invalid/2", location="New York")
+    third = app.create_lead(title="Example Role", company="Example Ltd",
+                            url="https://example.invalid/3", location="Berlin")
+    for r in (first, second, third):
+        assert r.outcome == "created"
+    fourth = app.create_lead(title="Example Role", company="Example Ltd",
+                             url="https://example.invalid/4", location="Paris")
+    assert fourth.outcome == "created"
+    # The bug's exact failure shape: a stale/wrong slug (any of the three
+    # PRIOR notes) or an empty one where disambiguation was actually possible.
+    assert fourth.slug not in ("", first.slug, second.slug, third.slug)
+    note = next(n for n in Vault(str(tmp_path)).read_leads() if n.slug == fourth.slug)
+    assert note.fm.get("location") == "Paris"
