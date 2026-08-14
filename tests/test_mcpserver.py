@@ -157,6 +157,33 @@ def test_get_lead_found_returns_full_frontmatter_and_body(tmp_path):
     assert "body" in out
 
 
+def test_get_lead_found_carries_an_untrusted_content_warning(tmp_path):
+    # `fm`/`body` are scraped from a third-party job posting -- an MCP client's calling
+    # agent must be told, structurally, not just via the tool's own docstring, that this
+    # is data to read and never an instruction to follow. Matches the exact wording
+    # `sluice/triage/resolve.py` already uses for the identical class of content handed
+    # to the triage LLM judge, so the two don't drift into two different phrasings of
+    # the same warning.
+    slug = _seed(tmp_path, status="shortlist")
+    out = get_lead(_app(tmp_path), slug)
+    assert out["outcome"] == "found"
+    assert "content_warning" in out
+    assert "untrusted" in out["content_warning"].lower()
+    assert "never" in out["content_warning"].lower() and "instruction" in out["content_warning"].lower()
+
+
+def test_get_lead_not_found_and_ambiguous_carry_no_content_warning(tmp_path):
+    # There is no lead content in either outcome, so nothing to warn about -- the field
+    # is scoped to the ONE outcome that actually returns fm/body.
+    assert "content_warning" not in get_lead(_app(tmp_path), "nothing here")
+    _seed(tmp_path, company="Example Northgate", title="Analyst", url="https://example.invalid/1")
+    _seed(tmp_path, company="Example Northgate", title="Analyst Two",
+          url="https://example.invalid/2")
+    out = get_lead(_app(tmp_path), "Example Northgate")
+    assert out["outcome"] == "ambiguous"
+    assert "content_warning" not in out
+
+
 def test_get_lead_ambiguous_names_every_candidate_and_picks_none(tmp_path):
     slug1 = _seed(tmp_path, company="Example Northgate", title="Analyst",
                   url="https://example.invalid/1")
