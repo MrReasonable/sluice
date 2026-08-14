@@ -2,6 +2,8 @@
 codes, printed output -- mirroring tests/test_leads_expire_cli.py's own rationale for
 why an app-level test alone cannot certify the command (a mutant inside
 cmd_leads_dismiss could keep every app-level test green)."""
+import pathlib
+
 from sluice.cli import main
 from sluice.core.leads import Lead
 from sluice.core.vault import Vault
@@ -42,7 +44,20 @@ def test_refused_signoff_hold_names_the_remedy_and_exits_1(tmp_path, monkeypatch
 
 
 def test_same_day_repeat_is_unchanged_and_exits_zero(tmp_path, monkeypatch, capsys):
+    """Deferred #6 (final whole-branch review): `rc == 0` alone cannot
+    distinguish "genuinely took the unchanged branch" from "silently no-oped
+    some other way that also happens to return 0". Mirrors
+    tests/test_leads_dismiss.py's own test_same_day_repeat_... (the app-layer
+    version of this exact test) down to the CLI layer: assert `unchanged`
+    actually appears in the SECOND call's own captured stderr (cmd_leads_dismiss
+    prints result.outcome verbatim), and assert the second call's --reason text
+    never landed on disk -- proving the tag-idempotency `unchanged` is supposed
+    to reflect, not just a passing exit code."""
     slug = _seed(tmp_path)
     assert _run(tmp_path, monkeypatch, "--lead", slug, "--reason", "first") == 0
+    capsys.readouterr()   # discard the first call's own output
     assert _run(tmp_path, monkeypatch, "--lead", slug, "--reason", "second") == 0
     assert Vault(str(tmp_path)).read_leads()[0].status == "dismiss"
+    assert "unchanged" in capsys.readouterr().err
+    text = pathlib.Path(Vault(str(tmp_path)).read_leads()[0].ref).read_text()
+    assert "second" not in text
