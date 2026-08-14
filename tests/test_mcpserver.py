@@ -11,7 +11,7 @@ from sluice.core.app import Sluice
 from sluice.core.config import Config
 from sluice.core.leads import UNTRUSTED_SCRAPED_CONTENT_WARNING, Lead
 from sluice.core.vault import Vault
-from sluice.mcpserver import doctor, get_lead, health, list_leads
+from sluice.mcpserver import apply_record, dismiss_lead, doctor, get_lead, health, list_leads
 
 
 def _lead(company="Example Ltd", title="Example Role", url="https://example.invalid/1"):
@@ -386,3 +386,98 @@ def test_cmd_mcp_serve_returns_0_on_the_success_path(monkeypatch):
     monkeypatch.setattr(mcpserver_mod, "serve", lambda config: None)
     args = _build_parser().parse_args(["mcp", "serve"])
     assert cmd_mcp_serve(args, Config()) == 0
+
+
+# ── dismiss_lead ─────────────────────────────────────────────────────────────
+
+def test_dismiss_lead_tool_not_found(tmp_path):
+    out = dismiss_lead(_app(tmp_path), "nothing here", "no fit")
+    assert out == {"outcome": "not_found"}
+
+
+def test_dismiss_lead_tool_out_of_scope_for_an_applied_lead(tmp_path):
+    slug = _seed(tmp_path, status="applied")
+    out = dismiss_lead(_app(tmp_path), slug, "no fit")
+    assert out["outcome"] == "out_of_scope"
+    assert out["slug"] == slug
+    assert out["status"] == "applied"
+
+
+def test_dismiss_lead_tool_ambiguous_names_slug_candidates(tmp_path):
+    """A genuine slug COLLISION -- two notes at the SAME basename in different
+    subfolders -- reachable only via the recursive scan (#1); a flat directory
+    cannot hold two files at one name, and upsert's own identity logic (company+
+    title) cannot construct this on its own. Fixture technique verified directly
+    against tests/test_apply_select.py's own `_vault_subfolders` helper (its
+    `test_select_all_still_sends_an_unambiguous_lead`), the established pattern
+    for this exact class of fixture elsewhere in the suite."""
+    import pathlib
+    leads = pathlib.Path(tmp_path) / "Job Applications" / "Job Leads"
+    fm = ('company: "Example Northgate"\nrole: "Analyst"\nstatus: shortlist\n'
+         'url: "https://example.invalid/1"')
+    for sub in ("Active", "Archive"):
+        d = leads / sub
+        d.mkdir(parents=True)
+        (d / "Example Northgate - Analyst.md").write_text("---\n" + fm + "\n---\n\nBODY\n")
+    slug = "Example Northgate - Analyst"
+    out = dismiss_lead(_app(tmp_path), slug, "no fit")
+    assert out["outcome"] == "ambiguous"
+    assert out["candidates"] == [slug, slug]
+
+
+def test_dismiss_lead_tool_dismissed_carries_note_appended(tmp_path):
+    slug = _seed(tmp_path, status="shortlist")
+    out = dismiss_lead(_app(tmp_path), slug, "no fit")
+    assert out == {"outcome": "dismissed", "slug": slug, "status": "dismiss",
+                   "note_appended": True}
+
+
+def test_dismiss_lead_tool_refused_signoff_hold_names_the_remedy(tmp_path):
+    slug = _seed(tmp_path, status="shortlist", pending_cv='"CV_deadbeef.pdf (2026-08-14)"')
+    out = dismiss_lead(_app(tmp_path), slug, "no fit")
+    assert out["outcome"] == "refused_signoff_hold"
+    assert "cv_signoff" in out["detail"] and "discard=true" in out["detail"]
+
+
+# ── apply_record ─────────────────────────────────────────────────────────────
+
+def test_apply_record_tool_not_found(tmp_path):
+    out = apply_record(_app(tmp_path), "nothing here")
+    assert out == {"outcome": "not_found"}
+
+
+def test_apply_record_tool_out_of_scope_for_a_new_lead(tmp_path):
+    slug = _seed(tmp_path, status="new")
+    out = apply_record(_app(tmp_path), slug)
+    assert out["outcome"] == "out_of_scope"
+    assert out["status"] == "new"
+
+
+def test_apply_record_tool_ambiguous_names_slug_candidates(tmp_path):
+    """Round-2 review finding: this branch (a hand-inlined, must-stay-in-sync-by-
+    hand copy of apply.select.resolve, per its own comment) had zero coverage --
+    deleting it left the suite green while the fallthrough leaked two absolute
+    local file paths into `outcome` instead of the {"outcome", "candidates"} shape
+    every sibling tool uses. Same genuine slug-COLLISION fixture technique as
+    test_dismiss_lead_tool_ambiguous_names_slug_candidates above."""
+    import pathlib
+    leads = pathlib.Path(tmp_path) / "Job Applications" / "Job Leads"
+    fm = ('company: "Example Northgate"\nrole: "Analyst"\nstatus: shortlist\n'
+         'url: "https://example.invalid/1"')
+    for sub in ("Active", "Archive"):
+        d = leads / sub
+        d.mkdir(parents=True)
+        (d / "Example Northgate - Analyst.md").write_text("---\n" + fm + "\n---\n\nBODY\n")
+    slug = "Example Northgate - Analyst"
+    out = apply_record(_app(tmp_path), slug)
+    assert out == {"outcome": "ambiguous", "candidates": [slug, slug]}
+
+
+def test_apply_record_tool_recorded_with_quoted_ats_and_dropped_flags(tmp_path):
+    slug = _seed(tmp_path, status="shortlist")
+    out = apply_record(_app(tmp_path), slug, ats='greenhouse"; status: applied',
+                       url="https://x/apply")
+    assert out["outcome"] == "recorded"
+    assert "ats" not in out["fields"]
+    assert out["ats_dropped"] is True
+    assert out["fields"]["applied_url"] == "https://x/apply"

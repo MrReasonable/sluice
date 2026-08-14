@@ -11,8 +11,12 @@ enforced and proven.
 import dataclasses
 
 from sluice.core.app import Sluice
-from sluice.core.leads import UNTRUSTED_SCRAPED_CONTENT_WARNING, slug_matches
-from sluice.core.status import CANONICAL, normalize
+from sluice.core.leads import (
+    UNTRUSTED_SCRAPED_CONTENT_WARNING,
+    out_of_scope_verdict,
+    slug_matches,
+)
+from sluice.core.status import CANONICAL, TRIAGE_OWNED, normalize
 
 # `list_leads`'s company/role/url and `get_lead`'s fm/body are all scraped verbatim
 # from a third-party job posting -- the calling agent must be told, structurally and
@@ -119,6 +123,70 @@ def doctor(sluice: Sluice, offline: bool = True) -> dict:
 def health(sluice: Sluice) -> dict:
     """Per-source scrape baseline + retire state, sorted by source id."""
     return {"sources": [dataclasses.asdict(s) for s in sluice.health_report()]}
+
+
+def dismiss_lead(sluice: Sluice, lead: str, reason: str, note_tag: str | None = None) -> dict:
+    """Dismiss `lead` (exact slug match, decision 4) with `reason` recorded on the
+    note. Write tool -- only registered under --write. See Sluice.dismiss_lead's own
+    docstring for the CAS guards and idempotency shape. `note_tag` is a test-only
+    override never exposed on the registered client-facing tool (Task 11).
+
+    `Sluice.dismiss_lead` resolves only over TRIAGE_OWNED-status notes, so a `lead`
+    that names a real note OUTSIDE that scope (e.g. already `applied`) comes back
+    as its own `not_found` -- indistinguishable, from this tool's perspective, from
+    a `lead` that names nothing at all. `out_of_scope_verdict` re-reads every
+    status to tell the two apart, matching `apply_record`'s identical fallback
+    below."""
+    result = sluice.dismiss_lead(lead=lead, reason=reason, note_tag=note_tag)
+    if result.outcome == "ambiguous":
+        return {"outcome": "ambiguous", "candidates": result.candidates}
+    if result.outcome == "not_found":
+        oos = out_of_scope_verdict(sluice.store().read_leads(), lead,
+                                   matcher=lambda n, w: n.slug == w,
+                                   accepted=frozenset(TRIAGE_OWNED))
+        return oos or {"outcome": "not_found"}
+    out = {"outcome": result.outcome, "slug": result.slug}
+    if result.status:
+        out["status"] = result.status
+    if result.outcome in ("dismissed", "unchanged"):
+        out["note_appended"] = result.note_appended
+    if result.outcome == "refused_signoff_hold":
+        # Sluice.dismiss_lead's own DismissResult carries no message field for this
+        # outcome (see its docstring's require_blank comment) -- the remedy text is
+        # this tool's own responsibility to construct, not something to relay.
+        out["detail"] = (f"resolve the sign-off hold first: "
+                         f"cv_signoff(lead={result.slug!r}, discard=true)")
+    return out
+
+
+def apply_record(sluice: Sluice, lead: str, ats: str | None = None, url: str | None = None) -> dict:
+    """Record a sent application: shortlist -> applied, via Sluice.record()
+    (apply/record.py's never-clobber transition, hardened in #131 to guard ats and
+    re-check status CAS-fresh). Write tool.
+
+    `Sluice.record` resolves only over shortlist-status notes (`apply/select.py`'s
+    substring match, same as `get_lead`/`cv`/`apply --lead`) -- a `lead` naming a
+    real note in any other status comes back as the engine's own `no_match`, the
+    same ambiguity `dismiss_lead` resolves via `out_of_scope_verdict` above."""
+    out = sluice.record(lead=lead, ats=ats, url=url)
+    if out.get("reason") == "no_match":
+        oos = out_of_scope_verdict(sluice.store().read_leads(), lead,
+                                   matcher=slug_matches, accepted=frozenset({"shortlist"}))
+        return oos or {"outcome": "not_found"}
+    if isinstance(out.get("reason"), str) and out["reason"].startswith("ambiguous:"):
+        # record_one's own "ambiguous: <ref> | <ref>" reason carries REFS
+        # (select_one's presentation shape), not slugs -- re-resolve by slug for the
+        # shared vocabulary (decision 15) rather than parse a CLI-facing string.
+        notes = [n for n in sluice.store().read_leads({"shortlist"}) if slug_matches(n, lead)]
+        return {"outcome": "ambiguous", "candidates": sorted(n.slug for n in notes)}
+    if not out["ok"]:
+        return {"outcome": out["reason"]}   # conflict | raced | (defensively) a bare status
+    result = {"outcome": "recorded", "fields": out["fields"]}
+    if out.get("url_dropped"):
+        result["url_dropped"] = True
+    if out.get("ats_dropped"):
+        result["ats_dropped"] = True
+    return result
 
 
 def build_server(config):
