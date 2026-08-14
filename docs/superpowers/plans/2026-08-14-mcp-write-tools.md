@@ -827,14 +827,6 @@ def test_dismissed_from_each_triage_owned_status(tmp_path):
         assert result.outcome == ("unchanged" if status == "dismiss" else "dismissed"), status
 
 
-def test_refused_status_on_an_application_owned_lead(tmp_path):
-    """Static case: dismiss_lead's OWN resolution scopes to TRIAGE_OWNED, so an
-    applied lead is not_found at the resolution layer -- refused_status is reachable
-    only via a genuine CAS race (see the race test below), not a static call."""
-    # covered structurally by test_not_found's shape; the CAS race test below is
-    # what actually exercises the refused_status OUTCOME string.
-
-
 def test_refused_signoff_hold_names_the_remedy_lead(tmp_path):
     slug = _seed(tmp_path, status="shortlist", pending_cv='"CV_deadbeef.pdf (2026-08-14)"')
     result = _app(tmp_path).dismiss_lead(lead=slug, reason="no fit")
