@@ -305,9 +305,10 @@ Blocks for the life of the process once started; there is no `--dry-run`.
   that no scanner ingested. Lands at `status: new`; `job-sluice triage run`
   promotes it from there. Reports `upsert`'s own outcome vocabulary verbatim: two
   leads sharing company+title (even with different urls) collide onto ONE note, so
-  a second call at the same identity returns `updated` (same url, same posting
-  proven) or `merged` (weaker or no evidence either way) -- either way only
-  `last_seen` is bumped, the new url/salary/location NOT recorded.
+  a second call at the same identity returns `updated` when the incoming url (or,
+  absent a url match, the location) proves the same posting, or `merged` when
+  neither does (inconclusive evidence) -- either way only `last_seen` is bumped,
+  the new url/salary/location NOT recorded.
 
 `--write` is a per-registration trust decision about one MCP client: every existing
 read-only registration is unaffected, and a read-only server's `tools/list`
