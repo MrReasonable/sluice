@@ -665,12 +665,22 @@ def cmd_apply_record(args, config) -> int:
     if out["ok"]:
         f = out["fields"]
         print(f"apply-record: {args.lead} -> applied "
-              f"(ats={f['ats']} cv={f['applied_cv']})", file=sys.stderr)
+              f"(ats={f.get('ats', '(dropped)')} cv={f['applied_cv']})", file=sys.stderr)
         if out.get("url_dropped"):
             print("  applied_url dropped: --url was unsafe for frontmatter "
                   "and was not recorded", file=sys.stderr)
+        if out.get("ats_dropped"):
+            print("  ats dropped: the ATS name was unsafe for frontmatter "
+                  "and was not recorded", file=sys.stderr)
         return 0
-    print(f"apply-record: {args.lead} refused (status={out['reason']})", file=sys.stderr)
+    if out["reason"] == "raced":
+        # #131: distinct from the generic "refused (status=...)" wording below --
+        # "raced" is not a status, and printing "status=raced" would misleadingly
+        # suggest the lead's OWN status field literally reads "raced".
+        print(f"apply-record: {args.lead} lost the write race (left shortlist "
+              f"mid-write) -- retry", file=sys.stderr)
+    else:
+        print(f"apply-record: {args.lead} refused (status={out['reason']})", file=sys.stderr)
     return 1
 
 
