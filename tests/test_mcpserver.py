@@ -781,6 +781,40 @@ def test_create_lead_tool_reports_the_collision_detail_on_updated(tmp_path):
     assert "NOT recorded" in out["detail"]
 
 
+def test_create_lead_tool_reports_the_collision_detail_on_merged(tmp_path):
+    # When company+title collide but URLs differ, Vault._reconcile returns "merged"
+    # (inconclusive evidence it's the same posting). Same semantics as "updated":
+    # only last_seen bumped, incoming data NOT recorded.
+    app = _app(tmp_path)
+    create_lead(app, title="Example Role", company="Example Ltd",
+               url="https://example.invalid/1")
+    out = create_lead(app, title="Example Role", company="Example Ltd",
+                      url="https://example.invalid/DIFFERENT")
+    assert out["outcome"] == "merged"
+    assert "NOT recorded" in out["detail"]
+
+
+def test_create_lead_tool_reports_merged_away_detail(tmp_path):
+    """Round-2 review finding: merged_away had zero coverage at the MCP tool layer
+    -- does _DETAIL actually attach, does 'slug' stay absent from the response."""
+    v = Vault(str(tmp_path))
+    survivor = Lead(source="s", search="q", title="Survivor Role", company="Example Foundry",
+                    url="https://example.invalid/survivor")
+    loser = Lead(source="s", search="q", title="Loser Role", company="Example Foundry",
+                url="https://example.invalid/loser")
+    assert v.upsert(survivor).outcome == "created"
+    assert v.upsert(loser).outcome == "created"
+    notes = {n.fm.get("url"): n for n in v.read_leads()}
+    v.merge_cluster(notes[survivor.url].ref, [notes[loser.url].ref],
+                    alt_urls=[loser.url], first_seen="2026-01-01", last_seen="2026-01-01")
+
+    out = create_lead(_app(tmp_path), title="Loser Role", company="Example Foundry",
+                      url="https://example.invalid/loser")
+    assert out["outcome"] == "merged_away"
+    assert "slug" not in out
+    assert "nothing new was written" in out["detail"]
+
+
 def test_create_lead_tool_raises_valueerror_for_an_unsafe_field(tmp_path):
     with pytest.raises(ValueError, match="company"):
         create_lead(_app(tmp_path), title="Example Role", company="Bad\nCompany",
