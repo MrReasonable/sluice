@@ -695,3 +695,66 @@ def test_cv_signoff_tool_resolves_a_held_lead_in_dismiss_status(tmp_path):
                        claims='["unsupported claim"]')
     out = cv_signoff(_app(tmp_path), slug, discard=True)
     assert out["outcome"] == "discarded"
+
+
+def test_cv_signoff_tool_not_found(tmp_path):
+    out = cv_signoff(_app(tmp_path), "nothing here")
+    assert out == {"outcome": "not_found"}
+
+
+def test_cv_signoff_tool_ambiguous_names_slug_candidates(tmp_path):
+    """A genuine slug COLLISION -- two notes at the SAME basename in different
+    subfolders -- same fixture technique as test_dismiss_lead_tool_ambiguous_
+    names_slug_candidates above (itself verified against tests/test_apply_select.py's
+    own `_vault_subfolders` helper). sign_off_cv's own ambiguous check
+    (`len(notes) > 1`) runs BEFORE any pending_cv read or confirm callback (sluice/
+    core/app.py's sign_off_cv, right after the TRIAGE_OWNED-scoped slug_matches scan),
+    so neither note needs a sign-off hold for this to trigger -- a bare call with no
+    discard/confirm_token is enough."""
+    import pathlib
+    leads = pathlib.Path(tmp_path) / "Job Applications" / "Job Leads"
+    fm = ('company: "Example Northgate"\nrole: "Analyst"\nstatus: shortlist\n'
+         'url: "https://example.invalid/1"')
+    for sub in ("Active", "Archive"):
+        d = leads / sub
+        d.mkdir(parents=True)
+        (d / "Example Northgate - Analyst.md").write_text("---\n" + fm + "\n---\n\nBODY\n")
+    slug = "Example Northgate - Analyst"
+    out = cv_signoff(_app(tmp_path), slug)
+    assert out["outcome"] == "ambiguous"
+    assert out["candidates"] == [slug, slug]
+
+
+def test_cv_signoff_tool_second_call_threads_require_pending_into_the_write(tmp_path, monkeypatch):
+    """Proves the CAS-freshness half of the confirm-token mechanism actually fires,
+    not just that a promoting second call happens to succeed (which
+    test_cv_signoff_tool_token_promotes_on_a_second_call already covers, but that test
+    alone would keep passing even if a future refactor silently dropped
+    sign_off_cv's `effective_require_pending = pending` auto-derivation -- nothing
+    interleaves in that test to expose the gap). A spy on the REAL Vault.sign_off
+    (not a fake return) records the `require_pending` kwarg it was actually called
+    with on the promoting write, and asserts it equals the pending value this exact
+    call captured -- proving the second call's own require_pending is genuinely
+    threaded through, not merely that no exception was raised.
+
+    `Vault.sign_off`'s real signature (sluice/core/vault.py) is
+    `sign_off(self, ref, *, accept=True, require_pending=None)`, matched exactly
+    below rather than guessed."""
+    v = Vault(str(tmp_path))
+    slug = _seed(tmp_path, status="shortlist")
+    note = v.read_leads()[0]
+    v.hold_for_signoff(note.ref, pending="CV_deadbeef.pdf (2026-08-14)",
+                       claims='["unsupported claim"]')
+    app = _app(tmp_path)
+    first = cv_signoff(app, slug)
+
+    seen = {}
+    real_sign_off = Vault.sign_off
+    def _spy(self, ref, *, accept=True, require_pending=None):
+        seen["require_pending"] = require_pending
+        return real_sign_off(self, ref, accept=accept, require_pending=require_pending)
+    monkeypatch.setattr(Vault, "sign_off", _spy)
+
+    second = cv_signoff(app, slug, confirm_token=first["confirm_token"])
+    assert second["outcome"] == "promoted"
+    assert seen["require_pending"] == "CV_deadbeef.pdf (2026-08-14)"
