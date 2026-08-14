@@ -149,6 +149,15 @@ class DismissResult:
     note_appended: bool = False
 
 
+@dataclass
+class CreateLeadResult:
+    """#131 decision 10: outcome is upsert's own six-member vocabulary, passed
+    through VERBATIM -- never a bare "created". slug is "" when nothing was
+    written (refused | merged_away | merged_away_unproven)."""
+    outcome: str
+    slug: str = ""
+
+
 class StoreHasNoLayout(RuntimeError):
     """The configured store has no folder layout, so `leads reconcile` has nothing to do.
 
@@ -1304,6 +1313,77 @@ class Sluice:
                                  outcome="refused_signoff_hold", note_appended=False)
         return DismissResult(slug=note.slug, status=fresh_status, outcome="unchanged",
                              note_appended=False)
+
+    def create_lead(self, *, title: str, company: str, url: str, location: str = "",
+                    salary: str = "", job_type: str = "", source: str = "manual"
+                    ) -> CreateLeadResult:
+        """Create a lead note directly -- for a job a human found that no scanner
+        ingested (#131 decision 9-12). Raises ValueError naming every unsafe/invalid
+        field (matching list_leads's "name the full bad set, never silently return
+        empty" convention): dropping company/title changes which note gets created or
+        whether upsert's blank-identity gate refuses outright, so this raises rather
+        than abstains -- create_lead does its OWN validation up front and never
+        relies on _render_new's abstain-and-blank fallback (decision 7's separate,
+        narrower defense-in-depth for the pre-existing scraper path).
+
+        `url` is REQUIRED (no default, at both this facade and the tool signature)
+        and must be http(s) -- matching apply/select.eligibility's own rule -- so a
+        hand-created lead is apply-eligible by construction. `location` stays
+        optional at both layers: an unknown/blank location is real, valid data, not
+        an error condition.
+
+        Reports upsert's own six-member outcome vocabulary VERBATIM, never a bare
+        "created": two leads sharing company+title (even with different urls -- url
+        is not part of vault identity) collide onto ONE note, and the second call
+        returns "updated" or "merged" (Vault._reconcile's choice between the two
+        turns on whether a matching url or location PROVES the same posting, or
+        the evidence is merely inconclusive -- create_lead never re-derives that,
+        it only forwards it) -- either way a bare last_seen bump, with the incoming
+        url/salary/location NOT recorded. Slug resolution is a post-write re-read
+        matched on the store's own identity key (fm["company"] == company and
+        fm["role"] == title), never on url (neither outcome means the incoming url
+        was written). "refused"/"merged_away"/"merged_away_unproven" are the only
+        outcomes that wrote nothing at all, so those are the only ones with no slug
+        to resolve.
+
+        `search` is never persisted anywhere (verified by grep across sluice/: no
+        reader of Lead.search exists outside _row_to_lead's own construction) -- this
+        method passes search="" rather than expose a parameter for a field that goes
+        nowhere. Calls store.upsert() directly, never VaultSink, so seen.db is
+        untouched (decision 11) -- a later genuine scrape of the same posting is not
+        silently skipped by this manual entry."""
+        from sluice.core.leads import Lead, is_http_url
+        from sluice.core.vault import frontmatter_safe
+        fields = {"title": title, "company": company, "location": location,
+                 "salary": salary, "job_type": job_type, "source": source}
+        # `value.strip()`, not bare `value`: frontmatter_safe's OWN falsy-or-
+        # all-whitespace rule already treats " " the same as "" ("nothing worth
+        # writing", its own docstring), so a bare-truthy guard here would flag a
+        # whitespace-only title/company as UNSAFE and raise -- when the intent is
+        # to let it fall through to upsert's own blank-identity gate instead
+        # (test_refused_returns_no_slug pins the "refused", not raised, outcome).
+        bad = sorted(name for name, value in fields.items()
+                    if value.strip() and frontmatter_safe(value) is None)
+        if not url or not is_http_url(url) or frontmatter_safe(url) is None:
+            bad = sorted(set(bad) | {"url"})
+        if bad:
+            raise ValueError(
+                f"unsafe or invalid field(s): {bad} (must be printable, contain no "
+                f"\" or \\, and url must be present and http(s))")
+        store = self.store()
+        outcome = store.upsert(Lead(source=source, search="", title=title,
+                                    company=company, url=url, location=location,
+                                    salary=salary, job_type=job_type))
+        # "merged" belongs beside "created"/"updated" here, NOT beside "refused": a
+        # merge bumps last_seen on a REAL, findable note (Vault.upsert's own
+        # docstring: "UPDATE and MERGE bump ONLY last_seen"), same as "updated" --
+        # only "refused"/"merged_away"/"merged_away_unproven" write nothing at all.
+        if outcome not in ("created", "updated", "merged"):
+            return CreateLeadResult(outcome=outcome)
+        notes = [n for n in store.read_leads()
+                if n.fm.get("company") == company and n.fm.get("role") == title]
+        slug = notes[0].slug if notes else ""
+        return CreateLeadResult(outcome=outcome, slug=slug)
 
     def prep(self, *, lead=None, all_shortlist=False, limit=None, dry_run=False,
              include_stale=False):

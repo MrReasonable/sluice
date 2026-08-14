@@ -9,7 +9,7 @@ import os
 
 from sluice.core import status as _status
 from sluice.core.leads import (
-    StalenessPolicy, ambiguous_slug_warnings, index_by_slug, slug_matches,
+    StalenessPolicy, ambiguous_slug_warnings, index_by_slug, is_http_url, slug_matches,
 )
 from sluice.core.log import get_logger
 from sluice.apply.cvfile import parse_artifact, resolve_source
@@ -32,7 +32,7 @@ def eligibility(note, cfg, policy=StalenessPolicy()):
     if policy.blocks(note.fm.get("last_seen", "")):
         return False, "stale"
     url = (note.fm.get("url") or "").strip().strip('"')
-    if not url.startswith("http"):
+    if not is_http_url(url):
         return False, "no_url"
     basename = parse_artifact(note.fm.get("tailored_cv"), getattr(cfg, "served_prefix", "CV"))
     if basename is None:
