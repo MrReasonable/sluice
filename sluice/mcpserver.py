@@ -357,9 +357,11 @@ def create_lead(sluice: Sluice, title: str, company: str, url: str, location: st
     company+title collide onto ONE note: the SECOND call returns "updated" when
     the incoming url (or, absent a url match, the location) proves the same
     posting, or "merged" when neither does (inconclusive evidence -- e.g. a
-    blank-url lead whose location doesn't overlap the existing note's either).
-    Both are a bare last_seen bump, with the incoming url/salary/location NOT
-    recorded. Raises ValueError naming every unsafe/invalid field.
+    blank-url lead whose location is blank, or is compared against a note whose
+    own location is blank; two non-blank, non-overlapping locations are proven
+    DIFFERENT instead, and create a new note rather than merging). Both "updated"
+    and "merged" are a bare last_seen bump, with the incoming url/salary/location
+    NOT recorded. Raises ValueError naming every unsafe/invalid field.
     Does not touch seen.db (decision 11) -- a later genuine scrape of the same
     posting is not silently skipped by this manual entry. Lands at status=new;
     job-sluice triage run promotes it from there -- no `status` parameter on this
