@@ -65,8 +65,8 @@ explicitly deferred, matching #105's own deferred list.
    like the CLI's `--lead` always has. A parameter named `lead_ref` invites an agent to
    pass a `ref` it is never given, and would be the only parameter on the whole surface
    whose name disagrees with `get_lead(lead=...)`. One name for one concept across
-   nine tools: the agent that just called `get_lead(lead="northgate")` types the same
-   string into `dismiss_lead(lead="northgate")`.
+   nine tools: the agent that just called `get_lead(lead="acme analyst")` types the
+   same string into `dismiss_lead(lead="acme analyst")`.
 
 4. **`dismiss_lead` resolves by EXACT slug equality; the three wrapped CLI operations
    (`apply_record`, `cv_run`, `cv_signoff`) inherit their CLI's substring matcher
@@ -108,8 +108,19 @@ explicitly deferred, matching #105's own deferred list.
    the established `[triage <date>]`/`[expire <date>]` convention. The accepted cost,
    stated rather than hidden: two dismissals of the same lead on the same day record
    only the first reason (the second note is suppressed by its own tag) — the response
-   reports `note_appended: bool` (from a post-write re-read) so this is visible, not
-   silent.
+   reports `note_appended: bool` so this is visible, not silent.
+
+   **`note_appended` is derived from the PRE-write snapshot, not a post-write
+   re-read** — `/review-plan`'s round-2 invariant reviewer caught that a post-write
+   check (`the tag is present in the fresh relevance_notes`) is `True` in both the
+   real-append case and the already-present case, so it can't actually distinguish
+   them; the established shape for exactly this signal is `url_dropped`/`ats_dropped`
+   in `apply/record.py`, both computed from the INPUT before the write, not a
+   read-back after it. `Sluice.dismiss_lead` checks whether `note_tag` is already a
+   substring of the note's `relevance_notes` in the snapshot it already has in hand
+   before calling `update_fields` — `note_appended = tag not in snapshot_notes` —
+   the same snapshot-derived-signal-alongside-a-CAS-guarded-write shape decision 6
+   already uses for its own pre-checks.
 
 6. **`dismiss_lead`'s guards are both CAS-fresh, evaluated inside the transform —
    `_DISMISSABLE_FROM` is its OWN constant, not a rename of `_EXPIRABLE`.**
@@ -160,6 +171,20 @@ explicitly deferred, matching #105's own deferred list.
    not sink the batch) forbids. `create_lead` does its own validation up front and
    raises (decision 9) — it never relies on this fallback; this is pure
    defense-in-depth for the pre-existing scraper path.
+
+   **`company`/`role` are the two exceptions: an unsafe value there refuses the
+   whole create, never abstains-and-blanks.** Round-2 `/review-plan` review caught
+   that uniform abstain-and-blank is wrong specifically for these two, because they
+   ARE the vault's identity key (`_candidate_names`'s `stem = f"{company} - {title}"`)
+   — blanking one doesn't just drop a field the way blanking `location` does, it
+   silently changes which note the posting maps to, and a later legitimate re-scrape
+   of the same real job (with its real company name intact) would then create a
+   SECOND, disconnected note instead of matching the first. So an unsafe `company` or
+   `role` makes the caller (`upsert`) refuse the whole create — the same `refused`
+   outcome path its existing blank-identity gate already uses, one step earlier —
+   still per-item isolated, never an exception, never sinking the batch. The other
+   five fields (`location`/`salary`/`role_type`/`url`/`source`) keep the
+   abstain-and-blank-and-log treatment, since none of them affects identity.
 
 8. **`apply/record.py:record()` is hardened: `ats` gets `frontmatter_safe()` +
    quoting, mirroring `url`'s existing #111 fix exactly; the write gets
@@ -333,11 +358,25 @@ explicitly deferred, matching #105's own deferred list.
     legitimately disagree with the first if the vault changed in between). The actual
     fix is at the source: `Sluice.sign_off_cv`'s ambiguous branch is WIDENED to also
     return the candidate slug list it already has in hand internally (it already knows
-    every matching note before it joins their refs into the printed string) —
-    `cmd_cv_signoff`'s existing printed line keeps using the joined string unchanged,
-    and `cv_signoff` (MCP) reads the new `candidates` field directly from the SAME
-    resolution `sign_off_cv` already performed. One resolution pass, two consumers,
-    no drift between what the CLI prints and what the MCP tool returns.
+    every matching note before it joins their refs into the printed string).
+
+    **This is a real, small, stated change to `cmd_cv_signoff`, not a hidden no-op.**
+    A round-2 verification against the actual source caught the first draft's claim
+    that the CLI's own line "keeps using the joined string unchanged" as false:
+    `sign_off_cv` today returns a bare 2-tuple, and `cmd_cv_signoff` consumes it with
+    a strict `slug, outcome = result` unpack — any arity change breaks that line
+    regardless of which branch grows the new field. The fix, matching the
+    `DismissResult`/`CreateLeadResult` dataclass-report idiom this document already
+    uses for the two brand-new methods: `sign_off_cv` returns a small
+    `SignOffResult(slug: str, outcome: str, candidates: list = field(default_factory=
+    list))` dataclass instead of a tuple. `cmd_cv_signoff`'s one unpack line becomes
+    `result = sluice.sign_off_cv(...)` plus attribute access (`result.slug`,
+    `result.outcome`) — its printed joined-string line is built from `result.slug`
+    exactly as before, unaffected in behavior, just no longer tuple-shaped. `cv_signoff`
+    (MCP) reads `result.candidates` directly from the SAME resolution `sign_off_cv`
+    already performed. One resolution pass, two consumers, no drift between what the
+    CLI prints and what the MCP tool returns — and the one line in `cli.py` this
+    touches is named explicitly rather than assumed away.
 
     `out_of_scope` closes a concretely-live honesty gap this slice would otherwise
     silently inherit: `apply/select.resolve` and `Sluice.compose_cv` both scope to
@@ -357,13 +396,19 @@ explicitly deferred, matching #105's own deferred list.
     document is otherwise explicit about where every other shared, drift-prone piece
     of logic lives — `_NEVER_AN_INSTRUCTION`, `index_by_slug`, `slug_matches`): a new
     pure, store-agnostic function in `sluice/core/leads.py`, beside those two,
-    `def out_of_scope_verdict(notes: list, *, matcher, accepted: frozenset) -> dict |
-    None` — takes the already-fetched candidate notes (never re-fetches itself, so it
-    cannot diverge from whatever resolution the caller already did), a matcher
-    callable and the accepted-status set, and returns the `out_of_scope` dict or
-    `None` when nothing outside scope matched. Each of the four call sites passes its
-    own matcher (`slug_matches` for three tools, exact equality for `dismiss_lead`)
-    and its own accepted set.
+    `def out_of_scope_verdict(notes: list, wanted: str, *, matcher, accepted:
+    frozenset) -> dict | None`. `/review-plan`'s round-2 generalist reviewer caught
+    that the first draft's signature had nowhere to put the query string —
+    `slug_matches`'s own real signature is `(note, wanted: str) -> bool`, so a matcher
+    callable with no `wanted` parameter to close over could not actually invoke it as
+    described. Fixed by threading `wanted` through explicitly: `matcher` is
+    `Callable[[note, str], bool]`, called as `matcher(note, wanted)` for each of the
+    already-fetched candidate `notes` (never re-fetched, so it cannot diverge from
+    whatever resolution the caller already did) that falls outside `accepted`,
+    returning the `out_of_scope` dict on exactly one such match, `None` otherwise.
+    Each of the four call sites passes its own `wanted` (the lead string it already
+    has), its own matcher (`slug_matches` for three tools; `lambda n, w: n.slug == w`
+    for `dismiss_lead`'s exact-match rule, decision 4), and its own accepted set.
 
     Beyond that shared triple, each tool's action outcomes are its underlying
     primitive's existing vocabulary, passed through **verbatim**: `upsert`'s six,
@@ -422,23 +467,43 @@ explicitly deferred, matching #105's own deferred list.
     a safety one given the argument above, and it replaces #105's open caveat in
     `build_server`'s own docstring rather than leaving it stale.
 
-    **The concurrency test forces real interleaving; it does not merely hope for
-    it.** `/review-plan`'s test-engineer reviewer caught that a naive `asyncio.gather`
+    **The concurrency test exercises REAL interleaving via many rounds of REAL
+    concurrent execution — not a synthetic double, and not a hope that
+    `asyncio.gather` happens to interleave.** Two rounds of `/review-plan` review
+    converged on the same conclusion from different angles: a naive `asyncio.gather`
     of two `call_tool("dismiss_lead")` coroutines proves nothing if `MCPServer`
-    dispatches sync tools inline on the event loop, as decision 17 itself says is
-    still an open question — with zero real interleaving, "exactly one `dismissed`,
-    one `unchanged`" would hold under pure sequential execution too, making the test
-    pass vacuously regardless of whether the guards it's meant to exercise work at
-    all. Fixed by controlling the interleaving directly rather than hoping the
-    scheduler provides it: a test double wrapping the real `Vault.update_fields`
-    blocks the FIRST call on a `threading.Event` right after it reads `pending_cv`/
-    `status` but before it commits, releases it only once the SECOND call has started
-    and is itself waiting to enter the same critical section, then lets both proceed.
-    This deterministically exercises the actual race window regardless of whether the
-    SDK's dispatch turns out to be inline or threaded — a threaded dispatch model
-    additionally gets the `asyncio.gather` version as an integration-level sanity
-    check, but the deterministic double is what makes the safety property itself
-    verified rather than merely unrefuted.
+    dispatches sync tools inline on the event loop (test-engineer, round 1) — with
+    zero real interleaving, "exactly one `dismissed`, one `unchanged`" would hold
+    under pure sequential execution too. The round-2 attempted fix (a test double
+    blocking `Vault.update_fields` on a `threading.Event` mid-transform) turned out
+    to have no real seam to hook into: round-2 test-engineer review verified directly
+    that `update_fields` is a thin, synchronous trampoline into the private
+    `_cas_write`, which runs read→transform→staleness-check→commit as one call with
+    the guard logic living in a closure local to `update_fields` itself. A double
+    could only patch an unnamed private function (fragile, unspecified) or
+    reimplement the guard check itself — in which case the test would stay green
+    even if the REAL guard were deleted, defeating its entire purpose.
+
+    The actual fix abandons trying to force a single deterministic interleaving and
+    uses this codebase's own already-proven approach to exactly this class of
+    property instead — a race test needs ROUNDS, not a synthetic pause point.
+    `tests/test_leads_dismiss.py` seeds one lead, then runs N=50 rounds of two REAL
+    threads (`concurrent.futures.ThreadPoolExecutor`) both calling
+    `Sluice.dismiss_lead` on the same lead concurrently — the actual production code
+    path, actual file I/O, actual `_cas_write` retries, no mocking of the write layer
+    at all. Across all 50 rounds: exactly one thread's call reports `dismissed` and
+    the other `unchanged` (never both `dismissed`, never both `unchanged`, never an
+    unhandled exception), and the note on disk carries exactly one `[dismiss <date>]`
+    entry at the end. 50 real rounds make a missed race window statistically
+    negligible without depending on any dispatch-model assumption — `MCPServer`'s own
+    dispatch model (inline vs threaded, still to be determined empirically per the
+    paragraph above) only affects how MANY of an MCP client's concurrent
+    `call_tool("dismiss_lead")` requests can be in flight at once, never whether
+    `Sluice.dismiss_lead`'s OWN guard is safe under concurrent callers — which is what
+    this test actually proves, at the layer where the guard lives. A single
+    `asyncio.gather`-based round trip through `tests/functional/test_mcp_contract.py`
+    is kept as an integration-level sanity check that the SDK path reaches
+    `Sluice.dismiss_lead` at all, not as the safety proof.
 
 18. **`job-sluice leads dismiss --lead --reason` ships in the same PR; `create_lead`
     gets no CLI command this round.** `Sluice.dismiss_lead()` rewrites an existing
@@ -549,6 +614,14 @@ class CreateLeadResult:
 # a distinct constant, not a rename. See decision 6.
 _DISMISSABLE_FROM = frozenset(_status.TRIAGE_OWNED)
 
+# Implementation note (added per /review-plan round 2's architect finding): land
+# _DISMISSABLE_FROM immediately beside _EXPIRABLE's existing definition, not ~1000
+# lines away where dismiss_lead itself lives, and add a matching one-line comment on
+# _EXPIRABLE pointing at _DISMISSABLE_FROM -- both are TRIAGE_OWNED-derived siblings
+# that diverge for a real, verified reason (this comment), and a future edit to one
+# with no cue the other exists is exactly the silent-drift risk a single shared
+# constant was originally meant to avoid.
+
 def dismiss_lead(self, *, lead: str, reason: str,
                  note_tag: str | None = None) -> DismissResult: ...
 def create_lead(self, *, title: str, company: str, url: str, location: str = "",
@@ -634,23 +707,24 @@ Mirroring #105's exact layer split.
 11. A real `call_tool("dismiss_lead", ...)` round trip followed by `call_tool
     ("get_lead", ...)` proving the store actually changed through the real SDK JSON
     envelope.
-12. **The concurrency test** (decision 17): an integration-level `asyncio.gather` of
-    two overlapping `call_tool("dismiss_lead")` calls against the same seeded lead —
-    a sanity check under whatever the real dispatch model turns out to be, NOT the
-    guard's primary witness (that's item 12a below, which forces the interleaving
-    rather than hoping the SDK provides it).
-12a. **The forced-interleaving proof** (decision 17): at the `Sluice.dismiss_lead`
-    unit-test tier, a test double wrapping `Vault.update_fields` blocks the first of
-    two threads on a `threading.Event` right after it reads fresh `pending_cv`/status
-    but before it commits, releasing only once the second thread is confirmed waiting
-    on the same section; both proceed and the test asserts exactly one `dismissed`,
-    one `unchanged`. This is what makes the guard's correctness independent of
-    whatever `MCPServer`'s real dispatch model turns out to be.
+12. **The concurrency sanity check** (decision 17): a single `asyncio.gather` of two
+    overlapping `call_tool("dismiss_lead")` calls against the same seeded lead,
+    proving the SDK path reaches `Sluice.dismiss_lead` under concurrent dispatch at
+    all — NOT the guard's safety proof (that's item 12a below, at a different tier,
+    in `tests/test_leads_dismiss.py`, which is where the property actually gets
+    proven under real concurrent execution rather than through the SDK).
+12a. **The 50-round real-concurrency proof** (decision 17, `tests/test_leads_dismiss.py`):
+    two real `ThreadPoolExecutor` threads both call `Sluice.dismiss_lead` on the same
+    seeded lead, 50 times over — real production code, real file I/O, no mocking of
+    the write layer — asserting every round lands exactly one `dismissed` and one
+    `unchanged`, never both, never an exception, and exactly one `[dismiss <date>]`
+    note entry at the end. This is the guard's actual safety proof; item 12 above is
+    only a sanity check that the SDK reaches it.
 
 **New flat files**, matching the `test_<area>.py` convention:
 
 - `tests/test_leads_dismiss.py` — `Sluice.dismiss_lead`'s guards/outcomes/idempotency
-  directly, including the forced-interleaving proof (item 12a).
+  directly, including the 50-round real-concurrency proof (item 12a).
 - `tests/test_leads_create.py` — `Sluice.create_lead`'s mapping, verdict passthrough,
   slug resolution.
 - `tests/test_vault_render_safety.py` — `_render_new`: a `location` containing
@@ -662,20 +736,45 @@ Mirroring #105's exact layer split.
   `location` in the resulting frontmatter is BLANK (the whole unsafe value was
   refused, per decision 7's abstain-and-log rule); a truncating "fix" would instead
   leave a non-empty, truncated value. Asserting the field is empty is what
-  distinguishes real `frontmatter_safe`-abstain from a weaker workaround.
+  distinguishes real `frontmatter_safe`-abstain from a weaker workaround. **A
+  companion positive case is required, not optional**: a SAFE `location` (no
+  forbidden characters) must survive `_render_new` unchanged and non-blank — round-2
+  test-engineer review caught that the unsafe-only fixture set is also satisfied by
+  an over-broad "abstain everything unconditionally" mutant, which the positive case
+  alone would catch.
+
+  **`company`/`role` get a STRONGER response than the other five fields: refuse the
+  whole create, never abstain-and-blank.** Round-2 invariant review caught that
+  uniform abstain-and-log treats `company`/`role` the same as `location`/`salary`/
+  `url`/`role_type`/`source`, but `company`+`role` ARE the vault's identity key
+  (`Vault._candidate_names`'s `stem = f"{company} - {title}"`) — blanking either on
+  an unsafe scraped value doesn't just lose a field the way blanking `location`
+  does, it silently changes which note this posting maps to. A hostile posting
+  forging only `company` would still create a note (since `upsert`'s blank-identity
+  gate refuses only when BOTH are blank), but under a corrupted identity — and a
+  LATER, legitimate re-scrape of the same real posting, with its real company name
+  intact, would then fail to match that note at all and create a second, unlinked
+  one for what is really one job. So: an unsafe `company` OR `role` makes
+  `_render_new`'s caller (`upsert`) refuse the create entirely — the same `refused`
+  outcome path `upsert`'s own blank-identity gate already uses, extended one step
+  earlier, still per-item isolated (skips this one lead, does not abort the ingest
+  batch). The other five fields keep the abstain-and-blank-and-log treatment
+  unchanged, since none of them affects identity.
 - `tests/test_leads_dismiss_cli.py` — `leads dismiss`'s outcome→rc mapping.
 - Extend `tests/test_apply_record.py`/`tests/test_apply_record_cli.py` for the `ats`
   guard, the `require_status` refusal, and the new `ats_dropped` line.
 - Extend `tests/conformance/test_store_contract.py` for `sign_off(require_pending=)`
   — and, per `/review-plan`'s test-engineer reviewer, directly at the `Vault.sign_off`
-  layer, NOT only through `cv_signoff`'s two-call flow: calling `Vault.sign_off(ref,
-  require_pending=<a value that does not match the fresh pending_cv>)` must itself
-  return `"stale"` and write nothing, exercised with no confirm-token layer in the
-  call path at all. Testing item 7's own staleness scenario (re-hold between two
-  `cv_signoff` calls) is caught by the outer confirm-token comparison before
-  `Vault.sign_off` is ever reached, so it alone would leave `require_pending`'s own
-  CAS-level guard completely unexercised — if it were silently broken, nothing in
-  the originally-described suite would notice.
+  layer, NOT only through `cv_signoff`'s two-call flow: seed a `pending_cv` hold using
+  the same `store.hold_for_signoff(...)` helper this file's existing sign-off tests
+  already use two tests above, then call `Vault.sign_off(ref, require_pending=<a
+  value that does not match the fresh pending_cv>)` directly — no confirm-token layer
+  anywhere in this call path — and assert it returns `"stale"` and writes nothing.
+  Testing item 7's own staleness scenario (re-hold between two `cv_signoff` calls) is
+  caught by the outer confirm-token comparison before `Vault.sign_off` is ever
+  reached, so it alone would leave `require_pending`'s own CAS-level guard completely
+  unexercised — if it were silently broken, nothing in the originally-described suite
+  would notice.
 - Extend `tests/functional/test_cv.py` (the existing CLI-level `cv signoff` test
   file — there is no separate `test_cv_signoff_cli.py`) for `cmd_cv_signoff`'s new
   `"stale"` outcome: forced via the same technique `test_conflict_returns_1` already
@@ -687,9 +786,16 @@ Mirroring #105's exact layer split.
 **Mutation-verified, not read-through** (per this repo's own stated discipline — a
 check that cannot be falsified is unverified): `require_status`/`require_blank` in
 `Sluice.dismiss_lead`; `require_status` in `apply/record.py`; the `frontmatter_safe`
-call in `_render_new`'s new guard; the `require_pending` comparison in `Vault.sign_off`;
-the confirm-token comparison in `cv_signoff`. Each guard's removal must turn its named
-test red, confirmed by running that test by node ID.
+call in `_render_new`'s new guard; **the `frontmatter_safe` call on `ats` in
+`apply/record.py`** (decision 8 — `/review-plan`'s round-2 generalist reviewer caught
+this list omitted it despite the guard being structurally identical to `_render_new`'s,
+which the list did name); the `require_pending` comparison in `Vault.sign_off`; the
+confirm-token comparison in `cv_signoff`; **`note_appended`'s pre-write-snapshot
+derivation** (decision 5 — round-2 invariant review caught the first draft's
+post-write-re-read version was unfalsifiable by construction, since it can't
+distinguish "I appended it" from "it was already there"; mutating the snapshot check
+away must turn its named test red, not just read as plausible). Each guard's removal
+must turn its named test red, confirmed by running that test by node ID.
 
 All synthetic titles come from the existing seeded `titles`/`cfg_titles` faker
 fixtures, never hardcoded — matching #105's own testing rule.
@@ -724,8 +830,12 @@ fixtures, never hardcoded — matching #105's own testing rule.
 - `apply/record.py` guards `ats` and passes `require_status`; the CLI's message
   wording is corrected for the new `raced` reason.
 - `Vault.sign_off`'s `require_pending`/`"stale"` exist, are documented on the `Store`
-  protocol, are conformance-tested, and `cmd_cv_signoff` classifies `"stale"` as a
-  failure (rc 1).
+  protocol, and `cmd_cv_signoff` classifies `"stale"` as a failure (rc 1). Tested
+  BOTH via the conformance suite AND directly at `Vault.sign_off` with no
+  confirm-token layer in the call path — per round 1's own finding, testing only
+  through `cv_signoff`'s two-call flow would leave this specific CAS guard
+  unexercised, since the outer confirm-token comparison already catches that flow's
+  one described staleness scenario before `Vault.sign_off` is ever reached.
 - `create_lead` reports `updated`/`refused`/`merged_away*` honestly (never a bare
   "created") and writes no `seen.db` row.
 - `job-sluice leads dismiss` exists, reusing `Sluice.dismiss_lead` verbatim.
@@ -811,9 +921,12 @@ fixtures, never hardcoded — matching #105's own testing rule.
   outcome had no CLI-level test named, unlike every sibling outcome in this design;
   fixed by adding one to the existing `tests/functional/test_cv.py`. One finding
   escalated rather than fixed outright: the neutrality reviewer flagged a literal
-  hostname (`hermes`) in the Problem section, copied verbatim from the issue's own
-  text — put to the repo owner directly per the standing escalate-neutrally rule,
-  since a local review cannot tell whether a string is a real personal host or an
-  invented illustration. Confirmed real; replaced with the repo's own established
+  hostname the Problem section had copied verbatim from the issue's own text — put
+  to the repo owner directly per the standing escalate-neutrally rule, since a local
+  review cannot tell whether a string is a real personal host or an invented
+  illustration. Confirmed real; replaced with the repo's own established
   `<host>`/`<user>` placeholder convention (matching `sluice.yaml.example` and
-  `docs/CONFIGURATION.md`), never asserted as a claim about the value itself.
+  `docs/CONFIGURATION.md`). Stated here structurally only — the specific string
+  itself is deliberately not repeated in this changelog entry, matching this
+  project's own #56 lesson that describing a remediation can leak worse than the
+  thing it remediated.
