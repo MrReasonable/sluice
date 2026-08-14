@@ -76,7 +76,23 @@ class StaleLead:
 # structurally incapable of naming an APPLICATION_OWNED state, which is the property the
 # never-regress guard actually needs. `core.status` is pure stdlib, so importing it at
 # module scope does not touch cli.py's lazy-import discipline.
+#
+# See _DISMISSABLE_FROM below (#131) -- dismiss_lead's own required-status set, which
+# is NOT a rename of this one: it needs "dismiss" included, since it has no pre-filter
+# of already-dismissed leads the way expire_report() has.
 _EXPIRABLE = frozenset(_status.TRIAGE_OWNED) - {"dismiss"}
+
+# dismiss_lead's OWN required-status set (#131 decision 6) -- NOT a reuse of
+# _EXPIRABLE. _EXPIRABLE excludes "dismiss" safely ONLY because expire_report()
+# already filters out already-dismissed leads before expire() ever attempts the write;
+# dismiss_lead has no such pre-filter (it resolves one named lead directly, at
+# whatever status it is currently at), so excluding "dismiss" here would turn a
+# legitimate same-day re-dismiss into a hard CAS refusal instead of the `unchanged`
+# outcome decision 5's whole note-tag-idempotency rationale depends on. Both stay
+# DERIVED from TRIAGE_OWNED, never hand-listed, so neither can be edited into naming
+# an application-owned state -- that property, not which elements are excluded, is
+# what actually holds never-regress.
+_DISMISSABLE_FROM = frozenset(_status.TRIAGE_OWNED)
 
 
 @dataclass
@@ -116,6 +132,21 @@ class SignOffResult:
     outcome: str = ""   # promoted | discarded | collision | stale | nothing | aborted
                         # | not_found | ambiguous | conflict
     candidates: list = field(default_factory=list)
+
+
+@dataclass
+class DismissResult:
+    """#131 decisions 5/6: outcome is one of dismissed | unchanged | refused_status |
+    refused_signoff_hold | not_found | ambiguous | conflict. note_appended is True
+    ONLY when the write actually committed AND the pre-write snapshot showed the tag
+    absent -- neither signal alone distinguishes 'I appended it' from 'it was already
+    there' (a plain post-write re-read) or from 'a race loser predicted an append its
+    own write never committed' (a plain pre-write snapshot alone)."""
+    outcome: str
+    slug: str = ""
+    status: str = ""            # the FRESH status behind a refusal/unchanged
+    candidates: list = field(default_factory=list)
+    note_appended: bool = False
 
 
 class StoreHasNoLayout(RuntimeError):
@@ -1177,6 +1208,102 @@ class Sluice:
         except VaultConflict as e:
             _log.warning("cv signoff for %s lost the write race: %s", note.ref, e)
             return SignOffResult(slug=note.slug, outcome="conflict")
+
+    def dismiss_lead(self, *, lead: str, reason: str,
+                     note_tag: str | None = None) -> DismissResult:
+        """Resolve `lead` by EXACT slug equality (never substring -- #131 decision 4:
+        no CLI precedent to inherit a looser matcher from, and the caller may be an
+        LLM whose `lead` string derives from attacker-influenced scraped text) over
+        every TRIAGE_OWNED status, and dismiss it: status -> "dismiss", with `reason`
+        appended to relevance_notes under an idempotency tag so a same-day re-dismiss
+        is a real `unchanged`, not a duplicate note.
+
+        Refuses (writes nothing) rather than picks when the exact slug names TWO OR
+        MORE notes (a slug collision from the recursive scan, #1) -- via the shared
+        `index_by_slug` verdict every other multi-writer consumer already uses.
+
+        Guards, both CAS-fresh (re-read inside the write transform, never from the
+        snapshot this method itself read to resolve the lead):
+          - require_status=_DISMISSABLE_FROM (the FULL TRIAGE_OWNED set, "dismiss"
+            included -- see _DISMISSABLE_FROM's own comment for why NOT _EXPIRABLE).
+          - require_blank={"pending_cv"} -- refuses a lead holding an unsigned
+            composed CV; the refusal names the remedy (cv_signoff(lead=..., discard=
+            true), on this same tool surface elsewhere).
+
+        `note_tag` defaults to f"[dismiss {date.today().isoformat()}]", matching the
+        established [triage <date>]/[expire <date>] convention -- overridable only
+        for tests exercising idempotency deterministically (never exposed to an MCP
+        client, #131 decision 5).
+
+        Raises ValueError naming the field if `reason` is blank or not frontmatter-
+        safe -- dropping a dismissal's reasoning erases the entire point of the call,
+        so this refuses BEFORE any store read, matching create_lead's identical
+        raise-on-payload-fields discipline (decision 9)."""
+        from sluice.core.leads import index_by_slug
+        from sluice.core.protocols import VaultConflict
+        from sluice.core.vault import frontmatter_safe
+        if not reason or not reason.strip():
+            raise ValueError("reason must not be blank")
+        safe_reason = frontmatter_safe(reason)
+        if safe_reason is None:
+            raise ValueError(
+                f"reason {reason!r} is not safe to write into frontmatter (must be "
+                f"printable and contain no \" or \\)")
+        store = self.store()
+        notes = store.read_leads(frozenset(_status.TRIAGE_OWNED))
+        index, dropped = index_by_slug(notes)
+        if lead in dropped:
+            return DismissResult(outcome="ambiguous",
+                                 candidates=sorted(n.slug for n in dropped[lead]))
+        note = index.get(lead)
+        if note is None:
+            return DismissResult(outcome="not_found")
+        if note.status == "dismiss":
+            # Nothing for THIS call to transition -- the same "nothing to act on"
+            # shape sign_off_cv's own `nothing` outcome already uses one method
+            # above (checked against the snapshot, no store write attempted).
+            # `dismiss -> dismiss` is a legitimate no-op transition, never a
+            # regression (see _DISMISSABLE_FROM's own comment for why "dismiss" is
+            # included in the required-status set at all): a lead a human or an
+            # earlier call already filed away has nothing left to dismiss, and
+            # re-running the write merely to append another same-purpose note to an
+            # already-closed lead's history serves no purpose the tag-idempotency
+            # mechanism below exists to serve for an ACTIVE lead.
+            return DismissResult(slug=note.slug, status="dismiss", outcome="unchanged")
+        tag = note_tag or f"[dismiss {date.today().isoformat()}]"
+        snapshot_notes = note.fm.get("relevance_notes", "") or ""
+        tag_absent_at_snapshot = tag not in snapshot_notes
+        try:
+            # The appended text carries the tag ITSELF, matching expire()'s
+            # `note = f"{tag} stale: ..."` convention -- update_fields's own
+            # idempotency check (`if note_tag not in current`) tests for the tag as a
+            # SUBSTRING of relevance_notes, so the tag must actually be written into
+            # the note for a later call (same-day repeat, or the losing side of a
+            # real race) to ever find it there. Passing `note_tag=tag` alongside a
+            # body that does NOT itself contain `tag` would make the presence check
+            # permanently un-satisfiable, and every repeat call would re-append.
+            wrote = store.update_fields(
+                note.ref, {"status": "dismiss"}, append_note=f"{tag} {safe_reason}",
+                note_tag=tag, require_status=_DISMISSABLE_FROM,
+                require_blank=frozenset({"pending_cv"}))
+        except VaultConflict as e:
+            _log.warning("dismiss_lead: %s lost the write race: %s", note.ref, e)
+            return DismissResult(slug=note.slug, outcome="conflict")
+        note_appended = tag_absent_at_snapshot and wrote
+        if wrote:
+            return DismissResult(slug=note.slug, status="dismiss", outcome="dismissed",
+                                 note_appended=note_appended)
+        fresh = next((n for n in store.read_leads(frozenset(_status.CANONICAL))
+                     if n.ref == note.ref), None)
+        fresh_status = fresh.status if fresh is not None else note.status
+        if fresh_status not in _DISMISSABLE_FROM:
+            return DismissResult(slug=note.slug, status=fresh_status,
+                                 outcome="refused_status", note_appended=False)
+        if fresh is not None and (fresh.fm.get("pending_cv") or ""):
+            return DismissResult(slug=note.slug, status=fresh_status,
+                                 outcome="refused_signoff_hold", note_appended=False)
+        return DismissResult(slug=note.slug, status=fresh_status, outcome="unchanged",
+                             note_appended=False)
 
     def prep(self, *, lead=None, all_shortlist=False, limit=None, dry_run=False,
              include_stale=False):
