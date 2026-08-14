@@ -110,17 +110,30 @@ explicitly deferred, matching #105's own deferred list.
    only the first reason (the second note is suppressed by its own tag) — the response
    reports `note_appended: bool` so this is visible, not silent.
 
-   **`note_appended` is derived from the PRE-write snapshot, not a post-write
-   re-read** — `/review-plan`'s round-2 invariant reviewer caught that a post-write
-   check (`the tag is present in the fresh relevance_notes`) is `True` in both the
-   real-append case and the already-present case, so it can't actually distinguish
-   them; the established shape for exactly this signal is `url_dropped`/`ats_dropped`
-   in `apply/record.py`, both computed from the INPUT before the write, not a
-   read-back after it. `Sluice.dismiss_lead` checks whether `note_tag` is already a
-   substring of the note's `relevance_notes` in the snapshot it already has in hand
-   before calling `update_fields` — `note_appended = tag not in snapshot_notes` —
-   the same snapshot-derived-signal-alongside-a-CAS-guarded-write shape decision 6
-   already uses for its own pre-checks.
+   **`note_appended` is `True` only when the write actually committed AND the
+   pre-write snapshot showed the tag absent — neither signal alone is sufficient.**
+   `/review-plan`'s round-2 invariant reviewer caught that a plain post-write check
+   (`the tag is present in the fresh relevance_notes`) is `True` in both the
+   real-append case and the already-present case, so it can't distinguish them —
+   fixed by deriving the PREDICTION from the pre-write snapshot instead, matching
+   `url_dropped`/`ats_dropped`'s established input-derived shape. Round 3 caught a
+   real bug in THAT fix: under genuine concurrent dismissal (Testing item 12a), the
+   losing thread's pre-write snapshot correctly shows the tag absent (nobody has
+   written it yet when it reads), but its own `update_fields` call then loses the
+   CAS race and commits nothing — reporting `outcome: "unchanged"` alongside a
+   pre-write-derived `note_appended: true`, a self-contradictory response (claiming
+   to have appended a note that, per the outcome, it didn't). The pre-write snapshot
+   alone predicts INTENT, not what actually happened. Fixed with a composite:
+   `note_appended = (tag not in snapshot_notes) and wrote` — the snapshot check
+   gates out the "already present, no append was ever going to happen" case exactly
+   as before (this part doesn't need the write's fresh outcome, since a genuinely
+   already-tagged snapshot means no append could ever have been attempted), and the
+   `wrote` bool from `update_fields`'s own return gates out the "predicted an
+   append, but this call's write didn't actually commit" case the race exposes.
+   Testing item 12a asserts `note_appended` explicitly for both the winning and
+   losing thread in every round, not only `outcome`, since this composite is exactly
+   the kind of check that reads as correct without being exercised under real
+   concurrency.
 
 6. **`dismiss_lead`'s guards are both CAS-fresh, evaluated inside the transform —
    `_DISMISSABLE_FROM` is its OWN constant, not a rename of `_EXPIRABLE`.**
@@ -173,18 +186,46 @@ explicitly deferred, matching #105's own deferred list.
    defense-in-depth for the pre-existing scraper path.
 
    **`company`/`role` are the two exceptions: an unsafe value there refuses the
-   whole create, never abstains-and-blanks.** Round-2 `/review-plan` review caught
-   that uniform abstain-and-blank is wrong specifically for these two, because they
-   ARE the vault's identity key (`_candidate_names`'s `stem = f"{company} - {title}"`)
-   — blanking one doesn't just drop a field the way blanking `location` does, it
-   silently changes which note the posting maps to, and a later legitimate re-scrape
-   of the same real job (with its real company name intact) would then create a
-   SECOND, disconnected note instead of matching the first. So an unsafe `company` or
-   `role` makes the caller (`upsert`) refuse the whole create — the same `refused`
-   outcome path its existing blank-identity gate already uses, one step earlier —
-   still per-item isolated, never an exception, never sinking the batch. The other
-   five fields (`location`/`salary`/`role_type`/`url`/`source`) keep the
-   abstain-and-blank-and-log treatment, since none of them affects identity.
+   whole create, never abstains-and-blanks — but "unsafe" means something NARROWER
+   for these two fields than `frontmatter_safe()`'s general definition.** Round-2
+   `/review-plan` review caught that uniform abstain-and-blank is wrong specifically
+   for these two, because they ARE the vault's identity key (`_candidate_names`'s
+   `stem = f"{company} - {title}"`) — blanking one doesn't just drop a field the way
+   blanking `location` does, it silently changes which note the posting maps to, and
+   a later legitimate re-scrape of the same real job (with its real company name
+   intact) would then create a SECOND, disconnected note instead of matching the
+   first.
+
+   Round-3 review caught two real problems with the FIRST version of this fix,
+   verified directly against source and an existing test. First: `upsert`'s
+   blank-identity gate is OR-satisfied (refuses only when BOTH company and role are
+   blank), so it cannot catch — and this design's first draft never actually routed
+   through — the single-field-unsafe case that motivates this decision in the first
+   place (company forged, role legitimate). This is a genuinely NEW refusal
+   condition, not a reuse of the existing gate's OR logic: `upsert` refuses when
+   EITHER `company` or `role` individually fails the new check, before calling
+   `_render_new` at all. Second, and more serious: reusing `frontmatter_safe()`
+   verbatim — which rejects ANY embedded `"`/`\` — directly conflicts with an
+   EXISTING, deliberately-designed, already-pinned test,
+   `test_upsert_still_creates_a_lead_whose_field_merely_CONTAINS_quotes`
+   (`tests/test_vault.py:495`), whose own docstring states the governing principle
+   for this exact code path: "only a value that parses back EMPTY may be refused —
+   widening the gate from 'blank' to 'contains a quote' would bin it." Sluice's own
+   line-based `_fm_dict`/`_fm_value` reader (not a strict YAML parser) already
+   tolerates an embedded quote in `company`/`role` today, unguarded, and that
+   tolerance is product behavior this design must not regress.
+
+   The actual threat this decision exists to close — `ingest/base.py`'s
+   `.strip()` leaving an embedded NEWLINE intact, forging a new frontmatter key one
+   line down — is a DIFFERENT hazard than a bare embedded quote, and the fix is
+   scoped to exactly that: `company`/`role` are checked against `frontmatter_safe`'s
+   own "not printable" sub-rule ONLY (which already rejects the C0/C1 control class,
+   including `\n`, per its own docstring) — deliberately SKIPPING its separate
+   `"`/`\` structural-character rule, which is what the pinned test requires. `url`,
+   `ats`, and the other four `create_lead`/`_render_new` fields keep
+   `frontmatter_safe()`'s full definition unchanged, since none of them has an
+   equivalent existing test tolerating embedded quotes. Still per-item isolated,
+   never an exception, never sinking the ingest batch.
 
 8. **`apply/record.py:record()` is hardened: `ats` gets `frontmatter_safe()` +
    quoting, mirroring `url`'s existing #111 fix exactly; the write gets
@@ -491,11 +532,17 @@ explicitly deferred, matching #105's own deferred list.
     threads (`concurrent.futures.ThreadPoolExecutor`) both calling
     `Sluice.dismiss_lead` on the same lead concurrently — the actual production code
     path, actual file I/O, actual `_cas_write` retries, no mocking of the write layer
-    at all. Across all 50 rounds: exactly one thread's call reports `dismissed` and
-    the other `unchanged` (never both `dismissed`, never both `unchanged`, never an
-    unhandled exception), and the note on disk carries exactly one `[dismiss <date>]`
-    entry at the end. 50 real rounds make a missed race window statistically
-    negligible without depending on any dispatch-model assumption — `MCPServer`'s own
+    at all. Each round synchronizes both threads on a `threading.Barrier(2)`
+    immediately before the call (maximizing real overlap rather than hoping GIL/OS
+    scheduling provides it — the same technique, not merely a similar one, already
+    measured and proven in this repo's own `tests/conformance/test_store_contract.py`
+    for an analogous file-based CAS race). Across all 50 rounds: exactly one
+    thread's call reports `dismissed` (with `note_appended: true`) and the other
+    `unchanged` (with `note_appended: false`) — never both `dismissed`, never both
+    `unchanged`, never an unhandled exception — and the note on disk carries exactly
+    one `[dismiss <date>]` entry at the end. 50 real, Barrier-synchronized rounds
+    make a missed race window statistically negligible without depending on any
+    dispatch-model assumption — `MCPServer`'s own
     dispatch model (inline vs threaded, still to be determined empirically per the
     paragraph above) only affects how MANY of an MCP client's concurrent
     `call_tool("dismiss_lead")` requests can be in flight at once, never whether
@@ -591,7 +638,7 @@ str) -> dict`, omitting both `sluice` (decision 4 of #105) and `note_tag` (decis
 above) — so neither ever reaches the client-facing JSON schema. `tools/list`'s existing
 per-tool property-set assertion (Testing item 10) is what proves this, not prose.
 
-### `sluice/core/app.py` — two new `Sluice` methods, one rename
+### `sluice/core/app.py` — two new `Sluice` methods, plus `sign_off_cv`'s widened return
 
 ```python
 @dataclass
@@ -607,6 +654,16 @@ class DismissResult:
 class CreateLeadResult:
     outcome: str       # upsert's six-member vocabulary, verbatim
     slug: str = ""      # "" when nothing was written
+
+@dataclass
+class SignOffResult:               # replaces sign_off_cv's existing bare 2-tuple return
+    slug: str = ""
+    outcome: str = ""   # promoted | discarded | collision | stale | nothing
+                        # | not_found | ambiguous | conflict
+    candidates: list = field(default_factory=list)   # populated on ambiguous only
+    # decision 15: cmd_cv_signoff's one unpack line becomes attribute access
+    # (result.slug, result.outcome); its printed joined-string line is built from
+    # result.slug exactly as before -- unaffected in behavior, no longer tuple-shaped.
 
 # _EXPIRABLE (existing, unchanged) stays expire()'s own -- excludes "dismiss" because
 # expire_report() already filters already-dismissed leads before writing.
@@ -627,6 +684,12 @@ def dismiss_lead(self, *, lead: str, reason: str,
 def create_lead(self, *, title: str, company: str, url: str, location: str = "",
                 salary: str = "", job_type: str = "", source: str = "manual"
                 ) -> CreateLeadResult: ...
+
+# EXISTING method, return type widened from a bare (slug, outcome) 2-tuple to
+# SignOffResult -- see decision 15. sign_off_cv's own parameter list is unchanged;
+# only what it returns changes.
+def sign_off_cv(self, *, lead: str, accept: bool = True, confirm=None,
+                require_pending: str | None = None) -> SignOffResult: ...
 ```
 
 Matching #105's own dataclass-report idiom (`SourceHealth`, `StaleLead`,
@@ -716,10 +779,28 @@ Mirroring #105's exact layer split.
 12a. **The 50-round real-concurrency proof** (decision 17, `tests/test_leads_dismiss.py`):
     two real `ThreadPoolExecutor` threads both call `Sluice.dismiss_lead` on the same
     seeded lead, 50 times over — real production code, real file I/O, no mocking of
-    the write layer — asserting every round lands exactly one `dismissed` and one
-    `unchanged`, never both, never an exception, and exactly one `[dismiss <date>]`
-    note entry at the end. This is the guard's actual safety proof; item 12 above is
-    only a sanity check that the SDK reaches it.
+    the write layer. **Both threads synchronize on a `threading.Barrier(2)`
+    immediately before calling `dismiss_lead`, released together, per round** —
+    round-3 test-engineer review caught that "50 rounds" alone doesn't
+    establish real overlap without an explicit synchronization point, and that
+    exact mechanism (maximizing overlap rather than hoping GIL/OS scheduling
+    provides it) already has a measured precedent in this repo's own
+    `tests/conformance/test_store_contract.py`, which this test mirrors rather than
+    reinvents. Every round asserts: exactly one `dismissed` and one `unchanged`
+    (never both — see the `VaultConflict` note below), never an exception, exactly
+    one `[dismiss <date>]` note entry at the end, AND — per round 3's own
+    `note_appended` finding above — `note_appended: true` on the `dismissed`
+    result and `note_appended: false` on the `unchanged` one, every round, not only
+    the outcome strings. A raised `VaultConflict` is not itself a round failure
+    (with only 2 contending writers against `_RMW_RACE_RETRIES = 3`, the retry
+    budget makes a genuine sustained-conflict outcome unreachable in practice for
+    this specific contention level — stated explicitly here, not left implicit,
+    since it's exactly the kind of unstated assumption earlier rounds caught
+    elsewhere in this design) — if one is ever observed, the test fails loudly
+    rather than silently retrying, since an unexplained `VaultConflict` at 2-writer
+    contention would itself be a signal something else is wrong. This is the
+    guard's actual safety proof; item 12 above is only a sanity check that the SDK
+    reaches it.
 
 **New flat files**, matching the `test_<area>.py` convention:
 
@@ -743,23 +824,27 @@ Mirroring #105's exact layer split.
   an over-broad "abstain everything unconditionally" mutant, which the positive case
   alone would catch.
 
-  **`company`/`role` get a STRONGER response than the other five fields: refuse the
-  whole create, never abstain-and-blank.** Round-2 invariant review caught that
-  uniform abstain-and-log treats `company`/`role` the same as `location`/`salary`/
-  `url`/`role_type`/`source`, but `company`+`role` ARE the vault's identity key
-  (`Vault._candidate_names`'s `stem = f"{company} - {title}"`) — blanking either on
-  an unsafe scraped value doesn't just lose a field the way blanking `location`
-  does, it silently changes which note this posting maps to. A hostile posting
-  forging only `company` would still create a note (since `upsert`'s blank-identity
-  gate refuses only when BOTH are blank), but under a corrupted identity — and a
-  LATER, legitimate re-scrape of the same real posting, with its real company name
-  intact, would then fail to match that note at all and create a second, unlinked
-  one for what is really one job. So: an unsafe `company` OR `role` makes
-  `_render_new`'s caller (`upsert`) refuse the create entirely — the same `refused`
-  outcome path `upsert`'s own blank-identity gate already uses, extended one step
-  earlier, still per-item isolated (skips this one lead, does not abort the ingest
-  batch). The other five fields keep the abstain-and-blank-and-log treatment
-  unchanged, since none of them affects identity.
+  **`company`/`role` get a THIRD, distinct test case — a narrower guard than the
+  other five fields, checked against a NEWLINE, not a bare quote.** Per decision 7's
+  round-3 correction: an embedded newline in `company` OR `role` (checked
+  individually — this is a NEW pre-check ahead of `upsert`'s own OR-based
+  blank-identity gate, not a reuse of it) refuses the whole create via `upsert`'s
+  `refused` outcome, never reaching `_render_new`. Required cases, all new: (a) an
+  embedded newline in `company` alone (role safe) refuses — the mixed-field case
+  that pins the new check is genuinely OR-based, since a naive AND-based
+  implementation (mirroring the existing blank-identity gate) would wrongly let it
+  through; (b) symmetric case with `role` alone; (c) **a `company` MERELY containing
+  a quote character, no newline, must still create successfully** — pinning
+  compatibility with the existing `tests/test_vault.py::
+  test_upsert_still_creates_a_lead_whose_field_merely_CONTAINS_quotes`, since this
+  design's whole point is closing the newline-forgery vector without regressing
+  that already-shipped, deliberately-designed tolerance. Case (c) is what a
+  round-3 review caught missing from the first draft, which would have reused
+  `frontmatter_safe()`'s full definition (quotes included) and broken that existing
+  test outright. The other five fields (`location`/`salary`/`role_type`/`url`/
+  `source`) keep `frontmatter_safe()`'s full definition and the abstain-and-blank
+  treatment unchanged, since none of them has an equivalent existing quote-tolerance
+  test and none of them affects identity.
 - `tests/test_leads_dismiss_cli.py` — `leads dismiss`'s outcome→rc mapping.
 - Extend `tests/test_apply_record.py`/`tests/test_apply_record_cli.py` for the `ats`
   guard, the `require_status` refusal, and the new `ats_dropped` line.
@@ -790,12 +875,22 @@ call in `_render_new`'s new guard; **the `frontmatter_safe` call on `ats` in
 `apply/record.py`** (decision 8 — `/review-plan`'s round-2 generalist reviewer caught
 this list omitted it despite the guard being structurally identical to `_render_new`'s,
 which the list did name); the `require_pending` comparison in `Vault.sign_off`; the
-confirm-token comparison in `cv_signoff`; **`note_appended`'s pre-write-snapshot
-derivation** (decision 5 — round-2 invariant review caught the first draft's
-post-write-re-read version was unfalsifiable by construction, since it can't
-distinguish "I appended it" from "it was already there"; mutating the snapshot check
-away must turn its named test red, not just read as plausible). Each guard's removal
-must turn its named test red, confirmed by running that test by node ID.
+confirm-token comparison in `cv_signoff`; **`note_appended`'s composite derivation**
+(decision 5 — round-2 invariant review caught the first draft's post-write-re-read
+version was unfalsifiable by construction, since it can't distinguish "I appended
+it" from "it was already there"; round-3 review then caught the SNAPSHOT-only fix
+that replaced it could itself report `note_appended: true` for a race LOSER whose
+write actually no-op'd — dropping either half of the composite, `(tag not in
+snapshot) and wrote`, must independently turn Testing item 12a's per-round
+`note_appended` assertion red, not just the outcome assertion); **the company/role
+newline-refusal branch in `upsert`'s new pre-check** (decision 7 — round-3 review
+caught this list still named only the generic `_render_new` guard after decision 7
+was corrected twice this round; deleting the newline check, or widening it back to
+`frontmatter_safe()`'s full quote-rejecting definition, must independently turn
+both the mixed-field OR-behavior test and the quote-tolerance regression test red).
+Each
+guard's removal must turn its named test red, confirmed by running that test by node
+ID.
 
 All synthetic titles come from the existing seeded `titles`/`cfg_titles` faker
 fixtures, never hardcoded — matching #105's own testing rule.
@@ -924,9 +1019,80 @@ fixtures, never hardcoded — matching #105's own testing rule.
   hostname the Problem section had copied verbatim from the issue's own text — put
   to the repo owner directly per the standing escalate-neutrally rule, since a local
   review cannot tell whether a string is a real personal host or an invented
-  illustration. Confirmed real; replaced with the repo's own established
-  `<host>`/`<user>` placeholder convention (matching `sluice.yaml.example` and
-  `docs/CONFIGURATION.md`). Stated here structurally only — the specific string
-  itself is deliberately not repeated in this changelog entry, matching this
-  project's own #56 lesson that describing a remediation can leak worse than the
-  thing it remediated.
+  illustration. Confirmed real; replaced with angle-bracket placeholders in the same
+  spirit as this repo's own established redaction convention (`SECURITY.md`'s
+  `<host>`/`<path>` rule, `core/backends.py`'s secrets map) — the exact tokens here
+  (`<host>`/`<user>`) are chosen to fit an ssh/docker/gosu one-liner rather than a
+  literal reuse of that convention's own two tokens. Stated here structurally only —
+  the specific string itself is deliberately not repeated in this changelog entry,
+  matching this project's own #56 lesson that describing a remediation can leak
+  worse than the thing it remediated.
+- 2026-08-14: Revised after a second `/review-plan` (5 reviewers: 1 Critical, 3
+  High, 2 Medium — this entry was itself missing until round 3 caught it, see
+  below). The Critical: round 1's forced-interleaving concurrency-test design (a
+  `threading.Event` blocking `Vault.update_fields` mid-transform) turned out to
+  have no real seam — verified `update_fields` is a synchronous trampoline into a
+  private `_cas_write` with the guard logic in a closure local to itself, so a
+  double could only patch private internals or reimplement the guard (defeating
+  the test); replaced entirely with 50 rounds of real `ThreadPoolExecutor`
+  concurrent execution, this codebase's own already-proven approach to exactly
+  this class of property. The architect reviewer found `cv_signoff`'s promised
+  `candidates` slug list had no source — `Sluice.sign_off_cv` returns a bare
+  2-tuple, and `cmd_cv_signoff` unpacks it strictly, so the round-1 fix's claim of
+  "no CLI change needed" was false; fixed with a `SignOffResult` dataclass,
+  matching `DismissResult`/`CreateLeadResult`'s established shape, and the one
+  real `cli.py` line this touches named explicitly. The generalist reviewer found
+  `out_of_scope_verdict`'s signature had nowhere to put the query string
+  `slug_matches` actually needs; fixed by threading `wanted` through explicitly.
+  The neutrality reviewer found round 1's OWN changelog entry (above) had re-typed
+  the hostname it was describing the removal of — fixed by rewriting that entry to
+  describe the fix structurally with no literal string at all, and an
+  under-marked illustrative slug was swapped for this document's own established
+  fake-data convention. Also fixed: `note_appended`'s post-write re-read couldn't
+  distinguish "appended" from "already there" (moved to a pre-write-snapshot
+  derivation); `_render_new`'s abstain-and-log treated `company`/`role` the same
+  as the other five fields, but those two ARE the vault's identity key, so
+  silently blanking one on an unsafe value risked splitting one real job into two
+  disconnected notes on a later legitimate re-scrape (changed to refuse the whole
+  create instead — a fix round 3 would go on to find was itself incomplete, see
+  below); the mutation-verified list and DoD were updated to match every fix
+  above.
+- 2026-08-14: Revised after a third `/review-plan` (5 reviewers: 0 Critical, 6
+  High, 2 Medium, 2 Low). No self-contradictions this round — every High was a
+  genuine correctness gap in round 2's OWN new fixes, the exact pattern round 3's
+  prompts asked reviewers to hunt for. Two reviewers independently caught that
+  round 2's `company`/`role` fix, as written, would have reused
+  `frontmatter_safe()`'s full definition (rejecting any embedded quote) and broken
+  an EXISTING, already-shipped, deliberately-designed test —
+  `test_upsert_still_creates_a_lead_whose_field_merely_CONTAINS_quotes` — whose
+  own docstring states the actual governing principle for this code path: only a
+  value that parses back EMPTY may be refused. Also caught: `upsert`'s existing
+  blank-identity gate is OR-satisfied and cannot catch a single-field-unsafe case
+  at all, so the claimed reuse of "the same refused outcome path" never actually
+  fired for the scenario the fix was written to close. Corrected with a genuinely
+  narrower, NEW pre-check: reject `company`/`role` only on an embedded newline
+  (the actual key-forging vector), explicitly tolerating embedded quotes exactly
+  as the existing unguarded behavior already does — three distinct test cases
+  added (mixed-field OR-behavior, its symmetric case, and the quote-tolerance
+  regression pin). Two reviewers independently found `note_appended`'s round-2
+  pre-write-snapshot fix could itself misfire: a race LOSER's snapshot correctly
+  shows the tag absent before it reads, but its own write then loses the CAS race
+  and commits nothing — reporting a self-contradictory `note_appended: true`
+  alongside `outcome: "unchanged"`; fixed with a composite,
+  `(tag not in snapshot) and wrote`, and Testing item 12a now asserts
+  `note_appended` per round, not only the outcome. The test-engineer reviewer
+  found the 50-round concurrency test named no synchronization mechanism to force
+  real overlap, risking round 1's exact "passes vacuously" defect one layer down;
+  fixed with a `threading.Barrier(2)` per round, mirroring a technique already
+  measured in this repo's own `test_store_contract.py` rather than inventing a
+  new one. Three reviewers independently found `SignOffResult` (introduced last
+  round) was absent from the copy-pasteable `core/app.py` code block, which still
+  carried a stale "one rename" section header from before that round's own
+  `_DISMISSABLE_FROM` fix — both corrected, with `sign_off_cv`'s new signature
+  added to the block. Also fixed: this Changelog was genuinely missing its own
+  round-2 entry (caught independently by two reviewers) — added above, once
+  reconstructed accurately rather than left as a placeholder; a citation for the
+  hostname-redaction convention named files that don't actually contain that
+  literal, corrected to the files that do; the `VaultConflict`/`_RMW_RACE_RETRIES`
+  assumption underlying the 50-round test's binary pass/fail framing is now
+  stated and cited explicitly rather than left implicit.
