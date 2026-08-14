@@ -1,11 +1,13 @@
-"""MCP registration contract (#105): `tools/list` reflects the real four tools --
-names, and schemas that never leak the injected `sluice` parameter (the property
-decision #4's nested-closure shape in sluice/mcpserver.py exists to guarantee) -- and
-a real `call_tool(...)` round-trips through the SDK's own dispatch into the real
-functions. Mirrors tests/functional/test_cli_contract.py's precedent of proving a
-structural property against the REAL wiring rather than a hand-rolled stand-in. No
-subprocess, no stdio, no network: `mcp.Client`'s in-memory transport drives the
-server object directly.
+"""MCP registration contract (#105, extended by #131): `tools/list` reflects the real
+tools -- the original four under the default write=False, all nine (plus the five
+write tools) under write=True -- names, and schemas that never leak the injected
+`sluice` parameter (the property decision #4's nested-closure shape in
+sluice/mcpserver.py exists to guarantee) -- and a real `call_tool(...)` round-trips
+through the SDK's own dispatch into the real functions, including one full
+dismiss_lead write and a concurrency sanity check. Mirrors
+tests/functional/test_cli_contract.py's precedent of proving a structural property
+against the REAL wiring rather than a hand-rolled stand-in. No subprocess, no stdio,
+no network: `mcp.Client`'s in-memory transport drives the server object directly.
 
 No `async def test_...`: this repo carries no pytest-asyncio dependency (`test` adds
 only `mcp`, `pytest`, `faker`, `pytest-cov`, `jinja2`, `setuptools`, `build`), so each
@@ -173,3 +175,104 @@ def test_call_tool_reports_a_real_sdk_error_for_a_tool_level_exception(tmp_path)
     result = asyncio.run(_run())
     assert result.is_error is True
     assert "not-a-real-status" in result.content[0].text
+
+
+# #131: the five write tools (dismiss_lead, apply_record, cv_run, cv_signoff,
+# create_lead) are registered only when build_server(config, write=True) is called --
+# the tests above all use the default write=False and so never see them. The two
+# tools/list tests below prove that omission/inclusion is REAL at the SDK layer (a
+# reviewer could accept Task 11's `if write:` structure while still doubting whether
+# tools/list genuinely reflects it), and the round-trip tests below that prove one
+# write tool's dispatch and a concurrency sanity check both work end-to-end through
+# the real SDK, not just via the direct-call unit tests in tests/test_mcpserver.py.
+
+def test_tools_list_under_default_write_false_returns_exactly_the_original_four():
+    async def _run():
+        from mcp import Client
+        server = build_server(Config())   # write defaults to False
+        async with Client(server, raise_exceptions=True) as client:
+            return await client.list_tools()
+
+    result = asyncio.run(_run())
+    names = {t.name for t in result.tools}
+    assert names == {"list_leads", "get_lead", "doctor", "health"}, (
+        "the five write tools must be genuinely ABSENT from tools/list under the "
+        "default (no --write) registration, not merely refusing at call time")
+
+
+def test_tools_list_under_write_true_returns_all_nine_with_exact_schemas():
+    async def _run():
+        from mcp import Client
+        server = build_server(Config(), write=True)
+        async with Client(server, raise_exceptions=True) as client:
+            return await client.list_tools()
+
+    result = asyncio.run(_run())
+    by_name = {t.name: t for t in result.tools}
+    assert set(by_name) == {
+        "list_leads", "get_lead", "doctor", "health",
+        "dismiss_lead", "apply_record", "cv_run", "cv_signoff", "create_lead",
+    }
+    for tool in by_name.values():
+        props = tool.input_schema.get("properties", {})
+        assert "sluice" not in props, (
+            f"{tool.name}'s schema leaked the injected `sluice` parameter: {props}")
+    assert set(by_name["dismiss_lead"].input_schema["properties"]) == {"lead", "reason"}
+    assert "note_tag" not in by_name["dismiss_lead"].input_schema["properties"]
+    assert set(by_name["apply_record"].input_schema["properties"]) == {"lead", "ats", "url"}
+    assert set(by_name["cv_run"].input_schema["properties"]) == {"lead", "backend"}
+    cv_signoff_props = set(by_name["cv_signoff"].input_schema["properties"])
+    assert cv_signoff_props == {"lead", "discard", "confirm_token"}
+    # decision 13: no default makes promote reachable by omission -- discard's own
+    # default (False) plus confirm_token's own default (None) together land on the
+    # needs_confirmation branch, never a silent promote.
+    schema_props = by_name["cv_signoff"].input_schema["properties"]
+    assert schema_props.get("discard", {}).get("default") is False
+    assert schema_props.get("confirm_token", {}).get("default") is None
+    assert set(by_name["create_lead"].input_schema["properties"]) == {
+        "title", "company", "url", "location", "salary", "job_type", "source"}
+
+
+def test_call_tool_dismiss_lead_round_trips_through_the_real_dispatch(tmp_path):
+    v = Vault(str(tmp_path / "vault"))
+    v.upsert(Lead(source="s", search="q", title="Example Role", company="Example Ltd",
+                  url="https://example.invalid/1"))
+    slug = next(n for n in v.read_leads() if n.fm.get("url") == "https://example.invalid/1").slug
+
+    async def _run():
+        from mcp import Client
+        server = build_server(Config(vault_dir=str(tmp_path / "vault")), write=True)
+        async with Client(server, raise_exceptions=True) as client:
+            dismissed = await client.call_tool(
+                "dismiss_lead", {"lead": slug, "reason": "no longer a fit"})
+            fetched = await client.call_tool("get_lead", {"lead": slug})
+            return dismissed, fetched
+
+    dismissed, fetched = asyncio.run(_run())
+    assert json.loads(dismissed.content[0].text)["outcome"] == "dismissed"
+    assert json.loads(fetched.content[0].text)["status"] == "dismiss"
+
+
+def test_call_tool_concurrency_sanity_check_reaches_dismiss_lead_under_overlap(tmp_path):
+    """Decision 17 / Testing item 12: NOT the guard's safety proof -- that's the
+    50-round Barrier test in tests/test_leads_dismiss.py (item 12a), at the
+    Sluice.dismiss_lead layer. This is only a sanity check that the SDK path reaches
+    Sluice.dismiss_lead at all under concurrent dispatch, now that Task 11 confirmed
+    MCPServer genuinely dispatches to separate worker threads."""
+    v = Vault(str(tmp_path / "vault"))
+    v.upsert(Lead(source="s", search="q", title="Example Role", company="Example Ltd",
+                  url="https://example.invalid/1"))
+    slug = next(n for n in v.read_leads() if n.fm.get("url") == "https://example.invalid/1").slug
+
+    async def _run():
+        from mcp import Client
+        server = build_server(Config(vault_dir=str(tmp_path / "vault")), write=True)
+        async with Client(server, raise_exceptions=True) as client:
+            return await asyncio.gather(
+                client.call_tool("dismiss_lead", {"lead": slug, "reason": "r1"}),
+                client.call_tool("dismiss_lead", {"lead": slug, "reason": "r2"}),
+            )
+
+    a, b = asyncio.run(_run())
+    outcomes = sorted(json.loads(r.content[0].text)["outcome"] for r in (a, b))
+    assert outcomes == ["dismissed", "unchanged"]
