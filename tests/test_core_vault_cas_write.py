@@ -34,6 +34,25 @@ def test_cas_write_serializes_two_racing_threads_so_neither_write_is_silently_lo
         with open(path) as f:
             final = f.read()
 
+        # Liveness guard: a worker that raises (VaultConflict, an unexpected
+        # exception, anything) never reaches `_results.append(...)`, so
+        # `results` would silently end up short -- and the per-entry loop
+        # below iterates however many entries ARE there, so it would pass
+        # vacuously (0 or 1 entries) while a thread died. Both threads must
+        # actually finish and report.
+        assert len(results) == 2, (
+            f"round {round_no}: expected both worker threads to report a "
+            f"result, got {results} -- a thread must have raised instead of "
+            f"reaching _results.append (final content: {final!r})")
+
+        # Liveness guard: the per-entry loop below also passes vacuously if
+        # _cas_write never actually wrote anything at all (both threads
+        # False, final still "BASE") -- assert real work happened.
+        wrote_true = [tag for tag, wrote in results if wrote is True]
+        assert wrote_true, (
+            f"round {round_no}: neither thread reported a committed write, "
+            f"got {results} (final content unchanged: {final!r})")
+
         # Each thread's transform appends its OWN distinct tag, so it is never a
         # no-op relative to ANY prior state -- unlike a "set field to constant"
         # transform, there is no state from which re-deriving against fresh
