@@ -1,6 +1,9 @@
 """sluice/mcpserver.py -- a Model Context Protocol server: a second front-end over
 `Sluice`, exposing four read-only tools (list_leads, get_lead, doctor, health) to an
-MCP client (e.g. Claude Code) over stdio (#105).
+MCP client (e.g. Claude Code) over stdio (#105), plus five write-capable tools
+(dismiss_lead, apply_record, cv_run, cv_signoff, create_lead) registered only when
+`build_server`/`serve` is called with write=True -- i.e. `job-sluice mcp serve
+--write` (#131).
 
 The `mcp` package is imported in exactly ONE place: inside `build_server()`'s own
 function body. See docs/superpowers/plans/2026-08-12-mcp-server.md's Global Constraints
@@ -385,21 +388,33 @@ def create_lead(sluice: Sluice, title: str, company: str, url: str, location: st
     return out
 
 
-def build_server(config):
-    """Build one `Sluice(config)`, register the four tools against it, and return
-    the constructed (NOT yet running) MCPServer. `mcp` is imported HERE and nowhere
-    else -- see the module docstring. `serve()` below is the live-process entry
-    point; tests reach this function directly (via the SDK's in-memory `Client`)
-    so they never have to block on `.run()`.
+def build_server(config, write: bool = False):
+    """Build one `Sluice(config)`, register the four read tools always plus, when
+    write=True, the five write-capable tools (#131) -- dismiss_lead, apply_record,
+    cv_run, cv_signoff, create_lead -- and return the constructed (NOT yet running)
+    MCPServer. `mcp` is imported HERE and nowhere else -- see the module docstring.
 
-    `Sluice(config)` is built ONCE, matching how every `cmd_*` in cli.py builds
-    exactly one `Sluice(config)` per invocation. Unlike a one-shot CLI command,
-    `mcp serve` is long-running: an edited `sluice.yaml` is picked up only on the
-    next restart, not live. Whether MCPServer's stdio transport can dispatch
-    overlapping tool calls against this one shared `Sluice` is not verified here;
-    believed benign for this read-only slice (see the design doc's Architecture
-    section) but not an assumption a future write-tools slice may inherit for
-    free."""
+    write=False is the default: every existing `claude mcp add job-sluice --
+    job-sluice mcp serve` registration stays read-only across this upgrade, and a
+    read-only server's tools/list genuinely omits the five write tools' names and
+    schemas too, not merely refusing them at call time -- shrinking what an agent
+    steered by prompt-injected content it just read through get_lead could even
+    attempt to call. `write` is a flag on `serve`, not a config key: a
+    per-registration trust decision about one client, not a property of the install.
+
+    Verified live, 2026-08-14, against a real `mcp==2.0.0` install: `MCPServer`
+    dispatches a sync `@tool`-decorated function to an AnyIO WORKER THREAD, never
+    inline on the event loop -- two concurrent `call_tool` requests genuinely
+    overlap (measured directly: two 0.3s tool calls fired via `asyncio.gather`
+    completed in ~0.3s total, on two distinct "AnyIO worker thread" threads, not
+    serialized on the main thread). This is an ERGONOMICS fact (a long cv_run does
+    NOT block other tool calls), not a safety one: every write this module can
+    reach is a single CAS transaction whose decision inputs are re-read INSIDE the
+    transform (require_status, require_blank, require_pending, upsert's O_EXCL
+    create), so real concurrent dispatch is exactly the condition
+    tests/test_leads_dismiss.py's 50-round Barrier proof and
+    tests/functional/test_mcp_contract.py's asyncio.gather sanity check are
+    validating against -- replaces #105's open dispatch-model caveat."""
     try:
         from mcp.server.mcpserver import MCPServer
     except ImportError as e:
@@ -439,9 +454,48 @@ def build_server(config):
         """Per-source scrape baseline + retire state."""
         return health(sluice)
 
+    if write:
+        @mcp_server.tool(name="dismiss_lead")
+        def dismiss_lead_tool(lead: str, reason: str) -> dict:
+            """Dismiss `lead` (exact slug match -- resolve it first via get_lead)
+            with `reason` recorded on the note."""
+            return dismiss_lead(sluice, lead, reason)
+
+        @mcp_server.tool(name="apply_record")
+        def apply_record_tool(lead: str, ats: str | None = None,
+                              url: str | None = None) -> dict:
+            """Record a sent application: shortlist -> applied."""
+            return apply_record(sluice, lead, ats=ats, url=url)
+
+        @mcp_server.tool(name="cv_run")
+        def cv_run_tool(lead: str, backend: str = "auto") -> dict:
+            """Compose and render a CV for one shortlisted lead. The composed text
+            itself is never returned, only violations/audit_flags/served/
+            dossier_failed."""
+            return cv_run(sluice, lead, backend=backend)
+
+        @mcp_server.tool(name="cv_signoff")
+        def cv_signoff_tool(lead: str, discard: bool = False,
+                            confirm_token: str | None = None) -> dict:
+            """Resolve a sign-off hold. discard=True clears it outright. Promoting
+            (discard=False) needs TWO calls: the first (no confirm_token) writes
+            nothing and returns a confirm_token bound to the claims; relay the
+            claims to a human, get approval, then call again with confirm_token to
+            promote."""
+            return cv_signoff(sluice, lead, discard=discard, confirm_token=confirm_token)
+
+        @mcp_server.tool(name="create_lead")
+        def create_lead_tool(title: str, company: str, url: str, location: str = "",
+                             salary: str = "", job_type: str = "",
+                             source: str = "manual") -> dict:
+            """Create a new lead note directly, for a job a human found that no
+            scanner ingested. Lands at status=new; run triage to promote it."""
+            return create_lead(sluice, title, company, url, location=location,
+                               salary=salary, job_type=job_type, source=source)
+
     return mcp_server
 
 
-def serve(config) -> None:
+def serve(config, write: bool = False) -> None:
     """Run the MCP server over stdio for the rest of the process's life."""
-    build_server(config).run("stdio")
+    build_server(config, write=write).run("stdio")

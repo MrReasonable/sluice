@@ -381,7 +381,7 @@ def test_serve_builds_the_server_and_runs_it_over_stdio(monkeypatch):
         def run(self, transport):
             calls.append(transport)
 
-    monkeypatch.setattr(mcpserver_mod, "build_server", lambda config: _FakeMcpServer())
+    monkeypatch.setattr(mcpserver_mod, "build_server", lambda config, write=False: _FakeMcpServer())
     mcpserver_mod.serve(object())
     assert calls == ["stdio"]
 
@@ -396,7 +396,7 @@ def test_cmd_mcp_serve_returns_0_on_the_success_path(monkeypatch):
     from sluice.cli import _build_parser, cmd_mcp_serve
     from sluice.core.config import Config
 
-    monkeypatch.setattr(mcpserver_mod, "serve", lambda config: None)
+    monkeypatch.setattr(mcpserver_mod, "serve", lambda config, write=False: None)
     args = _build_parser().parse_args(["mcp", "serve"])
     assert cmd_mcp_serve(args, Config()) == 0
 
@@ -826,3 +826,50 @@ def test_create_lead_tool_refused_reports_no_slug(tmp_path):
                       url="https://example.invalid/1")
     assert out["outcome"] == "refused"
     assert "slug" not in out
+
+
+# ── isolation sweep (decision 2) ─────────────────────────────────────────────
+
+def test_mcpserver_imports_from_sluice_only_within_an_explicit_allow_list():
+    """The isolation sweep: sluice/mcpserver.py may import from `sluice.` ONLY the
+    names on this allow-list -- proving, structurally, that no write tool can reach
+    a lower-level write path (cv.engine, vault, apply.record) directly instead of
+    through a Sluice method. Asserts on SCOPE (>=N imported NAMES examined across
+    every `sluice.`-prefixed import statement, not just >=1 import statement), so
+    a broken matcher cannot pass vacuously -- mirrors the existing mcp-import
+    sweep's shape from #105. Counting individual `alias` nodes rather than
+    `ImportFrom` statements matters here: this module's final shape has only 3
+    such statements (`sluice.core.app`, `sluice.core.leads`, `sluice.core.status`)
+    but 7 names imported across them (Sluice; UNTRUSTED_SCRAPED_CONTENT_WARNING,
+    UNTRUSTED_DERIVED_CONTENT_WARNING, out_of_scope_verdict, slug_matches;
+    CANONICAL, TRIAGE_OWNED, normalize) -- counting statements alone would make
+    this assertion far too easy to satisfy vacuously with a near-empty file."""
+    import ast
+    import inspect
+
+    ALLOWED = {
+        "sluice.core.app", "sluice.core.leads", "sluice.core.status",
+    }
+    tree = ast.parse(inspect.getsource(mcpserver_mod))
+    seen = 0
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module and \
+                node.module.startswith("sluice."):
+            assert node.module in ALLOWED, (
+                f"sluice/mcpserver.py imported {node.module!r}, outside the "
+                f"allow-list {sorted(ALLOWED)} -- every write must route through a "
+                f"Sluice method, never a lower-level module directly")
+            seen += len(node.names)
+    assert seen >= 5, "the sweep examined suspiciously few sluice. imports -- broken matcher?"
+
+
+# ── write-flag registration ──────────────────────────────────────────────────
+
+def test_build_server_accepts_a_write_parameter():
+    """Only the signature is checked here. The behavioural proof that write=False
+    omits the five write tools from tools/list lives at the SDK layer
+    (tests/functional/test_mcp_contract.py, Task 12)."""
+    import inspect
+
+    from sluice.mcpserver import build_server
+    assert "write" in inspect.signature(build_server).parameters
