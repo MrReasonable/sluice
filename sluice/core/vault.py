@@ -1763,6 +1763,33 @@ class Vault:
         unchanged: an AttributeError here (or in `Lead`) is not caught by the sink's
         `except OSError` and would abort the whole ingest run, so the coercion coerces
         rather than rejecting. See `core/leads.py:Lead.__post_init__`."""
+        # decision 7, round 3: company/role are the vault's identity key
+        # (_candidate_names' stem = f"{company} - {title}") -- forging a frontmatter
+        # key via an embedded newline in EITHER must refuse the whole create before any
+        # bytes are rendered, never abstain-and-blank (which would silently change
+        # which note a later legitimate re-scrape maps onto, splitting one real job
+        # into two disconnected notes). Checked on the RAW Lead fields, before
+        # _render_new interpolates them: by the time `rendered` exists, an injected
+        # newline has already forged whatever key follows it.
+        #
+        # NARROWER than frontmatter_safe(): only its "not printable" sub-rule (which
+        # already rejects \n, the actual key-forging vector -- str.isprintable() covers
+        # the whole C0/C1 control class) -- deliberately SKIPPING frontmatter_safe's
+        # separate "/\\ structural-character rule, which would refuse
+        # test_upsert_still_creates_a_lead_whose_field_merely_CONTAINS_quotes's pinned
+        # tolerance for an embedded quote in company/role. Sluice's own line-based
+        # _fm_dict/_fm_value reader already tolerates an embedded quote in these two
+        # fields today, unguarded -- that tolerance is product behavior this must not
+        # regress. OR-based (checked individually), not AND: a naive AND-based check
+        # (mirroring the blank-identity gate's own OR-satisfied shape) would let a
+        # single-field-unsafe case through, which is exactly the scenario this exists
+        # to close.
+        if not lead.company.isprintable() or not lead.title.isprintable():
+            _log.warning(
+                "vault refused lead %r: company or role contains a control character "
+                "(e.g. an embedded newline), which could forge a frontmatter key",
+                lead.dedup_key)
+            return "refused"
         rendered = self._render_new(lead)
         # `_split_frontmatter` cannot return None for `_render_new`'s output, and if it ever
         # did `_fm_dict(None)` is `{}` -- which refuses. Fails closed either way.
@@ -1908,20 +1935,42 @@ class Vault:
             return f"---\n{inner}\n---\n{body}"
         _cas_write(path, transform)
 
+    def _safe_or_blank(self, value: str, field_name: str, dedup_key: str) -> str:
+        """decision 7: abstain-and-log per field, never raise -- _render_new builds a
+        whole note in one call with no per-field channel to report through the way
+        update_fields's callers have (url_dropped), and Lead.__post_init__'s own
+        discipline is "coerce, never raise": an exception here would abort the whole
+        ingest-sink loop for one malformed scraped row, which this codebase's
+        per-item isolation discipline forbids."""
+        safe = frontmatter_safe(value)
+        if value and safe is None:
+            _log.warning("vault: lead %r's %s was not frontmatter-safe; blanked",
+                         dedup_key, field_name)
+        return safe or ""
+
     def _render_new(self, lead: Lead) -> str:
         first = lead.first_seen or _today()
         last = lead.last_seen or first
+        # decision 7: location/salary/role_type/url/source are the 5 non-identity
+        # interpolated fields -- company/role are guarded separately, one call up,
+        # inside upsert's own new pre-check (see there), since they're the vault's
+        # IDENTITY key and must refuse the whole create rather than abstain-and-blank.
+        location = self._safe_or_blank(lead.location, "location", lead.dedup_key)
+        salary = self._safe_or_blank(lead.salary, "salary", lead.dedup_key)
+        role_type = self._safe_or_blank(lead.job_type, "role_type", lead.dedup_key)
+        url = self._safe_or_blank(lead.url, "url", lead.dedup_key)
+        source = self._safe_or_blank(lead.source, "source", lead.dedup_key)
         inner = "\n".join([
             'base: "[[Job Leads.base]]"',
             f'company: "{lead.company}"',
             f'role: "{lead.title}"',
-            f'location: "{lead.location}"',
+            f'location: "{location}"',
             "status: new",
             "score: 0",
-            f'source: "{lead.source}"',
-            f'salary: "{lead.salary}"',
-            f'role_type: "{lead.job_type}"',
-            f'url: "{lead.url}"',
+            f'source: "{source}"',
+            f'salary: "{salary}"',
+            f'role_type: "{role_type}"',
+            f'url: "{url}"',
             'glassdoor_rating: ""',
             'culture_flags: ""',
             'relevance_notes: ""',
@@ -1931,8 +1980,8 @@ class Vault:
         body = (
             f"# {lead.company} - {lead.title}\n\n"
             f"**Status:** new\n"
-            f"**Location:** {lead.location} | **Salary:** {lead.salary}\n"
-            f"**URL:** {lead.url}\n"
+            f"**Location:** {location} | **Salary:** {salary}\n"
+            f"**URL:** {url}\n"
         )
         return f"---\n{inner}\n---\n\n{body}"
 
