@@ -5,13 +5,23 @@ matching `tests/test_leads_expire.py`'s own rationale for doing the same (a hand
 slug format could pass here while the shipped command matches nothing).
 """
 import dataclasses
+import pathlib
 
 import sluice.mcpserver as mcpserver_mod
 from sluice.core.app import Sluice
 from sluice.core.config import Config
 from sluice.core.leads import UNTRUSTED_SCRAPED_CONTENT_WARNING, Lead
 from sluice.core.vault import Vault
-from sluice.mcpserver import apply_record, dismiss_lead, doctor, get_lead, health, list_leads
+from sluice.mcpserver import (
+    apply_record,
+    cv_run,
+    cv_signoff,
+    dismiss_lead,
+    doctor,
+    get_lead,
+    health,
+    list_leads,
+)
 
 
 def _lead(company="Example Ltd", title="Example Role", url="https://example.invalid/1"):
@@ -481,3 +491,207 @@ def test_apply_record_tool_recorded_with_quoted_ats_and_dropped_flags(tmp_path):
     assert "ats" not in out["fields"]
     assert out["ats_dropped"] is True
     assert out["fields"]["applied_url"] == "https://x/apply"
+
+
+# ── cv_run ───────────────────────────────────────────────────────────────────
+
+def _cv_app(store, cv_out="unused", audit_out="supported\tx\tSF1"):
+    """A Sluice wired for a real (non-dry-run) compose_cv call. backend/renderer
+    are injected via the constructor's seam-override mechanism (the same one
+    store= already uses) -- FakeBackend/FakeRenderer are imported from
+    tests/test_cv_engine.py, this module's own established fakes for exactly
+    this purpose, not reinvented here."""
+    from tests.test_cv_engine import FakeBackend, FakeRenderer
+    return Sluice(Config(), store=store, backend=FakeBackend(cv_out, audit_out),
+                 renderer=FakeRenderer())
+
+
+def test_cv_run_tool_not_found(tmp_path):
+    app = _cv_app(Vault(str(tmp_path)))
+    out = cv_run(app, "nothing here")
+    assert out == {"outcome": "not_found"}
+
+
+def test_cv_run_tool_out_of_scope_for_a_dismissed_lead(tmp_path):
+    slug = _seed(tmp_path, status="dismiss")
+    app = _cv_app(Vault(str(tmp_path)))
+    out = cv_run(app, slug)
+    assert out["outcome"] == "out_of_scope"
+    assert out["status"] == "dismiss"
+
+
+def test_cv_run_tool_ambiguous_names_slug_candidates(tmp_path):
+    """Round-2 review finding: this branch (the same hand-inlined-resolve shape as
+    apply_record's ambiguous branch) had zero coverage -- deleting it left the
+    suite green while `results[0]` silently picked one arbitrary candidate's
+    skipped-ambiguous verdict, dropping the candidates list entirely. compose_cv's
+    own skipped-ambiguous refusal fires before any backend/render call, so the
+    FakeBackend/FakeRenderer this fixture wires are never invoked either way."""
+    import pathlib
+    leads = pathlib.Path(tmp_path) / "Job Applications" / "Job Leads"
+    fm = ('company: "Example Northgate"\nrole: "Analyst"\nstatus: shortlist\n'
+         'url: "https://example.invalid/1"')
+    for sub in ("Active", "Archive"):
+        d = leads / sub
+        d.mkdir(parents=True)
+        (d / "Example Northgate - Analyst.md").write_text("---\n" + fm + "\n---\n\nBODY\n")
+    slug = "Example Northgate - Analyst"
+    app = _cv_app(Vault(str(tmp_path)))
+    out = cv_run(app, slug)
+    assert out == {"outcome": "ambiguous", "candidates": [slug, slug]}
+
+
+def test_cv_run_tool_skipped_needs_signoff_for_a_lead_already_holding_pending_cv(monkeypatch):
+    """The single most important test in this slice (Testing item 6): proves the
+    #60 latch survives the MCP path unweakened. run_one checks pending_cv BEFORE
+    any dossier fetch or compose (verified directly, sluice/cv/engine.py:88), so
+    a minimal store carrying just read_leads/read_experience_entries/read_baseline
+    is enough -- the fabrication gate never reaches far enough to need more."""
+    from tests.test_cv_engine import FakeCache, Note, _cfg
+
+    note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst",
+                "pending_cv": "CV_deadbeef.pdf (2026-08-14)"},
+               path="Job Applications/Job Leads/Example Foundry - Analyst.md")
+
+    class _MinimalCvStore:
+        def read_leads(self, statuses=None):
+            return [note]
+        def read_experience_entries(self, verified_only=True):
+            return []
+        def read_baseline(self):
+            return "BASELINE"
+
+    app = _cv_app(_MinimalCvStore())
+    monkeypatch.setattr(app, "dossier_cache", lambda *a, **k: FakeCache())
+    monkeypatch.setattr("sluice.cv.config.load_cv_config", _cfg)
+
+    out = cv_run(app, "Example Foundry - Analyst")
+    assert out["outcome"] == "skipped-needs-signoff"
+    assert "content_warning" not in out
+    assert "text" not in out and "cv" not in out and "content" not in out
+
+
+def test_cv_run_tool_skipped_selection_for_a_non_shortlist_lead(monkeypatch):
+    """decision 4: cv_run's own resolution scopes to {"shortlist"} ONLY (unlike
+    cv_signoff's wide TRIAGE_OWNED scope) -- a "research" lead is out_of_scope, not
+    skipped-selection, since compose_cv's store.read_leads({"shortlist"}) never
+    even fetches it. Confirms the out_of_scope path, not run_one's own internal
+    (unreachable-via-cv_run) skipped-selection branch.
+
+    Two corrections to the fixture verified directly against the real contracts it
+    stands in for, both load-bearing for this test to prove what its own docstring
+    claims (neither affects any other test in this file):
+
+    (1) `_MinimalCvStore.read_leads` must actually FILTER by `statuses`, mirroring
+        `Vault.read_leads` (sluice/core/vault.py:944-958). A `read_leads` that
+        returns the note unconditionally would let compose_cv's OWN
+        `store.read_leads({"shortlist"})` find this "research" note anyway, so
+        `results` would be non-empty and cv_run would return the note's real
+        `run_one` verdict (skipped-selection) instead of ever reaching the
+        out_of_scope fallback this test exists to prove.
+    (2) The note needs a real `.status` attribute, not just `fm["status"]`.
+        `out_of_scope_verdict` reads `n.status` directly (core/leads.py:397) --
+        the real `LeadNote` contract's own field (core/protocols.py), distinct
+        from `.fm`. tests/test_cv_engine.py's `Note` stand-in never needed one
+        (run_one only reads `fm.get("status")`), so it is set here explicitly
+        rather than widening that shared fixture for one caller.
+    """
+    from tests.test_cv_engine import FakeCache, Note, _cfg
+
+    note = Note({"status": "research", "company": "Example Foundry", "role": "Analyst"},
+               path="Job Applications/Job Leads/Example Foundry - Analyst.md")
+    note.status = "research"
+
+    class _MinimalCvStore:
+        def read_leads(self, statuses=None):
+            if statuses and note.fm.get("status") not in statuses:
+                return []
+            return [note]
+        def read_experience_entries(self, verified_only=True):
+            return []
+        def read_baseline(self):
+            return "BASELINE"
+
+    app = _cv_app(_MinimalCvStore())
+    monkeypatch.setattr(app, "dossier_cache", lambda *a, **k: FakeCache())
+    monkeypatch.setattr("sluice.cv.config.load_cv_config", _cfg)
+
+    out = cv_run(app, "Example Foundry - Analyst")
+    assert out["outcome"] == "out_of_scope"
+    assert out["status"] == "research"
+
+
+# ── cv_signoff ───────────────────────────────────────────────────────────────
+
+def test_cv_signoff_tool_discard_returns_claims_with_content_warning(tmp_path):
+    v = Vault(str(tmp_path))
+    slug = _seed(tmp_path, status="shortlist")
+    note = v.read_leads()[0]
+    v.hold_for_signoff(note.ref, pending="CV_deadbeef.pdf (2026-08-14)",
+                       claims='["unsupported claim"]')
+    out = cv_signoff(_app(tmp_path), slug, discard=True)
+    assert out["outcome"] == "discarded"
+    assert out["claims"] == ["unsupported claim"]
+    assert "content_warning" in out
+
+
+def test_cv_signoff_tool_needs_confirmation_writes_nothing(tmp_path):
+    v = Vault(str(tmp_path))
+    slug = _seed(tmp_path, status="shortlist")
+    note = v.read_leads()[0]
+    v.hold_for_signoff(note.ref, pending="CV_deadbeef.pdf (2026-08-14)",
+                       claims='["unsupported claim"]')
+    out = cv_signoff(_app(tmp_path), slug)
+    assert out["outcome"] == "needs_confirmation"
+    assert out["pending_cv"] == "CV_deadbeef.pdf (2026-08-14)"
+    assert out["claims"] == ["unsupported claim"]
+    assert "confirm_token" in out and out["confirm_token"]
+    text = pathlib.Path(v.read_leads()[0].ref).read_text()
+    assert "pending_cv:" in text and "tailored_cv:" not in text   # NOTHING written
+
+
+def test_cv_signoff_tool_token_promotes_on_a_second_call(tmp_path):
+    v = Vault(str(tmp_path))
+    slug = _seed(tmp_path, status="shortlist")
+    note = v.read_leads()[0]
+    v.hold_for_signoff(note.ref, pending="CV_deadbeef.pdf (2026-08-14)",
+                       claims='["unsupported claim"]')
+    app = _app(tmp_path)
+    first = cv_signoff(app, slug)
+    second = cv_signoff(app, slug, confirm_token=first["confirm_token"])
+    assert second["outcome"] == "promoted"
+    text = pathlib.Path(Vault(str(tmp_path)).read_leads()[0].ref).read_text()
+    assert "tailored_cv:" in text and "pending_cv:" not in text
+
+
+def test_cv_signoff_tool_stale_token_after_a_re_hold_writes_nothing(tmp_path):
+    v = Vault(str(tmp_path))
+    slug = _seed(tmp_path, status="shortlist")
+    note = v.read_leads()[0]
+    v.hold_for_signoff(note.ref, pending="CV_first.pdf (2026-08-14)",
+                       claims='["claim one"]')
+    app = _app(tmp_path)
+    first = cv_signoff(app, slug)
+    # A re-compose interleaves: a NEW hold with different pending/claims lands before
+    # the second call arrives.
+    v.sign_off(note.ref, accept=False)   # discard the first hold
+    v.hold_for_signoff(note.ref, pending="CV_second.pdf (2026-08-14)",
+                       claims='["claim two"]')
+    second = cv_signoff(app, slug, confirm_token=first["confirm_token"])
+    assert second["outcome"] == "stale_confirmation"
+    assert second["pending_cv"] == "CV_second.pdf (2026-08-14)"
+    assert "confirm_token" in second
+    text = pathlib.Path(Vault(str(tmp_path)).read_leads()[0].ref).read_text()
+    assert "tailored_cv:" not in text   # still nothing promoted
+
+
+def test_cv_signoff_tool_resolves_a_held_lead_in_dismiss_status(tmp_path):
+    """decision 4: cv_signoff keeps sign_off_cv's deliberately WIDE TRIAGE_OWNED
+    resolution scope, unlike cv_run's shortlist-only shortlist."""
+    v = Vault(str(tmp_path))
+    slug = _seed(tmp_path, status="dismiss")
+    note = v.read_leads()[0]
+    v.hold_for_signoff(note.ref, pending="CV_deadbeef.pdf (2026-08-14)",
+                       claims='["unsupported claim"]')
+    out = cv_signoff(_app(tmp_path), slug, discard=True)
+    assert out["outcome"] == "discarded"
