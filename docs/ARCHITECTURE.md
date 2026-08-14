@@ -346,9 +346,14 @@ adapters AND drives the pipeline, so a surface no longer constructs a `Vault()`
 or a `Camofox()`, builds a backend, or duplicates the triage/compose/prep/record/
 track wiring itself. `cli.py` is now a thin shell over `Sluice` -- each command
 builds one, calls one method, and formats the result for the terminal -- so a surface
-built today has nothing left in `cli.py` worth forking. `sluice/mcpserver.py` (#105)
-is the first one: a Model Context Protocol server exposing four read-only tools
-(`list_leads`, `get_lead`, `doctor`, `health`) over stdio.
+built today has nothing left in `cli.py` worth forking. `sluice/mcpserver.py` (#105,
+extended #131) is the first one: a Model Context Protocol server exposing four
+read-only tools (`list_leads`, `get_lead`, `doctor`, `health`) always, and five
+write-capable tools (`dismiss_lead`, `apply_record`, `cv_run`, `cv_signoff`,
+`create_lead`) under `--write`. Every write tool is a thin translation layer over
+exactly one `Sluice` write method -- `sluice/mcpserver.py` itself contains no store
+write (AST-enforced) -- so a write tool can never become a second, undocumented
+write path for an invariant `Sluice`'s own methods already hold.
 
 `tests/conformance/test_store_contract.py` is parameterised over every registered
 store and asserts never-clobber (a re-scrape touches only `last_seen`, and that

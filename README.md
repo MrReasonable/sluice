@@ -285,21 +285,35 @@ stream each command writes to: [`docs/USAGE.md`](https://github.com/MrReasonable
 | `job-sluice cv` | compose, gate and render a tailored CV, then sign off on it (`run`, `signoff`) |
 | `job-sluice apply` | stage a CV + prep packet, then record a submitted application (`prep`, `record`) |
 | `job-sluice track` | reconcile the funnel from email + calendar signals (`run`, `confirm`, `dismiss`) |
-| `job-sluice leads` | maintenance passes -- report by default, write only when told (`dedupe`, `expire`, `reconcile`) |
+| `job-sluice leads` | maintenance passes -- report by default, write only when told (`dedupe`, `expire`, `reconcile`); `dismiss` writes unconditionally, like a pipeline command |
 | `job-sluice health` | per-source scrape baseline + retire state |
-| `job-sluice mcp` | run a Model Context Protocol server over stdio, for an agent to drive sluice directly (`serve`) |
+| `job-sluice mcp` | run a Model Context Protocol server over stdio, for an agent to drive sluice directly (`serve [--write]`) |
 
 ## MCP server
 
 `job-sluice mcp serve` runs sluice as a Model Context Protocol server over stdio, so
 an agent (Claude Code or otherwise) can call `list_leads`/`get_lead`/`doctor`/`health`
-directly instead of shelling out to the CLI and parsing its stdout. Read-only for
-now -- see [`docs/ARCHITECTURE.md`](https://github.com/MrReasonable/sluice/blob/main/docs/ARCHITECTURE.md)'s surface/adapter section. Needs `pip install -e '.[mcp]'`.
+directly instead of shelling out to the CLI and parsing its stdout. Read-only by
+default -- see [`docs/ARCHITECTURE.md`](https://github.com/MrReasonable/sluice/blob/main/docs/ARCHITECTURE.md)'s surface/adapter section. Needs `pip install -e '.[mcp]'`.
 
-Register it with Claude Code:
+Pass `--write` to also register five write-capable tools -- `dismiss_lead`,
+`apply_record`, `cv_run`, `cv_signoff`, `create_lead` -- each a thin translation
+layer over one `Sluice` write method, never a raw store write. `--write` is a
+per-registration trust decision about one MCP client, not a property of the
+install: every existing read-only registration is unaffected, and a read-only
+server's `tools/list` genuinely omits the five write tools' names and schemas, not
+merely refusing them at call time.
+
+Register it with Claude Code (read-only):
 
 ```bash
 claude mcp add job-sluice -- job-sluice mcp serve
+```
+
+...or with write tools enabled:
+
+```bash
+claude mcp add job-sluice -- job-sluice mcp serve --write
 ```
 
 ## Rendering prerequisites (`cv.renderer: template` only)

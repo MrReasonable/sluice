@@ -210,6 +210,11 @@ exit 0: `track-dismiss: <cleared|would clear> N entr(y|ies)`.
 
 Maintenance passes. **Report by default; none of these offers `--dry-run`, because the
 default *is* the dry run** — a write happens only with the flag named below.
+**Exception: `leads dismiss` writes unconditionally on every call** (#131), like the
+pipeline commands (`ingest run`/`triage run`/`cv run`/`apply record`/`track run`), not
+like its `leads` siblings — the distinguishing property is whose judgement the write
+encodes: `dismiss` acts on a verdict the user typed (`--lead`/`--reason`), while
+`dedupe`/`expire`/`reconcile` write over a set the TOOL computed.
 
 ### `job-sluice leads dedupe [--merge ID ...] [--json]`
 
@@ -235,6 +240,22 @@ outcome is `no-match`/`conflict`/`unreadable`/`skipped`/`ambiguous`. A lead unde
 `pending_cv` sign-off hold is refused rather than dismissed, since that would silently discard
 a composed CV no human has reviewed yet.
 
+### `job-sluice leads dismiss --lead SLUG --reason REASON`
+
+Dismisses ONE lead by EXACT store-issued slug (never a substring match), with
+`--reason` required and appended to `relevance_notes` under a same-day idempotency
+tag -- a same-day repeat is a real `unchanged`, not a duplicate note. Resolves over
+every triage-owned status, `dismiss` included, so re-dismissing an already-dismissed
+lead is a legitimate no-op rather than a regression. Reuses `Sluice.dismiss_lead`
+verbatim -- the same write path the `dismiss_lead` MCP tool calls (see below).
+Refused (writes nothing) if the slug is ambiguous (a name collision), the lead has
+moved into the application lifecycle, or it is held by a #60 sign-off
+(`pending_cv`) -- resolve that first: `job-sluice cv signoff --lead "<slug>"
+--discard`.
+
+Exit 1 for no match, ambiguous, either refusal, or a lost write race (`conflict`);
+exit 0 for `dismissed` or `unchanged`.
+
 ### `job-sluice leads reconcile [--apply] [--json]`
 
 Reports (or with `--apply`, moves) each lead note into the folder its `status` implies — only
@@ -253,16 +274,44 @@ No flags. Per-source scrape baseline and retire state, one line each:
 
 ## `job-sluice mcp`
 
-### `job-sluice mcp serve`
+### `job-sluice mcp serve [--write]`
 
-No flags. Runs sluice as a Model Context Protocol server over stdio, so an agent (Claude Code
-or otherwise) can call `list_leads`/`get_lead`/`doctor`/`health` directly instead of shelling
-out to the CLI and parsing its stdout. Read-only for now -- see
-[`docs/ARCHITECTURE.md`](ARCHITECTURE.md)'s surface/adapter section. Needs
-`pip install -e '.[mcp]'`; if the `mcp` package is not installed, exits 2 with a stderr message
-naming `job-sluice[mcp]` as the extra to install (see `sluice/mcpserver.py`'s
-`McpNotInstalled`) rather than a traceback. Blocks for the life of the process once started;
-there is no `--dry-run`.
+Runs sluice as a Model Context Protocol server over stdio, so an agent (Claude Code
+or otherwise) can call sluice's tools directly instead of shelling out to the CLI
+and parsing its stdout. Needs `pip install -e '.[mcp]'`; if the `mcp` package is not
+installed, exits 2 with a stderr message naming `job-sluice[mcp]` as the extra to
+install (see `sluice/mcpserver.py`'s `McpNotInstalled`) rather than a traceback.
+Blocks for the life of the process once started; there is no `--dry-run`.
+
+**Without `--write`** (the default), four read-only tools are registered:
+`list_leads`, `get_lead`, `doctor`, `health`.
+
+**With `--write`**, five more tools are registered:
+
+- `dismiss_lead(lead, reason)` -- dismiss one lead by EXACT slug, recording `reason`.
+- `apply_record(lead, ats=None, url=None)` -- record a sent application (shortlist
+  -> applied).
+- `cv_run(lead, backend="auto")` -- compose and render a CV for one shortlisted
+  lead. The composed text itself is never returned in the response.
+- `cv_signoff(lead, discard=False, confirm_token=None)` -- resolve a #60 sign-off
+  hold. `discard=True` clears it outright. **Promoting needs TWO calls**: the first
+  (no `confirm_token`) writes nothing and returns a `confirm_token` bound to the
+  exact claims text; relay the claims to a human, get explicit approval, then call
+  again passing that token back to actually promote. A token whose claims have
+  since changed (a re-compose interleaved) returns `stale_confirmation` with a
+  fresh token, having written nothing.
+- `create_lead(title, company, url, location="", salary="", job_type="",
+  source="manual")` -- create a new lead note directly, for a job a human found
+  that no scanner ingested. Lands at `status: new`; `job-sluice triage run`
+  promotes it from there. Reports `upsert`'s own outcome vocabulary verbatim: two
+  leads sharing company+title (even with different urls) collide onto ONE note, so
+  a second call at the same identity returns `updated` (same url, same posting
+  proven) or `merged` (weaker or no evidence either way) -- either way only
+  `last_seen` is bumped, the new url/salary/location NOT recorded.
+
+`--write` is a per-registration trust decision about one MCP client: every existing
+read-only registration is unaffected, and a read-only server's `tools/list`
+genuinely omits the five write tools, not merely refusing them at call time.
 
 ## `job-sluice init`
 
