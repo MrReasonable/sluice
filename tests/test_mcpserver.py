@@ -401,6 +401,40 @@ def test_cmd_mcp_serve_returns_0_on_the_success_path(monkeypatch):
     assert cmd_mcp_serve(args, Config()) == 0
 
 
+def test_build_parser_mcp_serve_write_flag_sets_args_write_true():
+    """`--write` must parse to `args.write is True` -- the sole channel `cmd_mcp_serve`
+    reads to decide whether to thread `write=True` into `mcpserver.serve`. Bare `mcp
+    serve` (no flag) defaults to False, already covered implicitly by every other test
+    in this file that calls `_build_parser().parse_args(["mcp", "serve"])`."""
+    from sluice.cli import _build_parser
+
+    args = _build_parser().parse_args(["mcp", "serve", "--write"])
+    assert args.write is True
+
+
+def test_cmd_mcp_serve_threads_write_true_to_serve(monkeypatch):
+    """Closes a gap neither test_serve_builds_the_server_and_runs_it_over_stdio nor
+    test_cmd_mcp_serve_returns_0_on_the_success_path covers: both only ever exercise
+    write=False (the lambdas' own default). A regression that silently dropped
+    `write=args.write` from cmd_mcp_serve's call to `mcpserver.serve` -- reverting to
+    a bare `mcpserver.serve(config)` -- would still pass every other test in this
+    file, since `serve`'s own `write` parameter defaults to False too. This spy
+    asserts the actual kwarg VALUE threaded through end to end (parsed args ->
+    cmd_mcp_serve -> serve), not just that the call succeeds."""
+    from sluice.cli import _build_parser, cmd_mcp_serve
+    from sluice.core.config import Config
+
+    captured = {}
+
+    def _spy(config, write=False):
+        captured["write"] = write
+
+    monkeypatch.setattr(mcpserver_mod, "serve", _spy)
+    args = _build_parser().parse_args(["mcp", "serve", "--write"])
+    assert cmd_mcp_serve(args, Config()) == 0
+    assert captured["write"] is True
+
+
 # ── dismiss_lead ─────────────────────────────────────────────────────────────
 
 def test_dismiss_lead_tool_not_found(tmp_path):
