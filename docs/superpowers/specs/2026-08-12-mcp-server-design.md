@@ -387,6 +387,11 @@ Four test surfaces, mirroring this codebase's existing layer split:
 - Any write-capable tool (apply, track, leads dedupe/expire/reconcile, cv signoff) — deferred
   until this slice ships and the write-path routing rule (route through `Vault.update_fields` +
   `require_status`, never a new write path) is proven out in review.
+  (Picked up by #131 — docs/superpowers/specs/2026-08-14-mcp-write-tools-design.md —
+  which shipped `dismiss_lead`/`apply_record`/`cv_run`/`cv_signoff`/`create_lead`
+  behind a new `--write` flag on `mcp serve`. `track run/confirm/dismiss` and batch
+  writes — `leads dedupe/expire/reconcile` — remain deferred, per #131's own Out of
+  scope section.)
 - Any transport beyond local stdio — auth/scoping for a non-stdio transport is explicitly out of
   scope per the issue, named here only so it isn't assumed away.
 - A schema/validation layer beyond what FastMCP infers from type hints — nothing in this slice's
@@ -438,3 +443,6 @@ Four test surfaces, mirroring this codebase's existing layer split:
   requirement added for `Sluice._resolve`'s undocumented no-side-effects constraint; test data
   tied to the existing seeded-faker fixtures; `health_report`'s sort-order test requires ≥2
   sources to be falsifiable.
+- 2026-08-14: #131 (docs/superpowers/specs/2026-08-14-mcp-write-tools-design.md)
+  picked up this slice's deferred write-capable tools, shipping five behind a new
+  `--write` flag on `mcp serve`.

@@ -312,6 +312,12 @@ application-owned state) and passes that same set as `require_status`, which is 
 the invariant when a lead enters the application lifecycle mid-sweep. It is NOT unconditional: a
 lead holding a `pending_cv` sign-off hold (#60) is refused, because dismissing it silently discards
 a composed CV no human has signed off. Any second bulk-dismiss path must refuse the same.
+`Sluice.dismiss_lead()` (#131) is that second writer -- a single-lead dismiss, not a
+bulk sweep, so `expire_report`'s pre-filtering argument does not apply to it; it uses
+its own `_DISMISSABLE_FROM` (the full `TRIAGE_OWNED` set, `dismiss` included) rather
+than `_EXPIRABLE`, and its `pending_cv` sign-off-hold refusal is checked CAS-fresh
+inside the write transform via `require_blank` -- unlike `leads expire`'s equivalent
+refusal, which is still decided from a snapshot.
 
 **Empty config means abstain, not match-nothing.** Every preference gate (`accept_titles`,
 `target_locations`, `reject_companies`, `relevance_keep`/`relevance_drop`, pay floors) defaults to

@@ -271,11 +271,17 @@ explicitly deferred, matching #105's own deferred list.
     never a bare "created."** Two leads sharing company+title (even with different
     URLs — the URL is not part of vault identity, `Vault._candidate_names`'
     `stem = f"{company} - {title}"` is) resolve to the same candidate note name; the
-    second `create_lead` call silently returns `"updated"` — a bare `last_seen` bump,
-    with the incoming url/salary/location **not recorded**. The response's `detail`
-    field says so explicitly rather than smoothing it into generic success —
-    surfacing this collision trap is the single most valuable thing `create_lead`'s
-    response can do, since it's the most likely way this tool surprises a caller.
+    second `create_lead` call silently returns `Vault._reconcile`'s verdict-driven
+    outcome — `"updated"` when the incoming url (or, absent a url match, the
+    location) proves the same posting, `"merged"` when neither does (inconclusive
+    evidence, e.g. two blank locations and no matching url; traced through
+    `core.leads.same_opportunity` returning `UNKNOWN`) — either way a bare
+    `last_seen` bump, with the incoming url/salary/location **not recorded**. Both
+    outcomes are real and reachable, not just the more common `"updated"`. The
+    response's `detail` field says so explicitly rather than smoothing it into
+    generic success — surfacing this collision trap is the single most valuable
+    thing `create_lead`'s response can do, since it's the most likely way this tool
+    surprises a caller.
     `merged_away` vs `merged_away_unproven` stay distinct (#81's own reason: only the
     proven one may ever enter a dedup store). `refused`/`merged_away*` return no
     `slug` — nothing was written. Slug resolution is a post-write re-read matched on
