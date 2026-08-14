@@ -2282,10 +2282,18 @@ def _lock_for(path: str) -> threading.Lock:
     kind of cross-platform, crash-recovery design surface this fix
     deliberately stays out of.
 
-    The registry grows by one entry per unique path ever written for the
-    life of the process; for a personal job-vault's note count (hundreds,
-    not millions) this is not worth adding eviction for."""
-    resolved = os.path.abspath(path)
+    The registry grows by one entry per unique path ever PASSED to
+    _cas_write for the life of the process (including calls that end up
+    being no-ops); for a personal job-vault's note count (hundreds, not
+    millions) this is not worth adding eviction for."""
+    # realpath, not abspath (Minor #4, final whole-branch review): this
+    # module deliberately uses realpath elsewhere for the identical reason
+    # (see write_document's own "realpath, not abspath: a symlink INSIDE the
+    # store..." comment) -- the whole point of this lock is ONE lock object
+    # per real file, and abspath normalizes text but not symlinks, so two
+    # textual paths to the same file would otherwise get two different
+    # locks, silently reintroducing the race this function exists to close.
+    resolved = os.path.realpath(path)
     with _write_locks_guard:
         lock = _write_locks.setdefault(resolved, threading.Lock())
     return lock
