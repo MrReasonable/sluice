@@ -1,5 +1,6 @@
 """Sluice.dismiss_lead(): resolution, CAS guards, note_appended idempotency, and the
 50-round real-concurrency proof (#131 decisions 4, 5, 6, 17)."""
+import os
 import pathlib
 import threading
 
@@ -171,6 +172,43 @@ def test_cas_proof_refuses_on_a_pending_cv_that_appeared_between_resolve_and_wri
     text = pathlib.Path(v.read_leads()[0].ref).read_text()
     assert "status: dismiss" not in text
     assert "pending_cv:" in text
+
+
+def test_cas_proof_refused_status_is_not_masked_as_unchanged_when_the_note_also_moved(
+        tmp_path, monkeypatch):
+    """Minor #11 (final whole-branch review): the post-refusal re-read matched
+    the FRESH note by `n.ref == note.ref` alone. When the note's ref has ALSO
+    changed by the time of that re-read -- e.g. a concurrent `leads reconcile
+    --apply` relocated it to a new folder after its status left TRIAGE_OWNED --
+    the ref-based lookup finds nothing, `fresh` was None, and the code fell
+    back to the STALE pre-write snapshot's status: a genuine refused_status
+    incorrectly reported as the more benign `unchanged`. Reproduced
+    deterministically, mirroring the CAS-proof tests above: update_fields is
+    wrapped to apply BOTH concurrent changes -- the status flip (so
+    require_status refuses) AND the folder move (so the ref-based re-read
+    misses, same filename/slug, different directory) -- inside the one window
+    dismiss_lead cannot see into."""
+    slug = _seed(tmp_path, status="research")
+    app = _app(tmp_path)
+    real_update_fields = Vault.update_fields
+
+    def _racing_update_fields(self, ref, fields, **kwargs):
+        real_update_fields(self, ref, {"status": "applied"})   # concurrent writer #1
+        wrote = real_update_fields(self, ref, fields, **kwargs)
+        # concurrent writer #2: relocate the note -- same filename (so the
+        # slug is unchanged), different folder (so the OLD ref no longer
+        # resolves to any note) -- exactly what `leads reconcile --apply`
+        # does once a note's status has left the folder its old status implied.
+        new_dir = pathlib.Path(ref).parent / "Elsewhere"
+        new_dir.mkdir(parents=True, exist_ok=True)
+        os.replace(ref, str(new_dir / pathlib.Path(ref).name))
+        return wrote
+
+    monkeypatch.setattr(Vault, "update_fields", _racing_update_fields)
+    result = app.dismiss_lead(lead=slug, reason="no fit")
+    assert result.outcome == "refused_status"
+    assert result.status == "applied"
+    assert result.slug == slug
 
 
 # ── the 50-round real-concurrency proof (Testing item 12a, decision 17) ─────────
