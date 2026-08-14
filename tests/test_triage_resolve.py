@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from sluice.core.leads import UNTRUSTED_SCRAPED_CONTENT_WARNING
 from sluice.triage import resolve
 
 
@@ -401,6 +402,13 @@ def test_build_resolve_prompt_first_line_is_fixed():
     d = {"page_title": "Anything", "structured_data": "", "jd": {}}
     prompt = resolve._build_resolve_prompt(d)
     assert prompt.startswith(resolve._RESOLVE_PROMPT_HEAD.splitlines()[0])
+
+
+def test_resolve_prompt_head_carries_the_shared_untrusted_content_warning():
+    # Pins the shared constant's presence directly -- reverting rule 5 to its old,
+    # independently-worded copy (the one that had silently dropped "whatever it says
+    # about itself") must redden this test, not just be caught by chance elsewhere.
+    assert UNTRUSTED_SCRAPED_CONTENT_WARNING in resolve._RESOLVE_PROMPT_HEAD
 
 
 def test_build_resolve_prompt_returns_none_when_everything_is_blank():
