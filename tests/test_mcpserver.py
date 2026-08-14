@@ -7,6 +7,8 @@ slug format could pass here while the shipped command matches nothing).
 import dataclasses
 import pathlib
 
+import pytest
+
 import sluice.mcpserver as mcpserver_mod
 from sluice.core.app import Sluice
 from sluice.core.config import Config
@@ -14,6 +16,7 @@ from sluice.core.leads import UNTRUSTED_SCRAPED_CONTENT_WARNING, Lead
 from sluice.core.vault import Vault
 from sluice.mcpserver import (
     apply_record,
+    create_lead,
     cv_run,
     cv_signoff,
     dismiss_lead,
@@ -758,3 +761,34 @@ def test_cv_signoff_tool_second_call_threads_require_pending_into_the_write(tmp_
     second = cv_signoff(app, slug, confirm_token=first["confirm_token"])
     assert second["outcome"] == "promoted"
     assert seen["require_pending"] == "CV_deadbeef.pdf (2026-08-14)"
+
+
+# ── create_lead ──────────────────────────────────────────────────────────────
+
+def test_create_lead_tool_reports_created_with_slug(tmp_path):
+    out = create_lead(_app(tmp_path), title="Example Role", company="Example Ltd",
+                      url="https://example.invalid/1")
+    assert out == {"outcome": "created", "slug": "Example Ltd - Example Role"}
+
+
+def test_create_lead_tool_reports_the_collision_detail_on_updated(tmp_path):
+    app = _app(tmp_path)
+    create_lead(app, title="Example Role", company="Example Ltd",
+               url="https://example.invalid/1")
+    out = create_lead(app, title="Example Role", company="Example Ltd",
+                      url="https://example.invalid/1")
+    assert out["outcome"] == "updated"
+    assert "NOT recorded" in out["detail"]
+
+
+def test_create_lead_tool_raises_valueerror_for_an_unsafe_field(tmp_path):
+    with pytest.raises(ValueError, match="company"):
+        create_lead(_app(tmp_path), title="Example Role", company="Bad\nCompany",
+                    url="https://example.invalid/1")
+
+
+def test_create_lead_tool_refused_reports_no_slug(tmp_path):
+    out = create_lead(_app(tmp_path), title=" ", company=" ",
+                      url="https://example.invalid/1")
+    assert out["outcome"] == "refused"
+    assert "slug" not in out
