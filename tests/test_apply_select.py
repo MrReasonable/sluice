@@ -35,12 +35,18 @@ def test_eligibility_rejects_non_shortlist():
 def test_eligibility_reasons():
     v, cfg = _vault([
         ("NoUrl.md", 'company: "A"\nrole: "Analyst"\nstatus: shortlist\ntailored_cv: CV_deadbeef.pdf (2026-07-09)'),
+        ("BadScheme.md", 'company: "E"\nrole: "Analyst"\nstatus: shortlist\n'
+                         'url: "httpx://internal"\ntailored_cv: CV_deadbeef.pdf (2026-07-09)'),
         ("Legacy.md", 'company: "B"\nrole: "Analyst"\nstatus: shortlist\nurl: "https://x/y"\ntailored_cv: "My CV/CV_B.pdf"'),
         ("Skipped.md", 'company: "C"\nrole: "Analyst"\nstatus: shortlist\nurl: "https://x/y"\ntailored_cv: "SKIPPED - too senior"'),
         ("Missing.md", 'company: "D"\nrole: "Analyst"\nstatus: shortlist\nurl: "https://x/y"\ntailored_cv: CV_facef00d.pdf (2026-07-09)'),
     ])
     by = {p.slug + ".md": select.eligibility(p, cfg) for p in v.read_leads({"shortlist"})}
     assert by["NoUrl.md"] == (False, "no_url")
+    # httpx:// merely starts with the substring "http" -- the bare .startswith("http")
+    # this check used to share with create_lead's url validation would wrongly accept
+    # it (round-2 review finding); is_http_url requires the exact scheme.
+    assert by["BadScheme.md"] == (False, "no_url")
     assert by["Legacy.md"] == (False, "no_artifact")
     assert by["Skipped.md"] == (False, "no_artifact")
     assert by["Missing.md"] == (False, "missing_file")
