@@ -6,6 +6,7 @@ import pytest
 
 from sluice.core.app import Sluice
 from sluice.core.config import Config
+from sluice.core.leads import Lead
 from sluice.core.seendb import SeenDb
 from sluice.core.vault import Vault
 from tests.conftest import LOCATIONS
@@ -132,8 +133,6 @@ def test_a_fourth_call_at_a_fourth_distinct_location_resolves_its_own_slug_never
     so both cases are correct by construction rather than by two separate
     guessing tiers)."""
     app = _app(tmp_path)
-    # LOCATIONS has 3 token-disjoint, non-remote entries; this test needs a 4th,
-    # so "Delta" extends the same synthetic naming scheme rather than a real city.
     first = app.create_lead(title="Example Role", company="Example Ltd",
                             url="https://example.invalid/1", location=LOCATIONS[0])
     second = app.create_lead(title="Example Role", company="Example Ltd",
@@ -143,13 +142,13 @@ def test_a_fourth_call_at_a_fourth_distinct_location_resolves_its_own_slug_never
     for r in (first, second, third):
         assert r.outcome == "created"
     fourth = app.create_lead(title="Example Role", company="Example Ltd",
-                             url="https://example.invalid/4", location="Delta")
+                             url="https://example.invalid/4", location=LOCATIONS[3])
     assert fourth.outcome == "created"
     # The bug's exact failure shape: a stale/wrong slug (any of the three
     # PRIOR notes) or an empty one where disambiguation was actually possible.
     assert fourth.slug not in ("", first.slug, second.slug, third.slug)
     note = next(n for n in Vault(str(tmp_path)).read_leads() if n.slug == fourth.slug)
-    assert note.fm.get("location") == "Delta"
+    assert note.fm.get("location") == LOCATIONS[3]
 
 
 def test_url_proven_second_call_resolves_the_first_notes_slug_not_a_coincidental_match(tmp_path):
@@ -216,3 +215,28 @@ def test_a_second_notes_url_does_not_steal_a_write_that_actually_landed_on_the_f
     second_note = next(n for n in Vault(str(tmp_path)).read_leads() if n.slug == second.slug)
     assert second_note.fm.get("location") == LOCATIONS[1]
     assert second_note.fm.get("url") == "https://example.invalid/2"
+
+
+def test_create_lead_reports_merged_away_with_no_slug(tmp_path):
+    """Round-2 review finding: merged_away/merged_away_unproven are 2 of upsert's
+    6 outcomes create_lead forwards verbatim (its own docstring's claim), but
+    neither had any coverage at this layer. Archives a real loser via
+    merge_cluster (mirroring tests/test_vault_archived_probe.py's own _merge_away
+    technique) then create_lead's incoming url matches the archived loser's own
+    url exactly -- url-proven, so merged_away (recorded), not the _unproven arm."""
+    v = Vault(str(tmp_path))
+    survivor = Lead(source="s", search="q", title="Survivor Role", company="Example Foundry",
+                    url="https://example.invalid/survivor")
+    loser = Lead(source="s", search="q", title="Loser Role", company="Example Foundry",
+                url="https://example.invalid/loser")
+    assert v.upsert(survivor).outcome == "created"
+    assert v.upsert(loser).outcome == "created"
+    notes = {n.fm.get("url"): n for n in v.read_leads()}
+    v.merge_cluster(notes[survivor.url].ref, [notes[loser.url].ref],
+                    alt_urls=[loser.url], first_seen="2026-01-01", last_seen="2026-01-01")
+
+    app = _app(tmp_path)
+    result = app.create_lead(title="Loser Role", company="Example Foundry",
+                             url="https://example.invalid/loser")
+    assert result.outcome == "merged_away"
+    assert result.slug == ""
