@@ -31,7 +31,7 @@ class RunReport:
     auto: int = 0
     proposed: int = 0
     calendar_added: int = 0
-    calendar_assumed_utc: int = 0   # of those, how many booked an instant we GUESSED
+    calendar_assumed_tz: int = 0   # of those, how many booked an instant we GUESSED
     failures: int = 0
     results: list = field(default_factory=list)
     open_proposals: list = field(default_factory=list)  # every currently-open dead-letter Entry
@@ -263,8 +263,8 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                     _dl_write(rep, lambda: deadletter.record(entry))
             if res.calendar in ("created", "updated"):
                 rep.calendar_added += 1
-                if res.calendar_assumed_utc:
-                    rep.calendar_assumed_utc += 1
+                if res.calendar_assumed_tz:
+                    rep.calendar_assumed_tz += 1
             if not dry_run:
                 seen.add(mid)
         except GoogleAuthError:
