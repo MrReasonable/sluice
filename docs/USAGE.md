@@ -161,11 +161,21 @@ resurfaces on every run until a human acts. Prints a summary plus the open-propo
 stdout:
 ```
 track: msgs=N classified=N auto=N proposed=N calendar_added=N failures=N open=N
+  WARNING: N calendar entries booked from a DTSTART with no usable timezone ...
+  FAILED <message_id>: <cause>
   OPEN PROPOSALS (awaiting action):
   [<first_seen> x<times_surfaced>[ (new)]] <lead|candidates|?> <<message_id>>: <proposal> :: <hint>
 ```
+Every failed message is NAMED, not just counted, and a run with any failure also
+Telegram-notifies — a bare count on a stderr stream cron discards told nobody that an
+interview invite had been dropped. Each failure is additionally recorded as a dead-letter row,
+so it survives the Gmail query window moving past it and can be cleared with
+`track dismiss --id`.
+
 Exit 1 only on a Google reauth failure (`track: google reauth needed (token refresh
-failed)`); otherwise exit 0.
+failed)`); otherwise exit 0 — including a run with failures. Cron alerting is built on that
+rule, and a transient single-message failure making every run "fail" is how an alert gets
+muted.
 
 ### `job-sluice track confirm --lead SLUG --to STATUS [--when DATETIME] [--dry-run]`
 
