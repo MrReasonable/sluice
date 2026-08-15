@@ -140,3 +140,63 @@ def test_the_pager_is_shared_so_the_two_endpoints_cannot_drift(endpoint):
     from sluice.track import google_client as gc
 
     assert hasattr(gc, "_paged"), "expected a single shared pager"
+
+
+# ---- honesty about what was dropped -------------------------------------------------------
+
+def test_truncated_is_true_when_the_CAP_dropped_items_even_on_the_last_page(monkeypatch):
+    """The loss is `items[:max_results]`, not "were there more pages".
+
+    When the final page carries the total past the cap, the slice throws away items already
+    in hand AND `list_next` returns None -- so answering "more pages?" reported `truncated=
+    False` while 239 calendar events vanished on shipped defaults. That is this branch's own
+    bug class, reintroduced inside the fix.
+    """
+    from sluice.track.google_client import _paged
+
+    ep = _PagedList([{"items": [{"id": f"e{i}"} for i in range(8)]}], "items")
+    items, truncated = _paged(ep, {}, "items", 5)
+    assert len(items) == 5
+    assert truncated is True, "dropped 3 items in hand and said nothing"
+
+
+def test_truncated_is_false_only_when_nothing_was_lost(monkeypatch):
+    from sluice.track.google_client import _paged
+
+    ep = _PagedList([{"items": [{"id": "a"}, {"id": "b"}]}], "items")
+    items, truncated = _paged(ep, {}, "items", 5)
+    assert items and truncated is False
+
+
+def test_zero_item_pages_with_a_token_cannot_loop_forever(monkeypatch):
+    """The cap counts ITEMS, but the loop condition is `request is not None`.
+
+    A page with zero items and a nextPageToken is legal for both Gmail and Calendar, and never
+    grows `len(items)` -- so the item cap is never reached and the walk never ends. That
+    defeats the cap's stated purpose verbatim: "a cron run that never returns is
+    indistinguishable from a hung one".
+    """
+    from sluice.track.google_client import _paged
+
+    endless = [{"items": [], "nextPageToken": "t"} for _ in range(10_000)]
+    ep = _PagedList(endless, "items")
+    items, truncated = _paged(ep, {}, "items", 50)
+    assert items == []
+    assert truncated is True, "hitting the page bound is a truncation and must be reported"
+
+
+def test_a_probe_failure_does_not_lose_the_items_already_collected(monkeypatch):
+    """`list_next` is only an advisory probe at the cap; losing the payload to it is absurd.
+
+    Assume the worse, honest answer instead: report truncated.
+    """
+    from sluice.track.google_client import _paged
+
+    class _Raises(_PagedList):
+        def list_next(self, previous_request, previous_response):
+            raise RuntimeError("transport blew up")
+
+    ep = _Raises([{"items": [{"id": f"e{i}"} for i in range(10)]}], "items")
+    items, truncated = _paged(ep, {}, "items", 5)
+    assert len(items) == 5, "items already in hand must survive an advisory probe failing"
+    assert truncated is True

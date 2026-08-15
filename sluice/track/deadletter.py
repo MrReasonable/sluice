@@ -117,13 +117,37 @@ class DeadLetterDb:
             db.close()
 
     def record(self, entry: Entry) -> None:
+        """Insert `entry`, or no-op if an IDENTICAL row already holds its message_id.
+
+        `INSERT OR IGNORE` on a `message_id` PRIMARY KEY silently discards a DIFFERENT row
+        for the same key, and that is a hole under every caller: a transient failure row for
+        `m1` would swallow the real proposal built on the next run, after which `seen.add`
+        runs and the message is never re-queried. A store that exists to prevent silent loss
+        must not lose a write silently, so a differing row RAISES -- which routes through
+        `_dl_write`, holds the lastrun watermark, and skips `seen.add`.
+
+        An identical re-record stays a quiet no-op: a deterministic failure re-recording the
+        same row every run must not raise, or durability turns into an exception per run."""
         db = self._connect()
         try:
-            db.execute(
+            cur = db.execute(
                 f"INSERT OR IGNORE INTO track_deadletter ({_COLS}) VALUES (?,?,?,?,?,?,?,?)",
                 (entry.message_id, entry.lead, entry.candidates, entry.ev_type,
                  entry.proposal, entry.hint, entry.first_seen, entry.times_surfaced),
             )
+            if cur.rowcount == 0:
+                existing = db.execute(
+                    f"SELECT {_COLS} FROM track_deadletter WHERE message_id = ?",
+                    (entry.message_id,)).fetchone()
+                # Compare the fields a caller sets; `times_surfaced` is bumped independently
+                # by `bump_surfaced`, so it is not part of "the same row".
+                if existing and tuple(existing[:6]) != (
+                        entry.message_id, entry.lead, entry.candidates, entry.ev_type,
+                        entry.proposal, entry.hint):
+                    raise ValueError(
+                        f"dead-letter row for message_id {entry.message_id!r} already exists "
+                        f"with ev_type {existing[3]!r}; refusing to silently discard the new "
+                        f"{entry.ev_type!r} row. Clear the stale one first.")
             db.commit()
         finally:
             db.close()
