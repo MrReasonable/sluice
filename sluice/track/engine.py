@@ -102,6 +102,10 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
     if not dry_run:
         deadletter.bump_surfaced()
     new_entries = []
+    # message_ids with an ALREADY-OPEN failure row, so a repeatedly-failing
+    # message does not accumulate one row per run.
+    _failed_ids = {e.message_id for e in deadletter.open_entries()
+                   if e.ev_type == "failure"}
     for mid in ids:
         if mid in seen:
             continue
@@ -272,18 +276,41 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
             break
         except Exception as exc:
             rep.failures += 1
-            # Never silent, because this is the message's LAST trace -- not merely its
-            # loudest. A failure skips seen.add, which leaves the message retryable, but only
-            # for as long as it stays inside `_gmail_query`'s day-granular `after:` window:
-            # `app.py` advances the lastrun watermark on this very run (`rep.failures` is not
-            # in that gate, unlike auth_error/deadletter_error), so a DETERMINISTIC failure --
-            # a malformed attachment, an API that rejects a value this message always produces
-            # -- gets roughly a day of retries and is then never queried again. No dead-letter
-            # row is written either, since this handler is outside that path. The digest's
-            # bare `failures=N` cannot tell that from a one-off blip, so the id and the cause
-            # go in the message itself, not only the traceback, to stay diagnosable wherever
-            # logs are read as text.
+            # Never silent, and never only a log line. A failure skips seen.add, which leaves
+            # the message retryable -- but only while it stays inside `_gmail_query`'s
+            # day-granular `after:` window, and `app.py` advances the lastrun watermark on
+            # this very run (`rep.failures` is not in that gate, unlike auth_error and
+            # deadletter_error). So a DETERMINISTIC failure gets roughly a day of retries and
+            # is then never queried again: absent from `seen`, and until now absent from the
+            # dead-letter store and every report too. After ~2 runs it ceased to exist (#139).
+            #
+            # NOT fixed by holding the watermark. One permanently-poisoned message would
+            # freeze it forever and the window would grow without bound -- a bigger fetch
+            # every run, now that #137 lifted the page cap -- while the failing message, being
+            # the OLDEST thing in that window, is the least likely to be reached. Make the
+            # FAILURE durable instead, with the machinery #49 already built: the row
+            # re-surfaces every run via bump_surfaced() and carries a dismiss lever.
             _log.exception("track: message %s failed: %s", mid, exc)
+            if not dry_run and mid not in _failed_ids:
+                # Once per message. A deterministic failure fails again next run while its row
+                # is still open, and re-recording would turn one broken message into a growing
+                # pile of identical rows -- the digest getting noisier the longer the problem
+                # goes unfixed, which is backwards.
+                entry = Entry(message_id=mid, lead="", candidates="", ev_type="failure",
+                              proposal="failed", hint=f"processing failed: {exc}",
+                              first_seen=today, times_surfaced=1)
+                # Same _dl_write as every other row -- it sets `rep.deadletter_error`, which
+                # holds the watermark, so an unpersistable failure keeps the message inside
+                # the query window. That is the one case where holding it IS right.
+                #
+                # But it also RE-RAISES, and we are already inside the per-message `except`:
+                # an escaping raise here has nothing left to catch it and would abort the
+                # whole run over one unrecordable message. Swallow it -- `deadletter_error`
+                # is already set by then, which is the part that matters.
+                try:
+                    _dl_write(rep, lambda e=entry: deadletter.record(e))
+                except Exception:
+                    _log.exception("track: could not dead-letter the failure for %s", mid)
     # Emit the full open set. Non-dry: the store already holds this run's new rows,
     # so it is the single source of truth. Dry: union the persisted set with this
     # run's computed-new (keyed by message_id, persisted wins), recording nothing.
