@@ -134,6 +134,70 @@ def test_floating_start_is_booked_as_utc_but_says_so_loudly(caplog):
     assert any("ASSUMING UTC" in m for m in said), f"the assumption is not stated: {said}"
 
 
+def _floating(uid="u1"):
+    return IcsEvent(uid=uid, summary="Screen", start=datetime(2026, 7, 15, 11, 0))
+
+
+def test_configured_zone_is_what_a_floating_start_is_booked_in():
+    # The default UTC is right for nobody in particular. A zone-less invite sitting in your
+    # inbox is far likelier to be in your local time, so the assumption is configurable --
+    # and setting it is what makes the guess actually correct.
+    cfg = TrackConfig(calendar_assumed_timezone="Europe/Berlin")
+    c = FakeGoogleClient(events=[])
+    assert sync_event(c, cfg, lead_slug="example-lead", ics=_floating()) == "created"
+    assert c.inserted[0]["start"] == {"dateTime": "2026-07-15T11:00:00", "timeZone": "Europe/Berlin"}
+
+
+def test_a_configured_zone_does_not_rewrite_the_same_entry_on_every_run():
+    # THE regression this knob could introduce. We book wall-clock 11:00 tagged Europe/Berlin
+    # (= 09:00Z). If the later comparison still assumed UTC it would read our own entry as
+    # 09:00 and the ics as 11:00, differ by the offset, and issue a real update_event on every
+    # single run -- forever, silently, against a live calendar.
+    cfg = TrackConfig(calendar_assumed_timezone="Europe/Berlin")
+    first = FakeGoogleClient(events=[])
+    sync_event(first, cfg, lead_slug="example-lead", ics=_floating())
+    # Google echoes the booked entry back as a resolved instant, which is what the next run sees.
+    echoed = {"id": "ev1", "start": {"dateTime": "2026-07-15T09:00:00+00:00"},
+              "extendedProperties": {"private": {"sluice-track-uid": "u1"}}}
+    again = FakeGoogleClient(events=[echoed])
+    assert sync_event(again, cfg, lead_slug="example-lead", ics=_floating()) == "present"
+    assert not again.updated and not again.inserted
+
+
+def test_an_aware_start_is_never_restamped_with_the_configured_zone():
+    # A `Z`-suffixed DTSTART is UTC by definition -- a fact, not a guess. timezone.utc has no
+    # `.key`, so a careless fallback would hand it the configured zone and misbook a genuinely
+    # UTC invite by that offset.
+    cfg = TrackConfig(calendar_assumed_timezone="Europe/Berlin")
+    utc_ics = parse_ics("BEGIN:VEVENT\r\nUID:u1\r\nDTSTART:20260715T110000Z\r\nEND:VEVENT")
+    c = FakeGoogleClient(events=[])
+    sync_event(c, cfg, lead_slug="example-lead", ics=utc_ics)
+    assert c.inserted[0]["start"] == {"dateTime": "2026-07-15T11:00:00+00:00", "timeZone": "UTC"}
+
+
+def test_an_unresolvable_configured_zone_warns_and_falls_back_to_utc(caplog):
+    # A typo in config must not start dropping invites -- that is the failure this module was
+    # just fixed for. Degrade to the old behaviour and say so.
+    from sluice.track import calendar_sync as CS
+    CS._resolve_zone.cache_clear()   # the warning is cached to fire once per process
+    cfg = TrackConfig(calendar_assumed_timezone="Nowhere/Notreal")
+    c = FakeGoogleClient(events=[])
+    with caplog.at_level("WARNING", logger="sluice.track.calendar_sync"):
+        sync_event(c, cfg, lead_slug="example-lead", ics=_floating())
+    assert c.inserted[0]["start"]["timeZone"] == "UTC"
+    assert any("Nowhere/Notreal" in r.getMessage() for r in caplog.records)
+    CS._resolve_zone.cache_clear()
+
+
+def test_the_shipped_default_still_assumes_utc():
+    # Neutral by default: the shipped config names no location, and behaviour is identical to
+    # before the key existed.
+    assert TrackConfig().calendar_assumed_timezone == "UTC"
+    c = FakeGoogleClient(events=[])
+    sync_event(c, TrackConfig(), lead_slug="example-lead", ics=_floating())
+    assert c.inserted[0]["start"]["timeZone"] == "UTC"
+
+
 def test_resolved_zone_and_present_outcome_stay_silent(caplog):
     # The warning must not cry wolf. A resolved zone is not a guess, and a `present` outcome
     # wrote nothing at all -- warning on either would train the reader to ignore the line.

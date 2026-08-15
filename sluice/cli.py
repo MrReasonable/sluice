@@ -657,8 +657,8 @@ def cmd_track_run(args, config) -> int:
         # HOUR is a guess -- so the one chance to notice is here.
         print(f"  WARNING: {rep.calendar_assumed_utc} calendar entr"
               f"{'y' if rep.calendar_assumed_utc == 1 else 'ies'} booked from a DTSTART with "
-              f"no usable timezone; the time was ASSUMED UTC and may be wrong. "
-              f"Check the entry against the invite.", file=sys.stderr)
+              f"no usable timezone; the time was ASSUMED (see track.calendar_assumed_timezone) "
+              f"and may be wrong. Check the entry against the invite.", file=sys.stderr)
     if rep.open_proposals:
         print("  OPEN PROPOSALS (awaiting action):", file=sys.stderr)
         for e in rep.open_proposals:
