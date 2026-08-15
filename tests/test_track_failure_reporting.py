@@ -18,7 +18,7 @@ import pytest
 
 from sluice import cli
 from sluice.core.config import Config
-from sluice.track.engine import RunReport
+from sluice.track.engine import RunReport, TrackFailure
 
 
 class _Args:
@@ -44,22 +44,29 @@ def _run(monkeypatch):
     return _drive
 
 
-def test_failures_is_a_list_so_the_count_and_the_detail_cannot_disagree():
-    """`failures=N` printed from `len()` of the same list that carries the detail.
+def test_failures_is_a_list_of_TrackFailure_so_nothing_can_disagree():
+    """`failures=N` is `len()` of the same list that carries the detail, and the safe and full
+    renderings come off the same object.
 
-    Two fields would drift; the digest would say 3 and name 1.
+    Separate fields would drift: the digest would say 3 and name 1, or the notification would
+    scrub a string the digest had already printed in full.
     """
     rep = RunReport()
     assert isinstance(rep.failures, list)
+    f = TrackFailure("m1", "RuntimeError: boom")
+    assert str(f) == "m1: RuntimeError: boom"
+    assert f.safe() == "m1 (RuntimeError)"
 
 
 def test_each_failed_message_is_NAMED_not_just_counted(_run, capsys):
     rep = RunReport(msgs=2, classified=1,
-                    failures=["m1: gmail hiccup", "m2: malformed attachment"])
+                    failures=[TrackFailure("m1", "RuntimeError: gmail hiccup"),
+                              TrackFailure("m2", "ValueError: malformed attachment")])
     code, _sent = _run(rep)
     err = capsys.readouterr().err
     assert "failures=2" in err, "the count must survive the change"
-    assert "m1: gmail hiccup" in err and "m2: malformed attachment" in err, err
+    assert "m1: RuntimeError: gmail hiccup" in err, err
+    assert "m2: ValueError: malformed attachment" in err, err
 
 
 def test_a_run_with_failures_NOTIFIES(_run):
@@ -68,7 +75,7 @@ def test_a_run_with_failures_NOTIFIES(_run):
     Under cron the stderr digest is usually discarded, so a dropped interview invite reached
     nobody. ingest, triage and cv all notify; this matches them.
     """
-    rep = RunReport(msgs=1, failures=["m1: boom"])
+    rep = RunReport(msgs=1, failures=[TrackFailure("m1", "RuntimeError: boom")])
     _code, sent = _run(rep)
     assert sent, "a run that dropped a message must notify"
     assert "m1" in sent[0], f"the notification must name what was dropped: {sent[0]}"
@@ -86,7 +93,7 @@ def test_a_partial_failure_still_exits_0(_run):
     -- which would cost more than it buys. The change here is that the run is no longer
     SILENT, not that it starts failing.
     """
-    code, _sent = _run(RunReport(msgs=1, failures=["m1: boom"]))
+    code, _sent = _run(RunReport(msgs=1, failures=[TrackFailure("m1", "RuntimeError: boom")]))
     assert code == 0
 
 
