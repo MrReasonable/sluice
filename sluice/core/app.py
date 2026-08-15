@@ -1433,6 +1433,25 @@ class Sluice:
             available=google_available, import_error=google_import_error,
             token_present=os.path.exists(track_cfg.token_path)))
 
+        # Which browser profile an ingest run will drive. Read from the environment, never by
+        # constructing a client: `Camofox.__init__` warns on the same misconfiguration this
+        # row reports, and doctor saying it twice trains the reader to skim. Zero I/O, so it
+        # holds under --offline and keeps the never-opens-a-browser invariant above.
+        #
+        # The auth-dependent set is ENUMERATED off the registry rather than hand-listed: a
+        # source added later that needs a login must show up here without anyone remembering
+        # to update doctor.
+        from sluice.core.camofox import DEFAULT_USER
+        from sluice.ingest import sources as _registry
+
+        auth_dependent = tuple(
+            s.id for s in _registry.all_sources() if getattr(s, "auth_probe_js", None))
+        components.append(_doctor.classify_camofox(
+            user_env=os.environ.get("CAMOFOX_USER"),
+            session_env=os.environ.get("CAMOFOX_SESSION"),
+            resolved_user=os.environ.get("CAMOFOX_USER") or DEFAULT_USER,
+            auth_dependent_sources=auth_dependent))
+
         # Gate posture: enumerated generically over every loaded config's
         # list-typed fields (list_typed_fields), never hand-listed -- the same
         # discipline tests/test_sluice_neutral_defaults.py's identically-shaped
