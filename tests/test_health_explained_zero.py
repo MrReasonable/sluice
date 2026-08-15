@@ -85,11 +85,20 @@ def test_three_zeros_explained_by_a_redirect_do_NOT_retire(tmp_path):
     assert h.should_retire("s") is False
 
 
-def test_a_hard_error_still_counts_as_dead(tmp_path):
+def test_a_hard_error_with_no_yield_still_counts_as_dead(tmp_path):
     # An exception is not an "explanation" in the sense that matters: there is nothing to go
     # and fix on the page, the source simply failed. Keep retiring it.
     h = _store(tmp_path, [_run(0, error="boom")] * 3)
     assert h.should_retire("s") is True
+
+
+def test_a_source_that_RETURNED_ROWS_is_never_dead_even_if_a_search_errored(tmp_path):
+    # `_run_source` REASSIGNS `signals` per search instead of merging, so a source whose LAST
+    # search raised while earlier ones succeeded reports a positive count AND an error. An
+    # earlier draft short-circuited `_is_dead` on `error` and would have retired a source that
+    # had just returned 50 rows. Found by a surviving mutant, not by reading.
+    h = _store(tmp_path, [_run(50, error="one search timed out")] * 3)
+    assert h.should_retire("s") is False
 
 
 def test_a_mix_of_explained_and_unexplained_zeros_does_not_retire(tmp_path):

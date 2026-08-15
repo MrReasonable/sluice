@@ -104,8 +104,11 @@ def _is_dead(run: dict) -> bool:
     learns what to fix. That is precisely how a wrong `CAMOFOX_USER` cost three heavyweight
     sources for eight-plus runs -- the retirement looked like the system working."""
     signals = run.get("signals", {}) or {}
-    if signals.get("error"):
-        return True
+    # No `error` short-circuit. It would be redundant AND wrong. Redundant because `error` is
+    # deliberately not an explanation, so a zero-yield error already falls through to dead
+    # below. Wrong because `_run_source` REASSIGNS `signals` per search rather than merging,
+    # so a source whose LAST search errored while earlier ones succeeded carries both a
+    # positive count and an error -- and a source that just returned rows is not dead.
     return run.get("count", 0) == 0 and _explained(signals) is None
 
 
