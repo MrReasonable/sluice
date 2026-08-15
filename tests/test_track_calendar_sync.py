@@ -77,3 +77,20 @@ def test_naive_ics_start_no_crash_and_present():
     ])
     assert sync_event(c, TrackConfig(), lead_slug="flowline", ics=naive) == "present"
     assert not c.updated and not c.inserted
+
+
+def test_naive_ics_start_still_sends_offset_bearing_window_bounds():
+    # The sibling above proves the naive-vs-aware COMPARISON survives; it cannot catch this,
+    # because the fake ignores the bounds it is handed. `events.list` requires RFC 3339, so a
+    # bound built from a naive datetime ("2026-07-15T09:00:00", no offset) is rejected with
+    # HTTP 400 -- which escapes reconcile and engine.run drops the whole message. Assert on
+    # the ARGUMENTS, which is where the defect actually lives.
+    from datetime import datetime
+    naive = IcsEvent(uid="u1", summary="Screen",
+                     start=datetime(2026, 7, 15, 10, 0), end=datetime(2026, 7, 15, 10, 30))
+    c = FakeGoogleClient(events=[])
+    sync_event(c, TrackConfig(), lead_slug="flowline", ics=naive)
+    assert c.listed, "list_events was never called, so the bounds were never exercised"
+    for lo, hi in c.listed:
+        assert datetime.fromisoformat(lo).tzinfo is not None, f"timeMin has no UTC offset: {lo}"
+        assert datetime.fromisoformat(hi).tzinfo is not None, f"timeMax has no UTC offset: {hi}"

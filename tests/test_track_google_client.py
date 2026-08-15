@@ -12,6 +12,10 @@ class FakeGoogleClient:
         self.messages = messages or {}
         self.events = list(events or [])
         self.inserted, self.updated, self.deleted = [], [], []
+        # Every (time_min_iso, time_max_iso) pair the caller passed. The real API rejects a
+        # bound without a UTC offset (RFC 3339), so the ARGUMENTS are behaviour a test must be
+        # able to assert on, not just the return value.
+        self.listed = []
 
     def search_messages(self, query, max_results=50):
         return list(self.messages.keys())
@@ -20,6 +24,7 @@ class FakeGoogleClient:
         return self.messages[message_id]
 
     def list_events(self, time_min_iso, time_max_iso):
+        self.listed.append((time_min_iso, time_max_iso))
         return list(self.events)
 
     def insert_event(self, body):

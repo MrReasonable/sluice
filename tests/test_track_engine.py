@@ -86,6 +86,22 @@ def test_run_resilient_to_bad_message():
     assert rep.failures == 1  # did not raise
 
 
+def test_per_message_failure_is_logged_with_the_message_id(caplog):
+    # Counting a failure without recording WHAT failed is why a permanent poison message can
+    # sit in the window for weeks: the id is never seen.add'd, so it re-fails every run, and
+    # the digest says only "failures=1". The id is the one thing that makes it diagnosable.
+    v, _ = _vault("applied")
+    class Boom(OneMsgClient):
+        def get_message(self, mid): raise RuntimeError("gmail hiccup")
+    with caplog.at_level("WARNING"):
+        rep = E.run(v, TrackConfig(), Boom(), FakeBackend("{}"), seen=set(), deadletter=_dl(),
+                    now_iso="2026-07-10T12:00:00+00:00")
+    assert rep.failures == 1
+    said = [r.getMessage() for r in caplog.records if r.name == "sluice.track.engine"]
+    assert any("m1" in m for m in said), f"message id never logged: {said}"
+    assert any("gmail hiccup" in m for m in said), f"cause never logged: {said}"
+
+
 def test_confirm_never_clobber():
     v, path = _vault("interview")
     assert E.confirm(v, TrackConfig(), "Example Tidal - Analyst", "offer", deadletter=_dl())["ok"] is True
