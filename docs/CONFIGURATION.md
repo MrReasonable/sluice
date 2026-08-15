@@ -121,6 +121,7 @@ block is commented out in `sluice.yaml.example`.
 | `gmail_extra_query` | `""` | |
 | `calendar_lookahead_days` | `45` | |
 | `calendar_match_minutes` | `30` | start-proximity dedup window |
+| `calendar_assumed_timezone` | `UTC` | IANA zone assumed for a DTSTART with no usable one (floating time, date-only, or an unresolvable TZID). Set it to your own zone — a zone-less invite in your inbox is far likelier to be in local time than UTC. The entry is still counted and warned about either way; an unresolvable value warns once and falls back to UTC. |
 | `primary_backend` / `fallback_backend` | `"claude-max"` / `"deepseek"` | |
 | `claude_max_model` | `"claude-sonnet-4-5"` | |
 | `cheap_model` | `"deepseek-v4-flash"` | |

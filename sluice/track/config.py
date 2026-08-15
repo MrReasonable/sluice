@@ -103,6 +103,18 @@ class TrackConfig:
     gmail_extra_query: str = ""
     calendar_lookahead_days: int = 45
     calendar_match_minutes: int = 30          # start-proximity window for dedup
+    # The zone to assume for a DTSTART that carries no usable one -- legal RFC 5545 floating
+    # time, a date-only VALUE=DATE, or a TZID this host cannot resolve. Such an invite states
+    # a wall-clock and no instant, so SOMETHING has to be assumed to book it at all, and the
+    # assumption is only ever a guess (calendar_sync warns and the digest counts it either
+    # way). An IANA key like `Europe/London`.
+    #
+    # The shipped default is UTC: neutral, correct for nobody in particular, and identical to
+    # the behaviour before this key existed. Set it to your own zone and the guess becomes
+    # right for the invites you actually receive -- a floating invite in your inbox is far
+    # more likely to be in your local time than in UTC. An unresolvable value warns once and
+    # falls back to UTC rather than raising, so a typo cannot start dropping messages.
+    calendar_assumed_timezone: str = "UTC"
     # Which backend fills each role. Track had no selectors while its backend was
     # hardcoded; it needs them now that construction is config-driven, and matches
     # the triage/cv defaults.

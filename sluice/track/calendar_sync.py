@@ -2,10 +2,40 @@
 (stable across reschedules), with a start-proximity fallback for events Google
 auto-added from the recruiter's own invite (which carry no sluice tag)."""
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 
 from sluice.core.log import get_logger
 
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover
+    ZoneInfo = None
+
 _log = get_logger("track.calendar_sync")
+
+
+@lru_cache(maxsize=None)
+def _resolve_zone(name):
+    """(tzinfo, effective_name) for the configured assume-this zone.
+
+    Falls back to UTC rather than raising: a typo in config must not start dropping every
+    invite, which is the failure this whole module has just been fixed for. lru_cache so the
+    warning fires ONCE per process rather than per event -- a misconfiguration is one fact,
+    not one fact per message."""
+    if not name or name == "UTC":
+        return timezone.utc, "UTC"
+    if ZoneInfo is not None:
+        try:
+            return ZoneInfo(name), name
+        except Exception:
+            _log.warning(
+                "track: calendar_assumed_timezone %r is not a timezone this host can resolve; "
+                "falling back to UTC. Zone-less invites will be booked in UTC.", name)
+    return timezone.utc, "UTC"
+
+
+def assumed_zone(cfg):
+    return _resolve_zone(getattr(cfg, "calendar_assumed_timezone", "") or "UTC")
 
 
 def floating_start(ics) -> bool:
@@ -17,31 +47,39 @@ def floating_start(ics) -> bool:
     return ics.start is not None and ics.start.tzinfo is None
 
 
-def _warn_if_floating(ics, outcome):
+def _warn_if_floating(cfg, ics, outcome):
     """Say out loud that an instant was assumed, at the only place that knows a write
     happened. Before `_window_bounds` coerced the list bounds, this population could not
     reach a write at all -- the list call raised first -- so the fix traded a loud HTTP 400
-    for a quiet wrong hour. This is what keeps it loud."""
+    for a quiet wrong hour. This is what keeps it loud.
+
+    The warning stays even when `calendar_assumed_timezone` is set: a configured zone makes
+    the guess BETTER, never certain. The invite still stated no instant."""
     if outcome not in ("created", "updated") or not floating_start(ics):
         return
+    zone = assumed_zone(cfg)[1]
     if ics.tzid_unresolved:
         _log.warning(
             "track: uid %s states TZID %r, which this host cannot resolve; %s the calendar "
-            "entry at %s ASSUMING UTC -- verify the time before relying on it",
-            ics.uid, ics.tzid_unresolved, outcome, ics.start.isoformat())
+            "entry at %s ASSUMING %s -- verify the time before relying on it",
+            ics.uid, ics.tzid_unresolved, outcome, ics.start.isoformat(), zone)
     else:
         _log.warning(
             "track: uid %s has a floating (zone-less) DTSTART; %s the calendar entry at %s "
-            "ASSUMING UTC -- verify the time before relying on it",
-            ics.uid, outcome, ics.start.isoformat())
+            "ASSUMING %s -- verify the time before relying on it",
+            ics.uid, outcome, ics.start.isoformat(), zone)
 
 
-def _aware(dt):
-    """Coerce a naive datetime (floating-time / unresolvable TZID) to UTC so
-    comparisons and subtractions never mix naive and aware values."""
+def _aware(dt, tz=timezone.utc):
+    """Coerce a naive datetime (floating-time / unresolvable TZID) to `tz` so comparisons and
+    subtractions never mix naive and aware values.
+
+    `tz` MUST be the same zone `_event_body` stamps, or the entry we booked and the entry we
+    later look for describe different instants: `_trunc(_event_start(ours)) != _trunc(start)`
+    on every run, so sync_event reports `updated` and issues a real update_event forever."""
     if dt is None:
         return None
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=tz)
 
 
 def _event_start(ev):
@@ -58,8 +96,8 @@ def _uid_of(ev):
     return (ev.get("extendedProperties", {}).get("private", {}) or {}).get("sluice-track-uid")
 
 
-def _trunc(dt):
-    a = _aware(dt)
+def _trunc(dt, tz=timezone.utc):
+    a = _aware(dt, tz)
     return a.replace(microsecond=0) if a else None
 
 
@@ -87,7 +125,7 @@ def _window_bounds(cfg, ics):
     coerced and the other forgotten (before this helper NEITHER was), but because the file
     already applied `_aware` to the proximity COMPARISON in `_foreign_at_start` and not to the
     bounds, and one shared definition is what stops a future fix landing in one site only."""
-    start = _aware(ics.start)
+    start = _aware(ics.start, assumed_zone(cfg)[0])
     window = timedelta(days=cfg.calendar_lookahead_days)
     return (start - window).isoformat(), (start + window).isoformat()
 
@@ -110,17 +148,24 @@ def _foreign_at_start(client, cfg, ics):
     if ics.start is None:
         return False
     near = timedelta(minutes=cfg.calendar_match_minutes)
+    tz = assumed_zone(cfg)[0]
     for ev in client.list_events(*_window_bounds(cfg, ics)):
         if _uid_of(ev) is None:
             est = _event_start(ev)
-            if est and abs(_aware(est) - _aware(ics.start)) <= near:
+            if est and abs(_aware(est, tz) - _aware(ics.start, tz)) <= near:
                 return True
     return False
 
 
 def _event_body(cfg, lead_slug, ics):
-    tz = "UTC"
-    if ics.start is not None and ics.start.tzinfo is not None:
+    # An AWARE start carries its own offset in `dateTime`, so its zone is a fact, not a
+    # guess -- `timezone.utc` (a `Z`-suffixed DTSTART) has no `.key` and is UTC by
+    # definition, and stamping the CONFIGURED zone on it instead would misbook a genuinely
+    # UTC invite. Only a naive start falls through to the assumption.
+    assumed = assumed_zone(cfg)[1]
+    if ics.start is None or ics.start.tzinfo is None:
+        tz = assumed
+    else:
         tz = getattr(ics.start.tzinfo, "key", None) or "UTC"
     return {
         "summary": ics.summary or "Interview",
@@ -142,15 +187,18 @@ def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
             return "cancelled"
         return "present"  # never delete a foreign event
     if ours:
-        if _trunc(_event_start(ours)) != _trunc(ics.start):
+        # Same zone the body was stamped with, or the instant we booked and the instant we
+        # compare differ by that offset and every run reports `updated` and re-writes it.
+        tz = assumed_zone(cfg)[0]
+        if _trunc(_event_start(ours), tz) != _trunc(ics.start, tz):
             if not dry_run:
                 client.update_event(ours["id"], _event_body(cfg, lead_slug, ics))
-            _warn_if_floating(ics, "updated")
+            _warn_if_floating(cfg, ics, "updated")
             return "updated"
         return "present"
     if _foreign_at_start(client, cfg, ics):
         return "present"  # a foreign event already covers this slot; do NOT insert or touch it
     if not dry_run:
         client.insert_event(_event_body(cfg, lead_slug, ics))
-    _warn_if_floating(ics, "created")
+    _warn_if_floating(cfg, ics, "created")
     return "created"

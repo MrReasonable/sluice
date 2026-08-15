@@ -231,6 +231,14 @@ track:
   # since neither has an environment variable to set instead.
   # seen_db:            # <- uncomment and set YOUR OWN
   # token_path:         # <- uncomment and set YOUR OWN (written 0600)
+  # An invite whose DTSTART carries no usable timezone -- legal RFC 5545 floating time, a
+  # date-only all-day event, or a TZID this host cannot resolve -- states a wall-clock and
+  # no instant, so one has to be ASSUMED to book it at all. The shipped default is UTC,
+  # which is neutral and right for nobody in particular; set your own IANA zone and the
+  # guess becomes right for the invites you actually receive. It stays a guess either way:
+  # every such entry is warned about in the log and counted in the run digest. An
+  # unresolvable value warns once and falls back to UTC rather than dropping invites.
+  # calendar_assumed_timezone:   # <- uncomment and set YOUR OWN IANA zone (Area/City)
   # Minimum confidence (0..1) for the LLM's "this is an application receipt"
   # classification to AUTO-advance a shortlist lead to `applied` on a domain-PROOF
   # match. Proof also requires that the delivering server AUTHENTICATED the sender
