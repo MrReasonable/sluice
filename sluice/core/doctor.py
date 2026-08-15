@@ -26,6 +26,7 @@ reach the candidate. Nothing above probed for either, because nothing did.
 `ComponentCheck` below is the second table this module now classifies, one row
 per non-backend piece a run depends on.
 """
+import hashlib
 from dataclasses import dataclass, field, fields
 
 from sluice.core.backends import option_like
@@ -378,6 +379,55 @@ def classify_track_google(*, available: bool, import_error: str | None,
             "google libs are importable but no token file exists yet -- the "
             "first `track run` will need an interactive OAuth consent")
     return ComponentCheck("track", "google", OK, "libs importable, token present")
+
+
+def camofox_profile_dir(user: str) -> str:
+    """The on-disk profile directory name for `user`.
+
+    The Camofox persistence plugin stores one profile per userId at a deterministic
+    SHA256-hashed subdirectory, of which the directory name is the first 32 hex characters.
+    Recomputed from the algorithm rather than carried as a table, so `doctor` cannot print a
+    confidently wrong hash that matches nothing on disk."""
+    return hashlib.sha256(user.encode()).hexdigest()[:32]
+
+
+def classify_camofox(*, user_env, session_env, resolved_user, auth_dependent_sources=()) -> ComponentCheck:
+    """Which browser profile an ingest run will drive, and whether the config actually chose it.
+
+    WHY THIS ROW EXISTS. On 2026-08-15 a production runner exported
+    `CAMOFOX_SESSION=contract-scanner`, aiming at a profile holding 335 cookies. Profiles are
+    keyed on userId ALONE, so the setting was inert and the run used the cookie-less `default`
+    profile; linkedin returned zero rows for eight-plus runs, and the auto-retire rule then
+    removed linkedin, jobserve and indeed. Nothing anywhere reported which profile was in use,
+    which is precisely the question `doctor` exists to answer.
+
+    Config-only: `Sluice.doctor` never opens a browser, and it does not need to. Every fact
+    here is readable from the environment, and the failure being caught was a misconfiguration.
+
+    DEGRADED, never DEAD, for session-without-user: the run still works, on a profile whose
+    cookies the operator did not choose. Sources needing no login are unaffected, so it does
+    not block a run -- but it is the one shape that is always a mistake.
+    """
+    profile = camofox_profile_dir(resolved_user)
+    if session_env and not user_env:
+        return ComponentCheck(
+            "camofox", "CAMOFOX_USER", DEGRADED,
+            f"CAMOFOX_SESSION={session_env!r} is set but CAMOFOX_USER is not. The session key "
+            f"does NOT select the cookie profile -- profiles are keyed on CAMOFOX_USER, so "
+            f"this run drives {resolved_user!r} ({profile}), not {session_env!r}. Set "
+            f"CAMOFOX_USER to the profile you logged in as.",
+            blocks=("ingest",))
+    if auth_dependent_sources:
+        named = ", ".join(sorted(auth_dependent_sources))
+        verb = "needs" if len(auth_dependent_sources) == 1 else "need"
+        return ComponentCheck(
+            "camofox", "CAMOFOX_USER", NOTICE,
+            f"profile {resolved_user!r} ({profile}); {named} {verb} an authenticated profile "
+            f"and will yield zero -- reported as drift=auth, not retired -- if it is logged out",
+            blocks=("ingest",))
+    return ComponentCheck(
+        "camofox", "CAMOFOX_USER", OK,
+        f"profile {resolved_user!r} ({profile})", blocks=("ingest",))
 
 
 def list_typed_fields(cfg) -> list:

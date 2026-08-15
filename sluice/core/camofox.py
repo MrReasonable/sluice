@@ -29,12 +29,17 @@ _log = get_logger("core.camofox")
 _DEFAULT_URL = "http://127.0.0.1:9377"
 _TIMEOUT = 45  # seconds; Camofox navigations can be slow to settle
 
+# The profile driven when CAMOFOX_USER is unset. Named rather than inlined so `doctor` can
+# report the resolved profile WITHOUT constructing a client (construction warns, and doctor
+# would then say the same thing twice) and cannot drift from the value actually used.
+DEFAULT_USER = "default"
+
 
 class Camofox:
     def __init__(
         self,
         base_url: str | None = None,
-        user: str = "default",
+        user: str = DEFAULT_USER,
         session: str = "sluice",
         timeout: int = _TIMEOUT,
     ):
