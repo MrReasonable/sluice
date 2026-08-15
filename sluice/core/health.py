@@ -75,21 +75,55 @@ class HealthStore:
         return all(_is_dead(r) for r in runs[-threshold:])
 
 
-def _is_dead(run: dict) -> bool:
-    return run.get("count", 0) == 0 or bool(run.get("signals", {}).get("error"))
+def _explained(signals: dict) -> str | None:
+    """Why this run looks wrong, when we can say -- `None` when we cannot.
 
+    THE one definition of "we know what went wrong", shared by `detect_drift` (which reports
+    it) and `_is_dead` (which decides whether to retire). Two copies would drift, and the
+    2026-08-15 incident is what a disagreement costs: the drift line said `zero` while the
+    retire rule silently concluded `dead`.
 
-def detect_drift(source_id: str, count: int, signals: dict | None, baseline: float) -> str | None:
-    """Classify this run against the source's baseline. Precedence:
-    zero > redirect > blocked > drop. Returns the reason, or None if healthy."""
-    signals = signals or {}
-    if count == 0:
-        return "zero"
+    An `error` is deliberately NOT an explanation. It says the fetch blew up, not that the
+    page told us something -- there is nothing on the site to go and fix, so an erroring
+    source should still retire."""
     requested, landed = signals.get("requested_host"), signals.get("landed_host")
     if requested and landed and requested != landed:
         return "redirect"
     if signals.get("blocked"):
         return "blocked"
+    if signals.get("auth"):
+        return "auth"
+    return None
+
+
+def _is_dead(run: dict) -> bool:
+    """Dead = produced nothing AND we cannot say why (or it errored outright).
+
+    A source we could not READ is BROKEN, not dead, and retiring it deletes the evidence:
+    it stops running, so it stops reporting the redirect/block/auth failure, so nobody ever
+    learns what to fix. That is precisely how a wrong `CAMOFOX_USER` cost three heavyweight
+    sources for eight-plus runs -- the retirement looked like the system working."""
+    signals = run.get("signals", {}) or {}
+    if signals.get("error"):
+        return True
+    return run.get("count", 0) == 0 and _explained(signals) is None
+
+
+def detect_drift(source_id: str, count: int, signals: dict | None, baseline: float) -> str | None:
+    """Classify this run against the source's baseline. Returns the reason, or None if healthy.
+
+    Precedence: an EXPLAINED failure (redirect > blocked > auth) outranks a bare `zero`, and
+    `zero` outranks `drop`. The explanation is checked FIRST on purpose. Testing `count == 0`
+    first -- as this did until 2026-08-15 -- discards the redirect/blocked signals the caller
+    already gathered and collapses every distinct failure into the one word that cannot be
+    acted on. The whole value of capturing requested/landed host is lost at exactly the
+    moment it would have paid."""
+    signals = signals or {}
+    reason = _explained(signals)
+    if reason:
+        return reason
+    if count == 0:
+        return "zero"
     if baseline and count < 0.4 * baseline:
         return "drop"
     return None

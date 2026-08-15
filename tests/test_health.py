@@ -20,8 +20,18 @@ def test_drop_below_40pct_of_baseline():
     assert detect_drift("s", 5, {}, baseline=10) is None      # 5 >= 4
 
 
-def test_precedence_zero_beats_redirect():
-    assert detect_drift("s", 0, {"requested_host": "a", "landed_host": "b"}, 10) == "zero"
+def test_precedence_an_explanation_beats_bare_zero():
+    """REVERSES the original `zero > redirect` precedence (2026-08-15, user-confirmed).
+
+    The old rule returned "zero" here, discarding the redirect the caller had already
+    measured. On 2026-08-15 that cost three heavyweight sources: linkedin, jobserve and
+    indeed each reported `drift=zero` for eight-plus runs and auto-retired, when the real and
+    single cause was a Camofox profile with no authenticated cookies. "zero" is the one
+    classification a human cannot act on, so it must be the LAST resort, not the first.
+
+    An unexplained zero is still "zero" -- see test_zero_count_flags_drift above.
+    """
+    assert detect_drift("s", 0, {"requested_host": "a", "landed_host": "b"}, 10) == "redirect"
 
 
 def test_healthy_returns_none():
