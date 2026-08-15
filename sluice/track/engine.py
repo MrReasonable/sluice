@@ -25,6 +25,37 @@ _PROPOSE_TARGET = {"phone_screen": "phone_screen", "interview": "interview",
 
 
 @dataclass
+class TrackFailure:
+    """One message that could not be processed, in two renderings.
+
+    ONE field carrying both, deliberately: a separate "safe summary" field would drift from
+    the real cause, and the count would end up describing a different set than the detail.
+
+    The split exists because the tiers are genuinely different. `cause` is the full exception
+    text and can carry the contents of your mail: `classify` hands the message BODY to a
+    backend, `_event_body` carries the interview summary and meeting url, and a
+    `googleapiclient.HttpError` renders the request URI -- which for a Gmail search is
+    `_gmail_query`'s `q=`, built from `gmail_extra_query`. That is fine for the operator's own
+    stderr and for the gitignored dead-letter db (`deadletter.py` already accounts for
+    message-ids and proposal text as private runtime state). It is NOT fine for a Telegram
+    message, which leaves the machine. `track/config.py` states the same principle for its own
+    errors: an exception message travels further than the file does."""
+    message_id: str
+    cause: str
+
+    def safe(self) -> str:
+        """What may leave the machine: the id and the exception TYPE, never its text.
+
+        Still actionable -- the id is what `track dismiss --id` takes and what the dead-letter
+        row is keyed on -- while carrying none of the message content."""
+        kind = self.cause.split(":", 1)[0].strip() if ":" in self.cause else "error"
+        return f"{self.message_id} ({kind or 'error'})"
+
+    def __str__(self) -> str:
+        return f"{self.message_id}: {self.cause}"
+
+
+@dataclass
 class RunReport:
     msgs: int = 0
     classified: int = 0
@@ -36,6 +67,8 @@ class RunReport:
     # which set this precedent. `failures=N` is printed from len(), so the count
     # and the detail come from one field and cannot disagree. A bare int meant a
     # cron run could say "failures=1" and name nothing, on a stream nobody reads.
+    # list[TrackFailure]. `failures=N` in the digest is len() of this, so the count
+    # and the detail come from one field and cannot disagree.
     failures: list = field(default_factory=list)
     results: list = field(default_factory=list)
     open_proposals: list = field(default_factory=list)  # every currently-open dead-letter Entry
@@ -279,7 +312,8 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
             rep.auth_error = True
             break
         except Exception as exc:
-            rep.failures.append(f"{mid}: {exc}")
+            rep.failures.append(TrackFailure(message_id=mid,
+                                             cause=f"{type(exc).__name__}: {exc}"))
             # Never silent, and never only a log line. A failure skips seen.add, which leaves
             # the message retryable -- but only while it stays inside `_gmail_query`'s
             # day-granular `after:` window, and `app.py` advances the lastrun watermark on

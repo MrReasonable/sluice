@@ -658,8 +658,10 @@ def cmd_track_run(args, config) -> int:
           f"failures={len(rep.failures)} open={len(rep.open_proposals)}", file=sys.stderr)
     # Each one NAMED, the way cmd_triage_run already does it. A bare count cannot tell a
     # one-off blip from a message that fails deterministically every run.
-    for msg in rep.failures:
-        print(f"  FAILED {msg}", file=sys.stderr)
+    for f in rep.failures:
+        # FULL cause here: this is the operator's own terminal, and scrubbing the local
+        # diagnostic would leave nowhere to debug from.
+        print(f"  FAILED {f}", file=sys.stderr)
     if rep.calendar_assumed_tz:
         # Its own line rather than another key on the digest: this is a correctness warning,
         # not a statistic. The entries look ordinary in the calendar -- only the HOUR is a
@@ -681,7 +683,12 @@ def cmd_track_run(args, config) -> int:
         # stream that is normally discarded. Exit code deliberately unchanged -- USAGE.md
         # documents exit 1 only for a reauth failure and cron alerting relies on it, and a
         # transient single-message failure failing every run is how an alert gets muted.
-        notify("job-sluice track: " + "; ".join(rep.failures), config=config)
+        # `.safe()`, not the cause: this leaves the machine. The exception text can
+        # carry message bodies, interview subjects, meeting urls, and the Gmail `q=`
+        # built from gmail_extra_query. The id is what keeps it actionable.
+        notify("job-sluice track: {} message(s) failed: {}".format(
+            len(rep.failures), "; ".join(f.safe() for f in rep.failures)),
+            config=config)
     if rep.open_proposals:
         print("  OPEN PROPOSALS (awaiting action):", file=sys.stderr)
         for e in rep.open_proposals:
