@@ -7,6 +7,11 @@ import contextlib
 import os
 import tempfile
 
+from sluice.core.log import get_logger
+
+
+_log = get_logger("track.google_client")
+
 
 class GoogleAuthError(Exception):
     pass
@@ -117,10 +122,25 @@ class RealGoogleClient:
             self._cal = self._svc("calendar", "v3")
         return self._cal
 
-    def search_messages(self, query, max_results=50):
-        r = self._gmail_svc().users().messages().list(
-            userId="me", q=query, maxResults=max_results).execute()
-        return [m["id"] for m in r.get("messages", [])]
+    def search_messages(self, query, max_results=500):
+        """Every message id matching `query`, across pages, capped at `max_results`.
+
+        The cap moved from 50-per-REQUEST to a total across pages, because 50 was never a
+        sane answer for this caller: `engine.run` filters against `seen` AFTER the fetch, so
+        on any busy window the already-processed messages consumed the cap and the unseen
+        ones -- the entire point of the call -- never arrived. Gmail returns newest-first, so
+        the ones starved out were the OLDEST unprocessed: exactly the set that had failed
+        before (#139)."""
+        items, truncated = _paged(
+            self._gmail_svc().users().messages(),
+            dict(userId="me", q=query, maxResults=min(max_results, 500)),
+            "messages", max_results)
+        if truncated:
+            _log.warning(
+                "track: gmail search hit the %d-message cap for %r -- there are more matches "
+                "than this run will see. Narrow gmail_extra_query or shorten the window.",
+                max_results, query)
+        return [m["id"] for m in items]
 
     def get_message(self, message_id):
         g = self._gmail_svc()
@@ -156,11 +176,26 @@ class RealGoogleClient:
         return {"headers": headers, "body_text": body_text,
                 "thread_id": msg.get("threadId", ""), "attachments": attachments}
 
-    def list_events(self, time_min_iso, time_max_iso):
-        r = self._cal_svc().events().list(
-            calendarId="primary", timeMin=time_min_iso, timeMax=time_max_iso,
-            singleEvents=True, maxResults=250).execute()
-        return r.get("items", [])
+    def list_events(self, time_min_iso, time_max_iso, max_results=2500):
+        """Every event in the window, across pages, capped at `max_results`.
+
+        A truncated page here is not a smaller answer, it is a WRONG one. `_find_ours` reads
+        absence as "we never created this", so an event of ours sitting off-page makes
+        `sync_event` insert a duplicate -- or, on a cancel, skip the delete entirely, and
+        report `present` while the interview stays in the calendar (#138). The window is
+        2 * calendar_lookahead_days (90 days by default) with `singleEvents=True`, which
+        EXPANDS recurrences: one daily standup is ~90 items on its own."""
+        items, truncated = _paged(
+            self._cal_svc().events(),
+            dict(calendarId="primary", timeMin=time_min_iso, timeMax=time_max_iso,
+                 singleEvents=True, maxResults=250),
+            "items", max_results)
+        if truncated:
+            _log.warning(
+                "track: calendar window returned more than %d events -- an event of ours may "
+                "be off-page, which reads as absent. Reduce calendar_lookahead_days.",
+                max_results)
+        return items
 
     def insert_event(self, body):
         return self._cal_svc().events().insert(calendarId="primary", body=body).execute()["id"]
@@ -171,6 +206,36 @@ class RealGoogleClient:
 
     def delete_event(self, event_id):
         self._cal_svc().events().delete(calendarId="primary", eventId=event_id).execute()
+
+
+def _paged(endpoint, params: dict, item_key: str, max_results: int) -> tuple:
+    """`(items, truncated)` across every page of a Google list endpoint.
+
+    ONE implementation for both callers. Two hand-rolled loops is how one of them keeps
+    `nextPageToken` and the other quietly does not -- which is the state #137 found them in,
+    with each call reading a truncated first page as the complete set.
+
+    Uses the client library's own `list_next(previous_request, previous_response)` protocol
+    rather than threading `pageToken` by hand: that is the documented paging contract, and it
+    is what the discovery-built service exposes.
+
+    `truncated` is returned rather than logged here so the CALLER can say what running out
+    costs, which differs sharply between the two (a missed message versus a duplicated or
+    undeleted calendar entry). Silently returning a short list is the one thing this must
+    never do -- that is the bug being fixed."""
+    request = endpoint.list(**params)
+    items, truncated = [], False
+    while request is not None:
+        response = request.execute()
+        items.extend(response.get(item_key, []))
+        if len(items) >= max_results:
+            # More pages remained: report it. A cap is still needed (an unbounded walk over a
+            # mailbox is its own outage -- a cron run that never returns), but it must be an
+            # HONEST one.
+            truncated = endpoint.list_next(request, response) is not None
+            return items[:max_results], truncated
+        request = endpoint.list_next(request, response)
+    return items, truncated
 
 
 def _walk_parts(payload):
