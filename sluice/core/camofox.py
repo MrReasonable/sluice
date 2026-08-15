@@ -17,6 +17,7 @@ returned zero rows for eight-plus runs, and the auto-retire rule then removed li
 jobserve and indeed. One false sentence, three dead sources, a week undiagnosed. Hence the
 warning in __init__: session-without-user is always a mistake, and it must be audible.
 """
+import hashlib
 import json
 import os
 import urllib.error
@@ -33,6 +34,22 @@ _TIMEOUT = 45  # seconds; Camofox navigations can be slow to settle
 # report the resolved profile WITHOUT constructing a client (construction warns, and doctor
 # would then say the same thing twice) and cannot drift from the value actually used.
 DEFAULT_USER = "default"
+
+
+def profile_dir(user: str) -> str:
+    """The on-disk profile directory name the Camofox server uses for `user`.
+
+    UNVERIFIABLE FROM THIS REPO. The scheme -- sha256 of the userId, directory named by the
+    first 32 hex characters -- is read from the Camofox persistence plugin's documentation,
+    and that server is a separate service this repo does not bundle. Recomputing it protects
+    against a stale copied literal; it does NOT protect against our belief about the scheme
+    being wrong or the server changing it, which is the likelier drift. If a printed hash does
+    not match a directory on disk, suspect this function first.
+
+    Lives here rather than in `core/doctor.py` because this is the module that owns Camofox
+    knowledge -- `DEFAULT_USER` is the other half of "how Camofox identifies a profile", and
+    splitting the pair across two modules is how they drift."""
+    return hashlib.sha256(user.encode()).hexdigest()[:32]
 
 
 class Camofox:

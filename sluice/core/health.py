@@ -139,13 +139,14 @@ def _explained(signals: dict) -> str | None:
     """Why this run looks wrong, when we can say -- `None` when we cannot.
 
     THE one definition of "we know what went wrong", shared by `detect_drift` (which reports
-    it) and `_is_dead` (which defers retirement). Two copies would drift, and the 2026-08-15
-    incident is what a disagreement costs: the drift line said `zero` while the retire rule
-    silently concluded `dead`.
+    it) and `_is_dead` (which defers retirement). Two copies would drift. Note this is NOT a
+    past disagreement being repaired: before 2026-08-15 neither function had the concept at
+    all, so they agreed by having the same blind spot. Centralising it is what stops the next
+    reason being added to one and not the other.
 
     An `error` is deliberately NOT an explanation. It says the fetch blew up, not that the
     page told us something -- there is nothing on the site to go and fix, so an erroring
-    source should still retire.
+    source that also yielded nothing should still retire.
 
     CAUTION when adding a reason here. Every entry is both a report AND a deferral of
     retirement, so a reason that fires benignly buys a dead source time it has not earned --
@@ -183,8 +184,10 @@ _RECOVERABLE = ("auth", "blocked", "unreachable")
 
 
 def _is_dead(run: dict) -> bool:
-    """Dead = produced nothing AND either we cannot say why, or the reason is one no operator
-    action will undo.
+    """Dead = produced nothing AND we cannot say why. An outright error is not a "why", so an
+    errored zero IS dead -- but an errored run that still returned rows is not. Nor is a
+    reason no operator action would undo: a relocated board is dead however well we can
+    explain it.
 
     A source we could not READ because of a fixable condition is BROKEN, not dead, and
     retiring it deletes the evidence: it stops running, so it stops reporting the auth/block
@@ -210,8 +213,12 @@ def detect_drift(source_id: str, count: int, signals: dict | None, baseline: flo
     `zero` outranks `drop`. The explanation is checked FIRST on purpose. Testing `count == 0`
     first -- as this did until 2026-08-15 -- discards the redirect/blocked signals the caller
     already gathered and collapses every distinct failure into the one word that cannot be
-    acted on. The whole value of capturing requested/landed host is lost at exactly the
-    moment it would have paid."""
+    acted on.
+
+    Two separate justifications, kept separate on purpose: the precedence reversal is right on
+    general principle, but it is NOT what would have rescued the 2026-08-15 LinkedIn case.
+    Logged-out LinkedIn serves guest markup at the SAME url, so there was no redirect signal
+    to discard -- only the new `auth` probe surfaces that one."""
     signals = signals or {}
     reason = _explained(signals)
     if count == 0:

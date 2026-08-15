@@ -1,9 +1,14 @@
 """A zero with a KNOWN CAUSE must keep its cause, and must not auto-retire the source.
 
 2026-08-15 incident: linkedin, jobserve and indeed all reported `drift=zero` for eight-plus
-consecutive runs and auto-retired themselves. The single underlying cause was that the
-scanner ran against a Camofox profile with no authenticated cookies, so every page came back
-logged-out/challenged with no rows.
+consecutive runs and auto-retired themselves. One ROOT cause -- the scanner ran against the
+wrong Camofox profile -- but three different MECHANISMS, which matters for what any single
+fix can claim: linkedin's extractor targets authenticated-only markup, indeed was served an
+anti-bot challenge, and jobserve landed somewhere unexpected. Only linkedin's is what the
+auth probe detects.
+
+What they had in common is the part this module fixes: whatever the mechanism, the run
+recorded a bare `zero` and nobody could tell an unreadable source from an empty one.
 
 Two properties of the health layer turned one recoverable config mistake into permanent loss
 of three heavyweight sources:
@@ -196,3 +201,55 @@ def test_a_mix_of_explained_and_unexplained_zeros_does_not_retire(tmp_path):
     # Any explained run in the window means we cannot conclude the source is dead.
     h = _store(tmp_path, [_run(0), _run(0, blocked=True), _run(0)])
     assert h.should_retire("s") is False
+
+
+# ---- the operator-facing surface -------------------------------------------------------
+
+def test_health_report_and_cli_surface_the_streak(tmp_path, monkeypatch, capsys):
+    """The streak must reach a human, or it is another field nothing consumes.
+
+    This is the half that makes suppressing retirement safe. `cmd_health` is the surface an
+    operator checks days later; a wedged source that shows only `baseline=0 recent=[0,0,0]`
+    with no RETIRE flag is MORE mysterious than the wrong answer it replaced.
+    """
+    from sluice import cli
+    from sluice.core.app import Sluice
+    from sluice.core.config import Config
+
+    store = tmp_path / "h.json"
+    monkeypatch.setenv("SLUICE_HEALTH", str(store))
+    h = HealthStore(str(store))
+    for _ in range(4):
+        h.record("linkedin", 0, {"auth": "missing"})
+
+    reports = {r.id: r for r in Sluice(Config()).health_report()}
+    assert reports["linkedin"].broken_reason == "auth"
+    assert reports["linkedin"].broken_runs == 4
+    assert reports["linkedin"].should_retire is False, "an explained failure must not retire"
+
+    class _Args:
+        pass
+
+    assert cli.cmd_health(_Args(), Config()) == 0
+    line = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("linkedin")][0]
+    assert "BROKEN" in line and "reason=auth" in line and "x4" in line, line
+    assert "RETIRE" not in line, line
+
+
+def test_a_healthy_source_prints_no_broken_marker(tmp_path, monkeypatch, capsys):
+    # The marker must stay rare, or it stops meaning anything.
+    from sluice import cli
+    from sluice.core.config import Config
+
+    store = tmp_path / "h.json"
+    monkeypatch.setenv("SLUICE_HEALTH", str(store))
+    h = HealthStore(str(store))
+    for _ in range(3):
+        h.record("reed", 100, {})
+
+    class _Args:
+        pass
+
+    assert cli.cmd_health(_Args(), Config()) == 0
+    line = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("reed")][0]
+    assert "BROKEN" not in line and "RETIRE" not in line, line
