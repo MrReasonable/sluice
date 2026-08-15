@@ -11,7 +11,7 @@ choose whose logins you inherit.
 
 That distinction is not pedantry. Until 2026-08-15 this docstring told the reader that the
 SESSION key chose the browser profile, and that setting it was how an operator reached their
-own logged-in browser. A production runner set CAMOFOX_SESSION=contract-scanner to reach a profile holding
+own logged-in browser. A production runner set CAMOFOX_SESSION=example-session to reach a profile holding
 335 cookies; the setting was inert, the run used the cookie-less `default` profile, LinkedIn
 returned zero rows for eight-plus runs, and the auto-retire rule then removed linkedin,
 jobserve and indeed. One false sentence, three dead sources, a week undiagnosed. Hence the

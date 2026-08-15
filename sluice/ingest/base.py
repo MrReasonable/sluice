@@ -164,6 +164,16 @@ class BrowserListSource:
     def searches(self) -> list:
         return [_mk_search(spec) for spec in self.searches_spec]
 
+    def _scroll_step(self, cam, tid) -> None:
+        """One scroll step, and the ONLY thing a list-shaped source may override.
+
+        A board that virtualizes its results (LinkedIn) must scroll the results PANEL rather
+        than the window. That is its sole difference from this class, so it is the sole thing
+        it gets to change. Overriding `fetch` wholesale is how the LinkedIn subclass silently
+        shipped without the auth probe: the registration declared one, so everything READ as
+        covered while the override never evaluated it."""
+        cam.scroll(tid, self.scroll_amount)
+
     def fetch(self, ctx: Ctx, search: Search) -> dict:
         cam, sleep = ctx.camofox, getattr(ctx, "sleep", time.sleep)
         tid = cam.create_tab(search.url)
@@ -174,25 +184,50 @@ class BrowserListSource:
             cam.evaluate(tid, self.dismiss_js)
             sleep(0.5)
         for _ in range(self.scrolls):
-            cam.scroll(tid, self.scroll_amount)
+            self._scroll_step(cam, tid)
             sleep(0.5)
         result = cam.evaluate(tid, self.extractor_js)
         landed = cam.evaluate(tid, "location.href")
-        # SAME tab as the extractor, deliberately: a second fetch could land elsewhere
-        # (redirect, A/B split, rate limit), and the probe would then describe a different
-        # page than the one that yielded nothing.
-        auth_missing = False
-        if self.auth_probe_js:
-            probe = cam.evaluate(tid, self.auth_probe_js)
-            # Only a clean truthy result counts. A probe that errored tells us nothing, and
-            # claiming "logged out" off a broken probe would suppress the retirement of a
-            # genuinely dead source -- the opposite failure, and a quieter one.
-            auth_missing = bool(probe.get("result")) if isinstance(probe, dict) and "error" not in probe else False
+        auth_missing, probe_error = self._read_auth_probe(cam, tid)
         cam.close_tab(tid)
         rows = result.get("result") if isinstance(result, dict) else None
-        landed_url = (landed.get("result") if isinstance(landed, dict) else None) or search.url or ""
-        return {"result": rows or [], "landed": landed_url, "requested": search.url,
-                "auth_missing": auth_missing}
+        # `Camofox._api` captures every failure as {"error": ...} rather than raising, so an
+        # evaluate that failed is indistinguishable from one that returned nothing unless we
+        # look. Record it: a browser that could not be read is the single clearest explanation
+        # for a zero, and discarding it is what let one outage retire every source at once.
+        errors = [r.get("error") for r in (result, landed) if isinstance(r, dict) and r.get("error")]
+        landed_result = landed.get("result") if isinstance(landed, dict) else None
+        # NOT `or search.url` when the evaluate failed: defaulting landed to the requested URL
+        # manufactures "no redirect", which is the one signal that would have explained this.
+        landed_url = landed_result or ("" if errors else (search.url or ""))
+        out = {"result": rows or [], "landed": landed_url, "requested": search.url,
+               "auth_missing": auth_missing}
+        if errors:
+            out["error"] = errors[0]
+        if probe_error:
+            out["auth_probe_error"] = probe_error
+        return out
+
+    def _read_auth_probe(self, cam, tid) -> tuple:
+        """`(auth_missing, probe_error)`, evaluated on the SAME tab as the extractor.
+
+        Same tab deliberately: a second fetch could land elsewhere (redirect, A/B split, rate
+        limit), and the probe would then describe a different page than the one that yielded
+        nothing.
+
+        Only a clean truthy result counts as logged-out. A probe that errored tells us nothing,
+        and claiming "logged out" off a broken probe would suppress the retirement of a
+        genuinely dead source -- the opposite failure, and a quieter one. But NOT claiming it
+        and NOT saying the probe broke are two different decisions: a probe that silently stops
+        working (LinkedIn renames a class, a CSP blocks the expression) disables this whole
+        guard while every dashboard stays green. So the error comes back too."""
+        if not self.auth_probe_js:
+            return False, None
+        probe = cam.evaluate(tid, self.auth_probe_js)
+        if not isinstance(probe, dict) or probe.get("error"):
+            err = probe.get("error") if isinstance(probe, dict) else "probe returned a non-dict"
+            return False, err
+        return bool(probe.get("result")), None
 
     def parse(self, raw: dict, search: Search) -> list:
         return [
@@ -208,10 +243,24 @@ class BrowserListSource:
             "requested_host": _host(raw.get("requested", "")),
             "markers": {},
         }
-        # Present only when the probe actually fired, so `detect_drift` sees a key it can
-        # classify on and every other source's signals are byte-identical to before.
-        if isinstance(raw, dict) and raw.get("auth_missing"):
+        if not isinstance(raw, dict):
+            return hint
+        # Present only when they actually fired, so `detect_drift` sees keys it can classify
+        # on and an ordinary source's signals stay byte-identical to before.
+        #
+        # `fetch_error` is the load-bearing one: `fetch` has always recorded "no-tab" and this
+        # method has always dropped it, so a Camofox outage reached the classifier as an
+        # unexplained zero and retired every source at once. A fresh dict built from three
+        # keys is exactly how a fourth goes missing.
+        if raw.get("error"):
+            hint["fetch_error"] = raw["error"]
+        if raw.get("auth_missing"):
             hint["auth"] = "missing"
+        # Reported but NOT an explanation: a broken probe must not defer retirement (that
+        # would keep a genuinely dead source alive), yet it has to be visible or the guard
+        # silently disables itself.
+        if raw.get("auth_probe_error"):
+            hint["auth_probe_error"] = raw["auth_probe_error"]
         return hint
 
 

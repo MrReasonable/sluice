@@ -8,7 +8,7 @@ health, classifies drift against the source's own baseline, and flags auto-retir
 """
 from dataclasses import dataclass, field
 
-from sluice.core.health import detect_drift
+from sluice.core.health import EXPLAINING_SIGNALS as _EXPLAINING_SIGNALS, detect_drift
 from sluice.core.log import get_logger
 from sluice.core.relevance import is_relevant
 from sluice.core.resilience import run_with_timeout, with_retry
@@ -23,7 +23,10 @@ class SourceResult:
     status: str = "ok"          # "ok" | "error"
     fetched: int = 0            # rows parsed, before dedup/relevance
     fresh: int = 0              # leads handed to the sink
-    drift: str | None = None    # "zero" | "drop" | "redirect" | "blocked" | None
+    # "zero" | "drop" | "redirect" | "blocked" | "auth" | "unreachable" | None.
+    # Keep in step with core/health.py's `_explained`/`detect_drift` -- this comment is the
+    # only place the vocabulary is enumerated, so a new reason that misses it is invisible.
+    drift: str | None = None
     retired: bool = False
     error: str | None = None
 
@@ -71,6 +74,7 @@ def _run_source(source, ctx, seen_keys, fresh, result, fetch_timeout, retries):
     only if EVERY search failed to fetch."""
     searches = list(searches_for(source, getattr(ctx, "config", None)))
     total, signals, ok, last_error = 0, {}, 0, None
+    explained = {}   # explanation keys seen on ANY search; see the loop below
     for search in searches:
         try:
             raw = run_with_timeout(
@@ -88,6 +92,17 @@ def _run_source(source, ctx, seen_keys, fresh, result, fetch_timeout, retries):
         hint = source.health_hint(raw)
         total += hint.get("count", 0)
         signals = {k: v for k, v in hint.items() if k != "markers"}
+        # An EXPLANATION is sticky across searches; counts and hosts are not.
+        #
+        # `signals` is reassigned per search, so without this a source whose first search came
+        # back logged-out and whose last returned an honest zero reports a bare `zero` -- the
+        # explanation is silently overwritten by a later search, and the source retires. The
+        # shipped sources use one search each, but `sources.<id>.searches` is the documented
+        # way to configure a real list, so the mechanism is weakest on exactly the setup the
+        # docs steer people toward.
+        for key in _EXPLAINING_SIGNALS:
+            if signals.get(key):
+                explained.setdefault(key, signals[key])
         for lead in source.parse(raw, search):
             key = lead.dedup_key
             if key in seen_keys or not is_relevant(lead.title, ctx.config):
@@ -97,7 +112,9 @@ def _run_source(source, ctx, seen_keys, fresh, result, fetch_timeout, retries):
     result.fetched = total
     if searches and ok == 0:
         result.status, result.error = "error", last_error
-    return total, signals
+    # `signals` last so the final search's count/hosts still win; `explained` only supplies
+    # keys a later search dropped.
+    return total, {**explained, **signals}
 
 
 def _update_health(source, result, health, count, signals):

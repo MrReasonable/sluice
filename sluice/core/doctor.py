@@ -395,7 +395,7 @@ def classify_camofox(*, user_env, session_env, resolved_user, auth_dependent_sou
     """Which browser profile an ingest run will drive, and whether the config actually chose it.
 
     WHY THIS ROW EXISTS. On 2026-08-15 a production runner exported
-    `CAMOFOX_SESSION=contract-scanner`, aiming at a profile holding 335 cookies. Profiles are
+    `CAMOFOX_SESSION=example-session`, aiming at a profile holding 335 cookies. Profiles are
     keyed on userId ALONE, so the setting was inert and the run used the cookie-less `default`
     profile; linkedin returned zero rows for eight-plus runs, and the auto-retire rule then
     removed linkedin, jobserve and indeed. Nothing anywhere reported which profile was in use,

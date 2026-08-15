@@ -1,7 +1,7 @@
 """`doctor` reports WHICH browser profile a run will use, and flags the config that selects none.
 
-2026-08-15: the production runner set `CAMOFOX_SESSION=contract-scanner`, intending to select
-a profile holding 335 cookies. Persistence keys on `sha256(userId)` and ignores sessionKey, so
+2026-08-15: the production runner set `CAMOFOX_SESSION=example-session`, intending to select
+a different, already-authenticated profile. Persistence keys on `sha256(userId)` and ignores sessionKey, so
 the run used the cookie-less `default` profile. LinkedIn returned zero rows for eight-plus runs
 and auto-retired, taking jobserve and indeed with it.
 
@@ -12,7 +12,19 @@ Config-only by construction. `Sluice.doctor`'s docstring states that it NEVER op
 and that invariant is worth more than a liveness check -- the failure here was a
 misconfiguration, visible without touching the network.
 """
+import hashlib
+
 from sluice.core.doctor import DEGRADED, NOTICE, OK, classify_camofox
+
+
+def _profile_hash(user):
+    """The digest doctor should print, derived independently of `camofox_profile_dir`'s call
+    site so a test failure names a real disagreement rather than a copied literal drifting.
+
+    NOTE: this cannot verify the SERVER's scheme -- it restates this repo's belief about it.
+    See `camofox_profile_dir` for why that belief is unverifiable from here.
+    """
+    return hashlib.sha256(user.encode()).hexdigest()[:32]
 
 
 def _check(**kw):
@@ -26,34 +38,35 @@ def _check(**kw):
 def test_it_names_the_profile_the_run_will_actually_use():
     # The operator's question is "whose cookies do I get?", and the answer is a hash on disk.
     # Printing it is what lets them correlate with ~/.camofox/profiles/<hash>/.
-    c = _check(user_env="ian", resolved_user="ian")
+    c = _check(user_env="example-user", resolved_user="example-user")
     assert c.state == OK
-    assert "ian" in c.detail
-    # sha256("ian")[:32] -- the real profile directory name.
-    assert "b54a95127a4b573f41e335fdbd339dcc" in c.detail
+    assert "example-user" in c.detail
+    # Derived, never hardcoded: a literal digest would both rot silently if the scheme
+    # changed and bake a reversible preimage of whatever name it was generated from.
+    assert _profile_hash("example-user") in c.detail
 
 
 def test_the_default_profile_is_reported_not_hidden():
     c = _check(resolved_user="default")
     assert c.state == OK
     assert "default" in c.detail
-    assert "37a8eec1ce19687d132fe29051dca629" in c.detail   # sha256("default")[:32]
+    assert _profile_hash("default") in c.detail
 
 
 def test_session_without_user_is_DEGRADED_and_says_what_to_do():
     # THE incident config. It must not read as healthy: the operator believes they selected a
     # profile and did not.
-    c = _check(session_env="contract-scanner", resolved_user="default")
+    c = _check(session_env="example-session", resolved_user="default")
     assert c.state == DEGRADED
     assert "CAMOFOX_SESSION" in c.detail and "CAMOFOX_USER" in c.detail
-    assert "contract-scanner" in c.detail, "must name the value that selected nothing"
+    assert "example-session" in c.detail, "must name the value that selected nothing"
     assert "ingest" in c.blocks, "this is what stops browser sources working"
 
 
 def test_session_WITH_user_is_fine():
     # Coherent: a profile was chosen AND a session named. Flagging it would train the reader
     # to ignore the row.
-    c = _check(user_env="ian", session_env="contract-scanner", resolved_user="ian")
+    c = _check(user_env="example-user", session_env="example-session", resolved_user="example-user")
     assert c.state == OK
 
 
@@ -90,8 +103,8 @@ def test_doctors_resolved_user_agrees_with_what_the_client_actually_uses(monkeyp
     monkeypatch.delenv("CAMOFOX_SESSION", raising=False)
     assert Camofox().user == DEFAULT_USER
 
-    monkeypatch.setenv("CAMOFOX_USER", "ian")
-    assert Camofox().user == "ian"
+    monkeypatch.setenv("CAMOFOX_USER", "example-user")
+    assert Camofox().user == "example-user"
 
 
 def test_the_camofox_row_actually_reaches_the_doctor_report(monkeypatch, tmp_path):
@@ -104,13 +117,13 @@ def test_the_camofox_row_actually_reaches_the_doctor_report(monkeypatch, tmp_pat
     from sluice.core.app import Sluice
     from sluice.core.config import Config
 
-    monkeypatch.setenv("CAMOFOX_SESSION", "contract-scanner")
+    monkeypatch.setenv("CAMOFOX_SESSION", "example-session")
     monkeypatch.delenv("CAMOFOX_USER", raising=False)
     rep = Sluice(Config()).doctor(offline=True, probe=lambda b: None)
     rows = [c for c in rep.components if c.component == "camofox"]
     assert rows, "doctor reported no camofox row at all"
     assert rows[0].state == DEGRADED, rows[0].detail
-    assert "contract-scanner" in rows[0].detail
+    assert "example-session" in rows[0].detail
 
 
 def test_the_report_names_the_REAL_auth_dependent_sources(monkeypatch):
@@ -129,7 +142,7 @@ def test_the_report_names_the_REAL_auth_dependent_sources(monkeypatch):
     assert expected, "no source declares an auth probe -- this test has become vacuous"
 
     monkeypatch.delenv("CAMOFOX_SESSION", raising=False)
-    monkeypatch.setenv("CAMOFOX_USER", "ian")
+    monkeypatch.setenv("CAMOFOX_USER", "example-user")
     rep = Sluice(Config()).doctor(offline=True, probe=lambda b: None)
     row = [c for c in rep.components if c.component == "camofox"][0]
     assert row.state == NOTICE, row.detail
@@ -144,10 +157,10 @@ def test_the_camofox_row_is_present_under_offline(monkeypatch):
     from sluice.core.config import Config
 
     monkeypatch.delenv("CAMOFOX_SESSION", raising=False)
-    monkeypatch.setenv("CAMOFOX_USER", "ian")
+    monkeypatch.setenv("CAMOFOX_USER", "example-user")
     rep = Sluice(Config()).doctor(offline=True, probe=lambda b: None)
     rows = [c for c in rep.components if c.component == "camofox"]
-    assert rows and "ian" in rows[0].detail
+    assert rows and "example-user" in rows[0].detail
 
 
 def test_the_profile_hash_matches_the_servers_scheme():
@@ -160,6 +173,6 @@ def test_the_profile_hash_matches_the_servers_scheme():
     """
     import hashlib
 
-    for user in ("ian", "default", "contract-scanner"):
+    for user in ("example-user", "default", "example-session"):
         expected = hashlib.sha256(user.encode()).hexdigest()[:32]
         assert expected in _check(resolved_user=user).detail

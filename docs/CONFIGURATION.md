@@ -147,8 +147,8 @@ block is commented out in `sluice.yaml.example`.
 | `SLUICE_TELEGRAM_TOKEN` / `SLUICE_TELEGRAM_CHAT` | `notify.telegram.{token,chat_id}` | notifications disabled unless both are present |
 | `SLUICE_LOCATIONS` | — | **retired** — merely being set makes `load_config` raise |
 | `CAMOFOX_URL` | the Camofox server's base URL | `http://127.0.0.1:9377` |
-| `CAMOFOX_USER` | Camofox user id | `default` |
-| `CAMOFOX_SESSION` | Camofox's named authenticated browser profile | `sluice` |
+| `CAMOFOX_USER` | **selects the cookie profile** — Camofox stores one profile per user id, so this decides whose logins a run inherits | `default` |
+| `CAMOFOX_SESSION` | groups tabs within that profile; does **not** select the profile or the authenticated session | `sluice` |
 | `EDITOR` | the editor `job-sluice init` opens for the Judging Profile's prose questions | none — a blank answer keeps the shipped neutral default |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | the `anthropic` backend's credentials/endpoint | none / provider default |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` | the `openai` backend | none / provider default |
