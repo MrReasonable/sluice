@@ -107,23 +107,19 @@ def test_list_leads_accepts_a_non_canonical_status_alias_like_the_rest_of_the_cl
 
 
 def test_list_leads_rejects_an_unknown_status_naming_the_valid_set(tmp_path):
-    try:
+    with pytest.raises(ValueError) as exc_info:
         list_leads(_app(tmp_path), statuses=["not-a-real-status"])
-        assert False, "expected a ValueError"
-    except ValueError as e:
-        assert "not-a-real-status" in str(e)
-        assert "shortlist" in str(e)  # a real canonical status, proving the valid set is named
+    assert "not-a-real-status" in str(exc_info.value)
+    assert "shortlist" in str(exc_info.value)  # a real canonical status, proving the valid set is named
 
 
 def test_list_leads_unknown_status_error_names_every_bad_status_not_just_the_first(tmp_path):
-    try:
+    with pytest.raises(ValueError) as exc_info:
         list_leads(_app(tmp_path), statuses=["nope-one", "nope-two"])
-        assert False, "expected a ValueError"
-    except ValueError as e:
-        # deferred-minor #6: `unknown` is the full sorted set of bad statuses -- the
-        # message must name ALL of them, not just unknown[0].
-        assert "nope-one" in str(e)
-        assert "nope-two" in str(e)
+    # deferred-minor #6: `unknown` is the full sorted set of bad statuses -- the
+    # message must name ALL of them, not just unknown[0].
+    assert "nope-one" in str(exc_info.value)
+    assert "nope-two" in str(exc_info.value)
 
 
 def test_list_leads_limit_truncates_and_reports_truncated(tmp_path):
@@ -148,11 +144,8 @@ def test_list_leads_negative_limit_raises_rather_than_reporting_a_false_truncate
     # minor finding #5: `limit is not None and len(notes) > limit` is True for a
     # negative limit even against an EMPTY store, which is a wrong `truncated` flag,
     # not a real truncation. Raise loudly instead, the same way an unknown status does.
-    try:
+    with pytest.raises(ValueError, match="-1"):
         list_leads(_app(tmp_path), limit=-1)
-        assert False, "expected a ValueError"
-    except ValueError as e:
-        assert "-1" in str(e)
 
 
 def test_list_leads_empty_statuses_list_falls_through_to_no_filter(tmp_path):
