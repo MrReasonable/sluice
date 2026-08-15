@@ -264,7 +264,7 @@ def test_a_raced_move_leaves_the_store_refusing_not_updating(tmp_path, monkeypat
     # create leaves the cache holding [leads_dir] while Active/ exists but is not in it, which
     # is exactly the stale shape the sweep must repair.
     warm = Lead(source="test", search="q", title="Warm", company="B", url="", location="")
-    assert v.upsert(warm) == "created"
+    assert v.upsert(warm).outcome == "created"
     assert v._scan_dirs_cache is not None, "the cache was not warmed"
     assert not any(d.endswith(ACTIVE_SUBDIR) for d in v._scan_dirs_cache), \
         "the cache already knows Active/; this fixture no longer reproduces the stale state"
@@ -285,7 +285,7 @@ def test_a_raced_move_leaves_the_store_refusing_not_updating(tmp_path, monkeypat
 
     # SAME instance -- the whole point is the cache the sweep just invalidated.
     raced = Lead(source="test", search="q", title="Raced", company="A", url="", location="")
-    assert v.upsert(raced) == "refused", (
+    assert v.upsert(raced).outcome == "refused", (
         "the store resolved a raced twin against a stale scan set: it wrote to the resurrected "
         "note instead of refusing the ambiguous identity")
 

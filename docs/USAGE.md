@@ -314,10 +314,10 @@ Blocks for the life of the process once started; there is no `--dry-run`.
   (`created` again -- a second real note at the same company+title). Both
   `updated` and `merged` are a bare `last_seen` bump; the new
   url/salary/location is NOT recorded either way. `slug` is OMITTED from the
-  response on any outcome -- including `created`/`updated`/`merged` -- if the
-  note this call landed on could not be unambiguously identified afterward;
-  the outcome itself is still always trustworthy, only the slug lookup can
-  abstain.
+  response only for `refused`/`merged_away`/`merged_away_unproven`, which
+  write nothing and so never have a slug to report -- `created`/`updated`/
+  `merged` always carry the slug of the note this call actually touched, the
+  store's own answer, never a guess.
 
 `--write` is a per-registration trust decision about one MCP client: every existing
 read-only registration is unaffected, and a read-only server's `tools/list`

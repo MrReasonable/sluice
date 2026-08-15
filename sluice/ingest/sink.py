@@ -45,9 +45,9 @@ class VaultSink:
             lead.last_seen = stamp
             try:
                 # created | updated | merged | refused | merged_away | merged_away_unproven
-                outcome = self.vault.upsert(lead)
-                counts[outcome] = counts.get(outcome, 0) + 1
-                if outcome in ("created", "updated", "merged", "merged_away"):
+                result = self.vault.upsert(lead)
+                counts[result.outcome] = counts.get(result.outcome, 0) + 1
+                if result.outcome in ("created", "updated", "merged", "merged_away"):
                     # Allowlist over "a note now exists", stated positively so an unknown
                     # outcome fails safe: refused (and the OSError->skipped below) stay OUT
                     # of `recorded` -> never enter seen.db -> retried next run. See #5.

@@ -433,11 +433,11 @@ def create_lead(sluice: Sluice, title: str, company: str, url: str, location: st
     this call creates a genuinely NEW note instead ("created" again -- a second
     real note at the same company+title). Both "updated" and "merged" are a bare
     last_seen bump, with the incoming url/salary/location NOT recorded. `slug`
-    is OMITTED from the response (not "") on any outcome -- including
-    "created"/"updated"/"merged" -- if the note this call landed on could not
-    be unambiguously identified afterward; the outcome itself is still always
-    trustworthy, only the slug lookup can abstain. Raises ValueError naming
-    every unsafe/invalid field.
+    is OMITTED from the response (not "") only for "refused"/"merged_away"/
+    "merged_away_unproven", which write nothing and so never have a slug to
+    report -- "created"/"updated"/"merged" always carry the slug of the note
+    this call actually touched, the store's own answer (#131), never a guess.
+    Raises ValueError naming every unsafe/invalid field.
     Does not touch seen.db (decision 11) -- a later genuine scrape of the same
     posting is not silently skipped by this manual entry. Lands at status=new;
     job-sluice triage run promotes it from there -- no `status` parameter on this

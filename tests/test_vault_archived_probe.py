@@ -25,8 +25,8 @@ def _lead(**kw):
 def _merge_away(v, loser_lead, survivor_lead):
     """Archive `loser_lead`'s note through the REAL merge_cluster, so the fixture cannot
     drift from what the production archive path actually writes."""
-    assert v.upsert(survivor_lead) == "created"
-    assert v.upsert(loser_lead) == "created"
+    assert v.upsert(survivor_lead).outcome == "created"
+    assert v.upsert(loser_lead).outcome == "created"
     notes = {n.fm.get("url"): n for n in v.read_leads()}
     survivor, loser = notes[survivor_lead.url], notes[loser_lead.url]
     v.merge_cluster(survivor.ref, [loser.ref], alt_urls=[loser_lead.url],
@@ -63,7 +63,7 @@ def test_merged_away_lead_is_not_recreated(tmp_path):
 
     # The dedup set is empty (0-byte/tableless seen.db, fresh machine, retargeted SEEN_DB),
     # so the loser is not filtered at ingest and reaches the write path again.
-    assert v.upsert(loser) == "merged_away"
+    assert v.upsert(loser).outcome == "merged_away"
     assert len(v.read_leads()) == 1
 
 
@@ -75,7 +75,7 @@ def test_proven_different_archived_note_does_not_suppress(tmp_path):
     _merge_away(v, loser, survivor)
     # Same name as the archived loser, but a token-disjoint location -> DIFFERENT.
     fresh = _lead(title="Widget Engineer Senior", url="", location=LOCATIONS[1])
-    assert v.upsert(fresh) == "created"
+    assert v.upsert(fresh).outcome == "created"
 
 
 def test_unknown_verdict_suppresses_as_unproven(tmp_path):
@@ -85,7 +85,7 @@ def test_unknown_verdict_suppresses_as_unproven(tmp_path):
     loser = _lead(title="Widget Engineer Senior", url="https://ex.invalid/2")
     _merge_away(v, loser, survivor)
     blank = _lead(title="Widget Engineer Senior", url="", location="")
-    assert v.upsert(blank) == "merged_away_unproven"
+    assert v.upsert(blank).outcome == "merged_away_unproven"
 
 
 def test_bare_prefix_would_over_match_a_different_job(tmp_path):
@@ -116,10 +116,10 @@ def test_bare_prefix_would_over_match_a_different_job(tmp_path):
     longer = _lead(title="Y II", url="https://ex.invalid/2", location="")
     _merge_away(v, longer, survivor)
     shorter = _lead(title="Y", url="", location="")
-    assert v.upsert(shorter) == "created"
+    assert v.upsert(shorter).outcome == "created"
     # CONTROL: same vault, same archive -- the lead that WAS merged away. Its url matches
     # the archived note's, so this is the url-proven arm.
-    assert v.upsert(longer) == "merged_away"
+    assert v.upsert(longer).outcome == "merged_away"
 
 
 def test_loser_archived_under_its_location_suffixed_name_is_found(tmp_path):
@@ -128,19 +128,19 @@ def test_loser_archived_under_its_location_suffixed_name_is_found(tmp_path):
     green, because the walk itself stops at candidate 2."""
     v = Vault(str(tmp_path))
     third = _lead(title="Third Survivor", url="https://ex.invalid/9")
-    assert v.upsert(third) == "created"
+    assert v.upsert(third).outcome == "created"
     cand1 = _lead(title="Y", url="https://ex.invalid/1", location=LOCATIONS[0])
-    assert v.upsert(cand1) == "created"
+    assert v.upsert(cand1).outcome == "created"
     # A token-disjoint location at the same name forces the location-suffixed candidate.
     cand2 = _lead(title="Y", url="https://ex.invalid/2", location=LOCATIONS[1])
-    assert v.upsert(cand2) == "created"
+    assert v.upsert(cand2).outcome == "created"
     notes = {n.fm.get("url"): n for n in v.read_leads()}
     survivor = notes["https://ex.invalid/9"]
     v.merge_cluster(survivor.ref,
                     [notes["https://ex.invalid/1"].ref, notes["https://ex.invalid/2"].ref],
                     alt_urls=["https://ex.invalid/1", "https://ex.invalid/2"],
                     first_seen="2026-07-01", last_seen="2026-07-07")
-    assert v.upsert(cand2) == "merged_away"
+    assert v.upsert(cand2).outcome == "merged_away"
 
 
 def test_numeric_suffix_archive_is_found(tmp_path):
@@ -149,23 +149,23 @@ def test_numeric_suffix_archive_is_found(tmp_path):
     re-upsert exercises the suffix path at all."""
     v = Vault(str(tmp_path))
     third = _lead(title="Suffix Survivor", url="https://ex.invalid/9")
-    assert v.upsert(third) == "created"
+    assert v.upsert(third).outcome == "created"
     a = _lead(title="Y", url="https://ex.invalid/1", location=LOCATIONS[0])
-    assert v.upsert(a) == "created"
+    assert v.upsert(a).outcome == "created"
     notes = {n.fm.get("url"): n for n in v.read_leads()}
     v.merge_cluster(notes["https://ex.invalid/9"].ref, [notes["https://ex.invalid/1"].ref],
                     alt_urls=["https://ex.invalid/1"], first_seen="2026-07-01",
                     last_seen="2026-07-07")
     # A proven-DIFFERENT B now takes the same active name, then is merged away too.
     b = _lead(title="Y", url="https://ex.invalid/2", location=LOCATIONS[1])
-    assert v.upsert(b) == "created"
+    assert v.upsert(b).outcome == "created"
     notes = {n.fm.get("url"): n for n in v.read_leads()}
     v.merge_cluster(notes["https://ex.invalid/9"].ref, [notes["https://ex.invalid/2"].ref],
                     alt_urls=["https://ex.invalid/2"], first_seen="2026-07-01",
                     last_seen="2026-07-07")
     merged = sorted(os.listdir(os.path.join(v.leads_dir, "_merged")))
     assert any(e.endswith(".1.md") for e in merged), merged
-    assert v.upsert(b) == "merged_away"
+    assert v.upsert(b).outcome == "merged_away"
 
 
 def test_hole_in_the_numeric_sequence_does_not_hide_an_archive(tmp_path):
@@ -174,10 +174,10 @@ def test_hole_in_the_numeric_sequence_does_not_hide_an_archive(tmp_path):
     does not."""
     v = Vault(str(tmp_path))
     third = _lead(title="Hole Survivor", url="https://ex.invalid/9")
-    assert v.upsert(third) == "created"
+    assert v.upsert(third).outcome == "created"
     for n, loc in ((1, LOCATIONS[0]), (2, LOCATIONS[1]), (3, LOCATIONS[2])):
         lead = _lead(title="Y", url=f"https://ex.invalid/{n}", location=loc)
-        assert v.upsert(lead) == "created"
+        assert v.upsert(lead).outcome == "created"
         notes = {x.fm.get("url"): x for x in v.read_leads()}
         v.merge_cluster(notes["https://ex.invalid/9"].ref,
                         [notes[f"https://ex.invalid/{n}"].ref],
@@ -189,7 +189,7 @@ def test_hole_in_the_numeric_sequence_does_not_hide_an_archive(tmp_path):
     os.replace(os.path.join(merged_dir, hole[0]), os.path.join(v.leads_dir, "restored.md"))
     # The lead behind the hole must still be suppressed.
     behind = _lead(title="Y", url="https://ex.invalid/3", location=LOCATIONS[2])
-    assert v.upsert(behind) == "merged_away"
+    assert v.upsert(behind).outcome == "merged_away"
 
 
 _LONG = "Y" * 150      # forces the 120-char cap, so `capped` is True
@@ -203,7 +203,7 @@ def test_capped_title_probe_advances_on_a_lost_title(tmp_path):
     loser = _lead(title=_LONG + "A", url="https://ex.invalid/2", location=LOCATIONS[0])
     _merge_away(v, loser, survivor)
     other = _lead(title=_LONG + "B", url="", location=LOCATIONS[0])
-    assert v.upsert(other) == "created"
+    assert v.upsert(other).outcome == "created"
 
 
 def test_capped_title_probe_control_arm_suppresses_a_matching_title(tmp_path):
@@ -219,7 +219,7 @@ def test_capped_title_probe_control_arm_suppresses_a_matching_title(tmp_path):
     loser = _lead(title=_LONG + "A", url="https://ex.invalid/2", location=LOCATIONS[0])
     _merge_away(v, loser, survivor)
     same = _lead(title=_LONG + "A", url="", location=LOCATIONS[0])
-    assert v.upsert(same) == "merged_away_unproven"
+    assert v.upsert(same).outcome == "merged_away_unproven"
 
 
 def test_capped_title_probe_url_match_overrides_a_lost_title(tmp_path):
@@ -230,7 +230,7 @@ def test_capped_title_probe_url_match_overrides_a_lost_title(tmp_path):
     loser = _lead(title=_LONG + "A", url="https://ex.invalid/2", location=LOCATIONS[0])
     _merge_away(v, loser, survivor)
     drifted = _lead(title=_LONG + "B", url="https://ex.invalid/2", location=LOCATIONS[0])
-    assert v.upsert(drifted) == "merged_away"
+    assert v.upsert(drifted).outcome == "merged_away"
 
 
 def test_merged_away_writes_nothing(tmp_path):
@@ -254,7 +254,7 @@ def test_merged_away_writes_nothing(tmp_path):
                 % LOCATIONS[0])
     assert not os.path.exists(os.path.join(tmp_path, ".stfolder"))
 
-    assert v.upsert(_lead(title="Y", url="", location=LOCATIONS[0])) == "merged_away_unproven"
+    assert v.upsert(_lead(title="Y", url="", location=LOCATIONS[0])).outcome == "merged_away_unproven"
 
     assert not os.path.exists(os.path.join(v.leads_dir, "X - Y.md"))
     assert not os.path.exists(os.path.join(tmp_path, ".stfolder"))
@@ -277,7 +277,7 @@ def test_dotted_title_is_not_confused_with_a_collision_suffix(tmp_path):
     merged = sorted(os.listdir(os.path.join(v.leads_dir, "_merged")))
     assert merged == ["X - Y.1.md"], merged
     fresh = _lead(title="Y", url="")   # location defaults LOCATIONS[0] -- same as dotted's
-    assert v.upsert(fresh) == "created"
+    assert v.upsert(fresh).outcome == "created"
 
 
 def test_numeric_suffix_collision_on_digest_suffixed_name_is_found(tmp_path):
@@ -296,24 +296,24 @@ def test_numeric_suffix_collision_on_digest_suffixed_name_is_found(tmp_path):
     merged away."""
     v = Vault(str(tmp_path))
     survivor = _lead(title="Digest Collision Survivor", url="https://ex.invalid/9")
-    assert v.upsert(survivor) == "created"
+    assert v.upsert(survivor).outcome == "created"
 
     block1 = _lead(title=_LONG + "BLOCK1", url="https://ex.invalid/91", location="")
-    assert v.upsert(block1) == "created"
+    assert v.upsert(block1).outcome == "created"
     block2a = _lead(title=_LONG + "BLOCK2A", url="https://ex.invalid/92", location=LOCATIONS[0])
-    assert v.upsert(block2a) == "created"
+    assert v.upsert(block2a).outcome == "created"
     block2b = _lead(title=_LONG + "BLOCK2B", url="https://ex.invalid/93", location=LOCATIONS[1])
-    assert v.upsert(block2b) == "created"
+    assert v.upsert(block2b).outcome == "created"
 
     l1 = _lead(title=_LONG + "TARGET", url="https://ex.invalid/94", location=LOCATIONS[0])
-    assert v.upsert(l1) == "created"
+    assert v.upsert(l1).outcome == "created"
     notes = {n.fm.get("url"): n for n in v.read_leads()}
     v.merge_cluster(notes["https://ex.invalid/9"].ref, [notes["https://ex.invalid/94"].ref],
                     alt_urls=["https://ex.invalid/94"], first_seen="2026-07-01",
                     last_seen="2026-07-07")
 
     l2 = _lead(title=_LONG + "TARGET", url="https://ex.invalid/95", location=LOCATIONS[1])
-    assert v.upsert(l2) == "created"
+    assert v.upsert(l2).outcome == "created"
     notes = {n.fm.get("url"): n for n in v.read_leads()}
     v.merge_cluster(notes["https://ex.invalid/9"].ref, [notes["https://ex.invalid/95"].ref],
                     alt_urls=["https://ex.invalid/95"], first_seen="2026-07-01",
@@ -337,7 +337,7 @@ def test_numeric_suffix_collision_on_digest_suffixed_name_is_found(tmp_path):
     # re-upsert exercises the suffix-disambiguation path at all (test_numeric_suffix_
     # archive_is_found's own control, applied here).
     again = _lead(title=_LONG + "TARGET", url="https://ex.invalid/95", location=LOCATIONS[1])
-    assert v.upsert(again) == "merged_away"
+    assert v.upsert(again).outcome == "merged_away"
 
 
 def test_numeric_suffix_collision_on_location_suffixed_name_is_found(tmp_path):
@@ -347,20 +347,20 @@ def test_numeric_suffix_collision_on_location_suffixed_name_is_found(tmp_path):
     not location -- is what proves them different from each other and from the blocker."""
     v = Vault(str(tmp_path))
     survivor = _lead(title="Location Collision Survivor", url="https://ex.invalid/9")
-    assert v.upsert(survivor) == "created"
+    assert v.upsert(survivor).outcome == "created"
 
     block1 = _lead(title=_LONG + "BLOCK", url="https://ex.invalid/91", location="")
-    assert v.upsert(block1) == "created"
+    assert v.upsert(block1).outcome == "created"
 
     l1 = _lead(title=_LONG + "P", url="https://ex.invalid/92", location=LOCATIONS[0])
-    assert v.upsert(l1) == "created"
+    assert v.upsert(l1).outcome == "created"
     notes = {n.fm.get("url"): n for n in v.read_leads()}
     v.merge_cluster(notes["https://ex.invalid/9"].ref, [notes["https://ex.invalid/92"].ref],
                     alt_urls=["https://ex.invalid/92"], first_seen="2026-07-01",
                     last_seen="2026-07-07")
 
     l2 = _lead(title=_LONG + "Q", url="https://ex.invalid/93", location=LOCATIONS[0])
-    assert v.upsert(l2) == "created"
+    assert v.upsert(l2).outcome == "created"
     notes = {n.fm.get("url"): n for n in v.read_leads()}
     v.merge_cluster(notes["https://ex.invalid/9"].ref, [notes["https://ex.invalid/93"].ref],
                     alt_urls=["https://ex.invalid/93"], first_seen="2026-07-01",
@@ -376,7 +376,7 @@ def test_numeric_suffix_collision_on_location_suffixed_name_is_found(tmp_path):
     assert capped and plain[0][:-len(".md")] == cands[1] != cands[0], (merged, cands)
 
     again = _lead(title=_LONG + "Q", url="https://ex.invalid/93", location=LOCATIONS[0])
-    assert v.upsert(again) == "merged_away"
+    assert v.upsert(again).outcome == "merged_away"
 
 
 def _collide(v, survivor_url="https://ex.invalid/9", title="Y", locs=(0, 1)):
@@ -386,13 +386,13 @@ def _collide(v, survivor_url="https://ex.invalid/9", title="Y", locs=(0, 1)):
     job's Lead -- the only one whose re-upsert exercises the counter at all, since the
     first sits at the exact, unsuffixed archive name."""
     a = _lead(title=title, url="https://ex.invalid/1", location=LOCATIONS[locs[0]])
-    assert v.upsert(a) == "created"
+    assert v.upsert(a).outcome == "created"
     notes = {n.fm.get("url"): n for n in v.read_leads()}
     v.merge_cluster(notes[survivor_url].ref, [notes["https://ex.invalid/1"].ref],
                     alt_urls=["https://ex.invalid/1"], first_seen="2026-07-01",
                     last_seen="2026-07-07")
     b = _lead(title=title, url="https://ex.invalid/2", location=LOCATIONS[locs[1]])
-    assert v.upsert(b) == "created"
+    assert v.upsert(b).outcome == "created"
     notes = {n.fm.get("url"): n for n in v.read_leads()}
     v.merge_cluster(notes[survivor_url].ref, [notes["https://ex.invalid/2"].ref],
                     alt_urls=["https://ex.invalid/2"], first_seen="2026-07-01",
@@ -409,13 +409,13 @@ def test_collision_file_does_not_suppress_a_job_genuinely_named_like_it(tmp_path
     suppression the job never earned. The archived note records the name it was SEATED at
     (`X - Y`), which does not equal the candidate, so it does not match."""
     v = Vault(str(tmp_path))
-    assert v.upsert(_lead(title="Mirror Survivor", url="https://ex.invalid/9")) == "created"
+    assert v.upsert(_lead(title="Mirror Survivor", url="https://ex.invalid/9")).outcome == "created"
     _collide(v)
     merged = sorted(os.listdir(os.path.join(v.leads_dir, "_merged")))
     assert merged == ["X - Y.1.md", "X - Y.md"], merged   # the ambiguous filename, for real
 
     dotted = _lead(title="Y.1", url="", location=LOCATIONS[1])   # LOCATIONS[1] -> SAME
-    assert v.upsert(dotted) == "created"
+    assert v.upsert(dotted).outcome == "created"
     assert os.path.exists(os.path.join(v.leads_dir, "X - Y.1.md"))
 
 
@@ -427,7 +427,7 @@ def test_quote_edged_component_still_suppresses(tmp_path):
     suppressing: a resurrection caused by punctuation. Reading the recorded name instead
     has nothing to re-derive."""
     v = Vault(str(tmp_path))
-    assert v.upsert(_lead(title="Quote Survivor", url="https://ex.invalid/9")) == "created"
+    assert v.upsert(_lead(title="Quote Survivor", url="https://ex.invalid/9")).outcome == "created"
     b = _collide(v, title="Y'")
     merged = sorted(os.listdir(os.path.join(v.leads_dir, "_merged")))
     assert merged == ["X - Y'.1.md", "X - Y'.md"], merged
@@ -435,7 +435,7 @@ def test_quote_edged_component_still_suppresses(tmp_path):
     archived = _read_fm(os.path.join(v.leads_dir, "_merged", "X - Y'.1.md"))
     assert archived["role"] == "Y" != "Y'"
 
-    assert v.upsert(b) == "merged_away"
+    assert v.upsert(b).outcome == "merged_away"
 
 
 def test_post_archive_edit_of_role_still_suppresses(tmp_path):
@@ -444,13 +444,13 @@ def test_post_archive_edit_of_role_still_suppresses(tmp_path):
     the name it was archived under, but its frontmatter no longer produces that name. The
     recorded field is a fact about the past, so an edit to `role` cannot move it."""
     v = Vault(str(tmp_path))
-    assert v.upsert(_lead(title="Edit Survivor", url="https://ex.invalid/9")) == "created"
+    assert v.upsert(_lead(title="Edit Survivor", url="https://ex.invalid/9")).outcome == "created"
     b = _collide(v)
     archived = os.path.join(v.leads_dir, "_merged", "X - Y.1.md")
     assert v.update_fields(archived, {"role": "Y, Revised By Hand"})
     assert _read_fm(archived)["role"] == "Y, Revised By Hand"
 
-    assert v.upsert(b) == "merged_away"
+    assert v.upsert(b).outcome == "merged_away"
 
 
 def test_legacy_archive_without_the_field_suppresses_by_exact_name(tmp_path):
@@ -465,7 +465,7 @@ def test_legacy_archive_without_the_field_suppresses_by_exact_name(tmp_path):
     not, and a pre-upgrade archive is exactly where the evidence is thinnest."""
     v = Vault(str(tmp_path))
     _seed_legacy(v, "X - Y.md", company="X", role="Y", location=LOCATIONS[0])
-    assert v.upsert(_lead(title="Y", url="", location=LOCATIONS[0])) == "merged_away_unproven"
+    assert v.upsert(_lead(title="Y", url="", location=LOCATIONS[0])).outcome == "merged_away_unproven"
 
 
 def test_legacy_numeric_suffix_archive_is_not_matched(tmp_path):
@@ -477,7 +477,7 @@ def test_legacy_numeric_suffix_archive_is_not_matched(tmp_path):
     invisibly, on the arm the sink records irreversibly."""
     v = Vault(str(tmp_path))
     _seed_legacy(v, "X - Y.1.md", company="X", role="Y", location=LOCATIONS[0])
-    assert v.upsert(_lead(title="Y", url="", location=LOCATIONS[0])) == "created"
+    assert v.upsert(_lead(title="Y", url="", location=LOCATIONS[0])).outcome == "created"
     assert os.path.exists(os.path.join(v.leads_dir, "X - Y.md"))          # the visible duplicate
     assert os.path.exists(os.path.join(v.leads_dir, "_merged", "X - Y.1.md"))   # archive intact
 
@@ -490,7 +490,7 @@ def test_unreadable_recorded_name_degrades_to_the_legacy_arm(tmp_path):
     v = Vault(str(tmp_path))
     _seed_legacy(v, "X - Y.1.md", company="X", role="Y", location=LOCATIONS[0],
                  extra="archived_from_note: X - Y\n")   # unquoted -> not the recorded form
-    assert v.upsert(_lead(title="Y", url="", location=LOCATIONS[0])) == "created"
+    assert v.upsert(_lead(title="Y", url="", location=LOCATIONS[0])).outcome == "created"
 
 
 def test_a_failed_stamp_does_not_un_count_a_real_archive(tmp_path, monkeypatch):
@@ -513,8 +513,8 @@ def test_a_failed_stamp_does_not_un_count_a_real_archive(tmp_path, monkeypatch):
     v = Vault(str(tmp_path))
     survivor = _lead(title="Stamp Survivor", url="https://ex.invalid/1")
     loser = _lead(title="Stamp Loser", url="https://ex.invalid/2")
-    assert v.upsert(survivor) == "created"
-    assert v.upsert(loser) == "created"
+    assert v.upsert(survivor).outcome == "created"
+    assert v.upsert(loser).outcome == "created"
     notes = {n.fm.get("url"): n for n in v.read_leads()}
     monkeypatch.setattr(vault_mod.os, "replace", flaky)
     archived = v.merge_cluster(notes["https://ex.invalid/1"].ref,
@@ -526,7 +526,7 @@ def test_a_failed_stamp_does_not_un_count_a_real_archive(tmp_path, monkeypatch):
     assert len(archived) == 1                     # still counted: the move really happened
     assert len(v.read_leads()) == 1               # ...and the loser really is out of view
     assert "archived_from_note" not in _read_fm(archived[0])   # the stamp genuinely failed
-    assert v.upsert(loser) == "merged_away"       # legacy arm: exact filename still suppresses
+    assert v.upsert(loser).outcome == "merged_away"       # legacy arm: exact filename still suppresses
 
 
 def test_zero_byte_reservation_is_skipped_not_treated_as_unknown(tmp_path):
@@ -534,12 +534,15 @@ def test_zero_byte_reservation_is_skipped_not_treated_as_unknown(tmp_path):
     name if the process dies before os.replace, and its cleanup is best-effort. Scored as
     UNKNOWN it would suppress every future lead at that name."""
     v = Vault(str(tmp_path))
-    assert v.upsert(_lead(title="Y", url="https://ex.invalid/1")) == "created"
+    assert v.upsert(_lead(title="Y", url="https://ex.invalid/1")).outcome == "created"
     merged_dir = os.path.join(v.leads_dir, "_merged")
     os.makedirs(merged_dir, exist_ok=True)
     open(os.path.join(merged_dir, "X - Y.md"), "w").close()   # the orphaned reservation
+    # location=LOCATIONS[1] makes fresh a DIFFERENT lead from the active "Y" note (whose
+    # location is the default), so this must create a second note -- accepting "updated"
+    # or "merged" would also pass a location-reconciliation regression.
     fresh = _lead(title="Y", url="https://ex.invalid/2", location=LOCATIONS[1])
-    assert v.upsert(fresh) in ("created", "updated", "merged")
+    assert v.upsert(fresh).outcome == "created"
 
 
 def test_unreadable_archived_entry_raises_rather_than_silently_resurrecting(tmp_path):
@@ -577,7 +580,7 @@ def test_blank_url_and_location_archive_is_still_recognized_as_a_note(tmp_path):
     loser = _lead(title="Blank Evidence Loser", url="", location="")
     _merge_away(v, loser, survivor)
     again = _lead(title="Blank Evidence Loser", url="", location="")
-    assert v.upsert(again) == "merged_away_unproven"
+    assert v.upsert(again).outcome == "merged_away_unproven"
 
 
 def test_company_only_archived_entry_is_still_a_note(tmp_path):
@@ -589,7 +592,7 @@ def test_company_only_archived_entry_is_still_a_note(tmp_path):
     reservation and skipped, which would resurrect the lead."""
     v = Vault(str(tmp_path))
     _seed_legacy(v, "X - Y.md", company="X", role="", location=LOCATIONS[0])
-    assert v.upsert(_lead(title="Y", url="", location=LOCATIONS[0])) == "merged_away_unproven"
+    assert v.upsert(_lead(title="Y", url="", location=LOCATIONS[0])).outcome == "merged_away_unproven"
 
 
 def test_role_only_archived_entry_is_still_a_note(tmp_path):
@@ -598,7 +601,7 @@ def test_role_only_archived_entry_is_still_a_note(tmp_path):
     a single half would leave one direction of the flip invisible."""
     v = Vault(str(tmp_path))
     _seed_legacy(v, "X - Y.md", company="", role="Y", location=LOCATIONS[0])
-    assert v.upsert(_lead(title="Y", url="", location=LOCATIONS[0])) == "merged_away_unproven"
+    assert v.upsert(_lead(title="Y", url="", location=LOCATIONS[0])).outcome == "merged_away_unproven"
 
 
 def test_legacy_wrong_hit_is_suppressed_only_on_the_unproven_arm(tmp_path):
@@ -617,7 +620,7 @@ def test_legacy_wrong_hit_is_suppressed_only_on_the_unproven_arm(tmp_path):
     _seed_legacy(v, "X - Y.1.md", company="X", role="Y",
                  location=LOCATIONS[0], extra='url: "https://ex.invalid/archived"\n')
     fresh = _lead(title="Y.1", url="https://ex.invalid/brand-new", location=LOCATIONS[0])
-    assert v.upsert(fresh) == "merged_away_unproven"
+    assert v.upsert(fresh).outcome == "merged_away_unproven"
 
 
 def test_location_only_same_is_unproven_and_stays_out_of_seen_db(tmp_path):
@@ -638,7 +641,7 @@ def test_location_only_same_is_unproven_and_stays_out_of_seen_db(tmp_path):
     _merge_away(v, loser, survivor)
 
     repost = _lead(title="Repost Target", url="https://ex.invalid/3", location=LOCATIONS[0])
-    assert v.upsert(repost) == "merged_away_unproven"
+    assert v.upsert(repost).outcome == "merged_away_unproven"
 
     counts = VaultSink(v, seen, today=lambda: "2026-07-31").write([repost])
     assert counts.get("merged_away_unproven") == 1 and not counts.get("created")
@@ -660,7 +663,7 @@ def test_url_proven_same_is_recorded_in_seen_db(tmp_path):
     _merge_away(v, loser, survivor)
 
     again = _lead(title="Repost Target", url="https://ex.invalid/2", location=LOCATIONS[0])
-    assert v.upsert(again) == "merged_away"
+    assert v.upsert(again).outcome == "merged_away"
 
     counts = VaultSink(v, seen, today=lambda: "2026-07-31").write([again])
     assert counts.get("merged_away") == 1
@@ -673,6 +676,6 @@ def test_probe_is_a_no_op_when_nothing_was_ever_merged(tmp_path):
     exist. That is the common case and means 'no hit' -- FileNotFoundError specifically,
     never a bare `except OSError` that would also swallow an unreadable directory."""
     v = Vault(str(tmp_path))
-    assert v.upsert(_lead()) == "created"
+    assert v.upsert(_lead()).outcome == "created"
     assert not os.path.exists(os.path.join(v.leads_dir, "_merged"))
-    assert v.upsert(_lead(url="https://ex.invalid/2", location=LOCATIONS[1])) == "created"
+    assert v.upsert(_lead(url="https://ex.invalid/2", location=LOCATIONS[1])).outcome == "created"

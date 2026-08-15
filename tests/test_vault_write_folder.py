@@ -20,13 +20,13 @@ def _lead(company="Example Ltd", title="Example Role", url="https://example.inva
 
 def test_the_flat_layout_writes_into_the_leads_dir(tmp_path):
     v = Vault(str(tmp_path))
-    assert v.upsert(_lead()) == "created"
+    assert v.upsert(_lead()).outcome == "created"
     assert os.path.isfile(os.path.join(v.leads_dir, "Example Ltd - Example Role.md"))
 
 
 def test_the_active_archive_layout_writes_into_active(tmp_path):
     v = Vault(str(tmp_path), lead_layout="active_archive")
-    assert v.upsert(_lead()) == "created"
+    assert v.upsert(_lead()).outcome == "created"
     assert os.path.isfile(
         os.path.join(v.leads_dir, ACTIVE_SUBDIR, "Example Ltd - Example Role.md"))
     assert not os.path.exists(os.path.join(v.leads_dir, "Example Ltd - Example Role.md"))
@@ -50,8 +50,8 @@ def test_a_rescrape_updates_the_note_in_active_rather_than_recreating_it(tmp_pat
     find the note in Active/ through the scan set and bump last_seen, not mint a twin at the root.
     This is the regression that would mass-duplicate an opted-in vault."""
     v = Vault(str(tmp_path), lead_layout="active_archive")
-    assert v.upsert(_lead()) == "created"
-    assert v.upsert(_lead()) == "updated"
+    assert v.upsert(_lead()).outcome == "created"
+    assert v.upsert(_lead()).outcome == "updated"
     found = [f for _, _, fs in os.walk(v.leads_dir) for f in fs if f.endswith(".md")]
     assert len(found) == 1, found
 
@@ -66,9 +66,9 @@ def test_a_note_already_at_the_root_is_updated_not_duplicated_into_active(tmp_pa
     above the update/merge dispatch -- `upsert`'s leads_dir makedirs sits there and runs on every
     non-refused outcome, so a naive repointing mints Active/ on a pure last_seen bump."""
     flat = Vault(str(tmp_path))
-    assert flat.upsert(_lead()) == "created"
+    assert flat.upsert(_lead()).outcome == "created"
     opted_in = Vault(str(tmp_path), lead_layout="active_archive")
-    assert opted_in.upsert(_lead()) == "updated"
+    assert opted_in.upsert(_lead()).outcome == "updated"
     assert os.path.isfile(os.path.join(flat.leads_dir, "Example Ltd - Example Role.md"))
     assert not os.path.exists(os.path.join(flat.leads_dir, ACTIVE_SUBDIR))
 
@@ -98,7 +98,7 @@ def test_a_refused_lead_creates_no_write_folder(tmp_path):
             fh.write("---\ncompany: Example Ltd\nrole: Example Role\n"
                      f"url: https://example.invalid/other\n"
                      f"location: {LOCATIONS[0]}\n---\nbody\n")
-    outcome = v.upsert(_lead(url="https://example.invalid/1", location=LOCATIONS[1]))
+    outcome = v.upsert(_lead(url="https://example.invalid/1", location=LOCATIONS[1])).outcome
     # Assert the PRECONDITION separately from the property. If this fixture stops reaching
     # `refused`, this line says so, instead of the test quietly passing because nothing was
     # created for some entirely different reason.
@@ -165,8 +165,8 @@ def test_a_symlinked_leads_dir_still_works_under_the_flat_default(tmp_path):
     os.makedirs(os.path.dirname(v.leads_dir), exist_ok=True)
     os.symlink(real, v.leads_dir)
 
-    assert v.upsert(_lead()) == "created"
+    assert v.upsert(_lead()).outcome == "created"
     assert os.path.isfile(os.path.join(str(real), "Example Ltd - Example Role.md"))
     assert [n.slug for n in v.read_leads()] == ["Example Ltd - Example Role"]
     # ...and a re-scrape reconciles against it rather than minting a twin.
-    assert v.upsert(_lead()) == "updated"
+    assert v.upsert(_lead()).outcome == "updated"

@@ -90,7 +90,7 @@ def test_rescrape_touches_last_seen_AND_NOTHING_ELSE(store_name, tmp_path, monke
     # re-scrape below is deterministic and does not depend on when the suite runs (the
     # re-scrape date must be LATER than the stored one for last_seen to move at all --
     # last_seen is monotonic, see test_rescrape_never_regresses_last_seen).
-    assert store.upsert(_lead(first_seen="2026-07-10", last_seen="2026-07-10")) == "created"
+    assert store.upsert(_lead(first_seen="2026-07-10", last_seen="2026-07-10")).outcome == "created"
     _enrich(store, store.read_leads()[0].ref)
     store.append_body_section(store.read_leads()[0].ref, "d-1",
                               "## Dossier <!--d-1-->\n\nbody")
@@ -99,7 +99,7 @@ def test_rescrape_touches_last_seen_AND_NOTHING_ELSE(store_name, tmp_path, monke
     before_fm = dict(before.fm)
 
     # The lead comes back on a LATER scrape, as it will every day it stays posted.
-    assert store.upsert(_lead(last_seen="2026-07-14")) == "updated"
+    assert store.upsert(_lead(last_seen="2026-07-14")).outcome == "updated"
 
     after = store.read_leads()[0]
     after_fm = dict(after.fm)
@@ -119,10 +119,10 @@ def test_rescrape_never_regresses_last_seen(store_name, tmp_path, monkeypatch):
     invariant it belongs with, so a second store inherits it rather than silently regressing.
     """
     store = _make_store(store_name, tmp_path, monkeypatch)
-    assert store.upsert(_lead(last_seen="2026-07-14")) == "created"
+    assert store.upsert(_lead(last_seen="2026-07-14")).outcome == "created"
     # The board re-lists the role with a STALE date. Update or merge -- either way the
     # stamp must not move into the past.
-    assert store.upsert(_lead(last_seen="2026-07-09")) in ("updated", "merged")
+    assert store.upsert(_lead(last_seen="2026-07-09")).outcome in ("updated", "merged")
     assert store.read_leads()[0].fm.get("last_seen") == "2026-07-14", \
         "an older re-scrape regressed last_seen into the past"
 
@@ -169,9 +169,9 @@ def test_merge_cluster_preserves_survivor_and_removes_losers(store_name, tmp_pat
     # is UNKNOWN evidence (same_opportunity), so upsert would MERGE this lead into the first
     # note instead of creating a second one, leaving nothing at url .../2 to test against.
     assert store.upsert(_lead(url="https://example.invalid/1", location=LOCATIONS[0],
-                              first_seen="2026-07-10", last_seen="2026-07-10")) == "created"
+                              first_seen="2026-07-10", last_seen="2026-07-10")).outcome == "created"
     assert store.upsert(_lead(url="https://example.invalid/2", location=LOCATIONS[1],
-                              first_seen="2026-07-05", last_seen="2026-07-20")) == "created"
+                              first_seen="2026-07-05", last_seen="2026-07-20")).outcome == "created"
     survivor = next(n for n in store.read_leads() if n.fm.get("url") == "https://example.invalid/1")
     _enrich(store, survivor.ref)
     store.append_body_section(survivor.ref, "d-merge", "## body\nkeep\n")
@@ -293,7 +293,7 @@ def test_slug_is_issued_stable_and_unique_across_what_the_store_creates(store_na
         _lead(company="Example Foundry", title="Engineer", url="https://example.invalid/2"),
         _lead(company="Example Analytics", title="Engineer", url="https://example.invalid/3"),
     ]
-    outcomes = [store.upsert(lead) for lead in seeds]
+    outcomes = [store.upsert(lead).outcome for lead in seeds]
     assert all(o in _VOCAB for o in outcomes), outcomes
 
     # Seeds 0, 3 and 4 are three DISTINCT identities, so each must create. Seeds 1 and 2
@@ -535,8 +535,8 @@ def test_two_jobs_differing_in_location_produce_two_notes(store_name, tmp_path, 
     """Two provably-different jobs (a proven location difference) must not collapse into one
     note. Stated in Store terms, on the slug SET, so a second store inherits the property."""
     store = _make_store(store_name, tmp_path, monkeypatch)
-    assert store.upsert(_lead(location=LOCATIONS[0], url="https://example.invalid/1")) == "created"
-    assert store.upsert(_lead(location=LOCATIONS[1], url="https://example.invalid/2")) == "created"
+    assert store.upsert(_lead(location=LOCATIONS[0], url="https://example.invalid/1")).outcome == "created"
+    assert store.upsert(_lead(location=LOCATIONS[1], url="https://example.invalid/2")).outcome == "created"
     assert len({n.slug for n in store.read_leads()}) == 2, \
         "two provably-different jobs collapsed into one note"
 
@@ -544,8 +544,8 @@ def test_two_jobs_differing_in_location_produce_two_notes(store_name, tmp_path, 
 def test_identical_strings_two_urls_produce_one_note(store_name, tmp_path, monkeypatch):
     """Same company+title+location, two urls -> one note (the accepted cross-board merge)."""
     store = _make_store(store_name, tmp_path, monkeypatch)
-    assert store.upsert(_lead(url="https://example.invalid/1")) == "created"
-    assert store.upsert(_lead(url="https://example.invalid/2")) in ("updated", "merged")
+    assert store.upsert(_lead(url="https://example.invalid/1")).outcome == "created"
+    assert store.upsert(_lead(url="https://example.invalid/2")).outcome in ("updated", "merged")
     assert len({n.slug for n in store.read_leads()}) == 1
 
 
@@ -555,8 +555,8 @@ def test_two_url_less_leads_differing_in_location_produce_two_notes(store_name, 
     url difference). End-to-end the engine's dedup_key collapses url-less leads first -- that
     read-key half is #23; this pins the store contract, which is what a 2nd store inherits."""
     store = _make_store(store_name, tmp_path, monkeypatch)
-    assert store.upsert(_lead(location=LOCATIONS[0], url="")) == "created"
-    assert store.upsert(_lead(location=LOCATIONS[1], url="")) == "created"
+    assert store.upsert(_lead(location=LOCATIONS[0], url="")).outcome == "created"
+    assert store.upsert(_lead(location=LOCATIONS[1], url="")).outcome == "created"
     assert len({n.slug for n in store.read_leads()}) == 2, \
         "two url-less jobs differing in location collapsed into one note"
 
@@ -566,8 +566,8 @@ def test_upsert_return_is_always_within_the_vocabulary(store_name, tmp_path, mon
     an out-of-vocab outcome slipping past the sink's allowlist. Membership, not a fixed string;
     exercised across create AND the same-lead re-scrape (update/merge), not just the create path."""
     store = _make_store(store_name, tmp_path, monkeypatch)
-    assert store.upsert(_lead()) in _VOCAB                       # create
-    assert store.upsert(_lead(last_seen="2026-07-14")) in _VOCAB  # re-scrape -> update/merge
+    assert store.upsert(_lead()).outcome in _VOCAB                       # create
+    assert store.upsert(_lead(last_seen="2026-07-14")).outcome in _VOCAB  # re-scrape -> update/merge
 
 
 # ── #81: a lead merged away must never be resurrected ─────────────────────────
@@ -581,8 +581,8 @@ def test_merged_away_lead_is_never_recreated(store_name, tmp_path, monkeypatch):
     trivially. Same shape as test_merge_cluster_preserves_survivor_and_removes_losers --
     two token-disjoint LOCATIONS, no filenames in the test's vocabulary."""
     store = _make_store(store_name, tmp_path, monkeypatch)
-    assert store.upsert(_lead(url="https://example.invalid/1", location=LOCATIONS[0])) == "created"
-    assert store.upsert(_lead(url="https://example.invalid/2", location=LOCATIONS[1])) == "created"
+    assert store.upsert(_lead(url="https://example.invalid/1", location=LOCATIONS[0])).outcome == "created"
+    assert store.upsert(_lead(url="https://example.invalid/2", location=LOCATIONS[1])).outcome == "created"
     survivor = next(n for n in store.read_leads() if n.fm.get("url") == "https://example.invalid/1")
     loser = next(n for n in store.read_leads() if n.fm.get("url") == "https://example.invalid/2")
     store.merge_cluster(survivor.ref, [loser.ref], alt_urls=["https://example.invalid/2"],
@@ -592,10 +592,81 @@ def test_merged_away_lead_is_never_recreated(store_name, tmp_path, monkeypatch):
     assert all(n.fm.get("url") != "https://example.invalid/2" for n in store.read_leads())
 
     # THE PROPERTY: the merged-away lead, re-scraped with the dedup set empty.
-    outcome = store.upsert(_lead(url="https://example.invalid/2", location=LOCATIONS[1]))
-    assert outcome != "created", f"{store_name} re-created a lead a human merged away"
-    assert outcome in _VOCAB
+    result = store.upsert(_lead(url="https://example.invalid/2", location=LOCATIONS[1]))
+    assert result.outcome != "created", f"{store_name} re-created a lead a human merged away"
+    assert result.outcome in _VOCAB
     assert len(store.read_leads()) == 1
+
+
+# ── #131 post-final-review: upsert reports the note it ACTUALLY wrote to ──────
+def test_upsert_result_slug_names_the_note_this_call_actually_wrote(
+        store_name, tmp_path, monkeypatch):
+    """The concrete regression this task exists to prevent (#131 final review):
+    two notes legitimately share company+title (a proven-different location seats
+    a second note at that identity) -- a THIRD call whose url proves it the SAME
+    posting as the FIRST note, but whose location matches the SECOND note, must
+    report the FIRST note's slug, not the second's. No post-hoc filter over the
+    finished note set can get this right in general; only the store's own
+    resolution, which this test proves by checking the note ACTUALLY ON DISK
+    matches what `result.slug` claims, not just that `result.slug` looks
+    plausible."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+
+    first = store.upsert(_lead(company="Example Ltd", title="Example Role",
+                               url="https://example.invalid/1", location=LOCATIONS[0]))
+    assert first.outcome == "created" and first.slug
+
+    second = store.upsert(_lead(company="Example Ltd", title="Example Role",
+                                url="https://example.invalid/2", location=LOCATIONS[1]))
+    assert second.outcome == "created" and second.slug
+    assert second.slug != first.slug
+
+    # The third call's url proves it the SAME posting as the FIRST note (url match
+    # is definitive), even though its own incoming location (LOCATIONS[1]) coincides
+    # with the SECOND, unrelated note's location -- exactly the reproduction that
+    # broke every prior "guess after the fact" strategy.
+    third = store.upsert(_lead(company="Example Ltd", title="Example Role",
+                               url="https://example.invalid/1", location=LOCATIONS[1]))
+    assert third.outcome in ("updated", "merged")
+    assert third.slug == first.slug, (
+        f"the url-proven write touched the FIRST note but reported "
+        f"{third.slug!r} instead of {first.slug!r}")
+
+    # Ground truth: read every note back and confirm the FIRST note's own fields
+    # actually changed (last_seen bumped towards 'today'), and the SECOND note's
+    # fields are untouched (never-clobber) -- proving `third.slug` names the note
+    # that genuinely received this call's write, not merely a plausible-looking one.
+    notes = {n.slug: n for n in store.read_leads()}
+    assert notes[first.slug].fm.get("url") == "https://example.invalid/1"
+    assert notes[second.slug].fm.get("url") == "https://example.invalid/2"
+
+
+def test_upsert_result_slug_is_blank_for_every_no_write_outcome(store_name, tmp_path, monkeypatch):
+    """refused/merged_away/merged_away_unproven never carry a slug -- confirms the
+    negative half of the contract, not just the positive one above."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+
+    refused = store.upsert(_lead(company="", title="", url=""))
+    assert refused.outcome == "refused"
+    assert refused.slug == ""
+
+    # merged_away / merged_away_unproven: same setup as
+    # test_merged_away_lead_is_never_recreated -- merge a loser away, then re-scrape
+    # the identity that was merged. Either outcome is a valid store response (they
+    # differ only in evidence strength), and NEITHER may carry a slug: the archived
+    # note is not one this call wrote into, only matched against.
+    survivor = store.upsert(_lead(url="https://example.invalid/3", location=LOCATIONS[0]))
+    loser = store.upsert(_lead(url="https://example.invalid/4", location=LOCATIONS[1]))
+    assert survivor.outcome == "created" and loser.outcome == "created"
+    survivor_note = next(n for n in store.read_leads() if n.fm.get("url") == "https://example.invalid/3")
+    loser_note = next(n for n in store.read_leads() if n.fm.get("url") == "https://example.invalid/4")
+    store.merge_cluster(survivor_note.ref, [loser_note.ref],
+                        alt_urls=["https://example.invalid/4"],
+                        first_seen="2026-07-05", last_seen="2026-07-20")
+
+    archived = store.upsert(_lead(url="https://example.invalid/4", location=LOCATIONS[1]))
+    assert archived.outcome in ("merged_away", "merged_away_unproven")
+    assert archived.slug == ""
 
 
 # ── #60: profile-audit sign-off (outcome verdict + never-clobber) ─────────────
@@ -679,7 +750,7 @@ def test_sign_off_require_pending_refuses_a_stale_confirmation_at_the_cas_layer(
     from sluice.core.leads import Lead
     lead = Lead(source="s", search="q", title="Example Role", company="Example Ltd",
                url="https://example.invalid/1")
-    assert store.upsert(lead) == "created"
+    assert store.upsert(lead).outcome == "created"
     note = store.read_leads()[0]
     store.hold_for_signoff(note.ref, pending="CV_deadbeef.pdf (2026-08-14)",
                            claims='["unsupported claim"]')

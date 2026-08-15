@@ -1361,32 +1361,24 @@ class Sluice:
         NEW note instead ("created" again -- a second real note at the same
         company+title; see "advance" in Vault._reconcile). Both "updated" and
         "merged" are a bare last_seen bump, with the incoming url/salary/location
-        NOT recorded. Slug resolution is a post-write re-read matched on the
-        store's own identity key (fm["company"] == company and fm["role"] ==
-        title), never on url (neither outcome means the incoming url was
-        written). That key alone is not always enough to name ONE note: a
-        proven-different location can seat a second, separate note at the same
-        company+title, so the re-read can find more than one match. When it
-        does, the match is narrowed the same two-tier way `same_opportunity`
-        itself prioritizes evidence (`Vault._reconcile`'s own decision
-        function, `core.leads.same_opportunity`): first by a matching
-        NON-EMPTY url, DEFINITIVE proof against the whole candidate set at
-        once; only when no note is url-proven does a location comparison
-        (via `same_opportunity`, against `self.config.location_noise_words`
-        -- never a re-derivation of that decision with a narrower or
-        differently-configured rule) get to decide -- because a flat single
-        `same_opportunity(...) != DIFFERENT` filter over every candidate at
-        once can, unlike the real per-name walk, match more than one note at
-        a time when an UNRELATED note's own location merely happens to
-        coincide with this call's incoming location. Either tier picks only
-        on an exact single match; slug stays "" if neither does. This means
-        ANY of "created"/"updated"/"merged" can come back with slug == ""
-        when the note cannot be unambiguously identified this way, not only
-        "refused"/"merged_away"/"merged_away_unproven" (which write nothing
-        at all and so never have a slug to resolve in the first place): the
-        refuse-on-ambiguity discipline `index_by_slug`/`select_one`/
-        `sign_off_cv`/`expire` already share, applied here too -- never an
-        unverified `notes[0]` pick.
+        NOT recorded.
+
+        Slug resolution (#131 post-final-review fix) is `store.upsert`'s OWN
+        report of which note it just touched (`result.slug`), never a guess
+        reconstructed after the fact. Earlier rounds tried re-reading
+        `store.read_leads()` and filtering by company+title -- a proven-wrong
+        approach: company+title alone can match MORE than one note (a
+        proven-different location seats a second note at that identity), and
+        no post-hoc filter over the finished set can always tell which of them
+        THIS call's write actually resolved to, because the store's own
+        resolution walks candidate names in order and stops at the first
+        non-advance verdict. `result.slug` is that answer, correct by
+        construction -- see `UpsertResult`'s own docstring (core/protocols.py)
+        for the full argument and the concrete reproduction that motivated it.
+        `slug` is "" only for "refused"/"merged_away"/"merged_away_unproven",
+        which write nothing and so never have a slug to report in the first
+        place -- never for "created"/"updated"/"merged", which are now always
+        correctly resolved.
 
         `search` is never persisted anywhere (verified by grep across sluice/: no
         reader of Lead.search exists outside _row_to_lead's own construction) -- this
@@ -1394,7 +1386,7 @@ class Sluice:
         nowhere. Calls store.upsert() directly, never VaultSink, so seen.db is
         untouched (decision 11) -- a later genuine scrape of the same posting is not
         silently skipped by this manual entry."""
-        from sluice.core.leads import DIFFERENT, Lead, _norm_url, is_http_url, same_opportunity
+        from sluice.core.leads import Lead, is_http_url
         from sluice.core.vault import frontmatter_safe
         fields = {"title": title, "company": company, "location": location,
                  "salary": salary, "job_type": job_type, "source": source}
@@ -1413,70 +1405,12 @@ class Sluice:
                 f"unsafe or invalid field(s): {bad} (must be printable, contain no "
                 f"\" or \\, and url must be present and http(s))")
         store = self.store()
-        lead = Lead(source=source, search="", title=title, company=company, url=url,
-                   location=location, salary=salary, job_type=job_type)
-        outcome = store.upsert(lead)
-        # "merged" belongs beside "created"/"updated" here, NOT beside "refused": a
-        # merge bumps last_seen on a REAL, findable note (Vault.upsert's own
-        # docstring: "UPDATE and MERGE bump ONLY last_seen"), same as "updated" --
-        # only "refused"/"merged_away"/"merged_away_unproven" write nothing at all.
-        if outcome not in ("created", "updated", "merged"):
-            return CreateLeadResult(outcome=outcome)
-        notes = [n for n in store.read_leads()
-                if n.fm.get("company") == company and n.fm.get("role") == title]
-        slug = ""
-        if len(notes) == 1:
-            slug = notes[0].slug
-        elif len(notes) > 1:
-            # Never guess an identity (final whole-branch review, Important #1;
-            # follow-up 2026-08-15): read_leads is unfiltered and not ordered by
-            # recency, so notes[0] can be a note THIS call never touched --
-            # reproduced directly: a third create_lead call at a third distinct
-            # location returned the SECOND note's slug, not the third (freshly
-            # created) one.
-            #
-            # A location-only narrowing is NOT enough on its own, and a plain
-            # `same_opportunity(...) != DIFFERENT` filter over the WHOLE
-            # candidate set is not either: `Vault._reconcile` never evaluates
-            # every note matching company+title at once -- it walks candidate
-            # NAMES in order (bare, then `- <incoming location>`, ...) and
-            # stops at the FIRST one that resolves non-advance, so a genuine
-            # url-proven match can be the SOLE note the real write ever
-            # touched even while a completely UNRELATED note's OWN location
-            # happens to equal this call's incoming location too (reproduced
-            # directly: url=/1+location=London create_lead'd, then url=/2+
-            # location=Berlin create_lead'd, then url=/1+location=Berlin --
-            # the third call's url proves it is the FIRST (London) note, but
-            # the SECOND (Berlin) note's own location coincidentally equals
-            # this call's incoming location too, so a flat
-            # `same_opportunity(...) != DIFFERENT` filter over all notes
-            # matches BOTH and reports "ambiguous" for a case that was not).
-            #
-            # A matching NON-EMPTY url is `same_opportunity`'s own FIRST,
-            # DEFINITIVE proof (it returns before ever comparing locations --
-            # see that function's docstring), so mirror that priority ACROSS
-            # the candidate set: if url proof alone narrows to exactly one
-            # note, that note is the answer regardless of any other note's
-            # merely-coincidental location overlap. Only when NO note is
-            # url-proven does location comparison (via `same_opportunity`,
-            # against the store's OWN configured noise words -- never a
-            # re-derivation with a narrower or differently-configured rule)
-            # get to decide, exactly matching what the real walk would have
-            # fallen back to. Either tier picks only on an EXACT single
-            # match; otherwise slug stays blank, matching `index_by_slug`/
-            # `select_one`/`sign_off_cv`/`expire`'s shared refuse-on-
-            # ambiguity discipline.
-            url_matched = [n for n in notes if lead.url and n.fm.get("url")
-                          and _norm_url(n.fm.get("url", "")) == _norm_url(lead.url)]
-            if len(url_matched) == 1:
-                slug = url_matched[0].slug
-            elif not url_matched:
-                noise = frozenset(self.config.location_noise_words)
-                candidates = [n for n in notes
-                             if same_opportunity(n.fm, lead, noise) != DIFFERENT]
-                if len(candidates) == 1:
-                    slug = candidates[0].slug
-        return CreateLeadResult(outcome=outcome, slug=slug)
+        result = store.upsert(Lead(source=source, search="", title=title,
+                                   company=company, url=url, location=location,
+                                   salary=salary, job_type=job_type))
+        if result.outcome not in ("created", "updated", "merged"):
+            return CreateLeadResult(outcome=result.outcome)
+        return CreateLeadResult(outcome=result.outcome, slug=result.slug)
 
     def prep(self, *, lead=None, all_shortlist=False, limit=None, dry_run=False,
              include_stale=False):
