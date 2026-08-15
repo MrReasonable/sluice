@@ -44,6 +44,17 @@ def test_windows_timezone_name_resolves_to_the_real_offset():
     assert e.start.utcoffset() == timedelta(hours=1)   # 17 Aug is BST, i.e. UTC+1
 
 
+def test_quoted_windows_timezone_name_resolves_too():
+    # RFC 5545 permits a QUOTED param value, and `parse_ics` stores param values raw, so the
+    # quotes reach `_parse_dt` and would be part of the lookup key. Kept as a second case
+    # rather than replacing the unquoted one: unquoted is the form the invites that motivated
+    # this actually carry, so swapping would trade real coverage for hypothetical coverage.
+    e = parse_ics("BEGIN:VEVENT\r\nUID:u\r\n"
+                  'DTSTART;TZID="GMT Standard Time":20260817T153000\r\nEND:VEVENT')
+    assert e.start.tzinfo is not None
+    assert e.start.utcoffset() == timedelta(hours=1)
+
+
 def test_unknown_timezone_name_still_parses_as_naive():
     # Fallback stays intact: an unrecognisable TZID must not raise out of a pure parser.
     e = parse_ics("BEGIN:VEVENT\r\nUID:u\r\n"
