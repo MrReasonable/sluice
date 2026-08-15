@@ -51,15 +51,38 @@ class _LinkedInSource(BrowserListSource):
             sleep(0.5)
         result = cam.evaluate(tid, self.extractor_js)
         landed = cam.evaluate(tid, "location.href")
+        # This override exists only to scroll the results PANEL, so it must otherwise keep
+        # the base class's contract -- including the auth probe. Omitting it here is how a
+        # subclass silently opts out of a safety signal it looks like it has.
+        auth_missing = False
+        if self.auth_probe_js:
+            probe = cam.evaluate(tid, self.auth_probe_js)
+            auth_missing = bool(probe.get("result")) if isinstance(probe, dict) and "error" not in probe else False
         cam.close_tab(tid)
         rows = result.get("result") if isinstance(result, dict) else None
         landed_url = (landed.get("result") if isinstance(landed, dict) else None) or search.url or ""
-        return {"result": rows or [], "landed": landed_url, "requested": search.url}
+        return {"result": rows or [], "landed": landed_url, "requested": search.url,
+                "auth_missing": auth_missing}
 
+
+# Logged out, LinkedIn still serves a full page of jobs -- in GUEST markup (`base-card` /
+# `job-search-card`), with none of the `artdeco-entity-lockup` cards the extractor above
+# targets. So the extractor returns 0 while the page is manifestly working, which is
+# indistinguishable from "no jobs matched" and is exactly what auto-retired this source on
+# 2026-08-15. Measured on the live browser that day: artdeco 0, guest cards 60.
+#
+# Requires BOTH halves: guest cards present AND authenticated cards absent. Guest markup
+# alone would fire on a page that renders both during a LinkedIn A/B, and "artdeco absent"
+# alone would fire on a genuinely empty result set.
+_AUTH_PROBE = (
+    "(()=>document.querySelectorAll('.artdeco-entity-lockup').length === 0 "
+    "&& document.querySelectorAll('.base-card, .job-search-card').length > 0)()"
+)
 
 register(_LinkedInSource(
     id="linkedin",
     extractor_js=_JS,
+    auth_probe_js=_AUTH_PROBE,
     wait=4, scrolls=8, scroll_amount=900,
     extra={"job_type": "contract"},
     searches_spec=[
