@@ -26,7 +26,14 @@ class _WorkInStartupsSource(BrowserListSource):
 
     def health_hint(self, raw: dict) -> dict:
         hint = super().health_hint(raw)
-        hint["markers"] = {"skipped": bool(raw.get("skipped"))}
+        skipped = bool(raw.get("skipped"))
+        hint["markers"] = {"skipped": skipped}
+        # ALSO as a signal, because `engine.py` strips `markers` before the classifier sees
+        # them -- so the clearest explanation this codebase records ("we did not even look,
+        # the board was rate-limiting") never reached `detect_drift` and a 429 retired the
+        # source as an unexplained zero. A rate-limit is recoverable, so it defers retirement.
+        if skipped:
+            hint["blocked"] = "rate-limited"
         return hint
 
 

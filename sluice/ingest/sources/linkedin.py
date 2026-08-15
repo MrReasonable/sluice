@@ -8,9 +8,7 @@ link is the card's `a[href*="/jobs/view/"]` (numeric-only now - the old URL-slug
 company recovery is obsolete, and DOM extraction gets company directly, so the
 snapshot fallback is unneeded).
 """
-import time
-
-from sluice.ingest.base import BrowserListSource, Search
+from sluice.ingest.base import BrowserListSource
 from sluice.ingest.sources import register
 
 # Scroll LinkedIn's virtualized results container (falls back to window scroll).
@@ -40,29 +38,16 @@ _JS = r"""
 
 
 class _LinkedInSource(BrowserListSource):
-    def fetch(self, ctx, search: Search) -> dict:
-        cam, sleep = ctx.camofox, getattr(ctx, "sleep", time.sleep)
-        tid = cam.create_tab(search.url)
-        if not tid:
-            return {"result": [], "landed": "", "requested": search.url, "error": "no-tab"}
-        sleep(self.wait)
-        for _ in range(self.scrolls):  # scroll the results PANEL, not the window
-            cam.evaluate(tid, _PANEL_SCROLL)
-            sleep(0.5)
-        result = cam.evaluate(tid, self.extractor_js)
-        landed = cam.evaluate(tid, "location.href")
-        # This override exists only to scroll the results PANEL, so it must otherwise keep
-        # the base class's contract -- including the auth probe. Omitting it here is how a
-        # subclass silently opts out of a safety signal it looks like it has.
-        auth_missing = False
-        if self.auth_probe_js:
-            probe = cam.evaluate(tid, self.auth_probe_js)
-            auth_missing = bool(probe.get("result")) if isinstance(probe, dict) and "error" not in probe else False
-        cam.close_tab(tid)
-        rows = result.get("result") if isinstance(result, dict) else None
-        landed_url = (landed.get("result") if isinstance(landed, dict) else None) or search.url or ""
-        return {"result": rows or [], "landed": landed_url, "requested": search.url,
-                "auth_missing": auth_missing}
+    """LinkedIn virtualizes its results list, so the PANEL must scroll, not the window.
+
+    That is the entire difference from `BrowserListSource`, and it is now the entire override.
+    This class used to reimplement `fetch` wholesale -- which is how it shipped without the
+    auth probe: the registration below declared one, so everything READ as covered while the
+    copied fetch never evaluated it. A second copy of a contract is a second place to fall out
+    of step with it, and this one did."""
+
+    def _scroll_step(self, cam, tid) -> None:
+        cam.evaluate(tid, _PANEL_SCROLL)
 
 
 # Logged out, LinkedIn still serves a full page of jobs -- in GUEST markup (`base-card` /

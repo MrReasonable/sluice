@@ -2,9 +2,9 @@
 
 2026-08-15 incident. The production runner set:
 
-    export CAMOFOX_SESSION=contract-scanner
+    export CAMOFOX_SESSION=example-session
 
-intending to select the `contract-scanner` browser profile, which existed and held 335
+intending to select the `example-session` browser profile, which existed and held 335
 cookies. The Camofox persistence plugin keys profiles on `sha256(userId)` and IGNORES
 sessionKey entirely, so the setting was inert: the run used the `default` profile, which had
 no LinkedIn `li_at`. LinkedIn returned zero rows for eight-plus runs and auto-retired, taking
@@ -29,37 +29,41 @@ def _clear_env(monkeypatch):
 
 
 def test_camofox_user_selects_the_profile(monkeypatch):
-    monkeypatch.setenv("CAMOFOX_USER", "ian")
-    assert Camofox().user == "ian"
+    monkeypatch.setenv("CAMOFOX_USER", "example-user")
+    assert Camofox().user == "example-user"
 
 
 def test_session_without_user_warns_because_it_selects_nothing(monkeypatch, caplog):
     # The exact production config. It must not pass silently: the operator believes they have
     # chosen a profile, and they have not.
-    monkeypatch.setenv("CAMOFOX_SESSION", "contract-scanner")
+    monkeypatch.setenv("CAMOFOX_SESSION", "example-session")
     with caplog.at_level("WARNING", logger="sluice.core.camofox"):
         c = Camofox()
     said = [r.getMessage() for r in caplog.records if r.name == "sluice.core.camofox"]
     assert said, "setting CAMOFOX_SESSION alone must warn"
     joined = " ".join(said)
     assert "CAMOFOX_SESSION" in joined and "CAMOFOX_USER" in joined, joined
-    assert "contract-scanner" in joined, "the warning must name the value that did nothing"
+    assert "example-session" in joined, "the warning must name the value that did nothing"
     # ...and the client still works, on the profile it actually uses.
     assert c.user == "default"
-    assert c.session == "contract-scanner"
+    assert c.session == "example-session"
 
 
 def test_session_WITH_user_does_not_warn(monkeypatch, caplog):
     # Setting both is coherent: the user picked a profile and also named a session. Warning
     # here would train the reader to ignore the line.
-    monkeypatch.setenv("CAMOFOX_USER", "ian")
-    monkeypatch.setenv("CAMOFOX_SESSION", "contract-scanner")
+    monkeypatch.setenv("CAMOFOX_USER", "example-user")
+    monkeypatch.setenv("CAMOFOX_SESSION", "example-session")
     with caplog.at_level("WARNING", logger="sluice.core.camofox"):
         Camofox()
-        # Positive control: the logger and capture really are wired up, so the empty
-        # assertion below cannot pass because nothing was listening.
         from sluice.core.camofox import _log
         _log.warning("probe")
+    # The control must be ASSERTED, not merely emitted. An earlier draft filtered the probe
+    # record out and asserted only that the remainder was empty -- which passes just as
+    # happily when capture is dead, i.e. exactly the failure the control exists to exclude.
+    # A positive control you do not check is decoration.
+    assert any(r.getMessage() == "probe" for r in caplog.records
+               if r.name == "sluice.core.camofox"), "caplog never reached this logger"
     said = [r.getMessage() for r in caplog.records
             if r.name == "sluice.core.camofox" and r.getMessage() != "probe"]
     assert said == [], said
@@ -75,7 +79,14 @@ def test_an_explicit_user_argument_still_wins_when_no_env(monkeypatch):
     assert Camofox(user="explicit").user == "explicit"
 
 
-def test_the_docstring_does_not_claim_session_selects_the_profile():
+_CLAIM_PHRASES = (
+    "which named browser profile",
+    "point at their own authenticated session",
+    "named authenticated browser profile",
+)
+
+
+def test_the_module_docstring_does_not_claim_session_selects_the_profile():
     """The proximate cause was documentation, so the documentation is part of the fix.
 
     Asserted structurally rather than by exact wording: the module must not pair
@@ -86,8 +97,42 @@ def test_the_docstring_does_not_claim_session_selects_the_profile():
 
     doc = (mod.__doc__ or "").lower()
     assert "camofox_session" in doc, "the knob should still be documented"
-    claim_words = ("which named browser profile", "point at their own authenticated session")
-    for phrase in claim_words:
+    for phrase in _CLAIM_PHRASES:
         assert phrase not in doc, (
             "module docstring still claims CAMOFOX_SESSION selects the profile: {!r}".format(phrase))
     assert "camofox_user" in doc, "the docstring must name the knob that DOES select the profile"
+
+
+def test_NO_shipped_doc_claims_session_selects_the_profile():
+    """The same claim, swept across every shipped doc and module — not just this one file.
+
+    The first cut of this guard read only `sluice.core.camofox.__doc__`, and review found the
+    identical false sentence still sitting in `docs/CONFIGURATION.md` ("Camofox's named
+    authenticated browser profile"). Fixing one instance of a wrong claim while an equally
+    load-bearing copy survives is how the original mistake gets made twice: a reader who
+    follows the config table lands in exactly the same place.
+
+    So the guard sweeps the class, not the instance.
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    targets = sorted(root.glob("docs/*.md")) + sorted((root / "sluice").rglob("*.py")) + [
+        root / "README.md", root / "sluice.yaml.example"]
+    checked, offenders = 0, []
+    for p in targets:
+        if not p.exists():
+            continue
+        text = p.read_text(encoding="utf-8", errors="replace").lower()
+        if "camofox_session" not in text:
+            continue
+        checked += 1
+        for phrase in _CLAIM_PHRASES:
+            if phrase in text:
+                offenders.append(f"{p.relative_to(root)}: {phrase!r}")
+    assert checked >= 2, (
+        f"only {checked} shipped file(s) mention CAMOFOX_SESSION — the sweep has probably "
+        f"stopped finding them, which would make this guard vacuous")
+    assert not offenders, (
+        "these shipped files still tell the reader CAMOFOX_SESSION selects the profile:\n  "
+        + "\n  ".join(offenders))
