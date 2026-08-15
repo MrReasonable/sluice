@@ -36,6 +36,21 @@ _TIMEOUT = 45  # seconds; Camofox navigations can be slow to settle
 DEFAULT_USER = "default"
 
 
+def resolve_user() -> str:
+    """The profile a run will drive, from the environment. THE one resolution.
+
+    `doctor` and the client used to compute this separately -- `os.environ.get(..., user)`
+    here versus `os.environ.get(...) or DEFAULT_USER` there -- and they disagreed on an
+    exported-but-EMPTY variable: the client drove the profile named `""` while doctor
+    reported `default`. `CAMOFOX_USER=$SOME_UNSET_VAR` in a runner script produces exactly
+    that, which is the same shape as the misconfiguration this whole module is about, so the
+    two readings had to become one.
+
+    Empty is treated as unset: a profile named by the empty string is never what anyone
+    means, and silently driving a fresh cookie-less one is the failure being designed out."""
+    return os.environ.get("CAMOFOX_USER") or DEFAULT_USER
+
+
 def profile_dir(user: str) -> str:
     """The on-disk profile directory name the Camofox server uses for `user`.
 
@@ -62,7 +77,8 @@ class Camofox:
     ):
         # Env overrides every knob so offline tests / alt sessions need no code change.
         self.base_url = base_url or os.environ.get("CAMOFOX_URL", _DEFAULT_URL)
-        self.user = os.environ.get("CAMOFOX_USER", user)
+        # `user` (the constructor arg) still wins when no env var is set.
+        self.user = os.environ.get("CAMOFOX_USER") or user
         self.session = os.environ.get("CAMOFOX_SESSION", session)
         self.timeout = timeout
         # The one configuration shape that is always a mistake: an operator who set only
