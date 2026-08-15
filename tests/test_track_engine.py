@@ -93,13 +93,19 @@ def test_per_message_failure_is_logged_with_the_message_id(caplog):
     v, _ = _vault("applied")
     class Boom(OneMsgClient):
         def get_message(self, mid): raise RuntimeError("gmail hiccup")
+    seen = set()
     with caplog.at_level("WARNING"):
-        rep = E.run(v, TrackConfig(), Boom(), FakeBackend("{}"), seen=set(), deadletter=_dl(),
+        rep = E.run(v, TrackConfig(), Boom(), FakeBackend("{}"), seen=seen, deadletter=_dl(),
                     now_iso="2026-07-10T12:00:00+00:00")
     assert rep.failures == 1
     said = [r.getMessage() for r in caplog.records if r.name == "sluice.track.engine"]
     assert any("m1" in m for m in said), f"message id never logged: {said}"
     assert any("gmail hiccup" in m for m in said), f"cause never logged: {said}"
+    # The retry contract is the other half of why the log line matters: a failure skips
+    # seen.add so the message is re-queried next run. That is what turns a DETERMINISTIC
+    # failure into a permanent poison message, and the log line is the only way to tell
+    # the two apart.
+    assert "m1" not in seen, "a failed message must stay retryable"
 
 
 def test_confirm_never_clobber():
