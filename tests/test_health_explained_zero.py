@@ -22,7 +22,7 @@ of three heavyweight sources:
 
 Broken is not the same as dead. A source we could not read is a source to FIX.
 """
-from sluice.core.health import HealthStore, detect_drift
+from sluice.core.health import HealthStore, _is_dead, detect_drift
 
 
 def _run(count, **signals):
@@ -253,3 +253,63 @@ def test_a_healthy_source_prints_no_broken_marker(tmp_path, monkeypatch, capsys)
     assert cli.cmd_health(_Args(), Config()) == 0
     line = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("reed")][0]
     assert "BROKEN" not in line and "RETIRE" not in line, line
+
+
+def test_an_explanation_from_an_EARLIER_search_is_not_overwritten_by_a_later_one(tmp_path):
+    """`_run_source` reassigns `signals` per search, so search 3's honest zero used to erase
+    search 1's "logged out".
+
+    The shipped sources configure one search each, but `sources.<id>.searches` is the
+    documented way to configure a real list -- so the mechanism was weakest on exactly the
+    setup the docs steer people toward.
+    """
+    from types import SimpleNamespace
+
+    from sluice.ingest import engine as E
+    from sluice.ingest.base import Search
+
+    class _Src:
+        id, kind, enabled = "demo", "browser", True
+
+        def searches(self):
+            return [Search("logged-out", "http://x/1"), Search("honest-zero", "http://x/2")]
+
+        def fetch(self, ctx, search):
+            return {"search": search.label}
+
+        def parse(self, raw, search):
+            return []
+
+        def health_hint(self, raw):
+            hint = {"count": 0, "landed_host": "x", "requested_host": "x", "markers": {}}
+            if raw["search"] == "logged-out":
+                hint["auth"] = "missing"          # only the FIRST search sees it
+            return hint
+
+    result = SimpleNamespace(fetched=0, status="ok", error=None)
+    ctx = SimpleNamespace(camofox=None,
+                          config=SimpleNamespace(source=lambda i: SimpleNamespace(searches=[])))
+    total, signals = E._run_source(_Src(), ctx, set(), [], result,
+                                   fetch_timeout=5, retries=1)
+    assert total == 0
+    assert signals.get("auth") == "missing", "an earlier search's explanation was overwritten"
+    assert detect_drift("demo", total, signals, 50) == "auth"
+
+
+def test_a_rate_limited_board_reports_blocked_rather_than_a_bare_zero():
+    """`blocked` had NO producer -- a classification nothing emits, which is the exact trap
+    this branch names elsewhere.
+
+    workinstartups already recorded the one real "we did not even look" fact in the codebase
+    (a 429 skip), but it lived in `markers`, which `engine.py` strips before the classifier
+    sees it. So a rate-limited board retired as an unexplained zero.
+    """
+    from sluice.ingest import sources as registry
+
+    src = registry.get("workinstartups")
+    hint = src.health_hint({"jobs": [], "landed": "", "requested": "http://x", "skipped": True})
+    assert hint["blocked"] == "rate-limited"
+    signals = {k: v for k, v in hint.items() if k != "markers"}
+    assert detect_drift("workinstartups", hint["count"], signals, 50) == "blocked"
+    # ...and it is recoverable, so it must not retire.
+    assert _is_dead({"count": 0, "signals": signals}) is False

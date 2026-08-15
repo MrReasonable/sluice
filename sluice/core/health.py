@@ -148,10 +148,13 @@ def _explained(signals: dict) -> str | None:
     page told us something -- there is nothing on the site to go and fix, so an erroring
     source that also yielded nothing should still retire.
 
-    CAUTION when adding a reason here. Every entry is both a report AND a deferral of
-    retirement, so a reason that fires benignly buys a dead source time it has not earned --
-    see `_dewww` for the case that nearly happened. `should_retire`'s bound is the
-    backstop, not a licence to be loose here."""
+    CAUTION when adding a reason here, and know that there is NO backstop. A reason in
+    `_RECOVERABLE` defers retirement indefinitely: `should_retire` needs `threshold`
+    consecutive dead runs and an explained run is never dead, so the counter never
+    accumulates -- a source stuck on `auth` for 300 runs never retires. That is deliberate
+    (the fix is an operator action, and `explained_streak` is what makes the wait visible),
+    but it means a reason that fires benignly buys a dead source unlimited time. `_dewww`
+    exists because `redirect` nearly was such a reason."""
     # FIRST, because it explains every other signal's absence: if the browser never gave us a
     # tab, or the page evaluate failed, we did not look at the site at all. Discarding this was
     # how a single Camofox outage could record a bare `zero` for all ~23 sources at once and
@@ -200,9 +203,10 @@ def _is_dead(run: dict) -> bool:
     signals = run.get("signals", {}) or {}
     # No `error` short-circuit. It would be redundant AND wrong. Redundant because `error` is
     # deliberately not an explanation, so a zero-yield error already falls through to dead
-    # below. Wrong because `_run_source` REASSIGNS `signals` per search rather than merging,
-    # so a source whose LAST search errored while earlier ones succeeded carries both a
-    # positive count and an error -- and a source that just returned rows is not dead.
+    # below. Wrong because `error` is NOT in `EXPLAINING_SIGNALS` and so is not made sticky by
+    # `_run_source` -- it survives only from the LAST search, which means a source whose final
+    # search errored while earlier ones returned rows carries both a positive count and an
+    # error. A source that just returned rows is not dead.
     return run.get("count", 0) == 0 and _explained(signals) not in _RECOVERABLE
 
 
