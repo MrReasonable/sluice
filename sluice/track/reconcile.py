@@ -19,18 +19,30 @@ class ReconcileResult:
     status_from: "str | None" = None
     status_to: "str | None" = None
     calendar: str = "none"
-    # A calendar entry was written for an instant we GUESSED (naive DTSTART -> assumed UTC).
-    # Counted into the digest so the assumption is visible without reading the log stream,
-    # which under cron is usually discarded.
-    calendar_assumed_utc: bool = False
+    # A calendar entry was booked for an instant we GUESSED: the DTSTART carried no usable
+    # zone, so `calendar_assumed_timezone` supplied one. Counted into the digest so the
+    # assumption is visible without reading the log stream, which under cron is discarded.
+    # NOT `_utc` -- the assumed zone is configurable, and naming the flag after the shipped
+    # DEFAULT would make it read as false the moment somebody sets the key.
+    calendar_assumed_tz: bool = False
     materials_written: bool = False
     proposal: "str | None" = None
     note: str = ""
 
 
-def _assumed_utc(outcome, ics):
-    """Did that sync_event call write an instant we guessed? Shares `floating_start` with the
-    warning calendar_sync emits, so the digest count and the log line can never disagree."""
+def _assumed_tz(outcome, ics):
+    """Did that sync_event call book an instant we guessed? Shares `floating_start` with the
+    warning calendar_sync emits, so the digest count and the log line can never disagree.
+
+    Deliberately does NOT compare the configured zone against UTC. The flag means "this
+    instant was assumed", which is equally true for `Europe/Berlin` as for the default -- a
+    configured zone makes the guess better-informed, never certain, because the invite still
+    stated no instant. Gating on `!= "UTC"` would silence the warning for exactly the users
+    who took the trouble to configure it.
+
+    `dry_run` is deliberately absent: `calendar_added` beside it also counts a dry run's
+    would-be writes, so both counters report what the run WOULD do and the CLI changes the
+    verb instead of the count."""
     return outcome in ("created", "updated") and floating_start(ics)
 
 
@@ -159,7 +171,7 @@ def reconcile(event, note_by_slug, vault, cfg, client, dry_run=False, *, shortli
     # Cancellation: calendar cancel only, never advance.
     if event.ics is not None and event.ics.cancelled:
         r.calendar = sync_event(client, cfg, lead_slug=event.lead_slug, ics=event.ics, dry_run=dry_run)
-        r.calendar_assumed_utc = _assumed_utc(r.calendar, event.ics)
+        r.calendar_assumed_tz = _assumed_tz(r.calendar, event.ics)
         r.action = "calendar"
         r.note = "cancellation"
         return r
@@ -169,7 +181,7 @@ def reconcile(event, note_by_slug, vault, cfg, client, dry_run=False, *, shortli
             and event.confidence >= cfg.auto_status_min:
         if event.ics is not None and event.ics.start is not None:
             r.calendar = sync_event(client, cfg, lead_slug=event.lead_slug, ics=event.ics, dry_run=dry_run)
-            r.calendar_assumed_utc = _assumed_utc(r.calendar, event.ics)
+            r.calendar_assumed_tz = _assumed_tz(r.calendar, event.ics)
         r.materials_written = _stamp_materials(vault, note, event, dry_run=dry_run)
         target = _SCHEDULE_TARGET[event.type]
         if _status.can_advance(note.status, target):

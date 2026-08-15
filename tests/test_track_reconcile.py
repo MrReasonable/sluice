@@ -61,7 +61,38 @@ def test_a_guessed_instant_is_flagged_on_the_result_so_the_digest_can_report_it(
                      tzid_unresolved="Nowhere/Notreal")
     ev = Event(lead_slug="Example Tidal - EM", type="interview", confidence=0.9, ics=naive)
     res = R.reconcile(ev, notes, v, TrackConfig(), FakeGoogleClient(events=[]))
-    assert res.calendar == "created" and res.calendar_assumed_utc is True
+    assert res.calendar == "created" and res.calendar_assumed_tz is True
+
+
+def test_a_guessed_instant_is_still_flagged_when_the_assumed_zone_is_not_utc():
+    # The flag means "this instant was ASSUMED", not "assumed UTC". A configured zone makes
+    # the guess better-informed, never certain -- the invite still stated no instant. Naming
+    # or gating this on UTC would silence the warning for exactly the people who bothered to
+    # configure the key, and the entry would still be a guess.
+    v, notes, _ = _vault_with("Example Tidal - EM", "applied")
+    cfg = TrackConfig(calendar_assumed_timezone="Europe/Berlin")
+    naive = IcsEvent(uid="u1", summary="Screen", start=datetime(2026, 7, 20, 10, 0),
+                     tzid_unresolved="Nowhere/Notreal")
+    ev = Event(lead_slug="Example Tidal - EM", type="interview", confidence=0.9, ics=naive)
+    c = FakeGoogleClient(events=[])
+    res = R.reconcile(ev, notes, v, cfg, c)
+    assert res.calendar == "created" and res.calendar_assumed_tz is True
+    # ...and the booking really did use the configured zone, end to end.
+    assert c.inserted[0]["start"]["timeZone"] == "Europe/Berlin"
+
+
+def test_a_dry_run_still_counts_the_guess_so_the_preview_can_warn():
+    # `calendar_added` counts a dry run's would-be writes too, so this counter matches its
+    # sibling rather than diverging. The CLI changes the VERB ("would be booked"), not the
+    # count -- gating the count here would make a preview silently omit the warning that is
+    # the whole reason a human reads a dry run.
+    v, notes, _ = _vault_with("Example Tidal - EM", "applied")
+    naive = IcsEvent(uid="u1", summary="Screen", start=datetime(2026, 7, 20, 10, 0))
+    ev = Event(lead_slug="Example Tidal - EM", type="interview", confidence=0.9, ics=naive)
+    c = FakeGoogleClient(events=[])
+    res = R.reconcile(ev, notes, v, TrackConfig(), c, dry_run=True)
+    assert res.calendar == "created" and res.calendar_assumed_tz is True
+    assert not c.inserted, "a dry run must not write"
 
 
 def test_a_resolved_instant_is_not_flagged():
@@ -70,7 +101,7 @@ def test_a_resolved_instant_is_not_flagged():
     v, notes, _ = _vault_with("Example Tidal - EM", "applied")
     ev = Event(lead_slug="Example Tidal - EM", type="interview", confidence=0.9, ics=_ics())
     res = R.reconcile(ev, notes, v, TrackConfig(), FakeGoogleClient(events=[]))
-    assert res.calendar == "created" and res.calendar_assumed_utc is False
+    assert res.calendar == "created" and res.calendar_assumed_tz is False
 
 
 def test_cancellation_ics_does_not_advance():
