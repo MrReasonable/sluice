@@ -278,7 +278,19 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
             elif res.action == "proposed":
                 rep.proposed += 1
                 target = _PROPOSE_TARGET.get(ev.type, "")
-                if ev.lead_slug and target:
+                if res.proposal == "cancel-unresolved":
+                    # MUST NOT inherit _PROPOSE_TARGET. `ev.type` for a cancelled interview
+                    # invite is still "interview", so the generic branch handed the operator
+                    # `confirm --to interview` -- a runnable command that BOOKS the thing that
+                    # was just cancelled. An unrunnable hint is worse than an honest "look at
+                    # this yourself" (see the else branch); a runnable and WRONG one is worse
+                    # than either.
+                    uid = getattr(ev.ics, "uid", "") or "?"
+                    hint = (f'(cancellation for uid "{uid}" could not be matched to a calendar '
+                            f'entry -- the invite carried no DTSTART, so nothing was searched. '
+                            f'Check your calendar and delete it by hand, then '
+                            f'`job-sluice track dismiss --id {mid}`)')
+                elif ev.lead_slug and target:
                     hint = f'job-sluice track confirm --lead "{ev.lead_slug}" --to {target}'
                 elif ev.candidates:
                     # Each option needs its own "job-sluice track confirm" prefix -- prefixing
@@ -301,6 +313,13 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                 # record BEFORE seen.add: a write failure raises, the `except`
                 # below skips seen.add, and the message re-processes next run.
                 if not dry_run:
+                    # Clear any stale FAILURE row for this id first. The table is keyed on
+                    # message_id, so a row left by a transient error on an earlier run would
+                    # otherwise collide with the real proposal -- and `seen.add` runs
+                    # straight after, making the loss permanent. One 503 was enough.
+                    if mid in _failed_ids:
+                        _dl_write(rep, lambda m=mid: deadletter.clear_id(m))
+                        _failed_ids.discard(mid)
                     _dl_write(rep, lambda: deadletter.record(entry))
             if res.calendar in ("created", "updated"):
                 rep.calendar_added += 1

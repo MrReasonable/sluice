@@ -208,7 +208,8 @@ class RealGoogleClient:
         self._cal_svc().events().delete(calendarId="primary", eventId=event_id).execute()
 
 
-def _paged(endpoint, params: dict, item_key: str, max_results: int) -> tuple:
+def _paged(endpoint, params: dict, item_key: str, max_results: int,
+           max_pages: int = 100) -> tuple:
     """`(items, truncated)` across every page of a Google list endpoint.
 
     ONE implementation for both callers. Two hand-rolled loops is how one of them keeps
@@ -219,23 +220,46 @@ def _paged(endpoint, params: dict, item_key: str, max_results: int) -> tuple:
     rather than threading `pageToken` by hand: that is the documented paging contract, and it
     is what the discovery-built service exposes.
 
+    `truncated` means WE LOST ITEMS -- not "there were more pages". Those differ at exactly
+    the moment it matters: when the final page carries the total past the cap, the slice drops
+    items already in hand while `list_next` returns None. Answering the easier question
+    reported `truncated=False` while 239 calendar events vanished on shipped defaults, which
+    is this module's own bug class rebuilt inside the fix for it.
+
+    TWO bounds, because they fail differently. `max_results` bounds items; `max_pages` bounds
+    REQUESTS, because a page with zero items and a nextPageToken is legal for both APIs and
+    never grows the item count -- so an item-only cap never trips and the walk never ends. A
+    cron run that never returns is indistinguishable from a hung one, which is the outage the
+    cap exists to prevent.
+
     `truncated` is returned rather than logged here so the CALLER can say what running out
     costs, which differs sharply between the two (a missed message versus a duplicated or
     undeleted calendar entry). Silently returning a short list is the one thing this must
-    never do -- that is the bug being fixed."""
+    never do."""
     request = endpoint.list(**params)
-    items, truncated = [], False
+    items, pages = [], 0
     while request is not None:
         response = request.execute()
         items.extend(response.get(item_key, []))
+        pages += 1
         if len(items) >= max_results:
-            # More pages remained: report it. A cap is still needed (an unbounded walk over a
-            # mailbox is its own outage -- a cron run that never returns), but it must be an
-            # HONEST one.
-            truncated = endpoint.list_next(request, response) is not None
-            return items[:max_results], truncated
+            # Over the cap. We lost items iff the slice actually drops some, OR another page
+            # remained. The probe is advisory only, so a transport failure inside it must not
+            # cost us the items already collected -- assume the worse, honest answer.
+            lost = len(items) > max_results
+            if not lost:
+                try:
+                    lost = endpoint.list_next(request, response) is not None
+                except Exception:
+                    lost = True
+            return items[:max_results], lost
+        if pages >= max_pages:
+            # Bounded by REQUESTS. Reaching here means the endpoint kept handing back pages
+            # without filling the item cap; whether or not more remain, this run stopped early
+            # and must say so.
+            return items, True
         request = endpoint.list_next(request, response)
-    return items, truncated
+    return items, False
 
 
 def _walk_parts(payload):

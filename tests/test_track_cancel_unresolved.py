@@ -109,3 +109,51 @@ def test_an_unresolved_cancel_is_PROPOSED_so_a_human_sees_it(tmp_path):
     assert res.proposal, "the dead-letter row needs a proposal string"
     assert pathlib.Path(leads / "Example Tidal - EM.md").read_text().count("status: interview") == 1, \
         "a cancellation must still never advance or regress the status"
+
+
+def test_the_unresolved_cancel_hint_does_NOT_offer_to_advance_the_lead():
+    """Routing to `proposed` inherits `_PROPOSE_TARGET[ev.type]`, and `ev.type` for a
+    cancelled interview invite is "interview".
+
+    So the operator was told an interview was cancelled and handed a copy-pasteable
+    `confirm --to interview` -- a command that RUNS and books the thing that was cancelled.
+    `engine.py` already holds the standard for this: an unrunnable command is worse than an
+    honest "look at this yourself". A command that runs and is wrong is worse still.
+    """
+    import pathlib
+
+    from sluice.core.vault import Vault
+    from sluice.track import engine as E
+    from sluice.track.config import TrackConfig
+    from tests.test_track_engine import FakeBackend, OneMsgClient, _dl
+
+    import tempfile
+    root = pathlib.Path(tempfile.mkdtemp())
+    leads = root / "Job Applications" / "Job Leads"
+    leads.mkdir(parents=True)
+    (leads / "Example Tidal - Analyst.md").write_text(
+        '---\ncompany: "Example Tidal"\nrole: "Analyst"\nstatus: interview\n---\n\nBODY\n')
+    v = Vault(str(root))
+
+    class _CancelClient(OneMsgClient):
+        def get_message(self, mid):
+            msg = super().get_message(mid)
+            msg["attachments"] = [{
+                "filename": "invite.ics", "mime": "text/calendar",
+                "data": (b"BEGIN:VCALENDAR\r\nMETHOD:CANCEL\r\nBEGIN:VEVENT\r\nUID:u1\r\n"
+                         b"END:VEVENT\r\nEND:VCALENDAR\r\n")}]
+            return msg
+
+    dl = _dl()
+    E.run(v, TrackConfig(), _CancelClient(),
+          FakeBackend('{"lead": "Example Tidal - Analyst", "type": "interview", '
+                      '"confidence": 0.9, "when": null, "links": [], "materials": [], '
+                      '"summary": "cancelled"}'),
+          seen=set(), deadletter=dl, now_iso="2026-07-10T12:00:00+00:00")
+
+    rows = [e for e in dl.open_entries() if e.message_id == "m1"]
+    assert rows, "an unresolved cancel must leave a durable row"
+    hint = rows[0].hint
+    assert "--to interview" not in hint, (
+        f"the row hands the operator a command that BOOKS the cancelled interview: {hint}")
+    assert "u1" in hint, f"the hint should name the UID so the entry can be found: {hint}"
