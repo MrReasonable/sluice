@@ -113,6 +113,30 @@ def test_the_camofox_row_actually_reaches_the_doctor_report(monkeypatch, tmp_pat
     assert "contract-scanner" in rows[0].detail
 
 
+def test_the_report_names_the_REAL_auth_dependent_sources(monkeypatch):
+    """The enumeration must actually find them.
+
+    Found by a surviving mutant: replacing `_registry.all_sources()` with `[]` broke nothing,
+    because the sibling tests assert on the profile name and pass whether the row is OK or
+    NOTICE. An enumeration that silently yields nothing is the "a search that finds nothing
+    proves nothing" shape -- the row would quietly stop warning the day it mattered.
+    """
+    from sluice.core.app import Sluice
+    from sluice.core.config import Config
+    from sluice.ingest import sources as registry
+
+    expected = {s.id for s in registry.all_sources() if getattr(s, "auth_probe_js", None)}
+    assert expected, "no source declares an auth probe -- this test has become vacuous"
+
+    monkeypatch.delenv("CAMOFOX_SESSION", raising=False)
+    monkeypatch.setenv("CAMOFOX_USER", "ian")
+    rep = Sluice(Config()).doctor(offline=True, probe=lambda b: None)
+    row = [c for c in rep.components if c.component == "camofox"][0]
+    assert row.state == NOTICE, row.detail
+    for sid in expected:
+        assert sid in row.detail, f"{sid} declares an auth probe but doctor did not name it"
+
+
 def test_the_camofox_row_is_present_under_offline(monkeypatch):
     # The check is config-only, so --offline must not omit it: offline is exactly the mode
     # someone uses to sanity-check a config before a run.
