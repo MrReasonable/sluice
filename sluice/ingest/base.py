@@ -314,12 +314,21 @@ class CarouselSource:
         ]
 
     def health_hint(self, raw: dict) -> dict:
-        return {
+        hint = {
             "count": len(raw.get("jobs", []) if isinstance(raw, dict) else []),
             "landed_host": _host(raw.get("landed", "")),
             "requested_host": _host(raw.get("requested", "")),
             "markers": {},
         }
+        # The same propagation as BrowserListSource, for the same reason. `health_hint` is a
+        # PROTOCOL member with two implementations, and the first fix landed on one of them --
+        # so a Camofox outage still reached the classifier as an unexplained zero here and
+        # retired this source after three runs. Fixing the instance and not the class is how
+        # the identical bug survives in the file next door; the conformance test is
+        # parameterised over both classes so a third implementation cannot repeat it.
+        if isinstance(raw, dict) and raw.get("error"):
+            hint["fetch_error"] = raw["error"]
+        return hint
 
 
 def _advance_js(selector: str) -> str:

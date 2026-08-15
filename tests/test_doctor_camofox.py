@@ -43,14 +43,14 @@ def test_it_names_the_profile_the_run_will_actually_use():
     assert "example-user" in c.detail
     # Derived, never hardcoded: a literal digest would both rot silently if the scheme
     # changed and bake a reversible preimage of whatever name it was generated from.
-    assert _profile_hash("example-user") in c.detail
+    assert f"({_profile_hash('example-user')})" in c.detail
 
 
 def test_the_default_profile_is_reported_not_hidden():
     c = _check(resolved_user="default")
     assert c.state == OK
     assert "default" in c.detail
-    assert _profile_hash("default") in c.detail
+    assert f"({_profile_hash('default')})" in c.detail
 
 
 def test_session_without_user_is_DEGRADED_and_says_what_to_do():
@@ -82,7 +82,7 @@ def test_probe_capable_sources_are_named_as_a_notice():
     have the row assert that every unlisted source is login-independent.
     """
     c = _check(resolved_user="default", probe_capable_sources=("linkedin",))
-    assert c.state in (OK, NOTICE)
+    assert c.state == NOTICE
     assert "linkedin" in c.detail
     assert "can detect" in c.detail, "must promise detection, not that it needs auth"
     assert "Other sources cannot" in c.detail, "must say the coverage is partial"
@@ -203,4 +203,46 @@ def test_the_profile_hash_matches_the_servers_scheme():
     """
 
     for user in ("example-user", "default", "example-session"):
-        assert _profile_hash(user) in _check(resolved_user=user).detail
+        # Parenthesised: a bare `in` passes for a LONGER digest, since a 40-char hash
+        # contains its own 32-char prefix -- so truncation drift would go unnoticed.
+        assert f"({_profile_hash(user)})" in _check(resolved_user=user).detail
+
+
+def test_doctor_and_the_client_agree_on_an_EXPORTED_BUT_EMPTY_user(monkeypatch):
+    """`CAMOFOX_USER=$SOME_UNSET_VAR` in a runner script exports an empty string.
+
+    The two readings used to disagree on it -- `os.environ.get(k, default)` treats an empty
+    var as PRESENT, `os.environ.get(k) or default` treats it as absent -- so the client drove
+    the profile named `""` while doctor reported `default`. Doctor confidently naming a
+    profile the run does not use is the same shape as the misconfiguration this row exists to
+    catch. One resolver now serves both.
+    """
+    from sluice.core.camofox import Camofox, resolve_user
+
+    monkeypatch.setenv("CAMOFOX_USER", "")
+    monkeypatch.delenv("CAMOFOX_SESSION", raising=False)
+    assert Camofox().user == resolve_user(), "the client and doctor disagree on an empty var"
+    assert Camofox().user == "default", "an empty var must read as unset, not as a profile"
+
+
+def test_the_report_does_not_name_sources_that_CANNOT_detect_a_logout(monkeypatch):
+    """Pinned in the ABSENT direction too.
+
+    The sibling asserts `expected subset of detail`, which a superset also satisfies -- so
+    deleting the `auth_probe_js` filter, and naming every browser source as probe-capable,
+    left the suite green. The row would then promise detection for ~20 sources that have none.
+    """
+    from sluice.core.app import Sluice
+    from sluice.core.config import Config
+    from sluice.ingest import sources as registry
+
+    capable = {s.id for s in registry.all_sources() if getattr(s, "auth_probe_js", None)}
+    incapable = {s.id for s in registry.all_sources()} - capable
+    assert capable and incapable, "both halves must be non-empty or this proves nothing"
+
+    monkeypatch.delenv("CAMOFOX_SESSION", raising=False)
+    monkeypatch.setenv("CAMOFOX_USER", "example-user")
+    row = [c for c in Sluice(Config()).doctor(offline=True, probe=lambda b: None).components
+           if c.component == "camofox"][0]
+    named = [s for s in incapable if s in row.detail]
+    assert not named, f"doctor promised detection for sources with no probe: {named}"

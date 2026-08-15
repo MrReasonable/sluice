@@ -14,6 +14,7 @@ An `auth_probe_js` lets a source declare what "logged out" looks like for it. Th
 evaluated on the same tab as the extractor, so it sees exactly the page the extractor failed
 on -- not a second fetch that might land differently.
 """
+import pytest
 from types import SimpleNamespace
 
 from sluice.ingest.base import BrowserListSource, Ctx, Search
@@ -59,7 +60,12 @@ def _src(**kw):
 
 
 def _ctx(cam):
-    return Ctx(camofox=cam, config=SimpleNamespace(source=lambda i: SimpleNamespace(searches=[])))
+    # `sleep` injected, as every other Ctx in the suite does it. Ctx defaults it to real
+    # `time.sleep`, and the two tests that drive the REAL registered LinkedIn source
+    # (wait=4, scrolls=8) therefore slept 8s each -- 41% of the whole suite's wall clock,
+    # and the next-slowest test in the repo is 0.78s.
+    return Ctx(camofox=cam, sleep=lambda *_: None,
+               config=SimpleNamespace(source=lambda i: SimpleNamespace(searches=[])))
 
 
 def _fetch(cam, **kw):
@@ -292,3 +298,31 @@ def test_the_linkedin_source_scrolls_the_RESULTS_PANEL():
     scrolled = [e for _tid, e in cam.evaluated if "scrollTop" in e or "scrollBy" in e]
     assert scrolled, "linkedin must scroll the results panel, not the window"
     assert len(scrolled) == src.scrolls, f"expected {src.scrolls} panel scrolls, got {len(scrolled)}"
+
+
+# ---- protocol CONFORMANCE, not per-class bespoke tests -----------------------------------
+
+def _carousel():
+    from sluice.ingest.base import CarouselSource
+    return CarouselSource(id="carousel", searches_spec=[("A", "http://x")],
+                          read_js="READ", advance_selector=".next", wait=0)
+
+
+@pytest.mark.parametrize("src", [_src(), _carousel()], ids=lambda s: type(s).__name__)
+def test_a_camofox_outage_is_explained_for_EVERY_source_class(src):
+    """`health_hint` is a protocol member with two implementations. The first fix landed on
+    one of them, so an outage still retired the carousel source after three runs -- the
+    identical bug, in the file next door.
+
+    Parameterised over the classes rather than written twice: a third implementation joins
+    this test by existing, instead of by someone remembering.
+    """
+    class _NoTab(_Cam):
+        def create_tab(self, url=""):
+            return None
+
+    raw = src.fetch(_ctx(_NoTab(rows=[])), Search("A", "http://x"))
+    hint = src.health_hint(raw)
+    assert hint.get("fetch_error") == "no-tab", f"{type(src).__name__} dropped the fetch error"
+    signals = {k: v for k, v in hint.items() if k != "markers"}
+    assert detect_drift("demo", hint["count"], signals, baseline=20) == "unreachable"

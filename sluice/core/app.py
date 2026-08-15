@@ -1457,7 +1457,7 @@ class Sluice:
         # only its `fetch` evaluates it. A `CarouselSource` (the base docstring names Otta,
         # which is login-gated) could grow the attribute tomorrow and never run it -- doctor
         # would then promise detection that does not happen.
-        from sluice.core.camofox import DEFAULT_USER
+        from sluice.core.camofox import resolve_user
         from sluice.ingest import sources as _registry
         from sluice.ingest.base import BrowserListSource
 
@@ -1467,7 +1467,10 @@ class Sluice:
         components.append(_doctor.classify_camofox(
             user_env=os.environ.get("CAMOFOX_USER"),
             session_env=os.environ.get("CAMOFOX_SESSION"),
-            resolved_user=os.environ.get("CAMOFOX_USER") or DEFAULT_USER,
+            # THE shared resolver, not a second copy: the two readings disagreed on an
+            # exported-but-empty CAMOFOX_USER, so doctor confidently reported a profile the
+            # run would not drive.
+            resolved_user=resolve_user(),
             probe_capable_sources=probe_capable))
 
         # Gate posture: enumerated generically over every loaded config's

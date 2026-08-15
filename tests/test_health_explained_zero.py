@@ -313,3 +313,22 @@ def test_a_rate_limited_board_reports_blocked_rather_than_a_bare_zero():
     assert detect_drift("workinstartups", hint["count"], signals, 50) == "blocked"
     # ...and it is recoverable, so it must not retire.
     assert _is_dead({"count": 0, "signals": signals}) is False
+
+
+def test_the_reason_precedence_is_PINNED_not_merely_documented():
+    """Which reason wins decides whether the source RETIRES.
+
+    `_RECOVERABLE` excludes `redirect`, and `_run_source` merges an explanation from any
+    search with the LAST search's hosts -- so a run really can carry `fetch_error` AND a host
+    mismatch at once. `unreachable` means the source lives; `redirect` means it dies.
+
+    The docstring stated the order and nothing tested it: moving the `fetch_error` clause or
+    the `redirect` clause to last left the whole suite green.
+    """
+    everything = {"fetch_error": "no-tab", "requested_host": "a.com", "landed_host": "b.com",
+                  "blocked": True, "auth": "missing"}
+    assert detect_drift("s", 0, everything, 10) == "unreachable"
+    assert detect_drift("s", 0, {k: v for k, v in everything.items()
+                                 if k != "fetch_error"}, 10) == "redirect"
+    assert detect_drift("s", 0, {"blocked": True, "auth": "missing"}, 10) == "blocked"
+    assert detect_drift("s", 0, {"auth": "missing"}, 10) == "auth"
