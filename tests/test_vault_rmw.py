@@ -287,7 +287,13 @@ def test_upsert_absorbs_a_bump_conflict_into_refused(tmp_path, monkeypatch):
         f.write_text(cur.replace(f"last_seen: {prev}", f"last_seen: 2026-08-{counter['n']:02d}"),
                      encoding="utf-8")
     racing_read(monkeypatch, str(f), churn, once=False)
-    assert v.upsert(lead).outcome == "refused"   # not an uncaught VaultConflict
+    result = v.upsert(lead)
+    assert result.outcome == "refused"   # not an uncaught VaultConflict
+    # #131: a refused bump touched no note THIS call owns -- the `if outcome !=
+    # "refused" else ""` guard in upsert's update/merge branches exists precisely so
+    # a CAS-conflict refusal (reached only AFTER _resolve_path already returned a real
+    # path) never reports that path's slug anyway.
+    assert result.slug == ""
 
 
 def test_upsert_merge_absorbs_a_bump_conflict_into_refused(tmp_path, monkeypatch):
@@ -312,7 +318,10 @@ def test_upsert_merge_absorbs_a_bump_conflict_into_refused(tmp_path, monkeypatch
         f.write_text(cur.replace(f"last_seen: {prev}", f"last_seen: 2026-08-{counter['n']:02d}"),
                      encoding="utf-8")
     racing_read(monkeypatch, str(f), churn, once=False)
-    assert v.upsert(lead).outcome == "refused"   # not an uncaught VaultConflict
+    result = v.upsert(lead)
+    assert result.outcome == "refused"   # not an uncaught VaultConflict
+    # Same guard, the merge branch's copy (see the sibling test above).
+    assert result.slug == ""
 
 
 def test_ingest_sink_survives_a_bump_conflict_and_keeps_the_lead_unrecorded(tmp_path, monkeypatch):
