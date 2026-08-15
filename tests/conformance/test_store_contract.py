@@ -676,52 +676,69 @@ def test_upsert_result_slug_is_not_fooled_by_an_unrelated_notes_matching_url(
     happens to get it right too, because the incoming url there matches exactly ONE
     note. This scenario is the one that actually tells them apart, reimplemented and
     verified against the real two-tier code before writing this test: swap WHICH
-    field matches which note. The incoming lead's url matches the SECOND note, but
-    its location coincidentally matches the FIRST note, which is seated at the BARE
-    candidate name the real candidate walk checks FIRST -- so the real write lands on
-    the FIRST note via a location-only verdict, WITHOUT the walk ever reaching the
-    SECOND note (or its url) at all. A url-then-location priority computed
-    afterward over the finished note set, in contrast, finds the SECOND note's url a
-    match FIRST and never even considers location, since exactly one url match ends
-    its search -- reporting the SECOND note's slug for a write that actually landed
-    on the FIRST."""
+    field matches which note -- the incoming lead's url matches ONE seeded note,
+    its location matches the OTHER.
+
+    Store-agnostic on purpose (round-2 review, non-blocking item #1): this does
+    NOT hardcode which of the two notes must win, only that `result.slug` names
+    WHICHEVER note the write actually touched (discovered from disk via
+    `last_seen`, never assumed). `Store.upsert`'s contract does not mandate
+    vault's specific bare-candidate-first walk order -- a store with an equally
+    honest but different resolution policy (say, url-first) could touch the
+    OTHER note here and still satisfy this test, as long as its reported slug
+    matches its own real write. Vault's actual, specific policy (this exact
+    reproduction resolves onto the note matched by LOCATION on the bare
+    candidate, never the note whose url merely happens to match) is pinned
+    separately, with a hardcoded expectation, at the create_lead facade layer in
+    tests/test_leads_create.py."""
     store = _make_store(store_name, tmp_path, monkeypatch)
+    original_stamps = {}
 
     first = store.upsert(_lead(company="Example Ltd", title="Example Role",
                                url="https://example.invalid/1", location=LOCATIONS[0],
                                first_seen="2026-01-01", last_seen="2026-01-01"))
     assert first.outcome == "created" and first.slug
+    original_stamps[first.slug] = "2026-01-01"
 
     second = store.upsert(_lead(company="Example Ltd", title="Example Role",
                                 url="https://example.invalid/2", location=LOCATIONS[1],
                                 first_seen="2026-01-02", last_seen="2026-01-02"))
     assert second.outcome == "created" and second.slug
     assert second.slug != first.slug
+    original_stamps[second.slug] = "2026-01-02"
 
-    # The SECOND note's own url, but the FIRST note's own location: the bare
-    # candidate name (the FIRST note) is checked before any location-suffixed one,
-    # and a url MISMATCH there does not block a location MATCH from resolving the
-    # walk right there (same_opportunity's real, pre-existing, documented rule: a
-    # non-matching url is not proof of DIFFERENT, so location is still consulted).
+    # The SECOND note's own url, but the FIRST note's own location -- a scenario
+    # designed to make a url-first post-hoc filter and the store's OWN real
+    # resolution disagree, whichever note the store's own policy actually picks.
     third = store.upsert(_lead(company="Example Ltd", title="Example Role",
                                url="https://example.invalid/2", location=LOCATIONS[0],
                                last_seen="2026-01-15"))
     assert third.outcome in ("updated", "merged")
-    assert third.slug == first.slug, (
-        f"the write actually landed on the FIRST note (matched by location on the "
-        f"bare candidate) but result.slug reported {third.slug!r} -- a url-then-"
-        f"location strategy applied after the fact would report the SECOND note's "
-        f"slug {second.slug!r} here, which is wrong")
 
-    # Ground truth, same discipline as the sibling test above: last_seen is the
-    # only observable effect of update/merge, so it is what proves the write
-    # landed where result.slug claims.
+    # Ground truth, discovered from disk, never assumed: last_seen is the ONLY
+    # observable effect of update/merge (never-clobber), so whichever of the two
+    # seeded notes' last_seen actually advanced to this call's stamp is the one
+    # the write genuinely touched.
     notes = {n.slug: n for n in store.read_leads()}
-    assert notes[first.slug].fm.get("last_seen") == "2026-01-15", (
-        "the FIRST note's last_seen was not actually bumped by the third call")
-    assert notes[second.slug].fm.get("last_seen") == "2026-01-02", (
-        "the SECOND note's last_seen moved even though the write was reported as "
-        "landing on the FIRST note")
+    touched = [slug for slug, stamp in original_stamps.items()
+              if notes[slug].fm.get("last_seen") != stamp]
+    assert len(touched) == 1, (
+        f"expected exactly one of the two seeded notes' last_seen to move, "
+        f"got {touched} (from {original_stamps})")
+    touched_slug = touched[0]
+    assert notes[touched_slug].fm.get("last_seen") == "2026-01-15"
+
+    assert third.slug == touched_slug, (
+        f"the write actually landed on {touched_slug!r} but result.slug reported "
+        f"{third.slug!r} instead -- a url-then-location strategy applied after "
+        f"the fact would report a slug picked by which note's url happens to "
+        f"match, not by which note the real write touched")
+
+    # never-clobber: the OTHER (untouched) note's last_seen must not have moved.
+    untouched_slug = second.slug if touched_slug == first.slug else first.slug
+    assert notes[untouched_slug].fm.get("last_seen") == original_stamps[untouched_slug], (
+        f"{untouched_slug!r}'s last_seen moved even though the write was "
+        f"reported as landing on {touched_slug!r} -- never-clobber violated")
 
 
 def test_upsert_result_slug_is_blank_for_every_no_write_outcome(store_name, tmp_path, monkeypatch):

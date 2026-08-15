@@ -2,10 +2,13 @@
 import os
 import pathlib
 
+import pytest
+
 from sluice.core.app import Sluice
 from sluice.core.config import Config
 from sluice.core.seendb import SeenDb
 from sluice.core.vault import Vault
+from tests.conftest import LOCATIONS
 
 
 def _app(tmp_path):
@@ -45,40 +48,38 @@ def test_collision_reports_merged_and_does_not_overwrite_url(tmp_path):
 
 def test_rejects_an_unsafe_field_by_name(tmp_path):
     app = _app(tmp_path)
-    try:
+    with pytest.raises(ValueError, match="title"):
         app.create_lead(title='Bad"Title', company="Example Ltd",
                         url="https://example.invalid/1")
-        assert False, "expected a ValueError"
-    except ValueError as e:
-        assert "title" in str(e)
 
 
 def test_rejects_an_embedded_newline_by_name(tmp_path):
     app = _app(tmp_path)
-    try:
+    with pytest.raises(ValueError, match="company"):
         app.create_lead(title="Example Role", company="Bad\nCompany",
                         url="https://example.invalid/1")
-        assert False, "expected a ValueError"
-    except ValueError as e:
-        assert "company" in str(e)
 
 
 def test_rejects_a_non_http_url(tmp_path):
     app = _app(tmp_path)
-    try:
+    with pytest.raises(ValueError, match="url"):
         app.create_lead(title="Example Role", company="Example Ltd", url="ftp://x")
-        assert False, "expected a ValueError"
-    except ValueError as e:
-        assert "url" in str(e)
+
+
+@pytest.mark.parametrize("bad_url", ["httpx://internal", "httpfoo", "http", "http:/x"])
+def test_rejects_urls_that_merely_start_with_the_substring_http(tmp_path, bad_url):
+    # A bare `.startswith("http")` (the shape this check used to share with
+    # apply/select.eligibility) accepts all four of these. is_http_url requires the
+    # exact "http://"/"https://" scheme instead (round-2 review finding).
+    app = _app(tmp_path)
+    with pytest.raises(ValueError, match="url"):
+        app.create_lead(title="Example Role", company="Example Ltd", url=bad_url)
 
 
 def test_requires_url(tmp_path):
     app = _app(tmp_path)
-    try:
+    with pytest.raises(ValueError, match="url"):
         app.create_lead(title="Example Role", company="Example Ltd", url="")
-        assert False, "expected a ValueError"
-    except ValueError as e:
-        assert "url" in str(e)
 
 
 def test_frontmatter_carries_no_search_key(tmp_path):
@@ -131,22 +132,24 @@ def test_a_fourth_call_at_a_fourth_distinct_location_resolves_its_own_slug_never
     so both cases are correct by construction rather than by two separate
     guessing tiers)."""
     app = _app(tmp_path)
+    # LOCATIONS has 3 token-disjoint, non-remote entries; this test needs a 4th,
+    # so "Delta" extends the same synthetic naming scheme rather than a real city.
     first = app.create_lead(title="Example Role", company="Example Ltd",
-                            url="https://example.invalid/1", location="London")
+                            url="https://example.invalid/1", location=LOCATIONS[0])
     second = app.create_lead(title="Example Role", company="Example Ltd",
-                             url="https://example.invalid/2", location="New York")
+                             url="https://example.invalid/2", location=LOCATIONS[1])
     third = app.create_lead(title="Example Role", company="Example Ltd",
-                            url="https://example.invalid/3", location="Berlin")
+                            url="https://example.invalid/3", location=LOCATIONS[2])
     for r in (first, second, third):
         assert r.outcome == "created"
     fourth = app.create_lead(title="Example Role", company="Example Ltd",
-                             url="https://example.invalid/4", location="Paris")
+                             url="https://example.invalid/4", location="Delta")
     assert fourth.outcome == "created"
     # The bug's exact failure shape: a stale/wrong slug (any of the three
     # PRIOR notes) or an empty one where disambiguation was actually possible.
     assert fourth.slug not in ("", first.slug, second.slug, third.slug)
     note = next(n for n in Vault(str(tmp_path)).read_leads() if n.slug == fourth.slug)
-    assert note.fm.get("location") == "Paris"
+    assert note.fm.get("location") == "Delta"
 
 
 def test_url_proven_second_call_resolves_the_first_notes_slug_not_a_coincidental_match(tmp_path):
@@ -161,21 +164,23 @@ def test_url_proven_second_call_resolves_the_first_notes_slug_not_a_coincidental
     below for the scenario that does distinguish it."""
     app = _app(tmp_path)
     first = app.create_lead(title="Example Role", company="Example Ltd",
-                            url="https://example.invalid/1", location="London")
+                            url="https://example.invalid/1", location=LOCATIONS[0])
     second = app.create_lead(title="Example Role", company="Example Ltd",
-                             url="https://example.invalid/2", location="Berlin")
+                             url="https://example.invalid/2", location=LOCATIONS[1])
     assert first.slug != second.slug
 
     third = app.create_lead(title="Example Role", company="Example Ltd",
-                            url="https://example.invalid/1", location="Berlin")
+                            url="https://example.invalid/1", location=LOCATIONS[1])
     assert third.slug == first.slug, (
         f"expected the url-proven FIRST note's slug {first.slug!r}, got {third.slug!r}")
     # never-clobber: the untouched SECOND note's own fields must survive intact --
-    # restores the coverage the two-tier-mechanism test this one replaced had, which
-    # this scenario alone (unlike the last_seen ground truth added at the conformance
-    # layer for THIS exact reproduction) also exercises at the create_lead facade.
+    # restores the coverage the deleted two-tier-mechanism test had. The
+    # conformance suite's sibling test already proves never-clobber via
+    # last_seen at the Vault.upsert layer; this re-proves it here, at the
+    # create_lead FACADE specifically, since create_lead's own pass-through
+    # could in principle diverge from the store even though today it does not.
     second_note = next(n for n in Vault(str(tmp_path)).read_leads() if n.slug == second.slug)
-    assert second_note.fm.get("location") == "Berlin"
+    assert second_note.fm.get("location") == LOCATIONS[1]
     assert second_note.fm.get("url") == "https://example.invalid/2"
 
 
@@ -194,14 +199,14 @@ def test_a_second_notes_url_does_not_steal_a_write_that_actually_landed_on_the_f
     reimplementation of that exact prior commit's logic before writing this test."""
     app = _app(tmp_path)
     first = app.create_lead(title="Example Role", company="Example Ltd",
-                            url="https://example.invalid/1", location="London")
+                            url="https://example.invalid/1", location=LOCATIONS[0])
     second = app.create_lead(title="Example Role", company="Example Ltd",
-                             url="https://example.invalid/2", location="Berlin")
+                             url="https://example.invalid/2", location=LOCATIONS[1])
     assert first.slug != second.slug
 
     # The SECOND note's own url, but the FIRST note's own location.
     third = app.create_lead(title="Example Role", company="Example Ltd",
-                            url="https://example.invalid/2", location="London")
+                            url="https://example.invalid/2", location=LOCATIONS[0])
     assert third.slug == first.slug, (
         f"the write actually landed on the FIRST note (matched by location on the "
         f"bare candidate) but create_lead reported {third.slug!r} -- a url-then-"
@@ -209,5 +214,5 @@ def test_a_second_notes_url_does_not_steal_a_write_that_actually_landed_on_the_f
         f"note's slug {second.slug!r} here")
     # never-clobber: the untouched SECOND note's own fields survive intact.
     second_note = next(n for n in Vault(str(tmp_path)).read_leads() if n.slug == second.slug)
-    assert second_note.fm.get("location") == "Berlin"
+    assert second_note.fm.get("location") == LOCATIONS[1]
     assert second_note.fm.get("url") == "https://example.invalid/2"
