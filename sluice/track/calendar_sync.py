@@ -179,12 +179,25 @@ def _event_body(cfg, lead_slug, ics):
 
 
 def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
+    """One of: created | updated | cancelled | present | unresolved.
+
+    `unresolved` is the answer to a question we could not ASK -- distinct from `present`,
+    which means we looked and there was nothing of ours. Conflating them cost a cancelled
+    interview its deletion and then consumed the message: reconcile mapped the old `present`
+    to an action engine.run ignored, so no dead-letter row was written and `seen.add` ran
+    anyway (#138)."""
     ours = _find_ours(client, cfg, ics)
     if ics.cancelled:
         if ours:
             if not dry_run:
                 client.delete_event(ours["id"])
             return "cancelled"
+        if ics.start is None:
+            # We never searched. `_find_ours` bails on a missing start, so "no event of ours"
+            # here is not a finding -- and a bare `METHOD:CANCEL` + `UID` VEVENT, with no
+            # DTSTART, is legal and is exactly what some senders emit. Saying `present` to
+            # this is asserting a fact from an unasked question.
+            return "unresolved"
         return "present"  # never delete a foreign event
     if ours:
         # Same zone the body was stamped with, or the instant we booked and the instant we

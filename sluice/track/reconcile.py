@@ -172,8 +172,16 @@ def reconcile(event, note_by_slug, vault, cfg, client, dry_run=False, *, shortli
     if event.ics is not None and event.ics.cancelled:
         r.calendar = sync_event(client, cfg, lead_slug=event.lead_slug, ics=event.ics, dry_run=dry_run)
         r.calendar_assumed_tz = _assumed_tz(r.calendar, event.ics)
-        r.action = "calendar"
         r.note = "cancellation"
+        if r.calendar == "unresolved":
+            # A cancel we could not resolve must reach a human. `action="calendar"` matches
+            # none of engine.run's branches, so it wrote nothing and let seen.add consume the
+            # message -- the work undone and the evidence gone. `proposed` is the existing
+            # route for "we could not act", and already carries a dismiss lever.
+            r.action = "proposed"
+            r.proposal = "cancel-unresolved"
+            return r
+        r.action = "calendar"
         return r
 
     # Scheduling with a structured signal.
