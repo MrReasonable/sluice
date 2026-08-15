@@ -106,8 +106,12 @@ class TrackConfig:
     # The zone to assume for a DTSTART that carries no usable one -- legal RFC 5545 floating
     # time, a date-only VALUE=DATE, or a TZID this host cannot resolve. Such an invite states
     # a wall-clock and no instant, so SOMETHING has to be assumed to book it at all, and the
-    # assumption is only ever a guess (calendar_sync warns and the digest counts it either
-    # way). An IANA key like `Europe/London`.
+    # assumption is only ever a guess. An IANA key like `Europe/London`.
+    #
+    # Whenever that guess is WRITTEN -- a `created` or `updated` calendar outcome, dry runs
+    # included -- calendar_sync warns and the run digest counts it. A `present` outcome is
+    # deliberately silent: nothing was written, so there is no entry whose hour could be
+    # wrong, and warning there would train the reader to ignore the line.
     #
     # The shipped default is UTC: neutral, correct for nobody in particular, and identical to
     # the behaviour before this key existed. Set it to your own zone and the guess becomes
