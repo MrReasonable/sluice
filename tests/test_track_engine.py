@@ -83,7 +83,7 @@ def test_run_resilient_to_bad_message():
         def get_message(self, mid): raise RuntimeError("gmail hiccup")
     rep = E.run(v, TrackConfig(), Boom(), FakeBackend("{}"), seen=set(), deadletter=_dl(),
                 now_iso="2026-07-10T12:00:00+00:00")
-    assert rep.failures == 1  # did not raise
+    assert len(rep.failures) == 1  # did not raise
 
 
 def test_per_message_failure_is_logged_with_the_message_id(caplog):
@@ -103,7 +103,7 @@ def test_per_message_failure_is_logged_with_the_message_id(caplog):
     with caplog.at_level("WARNING", logger="sluice.track.engine"):
         rep = E.run(v, TrackConfig(), Boom(), FakeBackend("{}"), seen=seen, deadletter=_dl(),
                     now_iso="2026-07-10T12:00:00+00:00")
-    assert rep.failures == 1
+    assert len(rep.failures) == 1
     said = [r.getMessage() for r in caplog.records if r.name == "sluice.track.engine"]
     assert any("m1" in m for m in said), f"message id never logged: {said}"
     assert any("gmail hiccup" in m for m in said), f"cause never logged: {said}"
@@ -264,7 +264,7 @@ def test_record_failure_skips_seen_so_message_reprocesses():
     rep = E.run(v, TrackConfig(), OneMsgRejectClient(), _soft_reject_backend(),
                 seen=seen, deadletter=BoomRecordDL(_dl().path),
                 now_iso="2026-07-10T12:00:00+00:00")
-    assert rep.failures == 1        # the raise was caught per-message
+    assert len(rep.failures) == 1        # the raise was caught per-message
     assert "m1" not in seen         # ...and seen.add was skipped -> re-processes next run
     assert rep.deadletter_error is True  # ...and app.py must hold the lastrun watermark (F3)
 
@@ -497,7 +497,7 @@ def test_clear_failure_holds_watermark():
                 now_iso="2026-07-10T12:00:00+00:00")
     assert rep.auto == 1  # the lead DID auto-advance (action=="applied"), reaching clear_lead
     assert rep.deadletter_error is True
-    assert rep.failures == 1
+    assert len(rep.failures) == 1
     assert "m1" not in seen
 
 
@@ -513,7 +513,7 @@ def test_non_deadletter_error_does_not_set_flag():
 
     rep = E.run(v, TrackConfig(), Boom(), FakeBackend("{}"), seen=set(), deadletter=_dl(),
                 now_iso="2026-07-10T12:00:00+00:00")
-    assert rep.failures == 1
+    assert len(rep.failures) == 1
     assert rep.deadletter_error is False
 
 

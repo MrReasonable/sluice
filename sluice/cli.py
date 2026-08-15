@@ -655,7 +655,11 @@ def cmd_track_run(args, config) -> int:
         return 1
     print(f"track: msgs={rep.msgs} classified={rep.classified} auto={rep.auto} "
           f"proposed={rep.proposed} calendar_added={rep.calendar_added} "
-          f"failures={rep.failures} open={len(rep.open_proposals)}", file=sys.stderr)
+          f"failures={len(rep.failures)} open={len(rep.open_proposals)}", file=sys.stderr)
+    # Each one NAMED, the way cmd_triage_run already does it. A bare count cannot tell a
+    # one-off blip from a message that fails deterministically every run.
+    for msg in rep.failures:
+        print(f"  FAILED {msg}", file=sys.stderr)
     if rep.calendar_assumed_tz:
         # Its own line rather than another key on the digest: this is a correctness warning,
         # not a statistic. The entries look ordinary in the calendar -- only the HOUR is a
@@ -671,6 +675,13 @@ def cmd_track_run(args, config) -> int:
               f"with no usable timezone; the time is ASSUMED (see "
               f"track.calendar_assumed_timezone) and may be wrong. Check it against the invite.",
               file=sys.stderr)
+    if rep.failures:
+        # track was the ONLY sub-app that never notified (ingest, triage and cv all do), so
+        # under cron a dropped interview invite reached nobody: the digest goes to a stderr
+        # stream that is normally discarded. Exit code deliberately unchanged -- USAGE.md
+        # documents exit 1 only for a reauth failure and cron alerting relies on it, and a
+        # transient single-message failure failing every run is how an alert gets muted.
+        notify("job-sluice track: " + "; ".join(rep.failures), config=config)
     if rep.open_proposals:
         print("  OPEN PROPOSALS (awaiting action):", file=sys.stderr)
         for e in rep.open_proposals:
