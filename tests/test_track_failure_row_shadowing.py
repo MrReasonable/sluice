@@ -88,3 +88,38 @@ def test_an_identical_re_record_is_still_a_quiet_no_op():
     dl.record(e)
     dl.record(e)   # must not raise
     assert len([r for r in dl.open_entries() if r.message_id == "m1"]) == 1
+
+
+def test_BOTH_record_sites_clear_a_stale_failure_row():
+    """The clear must live with the record, not beside one of them.
+
+    `engine.run` records a dead-letter row in TWO places: the `res.action == "proposed"`
+    branch, and the quiet-receipt / twin-hit / LLM-fallback branch above it. The first fix
+    put the stale-failure clear on only the second one -- so a message that failed once and
+    then classified as an unresolvable RECEIPT hit the new `record()` raise instead, setting
+    `deadletter_error` on EVERY subsequent run.
+
+    That never advances the lastrun watermark, so `_gmail_query`'s `after:` widens without
+    bound and every run re-fetches a larger set: exactly the failure the #139 comment argues
+    against, reintroduced by the fix for the collision.
+    """
+    # An IN-FLIGHT lead (the quiet-receipt branch requires one) that `match_receipt` cannot
+    # resolve by domain, but which the LLM names -- the routine shape the reviewer identified.
+    v, _ = _vault("applied")
+    dl = _dl()
+    client = _Flaky()
+
+    E.run(v, TrackConfig(), client, FakeBackend("{}"), seen=set(), deadletter=dl,
+          now_iso="2026-07-10T12:00:00+00:00")
+    assert [e for e in dl.open_entries() if e.ev_type == "failure"], "run 1 records the failure"
+
+    rep = E.run(v, TrackConfig(), client,
+                FakeBackend('{"lead": "Example Tidal", "type": "receipt", "confidence": 0.9, '
+                            '"when": null, "links": [], "materials": [], "summary": "ta"}'),
+                seen=set(), deadletter=dl, now_iso="2026-07-11T12:00:00+00:00")
+
+    assert rep.deadletter_error is False, (
+        "the stale failure row collided with the receipt row, so the watermark is now held "
+        "on every run and the Gmail window grows without bound")
+    rows = {e.message_id: e for e in dl.open_entries()}
+    assert rows["m1"].ev_type != "failure", "the receipt row never replaced the stale failure"
