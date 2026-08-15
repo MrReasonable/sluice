@@ -1,15 +1,30 @@
 """Camofox browser client - the impure I/O boundary for browser-driven sources.
 
-A thin HTTP wrapper over the Camofox server: a persistent, authenticated
-headless browser reachable at CAMOFOX_URL. Every source's fetch() step drives a
-tab through this client; parse() never touches it. The session key (which named
-browser profile to drive) defaults to "sluice" and is overridable via
-CAMOFOX_SESSION so an operator can point at their own authenticated session.
+A thin HTTP wrapper over the Camofox server: a persistent, authenticated headless browser
+reachable at CAMOFOX_URL. Every source's fetch() step drives a tab through this client;
+parse() never touches it.
+
+WHICH COOKIES A RUN GETS IS DECIDED BY CAMOFOX_USER, AND ONLY BY IT. The server's persistence
+plugin stores one profile per user at sha256(userId), and does not consult the session key at
+all. CAMOFOX_SESSION names a session WITHIN that profile: it groups tabs, and it does not
+choose whose logins you inherit.
+
+That distinction is not pedantry. Until 2026-08-15 this docstring told the reader that the
+SESSION key chose the browser profile, and that setting it was how an operator reached their
+own logged-in browser. A production runner set CAMOFOX_SESSION=contract-scanner to reach a profile holding
+335 cookies; the setting was inert, the run used the cookie-less `default` profile, LinkedIn
+returned zero rows for eight-plus runs, and the auto-retire rule then removed linkedin,
+jobserve and indeed. One false sentence, three dead sources, a week undiagnosed. Hence the
+warning in __init__: session-without-user is always a mistake, and it must be audible.
 """
 import json
 import os
 import urllib.error
 import urllib.request
+
+from sluice.core.log import get_logger
+
+_log = get_logger("core.camofox")
 
 _DEFAULT_URL = "http://127.0.0.1:9377"
 _TIMEOUT = 45  # seconds; Camofox navigations can be slow to settle
@@ -28,6 +43,17 @@ class Camofox:
         self.user = os.environ.get("CAMOFOX_USER", user)
         self.session = os.environ.get("CAMOFOX_SESSION", session)
         self.timeout = timeout
+        # The one configuration shape that is always a mistake: an operator who set only
+        # CAMOFOX_SESSION has chosen a session and believes they chose a PROFILE. Warn with
+        # both names and the inert value, so the message says what to do rather than that
+        # something is odd. Setting both is coherent and stays silent.
+        if os.environ.get("CAMOFOX_SESSION") and not os.environ.get("CAMOFOX_USER"):
+            _log.warning(
+                "CAMOFOX_SESSION=%r is set but CAMOFOX_USER is not. The session key does NOT "
+                "select the cookie profile -- profiles are keyed on CAMOFOX_USER (currently "
+                "%r), so this run inherits %r's logins, not %r's. Set CAMOFOX_USER to the "
+                "profile you actually logged in as.",
+                self.session, self.user, self.user, self.session)
 
     def _api(self, method: str, path: str, data: dict | None = None) -> dict:
         """One HTTP call to the Camofox server. Network/JSON errors are captured
