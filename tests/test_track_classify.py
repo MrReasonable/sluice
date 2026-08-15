@@ -21,7 +21,7 @@ class RaisingBackend:
     def complete(self, prompt): raise RuntimeError("backend down")
 
 
-def _msg(frm="jobs@company.com", subject="Interview", body="", thread="t1"):
+def _msg(frm="jobs@example.com", subject="Interview", body="", thread="t1"):
     return {"headers": {"from": frm, "subject": subject}, "body_text": body,
             "thread_id": thread, "attachments": []}
 
