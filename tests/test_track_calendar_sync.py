@@ -201,13 +201,27 @@ def test_the_shipped_default_still_assumes_utc():
 def test_resolved_zone_and_present_outcome_stay_silent(caplog):
     # The warning must not cry wolf. A resolved zone is not a guess, and a `present` outcome
     # wrote nothing at all -- warning on either would train the reader to ignore the line.
+    #
+    # Asserting an EMPTY list is the dangerous shape: `get_logger` sets propagate=False, so if
+    # capture were not reaching this logger the list would be empty for the WRONG reason and
+    # this test would pass while proving nothing. The positive control at the end is what
+    # makes the silence meaningful -- same logger, same capture, and it REQUIRES a record, so
+    # a broken capture reds this test instead of flattering it.
     resolved = parse_ics("BEGIN:VEVENT\r\nUID:u1\r\n"
                          "DTSTART;TZID=GMT Standard Time:20260715T110000\r\nEND:VEVENT")
     naive = IcsEvent(uid="u1", summary="Screen", start=datetime(2026, 7, 15, 10, 0))
+
+    def said():
+        return [r.getMessage() for r in caplog.records
+                if r.name == "sluice.track.calendar_sync"]
+
     with caplog.at_level("WARNING", logger="sluice.track.calendar_sync"):
         sync_event(FakeGoogleClient(events=[]), TrackConfig(), lead_slug="example-lead", ics=resolved)
         # naive, but an untagged event already covers the slot -> "present", nothing written
         sync_event(FakeGoogleClient(events=[{"id": "g1", "start": {"dateTime": "2026-07-15T10:00:00+00:00"}}]),
                    TrackConfig(), lead_slug="example-lead", ics=naive)
-    assert [r.getMessage() for r in caplog.records
-            if r.name == "sluice.track.calendar_sync"] == []
+        assert said() == [], said()
+        # Positive control: a genuinely guessed instant DOES reach the capture.
+        sync_event(FakeGoogleClient(events=[]), TrackConfig(), lead_slug="example-lead", ics=naive)
+        assert said(), ("capture never reached sluice.track.calendar_sync, so the empty "
+                        "assertion above proved nothing")
