@@ -154,6 +154,12 @@ class BrowserListSource:
     scroll_amount: int = 800
     dismiss_js: str | None = None
     extra: dict | None = None
+    # JS evaluating truthy when the page is showing its LOGGED-OUT face. Opt-in: a source
+    # that declares none reports no auth state, because a source cannot be wrong about a
+    # measurement it never took. Only sources whose extractor targets authenticated-only
+    # markup need it -- for them, "0 rows" and "logged out" are otherwise indistinguishable,
+    # which is what retired linkedin/jobserve/indeed on 2026-08-15.
+    auth_probe_js: str | None = None
 
     def searches(self) -> list:
         return [_mk_search(spec) for spec in self.searches_spec]
@@ -172,10 +178,21 @@ class BrowserListSource:
             sleep(0.5)
         result = cam.evaluate(tid, self.extractor_js)
         landed = cam.evaluate(tid, "location.href")
+        # SAME tab as the extractor, deliberately: a second fetch could land elsewhere
+        # (redirect, A/B split, rate limit), and the probe would then describe a different
+        # page than the one that yielded nothing.
+        auth_missing = False
+        if self.auth_probe_js:
+            probe = cam.evaluate(tid, self.auth_probe_js)
+            # Only a clean truthy result counts. A probe that errored tells us nothing, and
+            # claiming "logged out" off a broken probe would suppress the retirement of a
+            # genuinely dead source -- the opposite failure, and a quieter one.
+            auth_missing = bool(probe.get("result")) if isinstance(probe, dict) and "error" not in probe else False
         cam.close_tab(tid)
         rows = result.get("result") if isinstance(result, dict) else None
         landed_url = (landed.get("result") if isinstance(landed, dict) else None) or search.url or ""
-        return {"result": rows or [], "landed": landed_url, "requested": search.url}
+        return {"result": rows or [], "landed": landed_url, "requested": search.url,
+                "auth_missing": auth_missing}
 
     def parse(self, raw: dict, search: Search) -> list:
         return [
@@ -185,12 +202,17 @@ class BrowserListSource:
         ]
 
     def health_hint(self, raw: dict) -> dict:
-        return {
+        hint = {
             "count": len(raw.get("result", []) if isinstance(raw, dict) else []),
             "landed_host": _host(raw.get("landed", "")),
             "requested_host": _host(raw.get("requested", "")),
             "markers": {},
         }
+        # Present only when the probe actually fired, so `detect_drift` sees a key it can
+        # classify on and every other source's signals are byte-identical to before.
+        if isinstance(raw, dict) and raw.get("auth_missing"):
+            hint["auth"] = "missing"
+        return hint
 
 
 @dataclass
