@@ -19,8 +19,6 @@ Instead the failure itself becomes durable, using the machinery #49 already buil
 dead-letter row re-surfaces every run via `bump_surfaced()` and carries a `track dismiss --id`
 lever, so it survives the watermark moving on.
 """
-import pathlib
-
 from sluice.track import engine as E
 from sluice.track.config import TrackConfig
 from tests.test_track_engine import FakeBackend, OneMsgClient, _dl, _vault
@@ -40,7 +38,7 @@ def test_a_failed_message_is_recorded_in_the_dead_letter_store(tmp_path):
     v, _ = _vault("applied")
     dl = _dl()
     rep = _run(v, dl)
-    assert rep.failures == 1
+    assert len(rep.failures) == 1
     rows = {e.message_id: e for e in dl.open_entries()}
     assert "m1" in rows, "a failure that survives only in a log line is not durable"
     assert "gmail hiccup" in rows["m1"].hint, "the row must carry the cause, not just the id"
@@ -77,7 +75,7 @@ def test_a_dry_run_records_nothing(tmp_path):
     v, _ = _vault("applied")
     dl = _dl()
     rep = _run(v, dl, dry_run=True)
-    assert rep.failures == 1
+    assert len(rep.failures) == 1
     assert not [e for e in dl.open_entries() if e.message_id == "m1"]
 
 
@@ -102,9 +100,6 @@ def test_a_deadletter_write_failure_still_holds_the_watermark(tmp_path):
     so the message must stay in the query window.
     """
     v, _ = _vault("applied")
-
-    class _BadDl(type(_dl())):
-        pass
 
     dl = _dl()
 

@@ -32,7 +32,11 @@ class RunReport:
     proposed: int = 0
     calendar_added: int = 0
     calendar_assumed_tz: int = 0   # of those, how many booked an instant we GUESSED
-    failures: int = 0
+    # A LIST of "message-id: cause", not a count -- matching triage's RunReport,
+    # which set this precedent. `failures=N` is printed from len(), so the count
+    # and the detail come from one field and cannot disagree. A bare int meant a
+    # cron run could say "failures=1" and name nothing, on a stream nobody reads.
+    failures: list = field(default_factory=list)
     results: list = field(default_factory=list)
     open_proposals: list = field(default_factory=list)  # every currently-open dead-letter Entry
     auth_error: bool = False
@@ -275,7 +279,7 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
             rep.auth_error = True
             break
         except Exception as exc:
-            rep.failures += 1
+            rep.failures.append(f"{mid}: {exc}")
             # Never silent, and never only a log line. A failure skips seen.add, which leaves
             # the message retryable -- but only while it stays inside `_gmail_query`'s
             # day-granular `after:` window, and `app.py` advances the lastrun watermark on
