@@ -38,8 +38,8 @@ def test_classify_matches_single_lead():
 
 
 def test_ambiguous_match_sets_candidates_and_no_slug():
-    leads = [_lead("Ravenbank", "EM Cards"), _lead("Ravenbank", "EM Payments")]
-    be = FakeBackend(json.dumps({"lead": "Ravenbank", "type": "rejection", "confidence": 0.8,
+    leads = [_lead("Example Foundry", "EM Cards"), _lead("Example Foundry", "EM Payments")]
+    be = FakeBackend(json.dumps({"lead": "Example Foundry", "type": "rejection", "confidence": 0.8,
                                  "when": None, "links": [], "materials": [], "summary": "rejected"}))
     ev = C.classify(_msg(), leads, be, TrackConfig(), ics=None)
     assert ev.lead_slug is None and len(ev.candidates) == 2
