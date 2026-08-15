@@ -7,7 +7,7 @@ from datetime import date
 
 from sluice.core import status as _status
 from sluice.core.vault import frontmatter_safe
-from sluice.track.calendar_sync import sync_event
+from sluice.track.calendar_sync import floating_start, sync_event
 
 _SCHEDULE_TARGET = {"phone_screen": "phone_screen", "interview": "interview"}
 
@@ -19,9 +19,19 @@ class ReconcileResult:
     status_from: "str | None" = None
     status_to: "str | None" = None
     calendar: str = "none"
+    # A calendar entry was written for an instant we GUESSED (naive DTSTART -> assumed UTC).
+    # Counted into the digest so the assumption is visible without reading the log stream,
+    # which under cron is usually discarded.
+    calendar_assumed_utc: bool = False
     materials_written: bool = False
     proposal: "str | None" = None
     note: str = ""
+
+
+def _assumed_utc(outcome, ics):
+    """Did that sync_event call write an instant we guessed? Shares `floating_start` with the
+    warning calendar_sync emits, so the digest count and the log line can never disagree."""
+    return outcome in ("created", "updated") and floating_start(ics)
 
 
 def _stamp_materials(vault, note, ev, dry_run=False):
@@ -149,6 +159,7 @@ def reconcile(event, note_by_slug, vault, cfg, client, dry_run=False, *, shortli
     # Cancellation: calendar cancel only, never advance.
     if event.ics is not None and event.ics.cancelled:
         r.calendar = sync_event(client, cfg, lead_slug=event.lead_slug, ics=event.ics, dry_run=dry_run)
+        r.calendar_assumed_utc = _assumed_utc(r.calendar, event.ics)
         r.action = "calendar"
         r.note = "cancellation"
         return r
@@ -158,6 +169,7 @@ def reconcile(event, note_by_slug, vault, cfg, client, dry_run=False, *, shortli
             and event.confidence >= cfg.auto_status_min:
         if event.ics is not None and event.ics.start is not None:
             r.calendar = sync_event(client, cfg, lead_slug=event.lead_slug, ics=event.ics, dry_run=dry_run)
+            r.calendar_assumed_utc = _assumed_utc(r.calendar, event.ics)
         r.materials_written = _stamp_materials(vault, note, event, dry_run=dry_run)
         target = _SCHEDULE_TARGET[event.type]
         if _status.can_advance(note.status, target):

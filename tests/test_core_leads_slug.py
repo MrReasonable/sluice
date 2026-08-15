@@ -21,5 +21,5 @@ def test_slug_matches_on_company_role():
 
 def test_slug_matches_on_store_issued_slug():
     # Frontmatter is empty, so the only thing left to match on is the store's slug.
-    n = _note("", "", slug="flowline - Banker")
-    assert slug_matches(n, "flowline") is True
+    n = _note("", "", slug="example-meridian - Banker")
+    assert slug_matches(n, "example-meridian") is True

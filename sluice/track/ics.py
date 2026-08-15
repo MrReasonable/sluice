@@ -9,13 +9,23 @@ try:
 except ImportError:  # pragma: no cover
     ZoneInfo = None
 
-# Windows/Exchange timezone names -> IANA. Outlook and Exchange write `TZID:GMT Standard
-# Time` rather than an IANA key, and `ZoneInfo` cannot resolve those, so without this table
-# such a DTSTART falls through to NAIVE. Naive is not merely unsendable (calendar_sync has to
-# coerce it to satisfy RFC 3339) -- it is WRONG: `_event_body` stamps `timeZone: "UTC"` when
-# `start.tzinfo is None`, which books a British-Summer-Time invite an hour late. A subset of
-# CLDR's windowsZones table; a name that is absent still degrades to the naive fallback below
-# rather than raising, so an unrecognised zone is no worse off than before.
+# Windows/Exchange timezone names -> IANA. Outlook and Exchange write
+# `DTSTART;TZID=GMT Standard Time:...` rather than an IANA key, and `ZoneInfo` cannot resolve
+# those, so without this table such a DTSTART falls through to NAIVE. Naive is not merely
+# unsendable (calendar_sync has to coerce it to satisfy RFC 3339) -- it is WRONG:
+# `_event_body` stamps `timeZone: "UTC"` when `start.tzinfo is None`, which books a
+# British-Summer-Time invite an hour late.
+#
+# A subset of CLDR's windowsZones table, so plenty of real Windows names are absent -- and an
+# absent name is NOT harmless. It degrades to the naive fallback below rather than raising,
+# and that naive value is exactly the hour-late booking above; it is only quieter than a
+# crash, not safer. `IcsEvent.tzid_unresolved` carries the name out so calendar_sync can say
+# so out loud at the point of the write. The same is true of a name that IS mapped but whose
+# IANA target this host's tzdb lacks (`Europe/Kyiv` needs tzdata >= 2022b), which is why the
+# fallback records the tzid rather than silently discarding it.
+#
+# INVARIANT: every key here must be lowercase -- the lookup is `.get(key.lower(), key)`, so a
+# capitalised entry is dead code that never matches. Pinned by test_every_windows_tz_key_is_lowercase.
 _WINDOWS_TZ = {
     "gmt standard time": "Europe/London",
     "greenwich standard time": "Atlantic/Reykjavik",
@@ -62,6 +72,13 @@ class IcsEvent:
     summary: str = ""
     location: str = ""
     url: str = ""
+    # The raw TZID of a DTSTART that STATED a zone we could not read (unmapped Windows name,
+    # or an IANA key absent from this host's tzdb). Empty when the zone resolved AND when
+    # none was stated at all -- those two are different facts and must not collapse:
+    # legal RFC 5545 floating time has no better answer than the caller's default, whereas an
+    # unreadable TZID means the invite named an instant we failed to decode. calendar_sync
+    # warns on the second so the assumption is visible instead of silently wrong.
+    tzid_unresolved: str = ""
 
     @property
     def cancelled(self) -> bool:
@@ -74,24 +91,31 @@ def _unfold(text: str) -> str:
 
 
 def _parse_dt(value: str, params: dict):
+    """(datetime, unresolved_tzid). The second is non-empty ONLY when a TZID was stated and
+    we failed to resolve it -- never for a date-only or TZID-less value, which are naive for
+    reasons the caller cannot improve on."""
     v = value.strip()
     if v.endswith("Z"):
-        return datetime.strptime(v, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        return datetime.strptime(v, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc), ""
     if "T" in v:
         dt = datetime.strptime(v, "%Y%m%dT%H%M%S")
         tzid = params.get("TZID")
         if tzid and ZoneInfo:
-            # RFC 5545 permits a quoted param value, and Outlook's zone names contain spaces
-            # and dots, so normalise before the lookup. An unmapped name is passed through
-            # unchanged -- an IANA key resolves, anything else lands in the except below.
-            key = tzid.strip().strip('"')
+            # Normalise for the lookup only: dequote (RFC 5545 permits a quoted param value)
+            # then trim, in that order -- `" GMT Standard Time "` has its quotes on the
+            # OUTSIDE, so stripping whitespace first leaves them attached. `.lower()` is what
+            # matches the table, whose keys are lowercase by invariant; the spaces and dots in
+            # `w. europe standard time` are carried verbatim BY those keys, not normalised
+            # away. An unmapped name passes through dequoted-but-case-preserved, so a plain
+            # IANA key still resolves and anything else lands in the except below.
+            key = tzid.strip('"').strip()
             key = _WINDOWS_TZ.get(key.lower(), key)
             try:
-                return dt.replace(tzinfo=ZoneInfo(key))
+                return dt.replace(tzinfo=ZoneInfo(key)), ""
             except Exception:
-                return dt
-        return dt
-    return datetime.strptime(v, "%Y%m%d")
+                return dt, tzid
+        return dt, ""
+    return datetime.strptime(v, "%Y%m%d"), ""
 
 
 def parse_ics(text: str):
@@ -118,9 +142,12 @@ def parse_ics(text: str):
         elif name == "STATUS":
             ev.status = value.strip()
         elif name == "DTSTART":
-            ev.start = _parse_dt(value, params)
+            # Only DTSTART's unresolved zone is recorded: it is the instant everything
+            # downstream keys on (`_find_ours`, the proximity match, the calendar body),
+            # and `_event_body` falls back to `ics.start` when `end` is missing anyway.
+            ev.start, ev.tzid_unresolved = _parse_dt(value, params)
         elif name == "DTEND":
-            ev.end = _parse_dt(value, params)
+            ev.end, _ = _parse_dt(value, params)
         elif name == "SUMMARY":
             ev.summary = value.strip()
         elif name == "LOCATION":
