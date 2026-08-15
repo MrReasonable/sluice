@@ -13,6 +13,7 @@ from sluice.core import plugins
 from sluice.core.app import Sluice
 from sluice.core.backends import BackendError
 from sluice.core.config import Config
+from sluice.core.protocols import UpsertResult
 from sluice.ingest.base import Search
 
 
@@ -26,7 +27,7 @@ class _FakeStore:
 
     def upsert(self, lead):
         self.upserted.append(lead)
-        return "created"
+        return UpsertResult(outcome="created", slug=f"{lead.company} - {lead.title}")
 
     def ensure_stfolder(self):
         pass

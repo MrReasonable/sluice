@@ -2,6 +2,7 @@ import io
 import json
 
 from sluice.core.leads import Lead
+from sluice.core.protocols import UpsertResult
 from sluice.core.seendb import SeenDb
 from sluice.core.vault import Vault
 from sluice.ingest.sink import JsonSink, VaultSink
@@ -82,9 +83,9 @@ def test_vaultsink_records_merged_but_not_refused(tmp_path, monkeypatch):
     real = vault.upsert
     def fake(lead):
         if lead.url == "https://example.invalid/2":
-            return "merged"
+            return UpsertResult(outcome="merged", slug="Bee - Analyst")
         if lead.url == "https://example.invalid/3":
-            return "refused"
+            return UpsertResult(outcome="refused")
         return real(lead)
     monkeypatch.setattr(vault, "upsert", fake)
 
@@ -103,7 +104,7 @@ def test_vaultsink_records_url_proven_merged_away(tmp_path, monkeypatch):
     vault = Vault(str(tmp_path / "vault"))
     seen = SeenDb(str(tmp_path / "seen.db"))
     lead = _lead(url="https://example.invalid/1")
-    monkeypatch.setattr(vault, "upsert", lambda lead: "merged_away")
+    monkeypatch.setattr(vault, "upsert", lambda lead: UpsertResult(outcome="merged_away"))
 
     counts = VaultSink(vault, seen, today=lambda: "2026-07-07").write([lead])
 
@@ -120,7 +121,7 @@ def test_vaultsink_excludes_unproven_merged_away_from_seen_db(tmp_path, monkeypa
     vault = Vault(str(tmp_path / "vault"))
     seen = SeenDb(str(tmp_path / "seen.db"))
     lead = _lead(url="https://example.invalid/1")
-    monkeypatch.setattr(vault, "upsert", lambda lead: "merged_away_unproven")
+    monkeypatch.setattr(vault, "upsert", lambda lead: UpsertResult(outcome="merged_away_unproven"))
 
     counts = VaultSink(vault, seen, today=lambda: "2026-07-07").write([lead])
 

@@ -62,7 +62,7 @@ def test_a_merged_away_loser_stays_invisible_to_the_recursive_scan(tmp_path):
 
 def _seed_one(tmp_path):
     v = Vault(str(tmp_path))
-    assert v.upsert(_lead()) == "created"
+    assert v.upsert(_lead()).outcome == "created"
     return _leads_dir(tmp_path) / "Acme - Analyst.md"
 
 
@@ -81,7 +81,7 @@ def test_a_note_moved_to_a_subfolder_is_updated_not_recreated(tmp_path):
     # probes only leads_dir -- fails on that line and the two assertions below never execute,
     # so they could be anything at all and nothing would say so. Probed: reordered, each of
     # the three fails on that mutant INDEPENDENTLY (checked by deleting the other two).
-    outcome = v.upsert(_lead(last_seen="2026-07-08"))
+    outcome = v.upsert(_lead(last_seen="2026-07-08")).outcome
     assert not note.exists()                      # nothing re-created at the flat name
     assert "last_seen: 2026-07-08" in moved.read_text()   # the moved note is what was bumped
     assert outcome == "updated"
@@ -105,7 +105,7 @@ def test_a_note_filed_into_a_new_subfolder_mid_run_is_not_duplicated(tmp_path):
     # has a stale cache to be wedged by, and this test would pass with the fix deleted.
     _leads_dir(tmp_path).mkdir(parents=True)
     v = Vault(str(tmp_path))
-    assert v.upsert(_lead()) == "created"          # warms the cache at [leads_dir]
+    assert v.upsert(_lead()).outcome == "created"          # warms the cache at [leads_dir]
     note = _leads_dir(tmp_path) / "Acme - Analyst.md"
     active = _leads_dir(tmp_path) / "Active"
     active.mkdir()
@@ -114,7 +114,7 @@ def test_a_note_filed_into_a_new_subfolder_mid_run_is_not_duplicated(tmp_path):
 
     # The SAME instance, never a fresh one: a fresh Vault re-walks on its first lookup, so
     # the assertion below would hold with the fix deleted.
-    assert v.upsert(_lead(last_seen="2026-07-08")) == "updated"
+    assert v.upsert(_lead(last_seen="2026-07-08")).outcome == "updated"
     assert not note.exists()                       # no twin minted at the root name
     assert "last_seen: 2026-07-08" in moved.read_text()
 
@@ -133,11 +133,11 @@ def test_the_create_arm_re_derives_the_scan_set_once_per_create_not_per_lead(tmp
         return inner()
     v._walk = counting_walk
 
-    assert v.upsert(_lead()) == "created"
+    assert v.upsert(_lead()).outcome == "created"
     after_create = walks[0]
     assert after_create == 2, "one walk to fill the cache, one to re-derive before the create"
     for day in ("2026-07-08", "2026-07-09", "2026-07-10"):
-        assert v.upsert(_lead(last_seen=day)) == "updated"
+        assert v.upsert(_lead(last_seen=day)).outcome == "updated"
     assert walks[0] == after_create, "an update must not re-walk"
 
 
@@ -180,13 +180,13 @@ def test_a_stale_scan_set_cannot_record_a_merged_away_arm(tmp_path):
                        last_seen="2026-07-08")
     # The SAME instance, never a fresh one: a fresh Vault re-walks on its first lookup, so
     # this would hold with the guard reverted. The fresh-cache control is asserted below.
-    assert v.upsert(loser_lead) == "updated"
+    assert v.upsert(loser_lead).outcome == "updated"
     assert "last_seen: 2026-07-08" in restored.read_text()
     # The control: the fresh-cache verdict is `updated` too, so the ONLY thing the guard
     # changes is the stale-cache answer -- it invents no new outcome.
     assert Vault(str(tmp_path)).upsert(
         _lead(location=LOCATIONS[1], url="https://ex.invalid/2",
-              last_seen="2026-07-09")) == "updated"
+              last_seen="2026-07-09")).outcome == "updated"
 
 
 def test_a_novel_not_found_outcome_inherits_the_re_derive(tmp_path):
@@ -231,7 +231,7 @@ def test_a_candidate_resolving_to_two_notes_refuses_and_writes_nothing(tmp_path)
     twin.write_text(note.read_text())             # a hand-made copy
 
     v = Vault(str(tmp_path))
-    assert v.upsert(_lead(last_seen="2026-07-08")) == "refused"
+    assert v.upsert(_lead(last_seen="2026-07-08")).outcome == "refused"
     assert "last_seen: 2026-07-07" in note.read_text()
     assert "last_seen: 2026-07-07" in twin.read_text()
 
@@ -240,7 +240,7 @@ def test_a_new_lead_is_still_created_at_the_leads_dir_root(tmp_path):
     """PR A creates no folders and moves no notes: the write folder is unchanged. PR B is
     what points creates at Active/."""
     v = Vault(str(tmp_path))
-    assert v.upsert(_lead()) == "created"
+    assert v.upsert(_lead()).outcome == "created"
     assert (_leads_dir(tmp_path) / "Acme - Analyst.md").exists()
 
 
@@ -276,7 +276,7 @@ def test_a_merged_away_lead_is_still_suppressed_when_a_subfolder_exists(tmp_path
     # satisfied. Accepting either arm would leave free the one distinction this whole
     # test exists for -- `merged_away` enters seen.db, which has no removal path, and
     # `merged_away_unproven` must never be recorded.
-    assert fresh.upsert(loser_lead) == "merged_away"
+    assert fresh.upsert(loser_lead).outcome == "merged_away"
 
 
 # ── the candidate probe fails CLOSED ──────────────────────────────────────────
@@ -296,7 +296,7 @@ def test_an_unstatable_candidate_raises_rather_than_reading_as_absent(tmp_path):
     unstatable directory read as ABSENT -- and absent is the branch that creates and that
     records a merged_away in seen.db, which has no removal path."""
     v = Vault(str(tmp_path))
-    assert v.upsert(_lead()) == "created"
+    assert v.upsert(_lead()).outcome == "created"
     active = _unstatable_subdir(tmp_path)
     active.mkdir()
     (_leads_dir(tmp_path) / "Acme - Analyst.md").rename(active / "Acme - Analyst.md")
@@ -316,7 +316,7 @@ def test_an_unstatable_directory_does_not_silently_duplicate_a_live_note(tmp_pat
     Raising instead lands in the sink's `except OSError`, which counts the lead `skipped`
     and keeps it OUT of seen.db, so the next run retries it."""
     v = Vault(str(tmp_path))
-    assert v.upsert(_lead()) == "created"
+    assert v.upsert(_lead()).outcome == "created"
     active = _unstatable_subdir(tmp_path)
     active.mkdir()
     (_leads_dir(tmp_path) / "Acme - Analyst.md").rename(active / "Acme - Analyst.md")
@@ -352,7 +352,7 @@ def test_an_unstatable_directory_cannot_manufacture_a_recorded_merged_away(tmp_p
     restored.write_text(pathlib.Path(archived[0]).read_text())
     # SCOPE first: while the directory is readable the active note really is what answers,
     # so the assertion below is about the permissions bit and nothing else.
-    assert Vault(str(tmp_path)).upsert(loser_lead) == "updated"
+    assert Vault(str(tmp_path)).upsert(loser_lead).outcome == "updated"
 
     os.chmod(active, 0o444)
     try:
@@ -372,4 +372,4 @@ def test_a_directory_squatting_a_candidate_name_is_not_a_note(tmp_path):
     (leads / "Acme - Analyst.md").mkdir(parents=True)
     v = Vault(str(tmp_path))
     assert v._locate("Acme - Analyst") == []
-    assert v.upsert(_lead()) == "refused"
+    assert v.upsert(_lead()).outcome == "refused"

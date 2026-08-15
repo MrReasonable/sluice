@@ -74,7 +74,7 @@ def test_dedup_key_survives_a_none_company():
 # ── through the store ─────────────────────────────────────────────────────────
 def _upsert(tmp_path, **kw):
     v = Vault(str(tmp_path))
-    outcome = v.upsert(_lead(**kw))
+    outcome = v.upsert(_lead(**kw)).outcome
     leads = tmp_path / "Job Applications" / "Job Leads"
     on_disk = sorted(p.name for p in leads.iterdir()) if leads.is_dir() else []
     return outcome, on_disk, v

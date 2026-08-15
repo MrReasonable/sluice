@@ -39,6 +39,7 @@ from sluice.core.protocols import (
     CRITERIA_RELPATH,
     LeadNote,
     MalformedNoteField,
+    UpsertResult,
     VaultConflict,
 )
 
@@ -1666,8 +1667,9 @@ class Vault:
         return summary
 
     # ── upsert ───────────────────────────────────────────────────────────────
-    def upsert(self, lead: Lead) -> str:
-        """Reconcile an incoming lead against the existing notes. Returns one of
+    def upsert(self, lead: Lead) -> UpsertResult:
+        """Reconcile an incoming lead against the existing notes. Returns an
+        UpsertResult whose `outcome` is one of
         "created" | "updated" | "merged" | "refused" | "merged_away" | "merged_away_unproven".
         UPDATE and MERGE bump ONLY last_seen (never-clobber); REFUSE writes nothing, on any of
         FIVE causes, across four `return "refused"` sites. Three are IDENTITY refusals, decided
@@ -1774,7 +1776,13 @@ class Vault:
         Nothing raises on either route, which is the None-tolerance that mattered and is
         unchanged: an AttributeError here (or in `Lead`) is not caught by the sink's
         `except OSError` and would abort the whole ingest run, so the coercion coerces
-        rather than rejecting. See `core/leads.py:Lead.__post_init__`."""
+        rather than rejecting. See `core/leads.py:Lead.__post_init__`.
+
+        `result.slug` is the slug of the note this call resolved to -- populated for
+        "created"/"updated"/"merged", empty for "refused"/"merged_away"/
+        "merged_away_unproven". Never a different note that merely happens to share
+        the same company+title identity -- see UpsertResult's own docstring for why
+        that distinction is the whole point of this type."""
         # decision 7, round 3: company/role are the vault's identity key
         # (_candidate_names' stem = f"{company} - {title}") -- forging a frontmatter
         # key via an embedded newline in EITHER must refuse the whole create before any
@@ -1801,7 +1809,7 @@ class Vault:
                 "vault refused lead %r: company or role contains a control character "
                 "(e.g. an embedded newline), which could forge a frontmatter key",
                 lead.dedup_key)
-            return "refused"
+            return UpsertResult(outcome="refused")
         rendered = self._render_new(lead)
         # `_split_frontmatter` cannot return None for `_render_new`'s output, and if it ever
         # did `_fm_dict(None)` is `{}` -- which refuses. Fails closed either way.
@@ -1810,7 +1818,7 @@ class Vault:
             _log.warning("vault refused lead %r: its company and role both read back blank "
                          "from the note it would be written into, so it has no name to be "
                          "seated at and no read would ever return it", lead.dedup_key)
-            return "refused"
+            return UpsertResult(outcome="refused")
         for _ in range(_CREATE_RACE_RETRIES):
             path, action = self._resolve_path(lead)
             if action == "refuse":
@@ -1826,7 +1834,7 @@ class Vault:
                 _log.warning("vault refused lead %r: no name candidate is writable -- every one is "
                              "a note proven different, or one resolves to several",
                              lead.dedup_key)
-                return "refused"
+                return UpsertResult(outcome="refused")
             if action in (_ARCHIVED, _ARCHIVED_UNPROVEN):
                 # #81. Beside `refuse`, NOT beside update/merge: those sit AFTER the makedirs
                 # below, and a lead that writes nothing must not create the leads dir or the
@@ -1835,7 +1843,7 @@ class Vault:
                 # through to _write(None, ...) and raises TypeError, which the sink's
                 # `except OSError` does NOT catch and engine.py calls sink.write outside its
                 # per-source try, so the whole ingest run would abort.
-                return action
+                return UpsertResult(outcome=action)
             # Every remaining action WRITES, so make the dir + Syncthing marker now -- after the
             # refusal check, so a DIRECT refusal (the common case, pinned by
             # test_upsert_refuses_and_writes_nothing) leaves the filesystem untouched. (A refusal
@@ -1848,14 +1856,18 @@ class Vault:
             os.makedirs(self.leads_dir, exist_ok=True)
             self.ensure_stfolder()
             if action == "update":
-                return self._bump_last_seen_or_refuse(
+                outcome = self._bump_last_seen_or_refuse(
                     path, lead.last_seen or _today(), "updated", lead.dedup_key)
+                return UpsertResult(outcome=outcome,
+                                    slug=self._slug_for(path) if outcome != "refused" else "")
             if action == "merge":
                 # We could not prove same-or-different, so we do NOT split (that would mint a
                 # note per scrape -- unbounded). Bump last_seen like an update; the difference
                 # is only that the count is reported separately so the merge is visible.
-                return self._bump_last_seen_or_refuse(
+                outcome = self._bump_last_seen_or_refuse(
                     path, lead.last_seen or _today(), "merged", lead.dedup_key)
+                return UpsertResult(outcome=outcome,
+                                    slug=self._slug_for(path) if outcome != "refused" else "")
             # The WRITE FOLDER, made HERE and not beside the leads_dir makedirs above, which sits
             # ABOVE the update/merge/create fan-out and therefore runs on every non-refused
             # outcome. Measured: a second upsert of the same lead reaches that line and returns
@@ -1895,7 +1907,7 @@ class Vault:
                 # The SAME string the blank-note guard above ran the read's predicate over --
                 # re-rendering here would put a second, unchecked set of bytes on disk.
                 _write(path, rendered, exclusive=True)
-                return "created"
+                return UpsertResult(outcome="created", slug=self._slug_for(path))
             except FileExistsError:
                 # #16 TOCTOU: a concurrent writer created this note between _resolve_path's
                 # existence check and this exclusive create. Truncating it (the old open("w"))
@@ -1909,7 +1921,7 @@ class Vault:
         # Every attempt lost the create race (the note kept being created then deleted under
         # us). Refuse loudly rather than clobber or spin; the sink keeps it out of seen.db.
         _log.warning("vault could not create lead %r: create raced repeatedly", lead.dedup_key)
-        return "refused"
+        return UpsertResult(outcome="refused")
 
     def _bump_last_seen_or_refuse(self, path: str, last_seen: str, outcome: str,
                                   dedup_key: str) -> str:

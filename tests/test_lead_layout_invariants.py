@@ -24,8 +24,8 @@ def test_a_merged_away_lead_is_not_recreated_with_the_layout_on(tmp_path):
     leads_dir, and the write folder is now a SUBFOLDER of leads_dir -- so this checks the prune
     and the probe still agree once creates no longer land beside `_merged/`."""
     v = Vault(str(tmp_path), lead_layout="active_archive")
-    assert v.upsert(_lead()) == "created"
-    assert v.upsert(_lead(title="Example Role 2")) == "created"
+    assert v.upsert(_lead()).outcome == "created"
+    assert v.upsert(_lead(title="Example Role 2")).outcome == "created"
     active = os.path.join(v.leads_dir, ACTIVE_SUBDIR)
     survivor = os.path.join(active, "Example Ltd - Example Role.md")
     loser = os.path.join(active, "Example Ltd - Example Role 2.md")
@@ -38,7 +38,7 @@ def test_a_merged_away_lead_is_not_recreated_with_the_layout_on(tmp_path):
     # A fresh store, so nothing is carried in a cache: the re-scrape must be suppressed by the
     # ARCHIVE, not by in-memory state.
     v2 = Vault(str(tmp_path), lead_layout="active_archive")
-    assert v2.upsert(_lead(title="Example Role 2")) == "merged_away"
+    assert v2.upsert(_lead(title="Example Role 2")).outcome == "merged_away"
     assert not os.path.exists(loser), "a merged-away lead was resurrected"
 
 
@@ -54,7 +54,7 @@ def test_a_rescrape_after_reconcile_touches_only_last_seen(tmp_path):
     assert os.path.isfile(moved)
     before = open(moved, encoding="utf-8").read()
 
-    assert v.upsert(_lead()) in ("updated", "merged")
+    assert v.upsert(_lead()).outcome in ("updated", "merged")
     after = open(moved, encoding="utf-8").read()
     assert "status: dismiss" in after and "score: 7" in after
 

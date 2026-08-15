@@ -133,6 +133,33 @@ class LeadNote:
     status: str
 
 
+@dataclass
+class UpsertResult:
+    """Vault.upsert's own report of what it just did (#131 post-final-review fix).
+    `outcome` is the existing six-member vocabulary, unchanged in wording or
+    meaning. `slug` is populated ONLY for "created"/"updated"/"merged" -- the three
+    outcomes where a note now exists that this call's own resolution identified as
+    the SAME posting -- and is "" for "refused"/"merged_away"/"merged_away_unproven",
+    none of which write into (or match) any note this call itself now owns.
+
+    This is the single source of truth for "which note did THIS call actually
+    touch." A caller that instead re-derives the answer post-hoc (e.g. re-reading
+    every note matching the incoming lead's company+title) is reconstructing
+    information the store already had and discarded -- and can get it wrong: two
+    notes can legitimately share company+title (a proven-different location seats a
+    second note at that identity), and a filter applied AFTER the write cannot
+    always tell which of them THIS write actually resolved to, because the store's
+    own resolution walks candidate NAMES in a specific order and stops at the first
+    non-advance verdict -- a property no post-hoc filter over the finished set can
+    reconstruct in general. See Sluice.create_lead's own history (#131) for the
+    concrete reproduction that motivated this fix: three separate "guess after the
+    fact" strategies (location-only, a flat url-or-location filter, and a two-tier
+    url-then-location priority) each returned a real but WRONG note's slug in some
+    reachable scenario."""
+    outcome: str
+    slug: str = ""
+
+
 class Store(Protocol):
     """The lead/experience store. See tests/conformance/test_store_contract.py -- an
     implementation that does not pass that suite is not a Store, whatever it claims.
@@ -184,8 +211,9 @@ class Store(Protocol):
         """
         ...
 
-    def upsert(self, lead) -> str:
-        """Reconcile an incoming lead against the stored notes. Returns one of:
+    def upsert(self, lead) -> "UpsertResult":
+        """Reconcile an incoming lead against the stored notes. Returns an
+        UpsertResult whose `outcome` is one of:
         "created" (a genuinely new note), "updated" (an existing note identified as the
         same opportunity), "merged" (an existing note we could not prove same-or-different
         from), or "refused" (the store cannot write this lead WITHOUT clobbering a different
@@ -235,7 +263,16 @@ class Store(Protocol):
         seated at, so a re-scrape whose title has drifted past every name candidate is
         created, a visible duplicate a human can merge again. The conformance suite
         exercises only the location-split shape, so it does not police that residual; the
-        contract does, by naming it. See tests/conformance/test_store_contract.py."""
+        contract does, by naming it. See tests/conformance/test_store_contract.py.
+
+        `result.slug` is the slug of the note this call resolved to -- populated for
+        "created"/"updated"/"merged", empty for "refused"/"merged_away"/
+        "merged_away_unproven". A store MUST NOT report a slug for an outcome that
+        wrote nothing this call itself controls, and MUST report the slug of the
+        EXACT note whose content this call's write (or match, for merged_away*)
+        decided -- never a different note that merely happens to share the same
+        company+title identity. See UpsertResult's own docstring for why this
+        matters."""
         ...
 
     def update_fields(self, ref, fields: dict, *, append_note=None, note_tag=None,

@@ -23,7 +23,7 @@ def _leads_dir(tmp_path):
 
 def test_create_writes_lead_note_in_vault_schema(tmp_path):
     v = Vault(str(tmp_path))
-    assert v.upsert(_lead()) == "created"
+    assert v.upsert(_lead()).outcome == "created"
     f = _leads_dir(tmp_path) / "Acme - Analyst.md"
     assert f.exists()
     txt = f.read_text()
@@ -37,7 +37,7 @@ def test_create_writes_lead_note_in_vault_schema(tmp_path):
 
 def test_update_preserves_status_and_enrichment_and_body_bumps_last_seen(tmp_path):
     v = Vault(str(tmp_path))
-    assert v.upsert(_lead()) == "created"
+    assert v.upsert(_lead()).outcome == "created"
     f = _leads_dir(tmp_path) / "Acme - Analyst.md"
     # An agent later triages: sets status + score + notes, adds a body note.
     f.write_text(
@@ -48,7 +48,7 @@ def test_update_preserves_status_and_enrichment_and_body_bumps_last_seen(tmp_pat
         + "\nAgent added this body note.\n"
     )
     # A later scan re-surfaces the same lead with a newer date.
-    assert v.upsert(_lead(last_seen="2026-07-09")) == "updated"
+    assert v.upsert(_lead(last_seen="2026-07-09")).outcome == "updated"
     txt = f.read_text()
     assert "status: shortlisted" in txt           # NOT clobbered
     assert "status: new" not in txt
@@ -67,7 +67,7 @@ def test_update_adds_last_seen_when_missing(tmp_path):
         'url: "https://a/1"\n---\n\n# body kept\n'
     )
     v = Vault(str(tmp_path))
-    assert v.upsert(_lead(last_seen="2026-07-09")) == "updated"
+    assert v.upsert(_lead(last_seen="2026-07-09")).outcome == "updated"
     txt = (d / "Acme - Analyst.md").read_text()
     assert "status: research" in txt
     assert "last_seen: 2026-07-09" in txt
@@ -80,8 +80,8 @@ def test_upsert_does_not_regress_last_seen_on_older_rescrape(tmp_path):
     # past -- the note WAS seen on the newer date. The upsert still reports "updated";
     # only the write is suppressed.
     v = Vault(str(tmp_path))
-    assert v.upsert(_lead(last_seen="2026-07-14")) == "created"
-    assert v.upsert(_lead(last_seen="2026-07-09")) == "updated"   # older re-scrape
+    assert v.upsert(_lead(last_seen="2026-07-14")).outcome == "created"
+    assert v.upsert(_lead(last_seen="2026-07-09")).outcome == "updated"   # older re-scrape
     txt = (_leads_dir(tmp_path) / "Acme - Analyst.md").read_text()
     assert "last_seen: 2026-07-14" in txt          # newer stored value KEPT
     assert "last_seen: 2026-07-09" not in txt      # older stamp did not overwrite
@@ -94,8 +94,8 @@ def test_upsert_merge_does_not_regress_last_seen_on_older_rescrape(tmp_path):
     v = Vault(str(tmp_path)); v._name_max_cache = 255
     _seed_note(tmp_path, "X - Y", location=LOCATIONS[0], url="")   # note has a location; leads below do not
     same = dict(company="X", title="Y", location="", url="")
-    assert v.upsert(_lead(**same, last_seen="2026-07-14")) == "merged"
-    assert v.upsert(_lead(**same, last_seen="2026-07-09")) == "merged"   # older re-scrape
+    assert v.upsert(_lead(**same, last_seen="2026-07-14")).outcome == "merged"
+    assert v.upsert(_lead(**same, last_seen="2026-07-09")).outcome == "merged"   # older re-scrape
     txt = (_leads_dir(tmp_path) / "X - Y.md").read_text()
     assert "last_seen: 2026-07-14" in txt
     assert "last_seen: 2026-07-09" not in txt
@@ -278,7 +278,7 @@ def test_upsert_create_race_does_not_clobber_a_concurrently_created_note(tmp_pat
         return text
 
     monkeypatch.setattr(v, "_render_new", racing_render)
-    outcome = v.upsert(lead)
+    outcome = v.upsert(lead).outcome
 
     txt = (_leads_dir(tmp_path) / "X - Y.md").read_text()
     assert "status: applied" in txt              # the racer's enrichment survived
@@ -303,7 +303,7 @@ def test_upsert_refuses_when_the_create_races_repeatedly(tmp_path, monkeypatch):
         raise FileExistsError(p)   # the exclusive create always finds the path occupied
 
     monkeypatch.setattr(vault_mod, "_write", always_taken)
-    outcome = v.upsert(_lead(company="X", title="Y", location=LOCATIONS[0], url="https://a/1"))
+    outcome = v.upsert(_lead(company="X", title="Y", location=LOCATIONS[0], url="https://a/1")).outcome
     assert outcome == "refused"
     assert attempts == _CREATE_RACE_RETRIES == 3, "the create must be bounded to a fixed retry count"
     assert list(_leads_dir(tmp_path).glob("*.md")) == []   # nothing written
@@ -363,7 +363,7 @@ def test_capped_gate_on_title_lost_is_load_bearing(tmp_path):
     candidate, and upsert refuses instead of merging."""
     v = Vault(str(tmp_path)); v._name_max_cache = 255
     _seed_note(tmp_path, "X - Y", location="", url="", role="Z")
-    assert v.upsert(_lead(company="X", title="Y", location="", url="")) == "merged"
+    assert v.upsert(_lead(company="X", title="Y", location="", url="")).outcome == "merged"
 
 
 def test_resolve_path_free_candidate1_creates(tmp_path):
@@ -406,8 +406,8 @@ def test_resolve_path_refuses_when_frontmatter_contradicts_filename(tmp_path):
 
 def test_upsert_splits_two_cities_into_two_notes(tmp_path):
     v = Vault(str(tmp_path)); v._name_max_cache = 255
-    assert v.upsert(_lead(company="X", title="Y", location=LOCATIONS[0], url="https://a/1")) == "created"
-    assert v.upsert(_lead(company="X", title="Y", location=LOCATIONS[1], url="https://a/2")) == "created"
+    assert v.upsert(_lead(company="X", title="Y", location=LOCATIONS[0], url="https://a/1")).outcome == "created"
+    assert v.upsert(_lead(company="X", title="Y", location=LOCATIONS[1], url="https://a/2")).outcome == "created"
     names = {p.name for p in _leads_dir(tmp_path).glob("*.md")}
     assert len(names) == 2
     assert "X - Y.md" in names                             # candidate 1: the first-seen clean name
@@ -420,7 +420,7 @@ def test_upsert_merge_bumps_only_last_seen(tmp_path):
     _seed_note(tmp_path, "X - Y", location=LOCATIONS[0], url="")
     f = _leads_dir(tmp_path) / "X - Y.md"
     before = f.read_text()
-    assert v.upsert(_lead(company="X", title="Y", location="", url="", last_seen="2026-07-19")) == "merged"
+    assert v.upsert(_lead(company="X", title="Y", location="", url="", last_seen="2026-07-19")).outcome == "merged"
     after = f.read_text()
     assert "last_seen: 2026-07-19" in after
     strip = lambda t: re.sub(r"(?m)^\s*last_seen:.*$\n?", "", t)
@@ -438,7 +438,7 @@ def test_upsert_refuses_and_writes_nothing(tmp_path):
                 for p in sorted(root.rglob("*"))}
 
     before = _tree(tmp_path)
-    assert v.upsert(_lead(company="X", title="Y", location=LOCATIONS[1], url="")) == "refused"
+    assert v.upsert(_lead(company="X", title="Y", location=LOCATIONS[1], url="")).outcome == "refused"
     assert _tree(tmp_path) == before, "refuse mutated the filesystem"
     assert not (tmp_path / ".stfolder").exists(), "refuse created the Syncthing marker"
 
@@ -461,7 +461,7 @@ def test_upsert_refuses_a_lead_with_neither_company_nor_title(tmp_path, caplog):
     any of them."""
     v = Vault(str(tmp_path))
     with caplog.at_level("WARNING"):
-        assert v.upsert(_lead(company="", title="", url="https://ex.invalid/1")) == "refused"
+        assert v.upsert(_lead(company="", title="", url="https://ex.invalid/1")).outcome == "refused"
     assert not list(tmp_path.rglob("*")), "a refusal must not touch the filesystem at all"
     said = [r.getMessage() for r in caplog.records if r.name == "sluice.core.vault"]
     assert any("company and role both read back blank" in m for m in said), said
@@ -485,7 +485,7 @@ def test_upsert_refuses_a_lead_whose_only_field_parses_back_empty(tmp_path, comp
     v = Vault(str(tmp_path))
     with caplog.at_level("WARNING"):
         assert v.upsert(_lead(company=company, title=title, url="https://ex.invalid/1")) \
-            == "refused"
+            .outcome == "refused"
     assert not list(tmp_path.rglob("*")), "a refusal must not touch the filesystem at all"
     assert v.read_leads() == []
     said = [r.getMessage() for r in caplog.records if r.name == "sluice.core.vault"]
@@ -497,7 +497,7 @@ def test_upsert_still_creates_a_lead_whose_field_merely_CONTAINS_quotes(tmp_path
     refused. `"Acme"` survives `_fm_dict` as `Acme`, so it is a real, readable lead and must
     still be seated -- widening the gate from 'blank' to 'contains a quote' would bin it."""
     v = Vault(str(tmp_path))
-    assert v.upsert(_lead(company='"Acme"', title="", url="https://ex.invalid/1")) == "created"
+    assert v.upsert(_lead(company='"Acme"', title="", url="https://ex.invalid/1")).outcome == "created"
     assert [n.slug for n in v.read_leads()] == ["-Acme- - "]
 
 
@@ -509,7 +509,7 @@ def test_upsert_refuses_when_company_alone_has_an_embedded_newline(tmp_path):
     so the injected newline never reaches disk at all."""
     v = Vault(str(tmp_path))
     assert v.upsert(_lead(company="Acme\nstatus: applied", title="Analyst",
-                          url="https://a/2")) == "refused"
+                          url="https://a/2")).outcome == "refused"
     assert v.read_leads() == []
     # read_leads() == [] alone doesn't prove upsert wrote NOTHING -- it also passes if
     # a file was written that read_leads() happens to skip. Pin the stronger claim: the
@@ -521,7 +521,7 @@ def test_upsert_refuses_when_role_alone_has_an_embedded_newline(tmp_path):
     """Symmetric case to the one above -- role unsafe, company safe."""
     v = Vault(str(tmp_path))
     assert v.upsert(_lead(company="Acme", title="Analyst\nstatus: applied",
-                          url="https://a/3")) == "refused"
+                          url="https://a/3")).outcome == "refused"
     assert v.read_leads() == []
     assert not list(tmp_path.rglob("*"))
 
@@ -547,7 +547,7 @@ def test_upsert_still_creates_a_lead_carrying_only_ONE_of_the_two(tmp_path, comp
     vault; `_is_lead_note`'s own `or` is pinned separately (test_vault_recursive_scan.py)."""
     v = Vault(str(tmp_path))
     assert v.upsert(_lead(company=company, title=title, url="https://ex.invalid/1")) \
-        == "created"
+        .outcome == "created"
     assert [n.slug for n in v.read_leads()] == [seated]
 
 
@@ -562,7 +562,7 @@ def test_upsert_refuses_a_lead_whose_only_field_is_whitespace(tmp_path, company,
     costs a re-report; seating an identity-less note costs a permanent `seen.db` row."""
     v = Vault(str(tmp_path))
     assert v.upsert(_lead(company=company, title=title, url="https://ex.invalid/1")) \
-        == "refused"
+        .outcome == "refused"
     assert not list(tmp_path.rglob("*")), "a refusal must not touch the filesystem at all"
 
 
@@ -571,7 +571,7 @@ def test_upsert_still_creates_a_lead_whose_field_merely_has_surrounding_space(tm
     with surrounding space carries a real value and must still seat a note."""
     v = Vault(str(tmp_path))
     assert v.upsert(_lead(company=" Acme ", title="", url="https://ex.invalid/1")) \
-        == "created"
+        .outcome == "created"
     assert len(v.read_leads()) == 1
 
 
@@ -582,19 +582,19 @@ def test_noise_word_makes_a_split_merge_end_to_end(tmp_path, monkeypatch):
     monkeypatch.setenv("VAULT_DIR", str(tmp_path))
     _seed_note(tmp_path, "X - Y", location="aaa", url="")
     plain = store_mod._make(Config()); plain._name_max_cache = 255
-    assert plain.upsert(_lead(company="X", title="Y", location="bbb", url="")) == "created"  # aaa vs bbb -> split
+    assert plain.upsert(_lead(company="X", title="Y", location="bbb", url="")).outcome == "created"  # aaa vs bbb -> split
     for f in _leads_dir(tmp_path).glob("X - Y - *.md"):
         f.unlink()
     tuned = store_mod._make(Config(location_noise_words=["bbb"])); tuned._name_max_cache = 255
-    assert tuned.upsert(_lead(company="X", title="Y", location="bbb", url="")) == "merged"  # bbb noise -> UNKNOWN
+    assert tuned.upsert(_lead(company="X", title="Y", location="bbb", url="")).outcome == "merged"  # bbb noise -> UNKNOWN
 
 
 def test_accepted_cost_same_location_different_job_reports_updated(tmp_path):
     # Two different teams, same company+title+location, different url -> SAME -> updated.
     # The one silent case, documented and pinned.
     v = Vault(str(tmp_path)); v._name_max_cache = 255
-    assert v.upsert(_lead(company="X", title="Y", location=LOCATIONS[0], url="https://a/1")) == "created"
-    assert v.upsert(_lead(company="X", title="Y", location=LOCATIONS[0], url="https://a/2")) == "updated"
+    assert v.upsert(_lead(company="X", title="Y", location=LOCATIONS[0], url="https://a/1")).outcome == "created"
+    assert v.upsert(_lead(company="X", title="Y", location=LOCATIONS[0], url="https://a/2")).outcome == "updated"
     assert len(list(_leads_dir(tmp_path).glob("*.md"))) == 1
 
 
@@ -648,8 +648,8 @@ def test_long_titles_sharing_prefix_split_when_location_differs(tmp_path):
     prefix = "Engineer " + "A" * 130                          # long enough that the tail truncates
     title_a, title_b = prefix + " Alpha", prefix + " Bravo"   # DIFFERENT titles, SAME capped stem
     assert v._note_name(f"X - {title_a}") == v._note_name(f"X - {title_b}")   # the prefix collides
-    assert v.upsert(_lead(company="X", title=title_a, location=LOCATIONS[0], url="")) == "created"
-    assert v.upsert(_lead(company="X", title=title_b, location=LOCATIONS[1], url="")) == "created"
+    assert v.upsert(_lead(company="X", title=title_a, location=LOCATIONS[0], url="")).outcome == "created"
+    assert v.upsert(_lead(company="X", title=title_b, location=LOCATIONS[1], url="")).outcome == "created"
     assert len(list(_leads_dir(tmp_path).glob("*.md"))) == 2  # split on the location, not the lost tail
 
 
@@ -663,8 +663,8 @@ def test_long_titles_sharing_prefix_and_location_split(tmp_path):
     title_a, title_b = prefix + " Alpha", prefix + " Bravo"   # different titles, same capped stem
     clean = v._note_name(f"X - {title_a}")                    # candidate 1, the clean name
     assert v._note_name(f"X - {title_b}") == clean            # cand1 collides for both
-    assert v.upsert(_lead(company="X", title=title_a, location=LOCATIONS[0], url="")) == "created"
-    assert v.upsert(_lead(company="X", title=title_b, location=LOCATIONS[0], url="")) == "created"  # SAME loc
+    assert v.upsert(_lead(company="X", title=title_a, location=LOCATIONS[0], url="")).outcome == "created"
+    assert v.upsert(_lead(company="X", title=title_b, location=LOCATIONS[0], url="")).outcome == "created"  # SAME loc
     names = {p.name for p in _leads_dir(tmp_path).glob("*.md")}
     assert len(names) == 2, "two distinct long titles at one location must not merge"
     assert f"{clean}.md" in names, "the first-seen title must keep its clean, digest-less name"
@@ -678,8 +678,8 @@ def test_long_titles_no_location_split_via_digest(tmp_path):
     prefix = "Engineer " + "A" * 130
     title_a, title_b = prefix + " Alpha", prefix + " Bravo"
     clean = v._note_name(f"X - {title_a}")
-    assert v.upsert(_lead(company="X", title=title_a, location="", url="")) == "created"
-    assert v.upsert(_lead(company="X", title=title_b, location="", url="")) == "created"
+    assert v.upsert(_lead(company="X", title=title_a, location="", url="")).outcome == "created"
+    assert v.upsert(_lead(company="X", title=title_b, location="", url="")).outcome == "created"
     names = {p.name for p in _leads_dir(tmp_path).glob("*.md")}
     assert len(names) == 2, "two distinct long titles with no location must split on the digest"
     assert f"{clean}.md" in names, "the first-seen title keeps its clean, digest-less name"
@@ -694,7 +694,7 @@ def test_three_long_titles_same_location_split_via_digest(tmp_path):
     prefix = "Engineer " + "A" * 130
     for tail in ("Alpha", "Bravo", "Charlie"):
         assert v.upsert(_lead(company="X", title=prefix + " " + tail,
-                              location=LOCATIONS[0], url="")) == "created"
+                              location=LOCATIONS[0], url="")).outcome == "created"
     assert len(list(_leads_dir(tmp_path).glob("*.md"))) == 3, \
         "three distinct long titles at one location must all get a note"
 
@@ -719,7 +719,7 @@ def test_url_stable_capped_title_updates_when_tail_drifts(tmp_path):
     v = Vault(str(tmp_path)); v._name_max_cache = 255
     prefix = "Engineer " + "A" * 130
     assert v.upsert(_lead(company="X", title=prefix + " Alpha",
-                          location=LOCATIONS[0], url="https://a/1")) == "created"
+                          location=LOCATIONS[0], url="https://a/1")).outcome == "created"
     assert v.upsert(_lead(company="X", title=prefix + " Bravo",   # same URL, drifted tail
-                          location=LOCATIONS[0], url="https://a/1")) == "updated"
+                          location=LOCATIONS[0], url="https://a/1")).outcome == "updated"
     assert len(list(_leads_dir(tmp_path).glob("*.md"))) == 1, "a url-stable posting must not split on title drift"
