@@ -122,9 +122,12 @@ def test_a_fourth_call_at_a_fourth_distinct_location_resolves_its_own_slug_never
     merging). Before the fix, `notes[0]` over an unfiltered, not-recency-ordered
     read_leads() could return a note THIS call never touched -- reproduced
     directly: a 3rd create_lead call returned the 2nd note's slug, not the 3rd
-    (freshly created) one. The fix narrows to the note whose OWN location does
-    not compare DIFFERENT from the incoming one (sluice.core.leads.
-    _compare_locations) before ever falling back to a blank slug."""
+    (freshly created) one. None of these four calls reuses an earlier url, so
+    no note is url-proven -- this exercises the location-comparison fallback
+    tier (sluice.core.leads.same_opportunity, via _compare_locations, since
+    no url proof narrows first) before ever falling back to a blank slug. See
+    test_a_url_proven_match_wins_over_an_unrelated_notes_coincidental_location_overlap
+    below for the url-priority tier."""
     app = _app(tmp_path)
     first = app.create_lead(title="Example Role", company="Example Ltd",
                             url="https://example.invalid/1", location="London")
@@ -142,3 +145,39 @@ def test_a_fourth_call_at_a_fourth_distinct_location_resolves_its_own_slug_never
     assert fourth.slug not in ("", first.slug, second.slug, third.slug)
     note = next(n for n in Vault(str(tmp_path)).read_leads() if n.slug == fourth.slug)
     assert note.fm.get("location") == "Paris"
+
+
+def test_a_url_proven_match_wins_over_an_unrelated_notes_coincidental_location_overlap(tmp_path):
+    """Follow-up to Important #1 (2026-08-15): a location-only, or even a flat
+    `same_opportunity(...) != DIFFERENT` narrowing over the WHOLE candidate
+    set, is still not enough -- reproduced directly by a re-reviewer with no
+    mocking. `Vault._reconcile`'s real candidate walk never evaluates every
+    note matching company+title at once; it stops at the FIRST candidate name
+    that resolves non-advance. Here that is the BARE candidate name (the
+    London note), resolved via a matching url -- `Vault.upsert` never even
+    reaches the Berlin note's candidate name. But the Berlin note's OWN
+    location happens to equal this THIRD call's incoming location too, so a
+    naive same_opportunity filter over all notes matches BOTH and reports
+    ambiguous for a case that genuinely is not. url proof must be checked
+    across the candidate set FIRST, exactly mirroring same_opportunity's own
+    internal priority (url before location), and only fall back to location
+    comparison when no note is url-proven."""
+    app = _app(tmp_path)
+    london = app.create_lead(title="Example Role", company="Example Ltd",
+                             url="https://example.invalid/1", location="London")
+    berlin = app.create_lead(title="Example Role", company="Example Ltd",
+                             url="https://example.invalid/2", location="Berlin")
+    assert london.outcome == "created" and berlin.outcome == "created"
+    assert london.slug != berlin.slug
+
+    # Same url as the London note, but the SAME location as the Berlin note --
+    # the coincidence that broke a flat same_opportunity filter.
+    third = app.create_lead(title="Example Role", company="Example Ltd",
+                            url="https://example.invalid/1", location="Berlin")
+    assert third.outcome == "updated"
+    assert third.slug == london.slug
+    assert third.slug != berlin.slug
+    # never-clobber: the Berlin note's own last_seen/location are untouched.
+    berlin_note = next(n for n in Vault(str(tmp_path)).read_leads() if n.slug == berlin.slug)
+    assert berlin_note.fm.get("location") == "Berlin"
+    assert berlin_note.fm.get("url") == "https://example.invalid/2"

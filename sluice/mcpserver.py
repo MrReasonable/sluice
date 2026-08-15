@@ -432,8 +432,12 @@ def create_lead(sluice: Sluice, title: str, company: str, url: str, location: st
     proven DIFFERENT (two non-blank, non-overlapping locations), in which case
     this call creates a genuinely NEW note instead ("created" again -- a second
     real note at the same company+title). Both "updated" and "merged" are a bare
-    last_seen bump, with the incoming url/salary/location NOT recorded. Raises
-    ValueError naming every unsafe/invalid field.
+    last_seen bump, with the incoming url/salary/location NOT recorded. `slug`
+    is OMITTED from the response (not "") on any outcome -- including
+    "created"/"updated"/"merged" -- if the note this call landed on could not
+    be unambiguously identified afterward; the outcome itself is still always
+    trustworthy, only the slug lookup can abstain. Raises ValueError naming
+    every unsafe/invalid field.
     Does not touch seen.db (decision 11) -- a later genuine scrape of the same
     posting is not silently skipped by this manual entry. Lands at status=new;
     job-sluice triage run promotes it from there -- no `status` parameter on this
@@ -455,9 +459,9 @@ def create_lead(sluice: Sluice, title: str, company: str, url: str, location: st
         "refused": "the note could not be created (a blank identity, a name "
                    "collision, or a create race) -- nothing was written",
         "merged_away": "a matching archived note already covers this exact url -- "
-                        "nothing new was written",
+                       "nothing new was written",
         "merged_away_unproven": "an archived note looks like a possible match on "
-                                 "weaker evidence -- nothing new was written",
+                                "weaker evidence -- nothing new was written",
     }
     if result.outcome in _DETAIL:
         out["detail"] = _DETAIL[result.outcome]
