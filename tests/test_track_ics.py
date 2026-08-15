@@ -10,8 +10,8 @@ _REQUEST = (
     "UID:abc-123@example.invalid\r\nSEQUENCE:0\r\nSTATUS:CONFIRMED\r\n"
     "DTSTART;TZID=Europe/London:20260715T110000\r\n"
     "DTEND;TZID=Europe/London:20260715T113000\r\n"
-    "SUMMARY:Example Meridian first-stage screen\r\nLOCATION:Google Meet\r\n"
-    "URL:https://meet.google.com/abc\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+    "SUMMARY:Example Meridian first-stage screen\r\nLOCATION:Example Meet\r\n"
+    "URL:https://meet.example.invalid/abc\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
 )
 _CANCEL = _REQUEST.replace("METHOD:REQUEST", "METHOD:CANCEL").replace("SEQUENCE:0", "SEQUENCE:1")
 

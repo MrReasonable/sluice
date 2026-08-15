@@ -36,7 +36,7 @@ _SELF = Path(__file__).name
 
 # Reviewed 2026-08-15. Every entry has been eyeballed as synthetic: placeholder words (Acme,
 # Foo, Widget, Alpha/Beta/Gamma), single letters and their phonetics (A/B/C/D, Aye/Bee),
-# invented compounds (Beavni, Ravenbank), descriptive labels (Human Typed Co, Conflicted,
+# invented compounds (Beavni), descriptive labels (Human Typed Co, Conflicted,
 # blank), cluster-test slugs (a1/b2), a job-board name (indeed), the deliberately-malformed
 # `Foo\Bar` injection fixtures, and the `Example …` family.
 #
@@ -47,7 +47,7 @@ _REVIEWED_FIXTURE_IDENTITIES = frozenset({
     "D", "Delta", "Epsilon", "Example", "Example Analytics", "Example Co", "Example Foundry",
     "Example Ltd", "Example Meridian", "Example MeridianRemote", "Example Northgate",
     "Example Systems", "Example Telemetry", "Example Tidal", "Foo", "Gamma",
-    "Human Typed Co", "Ravenbank", "Widget", "X",
+    "Human Typed Co", "Widget", "X",
     "a", "a1", "a2", "b", "b1", "b2", "blank", "c", "d", "example-lead", "indeed", "x",
     # Escaping/injection fixtures — the backslashes are the point of the test.
     "Foo\\Bar Ltd", "Foo\\\\Bar Ltd", "Foo\\\\g<0>Bar", "Foo\\\\nBar",
@@ -141,8 +141,20 @@ def test_the_reviewed_roster_carries_no_identity_the_fixtures_stopped_using():
 
 # RFC 2606 / RFC 6761 reserve these for documentation and testing; they can never resolve to a
 # real host, so an address built from one cannot name a real employer's mail domain.
-_RESERVED_SUFFIXES = (".invalid", ".example", ".test", ".localhost",
-                      "example.com", "example.org", "example.net")
+#
+# Split in two because the matching rules differ, and conflating them punched a hole in this
+# guard: a plain `endswith("example.com")` also accepts `notexample.com`, which is an ordinary
+# registrable domain that could belong to an employer. The reserved TLDs are safe under
+# endswith because their leading dot forces a real label boundary; the reserved DOMAINS must
+# match exactly or as a dot-delimited subdomain.
+_RESERVED_TLDS = (".invalid", ".example", ".test", ".localhost")
+_RESERVED_DOMAINS = ("example.com", "example.org", "example.net")
+
+
+def _is_reserved(domain: str) -> bool:
+    if domain.endswith(_RESERVED_TLDS):
+        return True
+    return any(domain == d or domain.endswith("." + d) for d in _RESERVED_DOMAINS)
 
 # Non-employer real domains. Each needs a reason, not just an entry.
 _DOMAIN_ALLOWLIST = {
@@ -165,7 +177,7 @@ def test_every_email_domain_in_test_fixtures_is_reserved_or_allowlisted():
     for text in _test_sources():
         for domain in _EMAIL.findall(text):
             d = domain.lower().rstrip(".")
-            if d in _DOMAIN_ALLOWLIST or d.endswith(_RESERVED_SUFFIXES):
+            if d in _DOMAIN_ALLOWLIST or _is_reserved(d):
                 continue
             offenders.add(d)
     assert not offenders, (
@@ -173,6 +185,24 @@ def test_every_email_domain_in_test_fixtures_is_reserved_or_allowlisted():
         + "\n  ".join(sorted(offenders))
         + "\n\nUse an RFC 2606 reserved domain (`example.com`, or anything under `.invalid` / "
           "`.example`) so the address cannot name a real host.")
+
+
+def test_a_lookalike_domain_is_not_mistaken_for_a_reserved_one():
+    """`notexample.com` is registrable and could belong to an employer.
+
+    The first cut of this guard tested `d.endswith("example.com")`, which accepts it. A
+    neutrality check that silently passes an employer domain is worse than none, because it
+    reads as coverage. The reserved TLDs are still endswith-matched: their leading dot forces
+    a real label boundary, so `.invalid` cannot be spoofed the same way.
+    """
+    assert _is_reserved("example.com")
+    assert _is_reserved("careers.example.com")
+    assert _is_reserved("anything.invalid")
+    assert _is_reserved("evil.example")
+    assert not _is_reserved("notexample.com"), "lookalike accepted as reserved"
+    assert not _is_reserved("example.com.evil.co.uk"), "suffix-spoofed domain accepted"
+    assert not _is_reserved("myexample.org")
+    assert not _is_reserved("indeed.com")
 
 
 def test_the_email_sweep_actually_reads_fixtures():
