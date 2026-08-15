@@ -102,7 +102,7 @@ def get_lead(sluice: Sluice, lead: str) -> dict:
 
 
 def doctor(sluice: Sluice, offline: bool = True) -> dict:
-    """Preflight backends, renderer, store artefacts and gate posture. Offline by
+    """Preflight backends, renderer, store artefacts, the browser profile ingest will drive, and gate posture. Offline by
     default: an agent calling this tool casually must not trigger unbudgeted live
     spend. Passing `offline=False` makes a REAL live round-trip against every
     configured backend -- real network calls, real cost/latency, possibly an SSH

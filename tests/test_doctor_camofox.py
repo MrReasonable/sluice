@@ -31,7 +31,7 @@ def _check(**kw):
     kw.setdefault("user_env", None)
     kw.setdefault("session_env", None)
     kw.setdefault("resolved_user", "default")
-    kw.setdefault("auth_dependent_sources", ())
+    kw.setdefault("probe_capable_sources", ())
     return classify_camofox(**kw)
 
 
@@ -60,7 +60,7 @@ def test_session_without_user_is_DEGRADED_and_says_what_to_do():
     assert c.state == DEGRADED
     assert "CAMOFOX_SESSION" in c.detail and "CAMOFOX_USER" in c.detail
     assert "example-session" in c.detail, "must name the value that selected nothing"
-    assert "ingest" in c.blocks, "this is what stops browser sources working"
+    assert "ingest" in c.blocks, "a DEGRADED row must say what the failure costs"
 
 
 def test_session_WITH_user_is_fine():
@@ -70,22 +70,52 @@ def test_session_WITH_user_is_fine():
     assert c.state == OK
 
 
-def test_auth_dependent_sources_are_named_as_a_notice():
+def test_probe_capable_sources_are_named_as_a_notice():
     """Connects the config row to its consequence.
 
-    A reader looking at `CAMOFOX_USER=default` has no way to know that three sources will
-    silently yield zero if that profile is logged out. NOTICE, not DEGRADED: an unauthenticated
-    profile is legitimate (most sources need no login), so it must not affect the exit code.
+    A reader looking at `CAMOFOX_USER=default` has no way to know what a logged-out profile
+    would do. NOTICE, not DEGRADED: an unauthenticated profile is legitimate (most sources
+    need no login), so it must not affect the exit code.
+
+    The wording promises DETECTION, not coverage -- the probe is opt-in, so a source that
+    needs a login and ships no probe is simply absent from this list. Claiming otherwise would
+    have the row assert that every unlisted source is login-independent.
     """
-    c = _check(resolved_user="default", auth_dependent_sources=("linkedin",))
+    c = _check(resolved_user="default", probe_capable_sources=("linkedin",))
     assert c.state in (OK, NOTICE)
     assert "linkedin" in c.detail
+    assert "can detect" in c.detail, "must promise detection, not that it needs auth"
+    assert "Other sources cannot" in c.detail, "must say the coverage is partial"
+
+
+def test_healthy_rows_do_not_claim_to_block_ingest():
+    """`ComponentCheck.blocks` names what a FAILURE costs.
+
+    Setting it on the OK/NOTICE rows printed `blocks: ingest` beside a green row -- an
+    operator reading a correctly configured install was told ingest was blocked. Every other
+    classifier in this module omits `blocks` when healthy.
+    """
+    assert _check(resolved_user="default").blocks == ()
+    assert _check(resolved_user="default", probe_capable_sources=("linkedin",)).blocks == ()
+    assert _check(session_env="x", resolved_user="default").blocks == ("ingest",)
+
+
+def test_the_degraded_row_ALSO_names_what_will_silently_yield_zero():
+    """The incident's own configuration: session set, linkedin probe-capable.
+
+    Branching instead of composing told the operator to set CAMOFOX_USER but not which
+    sources were about to return nothing -- the half that connects the misconfiguration to
+    the symptom they can actually see.
+    """
+    c = _check(session_env="x", resolved_user="default", probe_capable_sources=("linkedin",))
+    assert c.state == DEGRADED
+    assert "CAMOFOX_USER" in c.detail and "linkedin" in c.detail
 
 
 def test_a_degraded_config_stays_degraded_even_with_auth_sources():
     # Precedence: the misconfiguration is the actionable fact and must not be softened into a
     # notice by the presence of auth-dependent sources.
-    c = _check(session_env="x", resolved_user="default", auth_dependent_sources=("linkedin",))
+    c = _check(session_env="x", resolved_user="default", probe_capable_sources=("linkedin",))
     assert c.state == DEGRADED
 
 
@@ -164,15 +194,13 @@ def test_the_camofox_row_is_present_under_offline(monkeypatch):
 
 
 def test_the_profile_hash_matches_the_servers_scheme():
-    """Pinned against the real algorithm rather than a copied constant.
+    """The digest doctor prints is the one `core.camofox.profile_dir` computes.
 
-    The camofox persistence plugin documents "each userId gets a deterministic SHA256-hashed
-    subdirectory"; the directory name is the first 32 hex chars. If that ever drifts, doctor
-    would print a hash that matches nothing on disk -- a confidently wrong answer, which is
-    worse than printing none.
+    HONEST LIMIT: this cannot verify the SERVER's scheme. Both sides recompute the same
+    expression, so it catches a divergence between doctor and the camofox module -- and
+    nothing about whether this repo's belief about the plugin matches reality. That belief is
+    unverifiable from here and `profile_dir`'s docstring says so.
     """
-    import hashlib
 
     for user in ("example-user", "default", "example-session"):
-        expected = hashlib.sha256(user.encode()).hexdigest()[:32]
-        assert expected in _check(resolved_user=user).detail
+        assert _profile_hash(user) in _check(resolved_user=user).detail

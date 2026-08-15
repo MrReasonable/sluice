@@ -957,7 +957,8 @@ missing `render` extra or WeasyPrint's native libraries before the dossier fetch
 LLM spend rather than after), the CV identity fields (`cv.name` still the shipped
 placeholder, `cv.contact` blank), the store's on-disk artefacts (the vault directory,
 the baseline CV, the Judging Profile, Experience Library entry counts, via the
-Store seam's OPTIONAL `preflight()` hook), track's Google adapter, and the current
+Store seam's OPTIONAL `preflight()` hook), track's Google adapter, the Camofox profile an
+ingest run will drive, and the current
 posture (abstaining or active) of every list-typed preference gate. Backend
 classification is role-aware -- a keyless fallback degrades (the sanctioned
 primary-only path, exit 0), while a keyed-but-broken backend is `dead` regardless of

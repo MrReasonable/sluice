@@ -259,6 +259,11 @@ def cmd_health(args, config) -> int:
 
     for src in Sluice(config).health_report():
         flag = " RETIRE" if src.should_retire else ""
+        # A source stuck on a NAMED failure is not retired (an operator action fixes it), so
+        # without this line it would look merely quiet. This is the cumulative signal that
+        # replaces the RETIRE flag for that case -- the one an operator reads days later.
+        if src.broken_reason:
+            flag += f" BROKEN reason={src.broken_reason} x{src.broken_runs}"
         print(f"{src.id:16} baseline={src.baseline:.0f} recent={src.recent}{flag}")
     return 0
 
@@ -947,7 +952,7 @@ def cmd_doctor(args, config) -> int:
 
 def _print_doctor(report, *, offline) -> None:
     """One line per distinct backend, annotated with the sub-app roles it serves,
-    followed by one line per component check (renderer, cv identity, store
+    followed by one line per component check (renderer, cv identity, store, camofox
     artefacts, track's Google adapter, preference gate posture). Written to
     stdout, like `health`/`list-sources` -- doctor's output IS the answer the
     operator asked for, not a run side-report.

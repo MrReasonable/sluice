@@ -98,6 +98,14 @@ class SourceHealth:
     baseline: float
     recent: list        # health.counts(id)
     should_retire: bool
+    # Why this source has been producing nothing, and for how many runs -- (None, 0) when it
+    # is not stuck. Added because suppressing retirement for an EXPLAINED failure removed the
+    # only cumulative signal an operator saw days later: without it a wedged source reads
+    # `baseline=0 recent=[0,0,0]` with no RETIRE flag and nothing saying why, which is more
+    # mysterious than the wrong answer it replaced. The reason a run failed was already
+    # persisted in the health store; nothing ever read it back.
+    broken_reason: "str | None" = None
+    broken_runs: int = 0
 
 
 class StoreHasNoLayout(RuntimeError):
@@ -885,10 +893,14 @@ class Sluice:
         from sluice.core.health import HealthStore
         from sluice.ingest import sources as registry
         health = HealthStore()
-        return [SourceHealth(id=src.id, kind=src.kind, baseline=health.baseline(src.id),
-                             recent=health.counts(src.id),
-                             should_retire=health.should_retire(src.id))
-                for src in sorted(registry.all_sources(), key=lambda s: s.id)]
+        def _one(src):
+            reason, n = health.explained_streak(src.id)
+            return SourceHealth(id=src.id, kind=src.kind, baseline=health.baseline(src.id),
+                                recent=health.counts(src.id),
+                                should_retire=health.should_retire(src.id),
+                                broken_reason=reason, broken_runs=n)
+
+        return [_one(src) for src in sorted(registry.all_sources(), key=lambda s: s.id)]
 
     def triage(self, *, statuses=("new", "research"), limit=None, dry_run=False,
                no_llm=False, backend_role="auto"):
@@ -1435,22 +1447,28 @@ class Sluice:
 
         # Which browser profile an ingest run will drive. Read from the environment, never by
         # constructing a client: `Camofox.__init__` warns on the same misconfiguration this
-        # row reports, and doctor saying it twice trains the reader to skim. Zero I/O, so it
-        # holds under --offline and keeps the never-opens-a-browser invariant above.
+        # row reports, and doctor saying it twice trains the reader to skim. No network and no
+        # browser, so it holds under --offline and keeps the invariant above. (Importing the
+        # source registry does scan and import ~22 modules -- filesystem work, not free, and
+        # `health_report` already pays it.)
         #
-        # The auth-dependent set is ENUMERATED off the registry rather than hand-listed: a
-        # source added later that needs a login must show up here without anyone remembering
-        # to update doctor.
+        # ENUMERATED off the registry rather than hand-listed, and gated on the CLASS that
+        # actually honours the field: `auth_probe_js` is declared on `BrowserListSource`, and
+        # only its `fetch` evaluates it. A `CarouselSource` (the base docstring names Otta,
+        # which is login-gated) could grow the attribute tomorrow and never run it -- doctor
+        # would then promise detection that does not happen.
         from sluice.core.camofox import DEFAULT_USER
         from sluice.ingest import sources as _registry
+        from sluice.ingest.base import BrowserListSource
 
-        auth_dependent = tuple(
-            s.id for s in _registry.all_sources() if getattr(s, "auth_probe_js", None))
+        probe_capable = tuple(
+            s.id for s in _registry.all_sources()
+            if isinstance(s, BrowserListSource) and getattr(s, "auth_probe_js", None))
         components.append(_doctor.classify_camofox(
             user_env=os.environ.get("CAMOFOX_USER"),
             session_env=os.environ.get("CAMOFOX_SESSION"),
             resolved_user=os.environ.get("CAMOFOX_USER") or DEFAULT_USER,
-            auth_dependent_sources=auth_dependent))
+            probe_capable_sources=probe_capable))
 
         # Gate posture: enumerated generically over every loaded config's
         # list-typed fields (list_typed_fields), never hand-listed -- the same

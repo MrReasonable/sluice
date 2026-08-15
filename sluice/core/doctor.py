@@ -26,10 +26,10 @@ reach the candidate. Nothing above probed for either, because nothing did.
 `ComponentCheck` below is the second table this module now classifies, one row
 per non-backend piece a run depends on.
 """
-import hashlib
 from dataclasses import dataclass, field, fields
 
 from sluice.core.backends import option_like
+from sluice.core.camofox import profile_dir as camofox_profile_dir
 
 # Four states, as bare strings so callers (cli formatter, exit_code) and tests
 # share one vocabulary without importing an enum. NOTICE is not a severity --
@@ -91,7 +91,7 @@ class ComponentCheck:
     one preference gate's posture.
 
     `component` groups rows in the printed report ("renderer", "cv-identity",
-    "store", "track", "gates"); `subject` names the specific thing
+    "store", "track", "camofox", "gates"); `subject` names the specific thing
     checked within that group ("cv.renderer", "cv.contact",
     "TriageConfig.accept_titles", ...). `blocks` names the sub-apps this
     specific failure stops -- the ComponentCheck analogue of BackendTarget.uses
@@ -381,25 +381,20 @@ def classify_track_google(*, available: bool, import_error: str | None,
     return ComponentCheck("track", "google", OK, "libs importable, token present")
 
 
-def camofox_profile_dir(user: str) -> str:
-    """The on-disk profile directory name for `user`.
-
-    The Camofox persistence plugin stores one profile per userId at a deterministic
-    SHA256-hashed subdirectory, of which the directory name is the first 32 hex characters.
-    Recomputed from the algorithm rather than carried as a table, so `doctor` cannot print a
-    confidently wrong hash that matches nothing on disk."""
-    return hashlib.sha256(user.encode()).hexdigest()[:32]
-
-
-def classify_camofox(*, user_env, session_env, resolved_user, auth_dependent_sources=()) -> ComponentCheck:
+def classify_camofox(*, user_env, session_env, resolved_user, probe_capable_sources=()) -> ComponentCheck:
     """Which browser profile an ingest run will drive, and whether the config actually chose it.
 
-    WHY THIS ROW EXISTS. On 2026-08-15 a production runner exported
-    `CAMOFOX_SESSION=example-session`, aiming at a profile holding 335 cookies. Profiles are
-    keyed on userId ALONE, so the setting was inert and the run used the cookie-less `default`
-    profile; linkedin returned zero rows for eight-plus runs, and the auto-retire rule then
-    removed linkedin, jobserve and indeed. Nothing anywhere reported which profile was in use,
-    which is precisely the question `doctor` exists to answer.
+    WHY THIS ROW EXISTS. On 2026-08-15 a production runner exported `CAMOFOX_SESSION`, aiming
+    at an already-authenticated profile. Profiles are keyed on userId ALONE, so the setting was
+    inert and the run used a cookie-less profile; linkedin returned zero rows for eight-plus
+    runs and auto-retired. Nothing anywhere reported which profile was in use, which is
+    precisely the question `doctor` exists to answer.
+
+    `probe_capable_sources` is what it says: sources that can DETECT a logged-out page, not
+    the set that needs a login. Those differ, and conflating them would have this row quietly
+    assert that every other source is login-independent. The probe is opt-in, so a source that
+    needs auth and ships no probe is simply absent -- which is why the wording promises
+    detection rather than coverage.
 
     Config-only: `Sluice.doctor` never opens a browser, and it does not need to. Every fact
     here is readable from the environment, and the failure being caught was a misconfiguration.
@@ -407,27 +402,31 @@ def classify_camofox(*, user_env, session_env, resolved_user, auth_dependent_sou
     DEGRADED, never DEAD, for session-without-user: the run still works, on a profile whose
     cookies the operator did not choose. Sources needing no login are unaffected, so it does
     not block a run -- but it is the one shape that is always a mistake.
+
+    `blocks` is set ONLY on the DEGRADED row. `ComponentCheck.blocks` names what a FAILURE
+    costs, so putting it on a healthy row prints "blocks: ingest" beside an `ok`.
     """
     profile = camofox_profile_dir(resolved_user)
+    detects = ""
+    if probe_capable_sources:
+        named = ", ".join(sorted(probe_capable_sources))
+        detects = (f"; {named} can detect a logged-out page and will report drift=auth "
+                   f"rather than a bare zero. Other sources cannot: for them a logged-out "
+                   f"profile still looks like an empty result set")
     if session_env and not user_env:
         return ComponentCheck(
             "camofox", "CAMOFOX_USER", DEGRADED,
             f"CAMOFOX_SESSION={session_env!r} is set but CAMOFOX_USER is not. The session key "
             f"does NOT select the cookie profile -- profiles are keyed on CAMOFOX_USER, so "
             f"this run drives {resolved_user!r} ({profile}), not {session_env!r}. Set "
-            f"CAMOFOX_USER to the profile you logged in as.",
+            f"CAMOFOX_USER to the profile you logged in as.{detects}",
             blocks=("ingest",))
-    if auth_dependent_sources:
-        named = ", ".join(sorted(auth_dependent_sources))
-        verb = "needs" if len(auth_dependent_sources) == 1 else "need"
+    if probe_capable_sources:
         return ComponentCheck(
             "camofox", "CAMOFOX_USER", NOTICE,
-            f"profile {resolved_user!r} ({profile}); {named} {verb} an authenticated profile "
-            f"and will yield zero -- reported as drift=auth, not retired -- if it is logged out",
-            blocks=("ingest",))
+            f"profile {resolved_user!r} ({profile}){detects}")
     return ComponentCheck(
-        "camofox", "CAMOFOX_USER", OK,
-        f"profile {resolved_user!r} ({profile})", blocks=("ingest",))
+        "camofox", "CAMOFOX_USER", OK, f"profile {resolved_user!r} ({profile})")
 
 
 def list_typed_fields(cfg) -> list:
