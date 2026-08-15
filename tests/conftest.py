@@ -61,6 +61,12 @@ def _pin_paths(tmp_path, monkeypatch):
     # sandbox test passes `env_var=None`, so none of them could see it.
     for var in PATH_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
+    # Not a PATH var, same hole. `Sluice.doctor` reads these to report which browser profile
+    # an ingest run will drive, so a developer -- or a CI runner -- with CAMOFOX_SESSION
+    # exported gets an extra DEGRADED row in every doctor test that does not monkeypatch it.
+    # That is precisely the 2026-08-15 incident config, on the machine most likely to have it.
+    for var in ("CAMOFOX_USER", "CAMOFOX_SESSION", "CAMOFOX_URL"):
+        monkeypatch.delenv(var, raising=False)
 
 
 def _title_pool(n=60):

@@ -202,3 +202,93 @@ def test_a_probe_that_errors_does_not_claim_the_user_is_logged_out():
     cam = _Boom(rows=[])
     src, raw = _fetch(cam, auth_probe_js="AUTHPROBE")
     assert src.health_hint(raw).get("auth") is None
+
+
+# ---- the PRODUCER side ------------------------------------------------------------------
+# Every test above this line drives `detect_drift` with a hand-written signal. That checks the
+# classifier and says nothing about the code that EMITS it -- which is how six mutations to
+# the emitting side all survived. Each test below deletes a producer, not a classifier.
+
+def test_a_dead_browser_is_reported_as_fetch_error_not_a_bare_zero():
+    """`create_tab` returning None is the single most common "could not read".
+
+    `fetch` has always recorded {"error": "no-tab"}; `health_hint` built a fresh dict from
+    three keys and dropped it, so the clearest explanation in the system reached the
+    classifier as an unexplained zero -- and one Camofox outage retired ALL sources at once.
+    """
+    class _Down(_Cam):
+        def create_tab(self, url=""):
+            return None
+
+    src = _src()
+    raw = src.fetch(_ctx(_Down(rows=[])), Search("A", "http://x"))
+    hint = src.health_hint(raw)
+    assert hint["fetch_error"] == "no-tab"
+    signals = {k: v for k, v in hint.items() if k != "markers"}
+    assert detect_drift("demo", hint["count"], signals, baseline=50) == "unreachable"
+
+
+def test_a_probe_that_errors_is_SURFACED_and_not_read_as_logged_out():
+    """The stub returns BOTH `result: True` and an error, deliberately.
+
+    An earlier version returned only `{"error": ...}` with no `result` key -- so
+    `bool(probe.get("result"))` was False whether or not the guard existed, and the test
+    passed with the guard deleted. A test that cannot distinguish the fix from its absence
+    is worse than none.
+    """
+    class _BadProbe(_Cam):
+        def evaluate(self, tid, expr):
+            self.evaluated.append((tid, expr))
+            if expr == "location.href":
+                return {"result": "http://x"}
+            if expr == "AUTHPROBE":
+                return {"result": True, "error": "SyntaxError"}
+            return {"result": self.rows}
+
+    src, raw = None, None
+    cam = _BadProbe(rows=[])
+    src = _src(auth_probe_js="AUTHPROBE")
+    raw = src.fetch(_ctx(cam), Search("A", "http://x"))
+    hint = src.health_hint(raw)
+    assert hint.get("auth") is None, "an errored probe must not be read as logged-out"
+    assert hint["auth_probe_error"] == "SyntaxError", "a silently broken guard is the bug"
+    # Reported, but NOT an explanation: it must not defer retirement.
+    signals = {k: v for k, v in hint.items() if k != "markers"}
+    assert detect_drift("demo", hint["count"], signals, baseline=50) == "zero"
+
+
+def test_a_failed_landed_evaluate_does_not_manufacture_no_redirect():
+    """Defaulting `landed` to the requested URL fabricates `requested_host == landed_host`.
+
+    That is the absence of the one signal that would have explained the run, invented by the
+    code that failed to read it.
+    """
+    class _NoLanded(_Cam):
+        def evaluate(self, tid, expr):
+            self.evaluated.append((tid, expr))
+            if expr == "location.href":
+                return {"error": "evaluate failed"}
+            return {"result": self.rows}
+
+    src = _src()
+    raw = src.fetch(_ctx(_NoLanded(rows=[])), Search("A", "http://x"))
+    assert raw["landed"] == "", "landed must stay empty rather than echo the request"
+    assert raw["error"] == "evaluate failed"
+    assert src.health_hint(raw)["fetch_error"] == "evaluate failed"
+
+
+def test_the_linkedin_source_scrolls_the_RESULTS_PANEL():
+    """LinkedIn virtualizes its list, so a window scroll loads no more jobs.
+
+    The whole reason the subclass exists. Nothing pinned it, so `_scroll_step` could be
+    emptied and the suite stayed green -- the source would silently return only the first
+    screenful.
+    """
+    from sluice.ingest import sources as registry
+
+    src = registry.get("linkedin")
+    cam = _Cam(rows=[])
+    src.fetch(_ctx(cam), Search("A", "https://www.linkedin.com/jobs/search"))
+    scrolled = [e for _tid, e in cam.evaluated if "scrollTop" in e or "scrollBy" in e]
+    assert scrolled, "linkedin must scroll the results panel, not the window"
+    assert len(scrolled) == src.scrolls, f"expected {src.scrolls} panel scrolls, got {len(scrolled)}"
