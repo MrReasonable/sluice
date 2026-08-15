@@ -138,12 +138,15 @@ class UpsertResult:
     """Vault.upsert's own report of what it just did (#131 post-final-review fix).
     `outcome` is the existing six-member vocabulary, unchanged in wording or
     meaning. `slug` is populated ONLY for "created"/"updated"/"merged" -- the three
-    outcomes where a note now exists that this call itself put there or bumped:
-    "created" seats a genuinely NEW note; "updated"/"merged" identify an EXISTING
-    note as this call's own resolution decided (same posting, or inconclusive
-    evidence, respectively) and bump only its last_seen. `slug` is "" for
-    "refused"/"merged_away"/"merged_away_unproven", none of which write into (or
-    match) any note this call itself now owns.
+    outcomes where a note now exists that this call itself put there or resolved
+    to: "created" seats a genuinely NEW note; "updated"/"merged" identify an
+    EXISTING note as this call's own resolution decided (same posting, or
+    inconclusive evidence, respectively) -- last_seen is the only field either may
+    change, and even that is not guaranteed: it is monotonic, so a re-upsert
+    carrying a stamp no newer than what is already stored resolves to (and
+    correctly reports the slug of) the same note while writing nothing at all.
+    `slug` is "" for "refused"/"merged_away"/"merged_away_unproven", none of which
+    write into (or match) any note this call itself now owns.
 
     This is the single source of truth for "which note did THIS call actually
     touch." A caller that instead re-derives the answer post-hoc (e.g. re-reading
