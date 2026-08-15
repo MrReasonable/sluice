@@ -74,16 +74,19 @@ def test_probe_capable_sources_are_named_as_a_notice():
     """Connects the config row to its consequence.
 
     A reader looking at `CAMOFOX_USER=default` has no way to know what a logged-out profile
-    would do. NOTICE, not DEGRADED: an unauthenticated profile is legitimate (most sources
+    would do. The source id here is a SYNTHETIC label: `classify_camofox` only formats it, so
+    a real one would couple this unit test to whichever source happens to declare a probe.
+    The two integration tests below deliberately DERIVE the real ids from the registry, which
+    is the only place they belong. NOTICE, not DEGRADED: an unauthenticated profile is legitimate (most sources
     need no login), so it must not affect the exit code.
 
     The wording promises DETECTION, not coverage -- the probe is opt-in, so a source that
     needs a login and ships no probe is simply absent from this list. Claiming otherwise would
     have the row assert that every unlisted source is login-independent.
     """
-    c = _check(resolved_user="default", probe_capable_sources=("linkedin",))
+    c = _check(resolved_user="default", probe_capable_sources=("example-source",))
     assert c.state == NOTICE
-    assert "linkedin" in c.detail
+    assert "example-source" in c.detail
     assert "can detect" in c.detail, "must promise detection, not that it needs auth"
     assert "Other sources cannot" in c.detail, "must say the coverage is partial"
 
@@ -96,26 +99,26 @@ def test_healthy_rows_do_not_claim_to_block_ingest():
     classifier in this module omits `blocks` when healthy.
     """
     assert _check(resolved_user="default").blocks == ()
-    assert _check(resolved_user="default", probe_capable_sources=("linkedin",)).blocks == ()
+    assert _check(resolved_user="default", probe_capable_sources=("example-source",)).blocks == ()
     assert _check(session_env="x", resolved_user="default").blocks == ("ingest",)
 
 
 def test_the_degraded_row_ALSO_names_what_will_silently_yield_zero():
-    """The incident's own configuration: session set, linkedin probe-capable.
+    """The incident's own configuration: session set, a probe-capable source present.
 
     Branching instead of composing told the operator to set CAMOFOX_USER but not which
     sources were about to return nothing -- the half that connects the misconfiguration to
     the symptom they can actually see.
     """
-    c = _check(session_env="x", resolved_user="default", probe_capable_sources=("linkedin",))
+    c = _check(session_env="x", resolved_user="default", probe_capable_sources=("example-source",))
     assert c.state == DEGRADED
-    assert "CAMOFOX_USER" in c.detail and "linkedin" in c.detail
+    assert "CAMOFOX_USER" in c.detail and "example-source" in c.detail
 
 
 def test_a_degraded_config_stays_degraded_even_with_auth_sources():
     # Precedence: the misconfiguration is the actionable fact and must not be softened into a
     # notice by the presence of auth-dependent sources.
-    c = _check(session_env="x", resolved_user="default", probe_capable_sources=("linkedin",))
+    c = _check(session_env="x", resolved_user="default", probe_capable_sources=("example-source",))
     assert c.state == DEGRADED
 
 
