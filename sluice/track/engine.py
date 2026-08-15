@@ -143,6 +143,23 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
     # message does not accumulate one row per run.
     _failed_ids = {e.message_id for e in deadletter.open_entries()
                    if e.ev_type == "failure"}
+
+    def _record_replacing_failure(message_id, entry):
+        """Record `entry`, clearing any stale FAILURE row for the same id first.
+
+        BOTH record sites must go through this. The table is keyed on message_id, so a row
+        left by a transient error on an earlier run collides with the real row -- and since
+        `record` now RAISES on a differing row rather than silently discarding it, putting
+        the clear beside only one site converted the old silent loss into a permanent stall:
+        `deadletter_error` on every run, so the lastrun watermark never advances and
+        `_gmail_query`'s `after:` widens without bound. That is the exact failure the comment
+        in the per-message handler below argues against.
+
+        A helper rather than two copies, because two copies is how this happened."""
+        if message_id in _failed_ids:
+            _dl_write(rep, lambda m=message_id: deadletter.clear_id(m))
+            _failed_ids.discard(message_id)
+        _dl_write(rep, lambda: deadletter.record(entry))
     for mid in ids:
         if mid in seen:
             continue
@@ -266,7 +283,7 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                               hint=hint, first_seen=today, times_surfaced=1)
                 new_entries.append(entry)
                 if not dry_run:
-                    _dl_write(rep, lambda: deadletter.record(entry))
+                    _record_replacing_failure(mid, entry)
             elif res.action == "applied":
                 rep.auto += 1
                 # Symmetric with confirm's clear-on-advance: an auto-resolved lead's
@@ -313,14 +330,7 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                 # record BEFORE seen.add: a write failure raises, the `except`
                 # below skips seen.add, and the message re-processes next run.
                 if not dry_run:
-                    # Clear any stale FAILURE row for this id first. The table is keyed on
-                    # message_id, so a row left by a transient error on an earlier run would
-                    # otherwise collide with the real proposal -- and `seen.add` runs
-                    # straight after, making the loss permanent. One 503 was enough.
-                    if mid in _failed_ids:
-                        _dl_write(rep, lambda m=mid: deadletter.clear_id(m))
-                        _failed_ids.discard(mid)
-                    _dl_write(rep, lambda: deadletter.record(entry))
+                    _record_replacing_failure(mid, entry)
             if res.calendar in ("created", "updated"):
                 rep.calendar_added += 1
                 if res.calendar_assumed_tz:
