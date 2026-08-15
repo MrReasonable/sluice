@@ -51,6 +51,28 @@ def test_interview_with_ics_auto_advances_and_calendars():
     assert "status: interview" in text and "interview_date" in text and "Deck" in text
 
 
+def test_a_guessed_instant_is_flagged_on_the_result_so_the_digest_can_report_it():
+    # A naive DTSTART books at an ASSUMED UTC. The log line says so, but under cron stderr is
+    # usually discarded, so the count has to ride the result out to the digest -- otherwise
+    # the only surviving evidence of a possibly-wrong hour is a calendar entry that looks
+    # entirely ordinary.
+    v, notes, _ = _vault_with("Example Tidal - EM", "applied")
+    naive = IcsEvent(uid="u1", summary="Screen", start=datetime(2026, 7, 20, 10, 0),
+                     tzid_unresolved="Nowhere/Notreal")
+    ev = Event(lead_slug="Example Tidal - EM", type="interview", confidence=0.9, ics=naive)
+    res = R.reconcile(ev, notes, v, TrackConfig(), FakeGoogleClient(events=[]))
+    assert res.calendar == "created" and res.calendar_assumed_utc is True
+
+
+def test_a_resolved_instant_is_not_flagged():
+    # The counter must stay at zero on the ordinary path, or the digest warning fires on
+    # every run and stops meaning anything.
+    v, notes, _ = _vault_with("Example Tidal - EM", "applied")
+    ev = Event(lead_slug="Example Tidal - EM", type="interview", confidence=0.9, ics=_ics())
+    res = R.reconcile(ev, notes, v, TrackConfig(), FakeGoogleClient(events=[]))
+    assert res.calendar == "created" and res.calendar_assumed_utc is False
+
+
 def test_cancellation_ics_does_not_advance():
     v, notes, path = _vault_with("Example Tidal - EM", "interview")
     ics = _ics(); ics.method = "CANCEL"

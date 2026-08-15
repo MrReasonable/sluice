@@ -47,10 +47,10 @@ def test_preview_all_stages_no_cv():
 
 def test_record_one_refuses_ambiguous():
     v, cfg = _vault([
-        ("flowline - Analyst.md", _GOOD.replace("Example Northgate", "flowline")),
-        ("flowlineRemote in London - Analyst.md", _GOOD.replace("Example Northgate", "flowlineRemote in London")),
+        ("Example Meridian - Analyst.md", _GOOD.replace("Example Northgate", "Example Meridian")),
+        ("Example MeridianRemote - Analyst.md", _GOOD.replace("Example Northgate", "Example MeridianRemote")),
     ])
-    out = engine.record_one(v, cfg, "flowline")
+    out = engine.record_one(v, cfg, "meridian")
     assert out["ok"] is False and out["reason"].startswith("ambiguous")
 
 

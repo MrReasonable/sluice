@@ -31,6 +31,7 @@ class RunReport:
     auto: int = 0
     proposed: int = 0
     calendar_added: int = 0
+    calendar_assumed_utc: int = 0   # of those, how many booked an instant we GUESSED
     failures: int = 0
     results: list = field(default_factory=list)
     open_proposals: list = field(default_factory=list)  # every currently-open dead-letter Entry
@@ -262,6 +263,8 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                     _dl_write(rep, lambda: deadletter.record(entry))
             if res.calendar in ("created", "updated"):
                 rep.calendar_added += 1
+                if res.calendar_assumed_utc:
+                    rep.calendar_assumed_utc += 1
             if not dry_run:
                 seen.add(mid)
         except GoogleAuthError:
@@ -269,12 +272,17 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
             break
         except Exception as exc:
             rep.failures += 1
-            # Never silent. A failure deliberately skips seen.add so the message retries, which
-            # means a message that fails DETERMINISTICALLY (a malformed attachment, an API that
-            # rejects a value this message always produces) fails again on every future run --
-            # and the digest's bare `failures=N` cannot tell that apart from a one-off blip.
-            # The id and the cause go in the message itself, not only the traceback, so the
-            # line is diagnosable wherever logs are read as text.
+            # Never silent, because this is the message's LAST trace -- not merely its
+            # loudest. A failure skips seen.add, which leaves the message retryable, but only
+            # for as long as it stays inside `_gmail_query`'s day-granular `after:` window:
+            # `app.py` advances the lastrun watermark on this very run (`rep.failures` is not
+            # in that gate, unlike auth_error/deadletter_error), so a DETERMINISTIC failure --
+            # a malformed attachment, an API that rejects a value this message always produces
+            # -- gets roughly a day of retries and is then never queried again. No dead-letter
+            # row is written either, since this handler is outside that path. The digest's
+            # bare `failures=N` cannot tell that from a one-off blip, so the id and the cause
+            # go in the message itself, not only the traceback, to stay diagnosable wherever
+            # logs are read as text.
             _log.exception("track: message %s failed: %s", mid, exc)
     # Emit the full open set. Non-dry: the store already holds this run's new rows,
     # so it is the single source of truth. Dry: union the persisted set with this

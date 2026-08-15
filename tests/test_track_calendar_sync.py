@@ -1,6 +1,6 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from sluice.track.config import TrackConfig
-from sluice.track.ics import IcsEvent
+from sluice.track.ics import IcsEvent, parse_ics
 from sluice.track.calendar_sync import sync_event
 from tests.test_track_google_client import FakeGoogleClient
 
@@ -82,15 +82,68 @@ def test_naive_ics_start_no_crash_and_present():
 def test_naive_ics_start_still_sends_offset_bearing_window_bounds():
     # The sibling above proves the naive-vs-aware COMPARISON survives; it cannot catch this,
     # because the fake ignores the bounds it is handed. `events.list` requires RFC 3339, so a
-    # bound built from a naive datetime ("2026-07-15T09:00:00", no offset) is rejected with
-    # HTTP 400 -- which escapes reconcile and engine.run drops the whole message. Assert on
-    # the ARGUMENTS, which is where the defect actually lives.
-    from datetime import datetime
+    # bound built from a naive datetime serialises as "2026-05-31T10:00:00" -- no offset --
+    # and is rejected with HTTP 400, which escapes reconcile and engine.run drops the whole
+    # message. Assert on the ARGUMENTS, which is where the defect actually lives.
+    cfg = TrackConfig()
     naive = IcsEvent(uid="u1", summary="Screen",
                      start=datetime(2026, 7, 15, 10, 0), end=datetime(2026, 7, 15, 10, 30))
     c = FakeGoogleClient(events=[])
-    sync_event(c, TrackConfig(), lead_slug="example-lead", ics=naive)
+    sync_event(c, cfg, lead_slug="example-lead", ics=naive)
     assert c.listed, "list_events was never called, so the bounds were never exercised"
     for lo, hi in c.listed:
-        assert datetime.fromisoformat(lo).tzinfo is not None, f"timeMin has no UTC offset: {lo}"
-        assert datetime.fromisoformat(hi).tzinfo is not None, f"timeMax has no UTC offset: {hi}"
+        lo_dt, hi_dt = datetime.fromisoformat(lo), datetime.fromisoformat(hi)
+        # utcoffset(), not `tzinfo is not None`: the invariant the API actually needs is that
+        # isoformat() EMITS an offset, and a tzinfo whose utcoffset() is None is "aware" by
+        # the weaker test while still serialising bare.
+        assert lo_dt.utcoffset() is not None, f"timeMin has no UTC offset: {lo}"
+        assert hi_dt.utcoffset() is not None, f"timeMax has no UTC offset: {hi}"
+        # A window has to be a window. Neither of these is implied by the offset check:
+        # swapping the bounds, or collapsing them to zero width, left the suite green.
+        assert lo_dt < hi_dt, f"timeMin must precede timeMax, got {lo} > {hi}"
+        assert hi_dt - lo_dt == 2 * timedelta(days=cfg.calendar_lookahead_days)
+
+
+def test_windows_tzid_invite_is_inserted_with_its_real_offset_and_zone():
+    # The parse-level tests pin `GMT Standard Time` -> +01:00, but nothing pinned that the
+    # resolved zone REACHES the calendar body -- which is where the whole table earns its
+    # keep. Deleting _event_body's zone derivation (always stamping "UTC") left the suite
+    # green, so this is the test that makes the stated purpose falsifiable.
+    ics = parse_ics("BEGIN:VEVENT\r\nUID:u1\r\n"
+                    "DTSTART;TZID=GMT Standard Time:20260715T110000\r\nEND:VEVENT")
+    c = FakeGoogleClient(events=[])
+    assert sync_event(c, TrackConfig(), lead_slug="example-lead", ics=ics) == "created"
+    assert c.inserted[0]["start"] == {"dateTime": "2026-07-15T11:00:00+01:00",
+                                      "timeZone": "Europe/London"}
+
+
+def test_floating_start_is_booked_as_utc_but_says_so_loudly(caplog):
+    # The fix traded a loud HTTP 400 for a quiet wrong hour: before the bounds were coerced
+    # this input could not reach a write at all. It books at the guessed instant now, so the
+    # guess has to be audible -- otherwise every signal (no failure, an ordinary-looking
+    # entry) says success while the hour is wrong.
+    ics = parse_ics("BEGIN:VEVENT\r\nUID:u1\r\n"
+                    "DTSTART;TZID=Nowhere/Notreal:20260715T110000\r\nEND:VEVENT")
+    c = FakeGoogleClient(events=[])
+    with caplog.at_level("WARNING", logger="sluice.track.calendar_sync"):
+        assert sync_event(c, TrackConfig(), lead_slug="example-lead", ics=ics) == "created"
+    assert c.inserted[0]["start"]["timeZone"] == "UTC"      # the guess itself is unchanged
+    said = [r.getMessage() for r in caplog.records if r.name == "sluice.track.calendar_sync"]
+    assert any("Nowhere/Notreal" in m for m in said), f"the unresolved zone is not named: {said}"
+    assert any("u1" in m for m in said), f"the uid is not named: {said}"
+    assert any("ASSUMING UTC" in m for m in said), f"the assumption is not stated: {said}"
+
+
+def test_resolved_zone_and_present_outcome_stay_silent(caplog):
+    # The warning must not cry wolf. A resolved zone is not a guess, and a `present` outcome
+    # wrote nothing at all -- warning on either would train the reader to ignore the line.
+    resolved = parse_ics("BEGIN:VEVENT\r\nUID:u1\r\n"
+                         "DTSTART;TZID=GMT Standard Time:20260715T110000\r\nEND:VEVENT")
+    naive = IcsEvent(uid="u1", summary="Screen", start=datetime(2026, 7, 15, 10, 0))
+    with caplog.at_level("WARNING", logger="sluice.track.calendar_sync"):
+        sync_event(FakeGoogleClient(events=[]), TrackConfig(), lead_slug="example-lead", ics=resolved)
+        # naive, but an untagged event already covers the slot -> "present", nothing written
+        sync_event(FakeGoogleClient(events=[{"id": "g1", "start": {"dateTime": "2026-07-15T10:00:00+00:00"}}]),
+                   TrackConfig(), lead_slug="example-lead", ics=naive)
+    assert [r.getMessage() for r in caplog.records
+            if r.name == "sluice.track.calendar_sync"] == []

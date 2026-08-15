@@ -54,10 +54,10 @@ def test_select_one_resolves_single_eligible():
 
 def test_select_one_refuses_ambiguous_shortlist_match():
     v, cfg = _vault([
-        ("flowline - Analyst.md", _GOOD.replace("Example Northgate", "flowline")),
-        ("flowlineRemote in London - Analyst.md", _GOOD.replace("Example Northgate", "flowlineRemote in London")),
+        ("Example Meridian - Analyst.md", _GOOD.replace("Example Northgate", "Example Meridian")),
+        ("Example MeridianRemote - Analyst.md", _GOOD.replace("Example Northgate", "Example MeridianRemote")),
     ])
-    note, reason = select.select_one(v, "flowline", cfg)
+    note, reason = select.select_one(v, "meridian", cfg)
     assert note is None and reason.startswith("ambiguous")
 
 

@@ -651,6 +651,14 @@ def cmd_track_run(args, config) -> int:
     print(f"track: msgs={rep.msgs} classified={rep.classified} auto={rep.auto} "
           f"proposed={rep.proposed} calendar_added={rep.calendar_added} "
           f"failures={rep.failures} open={len(rep.open_proposals)}", file=sys.stderr)
+    if rep.calendar_assumed_utc:
+        # Its own line rather than another key on the digest: this is a correctness warning,
+        # not a statistic. The entries exist and look ordinary in the calendar -- only the
+        # HOUR is a guess -- so the one chance to notice is here.
+        print(f"  WARNING: {rep.calendar_assumed_utc} calendar entr"
+              f"{'y' if rep.calendar_assumed_utc == 1 else 'ies'} booked from a DTSTART with "
+              f"no usable timezone; the time was ASSUMED UTC and may be wrong. "
+              f"Check the entry against the invite.", file=sys.stderr)
     if rep.open_proposals:
         print("  OPEN PROPOSALS (awaiting action):", file=sys.stderr)
         for e in rep.open_proposals:

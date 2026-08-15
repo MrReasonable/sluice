@@ -87,24 +87,29 @@ def test_run_resilient_to_bad_message():
 
 
 def test_per_message_failure_is_logged_with_the_message_id(caplog):
-    # Counting a failure without recording WHAT failed is why a permanent poison message can
-    # sit in the window for weeks: the id is never seen.add'd, so it re-fails every run, and
-    # the digest says only "failures=1". The id is the one thing that makes it diagnosable.
+    # Counting a failure without recording WHAT failed leaves no trace of it anywhere. The id
+    # is never seen.add'd, so the message stays retryable -- but only while it remains inside
+    # `_gmail_query`'s day-granular `after:` window, and app.py advances the lastrun watermark
+    # on this very run regardless of rep.failures. So a deterministic failure gets about a day
+    # and is then never queried again, with no dead-letter row. The digest says only
+    # "failures=1". This log line is the message's LAST trace, not merely its loudest.
     v, _ = _vault("applied")
     class Boom(OneMsgClient):
         def get_message(self, mid): raise RuntimeError("gmail hiccup")
     seen = set()
-    with caplog.at_level("WARNING"):
+    # logger= is load-bearing: get_logger sets propagate=False and reads its level from
+    # SLUICE_LOG_LEVEL at import, so a bare at_level("WARNING") touches only the root logger
+    # and this test goes red under a hostile SLUICE_LOG_LEVEL in the environment.
+    with caplog.at_level("WARNING", logger="sluice.track.engine"):
         rep = E.run(v, TrackConfig(), Boom(), FakeBackend("{}"), seen=seen, deadletter=_dl(),
                     now_iso="2026-07-10T12:00:00+00:00")
     assert rep.failures == 1
     said = [r.getMessage() for r in caplog.records if r.name == "sluice.track.engine"]
     assert any("m1" in m for m in said), f"message id never logged: {said}"
     assert any("gmail hiccup" in m for m in said), f"cause never logged: {said}"
-    # The retry contract is the other half of why the log line matters: a failure skips
-    # seen.add so the message is re-queried next run. That is what turns a DETERMINISTIC
-    # failure into a permanent poison message, and the log line is the only way to tell
-    # the two apart.
+    # Restated here only to keep the coupling visible in one place -- `seen` is already
+    # witnessed by test_record_failure_skips_seen_so_message_reprocesses, so this line is not
+    # what makes the test load-bearing. The log assertions above are.
     assert "m1" not in seen, "a failed message must stay retryable"
 
 
@@ -648,7 +653,7 @@ def test_a_proof_tier_receipt_never_advances_a_slug_two_notes_claim(caplog):
     be = FakeBackend(json.dumps({"lead": None, "type": "receipt", "confidence": 0.9,
                                  "when": None, "links": [], "materials": [], "summary": "received"}))
     dl = _dl()
-    with caplog.at_level("WARNING"):
+    with caplog.at_level("WARNING", logger="sluice.track.engine"):
         rep = E.run(v, TrackConfig(), OneReceiptClient(), be, seen=set(), deadletter=dl,
                     now_iso="2026-07-10T12:00:00+00:00")
     assert rep.auto == 0
