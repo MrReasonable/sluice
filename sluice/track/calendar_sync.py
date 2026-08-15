@@ -31,13 +31,27 @@ def _trunc(dt):
     return a.replace(microsecond=0) if a else None
 
 
+def _window_bounds(cfg, ics):
+    """The (timeMin, timeMax) pair for a list_events call centred on `ics.start`.
+
+    `_aware` FIRST, before isoformat(): `events.list` requires RFC 3339, and a NAIVE start
+    serialises without a UTC offset, which the API rejects with HTTP 400. That is not a
+    hypothetical -- an unresolvable TZID (Outlook writes Windows zone names) and legal
+    RFC 5545 floating time both parse naive. The error escapes reconcile into engine.run's
+    per-message handler, so the whole message is dropped, and since a failure skips
+    seen.add it re-fails on every later run. Both call sites build this identical pair, so
+    it lives here: coercing in one and forgetting the other is exactly how it shipped."""
+    start = _aware(ics.start)
+    window = timedelta(days=cfg.calendar_lookahead_days)
+    return (start - window).isoformat(), (start + window).isoformat()
+
+
 def _find_ours(client, cfg, ics):
     """The event WE created for this ics UID (by our sluice-track-uid tag), or None.
     Never returns a foreign event."""
     if ics.start is None:
         return None
-    window = timedelta(days=cfg.calendar_lookahead_days)
-    for ev in client.list_events((ics.start - window).isoformat(), (ics.start + window).isoformat()):
+    for ev in client.list_events(*_window_bounds(cfg, ics)):
         if _uid_of(ev) == ics.uid:
             return ev
     return None
@@ -49,9 +63,8 @@ def _foreign_at_start(client, cfg, ics):
     insert; such events are NEVER mutated or deleted."""
     if ics.start is None:
         return False
-    window = timedelta(days=cfg.calendar_lookahead_days)
     near = timedelta(minutes=cfg.calendar_match_minutes)
-    for ev in client.list_events((ics.start - window).isoformat(), (ics.start + window).isoformat()):
+    for ev in client.list_events(*_window_bounds(cfg, ics)):
         if _uid_of(ev) is None:
             est = _event_start(ev)
             if est and abs(_aware(est) - _aware(ics.start)) <= near:

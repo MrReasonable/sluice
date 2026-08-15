@@ -267,8 +267,15 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
         except GoogleAuthError:
             rep.auth_error = True
             break
-        except Exception:
+        except Exception as exc:
             rep.failures += 1
+            # Never silent. A failure deliberately skips seen.add so the message retries, which
+            # means a message that fails DETERMINISTICALLY (a malformed attachment, an API that
+            # rejects a value this message always produces) fails again on every future run --
+            # and the digest's bare `failures=N` cannot tell that apart from a one-off blip.
+            # The id and the cause go in the message itself, not only the traceback, so the
+            # line is diagnosable wherever logs are read as text.
+            _log.exception("track: message %s failed: %s", mid, exc)
     # Emit the full open set. Non-dry: the store already holds this run's new rows,
     # so it is the single source of truth. Dry: union the persisted set with this
     # run's computed-new (keyed by message_id, persisted wins), recording nothing.

@@ -1,4 +1,4 @@
-from datetime import timezone
+from datetime import timedelta, timezone
 from sluice.track.ics import parse_ics
 
 
@@ -31,6 +31,24 @@ def test_parse_utc_and_date_only():
 def test_cancel_flagged():
     assert parse_ics(_CANCEL).cancelled is True
     assert parse_ics("BEGIN:VEVENT\r\nUID:u\r\nSTATUS:CANCELLED\r\nEND:VEVENT").cancelled is True
+
+
+def test_windows_timezone_name_resolves_to_the_real_offset():
+    # Outlook/Exchange write WINDOWS zone names, not IANA ones, so ZoneInfo() raises and the
+    # value used to fall through to naive. Naive is not merely unsendable (the API wants
+    # RFC 3339) -- it is WRONG: _event_body stamps timeZone "UTC" for a naive start, booking a
+    # British-Summer-Time invite an hour late.
+    e = parse_ics("BEGIN:VEVENT\r\nUID:u\r\n"
+                  "DTSTART;TZID=GMT Standard Time:20260817T153000\r\nEND:VEVENT")
+    assert e.start.tzinfo is not None
+    assert e.start.utcoffset() == timedelta(hours=1)   # 17 Aug is BST, i.e. UTC+1
+
+
+def test_unknown_timezone_name_still_parses_as_naive():
+    # Fallback stays intact: an unrecognisable TZID must not raise out of a pure parser.
+    e = parse_ics("BEGIN:VEVENT\r\nUID:u\r\n"
+                  "DTSTART;TZID=Nowhere/Notreal:20260817T153000\r\nEND:VEVENT")
+    assert e.start.hour == 15 and e.start.tzinfo is None
 
 
 def test_line_folding_and_no_vevent():
