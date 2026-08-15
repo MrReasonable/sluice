@@ -150,10 +150,15 @@ def test_a_fourth_call_at_a_fourth_distinct_location_resolves_its_own_slug_never
 
 
 def test_url_proven_second_call_resolves_the_first_notes_slug_not_a_coincidental_match(tmp_path):
-    """The exact scenario that broke every prior create_lead fix attempt this
-    session (location-only narrowing, a flat same_opportunity filter, a two-tier
-    url-then-location priority) -- now correct by construction, since create_lead
-    just reads Vault.upsert's own answer instead of guessing."""
+    """The original reproduction that broke TWO of the three prior create_lead fix
+    attempts this session (location-only narrowing, a flat same_opportunity filter)
+    -- now correct by construction, since create_lead just reads Vault.upsert's own
+    answer instead of guessing. NOT the scenario that distinguishes the real fix
+    from the THIRD prior attempt (a two-tier url-then-location priority, #131's
+    immediately-preceding commit): that strategy gets this exact case right too,
+    because the third call's url matches exactly one note here. See
+    test_a_second_notes_url_does_not_steal_a_write_that_actually_landed_on_the_first
+    below for the scenario that does distinguish it."""
     app = _app(tmp_path)
     first = app.create_lead(title="Example Role", company="Example Ltd",
                             url="https://example.invalid/1", location="London")
@@ -165,3 +170,44 @@ def test_url_proven_second_call_resolves_the_first_notes_slug_not_a_coincidental
                             url="https://example.invalid/1", location="Berlin")
     assert third.slug == first.slug, (
         f"expected the url-proven FIRST note's slug {first.slug!r}, got {third.slug!r}")
+    # never-clobber: the untouched SECOND note's own fields must survive intact --
+    # restores the coverage the two-tier-mechanism test this one replaced had, which
+    # this scenario alone (unlike the last_seen ground truth added at the conformance
+    # layer for THIS exact reproduction) also exercises at the create_lead facade.
+    second_note = next(n for n in Vault(str(tmp_path)).read_leads() if n.slug == second.slug)
+    assert second_note.fm.get("location") == "Berlin"
+    assert second_note.fm.get("url") == "https://example.invalid/2"
+
+
+def test_a_second_notes_url_does_not_steal_a_write_that_actually_landed_on_the_first(tmp_path):
+    """#131 round-2 review, Important #3: distinguishes the real fix from the THIRD
+    prior create_lead attempt (a two-tier url-then-location priority applied to a
+    post-hoc `read_leads()` filter, #131's immediately-preceding commit), which the
+    scenario above does not. Swap WHICH field matches which note: the incoming
+    lead's url matches the SECOND note, but its location coincidentally matches the
+    FIRST note, which sits at the bare candidate name the real candidate walk
+    checks FIRST -- so the actual write lands on the FIRST note via a
+    location-only verdict, and the walk never even reaches the SECOND note. A
+    url-then-location priority computed afterward instead finds the SECOND note's
+    url a match FIRST (before ever considering location) and reports ITS slug for a
+    write that actually touched the FIRST -- verified directly against a faithful
+    reimplementation of that exact prior commit's logic before writing this test."""
+    app = _app(tmp_path)
+    first = app.create_lead(title="Example Role", company="Example Ltd",
+                            url="https://example.invalid/1", location="London")
+    second = app.create_lead(title="Example Role", company="Example Ltd",
+                             url="https://example.invalid/2", location="Berlin")
+    assert first.slug != second.slug
+
+    # The SECOND note's own url, but the FIRST note's own location.
+    third = app.create_lead(title="Example Role", company="Example Ltd",
+                            url="https://example.invalid/2", location="London")
+    assert third.slug == first.slug, (
+        f"the write actually landed on the FIRST note (matched by location on the "
+        f"bare candidate) but create_lead reported {third.slug!r} -- a url-then-"
+        f"location strategy applied after the fact would wrongly report the SECOND "
+        f"note's slug {second.slug!r} here")
+    # never-clobber: the untouched SECOND note's own fields survive intact.
+    second_note = next(n for n in Vault(str(tmp_path)).read_leads() if n.slug == second.slug)
+    assert second_note.fm.get("location") == "Berlin"
+    assert second_note.fm.get("url") == "https://example.invalid/2"

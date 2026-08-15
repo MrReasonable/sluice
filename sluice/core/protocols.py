@@ -138,9 +138,12 @@ class UpsertResult:
     """Vault.upsert's own report of what it just did (#131 post-final-review fix).
     `outcome` is the existing six-member vocabulary, unchanged in wording or
     meaning. `slug` is populated ONLY for "created"/"updated"/"merged" -- the three
-    outcomes where a note now exists that this call's own resolution identified as
-    the SAME posting -- and is "" for "refused"/"merged_away"/"merged_away_unproven",
-    none of which write into (or match) any note this call itself now owns.
+    outcomes where a note now exists that this call itself put there or bumped:
+    "created" seats a genuinely NEW note; "updated"/"merged" identify an EXISTING
+    note as this call's own resolution decided (same posting, or inconclusive
+    evidence, respectively) and bump only its last_seen. `slug` is "" for
+    "refused"/"merged_away"/"merged_away_unproven", none of which write into (or
+    match) any note this call itself now owns.
 
     This is the single source of truth for "which note did THIS call actually
     touch." A caller that instead re-derives the answer post-hoc (e.g. re-reading
@@ -267,12 +270,12 @@ class Store(Protocol):
 
         `result.slug` is the slug of the note this call resolved to -- populated for
         "created"/"updated"/"merged", empty for "refused"/"merged_away"/
-        "merged_away_unproven". A store MUST NOT report a slug for an outcome that
-        wrote nothing this call itself controls, and MUST report the slug of the
-        EXACT note whose content this call's write (or match, for merged_away*)
-        decided -- never a different note that merely happens to share the same
-        company+title identity. See UpsertResult's own docstring for why this
-        matters."""
+        "merged_away_unproven" (the latter two are a MATCH against an archived note,
+        never a write into one this call now owns, so they carry no slug either --
+        same rule as "refused"). For "created"/"updated"/"merged" a store MUST
+        report the slug of the EXACT note whose content this call's write decided --
+        never a different note that merely happens to share the same company+title
+        identity. See UpsertResult's own docstring for why this matters."""
         ...
 
     def update_fields(self, ref, fields: dict, *, append_note=None, note_tag=None,

@@ -608,37 +608,120 @@ def test_upsert_result_slug_names_the_note_this_call_actually_wrote(
     report the FIRST note's slug, not the second's. No post-hoc filter over the
     finished note set can get this right in general; only the store's own
     resolution, which this test proves by checking the note ACTUALLY ON DISK
-    matches what `result.slug` claims, not just that `result.slug` looks
-    plausible."""
+    matches what `result.slug` claims -- not merely that `first.slug`/`second.slug`
+    are the strings the FIRST two calls happened to return (a stub that always
+    echoed the SECOND note's slug back for every write would pass a check that
+    stopped at that), but that `last_seen` genuinely moved on the note
+    `third.slug` names and genuinely did NOT move on the other one (#131
+    round-2 review, Important #1: an earlier version of this test asserted
+    only `fm.get("url")`, which `updated`/`merged` never write, so it could
+    not tell a real write from a completely inert stub)."""
     store = _make_store(store_name, tmp_path, monkeypatch)
 
+    # Explicit, DISTINCT last_seen stamps on the first two creates -- not the
+    # `_lead()` default (today's date via Lead.__post_init__) -- so the third
+    # call's own stamp can only land on ONE of them without both already
+    # coinciding, which would make "did last_seen move" undecidable.
     first = store.upsert(_lead(company="Example Ltd", title="Example Role",
-                               url="https://example.invalid/1", location=LOCATIONS[0]))
+                               url="https://example.invalid/1", location=LOCATIONS[0],
+                               first_seen="2026-01-01", last_seen="2026-01-01"))
     assert first.outcome == "created" and first.slug
 
     second = store.upsert(_lead(company="Example Ltd", title="Example Role",
-                                url="https://example.invalid/2", location=LOCATIONS[1]))
+                                url="https://example.invalid/2", location=LOCATIONS[1],
+                                first_seen="2026-01-02", last_seen="2026-01-02"))
     assert second.outcome == "created" and second.slug
     assert second.slug != first.slug
 
     # The third call's url proves it the SAME posting as the FIRST note (url match
     # is definitive), even though its own incoming location (LOCATIONS[1]) coincides
-    # with the SECOND, unrelated note's location -- exactly the reproduction that
-    # broke every prior "guess after the fact" strategy.
+    # with the SECOND, unrelated note's location -- the original reproduction that
+    # broke TWO of the three prior "guess after the fact" strategies (location-only,
+    # and a flat same_opportunity filter over the whole candidate set). The THIRD
+    # strategy (a two-tier url-then-location priority, #131's immediately-preceding
+    # commit) gets THIS scenario right too, because the third call's url matches
+    # exactly ONE note's url here -- see
+    # test_upsert_result_slug_is_not_fooled_by_an_unrelated_notes_matching_url below
+    # for the scenario that distinguishes the real fix from that third strategy.
     third = store.upsert(_lead(company="Example Ltd", title="Example Role",
-                               url="https://example.invalid/1", location=LOCATIONS[1]))
+                               url="https://example.invalid/1", location=LOCATIONS[1],
+                               last_seen="2026-01-15"))
     assert third.outcome in ("updated", "merged")
     assert third.slug == first.slug, (
         f"the url-proven write touched the FIRST note but reported "
         f"{third.slug!r} instead of {first.slug!r}")
 
-    # Ground truth: read every note back and confirm the FIRST note's own fields
-    # actually changed (last_seen bumped towards 'today'), and the SECOND note's
-    # fields are untouched (never-clobber) -- proving `third.slug` names the note
-    # that genuinely received this call's write, not merely a plausible-looking one.
+    # Ground truth: `last_seen` is the ONLY field `updated`/`merged` may ever
+    # change (never-clobber), so it is the one signal that proves a write really
+    # landed where `result.slug` claims. The FIRST note's last_seen must have
+    # advanced to the third call's own stamp; the SECOND note's must NOT have
+    # moved off its own original stamp -- confirming the write landed on the note
+    # `third.slug` names and nowhere else, not merely that the string looks right.
     notes = {n.slug: n for n in store.read_leads()}
+    assert notes[first.slug].fm.get("last_seen") == "2026-01-15", (
+        "the FIRST note's last_seen was not actually bumped by the third call "
+        "-- third.slug named a note this write never touched")
+    assert notes[second.slug].fm.get("last_seen") == "2026-01-02", (
+        "the SECOND note's last_seen moved even though the third call's write "
+        "was reported as landing on the FIRST note -- never-clobber violated")
     assert notes[first.slug].fm.get("url") == "https://example.invalid/1"
     assert notes[second.slug].fm.get("url") == "https://example.invalid/2"
+
+
+def test_upsert_result_slug_is_not_fooled_by_an_unrelated_notes_matching_url(
+        store_name, tmp_path, monkeypatch):
+    """#131 round-2 review, Important #3: the scenario above does NOT distinguish
+    the real fix from #131's immediately-preceding commit (a two-tier url-then-
+    location priority applied to a post-hoc `read_leads()` filter) -- that strategy
+    happens to get it right too, because the incoming url there matches exactly ONE
+    note. This scenario is the one that actually tells them apart, reimplemented and
+    verified against the real two-tier code before writing this test: swap WHICH
+    field matches which note. The incoming lead's url matches the SECOND note, but
+    its location coincidentally matches the FIRST note, which is seated at the BARE
+    candidate name the real candidate walk checks FIRST -- so the real write lands on
+    the FIRST note via a location-only verdict, WITHOUT the walk ever reaching the
+    SECOND note (or its url) at all. A url-then-location priority computed
+    afterward over the finished note set, in contrast, finds the SECOND note's url a
+    match FIRST and never even considers location, since exactly one url match ends
+    its search -- reporting the SECOND note's slug for a write that actually landed
+    on the FIRST."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+
+    first = store.upsert(_lead(company="Example Ltd", title="Example Role",
+                               url="https://example.invalid/1", location=LOCATIONS[0],
+                               first_seen="2026-01-01", last_seen="2026-01-01"))
+    assert first.outcome == "created" and first.slug
+
+    second = store.upsert(_lead(company="Example Ltd", title="Example Role",
+                                url="https://example.invalid/2", location=LOCATIONS[1],
+                                first_seen="2026-01-02", last_seen="2026-01-02"))
+    assert second.outcome == "created" and second.slug
+    assert second.slug != first.slug
+
+    # The SECOND note's own url, but the FIRST note's own location: the bare
+    # candidate name (the FIRST note) is checked before any location-suffixed one,
+    # and a url MISMATCH there does not block a location MATCH from resolving the
+    # walk right there (same_opportunity's real, pre-existing, documented rule: a
+    # non-matching url is not proof of DIFFERENT, so location is still consulted).
+    third = store.upsert(_lead(company="Example Ltd", title="Example Role",
+                               url="https://example.invalid/2", location=LOCATIONS[0],
+                               last_seen="2026-01-15"))
+    assert third.outcome in ("updated", "merged")
+    assert third.slug == first.slug, (
+        f"the write actually landed on the FIRST note (matched by location on the "
+        f"bare candidate) but result.slug reported {third.slug!r} -- a url-then-"
+        f"location strategy applied after the fact would report the SECOND note's "
+        f"slug {second.slug!r} here, which is wrong")
+
+    # Ground truth, same discipline as the sibling test above: last_seen is the
+    # only observable effect of update/merge, so it is what proves the write
+    # landed where result.slug claims.
+    notes = {n.slug: n for n in store.read_leads()}
+    assert notes[first.slug].fm.get("last_seen") == "2026-01-15", (
+        "the FIRST note's last_seen was not actually bumped by the third call")
+    assert notes[second.slug].fm.get("last_seen") == "2026-01-02", (
+        "the SECOND note's last_seen moved even though the write was reported as "
+        "landing on the FIRST note")
 
 
 def test_upsert_result_slug_is_blank_for_every_no_write_outcome(store_name, tmp_path, monkeypatch):
