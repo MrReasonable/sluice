@@ -25,13 +25,26 @@ from tests.test_track_engine import FakeBackend, OneMsgClient, _dl, _vault
 
 
 class _Boom(OneMsgClient):
+    """Fails every time, with a DIFFERENT cause each call.
+
+    A constant cause makes the once-per-message guard untestable: `message_id` is the table's
+    PRIMARY KEY, so a second identical row is impossible whatever the code does, and the
+    "not written twice" assertion below passed with the guard deleted. Varying the cause makes
+    the second write a DIFFERING row, which is the case the guard actually decides.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
     def get_message(self, mid):
-        raise RuntimeError("gmail hiccup")
+        self.calls += 1
+        raise RuntimeError(f"gmail hiccup {self.calls}")
 
 
-def _run(v, dl, **kw):
-    return E.run(v, TrackConfig(), _Boom(), FakeBackend("{}"), seen=set(), deadletter=dl,
-                 now_iso="2026-07-10T12:00:00+00:00", **kw)
+def _run(v, dl, client=None, **kw):
+    return E.run(v, TrackConfig(), client or _Boom(), FakeBackend("{}"), seen=set(),
+                 deadletter=dl, now_iso="2026-07-10T12:00:00+00:00", **kw)
 
 
 def test_a_failed_message_is_recorded_in_the_dead_letter_store(tmp_path):
@@ -79,18 +92,30 @@ def test_a_dry_run_records_nothing(tmp_path):
     assert not [e for e in dl.open_entries() if e.message_id == "m1"]
 
 
-def test_a_failure_row_is_not_written_twice_for_the_same_message(tmp_path):
+def test_a_repeatedly_failing_message_keeps_ITS_FIRST_row_and_does_not_error(tmp_path):
     """A deterministic failure fails again next run, while its row is still open.
 
     Re-recording would multiply one broken message into a growing pile of identical rows --
     the digest gets noisier the longer the problem goes unfixed, which is backwards.
+
+    The row COUNT alone cannot witness that: `message_id` is the PRIMARY KEY, so two rows are
+    impossible regardless. What the guard actually decides is what happens on a DIFFERING
+    second write -- without it, `record` raises on the changed cause, `deadletter_error` is
+    set, and the lastrun watermark is held on every subsequent run. So the load-bearing
+    assertions are the error flag and which cause survived.
     """
     v, _ = _vault("applied")
     dl = _dl()
-    _run(v, dl)
-    _run(v, dl)
+    client = _Boom()
+    _run(v, dl, client=client)
+    rep2 = _run(v, dl, client=client)
     rows = [e for e in dl.open_entries() if e.message_id == "m1"]
     assert len(rows) == 1, f"expected one row for a repeatedly-failing message, got {len(rows)}"
+    assert rep2.deadletter_error is False, (
+        "a re-failing message set deadletter_error, which holds the watermark forever")
+    assert "gmail hiccup 1" in rows[0].hint, (
+        "the FIRST failure's row must stand -- rewriting it every run resets nothing useful "
+        "and churns the store")
 
 
 def test_a_deadletter_write_failure_still_holds_the_watermark(tmp_path):
