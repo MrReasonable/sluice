@@ -269,6 +269,34 @@ def test_an_invite_with_NO_uid_matches_nothing_of_ours():
     assert not d.deleted, "a cancel deleted an event belonging to a different lead"
 
 
+def test_an_EMPTY_tag_is_read_as_untagged_so_it_still_blocks_a_duplicate():
+    """The distinct consequence of `_uid_of` normalising an empty tag to None.
+
+    Abstaining on an absent UID is only half an answer: having refused to recognise our own
+    UID-less entry, we must not then cheerfully book a second one on top of it. Reading the
+    empty tag as NO tag is what makes `_foreign_at_start` see that entry -- an event whose tag
+    is empty really is indistinguishable from an untagged one -- so the slot is already
+    occupied and the booking is refused and REPORTED rather than duplicated.
+
+    This is the test that reaches past `_find_ours`' own no-UID guard. With that guard alone,
+    `mine` is empty, nothing is treated as foreign, and an insert lands on top of the entry we
+    already had. Witnessed: reverting `_uid_of` to return the raw tag reds this with
+    `created`."""
+    from sluice.track.ics import parse_ics
+
+    already_booked = {"id": "ours-from-a-previous-run",
+                      "start": {"dateTime": "2026-10-01T10:00:00+00:00"},
+                      "extendedProperties": {"private": {"sluice-track-uid": "",
+                                                         "sluice-track-lead": "example-lead"}}}
+    ics = parse_ics("BEGIN:VEVENT\r\nDTSTART:20261001T100000Z\r\nSUMMARY:Screen\r\nEND:VEVENT")
+    assert ics is not None and ics.uid == ""
+
+    c = FakeGoogleClient(events=[already_booked])
+    assert sync_event(c, TrackConfig(), lead_slug="example-lead", ics=ics) == "foreign"
+    assert not c.inserted, "booked a second entry on top of one we already had"
+    assert not c.updated and not c.deleted
+
+
 def test_a_CANCEL_removes_EVERY_entry_of_ours_not_just_the_one_in_the_window():
     """The population this whole fix serves is the one most likely to hit this.
 
