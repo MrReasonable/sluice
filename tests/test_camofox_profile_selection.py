@@ -49,30 +49,41 @@ def test_session_without_user_warns_because_it_selects_nothing(monkeypatch, capl
     assert c.session == "example-session"
 
 
+_CONTROL = "control-probe"
+
+
+def _warnings_with_control(caplog, body):
+    """Run `body()`; return the camofox warnings it emitted, with capture PROVEN live.
+
+    A bare `assert caplog.records == []` establishes nothing here. `sluice.core.log.get_logger`
+    sets `propagate=False`, so a capture path that never attaches produces an empty record list
+    for the same reason real silence does -- the assertion passes hardest in exactly the case it
+    is meant to exclude.
+
+    A control record separates them, and ASSERTING the control is the half that gets forgotten:
+    an earlier draft of the test below emitted one, filtered it out, and checked only the
+    remainder, which is no better than not having it. So the assert lives in the helper, and a
+    silence test cannot be written here without it.
+    """
+    from sluice.core.camofox import _log
+    with caplog.at_level("WARNING", logger="sluice.core.camofox"):
+        body()
+        _log.warning(_CONTROL)
+    said = [r.getMessage() for r in caplog.records if r.name == "sluice.core.camofox"]
+    assert _CONTROL in said, "caplog never reached the camofox logger -- the silence proves nothing"
+    return [m for m in said if m != _CONTROL]
+
+
 def test_session_WITH_user_does_not_warn(monkeypatch, caplog):
     # Setting both is coherent: the user picked a profile and also named a session. Warning
     # here would train the reader to ignore the line.
     monkeypatch.setenv("CAMOFOX_USER", "example-user")
     monkeypatch.setenv("CAMOFOX_SESSION", "example-session")
-    with caplog.at_level("WARNING", logger="sluice.core.camofox"):
-        Camofox()
-        from sluice.core.camofox import _log
-        _log.warning("probe")
-    # The control must be ASSERTED, not merely emitted. An earlier draft filtered the probe
-    # record out and asserted only that the remainder was empty -- which passes just as
-    # happily when capture is dead, i.e. exactly the failure the control exists to exclude.
-    # A positive control you do not check is decoration.
-    assert any(r.getMessage() == "probe" for r in caplog.records
-               if r.name == "sluice.core.camofox"), "caplog never reached this logger"
-    said = [r.getMessage() for r in caplog.records
-            if r.name == "sluice.core.camofox" and r.getMessage() != "probe"]
-    assert said == [], said
+    assert _warnings_with_control(caplog, Camofox) == []
 
 
 def test_neither_set_does_not_warn(monkeypatch, caplog):
-    with caplog.at_level("WARNING", logger="sluice.core.camofox"):
-        Camofox()
-    assert [r for r in caplog.records if r.name == "sluice.core.camofox"] == []
+    assert _warnings_with_control(caplog, Camofox) == []
 
 
 def test_an_explicit_user_argument_still_wins_when_no_env(monkeypatch):

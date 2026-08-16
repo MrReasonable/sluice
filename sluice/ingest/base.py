@@ -237,14 +237,17 @@ class BrowserListSource:
         ]
 
     def health_hint(self, raw: dict) -> dict:
+        # Normalise ONCE. The previous shape guarded the count with `isinstance`, then read
+        # `raw.get("landed")` unguarded on the next line, then checked `isinstance` again --
+        # so a non-dict `raw` raised `AttributeError` on the host lines and the later guard
+        # was unreachable. Three guards that add up to no tolerance at all.
+        raw = raw if isinstance(raw, dict) else {}
         hint = {
-            "count": len(raw.get("result", []) if isinstance(raw, dict) else []),
+            "count": len(raw.get("result", [])),
             "landed_host": _host(raw.get("landed", "")),
             "requested_host": _host(raw.get("requested", "")),
             "markers": {},
         }
-        if not isinstance(raw, dict):
-            return hint
         # Present only when they actually fired, so `detect_drift` sees keys it can classify
         # on and an ordinary source's signals stay byte-identical to before.
         #
@@ -314,8 +317,9 @@ class CarouselSource:
         ]
 
     def health_hint(self, raw: dict) -> dict:
+        raw = raw if isinstance(raw, dict) else {}   # see BrowserListSource.health_hint
         hint = {
-            "count": len(raw.get("jobs", []) if isinstance(raw, dict) else []),
+            "count": len(raw.get("jobs", [])),
             "landed_host": _host(raw.get("landed", "")),
             "requested_host": _host(raw.get("requested", "")),
             "markers": {},
@@ -326,7 +330,7 @@ class CarouselSource:
         # retired this source after three runs. Fixing the instance and not the class is how
         # the identical bug survives in the file next door; the conformance test is
         # parameterised over both classes so a third implementation cannot repeat it.
-        if isinstance(raw, dict) and raw.get("error"):
+        if raw.get("error"):
             hint["fetch_error"] = raw["error"]
         return hint
 
