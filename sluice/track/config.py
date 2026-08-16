@@ -115,13 +115,21 @@ class TrackConfig:
     # class for another, with no way to just raise the ceiling.
     #
     # What narrowing the lookahead costs has SHRUNK since #146: our own event is now found by
-    # its tag regardless of where it moved, so a short window no longer orphans it. The window
-    # is still the only thing `_foreign_at_start` can see, though -- an event sluice did not
-    # create carries no tag to search for -- so narrowing it still trades away the check that
-    # stops us double-booking over the recruiter's own auto-added invite.
+    # its tag regardless of where it moved, so a short window no longer orphans it.
     #
-    # The cap is shared by BOTH calendar reads (the window and the tag query), which is right:
-    # it bounds what one run will pull from the calendar, not what one query will.
+    # It costs less than it looks, in fact. `_foreign_at_start` only ever matches within
+    # `calendar_match_minutes` (30 by default) of the same start the window is CENTRED on, and
+    # `_positive_int` floors the lookahead at one day -- 1440 minutes -- so foreign detection
+    # survives every legal narrowing. It would only break under a start-proximity window wider
+    # than the lookahead itself, i.e. `calendar_match_minutes > calendar_lookahead_days * 1440`.
+    # If anything the relationship runs the other way: a WIDE window is what trips the cap
+    # below, and `_foreign_at_start` runs on the partial list before that is even checked.
+    #
+    # The cap is per-READ, and both calendar reads honour it independently, so a run over N
+    # invites can pull up to 2N * calendar_max_events. It bounds what one query returns, which
+    # is the thing `truncated` is computed against. (The block header above says "what one run
+    # will read" -- true of `gmail_max_messages`, which runs one search per run, and not of
+    # this one.)
     #
     # Both default to the pre-existing literals, so an install that sets neither behaves
     # exactly as before.

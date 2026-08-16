@@ -181,17 +181,20 @@ def test_the_pager_is_shared_so_the_two_endpoints_cannot_drift(monkeypatch, call
 # ---- the UID tag query: the request itself is the contract (#146) --------------------------
 
 def test_the_tag_query_sends_the_FILTER_and_no_time_window(monkeypatch):
-    """The whole fix is these four parameters, so they are what gets asserted.
+    """The filter and the ABSENCE of a window -- the two halves of #146's fix that live in the
+    request rather than in our own logic.
 
     Everything above this line tests behaviour we control. This one tests a REQUEST we hand to
-    Google, and it is the only part of #146 that a fake cannot vouch for: `sync_event` reads an
-    empty result as "we never created this", so a filter that is malformed or accidentally
-    bounded by time fails by returning nothing -- silently reinstating the duplicate insert.
+    Google, and it is the part of #146 a fake cannot vouch for: `sync_event` reads an empty
+    result as "we never created this", so a filter that is malformed or accidentally bounded by
+    time fails by returning nothing -- silently reinstating the duplicate insert.
 
     Pinned against Google's discovery document for calendar/v3 (revision 20260810):
     `privateExtendedProperty` is `propertyName=value` and matches PRIVATE properties only;
     `timeMin`/`timeMax` are optional, `calendarId` being the sole required parameter. A fake
     cannot check the semantics, but it can check that we asked the question we meant to.
+    (`singleEvents` is asserted by the sibling below, against the window read it must agree
+    with.)
     """
     cal = _CalPaged([{"items": []}])
     _client_with(monkeypatch, cal=cal).find_events_by_private_property("sluice-track-uid", "u1")
@@ -221,7 +224,20 @@ def test_both_calendar_reads_expand_recurrences_THE_SAME_WAY(monkeypatch):
                                                       "2026-03-01T00:00:00+00:00")
     _client_with(monkeypatch, cal=tagged).find_events_by_private_property("k", "v")
 
-    assert window.events_ep.calls[0]["singleEvents"] == tagged.events_ep.calls[0]["singleEvents"]
+    win, tag = window.events_ep.calls[0], tagged.events_ep.calls[0]
+    assert win["singleEvents"] == tag["singleEvents"], "the two reads disagree"
+    # The VALUE as well as the agreement. Equality alone is satisfied by both drifting to
+    # False -- and that mutant is exactly the harm this test's own docstring describes, since
+    # an unexpanded recurring parent is what a delete would then be aimed at. Executed: with
+    # `singleEvents=False` on both reads the whole suite stayed green, so the equality was
+    # certifying nothing on its own.
+    #
+    # It also silently breaks `_foreign_at_start`, which needs recurrences EXPANDED to see the
+    # weekly standup sitting at the interview slot; against unexpanded parents it stops
+    # suppressing the booking.
+    assert win["singleEvents"] is True and tag["singleEvents"] is True, (
+        f"both reads must expand recurrences, got window={win['singleEvents']!r} "
+        f"tag={tag['singleEvents']!r}")
 
 
 def test_the_tag_query_reads_every_page(monkeypatch):
@@ -236,8 +252,9 @@ def test_the_tag_query_reads_every_page(monkeypatch):
 
 def test_the_tag_query_is_bounded_and_SAYS_so(monkeypatch):
     """Unbounded is not an option just because the result set should be tiny -- "should be" is
-    what a cap exists for. Hitting it must report `truncated`, which `_find_ours_anywhere`
-    turns into `unresolved` rather than a guessed insert."""
+    what a cap exists for. Hitting it must REPORT, which is this method's whole job here;
+    `_find_ours_by_tag` passes the flag up and `sync_event` is what turns it into `unresolved`
+    rather than a guessed insert, and only when nothing of ours was found."""
     endless = [{"items": [{"id": f"e{i}"}], "nextPageToken": "t"} for i in range(500)]
     cal = _CalPaged(endless)
     got, truncated = _client_with(monkeypatch, cal=cal).find_events_by_private_property(
@@ -353,11 +370,20 @@ def test_the_probe_failure_branch_is_actually_REACHED(monkeypatch):
     assert truncated is True, "an unanswerable probe must assume the worse, honest answer"
 
 
-def _warns(monkeypatch, caplog, *, gmail=None, cal=None, query="q", **kw):
+def _warns(monkeypatch, caplog, *, gmail=None, cal=None, query="q", tag=None, **kw):
+    """The messages `sluice.track.google_client` emitted for one read.
+
+    `tag=(name, value)` drives the UID-tag query instead of the window read. A THIRD mode
+    rather than a second calendar one, because the tag query has its own truncation warning
+    with its own remedy, and a helper that could only reach two of the three left the newest
+    `if truncated:` block with no witness at all -- which is the same gap the two tests below
+    were written for."""
     with caplog.at_level("WARNING", logger="sluice.track.google_client"):
         c = _client_with(monkeypatch, gmail=gmail, cal=cal)
         if gmail is not None:
             c.search_messages(query, **kw)
+        elif tag is not None:
+            c.find_events_by_private_property(*tag, **kw)
         else:
             c.list_events("a", "b", **kw)
     return [r.getMessage() for r in caplog.records
@@ -388,6 +414,32 @@ def test_the_calendar_truncation_WARNING_actually_fires(monkeypatch, caplog):
              {"items": [{"id": "z"}]}]
     said = _warns(monkeypatch, caplog, cal=_CalPaged(pages), max_results=3)
     assert said, "a truncated calendar window must say so"
+
+
+def test_the_TAG_QUERY_truncation_WARNING_actually_fires(monkeypatch, caplog):
+    """Third caller, third `if truncated:` block, and it had no witness at all.
+
+    Deleting the whole warning from `find_events_by_private_property` left the entire suite
+    green -- the same gap, in the same shape, that the two tests above were written to close
+    for the other two callers. `test_the_tag_query_is_bounded_and_SAYS_so` asserts the RETURNED
+    flag, which is a different thing from the operator being told.
+    """
+    pages = [{"items": [{"id": f"e{i}"} for i in range(5)], "nextPageToken": "t"},
+             {"items": [{"id": "z"}]}]
+    # A UID shaped like one off a real invite: this value is parsed from an inbound .ics, so
+    # it is the same class of untrusted, mailbox-derived string as the gmail query above.
+    uid = "uid-9f3c@mail.example-tidal.invalid"
+    said = _warns(monkeypatch, caplog, cal=_CalPaged(pages),
+                  tag=("sluice-track-uid", uid), max_results=3)
+    assert said, "a truncated tag query must say so"
+    joined = " ".join(said)
+    assert "calendar_max_events" in joined, (
+        "it must name the knob that can actually help -- and NOT calendar_lookahead_days, "
+        f"which cannot affect a query with no window: {joined}")
+    assert "calendar_lookahead_days" not in joined, (
+        f"the remedy here is not the window knob: {joined}")
+    # Same rule as its gmail sibling, and it was green with `%r`/`value` in the warning.
+    assert uid not in joined, f"the warning leaked the UID off an inbound invite: {joined}"
 
 
 def test_a_complete_read_warns_about_nothing(monkeypatch, caplog):

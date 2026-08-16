@@ -232,16 +232,20 @@ track:
   # seen_db:            # <- uncomment and set YOUR OWN
   # token_path:         # <- uncomment and set YOUR OWN (written 0600)
 
-  # Hard TOTALS one run will read, across pages. Deployment-specific: they depend on
-  # your mailbox volume and calendar density, not on any preference. Both default to
-  # the values sluice has always used, so leaving them commented changes nothing.
+  # Hard TOTALS one read will return, across pages. Deployment-specific: they depend
+  # on your mailbox volume and calendar density, not on any preference. Both default
+  # to the values sluice has always used, so leaving them commented changes nothing.
   #
   # calendar_max_events is the one that costs most when it is too low: hitting it
   # makes sluice answer "I could not determine whether your event is there" rather
   # than guess, which leaves an interview unbooked until you act on the dead-letter
-  # row. It is also coupled to calendar_lookahead_days -- the window is twice that
-  # many days with recurring events expanded, so a bigger lookahead needs a bigger
-  # ceiling.
+  # row. It bounds each calendar read separately, and sluice makes two of them per
+  # invite it cannot immediately place: the window around the invite's start, and a
+  # lookup by sluice's own tag that carries no window at all (the second is what
+  # finds your event after a reschedule longer than calendar_lookahead_days). Only
+  # the first grows with calendar_lookahead_days -- that window is twice that many
+  # days with recurring events expanded -- so a bigger lookahead still wants a
+  # bigger ceiling.
   # gmail_max_messages: 500
   # calendar_max_events: 2500
   # An invite whose DTSTART carries no usable timezone -- legal RFC 5545 floating time, a

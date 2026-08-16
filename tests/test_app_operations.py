@@ -23,11 +23,15 @@ class _FakeTab:
 
 class _FakeGoogle:
     """Faithful fake of the client `track.engine.run` drives: the real method names
-    (engine.py:50 calls search_messages, :59 calls get_message; calendar_sync.py
+    (`engine.run` calls search_messages then get_message; `calendar_sync.sync_event`
     calls list_events/find_events_by_private_property/insert_event/update_event/
     delete_event when an .ics attachment is present), all inert. A fake missing a called
     method surfaces as an AttributeError instead of exercising the test's actual
-    assertion (tst-003)."""
+    assertion (tst-003).
+
+    Named by FUNCTION, not by line number. The two line numbers this used to cite had both
+    rotted -- they pointed at a hint string and a dataclass docstring -- and a reference that
+    silently stops being true is worse than no reference."""
     auth_error = False
 
     def search_messages(self, *a, **k): return [], False

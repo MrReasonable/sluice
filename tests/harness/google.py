@@ -1,10 +1,11 @@
 """A fake Google client matching `RealGoogleClient`'s surface.
 
 `track.engine.run` calls `search_messages` then `get_message`; `calendar_sync`
-calls `list_events`/`insert_event`/`update_event`/`delete_event` when an `.ics`
-attachment is present. All are implemented here so a call the engine makes lands
-on a real method rather than an `AttributeError` that would mask the assertion
-under test (the same discipline `test_app_operations.py::_FakeGoogle` follows).
+calls `list_events`/`find_events_by_private_property`/`insert_event`/
+`update_event`/`delete_event` when an `.ics` attachment is present. All are
+implemented here so a call the engine makes lands on a real method rather than an
+`AttributeError` that would mask the assertion under test (the same discipline
+`test_app_operations.py::_FakeGoogle` follows).
 It is passed via `Sluice.track(client=...)`, the explicit test seam -- Google has
 one client shape, so there is no registry, no config selection.
 """
