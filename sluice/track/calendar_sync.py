@@ -176,8 +176,15 @@ def _find_ours(events, ics):
 def _find_ours_anywhere(client, ics, truncated) -> tuple:
     """`(ours, truncated)` after asking Google for our UID tag DIRECTLY, unbounded by time.
 
-    Called only when the window scan came up empty, and it is a SUPPLEMENT to that scan, never
-    a replacement. That shape is what makes it safe to build on a contract this repo cannot
+    Called only when the window scan came up empty -- which is also what keeps the cost
+    honest. `_window`'s docstring is careful about round trips for good reason (up to 400
+    sequential ones for a 20-invite run before it was fetched once), and this adds a second
+    walk. It adds it to the MISS path only: an invite already booked at a time that has not
+    moved is answered by the window scan and asks Google nothing further, so the steady state
+    is unchanged. A genuinely new invite pays one extra request, and the tag query returns at
+    most a handful of events, so that request is one page.
+
+    It is a SUPPLEMENT to the window scan, never a replacement. That shape is what makes it safe to build on a contract this repo cannot
     execute. `privateExtendedProperty` is confirmed to EXIST -- see `find_events_by_private_property`
     -- but nothing offline can confirm that it MATCHES, and a filter that matches nothing
     returns an empty list rather than an error. So the two ways it can be wrong are both
