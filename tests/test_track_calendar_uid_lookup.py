@@ -187,3 +187,61 @@ def test_a_CLEAN_tag_query_does_not_clear_a_SHORT_window():
     assert not c.inserted, (
         "the short window was forgiven on the strength of an unexecuted filter -- lift this "
         "only after the query has been run against a live calendar")
+
+
+# ---- through engine.run, because a return value is not an outcome --------------------------
+
+def _rescheduled_invite_client(uid="u1"):
+    """One message carrying a real reschedule: an .ics 78 days out, and our own tagged event
+    still sitting at the original time."""
+    from tests.test_track_engine import OneMsgClient
+
+    class _Client(OneMsgClient):
+        def __init__(self):
+            super().__init__()
+            self.events = [_ours(uid=uid)]
+
+        def get_message(self, mid):
+            msg = super().get_message(mid)
+            msg["attachments"] = [{
+                "filename": "invite.ics", "mime": "text/calendar",
+                "data": (f"BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:{uid}\r\n"
+                         "DTSTART:20261001T100000Z\r\nDTEND:20261001T103000Z\r\n"
+                         "SUMMARY:Screen\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n").encode()}]
+            return msg
+
+    return _Client()
+
+
+def test_a_rescheduled_invite_END_TO_END_moves_the_entry_and_leaves_no_second_one():
+    """`sync_event`'s return value is not the thing that hurts anybody.
+
+    Every wave-1 test of this module stopped at that return value, which is exactly why a
+    routing gap survived them: an outcome can be correct and still reach no calendar and no
+    human. This drives the whole path -- Gmail message, .ics parse, classify, reconcile,
+    engine.run -- and asserts on the CALLS that reached Google and on the run report the
+    operator actually sees.
+    """
+    import json
+
+    from sluice.track import engine as E
+    from tests.test_track_engine import FakeBackend, _dl, _vault
+
+    v, _path = _vault("applied")
+    c = _rescheduled_invite_client()
+    rep = E.run(v, TrackConfig(), c,
+                FakeBackend(json.dumps({"lead": "Example Tidal", "type": "interview",
+                                        "confidence": 0.9, "when": None, "links": [],
+                                        "materials": [], "summary": "rescheduled"})),
+                seen=set(), deadletter=_dl(), now_iso="2026-07-10T12:00:00+00:00")
+
+    assert not c.inserted, "the operator's calendar now shows the interview twice"
+    assert [eid for eid, _ in c.updated] == ["ev1"], (
+        "the original entry must have MOVED; leaving it behind orphans it at the old time "
+        "with nothing marking it stale")
+    body = c.updated[0][1]
+    assert body["start"]["dateTime"].startswith("2026-10-01T10:00"), body["start"]
+    assert rep.calendar_added == 1 and not rep.failures
+    assert all(not r.needs_review for r in rep.results), (
+        f"a resolved reschedule must not also nag a human: "
+        f"{[r.needs_review for r in rep.results if r.needs_review]}")

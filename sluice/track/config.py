@@ -112,7 +112,16 @@ class TrackConfig:
     # is 2 * calendar_lookahead_days with `singleEvents=True` expanding recurrences, so
     # doubling the lookahead doubles the event count against this bound. Leaving it a literal
     # meant the remedy the digest offered ("reduce calendar_lookahead_days") traded one loss
-    # class for #146's, with no way to just raise the ceiling.
+    # class for another, with no way to just raise the ceiling.
+    #
+    # What narrowing the lookahead costs has SHRUNK since #146: our own event is now found by
+    # its tag regardless of where it moved, so a short window no longer orphans it. The window
+    # is still the only thing `_foreign_at_start` can see, though -- an event sluice did not
+    # create carries no tag to search for -- so narrowing it still trades away the check that
+    # stops us double-booking over the recruiter's own auto-added invite.
+    #
+    # The cap is shared by BOTH calendar reads (the window and the tag query), which is right:
+    # it bounds what one run will pull from the calendar, not what one query will.
     #
     # Both default to the pre-existing literals, so an install that sets neither behaves
     # exactly as before.
