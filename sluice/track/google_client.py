@@ -246,7 +246,8 @@ def _paged(endpoint, params: dict, item_key: str, max_results: int,
     `truncated` means WE LOST ITEMS -- not "there were more pages". Those differ at exactly
     the moment it matters: when the final page carries the total past the cap, the slice drops
     items already in hand while `list_next` returns None. Answering the easier question
-    reported `truncated=False` while 239 calendar events vanished on shipped defaults, which
+    reported `truncated=False` while the slice silently dropped up to a FULL PAGE (249 items
+    on shipped defaults: a 250-item page overshooting the 2500 cap), which
     is this module's own bug class rebuilt inside the fix for it.
 
     TWO bounds, because they fail differently. `max_results` bounds items; `max_pages` bounds

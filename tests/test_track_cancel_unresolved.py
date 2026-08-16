@@ -9,11 +9,15 @@ Net effect: the run reports `failures=0 calendar_added=0`, the cancelled intervi
 the calendar, and because the id is now in `seen` the message is NEVER reprocessed. That is
 strictly worse than a failure, which at least retries.
 
-`_find_ours` returns None for at least three reasons that are not "nothing to delete":
+Absence of a match is not "nothing to delete" for at least three reasons, and the guards for
+them now sit in `sync_event` rather than in `_find_ours` (which takes an events list and no
+longer fetches or inspects `ics.start`):
   1. `ics.start is None` -- a METHOD:CANCEL VEVENT carrying only a UID is legal, and
-     `parse_ics` yields exactly that.
+     `parse_ics` yields exactly that. Guarded at the top of `sync_event`.
   2. the event sits outside the lookahead window (a cancel of a long-rescheduled interview).
-  3. the events list was truncated (#137, fixed separately -- but the classes are independent).
+     Still indistinguishable from absence without a UID-keyed query -- see #146.
+  3. the events list was truncated. Fixed in this same branch, not separately: `list_events`
+     returns `truncated` and `sync_event` answers `unresolved` rather than guessing.
 """
 from datetime import datetime, timezone
 
@@ -37,8 +41,8 @@ def _cancel(uid="u1", start=None):
 def test_a_cancel_with_no_DTSTART_is_UNRESOLVED_not_present():
     """The legal shape that broke it: `METHOD:CANCEL` + `UID`, no DTSTART.
 
-    `_find_ours` bails on `ics.start is None` before it can look, so the old code answered
-    "nothing of ours" to a question it never asked -- while our tagged event sat right there.
+    `sync_event` returns before it can look, so the old code answered "nothing of ours" to a
+    question it never asked -- while our tagged event sat right there.
     """
     ics = parse_ics("BEGIN:VCALENDAR\r\nMETHOD:CANCEL\r\nBEGIN:VEVENT\r\nUID:u1\r\n"
                     "END:VEVENT\r\nEND:VCALENDAR\r\n")

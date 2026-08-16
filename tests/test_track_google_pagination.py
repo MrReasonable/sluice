@@ -149,7 +149,8 @@ def test_truncated_is_true_when_the_CAP_dropped_items_even_on_the_last_page(monk
 
     When the final page carries the total past the cap, the slice throws away items already
     in hand AND `list_next` returns None -- so answering "more pages?" reported `truncated=
-    False` while 239 calendar events vanished on shipped defaults. That is this branch's own
+    False` while the slice dropped up to a full page (249 items on shipped defaults). That is
+    this branch's own
     bug class, reintroduced inside the fix.
     """
     from sluice.track.google_client import _paged

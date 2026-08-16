@@ -151,8 +151,12 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
     def _record_replacing(message_id, entry):
         """Record `entry`, REPLACING whatever row already holds that message_id.
 
-        Every record site must go through this -- there are three, and the first version of
-        this helper covered two while its own docstring said "BOTH". The table is keyed on
+        The TWO proposal record sites go through this. The third -- the failure row at the
+        bottom of the per-message `except` -- deliberately does not: it is guarded on there
+        being no open failure row already, so it never collides with itself, and it must not
+        replace a proposal row that a LATER run will want. The first version of this helper
+        covered two sites while its own docstring said "BOTH", which read as a clean bill to
+        anyone auditing. The table is keyed on
         message_id, so a row from an earlier run collides with the new one, and `record`
         raises on a differing row rather than discarding it silently. Missing a site therefore
         converts the old silent loss into a permanent stall: `deadletter_error` every run, so
