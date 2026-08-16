@@ -82,8 +82,16 @@ def _within(lo, hi, event) -> bool:
         at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:
         return True
+    # Coerce BOTH sides rather than only the event. Production bounds always carry an offset
+    # (`_window_bounds` applies `_aware` before isoformat, and
+    # `test_naive_ics_start_still_sends_offset_bearing_window_bounds` is what pins that), so a
+    # naive bound reaching here means that guarantee already broke. Comparing anyway would
+    # raise a bare TypeError from inside a FAKE, which reads as a broken test rather than as
+    # the real regression its own dedicated test reports clearly.
     if at.tzinfo is None:
         at = at.replace(tzinfo=timezone.utc)
+    lo = lo if lo.tzinfo else lo.replace(tzinfo=timezone.utc)
+    hi = hi if hi.tzinfo else hi.replace(tzinfo=timezone.utc)
     return lo <= at <= hi
 
 
@@ -103,6 +111,37 @@ def test_fake_satisfies_interface():
     assert f.search_messages("q") == (["m1"], False)
     assert f.get_message("m1")["thread_id"] == "t"
     f.insert_event({"summary": "x"}); assert f.inserted
+
+
+def _full_surface_fakes():
+    """The fakes that claim to mirror the WHOLE client, by their own docstrings.
+
+    Deliberately not every fake in the suite: several are honestly partial (the calendar-only
+    ones in `test_track_truncated_window.py` implement no Gmail half and say so). Pinning
+    those would force stubs nobody calls, which is how a conformance test starts being
+    weakened instead of obeyed."""
+    from tests.harness.google import FakeGoogleClient as HarnessFake
+    from tests.test_app_operations import _FakeGoogle
+    return [FakeGoogleClient, HarnessFake, _FakeGoogle]
+
+
+@pytest.mark.parametrize("fake", _full_surface_fakes(), ids=lambda f: f.__module__)
+def test_a_full_surface_fake_implements_every_client_method(fake):
+    """Derived from `RealGoogleClient`, never re-listed.
+
+    #146 added one method and FOUR fakes had to be hand-edited. That is the argument for this
+    test: the AttributeError a missing method raises is loud, which is why the method was
+    chosen over a kwarg -- but it surfaces inside whatever unrelated test happened to drive an
+    invite, reported as that test's failure. Here it names the fake and the method directly.
+
+    A subset check, not equality: a fake carrying extra recording helpers (`inserted`,
+    `tag_queries`) is doing its job, and `RealGoogleClient` gaining a method it does not
+    implement is the only direction that is a defect."""
+    required = {n for n in vars(gc.RealGoogleClient)
+                if not n.startswith("_") and callable(getattr(gc.RealGoogleClient, n))}
+    assert required, "derived nothing from RealGoogleClient -- the sweep would certify anything"
+    missing = sorted(n for n in required if not callable(getattr(fake, n, None)))
+    assert not missing, f"{fake.__module__}.{fake.__name__} is missing {missing}"
 
 
 class _Exec:

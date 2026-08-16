@@ -6,15 +6,20 @@ the delete entirely and report `present` while the interview stays in the calend
 then `list_events` logged the warning and returned the items, so `truncated` never reached
 `_find_ours`. Absence still read as "we never created this".
 
-#138 fixed ONE of the three causes `_find_ours` returns None for (a cancel with no DTSTART).
-This is the second: the window was short and we know it. The third -- the event sits outside
-`calendar_lookahead_days` -- was left alone rather than guessed at until #146 gave it the
-UID-keyed query it needed; `tests/test_track_calendar_uid_lookup.py` covers that one.
+Three distinct causes make `_find_ours` return None, and they are named rather than numbered
+here because an earlier draft numbered them and then referred to "the first" and "the second"
+meaning something else six lines later:
 
-The two remain distinct, and the tests below are what keep them so. A short window is
-"we could not read the whole answer"; an out-of-window event is "we asked the wrong
-question". The tag query fixes the second and deliberately does not forgive the first, since
-its own matching behaviour has never been executed against a live calendar.
+  NO-DTSTART   -- a cancel carrying only a UID. Fixed by #138.
+  SHORT-WINDOW -- the read was truncated and we know it. Fixed here, and this file is its home.
+  OUT-OF-WINDOW -- the event exists but sits beyond `calendar_lookahead_days`. Left alone
+                   rather than guessed at until #146 gave it a UID-keyed query with no time
+                   bound; `tests/test_track_calendar_uid_lookup.py` covers that one.
+
+SHORT-WINDOW and OUT-OF-WINDOW stay distinct, and the tests below are what keep them so. A
+short window is "we could not read the whole answer"; an out-of-window event is "we asked the
+wrong question". The tag query answers the second and deliberately does not forgive the first,
+because its own matching behaviour has never been executed against a live calendar.
 
 Also pinned here: the two helpers used to make the SAME `list_events` call with identical
 bounds and no sharing, so raising the page cap turned 2 requests per invite into up to 20.
@@ -120,6 +125,9 @@ def test_the_window_is_fetched_ONCE_per_sync_not_twice():
     c = _TruncatingClient(events=[], truncated=False)
     sync_event(c, TrackConfig(), lead_slug="example-lead", ics=_ics())
     assert c.calls == 1, f"fetched the same window {c.calls} times"
+    # And the #146 tag lookup adds exactly ONE more, not one per helper -- the counter existed
+    # here with no assertion on it, which is how a second walk would have slipped in unnoticed.
+    assert c.tag_calls == 1, f"asked for the tag {c.tag_calls} times"
 
 
 def test_a_kwargs_shaped_client_is_not_silently_mis_unpacked():

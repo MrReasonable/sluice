@@ -296,20 +296,32 @@ class RealGoogleClient:
         them is the documented shape, not a trick.
 
         `privateExtendedProperty` is spelled `propertyName=value` and matches only PRIVATE
-        extended properties, which is where `_event_body` writes our tag. Confirmed against
-        Google's own discovery document for `calendar/v3` (revision 20260810) -- the same
-        artefact `googleapiclient.discovery.build` constructs this very method from, so a
-        misspelled parameter NAME cannot fail quietly: the built method raises TypeError for an
-        unknown keyword, and a value carrying no `=` is a 400. What no offline check can settle
-        is the MATCHING behaviour, and that is answered structurally rather than by faith --
-        `_find_ours_anywhere` is written so that a filter matching nothing costs nothing.
+        extended properties, which is where `_event_body` writes our tag. Checked against the
+        published `calendar/v3` discovery document, revision 20260810.
 
-        `singleEvents=True` to match `list_events`, and that is load-bearing rather than
-        cosmetic: `sync_event` runs the same `_find_ours` over both result sets and then calls
-        `update_event`/`delete_event` on whatever id it finds. If the two settings disagreed,
-        one search would hand back an expanded instance and the other the recurring parent, so
-        the same UID would resolve to a different id depending on which search found it -- and
-        a delete aimed at the parent takes out the entire series."""
+        That is NOT the document this method is built from, and the distinction is worth
+        keeping straight rather than glossing. `_svc` calls `build()` with no
+        `discoveryServiceUrl`, and modern google-api-python-client resolves `static_discovery`
+        to True in exactly that case, so the method is constructed from the JSON bundled in the
+        installed wheel -- a revision `pyproject.toml` does not pin. These four parameters have
+        been present in every published revision, which is what makes the two interchangeable
+        HERE; it is not a general licence to read one and assume the other.
+
+        What that buys is a NAME that cannot fail quietly: `discovery.py` builds an argmap from
+        whichever document it loaded and raises `TypeError("Got an unexpected keyword
+        argument")` for anything outside it, so a misspelling is immediate and loud. What no
+        offline check can settle is the MATCHING behaviour. Note the honest shape of that gap:
+        Google documents this query, with a worked example -- it is UNEXECUTED here, not
+        unspecified. `_find_ours_by_tag` is written so that a filter matching nothing costs
+        nothing, which is what makes shipping an unexecuted contract defensible.
+
+        `singleEvents=True` to match `list_events`. Defence rather than a live concern:
+        `_event_body` never writes `recurrence`, so every event sluice creates is a one-off for
+        which both settings return the same object with the same id. It matters if that ever
+        changes -- `sync_event` runs one `_find_ours` over both result sets and calls
+        `update_event`/`delete_event` on whatever id it finds, so a disagreement would resolve
+        one UID to an expanded instance in one search and the recurring parent in the other,
+        and a delete aimed at the parent takes out the whole series."""
         max_results = self.calendar_max_events if max_results is None else max_results
         items, truncated = _paged(
             self._cal_svc().events(),

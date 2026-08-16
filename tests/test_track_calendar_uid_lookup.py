@@ -134,26 +134,45 @@ def test_a_filter_that_MATCHES_NOTHING_leaves_every_pre_existing_outcome_untouch
 
     If the tag query silently returns nothing, `sync_event` must behave exactly as it did
     before this lookup existed -- so the worst case of a wrong filter is the bug we already
-    ship, never a new one. Each row is an outcome the window scan reaches on its own."""
+    ship, never a new one.
+
+    The rows are marked by whether they REACH the broken filter, because a table whose rows
+    mostly never touch the thing under test certifies nothing. Measured: `created`,
+    `unresolved` and `foreign` go through it (the window found nothing of ours); `updated` and
+    `present` are answered by the window scan and are here as controls -- they must not change
+    either, and they are the ones that would break if the miss-path guard were removed."""
     cfg = TrackConfig()
     inside = "2026-10-01T09:00:00+00:00"    # within the window centred on the new start
 
+    # -- reaches the filter --------------------------------------------------------------
     nothing = _FilterMatchesNothing(events=[])
     assert sync_event(nothing, cfg, lead_slug="example-lead", ics=_ics()) == "created"
     assert nothing.inserted, "a genuinely new invite must still be booked"
+    assert nothing.tag_queries, "this row is only meaningful if it consulted the filter"
 
+    short = _FilterMatchesNothing(events=[], truncated=True)
+    assert sync_event(short, cfg, lead_slug="example-lead", ics=_ics()) == "unresolved"
+    assert not short.inserted
+    assert short.tag_queries
+
+    # The recruiter's own auto-added invite at the new slot, nothing of ours anywhere. Reaches
+    # the filter (the window holds no event of ours) and must still refuse to double-book.
+    alien = _FilterMatchesNothing(
+        events=[{"id": "recruiters-own", "start": {"dateTime": "2026-10-01T10:00:00+00:00"}}])
+    assert sync_event(alien, cfg, lead_slug="example-lead", ics=_ics()) == "foreign"
+    assert not alien.inserted and not alien.updated and not alien.deleted
+    assert alien.tag_queries
+
+    # -- controls: answered by the window, must be unaffected ----------------------------
     moved = _FilterMatchesNothing(events=[_ours(start_iso=inside)])
     assert sync_event(moved, cfg, lead_slug="example-lead", ics=_ics()) == "updated"
 
     same = _FilterMatchesNothing(events=[_ours(start_iso="2026-10-01T10:00:00+00:00")])
     assert sync_event(same, cfg, lead_slug="example-lead", ics=_ics()) == "present"
 
-    short = _FilterMatchesNothing(events=[], truncated=True)
-    assert sync_event(short, cfg, lead_slug="example-lead", ics=_ics()) == "unresolved"
-    assert not short.inserted
-
     cancel = _FilterMatchesNothing(events=[_ours(start_iso=inside)])
-    assert sync_event(cancel, cfg, lead_slug="example-lead", ics=_ics(cancelled=True)) == "cancelled"
+    assert sync_event(cancel, cfg, lead_slug="example-lead",
+                      ics=_ics(cancelled=True)) == "cancelled"
 
 
 class _FilterMatchesTooMuch(FakeGoogleClient):
@@ -212,6 +231,153 @@ def test_a_CLEAN_tag_query_does_not_clear_a_SHORT_window():
         "only after the query has been run against a live calendar")
 
 
+# ---- the query must not be asked when the answer could not be trusted ----------------------
+
+def test_an_invite_with_NO_uid_matches_nothing_of_ours():
+    """An empty search key must mean ABSTAIN, never match-everything.
+
+    `parse_ics` admits a VEVENT with a DTSTART and no UID -- its last line is
+    `ev.uid or ev.start` -- so `_event_body` can write `sluice-track-uid: ""`, and equality
+    made `"" == ""` a hit. The +/- lookahead window used to contain that. A query with NO time
+    bound does not: it asks Google for every UID-less event sluice ever created, anywhere in
+    the calendar.
+
+    The concrete harm, which is why this is not a tidiness test: sluice booked one firm's
+    UID-less invite months ago; a DIFFERENT firm's UID-less invite arrives; `sync_event`
+    resolves the second onto the first and rewrites its summary, its start and its
+    `sluice-track-lead`. The first interview is gone from the calendar and the second was
+    never booked as its own entry -- reported as `updated`, counted as a success, with nothing
+    routed to a human. On a cancel it DELETES the other firm's live interview."""
+    from sluice.track.ics import parse_ics
+
+    theirs = {"id": "other-firms-event",
+              "start": {"dateTime": "2026-07-15T10:00:00+00:00"},
+              "extendedProperties": {"private": {"sluice-track-uid": "",
+                                                 "sluice-track-lead": "other-lead"}}}
+    ours = parse_ics("BEGIN:VEVENT\r\nDTSTART:20261001T100000Z\r\nSUMMARY:Screen\r\n"
+                     "END:VEVENT")
+    assert ours is not None and ours.uid == "", "fixture must be the UID-less invite"
+
+    c = FakeGoogleClient(events=[theirs])
+    assert sync_event(c, TrackConfig(), lead_slug="example-lead", ics=ours) == "created"
+    assert not c.updated and not c.deleted, "another lead's event was treated as our own"
+    assert c.tag_queries == [], "an empty-value query must never be sent at all"
+
+    d = FakeGoogleClient(events=[theirs])
+    ours.method = "CANCEL"
+    assert sync_event(d, TrackConfig(), lead_slug="example-lead", ics=ours) == "present"
+    assert not d.deleted, "a cancel deleted an event belonging to a different lead"
+
+
+def test_a_CANCEL_removes_EVERY_entry_of_ours_not_just_the_one_in_the_window():
+    """The population this whole fix serves is the one most likely to hit this.
+
+    An operator who already suffered #146 has BOTH the orphan at the old time and the duplicate
+    at the new one, each carrying this exact tag. The window scan sees only the one at the
+    current time. Deleting that and reporting `cancelled` is a positive claim the interview is
+    gone while the orphan is still in the calendar -- the #138 conflation exactly, arriving
+    through a new door.
+
+    So a cancel asks by tag ALWAYS, even when the window already found something, and removes
+    every entry it finds. Removal is the one operation where that is unambiguous: the interview
+    is cancelled, so every entry we made for it is stale."""
+    orphan = _ours(event_id="orphan-at-old-time")
+    dupe = _ours(start_iso="2026-10-01T10:00:00+00:00", event_id="duplicate-at-new-time")
+
+    c = FakeGoogleClient(events=[orphan, dupe])
+    assert sync_event(c, TrackConfig(), lead_slug="example-lead",
+                      ics=_ics(cancelled=True)) == "cancelled"
+    assert sorted(c.deleted) == ["duplicate-at-new-time", "orphan-at-old-time"], (
+        f"a cancelled interview was left in the calendar: deleted only {c.deleted}")
+
+
+def test_a_cancel_asks_by_tag_EVEN_WHEN_the_window_already_found_one():
+    """The mechanism behind the test above, pinned separately.
+
+    Restoring the miss-path-only guard on the cancel arm would leave that test green ONLY
+    because of the orphan; a reader could reasonably 'tidy' the condition back to `if not mine`
+    and this is what says no."""
+    c = FakeGoogleClient(events=[_ours(start_iso="2026-10-01T10:00:00+00:00")])
+    assert sync_event(c, TrackConfig(), lead_slug="example-lead",
+                      ics=_ics(cancelled=True)) == "cancelled"
+    assert c.tag_queries == [("sluice-track-uid", "u1")], (
+        "a cancel must confirm there is nothing of ours elsewhere before claiming removal")
+
+
+def test_a_RESCHEDULE_onto_two_entries_of_ours_refuses_to_guess():
+    """Removal is unambiguous with several entries; a move is not.
+
+    Both entries here sit outside the window, so the tag query is what finds them -- which is
+    the shape a long reschedule actually produces. `events.list` is called with no `orderBy`,
+    so "the first" is whatever Google happened to return: updating it moves an arbitrary one
+    and silently leaves the other. Only a human can say which is real."""
+    both = [_ours(event_id="one-of-two"), _ours(event_id="two-of-two")]
+    c = FakeGoogleClient(events=both)
+    assert sync_event(c, TrackConfig(), lead_slug="example-lead", ics=_ics()) == "unresolved"
+    assert not c.updated and not c.inserted, "moved an arbitrary one of two candidates"
+
+
+def test_a_tag_query_that_RAISES_does_not_fall_through_to_an_insert():
+    """The narrow softening that the missing-method test cannot catch.
+
+    `test_a_client_MISSING_the_tag_query_fails_loudly...` catches a `getattr` guard and a bare
+    `except Exception`. It does NOT catch `except HttpError: tagged = []`, which looks careful,
+    reads as defensive, and silently reinstates #146: a transport blip on the lookup would
+    fall through to an insert and duplicate an interview we simply failed to look for.
+
+    Propagating is the accepted cost, and it is the choice #142 already made for this seam --
+    a transport error becomes a retryable per-message failure, a dead-letter row and a digest
+    line, rather than a guess."""
+    import pytest
+
+    class _Boom(FakeGoogleClient):
+        def find_events_by_private_property(self, name, value, max_results=2500):
+            raise RuntimeError("google said no")
+
+    c = _Boom(events=[])
+    with pytest.raises(RuntimeError, match="google said no"):
+        sync_event(c, TrackConfig(), lead_slug="example-lead", ics=_ics())
+    assert not c.inserted, "swallowing the error would duplicate an interview"
+
+
+def test_a_uid_too_long_for_google_still_round_trips():
+    """Google SILENTLY TRUNCATES a private-property value past 1024 characters.
+
+    `parse_ics` puts no bound on a UID -- it is `value.strip()` off a third-party invite -- so
+    a longer one was written cut short while `_uid_of` and the tag query both searched for the
+    whole string. Our own event would be unfindable by window OR tag, and a fresh duplicate
+    inserted on every single run, forever: strictly worse than #146, which at least needs a
+    long reschedule to fire.
+
+    Truncating on BOTH sides closes the round trip by construction. The echo below is what
+    Google would actually hand back on the next run."""
+    from sluice.track.calendar_sync import _UID_KEY, _UID_VALUE_MAX
+
+    long_uid = "u" * (_UID_VALUE_MAX + 500)
+    first = FakeGoogleClient(events=[])
+    sync_event(first, TrackConfig(), lead_slug="example-lead", ics=_ics(uid=long_uid))
+    stored = first.inserted[0]["extendedProperties"]["private"][_UID_KEY]
+    assert len(stored) == _UID_VALUE_MAX, "we must not hand Google more than it will keep"
+
+    echoed = {"id": "ev1", "start": {"dateTime": "2026-10-01T10:00:00+00:00"},
+              "extendedProperties": {"private": {_UID_KEY: stored}}}
+    again = FakeGoogleClient(events=[echoed])
+    assert sync_event(again, TrackConfig(), lead_slug="example-lead",
+                      ics=_ics(uid=long_uid)) == "present"
+    assert not again.inserted, "a second run duplicated the entry it had just booked"
+
+
+def test_the_tag_KEY_fits_inside_googles_own_limit():
+    """Google silently DROPS a private-property key over 44 characters -- no error, the tag
+    simply never lands, and every lookup then reads as "we never created this". A rename is
+    the only way to trip this, and a rename is exactly the change that would not think to
+    check."""
+    from sluice.track.calendar_sync import _UID_KEY
+
+    assert len(_UID_KEY) <= 44, (
+        f"_UID_KEY is {len(_UID_KEY)} chars; Google drops keys over 44 SILENTLY")
+
+
 # ---- through engine.run, because a return value is not an outcome --------------------------
 
 def _rescheduled_invite_client(uid="u1"):
@@ -239,11 +405,12 @@ def _rescheduled_invite_client(uid="u1"):
 def test_a_rescheduled_invite_END_TO_END_moves_the_entry_and_leaves_no_second_one():
     """`sync_event`'s return value is not the thing that hurts anybody.
 
-    Every wave-1 test of this module stopped at that return value, which is exactly why a
-    routing gap survived them: an outcome can be correct and still reach no calendar and no
-    human. This drives the whole path -- Gmail message, .ics parse, classify, reconcile,
-    engine.run -- and asserts on the CALLS that reached Google and on the run report the
-    operator actually sees.
+    A unit test that stops at that return value cannot see a routing gap -- an outcome can be
+    correct and still reach no calendar and no human. `tests/test_track_unresolved_routing.py`
+    exists for exactly that reason and drives `engine.run` end to end; this is the same
+    treatment for #146. It runs the whole path -- Gmail message, .ics parse, classify,
+    reconcile, engine.run -- and asserts on the CALLS that reached Google and on the run report
+    the operator actually sees.
     """
     import json
 
@@ -268,7 +435,9 @@ def test_a_rescheduled_invite_END_TO_END_moves_the_entry_and_leaves_no_second_on
     # The non-emptiness check FIRST. `all()` over an empty list is True, so without it a run
     # that reconciled nothing at all -- an .ics that failed to parse, a classification that
     # matched no lead -- would satisfy the line below while proving the opposite of what it
-    # claims. This module already lost that argument once, in the silent-warning test.
+    # claims. Same shape as the empty-`caplog` trap that
+    # `test_track_calendar_sync.py::test_resolved_zone_and_present_outcome_stay_silent` carries
+    # a positive control for: an assertion over an empty collection flatters the code.
     assert rep.results, "nothing was reconciled, so the assertion below would be vacuous"
     assert all(not r.needs_review for r in rep.results), (
         f"a resolved reschedule must not also nag a human: "

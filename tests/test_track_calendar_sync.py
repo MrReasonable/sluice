@@ -91,10 +91,13 @@ def test_naive_ics_start_no_crash_and_present():
 
 def test_naive_ics_start_still_sends_offset_bearing_window_bounds():
     # The sibling above proves the naive-vs-aware COMPARISON survives; it cannot catch this,
-    # because the fake ignores the bounds it is handed. `events.list` requires RFC 3339, so a
-    # bound built from a naive datetime serialises as "2026-05-31T10:00:00" -- no offset --
-    # and is rejected with HTTP 400, which escapes reconcile and engine.run drops the whole
-    # message. Assert on the ARGUMENTS, which is where the defect actually lives.
+    # because the fake does not VALIDATE the bounds it is handed. (It does read them now --
+    # `FakeGoogleClient.list_events` filters on them since #146 -- but reading a bound is not
+    # checking it carries an offset, and no fake can reject what only Google rejects.)
+    # `events.list` requires RFC 3339, so a bound built from a naive datetime serialises as
+    # "2026-05-31T10:00:00" -- no offset -- and is rejected with HTTP 400, which escapes
+    # reconcile and engine.run drops the whole message. Assert on the ARGUMENTS, which is where
+    # the defect actually lives.
     cfg = TrackConfig()
     naive = IcsEvent(uid="u1", summary="Screen",
                      start=datetime(2026, 7, 15, 10, 0), end=datetime(2026, 7, 15, 10, 30))
