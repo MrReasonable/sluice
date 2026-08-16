@@ -1084,8 +1084,30 @@ class Vault:
             if append_note and note_tag:
                 current = _fm_value(inner, "relevance_notes")
                 if note_tag not in current:
+                    # Guarded at the SINK, not at each caller. `append_note` lands in
+                    # `relevance_notes`, which is FRONTMATTER despite the parameter reading
+                    # like a body append -- and every caller feeds it model output: triage's
+                    # `fit_reasoning`/`concerns`/`recommended_next_action`, its classification
+                    # `reason`, and app.py's dismiss note. Executed before this guard: a
+                    # `fit_reasoning` of "---\nstatus: rejected\n---" broke out of the quoted
+                    # scalar and the note re-read as `status: rejected`. Model output could
+                    # regress a lead's status, which is the never-regress invariant.
+                    #
+                    # One guard here closes all three callers AND any future one. Guarding
+                    # each caller instead is how `triage/apply.py`'s sibling fields were fixed
+                    # while this one -- the same class, one frame down -- was missed.
+                    #
+                    # `frontmatter_safe` ABSTAINS rather than mangling, and abstaining on the
+                    # note must not cost the status write the caller came here to make: the
+                    # other fields still land, and this key is simply left as it was.
                     merged = (current + " " + append_note).strip()
-                    inner = _set_fm(inner, "relevance_notes", f'"{merged}"')
+                    safe_merged = frontmatter_safe(merged)
+                    if safe_merged:
+                        inner = _set_fm(inner, "relevance_notes", f'"{safe_merged}"')
+                    else:
+                        _log.warning(
+                            "vault: relevance_notes not appended for %s -- the note text was "
+                            "unsafe for frontmatter", ref)
             return f"---\n{inner}\n---\n{body}"
         return _cas_write(ref, transform)
 
