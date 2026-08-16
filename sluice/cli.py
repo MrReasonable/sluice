@@ -755,24 +755,17 @@ def cmd_track_run(args, config) -> int:
             len(rep.failures), "; ".join(shown))
         if extra > 0:
             body += f"; ...and {extra} more (see the run digest)"
-        # Gated on `not args.dry_run` above: a preview run must not push an external message,
-        # and it also records no dead-letter rows, which made the fallback line below a false
-        # statement on exactly that path.
-        outcome = notify(body, config=config)
-        if outcome == "unconfigured":
-            # Every caller ignored this, so on an install without a Telegram token the fix
-            # for "stderr is discarded" was a second silent channel.
-            print("  (no notification sent: no Telegram token configured -- these failures "
-                  "are recorded in the dead-letter store and re-surface every run)",
-                  file=sys.stderr)
-        elif outcome == "failed":
-            # The state that used to be invisible. `_telegram_sender` swallows transport
-            # errors by design, so a revoked token or a dead network read as delivered --
-            # and the operator concluded the alert channel worked when it never had.
-            print("  WARNING: the failure notification could NOT be delivered (Telegram "
-                  "rejected it or was unreachable) -- check the token, the chat id and the "
-                  "log. The failures below are in the dead-letter store either way.",
-                  file=sys.stderr)
+        # Through the SHARED helper, like the other three sub-apps. This block was written
+        # inline first and the helper was extracted for ingest/triage/cv around it, which left
+        # the outcome->message mapping in two places -- the exact duplication the helper
+        # exists to prevent, in the sub-app it was written for.
+        #
+        # Gated on `not args.dry_run` above: a preview must not push an external message, and
+        # it records no dead-letter rows either, which made the unconfigured note's durability
+        # claim false on exactly that path.
+        _notify_reporting(body, config=config, label="track-failure",
+                          unconfigured_note=" -- these failures are recorded in the "
+                                            "dead-letter store and re-surface every run")
     if rep.open_proposals:
         print("  OPEN PROPOSALS (awaiting action):", file=sys.stderr)
         for e in rep.open_proposals:

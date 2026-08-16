@@ -168,3 +168,21 @@ def test_a_held_watermark_is_reported(_run, capsys):
     _run(RunReport(msgs=1, deadletter_error=True))
     err = capsys.readouterr().err
     assert "watermark" in err.lower(), f"a held watermark must be visible: {err}"
+
+
+def test_a_truncated_search_is_REPORTED_in_the_digest(_run, capsys):
+    """The only thing telling an operator why their run went quiet.
+
+    `search_truncated` now holds the lastrun watermark, so a run can legitimately make no
+    progress. Deleting the whole `if rep.search_truncated:` block left the suite green: the
+    flag's propagation and the watermark gate were both pinned, the MESSAGE was not.
+    """
+    _run(RunReport(msgs=1, search_truncated=True))
+    err = capsys.readouterr().err
+    assert "hit its cap" in err, err
+    assert "HELD" in err, "the operator must be told the watermark is holding"
+
+
+def test_a_complete_search_says_nothing_about_caps(_run, capsys):
+    _run(RunReport(msgs=1, classified=1))
+    assert "hit its cap" not in capsys.readouterr().err

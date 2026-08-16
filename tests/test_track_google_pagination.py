@@ -286,11 +286,11 @@ def test_the_probe_failure_branch_is_actually_REACHED(monkeypatch):
     assert truncated is True, "an unanswerable probe must assume the worse, honest answer"
 
 
-def _warns(monkeypatch, caplog, *, gmail=None, cal=None, **kw):
+def _warns(monkeypatch, caplog, *, gmail=None, cal=None, query="q", **kw):
     with caplog.at_level("WARNING", logger="sluice.track.google_client"):
         c = _client_with(monkeypatch, gmail=gmail, cal=cal)
         if gmail is not None:
-            c.search_messages("q", **kw)
+            c.search_messages(query, **kw)
         else:
             c.list_events("a", "b", **kw)
     return [r.getMessage() for r in caplog.records
@@ -302,9 +302,18 @@ def test_the_gmail_truncation_WARNING_actually_fires(monkeypatch, caplog):
     # own docstring claimed "hitting it is loud".
     pages = [{"messages": [{"id": f"m{i}"} for i in range(5)], "nextPageToken": "t"},
              {"messages": [{"id": "z"}]}]
-    said = _warns(monkeypatch, caplog, gmail=_GmailPaged(pages), max_results=3)
+    # A query shaped like a real one: `_gmail_query` appends `gmail_extra_query`, which is
+    # where the operator's own job-hunt domains and addresses live.
+    query = "after:2026/07/10 -category:promotions from:jobs@example-tidal.invalid"
+    said = _warns(monkeypatch, caplog, gmail=_GmailPaged(pages), max_results=3, query=query)
     assert said, "a truncated gmail search must say so"
-    assert "3" in " ".join(said), "the warning should name the cap that was hit"
+    joined = " ".join(said)
+    assert "3" in joined, "the warning should name the cap that was hit"
+    # ...and NOT the query. `config.py` sets the rule: a log message travels further (logs,
+    # bug reports) than the config file does. Naming the KNOB keeps it actionable without the
+    # value -- and putting `%r`/`query` back into the warning was green before this line.
+    assert "example-tidal.invalid" not in joined, f"the warning leaked the query: {joined}"
+    assert "gmail_extra_query" in joined, "it must still name the knob to narrow"
 
 
 def test_the_calendar_truncation_WARNING_actually_fires(monkeypatch, caplog):

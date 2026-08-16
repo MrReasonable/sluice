@@ -159,44 +159,10 @@ def test_confirm_still_writes_an_ordinary_when():
     assert 'interview_date: "2026-07-15"' in path.read_text()
 
 
-def test_the_frontmatter_write_sweep_covers_the_WHOLE_track_package():
-    """ENUMERATED across the package, not one function.
-
-    The previous version called itself "enumerated, not hand-listed" and then scoped itself to
-    `inspect.getsource(R._advance)` -- so the recurrence it was written to prevent was already
-    sitting in `engine.confirm`, structurally invisible to it. A sweep whose boundary is one
-    function is a hand-list with extra steps.
-    """
-    import re
-
-    pkg = pathlib.Path(E.__file__).parent
-    offenders = []
-    for py in sorted(pkg.glob("*.py")):
-        for i, line in enumerate(py.read_text(encoding="utf-8").splitlines(), 1):
-            # A quoted frontmatter scalar built by interpolation.
-            if not re.search(r'fields\[[^\]]+\]\s*=\s*f[\'"]"', line):
-                continue
-            # `.isoformat()` on a parsed datetime structurally cannot carry a quote or a
-            # backslash. Exempting the TYPE rather than the field name means a later change
-            # routing a raw string through the same field is still caught.
-            if ".isoformat()" in line:
-                continue
-            if "safe" not in line:
-                offenders.append(f"{py.name}:{i}: {line.strip()}")
-    assert not offenders, (
-        "an untrusted value is interpolated into frontmatter unguarded:\n  "
-        + "\n  ".join(offenders))
-
-
-def test_the_sweep_actually_finds_the_writes_it_is_checking():
-    """Guards the sweep. A regex that matches nothing passes silently and forever."""
-    import re
-
-    pkg = pathlib.Path(E.__file__).parent
-    hits = [1 for py in pkg.glob("*.py")
-            for line in py.read_text(encoding="utf-8").splitlines()
-            if re.search(r'fields\[[^\]]+\]\s*=\s*f[\'"]"', line)]
-    assert len(hits) >= 3, f"the sweep found {len(hits)} frontmatter writes -- it has drifted"
+# The package-wide sweep that used to live here moved to
+# `tests/test_frontmatter_write_sweep.py`. It called itself "the WHOLE track package"
+# and that boundary was the bug: `sluice/triage/apply.py` was writing the model's own
+# `culture_flags` into a quoted scalar unguarded, invisible to a track-only scan.
 
 
 @pytest.mark.parametrize("bad", ['a"b', "a\\b"])
@@ -207,3 +173,35 @@ def test_frontmatter_safe_rejects_both_structural_characters(bad):
     from sluice.core.vault import frontmatter_safe
 
     assert frontmatter_safe(bad) is None
+
+
+def test_confirm_TELLS_the_operator_their_when_was_dropped(monkeypatch, capsys, tmp_path):
+    """The consumer, not just the flag.
+
+    `engine.confirm` returns `when_dropped` and the test above asserts it -- at the engine
+    boundary. Deleting `if out.get("when_dropped"):` from `cmd_track_confirm` was green, which
+    is the state the guard's own comment calls out: "A guard whose result nothing consumes is
+    the silent drop it was added to prevent."
+    """
+    out = {"ok": True, "from": "interview", "to": "offer", "when_dropped": True}
+    monkeypatch.setattr("sluice.core.app.Sluice.track_confirm", lambda self, **k: out)
+
+    class _A:
+        def __getattr__(self, _n):
+            return None
+    args = _A()
+    cli.cmd_track_confirm(args, Config())
+    err = capsys.readouterr().err
+    assert "interview_date dropped" in err, f"the operator was not told: {err!r}"
+
+
+def test_confirm_stays_QUIET_when_the_when_was_written(monkeypatch, capsys):
+    # The inverse: a line printed unconditionally would train the reader to ignore it.
+    out = {"ok": True, "from": "interview", "to": "offer", "when_dropped": False}
+    monkeypatch.setattr("sluice.core.app.Sluice.track_confirm", lambda self, **k: out)
+
+    class _A:
+        def __getattr__(self, _n):
+            return None
+    cli.cmd_track_confirm(_A(), Config())
+    assert "dropped" not in capsys.readouterr().err

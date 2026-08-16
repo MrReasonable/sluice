@@ -294,10 +294,35 @@ def test_we_still_never_touch_the_foreign_event():
     assert not client.inserted and not client.updated and not client.deleted
 
 
-def test_an_ordinary_free_slot_still_books_and_stays_quiet():
-    rep, dl, _seen, _note = _run(_TruncatedClient(truncated=False))
-    assert rep.calendar_added == 1
+def test_an_event_OUTSIDE_the_match_window_does_not_block_the_booking():
+    """The boundary `_ForeignClient` sits inside, from the other side.
+
+    This was a byte-identical copy of `test_a_COMPLETE_window_still_books_and_records_nothing`
+    -- same fixture, same assertions -- so it pinned nothing the other did not.
+    `calendar_match_minutes` ships at 30; an event well outside that must NOT suppress the
+    insert, or the `foreign` outcome becomes a blanket refusal to ever book anything on a
+    busy calendar.
+    """
+    class _FarAway(_TruncatedClient):
+        def __init__(self):
+            super().__init__(truncated=False)
+            # 4 hours out: far outside the 30-minute proximity window.
+            self.events = [{"id": "lunch",
+                            "start": {"dateTime": "2026-07-15T14:00:00+00:00"}}]
+
+    rep, dl, _seen, _note = _run(_FarAway())
+    assert rep.calendar_added == 1, "an unrelated event hours away blocked the booking"
     assert [e for e in dl.open_entries() if e.message_id == "m1"] == []
+
+
+def test_a_dry_run_records_no_calendar_row_either():
+    """`--dry-run` must reach nothing durable. The failure row's dry-run guard was covered;
+    the `needs_review` calendar row is the newest write path and was not."""
+    v, _path = _vault("applied")
+    dl = _dl()
+    E.run(v, TrackConfig(), _TruncatedClient(), FakeBackend(_INTERVIEW), seen=set(),
+          deadletter=dl, now_iso="2026-07-10T12:00:00+00:00", dry_run=True)
+    assert dl.open_entries() == [], "a preview run wrote a dead-letter row"
 
 
 def test_a_failure_over_an_open_PROPOSAL_row_does_not_stall_the_watermark():
@@ -363,6 +388,11 @@ def test_a_failing_CLEAR_does_not_report_a_successful_message_as_failed():
         "tidying up after a SUCCESSFUL message reported it as a failed one: "
         f"{[f.detail() for f in rep.failures]}")
     assert "m1" in seen, "a successful message must be consumed, not re-processed forever"
+    # The docstring's other half, which this stopped short of asserting: swallowing the RAISE
+    # must not also swallow the SIGNAL. `deadletter_error` still holds the watermark, so a
+    # store that cannot be written does not quietly advance past un-persisted work.
+    assert rep.deadletter_error is True, (
+        "a failing dead-letter write must still hold the lastrun watermark")
 
 
 def test_every_needs_review_REASON_has_a_hint():
