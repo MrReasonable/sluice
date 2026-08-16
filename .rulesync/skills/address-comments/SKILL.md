@@ -300,6 +300,10 @@ For each fix:
 
 If multiple comments anchor on the same originating commit, batch them into one fixup commit per originating commit. If a single fix spans multiple originating commits (rare), pick the earliest and note the others in the commit body.
 
+**`git blame`'s answer can go STALE mid-multi-round review.** It names whichever commit last touched those exact lines as of the CURRENT tree -- but if you're now on round 2 or 3 of review response, an EARLIER round's own fixup (already squashed into some commit) may have already rewritten the very lines your new fix touches. `git blame` still reports correctly for the current tree, but the commit it names may itself have gained MORE content since — a later commit in the branch may have further rewritten the same region (a docstring reworded, an API widened, an import list extended) without `git blame` reflecting that, because blame answers "who wrote what's here now," not "is this the safest fixup target." A fixup committed against a target whose tree doesn't yet contain content the CURRENT diff assumes will conflict on autosquash. Before committing, verify: `git log --oneline <merge-base>..HEAD -- <file>` to find the LAST in-branch commit touching this file, then `git diff <that-commit> -- <file>` restricted to the exact hunk you're changing -- empty output there means that commit's tree already matches what your fixup expects, so it's a safe target. If it's NOT empty, retarget to that later commit instead of the one `git blame` named. This is not rare: it recurred 6 times across 3 review-response rounds on one PR (#131/#132), always resolved by retargeting, never by falling back to a plain non-fixup commit.
+
+**If a single fixup would touch multiple files with DIFFERENT correct targets** (e.g. a source fix + its test, where the source's last-touching commit differs from the test file's), split it: temporarily revert the wrong-target file's hunk (restore its pre-edit content), commit the isolated correct hunk against its target, then re-apply the reverted file's edit and commit it separately against ITS OWN correct target. Confirm each commit's diff touches exactly one file's hunk (`git diff --stat`) before committing.
+
 **Never `git commit -m "fix: apply CR auto-fixes"`.** Use `--fixup`; autosquash collapses the fixups into their targets before push, so the final history keeps the original Conventional Commit subjects (`fix(triage): ...`, `feat(cv): ...`).
 
 If a comment genuinely requires a NEW commit rather than a fixup (rare: it's new scope, not a correction to existing work), write it as a Conventional Commit and end the message with the repo trailer:
@@ -399,7 +403,13 @@ git push --force-with-lease
 
 Re-run the Step 7 quality bar after the rebase if it moved more than the fixups (a rebase over new upstream commits can surface a conflict-free but semantically broken tree).
 
-If the autosquash hits a conflict, `git rebase --abort` and escalate to the user. Do not resolve it heuristically: that's how histories get scrambled.
+If the autosquash hits a conflict, `git rebase --abort` first, then diagnose which shape it is before deciding what to do next:
+
+- **Stale fixup target (Step 5's warning)**: the conflict is a fixup whose diff no longer applies because a LATER commit already rewrote that region. This is a safe, mechanical fix, not a heuristic resolution -- retarget per Step 5's verification recipe (`git log --oneline <merge-base>..HEAD -- <file>` for the last in-branch touch, confirm with `git diff <candidate> -- <file>`) and retry the rebase. Recognize it by: the conflict markers show your OWN old/new content on one side and unrelated-looking surrounding changes (an import list, a docstring, a return-type widening) on the other -- not two different people's edits to the SAME logical change.
+- **An import-list or similarly mechanical merge** (e.g. two fixups each add a different name to the same `from x import ...` line): resolve by hand -- merge both additions into one line, verify no name is dropped, confirm no `<<<<<<<`/`=======`/`>>>>>>>` markers remain, then continue. This is still mechanical, not a judgment call.
+- **A genuine content clash** (two different intended changes to the same logical code, and it's unclear which should win, or resolving requires re-deriving what the correct combined behavior even is): `git rebase --abort` and escalate to the user. Do NOT resolve this kind heuristically -- that's how histories get scrambled.
+
+The distinction is whether resolving requires JUDGMENT about what the code should do (escalate) or only recovering information git's context-based patching couldn't see (the two mechanical cases above, safe to self-resolve).
 
 ## Step 9: Resolve addressed threads with GraphQL
 
