@@ -35,7 +35,7 @@ def test_eligibility_rejects_non_shortlist():
 def test_eligibility_reasons():
     v, cfg = _vault([
         ("NoUrl.md", 'company: "A"\nrole: "Analyst"\nstatus: shortlist\ntailored_cv: CV_deadbeef.pdf (2026-07-09)'),
-        ("BadScheme.md", 'company: "E"\nrole: "Analyst"\nstatus: shortlist\n'
+        ("BadScheme.md", 'company: "Example"\nrole: "Analyst"\nstatus: shortlist\n'
                          'url: "httpx://internal"\ntailored_cv: CV_deadbeef.pdf (2026-07-09)'),
         ("Legacy.md", 'company: "B"\nrole: "Analyst"\nstatus: shortlist\nurl: "https://x/y"\ntailored_cv: "My CV/CV_B.pdf"'),
         ("Skipped.md", 'company: "C"\nrole: "Analyst"\nstatus: shortlist\nurl: "https://x/y"\ntailored_cv: "SKIPPED - too senior"'),
