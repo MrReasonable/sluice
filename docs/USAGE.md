@@ -176,8 +176,11 @@ unconfigured, or rejected by the transport — that last one was previously indi
 from success, because the send error is swallowed by design. The notified list is capped, with
 the total count leading the message so truncating the list loses nothing vital, because an
 oversized body is rejected outright. On a real run each failure is additionally recorded as a
-dead-letter row, so it survives the Gmail query window moving past it and can be cleared with
-`track dismiss --id`; `--dry-run` records nothing and sends nothing.
+dead-letter row — **when that write succeeds** — so it survives the Gmail query window moving
+past it and can be cleared with `track dismiss --id`. If the dead-letter store cannot be
+written the run says so on its own `WARNING:` line and holds the watermark instead, which is
+the only reason the message stays reachable at all. `--dry-run` records nothing and sends
+nothing.
 
 Exit 1 only on a Google reauth failure (`track: google reauth needed (token refresh
 failed)`); otherwise exit 0 — including a run with failures. A run that could not WRITE the

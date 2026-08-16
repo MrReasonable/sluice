@@ -153,6 +153,34 @@ class TrackConfig:
     job_board_domains: dict = field(default_factory=lambda: dict(_JOB_BOARD_DOMAINS))
 
 
+# Keys whose value is a hard CAP on how much one run reads. A cap that silently becomes 0 or
+# False stops the run reading anything, which is the silent-loss class this sub-app exists to
+# close -- introduced by making these configurable at all.
+_POSITIVE_INT_KEYS = ("gmail_max_messages", "calendar_max_events")
+
+
+def _positive_int(key: str, value):
+    """A cap must be a real integer >= 1.
+
+    `bool` FIRST and separately: `bool` subclasses `int`, and PyYAML resolves `no`/`off`/
+    `false` to `False`, so `gmail_max_messages: no` passed an `isinstance(int)` test and then
+    made `min(value, 500)` evaluate to 0 -- a one-word typo that stops track reading any mail
+    at all, reported as an ordinary empty run. Measured, not theorised.
+
+    Raises rather than clamping: a cap the user wrote and we silently replaced is the same
+    class of lie as the value we are rejecting.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(
+            f"track.{key} must be a positive integer, got {value!r} "
+            f"({type(value).__name__}). Note YAML reads bare no/off/false as a BOOLEAN.")
+    if value < 1:
+        raise ValueError(
+            f"track.{key} must be >= 1, got {value}. A cap of {value} makes every run read "
+            f"nothing, which is indistinguishable from an empty mailbox.")
+    return value
+
+
 def load_track_config(path: str | None = None, *,
                       refuse_relocated_seen_db: bool = False) -> TrackConfig:
     cfg = TrackConfig()
@@ -168,7 +196,9 @@ def load_track_config(path: str | None = None, *,
         for k, v in data.items():
             if not (hasattr(cfg, k) and v is not None):
                 continue
-            if k in _MERGED_DENYLISTS:
+            if k in _POSITIVE_INT_KEYS:
+                setattr(cfg, k, _positive_int(k, v))
+            elif k in _MERGED_DENYLISTS:
                 # Merge, never replace -- see _MERGED_DENYLISTS. No `isinstance` test
                 # guarding the branch: a non-mapping value must RAISE, not fall through
                 # to the plain setattr below, which would replace the safety denylist

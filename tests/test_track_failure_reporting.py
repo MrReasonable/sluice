@@ -1,9 +1,15 @@
-"""A track run that dropped messages must SAY WHICH, notify, and not exit 0.
+"""A track run that dropped messages must SAY WHICH, and notify -- while still exiting 0.
 
 #140. `RunReport.failures` was a bare `int`. `cmd_track_run` printed `failures=N` and returned
 0, and called no `notify()` -- `notify` appears for ingest, triage and cv, and nowhere in
-track. Under cron that is: exit 0, no Telegram line, and a bare count on a stderr stream that
-is usually discarded.
+track. Under cron that is: no Telegram line, and a bare count on a stderr stream that is
+usually discarded.
+
+The exit code deliberately does NOT change: `docs/USAGE.md` documents exit 1 for a Google
+reauth failure ONLY, cron alerting is built on that, and one transient message failure making
+every run "fail" is how an alert gets muted. What changes is that the run stops being SILENT.
+An earlier version of this line said a dropped-message run "must not exit 0", which
+contradicted the test forty lines down asserting exactly that.
 
 `sluice/triage/engine.py` already had the right shape -- `failures` is a LIST of messages and
 `cmd_triage_run` prints each one -- so this is matching an in-repo precedent rather than
@@ -156,11 +162,11 @@ def test_the_full_cause_does_not_escape_through_repr_or_a_container():
     """
     from sluice.track.engine import RunReport, TrackFailure
 
-    secret = "HttpError: 400 requesting https://gmail.googleapis.com/?q=from:x@example.invalid"
+    secret = "HttpError: 400 requesting https://mail.example.invalid/?q=from:x@example.invalid"
     f = TrackFailure("m1", secret, kind="HttpError")
     assert repr(f) == f.safe(), "repr must not be the generated field dump"
     for rendering in (repr(f), "%s" % [f], "%s" % {"f": f}, "%s" % RunReport(failures=[f])):
-        assert "gmail.googleapis.com" not in rendering, rendering
+        assert "mail.example.invalid" not in rendering, rendering
         assert "example.invalid" not in rendering, rendering
     # ...and the detail is still reachable when asked for by name.
     assert secret in f.detail()

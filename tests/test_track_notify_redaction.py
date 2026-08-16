@@ -61,7 +61,7 @@ def _run(monkeypatch):
 _LEAKY = TrackFailure(
     message_id="m1",
     cause=("HttpError: 400 when requesting "
-           "https://gmail.googleapis.com/v1/users/me/messages?q=after:2026/07/01+"
+           "https://mail.example.invalid/v1/users/me/messages?q=after:2026/07/01+"
            "from:recruiter@example-employer.invalid — 'Interview: Staff Engineer at Example Co'"))
 
 
@@ -70,7 +70,7 @@ def test_the_notification_does_not_carry_the_exception_text(_run):
     assert sent, "a run that dropped a message must still notify"
     body = sent[0]
     for leaked in ("q=after:", "recruiter@example-employer.invalid",
-                   "Interview: Staff Engineer", "gmail.googleapis.com"):
+                   "Interview: Staff Engineer", "mail.example.invalid"):
         assert leaked not in body, f"notification leaked {leaked!r}: {body}"
 
 

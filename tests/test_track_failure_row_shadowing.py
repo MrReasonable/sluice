@@ -69,7 +69,10 @@ def test_record_does_not_silently_drop_a_differing_row(tmp_path):
     dl = _dl()
     dl.record(Entry(message_id="m1", lead="a", candidates="", ev_type="failure",
                     proposal="failed", hint="boom", first_seen="2026-07-10", times_surfaced=1))
-    with pytest.raises(Exception) as exc:
+    # `ValueError`, not `Exception`: the broad form also passes on an
+    # `sqlite3.OperationalError` or a `TypeError` from a signature change, so the refusal
+    # contract could break with the test still green.
+    with pytest.raises(ValueError) as exc:
         dl.record(Entry(message_id="m1", lead="b", candidates="", ev_type="interview",
                         proposal="confirm", hint="different", first_seen="2026-07-11",
                         times_surfaced=1))
