@@ -184,8 +184,10 @@ failed)`); otherwise exit 0 — including a run with failures. A run that could 
 dead-letter store prints a `WARNING:` line saying the lastrun watermark is being held, since
 that silently widens the Gmail query window on every subsequent run. A run whose Gmail search
 hit its cap prints a `WARNING:` too — it did NOT see every matching message, and the ones it
-missed are the oldest; narrow `track.gmail_extra_query` or shorten the lookback, because they
-will not be picked up later. Cron alerting is built on the exit-code rule above, and a
+missed are the oldest. That run HOLDS the lastrun watermark, so the missed messages stay
+inside the query window and are recoverable: narrow `track.gmail_extra_query` and re-run.
+(Shortening `track.gmail_lookback_days` will not help here — it applies only when there is no
+watermark file yet.) Cron alerting is built on the exit-code rule above, and a
 transient single-message failure making every run "fail" is how an alert gets muted.
 
 ### `job-sluice track confirm --lead SLUG --to STATUS [--when DATETIME] [--dry-run]`

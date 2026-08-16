@@ -287,7 +287,9 @@ def cmd_run(args, config) -> int:
     report = Sluice(config).ingest(srcs, dry_run=args.dry_run, json_sink=(args.sink == "json"))
     _print_report(report)
     if report.degraded:
-        notify(_format_degraded(report), config=config)
+        _notify_reporting(_format_degraded(report), config=config,
+                          label="degraded-sources",
+                          unconfigured_note=" -- the degraded sources are listed above")
     return 0
 
 
@@ -328,6 +330,32 @@ def _print_report(report) -> None:
         parts.append(f"{w['merged_away_unproven']} merged-away (unproven)")
     parts.append(f"{w.get('skipped', 0)} skipped")
     print("written: " + ", ".join(parts), file=sys.stderr)
+
+
+def _notify_reporting(body, *, config, label, unconfigured_note=None) -> str:
+    """`notify`, then SAY what happened to it. Every sub-app goes through this.
+
+    `notify` gained a three-state outcome because `_telegram_sender` swallows transport
+    errors, so a revoked token, a wrong chat_id, a 4xx or a dead network all read as delivered
+    -- on exactly the run whose alert mattered. Track consumed the new outcome and ingest,
+    triage and cv did not, which is the same fix-one-instance shape the outcome was added to
+    close. One helper rather than four call sites, because four copies is how three of them
+    end up saying different things.
+
+    `unconfigured_note` is opt-in: for track's failure alert, "no token configured" means the
+    alert channel does not exist and the operator should know. For triage's and cv's routine
+    success digests, printing that on every run would be noise beside the local digest they
+    already print, so they pass None and report only a genuine delivery FAILURE.
+    """
+    outcome = notify(body, config=config)
+    if outcome == "failed":
+        print(f"  WARNING: the {label} notification could NOT be delivered (Telegram "
+              f"rejected it or was unreachable) -- check the token, the chat id and the log.",
+              file=sys.stderr)
+    elif outcome == "unconfigured" and unconfigured_note:
+        print(f"  (no notification sent: no Telegram token configured{unconfigured_note})",
+              file=sys.stderr)
+    return outcome
 
 
 def _format_degraded(report) -> str:
@@ -460,7 +488,8 @@ def cmd_triage_run(args, config) -> int:
           f"backend={report.backend} failures={len(report.failures)}", file=sys.stderr)
     for msg in report.failures:
         print(f"  {msg}", file=sys.stderr)
-    notify(f"job-sluice triage: {report.counts} (backend {report.backend})", config=config)
+    _notify_reporting(f"job-sluice triage: {report.counts} (backend {report.backend})",
+                      config=config, label="triage-summary")
     return 0
 
 
@@ -531,9 +560,9 @@ def cmd_cv_run(args, config) -> int:
         print(f"cv: {blind} CV(s) composed blind (dossier fetch failed)", file=sys.stderr)
     rendered = [r for r in results if r.status == "rendered"]
     if rendered:
-        notify("job-sluice cv: " + "; ".join(
+        _notify_reporting("job-sluice cv: " + "; ".join(
             f"{r.served} (audit flags: {len(r.audit_flags)})" for r in rendered),
-            config=config)
+            config=config, label="cv-summary")
     return 0
 
 
@@ -690,18 +719,19 @@ def cmd_track_run(args, config) -> int:
               "watermark is being HELD. Every run will re-query a widening window until "
               "this is fixed.", file=sys.stderr)
     if rep.search_truncated:
-        # The Gmail search capped out, so this run never saw some matching messages.
+        # The Gmail search capped out, so this run never saw some matching messages -- and
+        # because Gmail returns newest-first, the ones it missed are the OLDEST.
         #
-        # This does NOT hold the watermark, and that is deliberate. `search_messages` caps
-        # BEFORE `engine.run` filters against `seen`, and Gmail returns newest-first, so
-        # holding it keeps `after:` wide -> more matches -> the same newest N -> the starved
-        # OLDEST stay starved, on a window that grows every run. Holding loses the same
-        # messages as advancing AND adds the unbounded-widening stall this sub-app has already
-        # been bitten by twice. Advancing at least self-heals. The honest position is that the
-        # over-cap messages are lost either way and the operator has to narrow the query.
+        # This HOLDS the watermark (`app.py`'s `_save_lastrun` gate). Advancing would move
+        # `after:` to today and put the starved messages permanently out of reach; holding
+        # keeps them queryable so narrowing the query actually recovers them next run.
+        #
+        # Deliberately does NOT say "shorten the lookback": `_gmail_query` consults
+        # `gmail_lookback_days` only when there is no `.lastrun`, so in steady state that
+        # knob does nothing and the advice would send the operator somewhere inert.
         print("  WARNING: the Gmail search hit its cap -- this run did NOT see every matching "
-              "message, and the ones it missed are the OLDEST. Narrow track.gmail_extra_query "
-              "or shorten the lookback; the missed messages will not be picked up later.",
+              "message, and the ones it missed are the OLDEST. The lastrun watermark is being "
+              "HELD so they stay reachable; narrow track.gmail_extra_query and re-run.",
               file=sys.stderr)
     if rep.failures and not args.dry_run:
         # track was the ONLY sub-app that never notified (ingest, triage and cv all do), so
@@ -765,6 +795,14 @@ def cmd_track_confirm(args, config) -> int:
                                        dry_run=args.dry_run)
     if out["ok"]:
         print(f"track-confirm: {args.lead} {out['from']} -> {out['to']}", file=sys.stderr)
+        if out.get("when_dropped"):
+            # Mirrors apply-record's `url_dropped` line above, for the same reason and in the
+            # same words. `engine.confirm` guards `--when` with `frontmatter_safe` and abstains
+            # on the field; the abstention was produced and then read by nobody, so the
+            # operator saw a clean success and never learned their date had not been recorded.
+            # A guard whose result nothing consumes is the silent drop it was added to prevent.
+            print("  interview_date dropped: --when was unsafe for frontmatter "
+                  "and was not recorded", file=sys.stderr)
         return 0
     print(f"track-confirm: {args.lead} refused ({out['reason']})", file=sys.stderr)
     return 1

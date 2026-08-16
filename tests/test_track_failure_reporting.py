@@ -144,3 +144,23 @@ def test_the_engine_POPULATES_TrackFailure_correctly():
     assert f.message_id == "m1", "the id must come from the message being processed"
     assert "RuntimeError" in f.cause and "gmail hiccup" in f.cause
     assert f.safe() == "m1 (RuntimeError)", "the outward rendering must carry no cause text"
+
+
+def test_the_full_cause_does_not_escape_through_repr_or_a_container():
+    """`__str__` alone was not enough -- and the commit that made it safe said it was.
+
+    `@dataclass` generates a `__repr__` printing EVERY field, `cause` included. So
+    `repr(f)`, `"%s" % [f]` and `"%s" % rep` all rendered the full exception text, and
+    `RunReport.failures` is a list -- `_log.warning("%s", rep.failures)` is the most natural
+    debug line anyone would write for it.
+    """
+    from sluice.track.engine import RunReport, TrackFailure
+
+    secret = "HttpError: 400 requesting https://gmail.googleapis.com/?q=from:x@example.invalid"
+    f = TrackFailure("m1", secret, kind="HttpError")
+    assert repr(f) == f.safe(), "repr must not be the generated field dump"
+    for rendering in (repr(f), "%s" % [f], "%s" % {"f": f}, "%s" % RunReport(failures=[f])):
+        assert "gmail.googleapis.com" not in rendering, rendering
+        assert "example.invalid" not in rendering, rendering
+    # ...and the detail is still reachable when asked for by name.
+    assert secret in f.detail()

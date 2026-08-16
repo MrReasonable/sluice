@@ -72,13 +72,20 @@ def test_a_cancel_with_a_start_and_genuinely_nothing_of_ours_is_still_present():
     assert not c.deleted
 
 
-def test_a_foreign_event_is_still_never_deleted():
-    # The safety property this whole module exists for, unchanged.
+def test_a_foreign_event_is_still_never_deleted_but_is_no_longer_SILENT():
+    """The safety property this whole module exists for, unchanged -- and the report fixed.
+
+    This test used to pin `present`, which is how the silence survived review: the assertion
+    that mattered (`not c.deleted`) sat beside one that certified the quiet value as correct.
+    `present` means "we searched a complete window and there was nothing of ours". Here we
+    found something and chose not to touch it, and the operator is left with a cancelled
+    interview on their calendar that nothing mentions.
+    """
     c = FakeGoogleClient(events=[{"id": "foreign",
                                   "start": {"dateTime": "2026-07-15T10:00:00+00:00"}}])
     ics = _cancel(start=datetime(2026, 7, 15, 10, 0, tzinfo=timezone.utc))
-    assert sync_event(c, TrackConfig(), lead_slug="example-lead", ics=ics) == "present"
-    assert not c.deleted
+    assert sync_event(c, TrackConfig(), lead_slug="example-lead", ics=ics) == "foreign"
+    assert not c.deleted, "the safety property: never delete an event we did not create"
 
 
 def test_an_unresolved_cancel_is_PROPOSED_so_a_human_sees_it(tmp_path):

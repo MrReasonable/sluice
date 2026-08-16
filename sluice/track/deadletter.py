@@ -242,8 +242,21 @@ class DeadLetterDb:
             finally:
                 db.close()
 
-    def clear_lead(self, slug: str) -> int:
-        """Clear this lead's STATUS proposals -- not everything filed against the lead.
+    def clear_lead(self, slug: str, *, status_only: bool = True) -> int:
+        """Clear rows filed against this lead. `status_only` says WHICH.
+
+        Two callers with genuinely different meanings, and collapsing them was a bug:
+          - `status_only=True` (default) -- an AUTO-ADVANCE resolved this lead's status
+            proposals. It did not remove a stale calendar entry or make a failed message
+            succeed, so those rows stay.
+          - `status_only=False` -- a HUMAN ran `track dismiss --lead`, which means "I have
+            looked at this lead and nothing here needs action". That is entitled to clear
+            everything, and must, or the operator is left with rows the `--lead` lever cannot
+            reach and nothing telling them to use `--id`.
+
+        Filtering unconditionally also desynced `track_dismiss`'s dry-run counter, which
+        counts every row for the lead: `--dry-run` said "would clear 2", the real command
+        cleared 1, and `app.py`'s own comment claimed the two "can never disagree".
 
         The unfiltered `DELETE ... WHERE lead = ?` was a silent loss. It fires on any
         `applied` advance and on any successful `confirm`, so a `calendar` row saying "the
@@ -261,9 +274,12 @@ class DeadLetterDb:
             return 0
         db = self._open()
         try:
-            cur = db.execute(
-                "DELETE FROM track_deadletter WHERE lead = ? AND ev_type NOT IN (?,?)",
-                (slug, EV_TYPE_FAILURE, EV_TYPE_CALENDAR))
+            if status_only:
+                cur = db.execute(
+                    "DELETE FROM track_deadletter WHERE lead = ? AND ev_type NOT IN (?,?)",
+                    (slug, EV_TYPE_FAILURE, EV_TYPE_CALENDAR))
+            else:
+                cur = db.execute("DELETE FROM track_deadletter WHERE lead = ?", (slug,))
             db.commit()
             return cur.rowcount
         finally:

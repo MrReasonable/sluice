@@ -1241,7 +1241,22 @@ class Sluice:
                                since_iso=since_iso, dry_run=dry_run)
         if not dry_run:
             _save_seen(tcfg.seen_db, seen)
-            if not rep.auth_error and not rep.deadletter_error:
+            # `search_truncated` HOLDS the watermark too. I argued the opposite in review and
+            # was wrong on two of three premises, both falsified by measurement:
+            #
+            #   - "a held window costs a bigger fetch every run" -- false since #137. The cap
+            #     is a hard TOTAL across pages, so 400 matches and 50,000 matches both cost
+            #     one request. The expense that justified advancing no longer exists.
+            #   - "holding loses the same messages as advancing" -- false in the dimension
+            #     that decides it. Advancing moves `after:` to TODAY, so every starved message
+            #     leaves the addressable set the instant we advance. Holding keeps them
+            #     queryable, which is what makes the prescribed remedy (narrow
+            #     `gmail_extra_query`) actually recover them on the next run.
+            #
+            # Gmail returns newest-first, so holding cannot starve NEW mail -- it is always
+            # inside the cap. This is not the `deadletter_error` shape, which is a per-message
+            # stall that no operator action clears.
+            if not (rep.auth_error or rep.deadletter_error or rep.search_truncated):
                 _save_lastrun(lastrun_path, now_iso)
         return rep
 
@@ -1284,7 +1299,12 @@ class Sluice:
                     if (message_id is not None and e.message_id == message_id)
                     or (lead is not None and e.lead == lead))
             return {"cleared": n, "dry_run": True}
-        n = dl.clear_id(message_id) if message_id is not None else dl.clear_lead(lead)
+        # `status_only=False`: an explicit human dismissal clears EVERYTHING for the lead,
+        # which is what the dry-run counter above already counts. The default (status_only)
+        # is for the engine's auto-advance clears, where a status change genuinely does not
+        # resolve a stale calendar entry or a failed message.
+        n = (dl.clear_id(message_id) if message_id is not None
+             else dl.clear_lead(lead, status_only=False))
         return {"cleared": n, "dry_run": False}
 
     def doctor(self, *, offline=False, probe=None):

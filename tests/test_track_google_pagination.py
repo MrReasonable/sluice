@@ -344,3 +344,103 @@ def test_list_events_DEFAULT_cap_is_the_post_137_value(monkeypatch):
     got, truncated = _client_with(monkeypatch, cal=cal).list_events("a", "b")
     assert len(got) == 1000, f"the default cap truncated a 1000-event window to {len(got)}"
     assert truncated is False
+
+
+# ---- search_truncated: the only artefact of #137 a user ever sees --------------------------
+
+def test_search_truncated_reaches_the_RunReport(monkeypatch):
+    """The propagation had zero coverage: `ids, _ = client.search_messages(...)` in
+    `engine.run` left the whole suite green."""
+    from sluice.track import engine as E
+    from sluice.track.config import TrackConfig
+    from tests.test_track_engine import FakeBackend, OneMsgClient, _dl, _vault
+
+    class _Capped(OneMsgClient):
+        def search_messages(self, query, max_results=500):
+            return ["m1"], True
+
+    v, _ = _vault("applied")
+    rep = E.run(v, TrackConfig(), _Capped(), FakeBackend("{}"), seen=set(), deadletter=_dl(),
+                now_iso="2026-07-10T12:00:00+00:00")
+    assert rep.search_truncated is True
+
+
+def test_a_complete_search_does_not_set_the_flag():
+    from sluice.track import engine as E
+    from sluice.track.config import TrackConfig
+    from tests.test_track_engine import FakeBackend, OneMsgClient, _dl, _vault
+
+    v, _ = _vault("applied")
+    rep = E.run(v, TrackConfig(), OneMsgClient(), FakeBackend("{}"), seen=set(),
+                deadletter=_dl(), now_iso="2026-07-10T12:00:00+00:00")
+    assert rep.search_truncated is False
+
+
+def test_a_truncated_search_HOLDS_the_lastrun_watermark(tmp_path, monkeypatch):
+    """The decision this branch REVERSED, pinned by driving the real gate.
+
+    I first argued for advancing, on two premises review then falsified by measurement:
+    a held window does not cost a bigger fetch (since #137 the cap is a hard TOTAL across
+    pages, so 400 matches and 50,000 matches both cost one request), and holding does not
+    lose the same messages as advancing -- advancing moves `after:` to TODAY, so every
+    starved message leaves the addressable set the instant we advance. Holding keeps them
+    queryable, which is the only policy under which narrowing the query recovers them.
+
+    An earlier version of this test asserted a restatement of the gate expression instead of
+    running it, which certified nothing.
+    """
+    from sluice.core import app as A
+    from sluice.core.app import Sluice
+    from sluice.core.config import Config
+
+    seen_db = str(tmp_path / "track-seen.db")
+    cfgp = tmp_path / "cfg.yaml"
+    cfgp.write_text(f"track:\n  seen_db: {seen_db}\n")
+    monkeypatch.setenv("SLUICE_CONFIG", str(cfgp))
+
+    saved = []
+    monkeypatch.setattr(A, "_save_lastrun", lambda path, iso: saved.append(iso))
+
+    class _Rep:
+        auth_error = False
+        deadletter_error = False
+        search_truncated = True
+        failures = []
+        open_proposals = []
+
+    # `app.track` imports the engine INSIDE the method, so patch the module itself.
+    import sluice.track.engine as _te
+    monkeypatch.setattr(_te, "run", lambda *a, **k: _Rep())
+    monkeypatch.setattr(A, "_save_seen", lambda *a, **k: None)
+    Sluice(Config()).track(now_iso="2026-07-10T12:00:00+00:00")
+    assert saved == [], "a truncated search must HOLD the watermark, not advance past it"
+
+
+def test_a_complete_search_still_ADVANCES_the_watermark(tmp_path, monkeypatch):
+    # The hold must be narrow: an ordinary run has to keep advancing, or every run re-queries
+    # a widening window -- the stall this sub-app has been bitten by before.
+    from sluice.core import app as A
+    from sluice.core.app import Sluice
+    from sluice.core.config import Config
+
+    seen_db = str(tmp_path / "track-seen.db")
+    cfgp = tmp_path / "cfg.yaml"
+    cfgp.write_text(f"track:\n  seen_db: {seen_db}\n")
+    monkeypatch.setenv("SLUICE_CONFIG", str(cfgp))
+
+    saved = []
+    monkeypatch.setattr(A, "_save_lastrun", lambda path, iso: saved.append(iso))
+
+    class _Rep:
+        auth_error = False
+        deadletter_error = False
+        search_truncated = False
+        failures = []
+        open_proposals = []
+
+    # `app.track` imports the engine INSIDE the method, so patch the module itself.
+    import sluice.track.engine as _te
+    monkeypatch.setattr(_te, "run", lambda *a, **k: _Rep())
+    monkeypatch.setattr(A, "_save_seen", lambda *a, **k: None)
+    Sluice(Config()).track(now_iso="2026-07-10T12:00:00+00:00")
+    assert saved == ["2026-07-10T12:00:00+00:00"]

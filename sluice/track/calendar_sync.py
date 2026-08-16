@@ -237,7 +237,14 @@ def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
             # incomplete search, which is how a cancelled interview stayed in the calendar
             # with `seen.add` consuming the message and no trace left anywhere.
             return "unresolved"
-        return "present"  # never delete a foreign event
+        if _foreign_at_start(events, cfg, ics):
+            # Something we did not create sits at that slot -- routinely the recruiter's own
+            # invite, which Google auto-adds from the mail. We must never delete a foreign
+            # event, and `present` ("we searched and there was nothing of ours") is true but
+            # useless here: the operator's calendar still shows a cancelled interview and
+            # nothing tells them. Distinct value so it can reach a human.
+            return "foreign"
+        return "present"  # nothing of ours, and nothing else at that slot
     if ours:
         # Same zone the body was stamped with, or the instant we booked and the instant we
         # compare differ by that offset and every run reports `updated` and re-writes it.
@@ -249,7 +256,12 @@ def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
             return "updated"
         return "present"
     if _foreign_at_start(events, cfg, ics):
-        return "present"  # a foreign event already covers this slot; do NOT insert or touch it
+        # A foreign event covers this slot, so we do NOT insert or touch it -- that safety
+        # property is right and unchanged. Reporting it as `present` was not: the interview
+        # was never booked, the status still advanced, and `seen.add` consumed the message.
+        # `calendar_match_minutes` defaults to 30, so ANY untagged event within half an hour
+        # -- a standup, a dentist appointment -- suppresses the booking silently.
+        return "foreign"
     if truncated:
         # Our own entry may be off-page, so inserting would DUPLICATE it. Refusing and
         # surfacing beats silently double-booking an interview.
