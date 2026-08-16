@@ -167,6 +167,16 @@ class BrowserListSource:
     def _scroll_step(self, cam, tid) -> None:
         """One scroll step, and the ONLY thing a list-shaped source may override.
 
+        Its result is deliberately NOT folded into `errors` below, and that is a judgement
+        rather than an oversight. A failed scroll does not produce the unexplained ZERO this
+        branch exists to remove: the extractor still runs and reports whatever was visible, so
+        the outcome is a LOW count, which `detect_drift` already classifies against the
+        source's baseline. Promoting it to `fetch_error` would classify as `unreachable`,
+        which is in `_RECOVERABLE` and therefore defers retirement indefinitely -- buying a
+        genuinely dead source unlimited time on a benign scroll hiccup, the opposite and
+        quieter failure that `_explained`'s docstring warns about. If the tab itself is
+        broken, the extractor evaluate errors too and IS recorded.
+
         A board that virtualizes its results (LinkedIn) must scroll the results PANEL rather
         than the window. That is its sole difference from this class, so it is the sole thing
         it gets to change. Overriding `fetch` wholesale is how the LinkedIn subclass silently
