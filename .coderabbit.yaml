@@ -56,6 +56,19 @@ reviews:
         Tests use synthetic fixtures only. Flag any real personal data, real
         company names, or real URLs. Every test must assert on behaviour, not
         merely run without error.
+
+        One exception, because it is public integration surface rather than
+        private job-search data: the job-board identifiers this repo ships an
+        adapter for, which are exactly the module basenames under
+        `sluice/ingest/sources/` (linkedin, indeed, reed, jobserve, cwjobs and
+        their siblings). These are allowed in test prose — docstrings
+        describing a real incident in a named adapter — and as source
+        identifiers. They are NOT allowed as a lead, employer or candidate
+        fixture identity; use `Example <Word>` there, which
+        `tests/test_fixture_name_neutrality.py` enforces over the identity
+        positions. The exception permits these names, it does not prefer them:
+        a test that does not care which adapter it is talking about should
+        still use a synthetic id. Every other real company name stays flagged.
   tools:
     gitleaks:
       enabled: true

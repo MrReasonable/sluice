@@ -42,6 +42,14 @@ _SELF = Path(__file__).name
 #
 # Adding a name here is a DECISION that it names no real firm. Make it deliberately — a local
 # check cannot establish it — and prefer `Example <Word>` for anything new.
+#
+# `indeed` is the one entry allowed on a different ground: it is a shipped source identifier
+# (`sluice/ingest/sources/indeed.py`), so it is public integration surface rather than anything
+# out of a private job hunt. `.coderabbit.yaml`'s `tests/**` instruction carries that exception
+# in full. It is narrow in both directions — the exception covers the identifiers of adapters
+# this repo ships, and it does NOT extend to using one as a lead or employer identity, which is
+# what this roster governs. `indeed` is here only because a fixture already sits in an identity
+# position; a new one should still be `Example <Word>`.
 _REVIEWED_FIXTURE_IDENTITIES = frozenset({
     "A", "A-B", "Acme", "Alpha", "Aye", "B", "Beavni", "Bee", "Beta", "C", "Conflicted",
     "D", "Delta", "Epsilon", "Example", "Example Analytics", "Example Co", "Example Foundry",
