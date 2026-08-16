@@ -128,7 +128,10 @@ def test_NO_shipped_doc_claims_session_selects_the_profile():
     from pathlib import Path
 
     root = Path(__file__).resolve().parent.parent
-    targets = sorted(root.glob("docs/*.md")) + sorted((root / "sluice").rglob("*.py")) + [
+    # rglob, not glob: `docs/*.md` skips every subdirectory, so a nested shipped document
+    # could restore the claim with this guard still green. The whole point of the sweep is
+    # that it covers the class rather than the copies someone thought of.
+    targets = sorted((root / "docs").rglob("*.md")) + sorted((root / "sluice").rglob("*.py")) + [
         root / "README.md", root / "sluice.yaml.example"]
     checked, offenders = 0, []
     for p in targets:
