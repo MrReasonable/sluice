@@ -16,7 +16,14 @@ name = "job-sluice"
 dynamic = ["version"]
 description = "Sluice: an engineered, config-driven job-hunting pipeline (ingest, triage, CV tailoring, apply, track)."
 requires-python = ">=3.12"
-dependencies = ["pyyaml"]
+# `tzdata` carries the IANA database as a wheel. `zoneinfo` otherwise falls back to the
+# SYSTEM tz database, which Linux and macOS have and Windows does not -- and a bare
+# container often does not either. Without it, #135's Windows-zone-name -> IANA table
+# resolves nothing: `ZoneInfo(name)` raises, `_parse_dt` reports the zone unresolved, and
+# every Outlook invite is booked at an ASSUMED instant instead of its stated one. Silently,
+# and only on the machines nobody develops on. It is a data package with no code, so the
+# cost of carrying it unconditionally is a download, not a risk (#145).
+dependencies = ["pyyaml", "tzdata"]
 # PEP 639 SPDX license expression -- the modern, non-deprecated form. setuptools >=77 (this
 # repo pins >=83 in [build-system] and the test extra) HARD-ERRORS at build time
 # (setuptools.errors.InvalidConfigError, confirmed by a real build attempt -- not merely a

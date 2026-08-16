@@ -111,3 +111,69 @@ def test_line_folding_and_no_vevent():
     folded = "BEGIN:VEVENT\r\nUID:u\r\nSUMMARY:Very long\r\n  wrapped title\r\nEND:VEVENT"
     assert parse_ics(folded).summary == "Very long wrapped title"
     assert parse_ics("no event here") is None
+
+
+# ---- #143: a pure parser must not raise on a malformed VALUE -------------------------------
+
+@pytest.mark.parametrize("dtstart", [
+    "2026-08-17T15:30:00Z",      # ISO where RFC 5545 wants basic format -- the reported case
+    "not-a-date",
+    "20260817T1530",             # truncated
+    "",
+    "20261301T000000Z",          # month 13
+])
+def test_a_malformed_DTSTART_does_not_raise_out_of_the_parser(dtstart):
+    """`parse_ics` runs inside `engine.run`'s per-message handler, so a raise here took down
+    the WHOLE message -- classification, status advance and calendar write -- and the invite
+    became a dead-letter failure row instead of the interview it described.
+
+    Same principle the module already applies to an unresolvable TZID: a pure parser reports
+    what it could not read, it does not abort the caller.
+    """
+    ics = parse_ics(
+        "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:u1\r\n"
+        f"DTSTART:{dtstart}\r\nSUMMARY:Screen\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+    assert ics is not None, "the VEVENT must still parse"
+    assert ics.uid == "u1", "the fields we COULD read must survive"
+    assert ics.start is None, "an unreadable start is None, not a guess"
+
+
+def test_a_malformed_DTSTART_is_reported_not_swallowed(caplog):
+    with caplog.at_level("WARNING", logger="sluice.track.ics"):
+        parse_ics("BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:u1\r\n"
+                  "DTSTART:not-a-date\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+    said = [r.getMessage() for r in caplog.records if r.name == "sluice.track.ics"]
+    assert said, "a value we could not read must say so"
+    assert "not-a-date" in " ".join(said), said
+
+
+def test_a_WELL_FORMED_dtstart_is_unaffected():
+    # The tolerance must be narrow: the ordinary path still parses to an aware datetime.
+    ics = parse_ics("BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:u1\r\n"
+                    "DTSTART:20260715T100000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+    assert ics.start is not None and ics.start.tzinfo is not None
+
+
+@pytest.mark.parametrize("dtstart,why", [
+    ("20260817T1530", "a truncated stamp read as 15:03 -- strptime is not length-strict"),
+    ("20260817T153000+0100", "an offset suffix RFC 5545 does not use in this field"),
+])
+def test_a_TRUNCATED_or_odd_stamp_is_refused_rather_than_silently_misread(dtstart, why):
+    """The sharper half of #143, found by the test rather than the issue.
+
+    Raising was never the worst outcome here. `%H%M%S` against `1530` yields 15:03:00 --
+    `strptime` consumes greedily and does not require the field widths it names -- so a
+    clipped DTSTART booked the interview an hour and twenty-seven minutes early, silently,
+    with `failures=0`. That is the wrong-hour class this module was last fixed for, arriving
+    through a different door.
+    """
+    ics = parse_ics("BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:u1\r\n"
+                    f"DTSTART:{dtstart}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+    assert ics.start is None, f"{why}: got {ics.start}"
+
+
+def test_a_date_only_DTSTART_still_parses():
+    # The shape guard must not reject the legal DATE form the module already supports.
+    ics = parse_ics("BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:u1\r\n"
+                    "DTSTART;VALUE=DATE:20260715\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+    assert ics.start is not None and ics.start.date().isoformat() == "2026-07-15"

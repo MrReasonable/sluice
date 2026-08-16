@@ -4,10 +4,14 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from sluice.core.log import get_logger
+
 try:
     from zoneinfo import ZoneInfo
 except ImportError:  # pragma: no cover
     ZoneInfo = None
+
+_log = get_logger("track.ics")
 
 # Windows/Exchange timezone names -> IANA. Outlook and Exchange write
 # `DTSTART;TZID=GMT Standard Time:...` rather than an IANA key, and `ZoneInfo` cannot resolve
@@ -95,6 +99,35 @@ def _parse_dt(value: str, params: dict):
     we failed to resolve it -- never for a date-only or TZID-less value, which are naive for
     reasons the caller cannot improve on."""
     v = value.strip()
+    try:
+        return _parse_dt_strict(v, params)
+    except ValueError:
+        # A pure parser must not raise on a malformed VALUE, for the same reason it must not
+        # raise on an unresolvable TZID: `parse_ics` runs inside `engine.run`'s per-message
+        # handler, so one mojibake DTSTART took down the WHOLE message -- classification,
+        # status advance and calendar write -- and the invite became a dead-letter failure
+        # row instead of the interview it described. `2026-08-17T15:30:00Z` (ISO where RFC
+        # 5545 wants a basic-format stamp) is enough to do it. Returning None leaves the
+        # cancel/no-DTSTART path already built for "we could not read a start" (#143).
+        _log.warning("track: unparseable DTSTART/DTEND %r -- treating the event as having "
+                     "no start", value)
+        return None, ""
+
+
+# RFC 5545 DATE-TIME is exactly `YYYYMMDDTHHMMSS` (optionally `Z`); DATE is exactly
+# `YYYYMMDD`. Anchored and length-exact because `strptime` is NOT: `%H%M%S` against a
+# truncated `1530` reads 15:03:00 rather than failing, so a clipped stamp booked an interview
+# at the WRONG HOUR silently -- the failure class this module was last fixed for, arriving by
+# a different door. Surfaced by a test written for #143's raise, not by the issue.
+_DT_SHAPE = re.compile(r"^\d{8}T\d{6}Z?$")
+_DATE_SHAPE = re.compile(r"^\d{8}$")
+
+
+def _parse_dt_strict(v: str, params: dict):
+    """The parse itself. Split out so the tolerant wrapper above has ONE place to catch, and
+    so a future format can be added here without anyone having to notice the try/except."""
+    if not (_DT_SHAPE.match(v) or _DATE_SHAPE.match(v)):
+        raise ValueError(f"not an RFC 5545 DATE or DATE-TIME: {v!r}")
     if v.endswith("Z"):
         return datetime.strptime(v, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc), ""
     if "T" in v:
