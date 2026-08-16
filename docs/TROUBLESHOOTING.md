@@ -111,10 +111,16 @@ actually answers, not just that a key is present.
 ## `track` reauth needed
 
 `track run` exits 1 with `track: google reauth needed (token refresh failed)` when the stored
-OAuth token can't be refreshed. Delete the file at `track.token_path` (see
-`docs/CONFIGURATION.md`; default `<XDG_STATE_HOME>/sluice/google_token.json`) and re-run —
-`track` will walk you through the interactive consent flow again. Needs
-`pip install -e '.[google]'`.
+OAuth token is genuinely dead — Google REFUSED the refresh, or the file is present but
+unparseable. Delete the file at `track.token_path` (see `docs/CONFIGURATION.md`; default
+`<XDG_STATE_HOME>/sluice/google_token.json`) and re-run — `track` will walk you through the
+interactive consent flow again. Needs `pip install -e '.[google]'`.
+
+**A network problem does not produce this.** A dropped connection, a DNS failure, a Google
+5xx or a disk-full error while writing the refreshed token are reported as ordinary run
+failures — named in the digest, recorded in the dead-letter store, and retried — precisely so
+that deleting a perfectly good credential is never the remedy for a Wi-Fi blip (#142). If you
+see a transport error rather than this message, re-run rather than re-authorising.
 
 ## Shell completion isn't offering anything
 
