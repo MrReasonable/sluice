@@ -652,6 +652,37 @@ def test_cv_run_tool_skipped_selection_for_a_non_shortlist_lead(monkeypatch):
     assert out["status"] == "research"
 
 
+def test_cv_run_tool_bad_backend_raises_value_error_naming_valid_choices(tmp_path):
+    """decision 14: `backend` is unvalidated a SECOND time in this module (no
+    duplicate copy of the choice set), but the resulting `BackendError` from
+    `Sluice.backend` must not leak past this tool as a second exception type --
+    the design doc's Error Handling section states cv_run's bad backend joins
+    `ValueError`, matching every other malformed-input field in this file.
+    `Sluice.backend`'s role guard runs BEFORE checking a constructor override
+    (see its own docstring), so this raises even through `_cv_app`'s
+    FakeBackend/FakeRenderer overrides -- used here only so the renderer
+    construction that `compose_cv` also runs does not require WeasyPrint."""
+    app = _cv_app(Vault(str(tmp_path)))
+    with pytest.raises(ValueError) as exc_info:
+        cv_run(app, "nothing here", backend="bogus")
+    message = str(exc_info.value)
+    assert "bogus" in message
+    for choice in ("auto", "primary", "fallback", "claude-max", "deepseek"):
+        assert choice in message
+
+
+def test_cv_run_tool_accepts_every_valid_backend_choice(tmp_path):
+    """Companion to the bad-backend test above: every value `_BackendRole`'s
+    `Literal` enum advertises to a schema-validated MCP client must actually pass
+    `Sluice.backend`'s role guard, or the schema would be lying about what the
+    tool accepts. `_cv_app`'s FakeBackend constructor override short-circuits
+    AFTER the role guard (`Sluice.backend`'s own ordering), so this proves the
+    guard accepts every value without needing real backend credentials."""
+    app = _cv_app(Vault(str(tmp_path)))
+    for choice in ("auto", "primary", "fallback", "claude-max", "deepseek"):
+        assert cv_run(app, "nothing here", backend=choice) == {"outcome": "not_found"}
+
+
 # ── cv_signoff ───────────────────────────────────────────────────────────────
 
 def test_cv_signoff_tool_discard_returns_claims_with_content_warning(tmp_path):

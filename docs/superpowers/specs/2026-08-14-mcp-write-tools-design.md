@@ -378,10 +378,16 @@ explicitly deferred, matching #105's own deferred list.
     silently overrides the #9 staleness gate, and that is not a decision this tool may
     make on its own authority; `no_serve`/`limit` have no meaning for a single-lead
     call. `backend` passes straight through to `compose_cv(backend_role=...)` with no
-    duplicate validation in `mcpserver.py` — `Sluice.backend` already raises
-    `BackendError` naming the full valid set at the point of use, and a second copy of
-    that set in `mcpserver.py` would be a second drift site the shared-constant
-    discipline elsewhere in this module exists to avoid. The composed CV text itself
+    duplicate CHOICE-SET validation in `mcpserver.py` — `Sluice.backend` already
+    raises `BackendError` naming the full valid set at the point of use, and a second
+    copy of that set in `mcpserver.py` would be a second drift site the
+    shared-constant discipline elsewhere in this module exists to avoid. `compose_cv`
+    itself catches that `BackendError` and re-raises it as `ValueError`, so an invalid
+    `backend` joins the Error Handling section's single malformed-input contract
+    rather than leaking a second exception type — that is a translation, not a
+    second copy of the choice set, and it lives at the `Sluice` layer (mirroring
+    `dismiss_lead`'s own `reason` validation) rather than in `mcpserver.py`, whose
+    isolation sweep forbids importing `BackendError` directly. The composed CV text itself
     is never returned in the response (only `violations`/`audit_flags`/`served`/
     `dossier_failed`, matching what `cmd_cv_run` already prints) — it's an LLM
     document derived from an attacker-controlled JD, and echoing the whole thing back
