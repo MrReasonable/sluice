@@ -1,3 +1,5 @@
+import os
+
 from sluice.core.config import Config
 from sluice.core.log import get_logger, notify
 
@@ -89,3 +91,42 @@ def test_a_delivered_notification_is_not_reported_as_undelivered(monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=0: _R())
     assert notify("ping", config=cfg) == "sent"
+
+
+def test_the_suite_does_not_read_the_developers_SLUICE_LOG_LEVEL(monkeypatch):
+    """#144. `get_logger` sets a logger's level exactly once, guarded on
+    `if not logger.handlers`, so an exported `SLUICE_LOG_LEVEL` is baked into every
+    `sluice.*` logger at import -- before any test runs. Combined with `propagate = False`,
+    a bare `caplog.at_level("WARNING")` then captures nothing, and 34 tests across ten files
+    went red on a developer machine that happened to export it.
+
+    conftest's autouse fixture normalises BOTH halves. This asserts the second one, which is
+    the half a `delenv` alone would miss.
+    """
+    import logging
+
+    sluice_loggers = [obj for name, obj in logging.Logger.manager.loggerDict.items()
+                      if name.startswith("sluice.") and isinstance(obj, logging.Logger)]
+    assert sluice_loggers, "no sluice logger exists yet -- this assertion would be vacuous"
+    noisy = {lg.name: logging.getLevelName(lg.level) for lg in sluice_loggers
+             if lg.level > logging.INFO}
+    assert not noisy, (
+        f"these loggers kept a level from the ambient environment: {noisy}. "
+        "A test asserting on their records would silently capture nothing.")
+    assert "SLUICE_LOG_LEVEL" not in os.environ, (
+        "the env var itself must be scrubbed, or a logger created DURING a test inherits it")
+
+
+def test_a_namespaced_logger_still_honours_the_env_var_outside_the_suite(monkeypatch):
+    """The scrub is a TEST-harness decision, not a behaviour change. `get_logger` must still
+    read the variable, or operators lose the only lever they have over log volume."""
+    import logging
+
+    monkeypatch.setenv("SLUICE_LOG_LEVEL", "ERROR")
+    name = "sluice.test_env_level_probe"
+    logging.Logger.manager.loggerDict.pop(name, None)   # force a first-call creation
+    lg = get_logger("test_env_level_probe")
+    try:
+        assert lg.level == logging.ERROR
+    finally:
+        logging.Logger.manager.loggerDict.pop(name, None)
