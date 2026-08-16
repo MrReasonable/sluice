@@ -12,7 +12,7 @@ from sluice.track.classify import classify
 from sluice.track.reconcile import reconcile
 from sluice.track.ics import parse_ics
 from sluice.track.google_client import GoogleAuthError
-from sluice.track.deadletter import Entry
+from sluice.track.deadletter import EV_TYPE_CALENDAR, EV_TYPE_FAILURE, Entry
 from sluice.track.receipt import match_receipt
 
 _log = get_logger("track.engine")
@@ -141,27 +141,43 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
     if not dry_run:
         deadletter.bump_surfaced()
     new_entries = []
-    # message_ids with an ALREADY-OPEN failure row, so a repeatedly-failing
-    # message does not accumulate one row per run.
-    _failed_ids = {e.message_id for e in deadletter.open_entries()
-                   if e.ev_type == "failure"}
+    # ev_type of every ALREADY-OPEN row, by message_id. Was failure-rows-only, which was too
+    # narrow in both directions: a repeatedly-failing message must not accumulate a row per
+    # run (the original reason), AND any stale row for a message being re-processed collides
+    # with the new one on the message_id PRIMARY KEY.
+    _open_ev_type = {e.message_id: e.ev_type for e in deadletter.open_entries()}
 
-    def _record_replacing_failure(message_id, entry):
-        """Record `entry`, clearing any stale FAILURE row for the same id first.
+    def _record_replacing(message_id, entry):
+        """Record `entry`, REPLACING whatever row already holds that message_id.
 
-        BOTH record sites must go through this. The table is keyed on message_id, so a row
-        left by a transient error on an earlier run collides with the real row -- and since
-        `record` now RAISES on a differing row rather than silently discarding it, putting
-        the clear beside only one site converted the old silent loss into a permanent stall:
-        `deadletter_error` on every run, so the lastrun watermark never advances and
-        `_gmail_query`'s `after:` widens without bound. That is the exact failure the comment
-        in the per-message handler below argues against.
+        Every record site must go through this -- there are three, and the first version of
+        this helper covered two while its own docstring said "BOTH". The table is keyed on
+        message_id, so a row from an earlier run collides with the new one, and `record`
+        raises on a differing row rather than discarding it silently. Missing a site therefore
+        converts the old silent loss into a permanent stall: `deadletter_error` every run, so
+        the watermark never advances and `_gmail_query`'s `after:` widens without bound.
 
-        A helper rather than two copies, because two copies is how this happened."""
-        if message_id in _failed_ids:
+        Scoped to ANY stale row, not just `failure`. A proposal row differs between runs
+        whenever its `proposal` string embeds a model confidence, which is the routine shape
+        of a re-processed message, and that hit the raise just as hard."""
+        _dl_write(rep, lambda: deadletter.record(entry, replace=message_id in _open_ev_type))
+        _open_ev_type[message_id] = entry.ev_type
+
+    def _clear_stale_failure(message_id):
+        """A message that PROCESSED has resolved its failure row, whatever the outcome was.
+
+        The clear used to live inside the record helper, so it reached the two outcomes that
+        record a row and missed `applied` and `skipped`. On those, a row from one transient
+        Gmail 500 survived its own resolution and re-surfaced every run with `times_surfaced`
+        climbing, for a message now in `seen` and never reprocessed -- clearable only by a
+        hand-typed `track dismiss --id`. Indistinguishable from a live failure, which is how
+        an operator learns to ignore the real one.
+
+        `clear_lead` cannot do this: the failure Entry is written with `lead=""`, so a
+        lead-keyed clear structurally cannot reach it."""
+        if _open_ev_type.get(message_id) == EV_TYPE_FAILURE:
             _dl_write(rep, lambda m=message_id: deadletter.clear_id(m))
-            _failed_ids.discard(message_id)
-        _dl_write(rep, lambda: deadletter.record(entry))
+            _open_ev_type.pop(message_id, None)
     for mid in ids:
         if mid in seen:
             continue
@@ -285,7 +301,7 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                               hint=hint, first_seen=today, times_surfaced=1)
                 new_entries.append(entry)
                 if not dry_run:
-                    _record_replacing_failure(mid, entry)
+                    _record_replacing(mid, entry)
             elif res.action == "applied":
                 rep.auto += 1
                 # Symmetric with confirm's clear-on-advance: an auto-resolved lead's
@@ -328,19 +344,49 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                 else:
                     hint = f'(no runnable action for type "{ev.type}" / lead "{res.lead}"; review manually)'
                 entry = Entry(message_id=mid, lead=ev.lead_slug or "",
-                              candidates=",".join(ev.candidates), ev_type=ev.type,
+                              candidates=",".join(ev.candidates),
+                              # A cancel we could not match is a CALENDAR row, not a status
+                              # proposal, so an unrelated later advance on the same lead does
+                              # not `clear_lead` away the "remove it by hand" instruction.
+                              ev_type=(EV_TYPE_CALENDAR if res.proposal == "cancel-unresolved"
+                                       else ev.type),
                               proposal=res.proposal or ev.type, hint=hint,
                               first_seen=today, times_surfaced=1)
                 new_entries.append(entry)
                 # record BEFORE seen.add: a write failure raises, the `except`
                 # below skips seen.add, and the message re-processes next run.
                 if not dry_run:
-                    _record_replacing_failure(mid, entry)
+                    _record_replacing(mid, entry)
+            if res.needs_review and not any(e.message_id == mid for e in new_entries):
+                # Recorded independently of `action`, which is the whole point: this fires on
+                # the `applied` path (status advanced, nothing booked) and on the `calendar`
+                # path, and NEITHER of those records anything. The `not any(...)` guard is for
+                # the case where the action branch above already filed a row for this message
+                # -- one message, one row, since message_id is the table's PRIMARY KEY.
+                #
+                # `ev_type` is EV_TYPE_CALENDAR rather than `ev.type`, so `clear_lead` cannot
+                # delete it when an unrelated later email advances the same lead. A stale
+                # calendar entry is not resolved by a status advance.
+                uid = getattr(ev.ics, "uid", "") or "?"
+                entry = Entry(
+                    message_id=mid, lead=ev.lead_slug or "", candidates="",
+                    ev_type=EV_TYPE_CALENDAR, proposal=res.needs_review,
+                    hint=(f'(the calendar entry for uid "{uid}" could NOT be created or '
+                          f'verified -- the lead was still advanced, but check your calendar '
+                          f'and add it by hand, then `job-sluice track dismiss --id {mid}`)'),
+                    first_seen=today, times_surfaced=1)
+                new_entries.append(entry)
+                if not dry_run:
+                    _record_replacing(mid, entry)
             if res.calendar in ("created", "updated"):
                 rep.calendar_added += 1
                 if res.calendar_assumed_tz:
                     rep.calendar_assumed_tz += 1
             if not dry_run:
+                # Whatever the outcome was, this message PROCESSED, so any failure row from an
+                # earlier run is resolved. Here rather than in the record helper, because the
+                # `applied` and `skipped` outcomes record nothing and were therefore missed.
+                _clear_stale_failure(mid)
                 seen.add(mid)
         except GoogleAuthError:
             rep.auth_error = True
@@ -363,12 +409,13 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
             # FAILURE durable instead, with the machinery #49 already built: the row
             # re-surfaces every run via bump_surfaced() and carries a dismiss lever.
             _log.exception("track: message %s failed: %s", mid, exc)
-            if not dry_run and mid not in _failed_ids:
+            if not dry_run and _open_ev_type.get(mid) != EV_TYPE_FAILURE:
                 # Once per message. A deterministic failure fails again next run while its row
                 # is still open, and re-recording would turn one broken message into a growing
                 # pile of identical rows -- the digest getting noisier the longer the problem
                 # goes unfixed, which is backwards.
-                entry = Entry(message_id=mid, lead="", candidates="", ev_type="failure",
+                entry = Entry(message_id=mid, lead="", candidates="",
+                              ev_type=EV_TYPE_FAILURE,
                               proposal="failed", hint=f"processing failed: {exc}",
                               first_seen=today, times_surfaced=1)
                 # Same _dl_write as every other row -- it sets `rep.deadletter_error`, which

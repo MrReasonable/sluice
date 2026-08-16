@@ -210,7 +210,13 @@ def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
     if ics.start is None:
         # We cannot even build a window, so nothing was searched. A bare `METHOD:CANCEL` +
         # `UID` VEVENT is legal RFC 5545 and lands here.
-        return "unresolved" if ics.cancelled else "present"
+        #
+        # `unresolved` for BOTH arms. The non-cancel arm used to answer `present`, which this
+        # docstring defines as "we searched a complete window and there was nothing of ours"
+        # -- a positive claim about a search that never happened. Unreachable today, because
+        # `reconcile` guards `ics.start is not None` before the only non-cancel call site, but
+        # the honest value costs nothing and the wrong one sits waiting for a third caller.
+        return "unresolved"
     events, truncated = _window(client, cfg, ics)
     ours = _find_ours(events, ics)
     if ics.cancelled:
