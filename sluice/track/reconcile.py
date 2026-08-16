@@ -28,6 +28,13 @@ class ReconcileResult:
     materials_written: bool = False
     proposal: "str | None" = None
     note: str = ""
+    # Something needs a HUMAN, independently of `action`. `action` conflates "what we wrote"
+    # with "what needs attention", and a refused calendar write is legitimately both: the
+    # interview is real so the status advance is right, and the missing calendar entry still
+    # has to reach someone. Forcing it through `action="proposed"` would trade a silent loss
+    # for a manual step on every truncated run; leaving it out is how it vanished entirely.
+    # `engine.run` records a dead-letter row on this whatever `action` came out as.
+    needs_review: str = ""
 
 
 def _assumed_tz(outcome, ics):
@@ -199,6 +206,17 @@ def reconcile(event, note_by_slug, vault, cfg, client, dry_run=False, *, shortli
         if event.ics is not None and event.ics.start is not None:
             r.calendar = sync_event(client, cfg, lead_slug=event.lead_slug, ics=event.ics, dry_run=dry_run)
             r.calendar_assumed_tz = _assumed_tz(r.calendar, event.ics)
+            if r.calendar == "unresolved":
+                # The cancel branch above learned this and the scheduling branch did not, so a
+                # refused insert (our event may be off-page in a truncated window, and
+                # inserting would duplicate it) advanced the status to `interview`, booked
+                # NOTHING, wrote no row, and let `seen.add` consume the message. `failures=0`,
+                # `calendar_added=0` -- indistinguishable from a message carrying no invite.
+                #
+                # The advance itself is correct and stays: the interview genuinely was
+                # scheduled. What was missing is that anyone finds out the calendar entry is
+                # not there.
+                r.needs_review = "calendar-unresolved"
         r.materials_written = _stamp_materials(vault, note, event, dry_run=dry_run)
         target = _SCHEDULE_TARGET[event.type]
         if _status.can_advance(note.status, target):

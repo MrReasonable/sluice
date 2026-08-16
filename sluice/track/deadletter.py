@@ -59,6 +59,14 @@ def deadletter_path(seen_db: str) -> str:
     return seen_db + _DEADLETTER_SUFFIX
 
 
+# Row kinds that are NOT a status proposal, and which a status advance therefore does not
+# resolve. `ev_type` otherwise draws from classify's vocabulary (interview/offer/receipt/...);
+# these two are engine-authored and live here, in the module that owns the table, so a future
+# classify type colliding with one is visible at the definition rather than at a bare literal.
+EV_TYPE_FAILURE = "failure"      # the message could not be processed at all
+EV_TYPE_CALENDAR = "calendar"    # a calendar action we could not complete or verify
+
+
 class DeadLetterDb:
     def __init__(self, path: str):
         self.path = path
@@ -116,8 +124,17 @@ class DeadLetterDb:
         finally:
             db.close()
 
-    def record(self, entry: Entry) -> None:
+    def record(self, entry: Entry, *, replace: bool = False) -> None:
         """Insert `entry`, or no-op if an IDENTICAL row already holds its message_id.
+
+        `replace=True` UPDATES a differing row instead of raising, preserving `first_seen` and
+        `times_surfaced`. That is for a caller re-recording ITS OWN message -- `engine.run`
+        re-processes a message whenever it is not yet in `seen`, and a re-derived row is by
+        definition the newer truth. Without it the raise below turned a routine re-record into
+        a permanent stall: a proposal row whose `proposal` string embeds a model confidence
+        differs on the next run, so `record` raised, `deadletter_error` was set on every run,
+        `_save_lastrun` never advanced, and `_gmail_query`'s `after:` widened without bound.
+        An UPDATE also avoids the delete-then-insert window a clear+record leaves.
 
         `INSERT OR IGNORE` on a `message_id` PRIMARY KEY silently discards a DIFFERENT row
         for the same key, and that is a hole under every caller: a transient failure row for
@@ -139,11 +156,24 @@ class DeadLetterDb:
                 existing = db.execute(
                     f"SELECT {_COLS} FROM track_deadletter WHERE message_id = ?",
                     (entry.message_id,)).fetchone()
-                # Compare the fields a caller sets; `times_surfaced` is bumped independently
-                # by `bump_surfaced`, so it is not part of "the same row".
-                if existing and tuple(existing[:6]) != (
-                        entry.message_id, entry.lead, entry.candidates, entry.ev_type,
-                        entry.proposal, entry.hint):
+                # The first SIX columns are the comparison, which excludes TWO fields, for two
+                # different reasons -- the previous comment gave only one and would have led a
+                # reader to widen the slice:
+                #   - `times_surfaced` moves under `bump_surfaced`, independently of any caller.
+                #   - `first_seen` moves with the CALENDAR. The caller passes `first_seen=today`,
+                #     so including it would make every deterministic failure raise the day after
+                #     it started -- the permanent-stall shape, on a far wider trigger than the
+                #     one that caused it. Pinned by `test_a_re_record_on_a_LATER_DAY_...`.
+                differs = existing and tuple(existing[:6]) != (
+                    entry.message_id, entry.lead, entry.candidates, entry.ev_type,
+                    entry.proposal, entry.hint)
+                if differs and replace:
+                    db.execute(
+                        "UPDATE track_deadletter SET lead=?, candidates=?, ev_type=?, "
+                        "proposal=?, hint=? WHERE message_id=?",
+                        (entry.lead, entry.candidates, entry.ev_type, entry.proposal,
+                         entry.hint, entry.message_id))
+                elif differs:
                     raise ValueError(
                         f"dead-letter row for message_id {entry.message_id!r} already exists "
                         f"with ev_type {existing[3]!r}; refusing to silently discard the new "
@@ -203,11 +233,27 @@ class DeadLetterDb:
                 db.close()
 
     def clear_lead(self, slug: str) -> int:
+        """Clear this lead's STATUS proposals -- not everything filed against the lead.
+
+        The unfiltered `DELETE ... WHERE lead = ?` was a silent loss. It fires on any
+        `applied` advance and on any successful `confirm`, so a `calendar` row saying "the
+        cancellation could not be matched, remove it from your calendar by hand" was deleted
+        by an unrelated rejection email arriving weeks later -- with the message already in
+        `seen`, so the instruction was never re-derived and the cancelled interview stayed in
+        the calendar with no trace.
+
+        The justification for clearing ("an auto-resolved lead's pending proposals are
+        resolved too, the lead is already terminal") holds for STATUS proposals only.
+        Advancing a lead to `rejected` does not remove a stale calendar entry, and does not
+        make a failed message succeed.
+        """
         if _absent(self.path):
             return 0
         db = self._open()
         try:
-            cur = db.execute("DELETE FROM track_deadletter WHERE lead = ?", (slug,))
+            cur = db.execute(
+                "DELETE FROM track_deadletter WHERE lead = ? AND ev_type NOT IN (?,?)",
+                (slug, EV_TYPE_FAILURE, EV_TYPE_CALENDAR))
             db.commit()
             return cur.rowcount
         finally:
