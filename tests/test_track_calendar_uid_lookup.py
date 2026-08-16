@@ -43,8 +43,12 @@ def test_the_fixture_really_is_out_of_window():
     that has nothing to do with #146."""
     c = FakeGoogleClient(events=[_ours()])
     sync_event(c, TrackConfig(), lead_slug="example-lead", ics=_ics())
-    lo, hi = c.listed[0]
-    assert not (lo <= _OLD <= hi), (
+    lo, hi = (datetime.fromisoformat(b) for b in c.listed[0])
+    old = datetime.fromisoformat(_OLD)
+    # Parsed, not compared as strings. ISO-8601 sorts lexically only while every value shares
+    # one offset, and a premise check that silently stops meaning anything the day a fixture
+    # gains a `+01:00` is worse than no premise check.
+    assert not (lo <= old <= hi), (
         f"the old event at {_OLD} sits INSIDE the window {lo}..{hi}, so nothing here "
         "exercises the out-of-window lookup")
 
@@ -89,9 +93,28 @@ def test_the_tag_query_asks_for_the_KEY_THE_BODY_IS_WRITTEN_WITH():
     string is the contract, so the string is what this asserts."""
     c = FakeGoogleClient(events=[])
     sync_event(c, TrackConfig(), lead_slug="example-lead", ics=_ics())
-    assert list(c.inserted[0]["extendedProperties"]["private"]) == \
-        ["sluice-track-uid", "sluice-track-lead"]
+    # The KEY SET, not its order -- insertion order is incidental, and pinning it would make
+    # this red for a rearrangement that harms nobody while still catching a rename.
+    assert set(c.inserted[0]["extendedProperties"]["private"]) == \
+        {"sluice-track-uid", "sluice-track-lead"}
     assert c.tag_queries == [("sluice-track-uid", "u1")]
+
+
+def test_our_own_out_of_window_event_BEATS_a_foreign_event_at_the_new_slot():
+    """Which of the two lookups wins, when they disagree.
+
+    The window scan sees only the untagged event now sitting at the rescheduled time -- the
+    recruiter's own invite, which Google auto-adds from the mail -- so on its own it answers
+    `foreign`: correct about the safety property, and it leaves our real entry stranded at the
+    old time forever, because `foreign` writes nothing. Finding OURS has to take precedence,
+    and it does: the tag query runs before `_foreign_at_start` is consulted."""
+    c = FakeGoogleClient(events=[
+        _ours(),                                                        # ours, out of window
+        {"id": "recruiter", "start": {"dateTime": "2026-10-01T10:00:00+00:00"}},   # untagged
+    ])
+    assert sync_event(c, TrackConfig(), lead_slug="example-lead", ics=_ics()) == "updated"
+    assert [eid for eid, _ in c.updated] == ["ev1"]
+    assert not c.inserted and not c.deleted, "the foreign event must still never be touched"
 
 
 class _FilterMatchesNothing(FakeGoogleClient):
@@ -242,6 +265,11 @@ def test_a_rescheduled_invite_END_TO_END_moves_the_entry_and_leaves_no_second_on
     body = c.updated[0][1]
     assert body["start"]["dateTime"].startswith("2026-10-01T10:00"), body["start"]
     assert rep.calendar_added == 1 and not rep.failures
+    # The non-emptiness check FIRST. `all()` over an empty list is True, so without it a run
+    # that reconciled nothing at all -- an .ics that failed to parse, a classification that
+    # matched no lead -- would satisfy the line below while proving the opposite of what it
+    # claims. This module already lost that argument once, in the silent-warning test.
+    assert rep.results, "nothing was reconciled, so the assertion below would be vacuous"
     assert all(not r.needs_review for r in rep.results), (
         f"a resolved reschedule must not also nag a human: "
         f"{[r.needs_review for r in rep.results if r.needs_review]}")
