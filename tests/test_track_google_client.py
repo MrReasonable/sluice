@@ -244,3 +244,135 @@ def test_an_interrupted_write_cleans_up_on_keyboard_interrupt(tmp_path, monkeypa
     with pytest.raises(KeyboardInterrupt):
         mod._write_token(str(p), "tok")
     assert list(tmp_path.iterdir()) == [], "a temp survived Ctrl-C during a token write"
+
+
+# ---- #142: only a dead CREDENTIAL means "reauth", never a bad network ----------------------
+
+def _fake_google(monkeypatch, *, refresh_raises=None, valid=False):
+    """Stand the google libs up under their import names, as the refresh test above does.
+
+    They live only in the container venv and `_creds` imports them lazily inside the method,
+    which is what makes this possible at all.
+    """
+    import sys
+    import types
+
+    class _RefreshError(Exception):
+        pass
+
+    class _Creds:
+        refresh_token = "r"
+
+        def __init__(self):
+            self.valid = valid
+
+        def refresh(self, request):
+            # The sentinel means "raise the RefreshError this very call installed". Calling
+            # `_fake_google` twice would otherwise build a SECOND, distinct RefreshError
+            # class, so the `except` clause resolving the module's one would not match the
+            # raised one -- a fake that makes the mutant look alive.
+            if refresh_raises == "REFRESH_ERROR":
+                raise _RefreshError("invalid_grant")
+            if refresh_raises is not None:
+                raise refresh_raises
+            self.valid = True
+
+        def to_json(self):
+            return '{"refreshed": true}'
+
+    cred_mod = types.ModuleType("google.oauth2.credentials")
+    cred_mod.Credentials = types.SimpleNamespace(
+        from_authorized_user_file=lambda path: _Creds())
+    req_mod = types.ModuleType("google.auth.transport.requests")
+    req_mod.Request = lambda: None
+    exc_mod = types.ModuleType("google.auth.exceptions")
+    exc_mod.RefreshError = _RefreshError
+    for name, mod in (("google", types.ModuleType("google")),
+                      ("google.oauth2", types.ModuleType("google.oauth2")),
+                      ("google.auth", types.ModuleType("google.auth")),
+                      ("google.auth.transport", types.ModuleType("google.auth.transport")),
+                      ("google.oauth2.credentials", cred_mod),
+                      ("google.auth.transport.requests", req_mod),
+                      ("google.auth.exceptions", exc_mod)):
+        monkeypatch.setitem(sys.modules, name, mod)
+    return _RefreshError
+
+
+@pytest.mark.parametrize("exc", [
+    ConnectionError("network unreachable"),
+    TimeoutError("timed out"),
+    OSError("[Errno 28] No space left on device"),
+])
+def test_a_TRANSIENT_failure_is_not_reported_as_reauth(exc, tmp_path, monkeypatch):
+    """`GoogleAuthError` breaks `engine.run`'s loop, exits 1, and TROUBLESHOOTING.md tells the
+    operator to DELETE the token and re-consent. On a Wi-Fi blip that throws away a perfectly
+    good credential and forces an interactive browser flow -- so a transient error must
+    propagate as itself and be handled as the ordinary per-message failure it is.
+    """
+    _fake_google(monkeypatch, refresh_raises=exc)
+    c = gc.RealGoogleClient(str(tmp_path / "tok.json"))
+    with pytest.raises(type(exc)):
+        c._creds()
+
+
+def test_a_REFUSED_refresh_still_reports_reauth(tmp_path, monkeypatch):
+    # The case the error type exists for: Google actively rejected the credential.
+    _fake_google(monkeypatch, refresh_raises="REFRESH_ERROR")
+    c = gc.RealGoogleClient(str(tmp_path / "tok.json"))
+    with pytest.raises(gc.GoogleAuthError) as e:
+        c._creds()
+    assert "REFUSED" in str(e.value)
+
+
+def test_an_unreadable_token_FILE_is_not_reported_as_reauth(tmp_path, monkeypatch):
+    """A permissions problem or a missing path is not a dead credential, and deleting the
+    file is the one remedy that cannot help."""
+    import sys
+    import types
+
+    cred_mod = types.ModuleType("google.oauth2.credentials")
+
+    def _boom(path):
+        raise PermissionError("[Errno 13] Permission denied")
+
+    cred_mod.Credentials = types.SimpleNamespace(from_authorized_user_file=_boom)
+    req_mod = types.ModuleType("google.auth.transport.requests")
+    req_mod.Request = lambda: None
+    for name, mod in (("google", types.ModuleType("google")),
+                      ("google.oauth2", types.ModuleType("google.oauth2")),
+                      ("google.auth", types.ModuleType("google.auth")),
+                      ("google.auth.transport", types.ModuleType("google.auth.transport")),
+                      ("google.oauth2.credentials", cred_mod),
+                      ("google.auth.transport.requests", req_mod)):
+        monkeypatch.setitem(sys.modules, name, mod)
+
+    c = gc.RealGoogleClient(str(tmp_path / "tok.json"))
+    with pytest.raises(PermissionError):
+        c._creds()
+
+
+def test_a_CORRUPT_token_does_report_reauth(tmp_path, monkeypatch):
+    # Present but unparseable IS a dead credential; re-consent is the right remedy.
+    import sys
+    import types
+
+    cred_mod = types.ModuleType("google.oauth2.credentials")
+
+    def _boom(path):
+        raise ValueError("Expecting value: line 1 column 1")
+
+    cred_mod.Credentials = types.SimpleNamespace(from_authorized_user_file=_boom)
+    req_mod = types.ModuleType("google.auth.transport.requests")
+    req_mod.Request = lambda: None
+    for name, mod in (("google", types.ModuleType("google")),
+                      ("google.oauth2", types.ModuleType("google.oauth2")),
+                      ("google.auth", types.ModuleType("google.auth")),
+                      ("google.auth.transport", types.ModuleType("google.auth.transport")),
+                      ("google.oauth2.credentials", cred_mod),
+                      ("google.auth.transport.requests", req_mod)):
+        monkeypatch.setitem(sys.modules, name, mod)
+
+    c = gc.RealGoogleClient(str(tmp_path / "tok.json"))
+    with pytest.raises(gc.GoogleAuthError) as e:
+        c._creds()
+    assert "unreadable" in str(e.value)

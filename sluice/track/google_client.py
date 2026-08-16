@@ -84,6 +84,33 @@ def probe_availability() -> tuple[bool, str | None]:
     return True, None
 
 
+def _auth_failures() -> tuple:
+    """Exception types that mean the CREDENTIAL is dead, as opposed to the network being bad.
+
+    Resolved lazily and defensively: the google libs live only in the container venv (this
+    module is import-clean without them, by design), and the exception surface has moved
+    between releases. A missing name must not turn a narrowing fix into an ImportError at
+    refresh time, so anything we cannot resolve is simply absent from the tuple -- which
+    fails toward "propagate as itself", the safe direction: an unclassified error becomes an
+    ordinary per-message failure rather than a spurious "delete your token".
+    """
+    found = []
+    try:
+        from google.auth import exceptions as _ge
+        for name in ("RefreshError", "DefaultCredentialsError"):
+            exc = getattr(_ge, name, None)
+            if isinstance(exc, type) and issubclass(exc, BaseException):
+                found.append(exc)
+    except Exception:  # pragma: no cover - google libs absent in the dev venv
+        pass
+    return tuple(found) or (_NeverRaised,)
+
+
+class _NeverRaised(Exception):
+    """Placeholder so `except _auth_failures()` is always a valid, never-matching clause when
+    the google exception module cannot be resolved."""
+
+
 class RealGoogleClient:
     """Gmail + Calendar over google_token.json. Lazy-imports google libs."""
 
@@ -101,20 +128,45 @@ class RealGoogleClient:
         self._cal = None
 
     def _creds(self):
+        """The stored credential, refreshed if needed.
+
+        `GoogleAuthError` is reserved for "this token is no longer usable and a human must
+        re-consent", because that is what it MEANS downstream: `engine.run` breaks its loop on
+        it, `cmd_track_run` exits 1, and `docs/TROUBLESHOOTING.md` tells the operator to DELETE
+        the token file and re-authorise.
+
+        The previous `except Exception` spanned `creds.refresh()` and `_write_token()`, so a
+        Wi-Fi blip, a DNS failure, a Google 5xx or a disk-full `OSError` all became "reauth
+        needed" -- and the documented remedy then threw away a perfectly good credential and
+        forced an interactive browser flow, on a transient error that would have cleared
+        itself. It also aborted the whole run instead of failing one message (#142).
+
+        So transport and OS errors now propagate AS THEMSELVES. They are already handled
+        correctly one level up: the per-message handler records a dead-letter row, names the
+        failure in the digest, notifies, and leaves the message retryable.
+        """
         from google.oauth2.credentials import Credentials
         from google.auth.transport.requests import Request
         try:
             creds = Credentials.from_authorized_user_file(self.token_path)
+        except OSError:
+            # Unreadable/absent token file. NOT reauth: the remedy is to look at the path,
+            # not to delete what may be a fine credential behind a permissions problem.
+            raise
+        except Exception as e:
+            # Present but unparseable -- a genuinely dead credential. Re-consent IS the fix.
+            raise GoogleAuthError(f"google token at {self.token_path} is unreadable: {e}") from e
+        try:
             if not creds.valid and creds.refresh_token:
                 creds.refresh(Request())
                 _write_token(self.token_path, creds.to_json())
-            if not creds.valid:
-                raise GoogleAuthError("google token invalid and could not refresh")
-            return creds
-        except GoogleAuthError:
-            raise
-        except Exception as e:  # refresh/parse failure -> reauth needed
-            raise GoogleAuthError(f"google auth failed: {e}") from e
+        except _auth_failures() as e:
+            raise GoogleAuthError(f"google token refresh was REFUSED: {e}") from e
+        # Every other exception -- TransportError, ConnectionError, socket timeout, OSError
+        # from the token write -- deliberately propagates untouched.
+        if not creds.valid:
+            raise GoogleAuthError("google token invalid and could not refresh")
+        return creds
 
     def _svc(self, name, version):
         from googleapiclient.discovery import build
