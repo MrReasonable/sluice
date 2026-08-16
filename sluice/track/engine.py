@@ -63,13 +63,15 @@ class RunReport:
     proposed: int = 0
     calendar_added: int = 0
     calendar_assumed_tz: int = 0   # of those, how many booked an instant we GUESSED
-    # A LIST of "message-id: cause", not a count -- matching triage's RunReport,
-    # which set this precedent. `failures=N` is printed from len(), so the count
-    # and the detail come from one field and cannot disagree. A bare int meant a
-    # cron run could say "failures=1" and name nothing, on a stream nobody reads.
-    # list[TrackFailure]. `failures=N` in the digest is len() of this, so the count
-    # and the detail come from one field and cannot disagree.
+    # list[TrackFailure], not a count -- matching triage's RunReport, which set the
+    # precedent. `failures=N` in the digest is len() of this list, so the count and the
+    # detail come off one field and cannot disagree. A bare int meant a cron run could
+    # say "failures=1" and name nothing, on a stream nobody reads.
     failures: list = field(default_factory=list)
+    # The Gmail search hit its cap, so this run did not see every matching message.
+    # DELIBERATELY not part of app.py's `_save_lastrun` gate -- see the digest warning in
+    # cli.py for why holding the watermark on this makes it strictly worse.
+    search_truncated: bool = False
     results: list = field(default_factory=list)
     open_proposals: list = field(default_factory=list)  # every currently-open dead-letter Entry
     auth_error: bool = False
@@ -128,7 +130,7 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
     # it already computed, and can drift from it.
     dropped_twins = [n for members in dropped_shortlist.values() for n in members]
     try:
-        ids = client.search_messages(_gmail_query(cfg, now_iso, since_iso))
+        ids, rep.search_truncated = client.search_messages(_gmail_query(cfg, now_iso, since_iso))
     except GoogleAuthError:
         rep.auth_error = True
         return rep

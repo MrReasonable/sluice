@@ -29,9 +29,9 @@ class _TruncatingClient:
         self.calls = 0
         self.deleted, self.inserted, self.updated = [], [], []
 
-    def list_events(self, t0, t1, return_truncated=False):
+    def list_events(self, t0, t1, max_results=2500):
         self.calls += 1
-        return (list(self.events), self.truncated) if return_truncated else list(self.events)
+        return list(self.events), self.truncated
 
     def insert_event(self, body):
         self.inserted.append(body)
@@ -105,19 +105,31 @@ def test_the_window_is_fetched_ONCE_per_sync_not_twice():
     assert c.calls == 1, f"fetched the same window {c.calls} times"
 
 
-def test_a_client_without_the_truncation_kwarg_still_works():
-    """The Fetcher-shaped protocol is satisfied by fakes across the suite and by any
-    third-party client; a new kwarg must not become a hard requirement."""
-    class _Old:
+def test_a_kwargs_shaped_client_is_not_silently_mis_unpacked():
+    """This replaces a test that asserted the opposite and was wrong.
+
+    The old design made the pair opt-in (`return_truncated=True`) with a `try/except TypeError`
+    fallback for clients predating it, and the test that "proved" compatibility defined its
+    fake as `def list_events(self, t0, t1)` -- POSITIONAL-ONLY, the one shape the probe
+    actually handles. A `**kwargs` client, which is what two of the three fakes in this repo
+    are, SWALLOWS the unknown kwarg instead of raising, so no TypeError fired and a bare list
+    reached the tuple unpack: `ValueError: not enough values to unpack` with an empty window,
+    and a silent mis-bind of two event dicts to `(events, truncated)` with two.
+
+    The contract is now unconditional, so the probe is gone. What is worth pinning is that a
+    `**kwargs` client reaches `sync_event` intact rather than being quietly mis-read.
+    """
+    class _Kwargs:
         def __init__(self):
             self.inserted = []
 
-        def list_events(self, t0, t1):
-            return []
+        def list_events(self, *a, **k):
+            return [], False
 
         def insert_event(self, body):
             self.inserted.append(body)
             return "x"
 
-    c = _Old()
+    c = _Kwargs()
     assert sync_event(c, TrackConfig(), lead_slug="example-lead", ics=_ics()) == "created"
+    assert c.inserted, "the insert must actually have happened"

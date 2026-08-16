@@ -29,9 +29,9 @@ class _FakeGoogle:
     AttributeError instead of exercising the test's actual assertion (tst-003)."""
     auth_error = False
 
-    def search_messages(self, *a, **k): return []
+    def search_messages(self, *a, **k): return [], False
     def get_message(self, *a, **k): return {}
-    def list_events(self, *a, **k): return []
+    def list_events(self, *a, **k): return [], False
     def insert_event(self, *a, **k): return "evt1"
     def update_event(self, *a, **k): return "evt1"
     def delete_event(self, *a, **k): return None

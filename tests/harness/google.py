@@ -21,14 +21,17 @@ class FakeGoogleClient:
         self.messages = dict(messages or {})
 
     def search_messages(self, query, max_results=50):
-        return list(self.messages)
+        # `(ids, truncated)` -- the real client's contract, unconditionally. This fake was
+        # `**kwargs`-shaped and silently swallowed the old opt-in kwarg, which is how a bare
+        # list reached an unpack in production code.
+        return list(self.messages), False
 
     def get_message(self, message_id):
         return self.messages.get(message_id, {})
 
     # Calendar surface -- reached only when a message carries an .ics attachment.
     def list_events(self, *a, **k):
-        return []
+        return [], False
 
     def insert_event(self, *a, **k):
         return "evt-1"

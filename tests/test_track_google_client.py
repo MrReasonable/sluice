@@ -7,10 +7,17 @@ import sluice.track.google_client as gc
 
 
 class FakeGoogleClient:
-    """Reference fake used across track tests; mirrors the real interface."""
-    def __init__(self, messages=None, events=None):
+    """Reference fake used across track tests; mirrors the real interface.
+
+    `search_messages` and `list_events` both return `(items, truncated)`, matching the real
+    client unconditionally. A fake that returns a bare list where the real one returns a pair
+    is not a fake, it is a second implementation -- and that divergence is exactly what let a
+    broken compatibility probe stay green.
+    """
+    def __init__(self, messages=None, events=None, truncated=False):
         self.messages = messages or {}
         self.events = list(events or [])
+        self.truncated = truncated
         self.inserted, self.updated, self.deleted = [], [], []
         # Every (time_min_iso, time_max_iso) pair the caller passed. The real API rejects a
         # bound without a UTC offset (RFC 3339), so the ARGUMENTS are behaviour a test must be
@@ -18,14 +25,14 @@ class FakeGoogleClient:
         self.listed = []
 
     def search_messages(self, query, max_results=50):
-        return list(self.messages.keys())
+        return list(self.messages.keys()), False
 
     def get_message(self, message_id):
         return self.messages[message_id]
 
-    def list_events(self, time_min_iso, time_max_iso):
+    def list_events(self, time_min_iso, time_max_iso, max_results=2500):
         self.listed.append((time_min_iso, time_max_iso))
-        return list(self.events)
+        return list(self.events), self.truncated
 
     def insert_event(self, body):
         self.inserted.append(body); return "ev-new"
@@ -50,7 +57,7 @@ def test_real_client_constructs_without_touching_google():
 
 def test_fake_satisfies_interface():
     f = FakeGoogleClient(messages={"m1": {"headers": {}, "body_text": "", "thread_id": "t", "attachments": []}})
-    assert f.search_messages("q") == ["m1"]
+    assert f.search_messages("q") == (["m1"], False)
     assert f.get_message("m1")["thread_id"] == "t"
     f.insert_event({"summary": "x"}); assert f.inserted
 
