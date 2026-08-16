@@ -88,13 +88,17 @@ def test_a_foreign_event_is_still_never_deleted_but_is_no_longer_SILENT():
     assert not c.deleted, "the safety property: never delete an event we did not create"
 
 
-def test_an_unresolved_cancel_is_PROPOSED_so_a_human_sees_it(tmp_path):
+def test_an_unresolved_cancel_REACHES_A_HUMAN(tmp_path):
     """`reconcile` must route it somewhere durable.
 
     `action="calendar"` matched none of engine.run's branches, so nothing was recorded and
-    `seen.add` ran regardless -- the message was consumed with the work undone. `proposed` is
-    the existing path for "we could not act, a human must", and it already writes a
-    dead-letter row with a `track dismiss --id` lever.
+    `seen.add` ran regardless -- the message was consumed with the work undone.
+
+    It now travels on `needs_review` rather than by forcing `action="proposed"` with a magic
+    proposal string. Asserting the FACT (a human is told) rather than the ROUTE: the previous
+    version pinned `action == "proposed"`, which is a mechanism, and mechanisms are what you
+    want free to change. The end-to-end consequence -- a dead-letter row with a dismiss lever
+    -- is pinned in `test_track_unresolved_routing.py`.
     """
     import pathlib
 
@@ -116,8 +120,8 @@ def test_an_unresolved_cancel_is_PROPOSED_so_a_human_sees_it(tmp_path):
     res = R.reconcile(ev, notes, v, TrackConfig(),
                       FakeGoogleClient(events=[_tagged("u1", "2026-07-15T10:00:00+00:00")]))
     assert res.calendar == "unresolved"
-    assert res.action == "proposed", "an unresolved cancel must reach a human, not vanish"
-    assert res.proposal, "the dead-letter row needs a proposal string"
+    assert res.needs_review == "cancel-unresolved", (
+        "an unresolved cancel must reach a human, not vanish")
     assert pathlib.Path(leads / "Example Tidal - EM.md").read_text().count("status: interview") == 1, \
         "a cancellation must still never advance or regress the status"
 

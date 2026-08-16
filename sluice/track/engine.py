@@ -24,6 +24,36 @@ _INFLIGHT = ("applied", "phone_screen", "interview", "offer")  # non-terminal ap
 _PROPOSE_TARGET = {"phone_screen": "phone_screen", "interview": "interview",
                    "rejection": "rejected", "offer": "offer", "receipt": "applied"}
 
+# `ReconcileResult.needs_review` -> the operator-facing hint. A table rather than an if/elif
+# chain so a new reason cannot be added without a hint: `_NEEDS_REVIEW_HINT[reason]` raises
+# KeyError at the record site, which is loud, local and immediate. The previous shape had one
+# hardcoded sentence covering two reasons, and it silently became a false statement the moment
+# the second was added.
+#
+# NONE of these may offer `confirm --to <status>`. `ev.type` for a cancelled interview invite
+# is still "interview", so the generic proposal hint would hand the operator a runnable
+# command that BOOKS the thing that was just cancelled. An unrunnable hint is worse than an
+# honest "look at this yourself"; a runnable and WRONG one is worse than either.
+_NEEDS_REVIEW_HINT = {
+    "cancel-unresolved":
+        '(cancellation for uid "{uid}" could not be matched to a calendar entry, so nothing '
+        'was deleted. Check your calendar and remove it by hand, then '
+        "`job-sluice track dismiss --id {mid}`)",
+    "cancel-foreign":
+        '(cancellation for uid "{uid}" -- the entry at that slot was not created by sluice '
+        "(usually the sender's own invite, auto-added by Google), so it was left alone. "
+        "Remove it by hand, then `job-sluice track dismiss --id {mid}`)",
+    "calendar-unresolved":
+        '(the calendar entry for uid "{uid}" could NOT be created or verified -- the lead was '
+        "still advanced, but check your calendar and add it by hand, then "
+        "`job-sluice track dismiss --id {mid}`)",
+    "calendar-foreign":
+        '(no calendar entry was created for uid "{uid}": an event sluice did not create '
+        "already covers that slot, so booking would have duplicated it. The lead was still "
+        "advanced -- check the slot is really your interview, then "
+        "`job-sluice track dismiss --id {mid}`)",
+}
+
 
 @dataclass(repr=False)
 class TrackFailure:
@@ -377,28 +407,12 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
             elif res.action == "proposed":
                 rep.proposed += 1
                 target = _PROPOSE_TARGET.get(ev.type, "")
-                # `startswith`, not an equality on one reason code. `reconcile` now emits
-                # `cancel-unresolved` AND `cancel-foreign`, and matching one literal is
-                # how the second reason would inherit `_PROPOSE_TARGET` and hand the
-                # operator a `confirm --to interview` for an interview that was
-                # cancelled -- the exact runnable-and-wrong hint this branch exists to
-                # prevent.
-                if (res.proposal or "").startswith("cancel-"):
-                    # MUST NOT inherit _PROPOSE_TARGET. `ev.type` for a cancelled interview
-                    # invite is still "interview", so the generic branch handed the operator
-                    # `confirm --to interview` -- a runnable command that BOOKS the thing that
-                    # was just cancelled. An unrunnable hint is worse than an honest "look at
-                    # this yourself" (see the else branch); a runnable and WRONG one is worse
-                    # than either.
-                    uid = getattr(ev.ics, "uid", "") or "?"
-                    # Deliberately does NOT name a cause. `unresolved` now covers two (no
-                    # DTSTART to search with, and a calendar window we know was truncated),
-                    # and an earlier version hardcoded the first -- which became a false
-                    # statement the moment the second was added.
-                    hint = (f'(cancellation for uid "{uid}" could not be matched to a calendar '
-                            f'entry, so nothing was deleted. Check your calendar and remove it '
-                            f'by hand, then `job-sluice track dismiss --id {mid}`)')
-                elif ev.lead_slug and target:
+                # A cancelled invite no longer reaches this chain at all: `reconcile` routes
+                # every calendar outcome we could not act on through `needs_review` instead,
+                # handled once below. That removes the carve-out that used to live here to
+                # stop `_PROPOSE_TARGET` handing the operator `confirm --to interview` for an
+                # interview that had just been CANCELLED.
+                if ev.lead_slug and target:
                     hint = f'job-sluice track confirm --lead "{ev.lead_slug}" --to {target}'
                 elif ev.candidates:
                     # Each option needs its own "job-sluice track confirm" prefix -- prefixing
@@ -415,12 +429,7 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                     hint = f'(no runnable action for type "{ev.type}" / lead "{res.lead}"; review manually)'
                 entry = Entry(message_id=mid, lead=ev.lead_slug or "",
                               candidates=",".join(ev.candidates),
-                              # A cancel we could not match is a CALENDAR row, not a status
-                              # proposal, so an unrelated later advance on the same lead does
-                              # not `clear_lead` away the "remove it by hand" instruction.
-                              ev_type=(EV_TYPE_CALENDAR
-                                       if (res.proposal or "").startswith("cancel-")
-                                       else ev.type),
+                              ev_type=ev.type,
                               proposal=res.proposal or ev.type, hint=hint,
                               first_seen=today, times_surfaced=1)
                 new_entries.append(entry)
@@ -428,23 +437,32 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                 # below skips seen.add, and the message re-processes next run.
                 if not dry_run:
                     _record_replacing(mid, entry)
-            if res.needs_review and not any(e.message_id == mid for e in new_entries):
-                # Recorded independently of `action`, which is the whole point: this fires on
-                # the `applied` path (status advanced, nothing booked) and on the `calendar`
-                # path, and NEITHER of those records anything. The `not any(...)` guard is for
-                # the case where the action branch above already filed a row for this message
-                # -- one message, one row, since message_id is the table's PRIMARY KEY.
+            if res.needs_review:
+                # THE one route for "the calendar work could not be done", whatever `action`
+                # came out as. That independence is the point: this fires on `applied` (status
+                # advanced, nothing booked) and on `calendar`, and NEITHER of those records
+                # anything.
+                #
+                # It also replaced a second route. A cancel we could not act on used to force
+                # `action="proposed"` with a magic `proposal` string that `engine.run` had to
+                # sniff twice -- once to withhold `_PROPOSE_TARGET`, once to choose `ev_type`.
+                # Both carve-outs are gone; one field and one table below.
                 #
                 # `ev_type` is EV_TYPE_CALENDAR rather than `ev.type`, so `clear_lead` cannot
                 # delete it when an unrelated later email advances the same lead. A stale
                 # calendar entry is not resolved by a status advance.
+                #
+                # No `not any(...)` guard: every reason here comes from a branch that files
+                # nothing else, and `_record_replacing` would REPLACE a row rather than
+                # collide. The guard that used to sit here was unreachable by construction and
+                # resolved a hypothetical collision first-writer-wins -- silently dropping the
+                # calendar instruction in favour of a status proposal, which is the opposite
+                # of the priority `clear_lead` establishes three lines down.
                 uid = getattr(ev.ics, "uid", "") or "?"
+                hint = _NEEDS_REVIEW_HINT[res.needs_review].format(uid=uid, mid=mid)
                 entry = Entry(
                     message_id=mid, lead=ev.lead_slug or "", candidates="",
-                    ev_type=EV_TYPE_CALENDAR, proposal=res.needs_review,
-                    hint=(f'(the calendar entry for uid "{uid}" could NOT be created or '
-                          f'verified -- the lead was still advanced, but check your calendar '
-                          f'and add it by hand, then `job-sluice track dismiss --id {mid}`)'),
+                    ev_type=EV_TYPE_CALENDAR, proposal=res.needs_review, hint=hint,
                     first_seen=today, times_surfaced=1)
                 new_entries.append(entry)
                 if not dry_run:

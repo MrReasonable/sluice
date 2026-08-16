@@ -363,3 +363,44 @@ def test_a_failing_CLEAR_does_not_report_a_successful_message_as_failed():
         "tidying up after a SUCCESSFUL message reported it as a failed one: "
         f"{[f.detail() for f in rep.failures]}")
     assert "m1" in seen, "a successful message must be consumed, not re-processed forever"
+
+
+def test_every_needs_review_REASON_has_a_hint():
+    """ENUMERATED from `reconcile`'s source, not from a list written here.
+
+    `_NEEDS_REVIEW_HINT[reason]` raises KeyError at the record site, which is loud and local
+    -- but only once that reason actually occurs in production. Deriving the reasons from the
+    producer means a new one added without a hint fails here instead, and a hand-written
+    expectation in this file would just be the same omission twice.
+    """
+    import inspect
+    import re
+
+    from sluice.track import reconcile as R
+    from sluice.track.engine import _NEEDS_REVIEW_HINT
+
+    src = inspect.getsource(R.reconcile)
+    # `r.needs_review = f"cancel-{r.calendar}"` -- prefix is literal, suffix is the outcome.
+    prefixes = set(re.findall(r'needs_review\s*=\s*f?"([a-z]+)-\{', src))
+    assert prefixes, "the scan found no needs_review assignment -- it has drifted from the code"
+    outcomes = set(re.findall(r'r\.calendar in \(([^)]*)\)', src))
+    assert outcomes, "could not read the calendar outcomes that trigger a review"
+    values = {v.strip().strip('"') for group in outcomes for v in group.split(",") if v.strip()}
+    expected = {f"{p}-{v}" for p in prefixes for v in values}
+    missing = expected - set(_NEEDS_REVIEW_HINT)
+    assert not missing, f"reasons reconcile can emit with no hint: {sorted(missing)}"
+
+
+def test_no_needs_review_hint_offers_a_runnable_confirm():
+    """The property the deleted carve-out protected, asserted over the whole table.
+
+    `ev.type` for a cancelled interview invite is still "interview", so a hint built from
+    `_PROPOSE_TARGET` would hand the operator `confirm --to interview` -- a command that RUNS
+    and books the thing that was just cancelled. Checked for every reason rather than for the
+    one that had the bug.
+    """
+    from sluice.track.engine import _NEEDS_REVIEW_HINT
+
+    for reason, template in _NEEDS_REVIEW_HINT.items():
+        assert "--to " not in template, f"{reason} offers a status advance: {template}"
+        assert "dismiss --id" in template, f"{reason} has no lever to clear it: {template}"

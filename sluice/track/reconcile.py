@@ -198,19 +198,20 @@ def reconcile(event, note_by_slug, vault, cfg, client, dry_run=False, *, shortli
         r.calendar_assumed_tz = _assumed_tz(r.calendar, event.ics)
         r.note = "cancellation"
         if r.calendar in ("unresolved", "foreign"):
-            # A cancel we could not ACT ON must reach a human. `action="calendar"` matches
-            # none of engine.run's branches, so it wrote nothing and let seen.add consume the
-            # message -- the work undone and the evidence gone. `proposed` is the existing
-            # route for "we could not act", and already carries a dismiss lever.
+            # A cancel we could not ACT ON must reach a human. Both outcomes, not just
+            # `unresolved`: `foreign` means something we did not create sits at that slot --
+            # routinely the recruiter's own invite, auto-added by Google from the mail. We
+            # must never delete it, but the operator's calendar still shows a cancelled
+            # interview and `present` told them nothing.
             #
-            # BOTH outcomes, not just `unresolved`. `foreign` means something we did not
-            # create sits at that slot -- routinely the recruiter's own invite, auto-added by
-            # Google from the mail. We must never delete it, but the operator's calendar still
-            # shows a cancelled interview and `present` told them nothing. Sweeping the
-            # sibling producer in the same function, rather than the one that was reported.
-            r.action = "proposed"
-            r.proposal = f"cancel-{r.calendar}"
-            return r
+            # `needs_review`, the SAME channel the scheduling branch uses. This used to force
+            # `action="proposed"` with a magic `proposal` string, which `engine.run` then had
+            # to detect twice -- once to withhold `_PROPOSE_TARGET` (or the operator is handed
+            # a runnable `confirm --to interview` for an interview that was just CANCELLED)
+            # and again to pick the row's `ev_type`. Two routes for one fact is how one of
+            # them ends up handled and the other not, which is exactly what happened when the
+            # scheduling producer was added.
+            r.needs_review = f"cancel-{r.calendar}"
         r.action = "calendar"
         return r
 

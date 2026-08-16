@@ -64,9 +64,15 @@ class _PagedList:
         return _Exec(nxt)
 
 
-def _client_with(monkeypatch, *, gmail=None, cal=None):
+def _client_with(monkeypatch, *, gmail=None, cal=None,
+                 gmail_max_messages=500, calendar_max_events=2500):
     c = RealGoogleClient.__new__(RealGoogleClient)          # no OAuth, no network
     c._gmail = c._cal = None
+    # `__new__` skips `__init__`, so the caps have to be set here. Defaulted to the SHIPPED
+    # values rather than to something convenient: these tests exist to pin what an install
+    # that configures nothing actually does.
+    c.gmail_max_messages = gmail_max_messages
+    c.calendar_max_events = calendar_max_events
     if gmail is not None:
         monkeypatch.setattr(c, "_gmail_svc", lambda: gmail, raising=False)
     if cal is not None:
@@ -444,3 +450,65 @@ def test_a_complete_search_still_ADVANCES_the_watermark(tmp_path, monkeypatch):
     monkeypatch.setattr(A, "_save_seen", lambda *a, **k: None)
     Sluice(Config()).track(now_iso="2026-07-10T12:00:00+00:00")
     assert saved == ["2026-07-10T12:00:00+00:00"]
+
+
+# ---- the caps are configurable, and the config actually REACHES the client -----------------
+
+def test_a_configured_cap_changes_what_one_run_reads(monkeypatch):
+    """The knob, exercised. A config key nothing threads through is decoration."""
+    pages = [{"messages": [{"id": f"m{i}"} for i in range(j * 40, j * 40 + 40)],
+              **({"nextPageToken": "t"} if j < 2 else {})} for j in range(3)]
+    c = _client_with(monkeypatch, gmail=_GmailPaged(pages), gmail_max_messages=50)
+    ids, truncated = c.search_messages("q")
+    assert len(ids) == 50 and truncated is True, "the configured cap was ignored"
+
+
+def test_the_configured_calendar_cap_is_used_too():
+    cal_pages = [{"items": [{"id": f"e{i}"} for i in range(j * 250, j * 250 + 250)],
+                  **({"nextPageToken": "t"} if j < 3 else {})} for j in range(4)]
+    import pytest as _pytest
+    mp = _pytest.MonkeyPatch()
+    try:
+        c = _client_with(mp, cal=_CalPaged(cal_pages), calendar_max_events=500)
+        got, truncated = c.list_events("a", "b")
+        assert len(got) == 500 and truncated is True
+    finally:
+        mp.undo()
+
+
+def test_the_config_keys_are_THREADED_into_the_client(tmp_path, monkeypatch):
+    """`app.py` builds the client. If it forgets a key, the default silently wins and every
+    test above still passes -- so assert the wiring, not just the client."""
+    from sluice.core.app import Sluice
+    from sluice.core.config import Config
+
+    seen_db = str(tmp_path / "track-seen.db")
+    cfgp = tmp_path / "cfg.yaml"
+    cfgp.write_text(
+        f"track:\n  seen_db: {seen_db}\n  gmail_max_messages: 111\n"
+        f"  calendar_max_events: 222\n")
+    monkeypatch.setenv("SLUICE_CONFIG", str(cfgp))
+
+    built = {}
+    import sluice.track.google_client as _gc
+
+    class _Spy:
+        def __init__(self, token_path, *, gmail_max_messages, calendar_max_events):
+            built["gmail"] = gmail_max_messages
+            built["cal"] = calendar_max_events
+
+    monkeypatch.setattr(_gc, "RealGoogleClient", _Spy)
+
+    class _Rep:
+        auth_error = deadletter_error = search_truncated = False
+        failures = []
+        open_proposals = []
+
+    import sluice.track.engine as _te
+    monkeypatch.setattr(_te, "run", lambda *a, **k: _Rep())
+    import sluice.core.app as A
+    monkeypatch.setattr(A, "_save_seen", lambda *a, **k: None)
+    monkeypatch.setattr(A, "_save_lastrun", lambda *a, **k: None)
+
+    Sluice(Config()).track(now_iso="2026-07-10T12:00:00+00:00")
+    assert built == {"gmail": 111, "cal": 222}, f"config did not reach the client: {built}"

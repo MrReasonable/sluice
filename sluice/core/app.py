@@ -1229,7 +1229,10 @@ class Sluice:
         seen = _load_seen(tcfg.seen_db)
         deadletter = DeadLetterDb(deadletter_path(tcfg.seen_db))
         since_iso = _load_lastrun(lastrun_path)
-        client = client if client is not None else RealGoogleClient(tcfg.token_path)
+        client = client if client is not None else RealGoogleClient(
+            tcfg.token_path,
+            gmail_max_messages=tcfg.gmail_max_messages,
+            calendar_max_events=tcfg.calendar_max_events)
         backend = self.backend(
             backend_role, primary_name=tcfg.primary_backend,
             primary_model=tcfg.claude_max_model, effort=tcfg.claude_max_effort,

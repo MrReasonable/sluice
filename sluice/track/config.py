@@ -103,6 +103,21 @@ class TrackConfig:
     gmail_extra_query: str = ""
     calendar_lookahead_days: int = 45
     calendar_match_minutes: int = 30          # start-proximity window for dedup
+    # Hard TOTAL caps on what one run will read, across pages. Configurable because they are
+    # deployment-specific -- mailbox volume and calendar density -- and because the calendar
+    # one is CORRECTNESS-bearing since #137: hitting it makes `sync_event` answer
+    # `unresolved`, which means the interview is not booked until a human intervenes.
+    #
+    # `calendar_max_events` is also COUPLED to a key that is already configurable: the window
+    # is 2 * calendar_lookahead_days with `singleEvents=True` expanding recurrences, so
+    # doubling the lookahead doubles the event count against this bound. Leaving it a literal
+    # meant the remedy the digest offered ("reduce calendar_lookahead_days") traded one loss
+    # class for #146's, with no way to just raise the ceiling.
+    #
+    # Both default to the pre-existing literals, so an install that sets neither behaves
+    # exactly as before.
+    gmail_max_messages: int = 500
+    calendar_max_events: int = 2500
     # The zone to assume for a DTSTART that carries no usable one -- legal RFC 5545 floating
     # time, a date-only VALUE=DATE, or a TZID this host cannot resolve. Such an invite states
     # a wall-clock and no instant, so SOMETHING has to be assumed to book it at all, and the
