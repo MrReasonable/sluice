@@ -1049,7 +1049,17 @@ class Sluice:
 
         cv's config maps to Sluice.backend's fields via compose_model/compose_effort/
         compose_host/compose_claude_path -- NOT triage's claude_max_* fields. That
-        mapping belongs here, not in Sluice.backend, same reasoning as `triage()`."""
+        mapping belongs here, not in Sluice.backend, same reasoning as `triage()`.
+
+        Raises `ValueError` naming the valid choices on an unrecognised `backend_role`
+        -- `Sluice.backend`'s own `BackendError`, re-raised here (#131: mcpserver.py's
+        cv_run passes `backend` straight through with no duplicate copy of the choice
+        set, and its own isolation sweep forbids it importing `BackendError` directly,
+        so the translation belongs at this layer, the same way `dismiss_lead` raises
+        `ValueError` for ITS OWN malformed `reason` directly rather than leaving it to
+        a caller). cli.py's `--backend` argparse `choices` already reject a bad value
+        before ever reaching here, so this is unreachable from the CLI in practice."""
+        from sluice.core.backends import BackendError
         from sluice.cv.config import load_cv_config
         from sluice.cv.engine import CvResult, run_batch, run_one
         from sluice.core.leads import slug_matches
@@ -1073,12 +1083,15 @@ class Sluice:
                     "skipped-gate for this lead", getattr(cvcfg, "renderer", ""), e)
         else:
             renderer = self.renderer(cvcfg)
-        backend = self.backend(
-            backend_role, primary_name=cvcfg.primary_backend,
-            primary_model=cvcfg.compose_model, effort=cvcfg.compose_effort,
-            host=cvcfg.compose_host, claude_path=cvcfg.compose_claude_path,
-            fallback_name=cvcfg.fallback_backend, fallback_model=cvcfg.cheap_model,
-            timeout=cvcfg.compose_timeout)
+        try:
+            backend = self.backend(
+                backend_role, primary_name=cvcfg.primary_backend,
+                primary_model=cvcfg.compose_model, effort=cvcfg.compose_effort,
+                host=cvcfg.compose_host, claude_path=cvcfg.compose_claude_path,
+                fallback_name=cvcfg.fallback_backend, fallback_model=cvcfg.cheap_model,
+                timeout=cvcfg.compose_timeout)
+        except BackendError as e:
+            raise ValueError(str(e)) from e
         cache = self.dossier_cache(self._dossier_dir(), cvcfg.ttl_days)
         store = self.store()
         # Built ONCE here and passed to both branches, so the single-lead and batch paths

@@ -177,6 +177,45 @@ def test_call_tool_reports_a_real_sdk_error_for_a_tool_level_exception(tmp_path)
     assert "not-a-real-status" in result.content[0].text
 
 
+def test_call_tool_cv_run_reports_a_real_sdk_error_for_an_invalid_backend(tmp_path, monkeypatch):
+    """Companion to the ValueError test above, for cv_run's own BackendError->ValueError
+    translation (sluice/mcpserver.py, decision 14): the SAME degrade-to-is_error
+    contract must hold through the real dispatch, not just at the direct-call layer
+    tests/test_mcpserver.py already covers. `cv_run`'s `backend` is schema-typed as an
+    `enum` (pinned above in test_tools_list_under_write_true_returns_all_nine_with_exact_
+    schemas, which is where 'every valid choice is accepted' is already covered without
+    duplicating that set here) -- this proves an invalid value past that schema still
+    reaches Sluice.backend's own role guard and comes back as a proper tool error either
+    way, rather than crashing the server.
+
+    cv.renderer is pointed at 'script' with a real (never-executed) file so compose_cv's
+    renderer construction -- which runs BEFORE the backend role guard -- succeeds without
+    WeasyPrint installed in this environment; the guard then raises before any backend
+    credential is ever needed."""
+    script = tmp_path / "render.py"
+    script.write_text("#!/usr/bin/env python3\n")
+
+    def _fake_cv_config():
+        from sluice.cv.config import CvConfig
+        c = CvConfig()
+        c.renderer = "script"
+        c.render_script = str(script)
+        return c
+
+    monkeypatch.setattr("sluice.cv.config.load_cv_config", _fake_cv_config)
+
+    async def _run():
+        from mcp import Client
+        server = build_server(Config(vault_dir=str(tmp_path / "vault")), write=True)
+        async with Client(server, raise_exceptions=True) as client:
+            return await client.call_tool(
+                "cv_run", {"lead": "nothing here", "backend": "bogus"})
+
+    result = asyncio.run(_run())
+    assert result.is_error is True
+    assert "bogus" in result.content[0].text
+
+
 # #131: the five write tools (dismiss_lead, apply_record, cv_run, cv_signoff,
 # create_lead) are registered only when build_server(config, write=True) is called --
 # the tests above all use the default write=False and so never see them. The two

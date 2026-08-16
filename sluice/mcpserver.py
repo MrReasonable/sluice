@@ -260,8 +260,9 @@ def _confirm_token(slug: str, pending: str, claims: list) -> str:
 # which constrains argparse's `--backend` the identical way for the identical
 # reason. Typing cv_run's `backend` parameter with this (Minor #9, final
 # whole-branch review) puts the same constraint into the MCP tool's
-# client-facing JSON schema (an `enum`), rather than leaving an invalid value
-# to surface only as a runtime BackendError. A THIRD hand-synced copy of the
+# client-facing JSON schema (an `enum`), rather than relying solely on
+# compose_cv's own runtime BackendError->ValueError translation to catch a
+# schema-validated client's mistake. A THIRD hand-synced copy of the
 # same choice set, not an import of either existing one: cli.py already
 # accepts this cost for the same reason (a bare literal is not worth crossing
 # a module boundary for) -- MUST stay in sync with Sluice._BACKEND_ROLES/
@@ -282,7 +283,20 @@ def cv_run(sluice: Sluice, lead: str, backend: _BackendRole = "auto") -> dict:
     wide TRIAGE_OWNED scope -- matching compose_cv's own single-lead resolution
     (`store.read_leads({"shortlist"})`). A `lead` naming a real note OUTSIDE that
     scope comes back as `out_of_scope`, the same fallback dismiss_lead/apply_record
-    use above, via a full unfiltered re-read."""
+    use above, via a full unfiltered re-read.
+
+    An invalid `backend` reaches `Sluice.backend` unvalidated a second time here
+    (decision 14 -- no duplicate copy of the valid-choice set in this module).
+    `compose_cv` itself re-raises that as `ValueError`, so `backend` joins every
+    other malformed-input field in this file's single exception contract (the
+    design doc's Error Handling section states this explicitly) without this
+    module importing the lower-level `BackendError` type itself -- the isolation
+    sweep below (`test_mcpserver_imports_from_sluice_only_within_an_explicit_
+    allow_list`) confines this module to `Sluice` methods for exactly this
+    reason. `_BackendRole`'s `Literal` enum already stops a schema-validated MCP
+    client from sending an invalid value at all; the translation only guards the
+    direct-call path (tests, or another in-process caller) that bypasses that
+    schema."""
     results = sluice.compose_cv(lead=lead, backend_role=backend)
     if not results:
         oos = out_of_scope_verdict(sluice.store().read_leads(), lead,
