@@ -12,6 +12,7 @@ from sluice.track.classify import classify
 from sluice.track.reconcile import reconcile
 from sluice.track.ics import parse_ics
 from sluice.track.google_client import GoogleAuthError
+from sluice.core.vault import frontmatter_safe
 from sluice.track.deadletter import EV_TYPE_CALENDAR, EV_TYPE_FAILURE, Entry
 from sluice.track.receipt import match_receipt
 
@@ -456,6 +457,7 @@ def confirm(vault, cfg, slug, to, *, deadletter, when=None, dry_run=False) -> di
     # arbitrary `--to` target (#10).
     if not _status.can_transition(note.status, to):
         return {"ok": False, "reason": note.status}
+    when_dropped = False
     if not dry_run:
         # BEFORE the status write. `clear_lead` below can raise on an unreachable store,
         # and by then the advance has already landed -- leaving a row nobody can clear,
@@ -463,7 +465,21 @@ def confirm(vault, cfg, slug, to, *, deadletter, when=None, dry_run=False) -> di
         deadletter.check_reachable()
         fields = {"status": _status.normalize(to), "last_signal": date.today().isoformat()}
         if when:
-            fields["interview_date"] = f'"{when}"'
+            # The THIRD `interview_date` write site. #141 guarded `reconcile._advance` and its
+            # commit claimed the class was closed while this one sat one module over, writing
+            # the same field with the same quoting -- the exact miss that commit criticised
+            # #111 for. `--when` is operator-typed but `frontmatter_safe`'s own docstring names
+            # "a CLI value that may have been pasted rather than typed" as needing the guard,
+            # and `apply/record.py` already guards `--url` on that reasoning. Pasting a time
+            # out of an invite (`Tuesday 3pm "BST"`) writes YAML the vault cannot read back,
+            # AFTER the status advance has landed.
+            safe_when = frontmatter_safe(when)
+            if safe_when:
+                fields["interview_date"] = f'"{safe_when}"'
+            else:
+                # Surfaced, not dropped in silence: the operator typed this, so they are the
+                # one person who can retype it. Matches `record.py`'s `url_dropped`.
+                when_dropped = True
         try:
             vault.update_fields(note.ref, fields)
         except VaultConflict:
@@ -476,4 +492,5 @@ def confirm(vault, cfg, slug, to, *, deadletter, when=None, dry_run=False) -> di
         # returns above too, so neither path ever deletes a row (deleting on a
         # non-write would be #49's silent loss on the clear path).
         deadletter.clear_lead(note.slug)
-    return {"ok": True, "from": note.status, "to": _status.normalize(to)}
+    return {"ok": True, "from": note.status, "to": _status.normalize(to),
+            "when_dropped": when_dropped}

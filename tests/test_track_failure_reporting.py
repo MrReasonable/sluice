@@ -39,7 +39,12 @@ def _run(monkeypatch):
                 return rep
 
         monkeypatch.setattr("sluice.core.app.Sluice", _Sluice)
-        monkeypatch.setattr(cli, "notify", lambda body, config=None: sent.append(body))
+        # Returns the real contract's outcome. A fake returning None made EVERY test in
+        # this file run the "unconfigured" branch while simultaneously "sending", so the
+        # digest always claimed no notification was sent and nothing could assert its
+        # absence -- a mutant printing that line unconditionally survived.
+        monkeypatch.setattr(cli, "notify",
+                            lambda body, config=None: (sent.append(body), "sent")[1])
         return cli.cmd_track_run(_Args(), Config()), sent
     return _drive
 

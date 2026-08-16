@@ -34,7 +34,7 @@ class _Args:
 def _run(monkeypatch):
     sent = []
 
-    def _drive(rep):
+    def _drive(rep, outcome="sent"):
         class _Sluice:
             def __init__(self, config):
                 pass
@@ -43,7 +43,17 @@ def _run(monkeypatch):
                 return rep
 
         monkeypatch.setattr("sluice.core.app.Sluice", _Sluice)
-        monkeypatch.setattr(cli, "notify", lambda body, config=None: sent.append(body))
+        # Returns the real contract's OUTCOME string, and the outcome is a parameter.
+        #
+        # Two bugs lived in the old shape. The fake returned None, so every test in this file
+        # ran the "nothing configured" branch while simultaneously recording a send -- the
+        # digest always claimed no notification was sent, and a mutant printing that line
+        # unconditionally survived. And because this fixture patches `cli.notify` INSIDE
+        # `_drive`, a test that patched it beforehand had its patch silently overwritten,
+        # which is how the unconfigured test below ended up asserting the fixture's behaviour
+        # rather than its own.
+        monkeypatch.setattr(cli, "notify",
+                            lambda body, config=None: (sent.append(body), outcome)[1])
         return cli.cmd_track_run(_Args(), Config()), sent
     return _drive
 
@@ -110,18 +120,40 @@ def test_the_notify_body_is_bounded(_run):
     assert "more" in body, "must say that the list was cut, not silently show 10 of 500"
 
 
-def test_a_notify_that_goes_NOWHERE_is_reported_locally(_run, monkeypatch, capsys):
-    """`notify()` returns False when nothing is configured, and every caller ignored it.
+def test_a_notify_that_goes_NOWHERE_is_reported_locally(_run, capsys):
+    """`notify()` reports "unconfigured", and every caller used to ignore it.
 
     So on an install with no Telegram token, the fix for "the stderr digest is discarded" was
     a second silent channel. USAGE.md asserted flatly that a failing run "Telegram-notifies",
     which is false there.
     """
-    monkeypatch.setattr(cli, "notify", lambda body, config=None: False)
-    _run(RunReport(msgs=1, failures=[TrackFailure("m1", "RuntimeError: boom")]))
+    _run(RunReport(msgs=1, failures=[TrackFailure("m1", "RuntimeError: boom")]),
+         outcome="unconfigured")
     err = capsys.readouterr().err
     assert "not configured" in err or "no notification" in err.lower(), (
         f"a notification that went nowhere must say so locally: {err}")
+
+
+def test_a_notify_the_TRANSPORT_rejected_is_reported_locally(_run, capsys):
+    """The third outcome, which had no representation at all.
+
+    `_telegram_sender` swallows transport errors, so a revoked token or a dead network read
+    as delivered and the digest said nothing. An operator would reasonably conclude the alert
+    channel worked when it never had.
+    """
+    _run(RunReport(msgs=1, failures=[TrackFailure("m1", "RuntimeError: boom")]),
+         outcome="failed")
+    err = capsys.readouterr().err
+    assert "could not be delivered" in err.lower(), (
+        f"an undelivered alert must say so locally: {err}")
+
+
+def test_a_DELIVERED_notification_is_not_reported_as_undelivered(_run, capsys):
+    """The inverse, which nothing asserted -- so a digest that ALWAYS cried "not sent" was
+    indistinguishable from a correct one."""
+    _run(RunReport(msgs=1, failures=[TrackFailure("m1", "RuntimeError: boom")]))
+    err = capsys.readouterr().err.lower()
+    assert "no notification" not in err and "could not be delivered" not in err, err
 
 
 def test_a_held_watermark_is_reported(_run, capsys):

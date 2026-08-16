@@ -700,7 +700,7 @@ def cmd_track_run(args, config) -> int:
               "message, and the ones it missed are the OLDEST. Narrow track.gmail_extra_query "
               "or shorten the lookback; the missed messages will not be picked up later.",
               file=sys.stderr)
-    if rep.failures:
+    if rep.failures and not args.dry_run:
         # track was the ONLY sub-app that never notified (ingest, triage and cv all do), so
         # under cron a dropped interview invite reached nobody: the digest goes to a stderr
         # stream that is normally discarded. Exit code deliberately unchanged -- USAGE.md
@@ -722,12 +722,23 @@ def cmd_track_run(args, config) -> int:
             len(rep.failures), "; ".join(shown))
         if extra > 0:
             body += f"; ...and {extra} more (see the run digest)"
-        if not notify(body, config=config):
-            # `notify` returns False when nothing is configured. Every caller ignored that,
-            # so on an install without a Telegram token the fix for "stderr is discarded" was
-            # a second silent channel.
+        # Gated on `not args.dry_run` above: a preview run must not push an external message,
+        # and it also records no dead-letter rows, which made the fallback line below a false
+        # statement on exactly that path.
+        outcome = notify(body, config=config)
+        if outcome == "unconfigured":
+            # Every caller ignored this, so on an install without a Telegram token the fix
+            # for "stderr is discarded" was a second silent channel.
             print("  (no notification sent: no Telegram token configured -- these failures "
                   "are recorded in the dead-letter store and re-surface every run)",
+                  file=sys.stderr)
+        elif outcome == "failed":
+            # The state that used to be invisible. `_telegram_sender` swallows transport
+            # errors by design, so a revoked token or a dead network read as delivered --
+            # and the operator concluded the alert channel worked when it never had.
+            print("  WARNING: the failure notification could NOT be delivered (Telegram "
+                  "rejected it or was unreachable) -- check the token, the chat id and the "
+                  "log. The failures below are in the dead-letter store either way.",
                   file=sys.stderr)
     if rep.open_proposals:
         print("  OPEN PROPOSALS (awaiting action):", file=sys.stderr)
