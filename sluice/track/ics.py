@@ -171,7 +171,16 @@ def parse_ics(text: str):
         elif name == "UID":
             ev.uid = value.strip()
         elif name == "SEQUENCE":
-            ev.sequence = int(value.strip() or 0)
+            # Same tolerance as DTSTART, and for the same reason: `parse_ics` runs inside
+            # `engine.run`'s per-message handler and attachment bytes are decoded with
+            # `errors="replace"`, so one mangled line took down classification, the status
+            # advance and the calendar write. `SEQUENCE:abc` and `SEQUENCE:1.0` both raised.
+            # The invariant is stated sixty lines above this and was applied to one field.
+            try:
+                ev.sequence = int(value.strip() or 0)
+            except ValueError:
+                _log.warning("track: unparseable SEQUENCE %r -- treating it as 0", value)
+                ev.sequence = 0
         elif name == "STATUS":
             ev.status = value.strip()
         elif name == "DTSTART":

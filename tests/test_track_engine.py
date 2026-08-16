@@ -916,3 +916,42 @@ def test_receipt_ambiguous_inflight_fallback_surfaces_both_candidates():
     assert rep.auto == 0 and rep.proposed == 1
     assert pathlib.Path(path1).read_text() == before1   # neither note written
     assert pathlib.Path(path2).read_text() == before2
+
+
+def test_a_TRANSPORT_failure_fetching_the_message_list_is_reported_not_raised():
+    """The fetch is OUTSIDE the per-message loop, so nothing below can catch for it.
+
+    It is also the FIRST Google call of a run, which is where the token refresh happens --
+    so narrowing `GoogleAuthError` to real credential failures (#142) moved every transient
+    network error to exactly here. Uncaught, it leaves `run()`, `Sluice.track()`,
+    `cmd_track_run` and `main()` as a raw traceback. Before the narrowing it was a misleading
+    "reauth needed" with a clean exit 1; a traceback is not an improvement.
+    """
+    class _NoNetwork(OneMsgClient):
+        def search_messages(self, query, max_results=None):
+            raise ConnectionError("network is unreachable")
+
+    v, _ = _vault("applied")
+    rep = E.run(v, TrackConfig(), _NoNetwork(), FakeBackend("{}"), seen=set(), deadletter=_dl(),
+                now_iso="2026-07-10T12:00:00+00:00")
+    assert rep.auth_error is False, "a network failure is NOT a reauth"
+    assert len(rep.failures) == 1, "the run must name what stopped it"
+    assert "ConnectionError" in rep.failures[0].cause
+    assert rep.deadletter_error is True, (
+        "nothing was read, so the watermark must hold -- advancing it would skip whatever "
+        "arrived during the outage")
+
+
+def test_an_AUTH_failure_fetching_the_message_list_still_reports_reauth():
+    # The other arm: a genuinely dead credential must still set auth_error and exit 1.
+    from sluice.track.google_client import GoogleAuthError
+
+    class _DeadToken(OneMsgClient):
+        def search_messages(self, query, max_results=None):
+            raise GoogleAuthError("token refresh was REFUSED")
+
+    v, _ = _vault("applied")
+    rep = E.run(v, TrackConfig(), _DeadToken(), FakeBackend("{}"), seen=set(), deadletter=_dl(),
+                now_iso="2026-07-10T12:00:00+00:00")
+    assert rep.auth_error is True
+    assert rep.failures == [], "a reauth is its own report, not a per-message failure"

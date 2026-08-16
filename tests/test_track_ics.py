@@ -177,3 +177,26 @@ def test_a_date_only_DTSTART_still_parses():
     ics = parse_ics("BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:u1\r\n"
                     "DTSTART;VALUE=DATE:20260715\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
     assert ics.start is not None and ics.start.date().isoformat() == "2026-07-15"
+
+
+@pytest.mark.parametrize("seq", ["abc", "1.0", "", "  ", "9" * 5000])
+def test_a_malformed_SEQUENCE_does_not_raise_either(seq):
+    """The same tolerance as DTSTART, applied to the field it was not applied to.
+
+    `SEQUENCE:abc` and `SEQUENCE:1.0` both raised `ValueError` straight out of `parse_ics`,
+    sixty lines below the comment stating that a pure parser must not raise on a malformed
+    VALUE. Attachment bytes are decoded with `errors="replace"`, so a mangled line is exactly
+    what this receives. (The 5000-digit case trips CPython's int-conversion limit.)
+    """
+    ics = parse_ics("BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:u1\r\n"
+                    f"SEQUENCE:{seq}\r\nDTSTART:20260715T100000Z\r\n"
+                    "END:VEVENT\r\nEND:VCALENDAR\r\n")
+    assert ics is not None and ics.uid == "u1"
+    assert ics.start is not None, "an unreadable SEQUENCE must not cost the DTSTART"
+    assert isinstance(ics.sequence, int)
+
+
+def test_a_WELL_FORMED_sequence_is_still_read():
+    ics = parse_ics("BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:u1\r\nSEQUENCE:3\r\n"
+                    "DTSTART:20260715T100000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+    assert ics.sequence == 3

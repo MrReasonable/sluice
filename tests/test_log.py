@@ -184,10 +184,13 @@ def test_the_harness_normalises_to_exactly_INFO_not_merely_quietly():
     """
     import logging
 
-    from sluice.core.log import get_logger
 
-    lg = get_logger("test_normalised_level_probe")
-    try:
-        assert lg.level == logging.INFO, logging.getLevelName(lg.level)
-    finally:
-        logging.Logger.manager.loggerDict.pop("sluice.test_normalised_level_probe", None)
+    # A logger that EXISTED BEFORE the fixture ran. Creating a fresh one via `get_logger`
+    # asserted `get_logger`'s own hardcoded default instead, so lowering conftest's
+    # normalisation target left this green -- an equivalent mutant, and a docstring claiming
+    # a witness it did not have. `sluice.track.ics` is created at import.
+    import sluice.track.ics  # noqa: F401  -- imported for its module-level get_logger call
+
+    lg = logging.getLogger("sluice.track.ics")
+    assert lg.handlers, "expected a logger the fixture would have seen, not a fresh one"
+    assert lg.level == logging.INFO, logging.getLevelName(lg.level)
