@@ -538,3 +538,16 @@ def test_an_ADVANCE_error_is_recorded_too():
     assert raw["jobs"], "the jobs read before the failure must survive"
     assert raw.get("error") == "advance evaluate failed", (
         f"a partial carousel read was reported as a complete one: {raw}")
+
+
+@pytest.mark.parametrize("src", _every_registered_source(), ids=lambda s: s.id)
+@pytest.mark.parametrize("payload", [None, 0, "text", 1.5], ids=repr)
+def test_health_hint_tolerates_a_NON_SIZED_value_under_the_count_key(src, payload):
+    """Normalising `raw` to a dict guarantees `raw.get(...)` is safe and says NOTHING about
+    what comes back. The sweep above passes non-dicts as the whole `raw`, so it never reached
+    this: `{"result": None}` raised TypeError from `len()`, inside the very expression written
+    to tolerate a malformed payload.
+    """
+    for key in ("result", "jobs"):
+        hint = src.health_hint({key: payload, "landed": "", "requested": "http://x"})
+        assert hint["count"] == 0
