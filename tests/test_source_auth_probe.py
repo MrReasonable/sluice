@@ -326,3 +326,23 @@ def test_a_camofox_outage_is_explained_for_EVERY_source_class(src):
     assert hint.get("fetch_error") == "no-tab", f"{type(src).__name__} dropped the fetch error"
     signals = {k: v for k, v in hint.items() if k != "markers"}
     assert detect_drift("demo", hint["count"], signals, baseline=20) == "unreachable"
+
+
+@pytest.mark.parametrize("src", [_src(), _carousel()], ids=lambda s: type(s).__name__)
+@pytest.mark.parametrize("raw", [None, [], "boom", 0], ids=repr)
+def test_health_hint_tolerates_a_non_dict_raw(src, raw):
+    """Both implementations claimed to tolerate this and neither did.
+
+    Each guarded the COUNT with `isinstance(raw, dict)`, then read `raw.get("landed")` on the
+    very next line with no guard, then checked `isinstance` again afterwards. The unguarded
+    dereference raised `AttributeError` first, so the second guard was unreachable and the
+    tolerance the two guards were written for did not exist in either class.
+
+    Latent rather than live -- no registered source returns a non-dict today -- so the value
+    here is that `health_hint` is a PROTOCOL member: the next implementation is written by
+    copying one of these, and a guard that reads as deliberate is the kind that gets copied.
+    """
+    hint = src.health_hint(raw)
+    assert hint["count"] == 0
+    assert hint["landed_host"] == "" and hint["requested_host"] == ""
+    assert "fetch_error" not in hint, "a non-dict carries no error to report"
