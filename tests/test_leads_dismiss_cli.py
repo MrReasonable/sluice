@@ -43,6 +43,50 @@ def test_refused_signoff_hold_names_the_remedy_and_exits_1(tmp_path, monkeypatch
     assert "sign-off hold" in err and "cv signoff" in err
 
 
+def test_ambiguous_slug_names_every_candidate_and_exits_1(tmp_path, monkeypatch, capsys):
+    """Round-2 CodeRabbit finding: `ambiguous` had zero CLI coverage. dismiss_lead
+    resolves by EXACT slug equality (decision 4), so this branch needs a genuine
+    slug COLLISION -- two notes at the same basename in different folders -- not a
+    substring match. Written as raw files (not through Vault.upsert, which resolves
+    a repeat title/company/url to the SAME note) mirroring
+    tests/test_mcpserver.py's test_cv_run_tool_ambiguous_names_slug_candidates."""
+    leads = pathlib.Path(tmp_path) / "Job Applications" / "Job Leads"
+    fm = ('company: "Example Northgate"\nrole: "Analyst"\nstatus: shortlist\n'
+         'url: "https://example.invalid/1"')
+    for sub in ("Active", "Archive"):
+        d = leads / sub
+        d.mkdir(parents=True)
+        (d / "Example Northgate - Analyst.md").write_text("---\n" + fm + "\n---\n\nBODY\n")
+    slug = "Example Northgate - Analyst"
+    assert _run(tmp_path, monkeypatch, "--lead", slug, "--reason", "x") == 1
+    err = capsys.readouterr().err
+    assert "ambiguous: 2 notes claim the slug" in err
+    assert "rename or merge" in err
+
+
+def test_refused_status_names_the_drifted_status_and_exits_1(tmp_path, monkeypatch, capsys):
+    """Round-2 CodeRabbit finding: `refused_status` had zero CLI coverage. Reachable
+    only via the CAS race dismiss_lead's own require_status guards against: the
+    resolve snapshot finds the note TRIAGE_OWNED, then a concurrent writer moves it
+    OUTSIDE _DISMISSABLE_FROM before this call's own write lands -- mirroring
+    tests/test_leads_dismiss.py's app-layer
+    test_cas_proof_refuses_on_a_status_that_changed_between_resolve_and_write, down
+    to the CLI's own printed output. A lead simply SEEDED at 'applied' would never
+    reach this branch at all: store.read_leads(TRIAGE_OWNED) would drop it from the
+    initial resolve and dismiss_lead would report not_found instead."""
+    slug = _seed(tmp_path, status="research")
+    real_update_fields = Vault.update_fields
+
+    def _racing_update_fields(self, ref, fields, **kwargs):
+        real_update_fields(self, ref, {"status": "applied"})   # simulated concurrent writer
+        return real_update_fields(self, ref, fields, **kwargs)
+
+    monkeypatch.setattr(Vault, "update_fields", _racing_update_fields)
+    assert _run(tmp_path, monkeypatch, "--lead", slug, "--reason", "x") == 1
+    err = capsys.readouterr().err
+    assert f"leads dismiss: {slug}: refused (status=applied)" in err
+
+
 def test_same_day_repeat_is_unchanged_and_exits_zero(tmp_path, monkeypatch, capsys):
     """Deferred #6 (final whole-branch review): `rc == 0` alone cannot
     distinguish "genuinely took the unchanged branch" from "silently no-oped
