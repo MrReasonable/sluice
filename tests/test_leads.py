@@ -17,8 +17,8 @@ def test_dedup_key_is_full_link_minus_fragment():
     # dropped) so it matches the full-link format already stored in the legacy
     # seen.db - a clean cutover with no re-surfacing.
     lead = Lead(source="li", search="x", title="Analyst",
-                url="https://www.linkedin.com/jobs/view/44268/#applied")
-    assert lead.dedup_key == "https://www.linkedin.com/jobs/view/44268/"
+                url="https://example.invalid/jobs/view/44268/#applied")
+    assert lead.dedup_key == "https://example.invalid/jobs/view/44268/"
 
 
 def test_dedup_key_falls_back_to_title_company_when_no_url():

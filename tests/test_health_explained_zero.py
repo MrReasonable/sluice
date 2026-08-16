@@ -34,8 +34,10 @@ def _run(count, **signals):
 def test_zero_caused_by_a_redirect_reports_the_redirect_not_bare_zero():
     # The whole point of capturing requested/landed host is to explain a bad run. Reporting
     # "zero" here throws away the only actionable half of what we know.
-    assert detect_drift("s", 0, {"requested_host": "jobserve.com",
-                                 "landed_host": "affiliate.jobserve.com"}, 10) == "redirect"
+    # Synthetic hosts: `detect_drift` only compares the pair after `_dewww`, so the real
+    # board name added nothing the apex -> subdomain SHAPE does not already carry.
+    assert detect_drift("s", 0, {"requested_host": "example.invalid",
+                                 "landed_host": "affiliate.example.invalid"}, 10) == "redirect"
 
 
 def test_zero_caused_by_a_block_reports_blocked_not_bare_zero():
