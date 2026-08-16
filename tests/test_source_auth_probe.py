@@ -434,3 +434,107 @@ def test_the_ordinary_path_still_closes_exactly_once():
     cam = _Cam(rows=[{"title": "T"}])
     _src().fetch(_ctx(cam), Search("A", "http://x"))
     assert cam.closed == 1 and cam.tabs_opened == 1
+
+
+# ---- a failed evaluate must EXPLAIN the zero, for every source class -----------------------
+
+@pytest.mark.parametrize("src", _every_registered_source(), ids=lambda s: s.id)
+def test_a_failed_evaluate_is_propagated_as_a_fetch_error(src, _no_prefetch_probes):
+    """The whole point of this branch, swept over the classes rather than one of them.
+
+    `Camofox._api` captures failures as `{"error": ...}` rather than raising, so a failed
+    evaluate is indistinguishable from a page with no jobs unless the source looks.
+    `BrowserListSource` was taught to look; `CarouselSource` was not -- it broke out of its
+    read loop and returned an empty list with no error, so `health_hint` had nothing to
+    propagate, `detect_drift` saw a bare `zero`, and three runs retired the source.
+    """
+    class _Erroring(_Cam):
+        def evaluate(self, tid, expr):
+            self.evaluated.append((tid, expr))
+            return {"error": "target closed"}
+
+    raw = src.fetch(_ctx(_Erroring(rows=[])), Search("A", "http://x"))
+    assert raw.get("error"), (
+        f"{type(src).__name__} swallowed a failed evaluate: {raw}")
+    hint = src.health_hint(raw)
+    assert hint.get("fetch_error"), f"{type(src).__name__} dropped it before the classifier"
+    signals = {k: v for k, v in hint.items() if k != "markers"}
+    assert detect_drift("demo", hint["count"], signals, baseline=20) == "unreachable"
+
+
+@pytest.mark.parametrize("src", _every_registered_source(), ids=lambda s: s.id)
+def test_a_failed_evaluate_does_not_manufacture_no_redirect(src, _no_prefetch_probes):
+    """`landed == requested` asserts "we arrived where we asked", which is a positive claim
+    about a page that could not be read. Redirect is one of the few signals that would have
+    explained the zero, so fabricating its ABSENCE is worse than reporting nothing."""
+    class _Erroring(_Cam):
+        def evaluate(self, tid, expr):
+            self.evaluated.append((tid, expr))
+            return {"error": "target closed"}
+
+    raw = src.fetch(_ctx(_Erroring(rows=[])), Search("A", "http://x"))
+    assert raw.get("landed") == "", (
+        f"{type(src).__name__} claimed it landed on {raw.get('landed')!r} after a failed read")
+
+
+@pytest.mark.parametrize("src", _every_registered_source(), ids=lambda s: s.id)
+def test_a_CLEAN_read_still_reports_the_landed_url(src, _no_prefetch_probes):
+    # The abstention must be narrow: a working run still has to report where it landed, or
+    # the redirect classifier loses its input entirely.
+    cam = _Cam(rows=[{"title": "T", "link": "http://x/1"}])
+    raw = src.fetch(_ctx(cam), Search("A", "http://x"))
+    assert raw.get("landed"), f"{type(src).__name__} lost the landed url on a clean run: {raw}"
+    assert not raw.get("error")
+
+
+def test_a_read_error_ALONE_is_recorded_even_when_the_page_url_reads_fine():
+    """Isolates the read-evaluate capture.
+
+    The sweep above uses a fake that errors on EVERY evaluate, including `location.href` --
+    so the error key was still set by that second failure, and deleting the read capture
+    survived. A fake that fails only the thing under test is the difference between a witness
+    and a coincidence.
+    """
+    from sluice.ingest.base import CarouselSource
+
+    class _ReadFails(_Cam):
+        def evaluate(self, tid, expr):
+            self.evaluated.append((tid, expr))
+            if expr == "location.href":
+                return {"result": "http://x"}      # the page URL reads perfectly well
+            return {"error": "read evaluate failed"}
+
+    src = CarouselSource(id="carousel", searches_spec=[("A", "http://x")],
+                         read_js="READ", advance_selector=".next", wait=0)
+    raw = src.fetch(_ctx(_ReadFails(rows=[])), Search("A", "http://x"))
+    assert raw.get("error") == "read evaluate failed", (
+        f"a failed read was swallowed while the url read fine: {raw}")
+    assert src.health_hint(raw).get("fetch_error"), "it must reach the classifier"
+
+
+def test_an_ADVANCE_error_is_recorded_too():
+    """The second evaluate in the loop. It errored mid-carousel, the loop broke, and the jobs
+    read so far were returned as if the page had simply run out -- a partial read reported as
+    a complete one."""
+    from sluice.ingest.base import CarouselSource
+
+    class _AdvanceFails(_Cam):
+        def __init__(self, **kw):
+            super().__init__(**kw)
+            self._reads = 0
+
+        def evaluate(self, tid, expr):
+            self.evaluated.append((tid, expr))
+            if expr == "location.href":
+                return {"result": "http://x"}
+            if expr == "READ":
+                self._reads += 1
+                return {"result": {"title": f"T{self._reads}", "link": f"http://x/{self._reads}"}}
+            return {"error": "advance evaluate failed"}   # the advance click
+
+    src = CarouselSource(id="carousel", searches_spec=[("A", "http://x")],
+                         read_js="READ", advance_selector=".next", wait=0)
+    raw = src.fetch(_ctx(_AdvanceFails(rows=[])), Search("A", "http://x"))
+    assert raw["jobs"], "the jobs read before the failure must survive"
+    assert raw.get("error") == "advance evaluate failed", (
+        f"a partial carousel read was reported as a complete one: {raw}")

@@ -302,11 +302,22 @@ class CarouselSource:
         # Same try/finally as BrowserListSource, for the same reason. `health_hint` was fixed
         # in one implementation and not the other twice on this branch; a resource leak is no
         # different, so both close together.
-        jobs, seen = [], set()
+        jobs, seen, errors = [], set(), []
+        landed = None
         try:
             sleep(self.wait)
             for _ in range(self.max_jobs):
                 read = cam.evaluate(tid, self.read_js)
+                if isinstance(read, dict) and read.get("error"):
+                    # `Camofox._api` captures every failure as `{"error": ...}` rather than
+                    # raising, so a failed evaluate is INDISTINGUISHABLE from a page with no
+                    # jobs unless we look. This class did not look: it broke out of the loop
+                    # and returned an empty `jobs` with no `error`, so `health_hint` had
+                    # nothing to propagate, `detect_drift` saw a bare `zero`, and three such
+                    # runs retired the source. That is the exact failure this branch removes
+                    # -- and it was removed for the list-shaped sources only.
+                    errors.append(read["error"])
+                    break
                 job = read.get("result") if isinstance(read, dict) else None
                 if not isinstance(job, dict):
                     break
@@ -316,12 +327,27 @@ class CarouselSource:
                 seen.add(sig)
                 jobs.append(job)
                 advanced = cam.evaluate(tid, _advance_js(self.advance_selector))
+                if isinstance(advanced, dict) and advanced.get("error"):
+                    errors.append(advanced["error"])
+                    break
                 if not (isinstance(advanced, dict) and advanced.get("result")):
                     break
                 sleep(0.5)
+            landed = cam.evaluate(tid, "location.href")
         finally:
             cam.close_tab(tid)
-        return {"jobs": jobs, "landed": search.url, "requested": search.url}
+        if isinstance(landed, dict) and landed.get("error"):
+            errors.append(landed["error"])
+        landed_result = landed.get("result") if isinstance(landed, dict) else None
+        # READ, not assumed. This returned `landed: search.url` unconditionally, which asserts
+        # `requested_host == landed_host` -- a manufactured "no redirect" on a run where
+        # nothing was read, and redirect is one of the few signals that would have explained
+        # the zero. Same reasoning as the base class, which stopped doing this.
+        out = {"jobs": jobs, "landed": landed_result or ("" if errors else (search.url or "")),
+               "requested": search.url}
+        if errors:
+            out["error"] = errors[0]
+        return out
 
     def parse(self, raw: dict, search: Search) -> list:
         return [
