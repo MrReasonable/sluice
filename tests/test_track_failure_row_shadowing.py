@@ -74,6 +74,11 @@ def test_record_does_not_silently_drop_a_differing_row(tmp_path):
                         proposal="confirm", hint="different", first_seen="2026-07-11",
                         times_surfaced=1))
     assert "m1" in str(exc.value)
+    # And the refusal must be a NO-OP on the store. A raise that had already clobbered the
+    # existing row would be the silent loss this guard exists to prevent, wearing an
+    # exception as a disguise.
+    rows = dl.open_entries()
+    assert [(e.ev_type, e.hint) for e in rows] == [("failure", "boom")], rows
 
 
 def test_an_identical_re_record_is_still_a_quiet_no_op():

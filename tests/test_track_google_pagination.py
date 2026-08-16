@@ -34,15 +34,28 @@ class _PagedList:
     rather than a `pageToken` kwarg matters -- it is what the discovery-built service does.
     """
 
+    # A hard call bound. `list_next` finds its position with `self.pages.index(response)`,
+    # and 10_000 identical zero-item pages all compare equal, so the index is always 0 --
+    # deleting the page cap under test gives an INFINITE LOOP, not a failure. In a sub-second
+    # suite that reads as wedged CI rather than as a caught regression, which is the one
+    # outcome a mutation witness must never produce.
+    _MAX_CALLS = 400
+
     def __init__(self, pages, item_key):
         self.pages, self.item_key = pages, item_key
         self.calls = []
+        self._next_calls = 0
 
     def list(self, **kw):
         self.calls.append(kw)
         return _Exec(self.pages[0])
 
     def list_next(self, previous_request, previous_response):
+        self._next_calls += 1
+        if self._next_calls > self._MAX_CALLS:
+            raise AssertionError(
+                f"list_next called {self._next_calls} times -- the pager is not bounded. "
+                "Failing fast rather than hanging the suite.")
         idx = self.pages.index(previous_response)
         if idx + 1 >= len(self.pages):
             return None
@@ -130,16 +143,33 @@ def test_list_events_is_bounded_too(monkeypatch):
     assert len(got) == 5
 
 
-@pytest.mark.parametrize("endpoint", ["messages", "events"])
-def test_the_pager_is_shared_so_the_two_endpoints_cannot_drift(endpoint):
-    """One helper, two callers.
+@pytest.mark.parametrize("caller", ["search_messages", "list_events"])
+def test_the_pager_is_shared_so_the_two_endpoints_cannot_drift(monkeypatch, caller):
+    """One helper, two callers -- asserted by OBSERVING the call, not by `hasattr`.
 
-    Two hand-rolled paging loops is how one of them keeps `nextPageToken` and the other
-    quietly does not -- which is the state this issue found them in.
+    The previous version's whole body was `assert hasattr(gc, "_paged")`, which stays green
+    if both callers hand-roll their own loops beside an unused helper. That is the exact
+    state this issue found them in: two loops, one of which quietly dropped `nextPageToken`.
     """
     from sluice.track import google_client as gc
 
-    assert hasattr(gc, "_paged"), "expected a single shared pager"
+    seen = {}
+
+    def _spy(endpoint, params, item_key, max_results, max_pages=100):
+        seen["item_key"] = item_key
+        seen["max_results"] = max_results
+        return [], False
+
+    monkeypatch.setattr(gc, "_paged", _spy)
+    c = _client_with(monkeypatch, gmail=_GmailPaged([{"messages": []}]),
+                     cal=_CalPaged([{"items": []}]))
+    if caller == "search_messages":
+        c.search_messages("q")
+        assert seen.get("item_key") == "messages"
+    else:
+        c.list_events("a", "b")
+        assert seen.get("item_key") == "items"
+    assert seen.get("max_results"), "the caller must pass its own bound through the pager"
 
 
 # ---- honesty about what was dropped -------------------------------------------------------
@@ -186,10 +216,18 @@ def test_zero_item_pages_with_a_token_cannot_loop_forever(monkeypatch):
     assert truncated is True, "hitting the page bound is a truncation and must be reported"
 
 
-def test_a_probe_failure_does_not_lose_the_items_already_collected(monkeypatch):
-    """`list_next` is only an advisory probe at the cap; losing the payload to it is absurd.
+def test_a_slice_OVERSHOOT_short_circuits_before_the_advisory_probe(monkeypatch):
+    """Renamed to say what it actually covers.
 
-    Assume the worse, honest answer instead: report truncated.
+    It was called "a probe failure does not lose the items already collected", but its fixture
+    (10 items, cap 5) makes `lost = len(items) > max_results` True before the `try`, so the
+    raising `list_next` below is never called and the probe branch is never entered. It was a
+    duplicate of the slice-overshoot test wearing the probe test's name -- a false signpost
+    that the probe path had two witnesses when it had one
+    (`test_the_probe_failure_branch_is_actually_REACHED`).
+
+    What it genuinely pins is worth keeping: when the slice already proves loss, we do not
+    spend a round trip asking, and a broken `list_next` cannot affect the answer.
     """
     from sluice.track.google_client import _paged
 
@@ -199,8 +237,10 @@ def test_a_probe_failure_does_not_lose_the_items_already_collected(monkeypatch):
 
     ep = _Raises([{"items": [{"id": f"e{i}"} for i in range(10)]}], "items")
     items, truncated = _paged(ep, {}, "items", 5)
-    assert len(items) == 5, "items already in hand must survive an advisory probe failing"
+    assert len(items) == 5, "items already in hand must survive"
     assert truncated is True
+    assert ep._next_calls == 0, (
+        "the slice already proved loss, so the advisory probe must not be consulted at all")
 
 
 def test_truncated_is_true_when_the_cap_lands_EXACTLY_and_more_pages_remain(monkeypatch):
@@ -272,3 +312,35 @@ def test_a_complete_read_warns_about_nothing(monkeypatch, caplog):
     # A warning that fires on every run stops being read.
     said = _warns(monkeypatch, caplog, cal=_CalPaged([{"items": [{"id": "e1"}]}]))
     assert said == []
+
+
+# ---- the #137 headline itself, which nothing pinned ---------------------------------------
+
+def test_search_messages_DEFAULT_cap_is_the_post_137_value(monkeypatch):
+    """The change #137 is about, and it was unwitnessed.
+
+    Every other test here passes an explicit cap or uses fewer than ten items, so reverting
+    the default from 500 to the pre-#137 50 left the whole suite green. `engine.run` filters
+    against `seen` AFTER the fetch, so a small cap is consumed by already-processed ids and
+    the unseen ones -- the entire point of the call -- never arrive.
+    """
+    pages = [{"messages": [{"id": f"m{i}"} for i in range(j * 40, j * 40 + 40)],
+              **({"nextPageToken": "t"} if j < 2 else {})} for j in range(3)]
+    gmail = _GmailPaged(pages)
+    ids, truncated = _client_with(monkeypatch, gmail=gmail).search_messages("q")
+    assert len(ids) == 120, (
+        f"the default cap truncated a 120-message window to {len(ids)} -- a pre-#137 cap of "
+        "50 would silently starve the oldest unprocessed messages")
+    assert truncated is False
+
+
+def test_list_events_DEFAULT_cap_is_the_post_137_value(monkeypatch):
+    """Same gap on the calendar side. The window is 2 * calendar_lookahead_days (90 days by
+    default) with `singleEvents=True` expanding recurrences, so a low cap is reached easily
+    and reads as "our event is not there"."""
+    pages = [{"items": [{"id": f"e{i}"} for i in range(j * 250, j * 250 + 250)],
+              **({"nextPageToken": "t"} if j < 3 else {})} for j in range(4)]
+    cal = _CalPaged(pages)
+    got, truncated = _client_with(monkeypatch, cal=cal).list_events("a", "b")
+    assert len(got) == 1000, f"the default cap truncated a 1000-event window to {len(got)}"
+    assert truncated is False

@@ -55,6 +55,11 @@ def test_a_backslash_in_the_llm_date_is_abstained_on():
     res, text = _advance_with("2026-07-15\\")
     assert res.status_to == "interview"
     assert "2026-07-15\\" not in text
+    # The KEY must be absent, not present-and-empty. Without this, changing `if safe_when:`
+    # to an unconditional write leaves `interview_date: ""` in the note and both assertions
+    # above still pass -- an empty date reads as "we know there is no date", which is a
+    # different and wrong claim.
+    assert "interview_date" not in text, "abstain means no key, not an empty one"
 
 
 def test_an_ordinary_date_is_still_written():
