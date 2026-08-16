@@ -215,10 +215,19 @@ def _find_ours(events, ics):
     result reaches it and is handed to `_foreign_at_start` untouched. What the comparison gates
     is the write.)
 
-    An invite with no UID identifies nothing, so it matches nothing. Guarded here rather than
-    only at the query, because the same collision exists in the WINDOW results -- two UID-less
-    invites landing within one lookahead of each other -- just needing a coincidence the
-    unbounded query does not. See `_uid_of` for what that collision costs."""
+    An invite with no UID identifies nothing, so it matches nothing.
+
+    That guard is REDUNDANT BY CONSTRUCTION today and is kept deliberately, which is worth
+    saying out loud rather than leaving for someone to rediscover: `_uid_of` already maps an
+    empty tag to None and `None == ""` is False, so the loop below could not match a UID-less
+    ics anyway. A mutation witness confirms it -- deleting this guard alone kills no test, and
+    so does deleting `_uid_of`'s normalisation alone. Each covers for the other.
+
+    It stays because the two are guarding different things and only one of them is obvious.
+    `_uid_of`'s normalisation exists so an empty-tagged event reads as UNTAGGED (see there);
+    that it also happens to stop this comparison matching is a side effect. A future change to
+    `_uid_of` that looked purely cosmetic would silently re-open a cross-lead clobber, and this
+    line is what makes that impossible rather than merely unlikely."""
     if not ics.uid:
         return []
     want = _uid_tag(ics.uid)
