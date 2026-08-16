@@ -195,6 +195,25 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
     except GoogleAuthError:
         rep.auth_error = True
         return rep
+    except Exception as exc:
+        # The FETCH is outside the per-message loop, so nothing below can catch for it -- and
+        # this is the first Google call of the run, which means it is where the token refresh
+        # actually happens. Narrowing `GoogleAuthError` to real credential failures therefore
+        # moved every transient network error to exactly here, where an uncaught raise leaves
+        # `run()`, `Sluice.track()`, `cmd_track_run` and `main()` as a raw traceback. Before
+        # that narrowing it was a misleading "reauth needed" with a clean exit 1; a traceback
+        # is not an improvement.
+        #
+        # Reported the same way a per-message failure is -- named, durable, notified, exit 0 --
+        # which is what `google_client._creds`'s docstring and TROUBLESHOOTING.md already
+        # promise. `deadletter_error` holds the watermark: nothing was read, so advancing it
+        # would skip whatever arrived during the outage.
+        _log.exception("track: could not fetch the message list: %s", exc)
+        rep.failures.append(TrackFailure(message_id="(gmail search)",
+                                         cause=f"{type(exc).__name__}: {exc}",
+                                         kind=type(exc).__name__))
+        rep.deadletter_error = True
+        return rep
     # Bump carried entries before any new record, so a row first recorded THIS run
     # stays at times_surfaced=1. Outside the per-message try on purpose: a raise
     # here (corrupt/unwritable store) aborts the run before seen/lastrun save --

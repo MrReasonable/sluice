@@ -153,10 +153,15 @@ class TrackConfig:
     job_board_domains: dict = field(default_factory=lambda: dict(_JOB_BOARD_DOMAINS))
 
 
-# Keys whose value is a hard CAP on how much one run reads. A cap that silently becomes 0 or
-# False stops the run reading anything, which is the silent-loss class this sub-app exists to
-# close -- introduced by making these configurable at all.
-_POSITIVE_INT_KEYS = ("gmail_max_messages", "calendar_max_events")
+# Integer keys where a value of 0, a negative, or a YAML boolean silently disables the thing
+# the key controls. NOT "introduced by making the caps configurable", which an earlier version
+# of this comment claimed: `calendar_lookahead_days: no` -> `False` -> `timedelta(days=0)` is a
+# ZERO-LENGTH search window, so `_find_ours` finds nothing, every interview is double-booked
+# and every cancellation left in place. Same one-word typo, same guard, and it predates this
+# PR entirely -- so the guard covers the pre-existing keys too rather than only the new ones.
+_POSITIVE_INT_KEYS = ("gmail_max_messages", "calendar_max_events",
+                      "calendar_lookahead_days", "gmail_lookback_days",
+                      "calendar_match_minutes")
 
 
 def _positive_int(key: str, value):

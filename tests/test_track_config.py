@@ -134,3 +134,54 @@ def test_auto_apply_min_default_and_override(tmp_path):
     cfg_file = tmp_path / "s.yaml"
     cfg_file.write_text("track:\n  auto_apply_min: 0.9\n")
     assert load_track_config(str(cfg_file)).auto_apply_min == 0.9
+
+
+# ---- a bare `no` must not silently disable a run ------------------------------------------
+
+_POSITIVE_INT_CONFIG_KEYS = [
+    "gmail_max_messages", "calendar_max_events",
+    "calendar_lookahead_days", "gmail_lookback_days", "calendar_match_minutes",
+]
+
+
+@pytest.mark.parametrize("key", _POSITIVE_INT_CONFIG_KEYS)
+@pytest.mark.parametrize("bad,why", [
+    ("no", "PyYAML reads a bare no/off/false as a BOOLEAN, and bool subclasses int"),
+    ("0", "a zero bound makes the thing it bounds read or match nothing"),
+    ("-5", "a negative bound is nonsense the callers do not check for"),
+    ("abc", "a non-integer"),
+])
+def test_a_nonsense_integer_key_is_REFUSED(tmp_path, monkeypatch, key, bad, why):
+    """Swept over every integer key, not just the two this PR added.
+
+    The caps were the reported case -- `gmail_max_messages: no` -> `False` ->
+    `min(False, 500)` == 0, so the run reads no mail and reports an ordinary empty run. But
+    `calendar_lookahead_days: no` is the same one-word typo with a worse outcome:
+    `timedelta(days=False)` is a ZERO-LENGTH search window, so `_find_ours` finds nothing,
+    every interview is double-booked and every cancellation left in the calendar. That one
+    predates this PR, which is why the guard covers the pre-existing keys too.
+    """
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(f"track:\n  seen_db: {tmp_path}/s.db\n  {key}: {bad}\n")
+    monkeypatch.setenv("SLUICE_CONFIG", str(cfg))
+    with pytest.raises(ValueError) as e:
+        load_track_config(str(cfg))
+    assert key in str(e.value), f"the error must name the key ({why})"
+
+
+@pytest.mark.parametrize("key", _POSITIVE_INT_CONFIG_KEYS)
+def test_an_ordinary_positive_value_is_still_accepted(tmp_path, monkeypatch, key):
+    # The refusal must be narrow, or a legitimate config stops loading.
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(f"track:\n  seen_db: {tmp_path}/s.db\n  {key}: 7\n")
+    monkeypatch.setenv("SLUICE_CONFIG", str(cfg))
+    assert getattr(load_track_config(str(cfg)), key) == 7
+
+
+def test_the_swept_key_list_matches_the_module(tmp_path):
+    """ENUMERATED against the source, so a new integer key added without validation fails
+    here rather than shipping a config that silently disables a run."""
+    from sluice.track.config import _POSITIVE_INT_KEYS
+
+    assert set(_POSITIVE_INT_CONFIG_KEYS) == set(_POSITIVE_INT_KEYS), (
+        "this test's key list has drifted from sluice/track/config.py")
