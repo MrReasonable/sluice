@@ -677,18 +677,44 @@ def cmd_track_run(args, config) -> int:
               f"with no usable timezone; the time is ASSUMED (see "
               f"track.calendar_assumed_timezone) and may be wrong. Check it against the invite.",
               file=sys.stderr)
+    if rep.deadletter_error:
+        # Consumed at exactly one place before this -- `app.py`'s `_save_lastrun` gate -- and
+        # printed nowhere. A read-only dead-letter store (disk full, permissions, a stale
+        # sidecar after a path migration) therefore silently declined to advance the watermark
+        # on every run, widening the Gmail window without bound, while the digest looked
+        # entirely normal and the command exited 0.
+        print("  WARNING: the dead-letter store could not be written, so the lastrun "
+              "watermark is being HELD. Every run will re-query a widening window until "
+              "this is fixed.", file=sys.stderr)
     if rep.failures:
         # track was the ONLY sub-app that never notified (ingest, triage and cv all do), so
         # under cron a dropped interview invite reached nobody: the digest goes to a stderr
         # stream that is normally discarded. Exit code deliberately unchanged -- USAGE.md
         # documents exit 1 only for a reauth failure and cron alerting relies on it, and a
         # transient single-message failure failing every run is how an alert gets muted.
-        # `.safe()`, not the cause: this leaves the machine. The exception text can
-        # carry message bodies, interview subjects, meeting urls, and the Gmail `q=`
-        # built from gmail_extra_query. The id is what keeps it actionable.
-        notify("job-sluice track: {} message(s) failed: {}".format(
-            len(rep.failures), "; ".join(f.safe() for f in rep.failures)),
-            config=config)
+        #
+        # `.safe()`, not the cause: this leaves the machine. The exception text can carry
+        # message bodies, interview subjects, meeting urls, and the Gmail `q=` built from
+        # gmail_extra_query. The id is what keeps it actionable.
+        #
+        # BOUNDED. #137 raised the message cap 50 -> 500, so a mass failure can produce 500
+        # entries (~18KB), which Telegram rejects -- and `_telegram_sender` swallows every
+        # send error by design, so the alert would silently not arrive on exactly the run
+        # that most needed it. The count leads, so truncating the list loses nothing vital.
+        _CAP = 10
+        shown = [f.safe() for f in rep.failures[:_CAP]]
+        extra = len(rep.failures) - len(shown)
+        body = "job-sluice track: {} message(s) failed: {}".format(
+            len(rep.failures), "; ".join(shown))
+        if extra > 0:
+            body += f"; ...and {extra} more (see the run digest)"
+        if not notify(body, config=config):
+            # `notify` returns False when nothing is configured. Every caller ignored that,
+            # so on an install without a Telegram token the fix for "stderr is discarded" was
+            # a second silent channel.
+            print("  (no notification sent: no Telegram token configured -- these failures "
+                  "are recorded in the dead-letter store and re-surface every run)",
+                  file=sys.stderr)
     if rep.open_proposals:
         print("  OPEN PROPOSALS (awaiting action):", file=sys.stderr)
         for e in rep.open_proposals:

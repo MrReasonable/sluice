@@ -158,7 +158,7 @@ Reads Gmail + Calendar since the last watermark (or `track.gmail_lookback_days` 
 exists). Auto-advances status only on a proof-grade, authenticated, non-multi-tenant match
 above the configured confidence floor; every weaker signal becomes a dead-letter proposal that
 resurfaces on every run until a human acts. Prints a summary plus the open-proposal list to
-stdout:
+**stderr** (the whole block, including the digest line):
 ```
 track: msgs=N classified=N auto=N proposed=N calendar_added=N failures=N open=N
   WARNING: N calendar entries booked from a DTSTART with no usable timezone ...
@@ -166,14 +166,18 @@ track: msgs=N classified=N auto=N proposed=N calendar_added=N failures=N open=N
   OPEN PROPOSALS (awaiting action):
   [<first_seen> x<times_surfaced>[ (new)]] <lead|candidates|?> <<message_id>>: <proposal> :: <hint>
 ```
-Every failed message is NAMED, not just counted, and a run with any failure also
-Telegram-notifies — a bare count on a stderr stream cron discards told nobody that an
-interview invite had been dropped. Each failure is additionally recorded as a dead-letter row,
+Every failed message is NAMED, not just counted, and a run with any failure Telegram-notifies
+**if a token is configured** — the notification is a silent no-op otherwise, and the digest
+says so rather than leaving you to assume it went out. The notified list is capped (the total
+leads, so nothing vital is lost) because an oversized body is rejected and the send error is
+swallowed by design. Each failure is additionally recorded as a dead-letter row,
 so it survives the Gmail query window moving past it and can be cleared with
 `track dismiss --id`.
 
 Exit 1 only on a Google reauth failure (`track: google reauth needed (token refresh
-failed)`); otherwise exit 0 — including a run with failures. Cron alerting is built on that
+failed)`); otherwise exit 0 — including a run with failures. A run that could not WRITE the
+dead-letter store prints a `WARNING:` line saying the lastrun watermark is being held, since
+that silently widens the Gmail query window on every subsequent run. Cron alerting is built on that
 rule, and a transient single-message failure making every run "fail" is how an alert gets
 muted.
 

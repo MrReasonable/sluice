@@ -100,3 +100,28 @@ def test_a_partial_failure_still_exits_0(_run):
 def test_an_auth_error_still_exits_1(_run):
     code, _sent = _run(RunReport(auth_error=True))
     assert code == 1
+
+
+def test_the_engine_POPULATES_TrackFailure_correctly():
+    """The producer end, which nothing tested.
+
+    Every other test in this file and in test_track_notify_redaction.py constructs its own
+    `TrackFailure`, so the dataflow from `engine.run` was unwitnessed -- and it is exactly the
+    dataflow whose type change broke the suite for 15 minutes when this field became a list.
+    """
+    from sluice.track import engine as E
+    from sluice.track.config import TrackConfig
+    from tests.test_track_engine import FakeBackend, OneMsgClient, _dl, _vault
+
+    class _Boom(OneMsgClient):
+        def get_message(self, mid):
+            raise RuntimeError("gmail hiccup")
+
+    v, _ = _vault("applied")
+    rep = E.run(v, TrackConfig(), _Boom(), FakeBackend("{}"), seen=set(), deadletter=_dl(),
+                now_iso="2026-07-10T12:00:00+00:00")
+    assert len(rep.failures) == 1
+    f = rep.failures[0]
+    assert f.message_id == "m1", "the id must come from the message being processed"
+    assert "RuntimeError" in f.cause and "gmail hiccup" in f.cause
+    assert f.safe() == "m1 (RuntimeError)", "the outward rendering must carry no cause text"
