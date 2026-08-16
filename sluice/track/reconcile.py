@@ -76,7 +76,16 @@ def _stamp_receipt(vault, note, ev):
 def _advance(vault, note, target, ev, dry_run=False):
     fields = {"status": target, "last_signal": date.today().isoformat()}
     if ev.when:
-        fields["interview_date"] = f'"{ev.when}"'
+        # #141: `ev.when` is `data.get("when")` straight from the model -- untrusted in
+        # exactly the way `ev.links[0]` is, and guarded three lines below for exactly the
+        # same reason. A `"` or backslash closes the quoted scalar early and corrupts the
+        # note's frontmatter. #111 fixed the link and left its neighbour.
+        #
+        # Abstain on the FIELD, never the advance: losing the interview signal because the
+        # model returned a bad date string would be the worse failure by far.
+        safe_when = frontmatter_safe(ev.when)
+        if safe_when:
+            fields["interview_date"] = f'"{safe_when}"'
     elif ev.ics and ev.ics.start:
         fields["interview_date"] = f'"{ev.ics.start.date().isoformat()}"'
     if ev.links:
