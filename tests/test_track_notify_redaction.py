@@ -89,3 +89,50 @@ def test_the_LOCAL_digest_keeps_the_full_cause(_run, capsys):
 def test_a_clean_run_still_notifies_nothing(_run):
     _code, sent = _run(RunReport(msgs=3, classified=3))
     assert sent == []
+
+
+_MANY = [TrackFailure(f"m{i}", "RuntimeError: boom") for i in range(500)]
+
+
+def test_the_notify_body_is_bounded(_run):
+    """#137 raised the message cap 50 -> 500, so a run can now produce 500 failures.
+
+    At ~35 chars each that is an ~18KB body, which Telegram rejects -- and
+    `_telegram_sender` swallows every send error by design ("notify must never take down a
+    scan"). So on a MASS failure -- backend down, token expired mid-run, a Gmail schema change
+    -- the alert silently does not arrive, which is exactly when it matters most.
+    """
+    _code, sent = _run(RunReport(msgs=500, failures=_MANY))
+    assert sent
+    body = sent[0]
+    assert len(body) < 1500, f"unbounded notify body ({len(body)} chars) will be dropped"
+    assert "500" in body, "the total must survive truncation -- it is the headline"
+    assert "more" in body, "must say that the list was cut, not silently show 10 of 500"
+
+
+def test_a_notify_that_goes_NOWHERE_is_reported_locally(_run, monkeypatch, capsys):
+    """`notify()` returns False when nothing is configured, and every caller ignored it.
+
+    So on an install with no Telegram token, the fix for "the stderr digest is discarded" was
+    a second silent channel. USAGE.md asserted flatly that a failing run "Telegram-notifies",
+    which is false there.
+    """
+    monkeypatch.setattr(cli, "notify", lambda body, config=None: False)
+    _run(RunReport(msgs=1, failures=[TrackFailure("m1", "RuntimeError: boom")]))
+    err = capsys.readouterr().err
+    assert "not configured" in err or "no notification" in err.lower(), (
+        f"a notification that went nowhere must say so locally: {err}")
+
+
+def test_a_held_watermark_is_reported(_run, capsys):
+    """`deadletter_error` was consumed at exactly one place -- the `_save_lastrun` gate -- and
+    printed nowhere.
+
+    A read-only dead-letter store (disk full, permissions, a stale sidecar after a path
+    migration) therefore silently declines to advance the watermark on every run, widening
+    the Gmail window without bound, while the digest looks entirely normal and the command
+    exits 0.
+    """
+    _run(RunReport(msgs=1, deadletter_error=True))
+    err = capsys.readouterr().err
+    assert "watermark" in err.lower(), f"a held watermark must be visible: {err}"

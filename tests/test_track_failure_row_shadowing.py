@@ -123,3 +123,30 @@ def test_BOTH_record_sites_clear_a_stale_failure_row():
         "on every run and the Gmail window grows without bound")
     rows = {e.message_id: e for e in dl.open_entries()}
     assert rows["m1"].ev_type != "failure", "the receipt row never replaced the stale failure"
+
+
+def test_a_re_record_on_a_LATER_DAY_is_still_a_quiet_no_op():
+    """`first_seen` is excluded from the collision comparison, and that is load-bearing.
+
+    The caller sets `first_seen=today`, so including it would make every deterministic
+    failure raise the day after the date rolls over -- the permanent-stall shape, on a far
+    wider trigger than the one that caused it. The exclusion was undocumented and untested:
+    both existing fixtures re-record at the SAME hardcoded `now_iso`, so neither could vary
+    the date and the mutation survived.
+    """
+    dl = _dl()
+    base = dict(message_id="m1", lead="", candidates="", ev_type="failure",
+                proposal="failed", hint="boom", times_surfaced=1)
+    dl.record(Entry(first_seen="2026-07-10", **base))
+    dl.record(Entry(first_seen="2026-07-11", **base))   # next day, same failure -- must not raise
+    assert len([r for r in dl.open_entries() if r.message_id == "m1"]) == 1
+
+
+def test_a_differing_times_surfaced_is_also_not_a_collision():
+    # `bump_surfaced` moves it independently of any caller, so it is not part of "the same row".
+    dl = _dl()
+    base = dict(message_id="m1", lead="", candidates="", ev_type="failure",
+                proposal="failed", hint="boom", first_seen="2026-07-10")
+    dl.record(Entry(times_surfaced=1, **base))
+    dl.record(Entry(times_surfaced=7, **base))
+    assert len([r for r in dl.open_entries() if r.message_id == "m1"]) == 1

@@ -200,3 +200,74 @@ def test_a_probe_failure_does_not_lose_the_items_already_collected(monkeypatch):
     items, truncated = _paged(ep, {}, "items", 5)
     assert len(items) == 5, "items already in hand must survive an advisory probe failing"
     assert truncated is True
+
+
+def test_truncated_is_true_when_the_cap_lands_EXACTLY_and_more_pages_remain(monkeypatch):
+    """The core #137 signal, and it was unwitnessed.
+
+    Deleting `lost = endpoint.list_next(...) is not None` left the whole suite green: the
+    slice-overshoot case was tested, this one was not. It is the commoner shape -- the cap
+    falls on a page boundary and there is simply more behind it.
+    """
+    from sluice.track.google_client import _paged
+
+    pages = [{"items": [{"id": "a"}, {"id": "b"}], "nextPageToken": "t"},
+             {"items": [{"id": "c"}]}]
+    ep = _PagedList(pages, "items")
+    items, truncated = _paged(ep, {}, "items", 2)      # cap lands exactly on page one
+    assert len(items) == 2
+    assert truncated is True, "more pages remained and we said the answer was complete"
+
+
+def test_the_probe_failure_branch_is_actually_REACHED(monkeypatch):
+    """An earlier version of this test could not enter the branch it named.
+
+    Its fixture had 10 items with max_results=5, so `lost = len(items) > max_results` was
+    already True and the `try` was never executed -- the mutation `except: lost = True` ->
+    `lost = False` survived. Reaching it needs the cap hit EXACTLY, so the slice drops
+    nothing, plus a raising `list_next`.
+    """
+    from sluice.track.google_client import _paged
+
+    class _Raises(_PagedList):
+        def list_next(self, previous_request, previous_response):
+            raise RuntimeError("transport blew up")
+
+    ep = _Raises([{"items": [{"id": "a"}, {"id": "b"}]}], "items")
+    items, truncated = _paged(ep, {}, "items", 2)      # exact cap: the try IS entered
+    assert len(items) == 2, "items in hand must survive an advisory probe failing"
+    assert truncated is True, "an unanswerable probe must assume the worse, honest answer"
+
+
+def _warns(monkeypatch, caplog, *, gmail=None, cal=None, **kw):
+    with caplog.at_level("WARNING", logger="sluice.track.google_client"):
+        c = _client_with(monkeypatch, gmail=gmail, cal=cal)
+        if gmail is not None:
+            c.search_messages("q", **kw)
+        else:
+            c.list_events("a", "b", **kw)
+    return [r.getMessage() for r in caplog.records
+            if r.name == "sluice.track.google_client"]
+
+
+def test_the_gmail_truncation_WARNING_actually_fires(monkeypatch, caplog):
+    # Deleting either caller's `if truncated:` block left the suite green, while the tests'
+    # own docstring claimed "hitting it is loud".
+    pages = [{"messages": [{"id": f"m{i}"} for i in range(5)], "nextPageToken": "t"},
+             {"messages": [{"id": "z"}]}]
+    said = _warns(monkeypatch, caplog, gmail=_GmailPaged(pages), max_results=3)
+    assert said, "a truncated gmail search must say so"
+    assert "3" in " ".join(said), "the warning should name the cap that was hit"
+
+
+def test_the_calendar_truncation_WARNING_actually_fires(monkeypatch, caplog):
+    pages = [{"items": [{"id": f"e{i}"} for i in range(5)], "nextPageToken": "t"},
+             {"items": [{"id": "z"}]}]
+    said = _warns(monkeypatch, caplog, cal=_CalPaged(pages), max_results=3)
+    assert said, "a truncated calendar window must say so"
+
+
+def test_a_complete_read_warns_about_nothing(monkeypatch, caplog):
+    # A warning that fires on every run stops being read.
+    said = _warns(monkeypatch, caplog, cal=_CalPaged([{"items": [{"id": "e1"}]}]))
+    assert said == []
