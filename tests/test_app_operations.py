@@ -24,14 +24,16 @@ class _FakeTab:
 class _FakeGoogle:
     """Faithful fake of the client `track.engine.run` drives: the real method names
     (engine.py:50 calls search_messages, :59 calls get_message; calendar_sync.py
-    calls list_events/insert_event/update_event/delete_event when an .ics attachment
-    is present), all inert. A fake missing a called method surfaces as an
-    AttributeError instead of exercising the test's actual assertion (tst-003)."""
+    calls list_events/find_events_by_private_property/insert_event/update_event/
+    delete_event when an .ics attachment is present), all inert. A fake missing a called
+    method surfaces as an AttributeError instead of exercising the test's actual
+    assertion (tst-003)."""
     auth_error = False
 
     def search_messages(self, *a, **k): return [], False
     def get_message(self, *a, **k): return {}
     def list_events(self, *a, **k): return [], False
+    def find_events_by_private_property(self, *a, **k): return [], False
     def insert_event(self, *a, **k): return "evt1"
     def update_event(self, *a, **k): return "evt1"
     def delete_event(self, *a, **k): return None

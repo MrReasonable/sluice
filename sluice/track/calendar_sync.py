@@ -13,6 +13,13 @@ except ImportError:  # pragma: no cover
 
 _log = get_logger("track.calendar_sync")
 
+# The private extended property our events are tagged with. ONE definition, because there are
+# now THREE sites that have to agree: `_event_body` writes it, `_uid_of` reads it back, and
+# `_find_ours_anywhere` asks Google to filter on it server-side. A literal repeated across
+# those three drifts in exactly one direction -- the query stops matching -- and that failure
+# is silent and returns an empty list, which is #146 reinstated inside its own fix.
+_UID_KEY = "sluice-track-uid"
+
 
 @lru_cache(maxsize=None)
 def _resolve_zone(name):
@@ -93,7 +100,7 @@ def _event_start(ev):
 
 
 def _uid_of(ev):
-    return (ev.get("extendedProperties", {}).get("private", {}) or {}).get("sluice-track-uid")
+    return (ev.get("extendedProperties", {}).get("private", {}) or {}).get(_UID_KEY)
 
 
 def _trunc(dt, tz=timezone.utc):
@@ -154,11 +161,48 @@ def _window(client, cfg, ics) -> tuple:
 
 def _find_ours(events, ics):
     """The event WE created for this ics UID (by our sluice-track-uid tag), or None.
-    Never returns a foreign event."""
+    Never returns a foreign event.
+
+    Runs over BOTH result sets -- the window scan and the tag query -- and that is what keeps
+    Google's server-side `privateExtendedProperty` filter a narrowing hint rather than an
+    authority. However that filter behaves, an event reaches `sync_event` only after this
+    local comparison agrees the UID is ours."""
     for ev in events:
         if _uid_of(ev) == ics.uid:
             return ev
     return None
+
+
+def _find_ours_anywhere(client, ics, truncated) -> tuple:
+    """`(ours, truncated)` after asking Google for our UID tag DIRECTLY, unbounded by time.
+
+    Called only when the window scan came up empty, and it is a SUPPLEMENT to that scan, never
+    a replacement. That shape is what makes it safe to build on a contract this repo cannot
+    execute. `privateExtendedProperty` is confirmed to EXIST -- see `find_events_by_private_property`
+    -- but nothing offline can confirm that it MATCHES, and a filter that matches nothing
+    returns an empty list rather than an error. So the two ways it can be wrong are both
+    answered here rather than trusted away:
+
+      - matches too little (the empty list): `ours` stays None, `truncated` is unchanged, and
+        `sync_event` continues down the exact path it took before this function existed. The
+        worst case of a wrong filter is today's behaviour, which is the bug we already ship --
+        never a NEW one.
+      - matches too much: `_find_ours` re-checks `_uid_of(ev) == ics.uid` on every returned
+        event, so the server-side filter is a narrowing HINT and the local comparison stays the
+        authority. A filter that over-matched could not hand us somebody else's event.
+
+    `truncated` is only ever ADDED to, never cleared, and that asymmetry is deliberate. A
+    complete tag query returning nothing does look like stronger evidence than a short window
+    -- it would license an insert where `sync_event` currently answers `unresolved` -- but
+    "complete" there rests on the very matching behaviour we could not confirm. Clearing the
+    flag would convert an unverified external contract into a silent duplicate insert, which is
+    the harm this whole change exists to remove. It stays a one-way ratchet until someone
+    executes the filter against a live calendar."""
+    tagged, tag_truncated = client.find_events_by_private_property(_UID_KEY, ics.uid)
+    ours = _find_ours(tagged, ics)
+    if ours is not None:
+        return ours, truncated
+    return None, truncated or tag_truncated
 
 
 def _foreign_at_start(events, cfg, ics):
@@ -192,7 +236,7 @@ def _event_body(cfg, lead_slug, ics):
         "start": {"dateTime": ics.start.isoformat() if ics.start else None, "timeZone": tz},
         "end": {"dateTime": (ics.end or ics.start).isoformat() if ics.start else None, "timeZone": tz},
         "extendedProperties": {"private": {
-            "sluice-track-uid": ics.uid, "sluice-track-lead": lead_slug}},
+            _UID_KEY: ics.uid, "sluice-track-lead": lead_slug}},
     }
 
 
@@ -212,15 +256,22 @@ def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
     then consumed the message: reconcile mapped the old `present` to an action engine.run
     ignored, so no dead-letter row was written and `seen.add` ran anyway (#138).
 
-    HONEST LIMIT: one cause remains folded into `present`. An event that exists but sits
-    OUTSIDE the +/- calendar_lookahead_days window is indistinguishable from absence without a
-    UID-keyed query, so it is not guessed at here. That is issue #146 (a reschedule beyond
-    `calendar_lookahead_days` orphans our event and inserts a duplicate) -- tracked, not
-    merely noted, so nobody re-derives it from scratch.
+    An event that exists but sits OUTSIDE the +/- calendar_lookahead_days window used to be
+    folded into `present` -- indistinguishable from absence, so a reschedule beyond that window
+    inserted a duplicate and orphaned the original at the old time (#146). It is no longer
+    guessed at: when the window scan finds nothing, `_find_ours_anywhere` asks Google for the
+    sluice-track-uid tag directly, with no time bounds, and a tag is not something a reschedule
+    can move.
 
-    Google's `events.list` accepts a `privateExtendedProperty` filter, which would let
-    `_find_ours` search by the sluice-track-uid tag with no time window at all -- worth
-    confirming and building on, and it would make `unresolved` rare rather than routine."""
+    HONEST LIMIT, and it has moved rather than closed. That tag query rests on
+    `privateExtendedProperty`, whose EXISTENCE is confirmed against Google's discovery document
+    but whose MATCHING behaviour no offline test in this repo can execute. A filter that
+    matched nothing would return an empty list, not an error. So the lookup is a supplement to
+    the window scan and never a replacement, and its result is only ever allowed to make the
+    answer better: an empty tag query leaves `sync_event` on precisely the path it took before,
+    which is this same limit and not a new one. Whoever executes the filter against a live
+    calendar can then let it clear `truncated` too -- see `_find_ours_anywhere` for what that
+    would buy and what it would cost."""
     if ics.start is None:
         # We cannot even build a window, so nothing was searched. A bare `METHOD:CANCEL` +
         # `UID` VEVENT is legal RFC 5545 and lands here.
@@ -233,6 +284,10 @@ def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
         return "unresolved"
     events, truncated = _window(client, cfg, ics)
     ours = _find_ours(events, ics)
+    if ours is None:
+        # The window is centred on the start that may have just CHANGED, so a long reschedule
+        # moves our own event out of it. Ask for the tag instead, which no reschedule can move.
+        ours, truncated = _find_ours_anywhere(client, ics, truncated)
     if ics.cancelled:
         if ours:
             if not dry_run:
