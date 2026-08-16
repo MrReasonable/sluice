@@ -43,17 +43,37 @@ class TrackFailure:
     errors: an exception message travels further than the file does."""
     message_id: str
     cause: str
+    # The exception CLASS NAME, stored at construction rather than parsed back out of
+    # `cause`. `safe()` used to do `cause.split(":", 1)[0]`, which is a format contract
+    # between the producer and the redactor with nothing guarding it: a second producer
+    # written the obvious way -- `TrackFailure(mid, str(exc))` -- makes `safe()` emit
+    # unbounded free text up to the first colon, so a `ValueError("no lead matched Example Co
+    # - Staff Engineer: giving up")` would render the employer and role straight to Telegram.
+    # Two values derived from the same exception in the same expression cannot drift, which
+    # was the stated objection to a second field and does not apply to this one.
+    kind: str = "error"
 
     def safe(self) -> str:
         """What may leave the machine: the id and the exception TYPE, never its text.
 
         Still actionable -- the id is what `track dismiss --id` takes and what the dead-letter
         row is keyed on -- while carrying none of the message content."""
-        kind = self.cause.split(":", 1)[0].strip() if ":" in self.cause else "error"
-        return f"{self.message_id} ({kind or 'error'})"
+        return f"{self.message_id} ({self.kind or 'error'})"
+
+    def detail(self) -> str:
+        """The full cause. LOCAL ONLY: the operator's own stderr and the gitignored
+        dead-letter row. Never a notification, a bug report, or anything that leaves here."""
+        return f"{self.message_id}: {self.cause}"
 
     def __str__(self) -> str:
-        return f"{self.message_id}: {self.cause}"
+        """The SAFE rendering, deliberately.
+
+        This returned the full cause, so every natural thing a caller writes -- `str(f)`,
+        `f"{f}"`, `_log.info("%s", f)` -- leaked message content by default, and the docstring
+        above spent a paragraph explaining why that content is dangerous before making it the
+        default. Getting it wrong now produces a less useful line rather than a disclosure;
+        the full text is available, but you have to ask for it by name."""
+        return self.safe()
 
 
 @dataclass
@@ -398,7 +418,8 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
             break
         except Exception as exc:
             rep.failures.append(TrackFailure(message_id=mid,
-                                             cause=f"{type(exc).__name__}: {exc}"))
+                                             cause=f"{type(exc).__name__}: {exc}",
+                                             kind=type(exc).__name__))
             # Never silent, and never only a log line. A failure skips seen.add, which leaves
             # the message retryable -- but only while it stays inside `_gmail_query`'s
             # day-granular `after:` window, and `app.py` advances the lastrun watermark on

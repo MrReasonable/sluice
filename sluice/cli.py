@@ -661,7 +661,10 @@ def cmd_track_run(args, config) -> int:
     for f in rep.failures:
         # FULL cause here: this is the operator's own terminal, and scrubbing the local
         # diagnostic would leave nowhere to debug from.
-        print(f"  FAILED {f}", file=sys.stderr)
+        # `.detail()`, explicitly. This is the operator's own stderr, so the full cause
+        # belongs here -- but `str(f)` is the SAFE rendering now, so the local site has to
+        # ask for the detail by name rather than getting it by default.
+        print(f"  FAILED {f.detail()}", file=sys.stderr)
     if rep.calendar_assumed_tz:
         # Its own line rather than another key on the digest: this is a correctness warning,
         # not a statistic. The entries look ordinary in the calendar -- only the HOUR is a
