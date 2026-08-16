@@ -22,6 +22,8 @@ of three heavyweight sources:
 
 Broken is not the same as dead. A source we could not read is a source to FIX.
 """
+import pytest
+
 from sluice.core.health import HealthStore, _is_dead, detect_drift
 
 
@@ -309,7 +311,29 @@ def test_a_rate_limited_board_reports_blocked_rather_than_a_bare_zero():
     from sluice.ingest import sources as registry
 
     src = registry.get("workinstartups")
-    hint = src.health_hint({"jobs": [], "landed": "", "requested": "http://x", "skipped": True})
+    # The key `fetch` ACTUALLY returns on a rate-limit skip is `result`, not `jobs`.
+    # Both yield `count == 0`, so the old fixture passed while being unable to distinguish
+    # the real payload from a wrong one -- if the base class changed which key it counts,
+    # this stayed green and production broke. Derived from `fetch` below rather than
+    # hand-written, so the two cannot drift again.
+    import sluice.ingest.sources.workinstartups as _wis
+    from sluice.ingest.base import Search
+
+    mp = pytest.MonkeyPatch()
+    try:
+        mp.setattr(_wis, "head_rate_limited", lambda url: 120)   # the board is 429ing us
+        raw = src.fetch(None, Search("A", "http://x"))           # skip returns before any tab
+    finally:
+        mp.undo()
+    assert raw.get("skipped") is True, "fixture must be the real rate-limit skip payload"
+    # The CONTRACT, not just the count. `health_hint` and `parse` on the base class both read
+    # `result`, so a skip payload keyed on anything else is a latent mismatch -- invisible
+    # here, because an absent key and an empty list both give `count == 0` on a skip. Asserted
+    # explicitly because deriving the fixture from `fetch` (above) stops the TEST drifting
+    # from the source, and this stops the SOURCE drifting from its own base class.
+    assert "result" in raw, (
+        f"the skip payload must use the key the base class counts: {sorted(raw)}")
+    hint = src.health_hint(raw)
     assert hint["blocked"] == "rate-limited"
     signals = {k: v for k, v in hint.items() if k != "markers"}
     assert detect_drift("workinstartups", hint["count"], signals, 50) == "blocked"
