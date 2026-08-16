@@ -116,10 +116,23 @@ class HealthStore:
         return (reason, n) if reason else (None, 0)
 
 
-# The signal keys that CARRY an explanation, as opposed to describing the run. `ingest/engine`
-# makes exactly these sticky across a source's searches, because a reason found on search 1
-# must not be overwritten by search 3's honest zero. Lives here, beside `_explained`, so the
-# producer's notion of "this key explains something" cannot drift from the classifier's.
+# The PERSISTENCE list: the signal keys `ingest/engine` keeps sticky across a source's
+# searches, because a reason found on search 1 must not be overwritten by search 3's honest
+# zero. That is its only consumer -- `_explained` does not read this tuple.
+#
+# Membership here is deliberately NOT the same set as `_explained` classifies on, in both
+# directions, so do not "align" them:
+#
+#   - BROADER: `auth_probe_error` persists but never explains. A broken probe must stay
+#     visible (otherwise the guard silently disables itself) without deferring retirement,
+#     which would keep a genuinely dead source alive. The reason lives with the producer, in
+#     `ingest/base.py`'s `health_hint`.
+#   - NARROWER: `_explained` derives `redirect` from `requested_host`/`landed_host`, which are
+#     absent here on purpose. They are a MATCHED PAIR describing one search, and the merge is
+#     `{**explained, **signals}` -- so persisting them independently could pair search 1's
+#     requested host with search 3's landed host and report a redirect that never happened.
+#     The cost is that a redirect on an early search does not survive a later clean one; a
+#     phantom redirect on every multi-search source would be worse.
 EXPLAINING_SIGNALS = ("fetch_error", "blocked", "auth", "auth_probe_error")
 
 

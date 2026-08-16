@@ -92,7 +92,11 @@ def _run_source(source, ctx, seen_keys, fresh, result, fetch_timeout, retries):
         hint = source.health_hint(raw)
         total += hint.get("count", 0)
         signals = {k: v for k, v in hint.items() if k != "markers"}
-        # An EXPLANATION is sticky across searches; counts and hosts are not.
+        # An EXPLANATION is sticky across searches; counts and hosts are not. Hosts are
+        # excluded deliberately rather than overlooked: they are a matched pair, and with the
+        # `{**explained, **signals}` merge below, persisting them independently could pair one
+        # search's requested host with another's landed host and invent a redirect. See
+        # `EXPLAINING_SIGNALS` in `core/health.py` for the full asymmetry.
         #
         # `signals` is reassigned per search, so without this a source whose first search came
         # back logged-out and whose last returned an honest zero reports a bare `zero` -- the
