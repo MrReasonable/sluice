@@ -129,15 +129,22 @@ def test_doctors_resolved_user_agrees_with_what_the_client_actually_uses(monkeyp
     warns); `Camofox` resolves it in __init__. If those ever disagreed, doctor would confidently
     report a profile the run does not use -- worse than reporting nothing, because it would be
     believed. Both read `DEFAULT_USER`, and this pins that they agree in both arms.
+
+    Both READINGS have to appear, which is the correction here: this compared `Camofox().user`
+    against a constant in one arm and a literal in the other, and never called `resolve_user`
+    at all -- so the drift it exists to catch could happen with the test green. A test whose
+    docstring names two things must touch two things.
     """
-    from sluice.core.camofox import DEFAULT_USER, Camofox
+    from sluice.core.camofox import DEFAULT_USER, Camofox, resolve_user
 
     monkeypatch.delenv("CAMOFOX_USER", raising=False)
     monkeypatch.delenv("CAMOFOX_SESSION", raising=False)
     assert Camofox().user == DEFAULT_USER
+    assert resolve_user() == Camofox().user, "doctor and the client disagree when unset"
 
     monkeypatch.setenv("CAMOFOX_USER", "example-user")
     assert Camofox().user == "example-user"
+    assert resolve_user() == Camofox().user, "doctor and the client disagree when set"
 
 
 def test_the_camofox_row_actually_reaches_the_doctor_report(monkeypatch, tmp_path):

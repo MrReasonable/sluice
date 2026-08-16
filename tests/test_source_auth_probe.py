@@ -328,21 +328,58 @@ def test_a_camofox_outage_is_explained_for_EVERY_source_class(src):
     assert detect_drift("demo", hint["count"], signals, baseline=20) == "unreachable"
 
 
-@pytest.mark.parametrize("src", [_src(), _carousel()], ids=lambda s: type(s).__name__)
+def _every_registered_source():
+    """Every source the registry actually holds -- ENUMERATED, not hand-listed.
+
+    The first version of the test below parameterised over `[_src(), _carousel()]`, the two
+    base classes, and its own docstring claimed "a third implementation joins this test by
+    existing". It did not: `sources/workinstartups.py` already overrode `health_hint` and was
+    invisible to the pair. The fix for a fix-one-instance bug reproduced the bug.
+
+    Driving off the registry is the difference between a test that covers what someone
+    remembered and one that covers what is shipped.
+
+    Filtered to classes defined under `sluice.` because the registry is a global that tests
+    register into without cleanup (`tests/test_registry.py` leaves a `_Dummy` with no
+    `health_hint` behind). "Shipped sources" is the population this sweep is about, and saying
+    so explicitly beats depending on which test ran first.
+    """
+    from sluice.ingest import sources as registry
+    return [s for s in registry.all_sources()
+            if type(s).__module__.startswith("sluice.")]
+
+
+@pytest.mark.parametrize("src", _every_registered_source(), ids=lambda s: s.id)
 @pytest.mark.parametrize("raw", [None, [], "boom", 0], ids=repr)
-def test_health_hint_tolerates_a_non_dict_raw(src, raw):
-    """Both implementations claimed to tolerate this and neither did.
+def test_health_hint_tolerates_a_non_dict_raw_for_EVERY_registered_source(src, raw):
+    """`health_hint` is a protocol member, and every implementation had the same hole.
 
-    Each guarded the COUNT with `isinstance(raw, dict)`, then read `raw.get("landed")` on the
-    very next line with no guard, then checked `isinstance` again afterwards. The unguarded
-    dereference raised `AttributeError` first, so the second guard was unreachable and the
-    tolerance the two guards were written for did not exist in either class.
+    The base classes guarded the COUNT with `isinstance(raw, dict)`, then read
+    `raw.get("landed")` on the very next line unguarded, then checked `isinstance` again --
+    so the unguarded dereference raised first and the trailing guard was unreachable. The
+    `workinstartups` override then dereferenced the CALLER's object after `super()` had
+    normalised only its own local, so fixing the bases did not reach it.
 
-    Latent rather than live -- no registered source returns a non-dict today -- so the value
-    here is that `health_hint` is a PROTOCOL member: the next implementation is written by
-    copying one of these, and a guard that reads as deliberate is the kind that gets copied.
+    Latent rather than live: no shipped source returns a non-dict today. The value is that
+    this now fails for any registered source that grows the hole, including one added later.
     """
     hint = src.health_hint(raw)
     assert hint["count"] == 0
     assert hint["landed_host"] == "" and hint["requested_host"] == ""
     assert "fetch_error" not in hint, "a non-dict carries no error to report"
+
+
+def test_the_conformance_sweep_actually_sees_the_overriding_sources():
+    """Guards the enumeration itself.
+
+    A registry that failed to autoload would make the sweep above vacuous -- zero parameters,
+    green suite, nothing covered. Assert it reaches a source that OVERRIDES `health_hint`,
+    which is the case the sweep exists for.
+    """
+    srcs = _every_registered_source()
+    assert len(srcs) > 5, f"the registry looks unloaded: {len(srcs)} sources"
+    from sluice.ingest.base import BrowserListSource, CarouselSource
+    overriders = [s for s in srcs
+                  if type(s).health_hint not in (BrowserListSource.health_hint,
+                                                 CarouselSource.health_hint)]
+    assert overriders, "no overriding health_hint reached the sweep -- it cannot catch one"

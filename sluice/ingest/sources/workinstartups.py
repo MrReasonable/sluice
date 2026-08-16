@@ -26,6 +26,11 @@ class _WorkInStartupsSource(BrowserListSource):
 
     def health_hint(self, raw: dict) -> dict:
         hint = super().health_hint(raw)
+        # The base normalises `raw` LOCALLY, so that does not reach an override. Dereferencing
+        # the caller's original object here would raise `AttributeError` on a non-dict after
+        # the base call had already succeeded -- the same gap the base classes had, in the one
+        # implementation that lives outside them.
+        raw = raw if isinstance(raw, dict) else {}
         skipped = bool(raw.get("skipped"))
         hint["markers"] = {"skipped": skipped}
         # ALSO as a signal, because `engine.py` strips `markers` before the classifier sees
