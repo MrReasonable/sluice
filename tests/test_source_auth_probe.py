@@ -140,13 +140,13 @@ def test_the_linkedin_subclass_runs_the_probe_too():
         def evaluate(self, tid, expr):
             self.evaluated.append((tid, expr))
             if expr == "location.href":
-                return {"result": "https://www.linkedin.com/jobs/search"}
+                return {"result": "https://example.invalid/jobs/search"}
             if expr == src.auth_probe_js:
                 return {"result": True}          # logged-out page
             return {"result": []}                 # extractor finds nothing
 
     cam = _LiCam(rows=[])
-    raw = src.fetch(_ctx(cam), Search("A", "https://www.linkedin.com/jobs/search"))
+    raw = src.fetch(_ctx(cam), Search("A", "https://example.invalid/jobs/search"))
     assert src.auth_probe_js in [e for _tid, e in cam.evaluated], "the subclass skipped the auth probe"
     assert src.health_hint(raw)["auth"] == "missing"
 
@@ -294,7 +294,7 @@ def test_the_linkedin_source_scrolls_the_RESULTS_PANEL():
 
     src = registry.get("linkedin")
     cam = _Cam(rows=[])
-    src.fetch(_ctx(cam), Search("A", "https://www.linkedin.com/jobs/search"))
+    src.fetch(_ctx(cam), Search("A", "https://example.invalid/jobs/search"))
     scrolled = [e for _tid, e in cam.evaluated if "scrollTop" in e or "scrollBy" in e]
     assert scrolled, "linkedin must scroll the results panel, not the window"
     assert len(scrolled) == src.scrolls, f"expected {src.scrolls} panel scrolls, got {len(scrolled)}"
