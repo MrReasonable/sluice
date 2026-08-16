@@ -86,3 +86,43 @@ def test_load_seen_still_reads_a_missing_store_as_empty(tmp_path):
     from sluice.core.app import _load_seen
 
     assert _load_seen(str(tmp_path / "nope.db")) == set()
+
+
+def test_dismiss_by_LEAD_clears_a_calendar_row_too(tmp_path, monkeypatch):
+    """`--lead` is a HUMAN saying "nothing here needs action", and is entitled to clear
+    everything. `clear_lead` defaults to status-proposals-only for the engine's auto-advance
+    clears, and passing that default here silently stopped `--lead` reaching calendar and
+    failure rows -- with nothing telling the operator to use `--id`."""
+    from sluice.track.deadletter import EV_TYPE_CALENDAR
+
+    seen_db = _cfg(tmp_path, monkeypatch)
+    dl = DeadLetterDb(deadletter_path(seen_db))
+    dl.record(Entry(message_id="m1", lead="Example Tidal - EM", candidates="",
+                    ev_type="interview", proposal="interview", hint="confirm",
+                    first_seen="2026-07-10", times_surfaced=1))
+    dl.record(Entry(message_id="m2", lead="Example Tidal - EM", candidates="",
+                    ev_type=EV_TYPE_CALENDAR, proposal="cancel-unresolved",
+                    hint="remove it by hand", first_seen="2026-07-10", times_surfaced=1))
+
+    out = Sluice(Config()).track_dismiss(lead="Example Tidal - EM")
+    assert out["cleared"] == 2, "a human dismissal must clear the calendar row too"
+    assert dl.open_entries() == []
+
+
+def test_the_dismiss_DRY_RUN_count_matches_the_real_delete(tmp_path, monkeypatch):
+    """`app.py`'s own comment claims the two "can never disagree", and filtering `clear_lead`
+    unconditionally made them disagree: the preview said 2, the real command cleared 1, and
+    nothing named the row that survived."""
+    from sluice.track.deadletter import EV_TYPE_CALENDAR, EV_TYPE_FAILURE
+
+    seen_db = _cfg(tmp_path, monkeypatch)
+    dl = DeadLetterDb(deadletter_path(seen_db))
+    for mid, kind in (("m1", "interview"), ("m2", EV_TYPE_CALENDAR), ("m3", EV_TYPE_FAILURE)):
+        dl.record(Entry(message_id=mid, lead="Example Tidal - EM", candidates="",
+                        ev_type=kind, proposal="p", hint="h",
+                        first_seen="2026-07-10", times_surfaced=1))
+
+    preview = Sluice(Config()).track_dismiss(lead="Example Tidal - EM", dry_run=True)
+    real = Sluice(Config()).track_dismiss(lead="Example Tidal - EM")
+    assert preview["cleared"] == real["cleared"], (
+        f"preview said {preview['cleared']}, the real run cleared {real['cleared']}")

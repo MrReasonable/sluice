@@ -6,6 +6,7 @@ from datetime import date
 
 from sluice.core import status as _status
 from sluice.core.log import get_logger
+from sluice.core.vault import frontmatter_safe
 
 _log = get_logger("triage.apply")
 _DECISION_STATUS = {"reject": "dismiss", "needs_review": "needs_review", "keep": "new"}
@@ -46,14 +47,29 @@ def apply_verdict(vault, note, verdict, dossier) -> str:
         return "skipped"
     status = _status.normalize(verdict.get("verdict", "needs_review"))
     score = int(verdict.get("relevance_score", 0) or 0)
+    # BOTH untrusted, and both were written into quoted YAML scalars raw. `culture_flags` is
+    # the model's verdict JSON; `glassdoor_rating` comes off the fetched dossier. A `"` closes
+    # the scalar early and everything after it is parsed as frontmatter -- executed: a single
+    # culture flag injected a SECOND `status:` key, and YAML resolves last-wins, so model
+    # output could regress a lead's status. That is the never-regress invariant, reachable
+    # from a model.
+    #
+    # Same class as #141 in `track/reconcile.py`, one sub-app over. It survived that sweep
+    # because the sweep's boundary was the `track` package -- "a hand-list with extra steps",
+    # in the words of the test that drew the boundary.
+    #
+    # Abstain on the FIELD, never the write: losing a triage verdict because a culture flag
+    # contained a quote would be the worse failure. Logged, because a silent drop is invisible
+    # to the person reading the note.
     rating = (dossier.get("glassdoor") or {}).get("rating", "")
     flags = ", ".join(verdict.get("culture_flags") or [])
-    fields = {
-        "status": status,
-        "score": str(score),
-        "glassdoor_rating": f'"{rating}"',
-        "culture_flags": f'"{flags}"',
-    }
+    fields = {"status": status, "score": str(score)}
+    for key, raw in (("glassdoor_rating", rating), ("culture_flags", flags)):
+        safe = frontmatter_safe(str(raw)) if raw else ""
+        if raw and not safe:
+            _log.warning("triage: %s dropped for %s -- unsafe for frontmatter", key, note.slug)
+            continue
+        fields[key] = f'"{safe}"'
     tag = f"[triage {date.today().isoformat()}]"
     parts = [verdict.get("fit_reasoning", "")]
     if verdict.get("concerns"):
