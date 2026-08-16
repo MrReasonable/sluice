@@ -85,7 +85,8 @@ def _advance(vault, note, target, ev, dry_run=False):
     # #141. `ev.when` is the MODEL's `when` falling back to the parsed DTSTART --
     # `classify.py` builds it as `data.get("when") or ics.start.isoformat()` -- so it is
     # untrusted in exactly the way `ev.links[0]` is, and guarded in the `ev.links` branch
-    # below for exactly the same reason. A `"` closes the quoted scalar early and a backslash
+    # below for exactly the same reason (that branch is ~15 lines down, not the "three" an
+    # earlier version of this comment claimed -- name the branch, never the distance). A `"` closes the quoted scalar early and a backslash
     # opens a YAML escape sequence; either corrupts the note's frontmatter. #111 fixed the
     # link and left its neighbour.
     #

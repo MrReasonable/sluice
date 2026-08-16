@@ -104,7 +104,9 @@ def _trunc(dt, tz=timezone.utc):
 def _window_bounds(cfg, ics):
     """The (timeMin, timeMax) pair for a list_events call centred on `ics.start`.
     PRECONDITION: `ics.start` is not None -- `_aware(None)` is None and the arithmetic below
-    raises TypeError. Both callers guard; a third must too.
+    raises TypeError. ONE caller now (`_window`), and the guard sits one frame further out in
+    `sync_event`; `_find_ours` and `_foreign_at_start` take events and no longer fetch. A
+    second caller must either guard or route through `sync_event`.
 
     `_aware` FIRST, before isoformat(): `events.list` requires RFC 3339 (an external contract
     this repo cannot pin in a test), and a NAIVE start serialises without a UTC offset, which
@@ -113,15 +115,17 @@ def _window_bounds(cfg, ics):
     time, and a date-only `VALUE=DATE` DTSTART.
 
     The error escapes reconcile into engine.run's per-message handler, so this run's whole
-    message is abandoned -- no calendar event, no status advance, and no dead-letter row.
-    Skipping seen.add leaves it RETRYABLE but not retried forever: `_gmail_query` scopes on a
-    day-granular `after:` derived from the lastrun watermark, and `app.py` advances that
-    watermark on this very run regardless of `rep.failures`. So a deterministic failure gets
-    about a day of retries and is then never queried again (the hazard `_load_lastrun`'s own
-    docstring describes). That is why engine.run logs it: the log line is the only surviving
-    trace.
+    message is abandoned -- no calendar event and no status advance. Skipping seen.add leaves
+    it RETRYABLE but not retried forever: `_gmail_query` scopes on a day-granular `after:`
+    derived from the lastrun watermark, and `app.py` advances that watermark on this very run
+    regardless of `rep.failures`. So a deterministic failure gets about a day of retries and
+    is then never queried again (the hazard `_load_lastrun`'s own docstring describes).
 
-    Both call sites build this identical pair, so it lives here -- not because one was once
+    It is no longer trace-less, which this paragraph used to claim: #139 made the failure
+    durable, so it now leaves an `ev_type=failure` dead-letter row, a named entry in
+    `rep.failures`, a digest line and a notification.
+
+    It exists as a helper -- rather than inline in its single caller -- not because one site was
     coerced and the other forgotten (before this helper NEITHER was), but because the file
     already applied `_aware` to the proximity COMPARISON in `_foreign_at_start` and not to the
     bounds, and one shared definition is what stops a future fix landing in one site only."""
@@ -203,10 +207,13 @@ def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
 
     HONEST LIMIT: one cause remains folded into `present`. An event that exists but sits
     OUTSIDE the +/- calendar_lookahead_days window is indistinguishable from absence without a
-    UID-keyed query, so it is not guessed at here. Google's `events.list` accepts a
-    `privateExtendedProperty` filter, which would let `_find_ours` search by the
-    sluice-track-uid tag with no time window at all -- worth confirming and building on, and
-    it would make `unresolved` rare rather than routine."""
+    UID-keyed query, so it is not guessed at here. That is issue #146 (a reschedule beyond
+    `calendar_lookahead_days` orphans our event and inserts a duplicate) -- tracked, not
+    merely noted, so nobody re-derives it from scratch.
+
+    Google's `events.list` accepts a `privateExtendedProperty` filter, which would let
+    `_find_ours` search by the sluice-track-uid tag with no time window at all -- worth
+    confirming and building on, and it would make `unresolved` rare rather than routine."""
     if ics.start is None:
         # We cannot even build a window, so nothing was searched. A bare `METHOD:CANCEL` +
         # `UID` VEVENT is legal RFC 5545 and lands here.
