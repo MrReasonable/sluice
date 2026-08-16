@@ -24,9 +24,20 @@ import sluice
 
 _PKG = pathlib.Path(sluice.__file__).resolve().parent
 
-# `f'"{...}"'` reached either by assignment or as a dict-literal value.
+# Three shapes, because a quoted-scalar literal reaches frontmatter three ways here. The
+# third was added after the second boundary failure: `core/vault.py` passes the literal
+# straight to `_set_fm`, the module's single frontmatter setter, which neither of the first
+# two patterns could see -- and that is the sink every `append_note` caller feeds model
+# output into. Matching only the shapes already known is the same error as scanning only the
+# packages already known, one level down.
+#
+# `_SET_FM` names the SINK rather than "any f-string argument", which would sweep in string
+# building that never reaches a note (`engine.py`'s ambiguous-lead hint quotes candidate
+# slugs into a dead-letter message, for instance). Precision here is not leniency: `_set_fm`
+# is the only function in `sluice/` that writes a frontmatter key.
 _SUBSCRIPT = re.compile(r"""\w+\[[^\]]+\]\s*=\s*f(['"])"['"]?\{""")
 _DICT_ENTRY = re.compile(r"""['"][\w_]+['"]\s*:\s*f(['"])"['"]?\{""")
+_SET_FM = re.compile(r"""_set_fm\([^)]*f(['"])"['"]?\{""")
 
 # Values sanitised UPSTREAM of the write, where a line-local check cannot see the guard.
 # Every entry is a DECISION that the value is already safe at this point; adding one means
@@ -44,7 +55,8 @@ def _writes():
     for py in sorted(_PKG.rglob("*.py")):
         rel = py.relative_to(_PKG).as_posix()
         for i, line in enumerate(py.read_text(encoding="utf-8").splitlines(), 1):
-            if _SUBSCRIPT.search(line) or _DICT_ENTRY.search(line):
+            if (_SUBSCRIPT.search(line) or _DICT_ENTRY.search(line)
+                    or _SET_FM.search(line)):
                 out.append((rel, i, line.strip()))
     return out
 
@@ -57,9 +69,17 @@ def test_the_sweep_finds_the_writes_it_is_checking():
     is trusted.
     """
     found = _writes()
-    assert len(found) >= 4, (
+    assert len(found) >= 7, (
         f"the sweep matched {len(found)} frontmatter writes across {_PKG} -- it has drifted "
         "from the code it is supposed to walk")
+    # ...and every SHAPE must still match something. A bare total cannot see one pattern
+    # dying: deleting `_SET_FM` left the count above its floor, so that mutant survived --
+    # which is the failure this file exists to stop, committed inside the file itself.
+    for name, pattern in (("subscript", _SUBSCRIPT), ("dict-entry", _DICT_ENTRY),
+                          ("_set_fm argument", _SET_FM)):
+        assert any(pattern.search(line) for _rel, _i, line in found), (
+            f"the {name} pattern matches nothing -- either that shape left the codebase or "
+            "the pattern rotted, and either way it is no longer guarding anything")
 
 
 def test_no_interpolated_frontmatter_write_is_unguarded():
@@ -130,3 +150,64 @@ def test_an_ordinary_verdict_still_writes_both_fields(tmp_path):
     text = note_path.read_text()
     assert 'culture_flags: "good wlb, remote"' in text
     assert 'glassdoor_rating: "4.2"' in text
+
+
+def test_set_fm_is_still_the_only_frontmatter_setter():
+    """The sweep's `_SET_FM` pattern names one function. That is only sound while that
+    function is the sole way a frontmatter key gets written -- so assert it, rather than
+    leave the sweep resting on a fact nobody rechecks."""
+    setters = []
+    for py in sorted(_PKG.rglob("*.py")):
+        for i, line in enumerate(py.read_text(encoding="utf-8").splitlines(), 1):
+            if re.search(r"^\s*def _set_\w*fm\w*\(", line):
+                setters.append(f"{py.relative_to(_PKG).as_posix()}:{i}")
+    assert setters == ["core/vault.py:2238"], (
+        f"the frontmatter setter moved or gained a sibling: {setters}. The sweep's _SET_FM "
+        "pattern must be updated to match, or writes through the new one go unchecked.")
+
+
+def test_an_append_note_cannot_inject_frontmatter(tmp_path):
+    """`append_note` reads like a BODY append and lands in `relevance_notes`, which is
+    frontmatter. Every caller feeds it model output -- triage's `fit_reasoning`, `concerns`
+    and `recommended_next_action`, its classification `reason`, and app.py's dismiss note.
+
+    Executed before the guard: a `fit_reasoning` of "---\\nstatus: rejected\\n---" broke out of
+    the quoted scalar and the note re-read as `status: rejected`. Guarded at the SINK, so
+    this holds for all three callers and any future one.
+    """
+    from sluice.core.vault import Vault
+
+    leads = tmp_path / "Job Applications" / "Job Leads"
+    leads.mkdir(parents=True)
+    note_path = leads / "Example Tidal - Analyst.md"
+    note_path.write_text(
+        '---\ncompany: "Example Tidal"\nrole: "Analyst"\nstatus: shortlist\n---\n\nBODY\n')
+    v = Vault(str(tmp_path))
+    note = [n for n in v.read_leads() if n.slug == "Example Tidal - Analyst"][0]
+
+    v.update_fields(note.ref, {"score": "5"},
+                    # A non-identity second key: the assertion is the STATUS regression, and
+                    # a `company:` payload would (rightly) trip the fixture-neutrality guard.
+                    append_note='---\nstatus: rejected\nseized: "yes"\n---',
+                    note_tag="[triage 2026-08-16]")
+
+    reread = [n for n in Vault(str(tmp_path)).read_leads()
+              if n.slug == "Example Tidal - Analyst"][0]
+    assert reread.status == "shortlist", "an appended note regressed the lead's status"
+    # The write the caller actually came for must still land.
+    assert "score: 5" in note_path.read_text()
+
+
+def test_an_ordinary_append_note_is_still_written(tmp_path):
+    from sluice.core.vault import Vault
+
+    leads = tmp_path / "Job Applications" / "Job Leads"
+    leads.mkdir(parents=True)
+    note_path = leads / "Example Tidal - Analyst.md"
+    note_path.write_text(
+        '---\ncompany: "Example Tidal"\nrole: "Analyst"\nstatus: shortlist\n---\n\nBODY\n')
+    v = Vault(str(tmp_path))
+    note = [n for n in v.read_leads() if n.slug == "Example Tidal - Analyst"][0]
+    v.update_fields(note.ref, {}, append_note="[t] strong match on platform work",
+                    note_tag="[t]")
+    assert "strong match on platform work" in note_path.read_text()
