@@ -26,7 +26,7 @@ PATH_ENV_VARS = (
 
 
 @pytest.fixture(autouse=True)
-def _pin_paths(tmp_path, monkeypatch):
+def _pin_paths(tmp_path, monkeypatch, request):
     """Sandbox every per-system path the suite can resolve (#80).
 
     Before #80 the defaults were cwd-relative and the suite ran in `tmp_path`, so it
@@ -82,9 +82,19 @@ def _pin_paths(tmp_path, monkeypatch):
     # 29 call sites: the defect is that the suite reads an ambient env var, not that any one
     # test forgot an argument, and a per-site fix leaves the next bare call to reintroduce it.
     monkeypatch.delenv("SLUICE_LOG_LEVEL", raising=False)
-    for name, obj in list(logging.Logger.manager.loggerDict.items()):
-        if name.startswith("sluice.") and isinstance(obj, logging.Logger):
-            monkeypatch.setattr(obj, "level", logging.INFO, raising=False)
+    # `setLevel()`, NOT `obj.level = ...`. Assigning the attribute directly leaves
+    # `Logger._cache` populated, and `isEnabledFor` reads that cache -- so a logger whose
+    # cache was warmed while the ambient level was CRITICAL keeps answering False for
+    # WARNING even after the level says INFO, and `logger.warning(...)` is still dropped.
+    # Whether that bites depends on whether anything logged before the reset, i.e. on test
+    # ORDER: the fix worked here only because the cache happened to be cold. `setLevel`
+    # clears the cache, which is the entire reason it exists rather than being a property.
+    _levels = [(obj, obj.level) for name, obj in list(logging.Logger.manager.loggerDict.items())
+               if name.startswith("sluice.") and isinstance(obj, logging.Logger)]
+    for obj, _old in _levels:
+        obj.setLevel(logging.INFO)
+    # Restored through setLevel too, so the next test does not inherit a stale cache either.
+    request.addfinalizer(lambda: [obj.setLevel(old) for obj, old in _levels])
 
 
 def _title_pool(n=60):
