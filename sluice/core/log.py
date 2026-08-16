@@ -43,7 +43,10 @@ def _telegram_sender(config):
         return None
     token, chat = creds
 
-    def send(text: str, channel: str | None = None) -> None:
+    def send(text: str, channel: str | None = None) -> bool:
+        """True if Telegram accepted it. Still never raises -- notify must not take down a
+        scan -- but the caller can now tell "delivered" from "swallowed", which it could not
+        before: every transport error looked exactly like success."""
         payload = json.dumps({"chat_id": channel or chat, "text": text}).encode()
         req = urllib.request.Request(
             f"https://api.telegram.org/bot{token}/sendMessage",
@@ -53,17 +56,31 @@ def _telegram_sender(config):
         try:
             with urllib.request.urlopen(req, timeout=10) as r:
                 r.read()
+            return True
         except Exception as e:  # notify must never take down a scan
             get_logger("notify").warning("telegram send failed: %s", e)
+            return False
 
     return send
 
 
-def notify(text: str, channel: str | None = None, *, sender=None, config=None) -> bool:
-    """Send a notification. Returns True if a sender handled it, False if there
-    was nothing configured (silent no-op). `sender` is injectable for tests."""
+def notify(text: str, channel: str | None = None, *, sender=None, config=None) -> str:
+    """Send a notification; returns the OUTCOME.
+
+    `"sent"` | `"unconfigured"` | `"failed"`. Three states, not two: the bool this used to
+    return was True the moment a sender EXISTED, and `_telegram_sender.send` swallows every
+    transport error, so a revoked token, a wrong chat_id, a 4xx, a DNS failure or Telegram
+    being down all reported success. The one run that most needed the alert was the one where
+    nobody could tell it had not arrived.
+
+    A str rather than a bool because the two failure modes want different words: nothing is
+    configured (install-time, expected, quiet) versus configured and broken (an operator has
+    to look). Callers that ignore the return are unaffected; the truthiness of the old
+    `False` return is deliberately NOT preserved, so `if not notify(...)` fails loudly at
+    review rather than silently treating "failed" as success.
+
+    `sender` is injectable for tests -- a fake must return a bool, like the real one."""
     sender = sender or _telegram_sender(config)
     if sender is None:
-        return False
-    sender(text, channel)
-    return True
+        return "unconfigured"
+    return "sent" if sender(text, channel) else "failed"

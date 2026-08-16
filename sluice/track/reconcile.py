@@ -82,17 +82,24 @@ def _stamp_receipt(vault, note, ev):
 
 def _advance(vault, note, target, ev, dry_run=False):
     fields = {"status": target, "last_signal": date.today().isoformat()}
-    if ev.when:
-        # #141: `ev.when` is `data.get("when")` straight from the model -- untrusted in
-        # exactly the way `ev.links[0]` is, and guarded three lines below for exactly the
-        # same reason. A `"` or backslash closes the quoted scalar early and corrupts the
-        # note's frontmatter. #111 fixed the link and left its neighbour.
-        #
-        # Abstain on the FIELD, never the advance: losing the interview signal because the
-        # model returned a bad date string would be the worse failure by far.
-        safe_when = frontmatter_safe(ev.when)
-        if safe_when:
-            fields["interview_date"] = f'"{safe_when}"'
+    # #141. `ev.when` is the MODEL's `when` falling back to the parsed DTSTART --
+    # `classify.py` builds it as `data.get("when") or ics.start.isoformat()` -- so it is
+    # untrusted in exactly the way `ev.links[0]` is, and guarded in the `ev.links` branch
+    # below for exactly the same reason. A `"` closes the quoted scalar early and a backslash
+    # opens a YAML escape sequence; either corrupts the note's frontmatter. #111 fixed the
+    # link and left its neighbour.
+    #
+    # Abstain on the FIELD, never the advance: losing the interview signal because the model
+    # returned a bad date string would be the worse failure by far.
+    #
+    # The abstention FALLS THROUGH to the ics date. Written as `if ev.when: ... elif ev.ics`
+    # it did not: the `elif` binds to `ev.when` being falsy, not to the guard rejecting it, so
+    # a model returning `2026-07-15 10:00 "BST"` on an invite carrying a perfectly good
+    # DTSTART wrote NO date at all -- discarding the junk and the authoritative value
+    # together, which is the outcome the paragraph above says is the worse one.
+    safe_when = frontmatter_safe(ev.when) if ev.when else None
+    if safe_when:
+        fields["interview_date"] = f'"{safe_when}"'
     elif ev.ics and ev.ics.start:
         fields["interview_date"] = f'"{ev.ics.start.date().isoformat()}"'
     if ev.links:
