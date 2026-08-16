@@ -121,6 +121,8 @@ block is commented out in `sluice.yaml.example`.
 | `gmail_extra_query` | `""` | |
 | `calendar_lookahead_days` | `45` | |
 | `calendar_match_minutes` | `30` | start-proximity dedup window |
+| `gmail_max_messages` | `500` | hard TOTAL a run will read across pages. Hitting it means the run did NOT see every matching message — the oldest are starved, since Gmail returns newest-first — so the run holds the `.lastrun` watermark and warns. Raise it, or narrow `gmail_extra_query`. |
+| `calendar_max_events` | `2500` | hard TOTAL events a window read returns. Correctness-bearing: hitting it makes sluice answer `unresolved` rather than guess, so an interview is left unbooked until you act. The window is `2 × calendar_lookahead_days` with recurrences expanded, so raising the lookahead raises the event count against this ceiling. |
 | `calendar_assumed_timezone` | `UTC` | IANA zone assumed for a DTSTART with no usable one (floating time, date-only, or an unresolvable TZID). Set it to your own zone — a zone-less invite in your inbox is far likelier to be in local time than UTC. Whenever the guess is written (a `created` or `updated` outcome, dry runs included) it is warned about and counted in the run digest; a `present` outcome writes nothing and stays silent. An unresolvable value warns once and falls back to UTC. |
 | `primary_backend` / `fallback_backend` | `"claude-max"` / `"deepseek"` | |
 | `claude_max_model` | `"claude-sonnet-4-5"` | |

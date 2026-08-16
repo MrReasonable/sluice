@@ -87,8 +87,16 @@ def probe_availability() -> tuple[bool, str | None]:
 class RealGoogleClient:
     """Gmail + Calendar over google_token.json. Lazy-imports google libs."""
 
-    def __init__(self, token_path: str):
+    def __init__(self, token_path: str, *, gmail_max_messages: int = 500,
+                 calendar_max_events: int = 2500):
+        # The caps live on the CLIENT, not on the injected method signatures. `sync_event`
+        # and `engine.run` call `list_events`/`search_messages` without them, and a kwarg
+        # threaded through those calls would put a deployment concern into the protocol every
+        # fake has to implement. Defaults match the shipped literals, so a caller that passes
+        # neither behaves exactly as before.
         self.token_path = token_path
+        self.gmail_max_messages = gmail_max_messages
+        self.calendar_max_events = calendar_max_events
         self._gmail = None
         self._cal = None
 
@@ -122,7 +130,7 @@ class RealGoogleClient:
             self._cal = self._svc("calendar", "v3")
         return self._cal
 
-    def search_messages(self, query, max_results=500):
+    def search_messages(self, query, max_results=None):
         """Every message id matching `query`, across pages, capped at `max_results`.
 
         The cap moved from 50-per-REQUEST to a total across pages, because 50 was never a
@@ -142,8 +150,10 @@ class RealGoogleClient:
         the operator's own job-hunt domains and addresses, and `config.py` already sets the
         rule for this: an exception or log message travels further (logs, bug reports) than
         the config file does. Naming the KNOB keeps it actionable without the value."""
+        max_results = self.gmail_max_messages if max_results is None else max_results
         items, truncated = _paged(
             self._gmail_svc().users().messages(),
+            # 500 is Gmail's own per-REQUEST ceiling, unrelated to our total cap.
             dict(userId="me", q=query, maxResults=min(max_results, 500)),
             "messages", max_results)
         if truncated:
@@ -187,7 +197,7 @@ class RealGoogleClient:
         return {"headers": headers, "body_text": body_text,
                 "thread_id": msg.get("threadId", ""), "attachments": attachments}
 
-    def list_events(self, time_min_iso, time_max_iso, max_results=2500):
+    def list_events(self, time_min_iso, time_max_iso, max_results=None):
         """Every event in the window as `(items, truncated)`, across pages, capped.
 
         A truncated page here is not a smaller answer, it is a WRONG one. `_find_ours` reads
@@ -196,8 +206,10 @@ class RealGoogleClient:
         report `present` while the interview stays in the calendar (#138). The window is
         2 * calendar_lookahead_days (90 days by default) with `singleEvents=True`, which
         EXPANDS recurrences: one daily standup is ~90 items on its own."""
+        max_results = self.calendar_max_events if max_results is None else max_results
         items, truncated = _paged(
             self._cal_svc().events(),
+            # 250 is the API's per-REQUEST page size, unrelated to our total cap.
             dict(calendarId="primary", timeMin=time_min_iso, timeMax=time_max_iso,
                  singleEvents=True, maxResults=250),
             "items", max_results)
