@@ -15,7 +15,10 @@ longer fetches or inspects `ics.start`):
   1. `ics.start is None` -- a METHOD:CANCEL VEVENT carrying only a UID is legal, and
      `parse_ics` yields exactly that. Guarded at the top of `sync_event`.
   2. the event sits outside the lookahead window (a cancel of a long-rescheduled interview).
-     Still indistinguishable from absence without a UID-keyed query -- see #146.
+     No longer indistinguishable from absence: when the window scan finds nothing,
+     `_find_ours_anywhere` asks Google for the sluice-track-uid tag with no time bounds, so
+     the cancel reaches an event that moved out of the window (#146, fixed in
+     `tests/test_track_calendar_uid_lookup.py`).
   3. the events list was truncated. Fixed in this same branch, not separately: `list_events`
      returns `truncated` and `sync_event` answers `unresolved` rather than guessing.
 """

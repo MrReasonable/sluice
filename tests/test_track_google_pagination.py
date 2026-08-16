@@ -178,6 +178,73 @@ def test_the_pager_is_shared_so_the_two_endpoints_cannot_drift(monkeypatch, call
     assert seen.get("max_results"), "the caller must pass its own bound through the pager"
 
 
+# ---- the UID tag query: the request itself is the contract (#146) --------------------------
+
+def test_the_tag_query_sends_the_FILTER_and_no_time_window(monkeypatch):
+    """The whole fix is these four parameters, so they are what gets asserted.
+
+    Everything above this line tests behaviour we control. This one tests a REQUEST we hand to
+    Google, and it is the only part of #146 that a fake cannot vouch for: `sync_event` reads an
+    empty result as "we never created this", so a filter that is malformed or accidentally
+    bounded by time fails by returning nothing -- silently reinstating the duplicate insert.
+
+    Pinned against Google's discovery document for calendar/v3 (revision 20260810):
+    `privateExtendedProperty` is `propertyName=value` and matches PRIVATE properties only;
+    `timeMin`/`timeMax` are optional, `calendarId` being the sole required parameter. A fake
+    cannot check the semantics, but it can check that we asked the question we meant to.
+    """
+    cal = _CalPaged([{"items": []}])
+    _client_with(monkeypatch, cal=cal).find_events_by_private_property("sluice-track-uid", "u1")
+
+    sent = cal.events_ep.calls[0]
+    assert sent["privateExtendedProperty"] == "sluice-track-uid=u1", (
+        "the filter must be the documented propertyName=value form; anything else is a 400 "
+        "or, worse, a query that matches nothing")
+    assert "timeMin" not in sent and "timeMax" not in sent, (
+        f"a time bound here recreates #146 exactly -- our event moved OUT of one: {sent}")
+    assert sent["calendarId"] == "primary"
+
+
+def test_both_calendar_reads_expand_recurrences_THE_SAME_WAY(monkeypatch):
+    """`sync_event` runs one `_find_ours` over both result sets and then calls
+    `update_event`/`delete_event` on whatever id it finds.
+
+    So the two reads have to return the same SHAPE of object. If `singleEvents` drifted apart,
+    one search would hand back an expanded instance and the other the recurring parent, and the
+    same UID would resolve to a different id depending on which search happened to find it --
+    with a delete aimed at the parent taking out the whole series. Asserted as an equality
+    between the two requests rather than as `is True` twice, because the property that matters
+    is that they AGREE."""
+    window = _CalPaged([{"items": []}])
+    tagged = _CalPaged([{"items": []}])
+    _client_with(monkeypatch, cal=window).list_events("2026-01-01T00:00:00+00:00",
+                                                      "2026-03-01T00:00:00+00:00")
+    _client_with(monkeypatch, cal=tagged).find_events_by_private_property("k", "v")
+
+    assert window.events_ep.calls[0]["singleEvents"] == tagged.events_ep.calls[0]["singleEvents"]
+
+
+def test_the_tag_query_reads_every_page(monkeypatch):
+    """Same harm as the window read, one page further out: our own tagged event sitting on
+    page 2 reads as absent, and absence is what makes `sync_event` insert a duplicate."""
+    pages = [{"items": [{"id": "e1"}], "nextPageToken": "t1"}, {"items": [{"id": "e2"}]}]
+    cal = _CalPaged(pages)
+    got, truncated = _client_with(monkeypatch, cal=cal).find_events_by_private_property("k", "v")
+    assert [e["id"] for e in got] == ["e1", "e2"]
+    assert truncated is False
+
+
+def test_the_tag_query_is_bounded_and_SAYS_so(monkeypatch):
+    """Unbounded is not an option just because the result set should be tiny -- "should be" is
+    what a cap exists for. Hitting it must report `truncated`, which `_find_ours_anywhere`
+    turns into `unresolved` rather than a guessed insert."""
+    endless = [{"items": [{"id": f"e{i}"}], "nextPageToken": "t"} for i in range(500)]
+    cal = _CalPaged(endless)
+    got, truncated = _client_with(monkeypatch, cal=cal).find_events_by_private_property(
+        "k", "v", max_results=5)
+    assert len(got) == 5 and truncated is True
+
+
 # ---- honesty about what was dropped -------------------------------------------------------
 
 def test_truncated_is_true_when_the_CAP_dropped_items_even_on_the_last_page(monkeypatch):
