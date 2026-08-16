@@ -104,27 +104,36 @@ class SeenDb:
         return {r[0] for r in rows if r[0]}
 
     def _init(self) -> None:
+        # try/finally, like `load` above. `db.execute`/`db.commit` can raise on a full disk,
+        # a locked file or a corrupt store, and an un-closed sqlite connection holds its lock
+        # -- so the next writer fails too, and on Windows the file cannot be replaced at all.
+        # `load` already got this right and these two did not, which is the same
+        # fix-one-instance-not-the-class miss review has caught three times on this branch.
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
         db = sqlite3.connect(self.path)
-        db.execute(
-            "CREATE TABLE IF NOT EXISTS seen_jobs (url TEXT PRIMARY KEY, scanned_at TEXT)"
-        )
-        db.commit()
-        db.close()
+        try:
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS seen_jobs (url TEXT PRIMARY KEY, scanned_at TEXT)"
+            )
+            db.commit()
+        finally:
+            db.close()
 
     def save(self, leads: Iterable[Lead]) -> int:
         self._init()
         db = sqlite3.connect(self.path)
         now = datetime.datetime.now().isoformat()
         saved = 0
-        for lead in leads:
-            key = lead.dedup_key
-            if key:
-                db.execute(
-                    "INSERT OR IGNORE INTO seen_jobs (url, scanned_at) VALUES (?, ?)",
-                    (key, now),
-                )
-                saved += 1
-        db.commit()
-        db.close()
+        try:
+            for lead in leads:
+                key = lead.dedup_key
+                if key:
+                    db.execute(
+                        "INSERT OR IGNORE INTO seen_jobs (url, scanned_at) VALUES (?, ?)",
+                        (key, now),
+                    )
+                    saved += 1
+            db.commit()
+        finally:
+            db.close()
         return saved
