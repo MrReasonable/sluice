@@ -275,6 +275,15 @@ def _paged(endpoint, params: dict, item_key: str, max_results: int,
                 try:
                     lost = endpoint.list_next(request, response) is not None
                 except Exception:
+                    # Conservative value, but NOT a discarded cause. The bare `except` swallowed
+                    # HttpError (401/403/429/5xx), socket timeouts, SSL errors and a wrong
+                    # `list_next` contract alike, collapsing all of them to one bit -- and the
+                    # caller then emits a specific, possibly wrong diagnosis ("hit the cap,
+                    # narrow your query") for what was actually a transport blip on one advisory
+                    # request. With `truncated` now correctness-bearing, that blip becomes "the
+                    # interview was not booked", so the real reason has to be recoverable.
+                    _log.exception(
+                        "track: paging probe failed for %r; assuming items were lost", item_key)
                     lost = True
             return items[:max_results], lost
         if pages >= max_pages:

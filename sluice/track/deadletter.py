@@ -1,6 +1,16 @@
-"""Durable dead-letter for un-acted-on track proposals (#49). A `proposed`
-outcome is recorded here and re-surfaced every run until a human `confirm`s or
-`dismiss`es it -- the fix for "surfaced once, deduped by `seen`, then lost".
+"""Durable dead-letter for track work a human still has to do (#49). A row is recorded here
+and re-surfaced every run until a human `confirm`s or `dismiss`es it -- the fix for "surfaced
+once, deduped by `seen`, then lost".
+
+THREE kinds of row now live here, and the store knows the difference because `clear_lead`
+does. `ev_type` normally draws from classify's vocabulary (interview/offer/receipt/...) and
+means "a proposed STATUS change"; the two engine-authored kinds below do not:
+  - `EV_TYPE_FAILURE` -- the message could not be processed at all (#139).
+  - `EV_TYPE_CALENDAR` -- a calendar action we could not complete or verify, e.g. a
+    cancellation we could not match or an insert refused over a truncated window.
+A status advance resolves status proposals only, so `clear_lead` skips the other two. It used
+to delete everything filed against the lead, which silently discarded a "remove this from your
+calendar by hand" instruction when an unrelated rejection arrived weeks later.
 
 Failure semantics are DELIBERATELY ASYMMETRIC and load-bearing (this is the crux
 of #49, not a `SeenDb` copy). Every dead-lettered id is already in `seen`, so a

@@ -236,11 +236,16 @@ whichever neighbour it was written next to:
    producers: reconcile's own corroborated/below-floor path, and -- when
    deterministic matching finds nothing at all (tier `none`) while the LLM
    named a lead that is already in-flight -- an engine-level fallback that
-   records a dead-letter row and never writes. Un-acted-on proposals
-   are durably surfaced via `track/deadletter.py` -- a sqlite dead-letter
-   re-emitted every run until `track confirm`/`track dismiss` clears it, or a
-   lead's own proposals are cleared automatically when it auto-advances --
-   so a proposal never vanishes after a single report.
+   records a dead-letter row and never writes. Un-acted-on work is durably
+   surfaced via `track/deadletter.py` -- a sqlite dead-letter re-emitted every
+   run until `track confirm`/`track dismiss` clears it, or a lead's own
+   proposals are cleared automatically when it auto-advances -- so it never
+   vanishes after a single report. The store holds three kinds of row, not
+   just status proposals: a `failure` row for a message that could not be
+   processed at all, and a `calendar` row for a calendar action that could not
+   be completed or verified. An auto-advance clears a lead's STATUS proposals
+   only -- advancing to `rejected` does not remove a stale calendar entry, nor
+   make a failed message succeed.
 
 ## `onboard/` — a command package, not a sixth sub-app
 

@@ -58,9 +58,23 @@ def test_failures_is_a_list_of_TrackFailure_so_nothing_can_disagree():
     """
     rep = RunReport()
     assert isinstance(rep.failures, list)
-    f = TrackFailure("m1", "RuntimeError: boom")
-    assert str(f) == "m1: RuntimeError: boom"
+    f = TrackFailure("m1", "RuntimeError: boom", kind="RuntimeError")
     assert f.safe() == "m1 (RuntimeError)"
+    assert f.detail() == "m1: RuntimeError: boom"
+    # The DEFAULT rendering is the safe one. It used to be the full cause, so every natural
+    # `str(f)` / f-string / `_log.info("%s", f)` leaked message content by default -- while
+    # the type's own docstring explained at length why that content must not leave the box.
+    assert str(f) == f.safe(), "the default rendering must be the safe one"
+
+
+def test_safe_does_not_parse_the_kind_back_out_of_the_cause():
+    """`safe()` used to do `cause.split(":", 1)[0]`, a format contract with nothing guarding
+    it. A second producer written the obvious way -- `TrackFailure(mid, str(exc))` -- would
+    then emit free text up to the first colon straight to Telegram."""
+    f = TrackFailure("m1", "no lead matched Example Co - Staff Engineer: giving up")
+    assert f.safe() == "m1 (error)", (
+        f"an unset kind must degrade to a placeholder, never to message text: {f.safe()}")
+    assert "Example Co" not in f.safe() and "Staff Engineer" not in f.safe()
 
 
 def test_each_failed_message_is_NAMED_not_just_counted(_run, capsys):
