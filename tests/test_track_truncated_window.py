@@ -24,14 +24,26 @@ from sluice.track.ics import IcsEvent
 class _TruncatingClient:
     """A client whose window is short and SAYS so, like the real one after #137."""
 
-    def __init__(self, events=(), truncated=True):
+    def __init__(self, events=(), truncated=True, tag_truncated=False):
         self.events, self.truncated = list(events), truncated
+        self.tag_truncated = tag_truncated
         self.calls = 0
+        # Counted SEPARATELY from `calls`. The fetch-once test below asserts on the window
+        # call, and folding the tag query into the same counter would make that assertion
+        # read as a regression the moment #146's lookup was added -- an honest test breaking
+        # on an unrelated correct change is how a suite gets its assertions loosened.
+        self.tag_calls = 0
         self.deleted, self.inserted, self.updated = [], [], []
 
     def list_events(self, t0, t1, max_results=2500):
         self.calls += 1
         return list(self.events), self.truncated
+
+    def find_events_by_private_property(self, name, value, max_results=2500):
+        self.tag_calls += 1
+        return ([e for e in self.events
+                 if (e.get("extendedProperties", {}).get("private", {}) or {}).get(name) == value],
+                self.tag_truncated)
 
     def insert_event(self, body):
         self.inserted.append(body)
@@ -126,6 +138,9 @@ def test_a_kwargs_shaped_client_is_not_silently_mis_unpacked():
         def list_events(self, *a, **k):
             return [], False
 
+        def find_events_by_private_property(self, *a, **k):
+            return [], False
+
         def insert_event(self, body):
             self.inserted.append(body)
             return "x"
@@ -133,3 +148,35 @@ def test_a_kwargs_shaped_client_is_not_silently_mis_unpacked():
     c = _Kwargs()
     assert sync_event(c, TrackConfig(), lead_slug="example-lead", ics=_ics()) == "created"
     assert c.inserted, "the insert must actually have happened"
+
+
+def test_a_client_MISSING_the_tag_query_fails_loudly_rather_than_skipping_it():
+    """Why #146's lookup is a new METHOD and not a new argument to `list_events`.
+
+    The swallowed-kwarg failure above is a property of ARGUMENTS: `**kwargs` absorbs one it
+    does not know, so the caller learns nothing. A method name cannot be absorbed that way --
+    a client that has not implemented it raises AttributeError at the call, which is the
+    failure being visible rather than the lookup being skipped.
+
+    Pinned because the tempting softening is one line: wrapping the call in
+    `getattr(client, "find_events_by_private_property", None)` and carrying on when it is
+    absent. That would restore the silence exactly -- every fake in this repo would quietly
+    stop exercising the fix while its tests went on passing.
+    """
+    import pytest
+
+    class _NoTagQuery:
+        def __init__(self):
+            self.inserted = []
+
+        def list_events(self, *a, **k):
+            return [], False
+
+        def insert_event(self, body):
+            self.inserted.append(body)
+            return "x"
+
+    c = _NoTagQuery()
+    with pytest.raises(AttributeError, match="find_events_by_private_property"):
+        sync_event(c, TrackConfig(), lead_slug="example-lead", ics=_ics())
+    assert not c.inserted, "and it must fail BEFORE writing anything"

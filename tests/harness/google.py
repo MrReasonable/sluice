@@ -33,6 +33,13 @@ class FakeGoogleClient:
     def list_events(self, *a, **k):
         return [], False
 
+    def find_events_by_private_property(self, *a, **k):
+        # #146's UID-keyed lookup. Present for the reason stated at the top of this file --
+        # a call the engine makes must land on a real method -- and this one is reached on
+        # EVERY invite whose window scan finds nothing of ours, which for a fake whose window
+        # is always empty is every invite it ever sees.
+        return [], False
+
     def insert_event(self, *a, **k):
         return "evt-1"
 

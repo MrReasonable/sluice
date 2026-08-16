@@ -1,5 +1,6 @@
 import os
 import stat
+from datetime import datetime, timezone
 
 import pytest
 
@@ -9,20 +10,35 @@ import sluice.track.google_client as gc
 class FakeGoogleClient:
     """Reference fake used across track tests; mirrors the real interface.
 
-    `search_messages` and `list_events` both return `(items, truncated)`, matching the real
-    client unconditionally. A fake that returns a bare list where the real one returns a pair
-    is not a fake, it is a second implementation -- and that divergence is exactly what let a
-    broken compatibility probe stay green.
+    `search_messages`, `list_events` and `find_events_by_private_property` all return
+    `(items, truncated)`, matching the real client unconditionally. A fake that returns a bare
+    list where the real one returns a pair is not a fake, it is a second implementation -- and
+    that divergence is exactly what let a broken compatibility probe stay green.
+
+    ONE event store, two queries with different REACH. `list_events` honours the window bounds
+    it is handed; `find_events_by_private_property` searches the whole store, because that is
+    what dropping timeMin/timeMax buys. Two independent buckets would have been less code and
+    a worse fake: a test could then place an event where only the tag query can see it while
+    its start sits INSIDE the window, which the real API cannot do, and the fake would have
+    certified a scenario that does not exist. #146 is precisely a disagreement between these
+    two reaches, so the fake has to be able to disagree honestly and no other way.
     """
-    def __init__(self, messages=None, events=None, truncated=False):
+    def __init__(self, messages=None, events=None, truncated=False, tag_truncated=False):
         self.messages = messages or {}
         self.events = list(events or [])
         self.truncated = truncated
+        # Truncation of the TAG query, separately settable. It means something different from
+        # a short window -- "more events carry this tag than we read" -- and `sync_event`
+        # treats the two differently, so one flag could not express both.
+        self.tag_truncated = tag_truncated
         self.inserted, self.updated, self.deleted = [], [], []
         # Every (time_min_iso, time_max_iso) pair the caller passed. The real API rejects a
         # bound without a UTC offset (RFC 3339), so the ARGUMENTS are behaviour a test must be
         # able to assert on, not just the return value.
         self.listed = []
+        # Every (name, value) pair the tag query was asked for, same reasoning: the filter
+        # string is an external contract, so it is behaviour, not an implementation detail.
+        self.tag_queries = []
 
     def search_messages(self, query, max_results=50):
         return list(self.messages.keys()), False
@@ -32,7 +48,15 @@ class FakeGoogleClient:
 
     def list_events(self, time_min_iso, time_max_iso, max_results=2500):
         self.listed.append((time_min_iso, time_max_iso))
-        return list(self.events), self.truncated
+        lo = datetime.fromisoformat(time_min_iso)
+        hi = datetime.fromisoformat(time_max_iso)
+        return [e for e in self.events if _within(lo, hi, e)], self.truncated
+
+    def find_events_by_private_property(self, name, value, max_results=2500):
+        self.tag_queries.append((name, value))
+        return ([e for e in self.events
+                 if (e.get("extendedProperties", {}).get("private", {}) or {}).get(name) == value],
+                self.tag_truncated)
 
     def insert_event(self, body):
         self.inserted.append(body); return "ev-new"
@@ -42,6 +66,25 @@ class FakeGoogleClient:
 
     def delete_event(self, event_id):
         self.deleted.append(event_id)
+
+
+def _within(lo, hi, event) -> bool:
+    """Is `event` inside [lo, hi]? An event this fake cannot place in time is visible to
+    EVERY window.
+
+    That default is the one that fails loudly. Dropping an unplaceable event instead would
+    make a window assertion pass because the fixture was malformed, which reads exactly like
+    the code being correct."""
+    raw = (event.get("start") or {}).get("dateTime") or (event.get("start") or {}).get("date")
+    if not raw:
+        return True
+    try:
+        at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    return lo <= at <= hi
 
 
 def test_module_imports_without_google_libs():

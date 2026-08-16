@@ -284,6 +284,52 @@ class RealGoogleClient:
         # shape (positional-only) that the probe handles.
         return items, truncated
 
+    def find_events_by_private_property(self, name, value, max_results=None):
+        """Every event carrying `extendedProperties.private[name] == value`, as
+        `(items, truncated)` -- across pages, capped, and with NO TIME WINDOW.
+
+        The missing window is the entire point. `list_events` centres its bounds on the
+        invite's CURRENT start, so an event we booked before a long reschedule sits outside
+        them and reads as absent, which `sync_event` acts on by inserting a duplicate (#146).
+        A tag is not a time, so asking by tag is not bounded by one. `timeMin`/`timeMax` are
+        optional on `events.list` -- `calendarId` is the only required parameter -- so omitting
+        them is the documented shape, not a trick.
+
+        `privateExtendedProperty` is spelled `propertyName=value` and matches only PRIVATE
+        extended properties, which is where `_event_body` writes our tag. Confirmed against
+        Google's own discovery document for `calendar/v3` (revision 20260810) -- the same
+        artefact `googleapiclient.discovery.build` constructs this very method from, so a
+        misspelled parameter NAME cannot fail quietly: the built method raises TypeError for an
+        unknown keyword, and a value carrying no `=` is a 400. What no offline check can settle
+        is the MATCHING behaviour, and that is answered structurally rather than by faith --
+        `_find_ours_anywhere` is written so that a filter matching nothing costs nothing.
+
+        `singleEvents=True` to match `list_events`, and that is load-bearing rather than
+        cosmetic: `sync_event` runs the same `_find_ours` over both result sets and then calls
+        `update_event`/`delete_event` on whatever id it finds. If the two settings disagreed,
+        one search would hand back an expanded instance and the other the recurring parent, so
+        the same UID would resolve to a different id depending on which search found it -- and
+        a delete aimed at the parent takes out the entire series."""
+        max_results = self.calendar_max_events if max_results is None else max_results
+        items, truncated = _paged(
+            self._cal_svc().events(),
+            # 250 is the API's per-REQUEST page size, unrelated to our total cap.
+            dict(calendarId="primary", privateExtendedProperty=f"{name}={value}",
+                 singleEvents=True, maxResults=250),
+            "items", max_results)
+        if truncated:
+            # Deliberately NOT "reduce calendar_lookahead_days", the advice its `list_events`
+            # twin gives: there is no window here to narrow, so repeating that line would send
+            # the operator to a knob that cannot affect this call. The `value` stays out for
+            # the reason `search_messages` states -- it is parsed from an inbound invite, and a
+            # log line travels further than the mailbox does. The KNOB is what makes it
+            # actionable.
+            _log.warning(
+                "track: the %s tag query returned more than %d events -- our own entry may be "
+                "off-page, which reads as absent. Raise track.calendar_max_events.",
+                name, max_results)
+        return items, truncated
+
     def insert_event(self, body):
         return self._cal_svc().events().insert(calendarId="primary", body=body).execute()["id"]
 
