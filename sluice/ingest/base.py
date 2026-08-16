@@ -121,6 +121,22 @@ def _demash_company(company: str, location: str) -> str:
     return company
 
 
+def _sized(value):
+    """`value` if it has a length, else an empty list.
+
+    `health_hint` normalises `raw` to a dict, which makes `raw.get(...)` safe and says nothing
+    about what comes back. A payload carrying `None` or a scalar under the count key therefore
+    raised `TypeError` from `len()` -- inside the very expression written to tolerate a
+    malformed payload. Latent: no shipped source emits that shape today.
+
+    `isinstance(list | tuple)`, NOT `hasattr("__len__")`. A STRING has a length, so the
+    permissive form counted `{"result": "text"}` as four rows -- swapping a crash for a
+    plausible wrong number, which is worse. The value is a list of extracted rows or it is
+    not a payload we can count.
+    """
+    return value if isinstance(value, (list, tuple)) else []
+
+
 def _row_to_lead(source: str, search: Search, row: dict, extra: dict | None) -> Lead:
     """Map an extractor row {title, company?, location?, link, salary?} to a Lead.
     Source-level `extra` sets defaults; the search's own params override them (so
@@ -262,7 +278,10 @@ class BrowserListSource:
         # was unreachable. Three guards that add up to no tolerance at all.
         raw = raw if isinstance(raw, dict) else {}
         hint = {
-            "count": len(raw.get("result", [])),
+            # `_sized` not `len(...)` directly: normalising `raw` guarantees a DICT,
+            # not that the value under the payload key is sized. `{"result": None}`
+            # raised TypeError straight past the tolerance the line above exists for.
+            "count": len(_sized(raw.get("result"))),
             "landed_host": _host(raw.get("landed", "")),
             "requested_host": _host(raw.get("requested", "")),
             "markers": {},
@@ -369,7 +388,10 @@ class CarouselSource:
     def health_hint(self, raw: dict) -> dict:
         raw = raw if isinstance(raw, dict) else {}   # see BrowserListSource.health_hint
         hint = {
-            "count": len(raw.get("jobs", [])),
+            # `_sized` not `len(...)` directly: normalising `raw` guarantees a DICT,
+            # not that the value under the payload key is sized. `{"jobs": None}`
+            # raised TypeError straight past the tolerance the line above exists for.
+            "count": len(_sized(raw.get("jobs"))),
             "landed_host": _host(raw.get("landed", "")),
             "requested_host": _host(raw.get("requested", "")),
             "markers": {},

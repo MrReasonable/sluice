@@ -56,7 +56,7 @@ _REVIEWED_FIXTURE_IDENTITIES = frozenset({
     "Example Ltd", "Example Meridian", "Example MeridianRemote", "Example Northgate",
     "Example Systems", "Example Telemetry", "Example Tidal", "Foo", "Gamma",
     "Human Typed Co", "Widget", "X",
-    "a", "a1", "a2", "b", "b1", "b2", "blank", "c", "d", "example-lead", "indeed", "x",
+    "a", "a1", "a2", "b", "b1", "b2", "blank", "c", "d", "example-lead",
     # Escaping/injection fixtures — the backslashes are the point of the test.
     "Foo\\Bar Ltd", "Foo\\\\Bar Ltd", "Foo\\\\g<0>Bar", "Foo\\\\nBar",
 })
@@ -84,7 +84,13 @@ _COLLECTORS = (
     ("frontmatter company:", re.compile(r'company:\s*"([^"]*)"')),
     ("lead-note filename", re.compile(r'"([A-Za-z][^"\n]*? - [^"\n]*?\.md)"')),
     ("lead_slug= kwarg", re.compile(r'lead_slug="([^"\n]*)"')),
-    ("identity-first helper", re.compile(r'_(?:note|lead|vault_with|shortlist_with)\("([^"\n]*)"')),
+    # `(?<![A-Za-z0-9])` so the helper NAME must start here. Without it this matched the tail
+    # of `_row_to_lead("indeed", ...)` -- whose first argument is a SOURCE ID, not a lead
+    # identity -- and the roster carried `indeed` purely to silence that false positive. A
+    # sweep that has to be appeased with entries for things it misread is a sweep nobody can
+    # read the roster of.
+    ("identity-first helper",
+     re.compile(r'(?<![A-Za-z0-9])_(?:note|lead|vault_with|shortlist_with)\("([^"\n]*)"')),
 )
 
 

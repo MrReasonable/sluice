@@ -122,6 +122,32 @@ def test_a_degraded_config_stays_degraded_even_with_auth_sources():
     assert c.state == DEGRADED
 
 
+def _shipped_sources():
+    """Registered sources defined under `sluice.`, i.e. what an install actually ships.
+
+    `SourceRegistry` is a global that tests register into without cleanup, so an unfiltered
+    `all_sources()` can pick up another module's stray. Filtering by module states the
+    population these assertions are about rather than depending on which test ran first.
+    """
+    from sluice.ingest import sources as registry
+
+    return [s for s in registry.all_sources() if type(s).__module__.startswith("sluice.")]
+
+
+def _probe_capable_ids():
+    """The SAME predicate `Sluice.doctor` uses, not half of it.
+
+    Doctor derives its set with `isinstance(s, BrowserListSource) and s.auth_probe_js`; these
+    tests checked only the `auth_probe_js` half, so a non-list-shaped source declaring a probe
+    would make the expectation and the production behaviour disagree -- and the test would
+    report doctor as broken, or miss that it was.
+    """
+    from sluice.ingest.base import BrowserListSource
+
+    return {s.id for s in _shipped_sources()
+            if isinstance(s, BrowserListSource) and getattr(s, "auth_probe_js", None)}
+
+
 def test_doctors_resolved_user_agrees_with_what_the_client_actually_uses(monkeypatch):
     """Two readings of the same fact must not drift.
 
@@ -176,9 +202,7 @@ def test_the_report_names_the_REAL_auth_dependent_sources(monkeypatch):
     """
     from sluice.core.app import Sluice
     from sluice.core.config import Config
-    from sluice.ingest import sources as registry
-
-    expected = {s.id for s in registry.all_sources() if getattr(s, "auth_probe_js", None)}
+    expected = _probe_capable_ids()
     assert expected, "no source declares an auth probe -- this test has become vacuous"
 
     monkeypatch.delenv("CAMOFOX_SESSION", raising=False)
@@ -244,10 +268,8 @@ def test_the_report_does_not_name_sources_that_CANNOT_detect_a_logout(monkeypatc
     """
     from sluice.core.app import Sluice
     from sluice.core.config import Config
-    from sluice.ingest import sources as registry
-
-    capable = {s.id for s in registry.all_sources() if getattr(s, "auth_probe_js", None)}
-    incapable = {s.id for s in registry.all_sources()} - capable
+    capable = _probe_capable_ids()
+    incapable = {s.id for s in _shipped_sources()} - capable
     assert capable and incapable, "both halves must be non-empty or this proves nothing"
 
     monkeypatch.delenv("CAMOFOX_SESSION", raising=False)
