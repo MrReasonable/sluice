@@ -197,11 +197,18 @@ def _event_body(cfg, lead_slug, ics):
 
 
 def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
-    """One of: created | updated | cancelled | present | unresolved.
+    """One of: created | updated | cancelled | present | unresolved | foreign.
 
     `unresolved` is the answer to a question we could not ASK, or asked over a window we know
-    was incomplete -- distinct from `present`, which means we searched a complete window and
-    there was nothing of ours. Conflating them cost a cancelled interview its deletion and
+    was incomplete. `foreign` means we looked, found an event at that slot that sluice did NOT
+    create -- routinely the sender's own invite, auto-added by Google -- and deliberately left
+    it alone; the calendar work is therefore unfinished and a human has to look. Both are
+    distinct from `present`, which means we searched a complete window and there was nothing
+    of ours.
+
+    Keeping this list current is load-bearing, not tidiness: it is the contract every caller
+    branches on, and the paragraph below records what a value matching NO branch in reconcile
+    cost the last time it happened. Conflating them cost a cancelled interview its deletion and
     then consumed the message: reconcile mapped the old `present` to an action engine.run
     ignored, so no dead-letter row was written and `seen.add` ran anyway (#138).
 
