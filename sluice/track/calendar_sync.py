@@ -138,16 +138,14 @@ def _window(client, cfg, ics) -> tuple:
     after, so a 20-invite run could issue 400 sequential round trips against a 90-day window
     that `singleEvents=True` expands recurrences into.
 
-    `truncated` comes back because a SHORT window cannot answer "is there an event of ours".
-    A client that predates the kwarg simply reports not-truncated, which is the pre-existing
-    behaviour."""
-    bounds = _window_bounds(cfg, ics)
-    try:
-        return client.list_events(*bounds, return_truncated=True)
-    except TypeError:
-        # A Fetcher-shaped client without the kwarg (third-party, or a test fake). It cannot
-        # tell us, so assume complete -- the same answer it gave before this existed.
-        return client.list_events(*bounds), False
+    `truncated` comes back because a truncated result set cannot answer "is there an event of
+    ours" -- absence in a short read is not evidence of absence.
+
+    `list_events` returns the pair unconditionally, so there is nothing to probe for here. The
+    version that probed (`return_truncated=True` inside `try/except TypeError`) was broken: a
+    `**kwargs` client swallows an unknown kwarg instead of raising, so the except never ran and
+    the bare list fell through to this unpack. See `list_events` for the executed evidence."""
+    return client.list_events(*_window_bounds(cfg, ics))
 
 
 def _find_ours(events, ics):

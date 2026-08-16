@@ -130,17 +130,28 @@ class RealGoogleClient:
         on any busy window the already-processed messages consumed the cap and the unseen
         ones -- the entire point of the call -- never arrived. Gmail returns newest-first, so
         the ones starved out were the OLDEST unprocessed: exactly the set that had failed
-        before (#139)."""
+        before (#139).
+
+        Returns `(ids, truncated)`. ALWAYS a pair, never an opt-in: the first cut of this made
+        the calendar twin's pair conditional on a `return_truncated=True` kwarg with a
+        `try/except TypeError` fallback, and a `**kwargs`-shaped fake swallowed the kwarg
+        silently instead of raising -- so the caller unpacked a bare list. Two of the three
+        fakes in this repo are that shape. One return type, no probe, no fallback.
+
+        The `query` is deliberately NOT in the warning. It ends in `gmail_extra_query`, i.e.
+        the operator's own job-hunt domains and addresses, and `config.py` already sets the
+        rule for this: an exception or log message travels further (logs, bug reports) than
+        the config file does. Naming the KNOB keeps it actionable without the value."""
         items, truncated = _paged(
             self._gmail_svc().users().messages(),
             dict(userId="me", q=query, maxResults=min(max_results, 500)),
             "messages", max_results)
         if truncated:
             _log.warning(
-                "track: gmail search hit the %d-message cap for %r -- there are more matches "
-                "than this run will see. Narrow gmail_extra_query or shorten the window.",
-                max_results, query)
-        return [m["id"] for m in items]
+                "track: gmail search hit the %d-message cap -- there are more matches than "
+                "this run will see. Narrow track.gmail_extra_query or shorten the window.",
+                max_results)
+        return [m["id"] for m in items], truncated
 
     def get_message(self, message_id):
         g = self._gmail_svc()
@@ -176,9 +187,8 @@ class RealGoogleClient:
         return {"headers": headers, "body_text": body_text,
                 "thread_id": msg.get("threadId", ""), "attachments": attachments}
 
-    def list_events(self, time_min_iso, time_max_iso, max_results=2500,
-                    return_truncated=False):
-        """Every event in the window, across pages, capped at `max_results`.
+    def list_events(self, time_min_iso, time_max_iso, max_results=2500):
+        """Every event in the window as `(items, truncated)`, across pages, capped.
 
         A truncated page here is not a smaller answer, it is a WRONG one. `_find_ours` reads
         absence as "we never created this", so an event of ours sitting off-page makes
@@ -198,9 +208,17 @@ class RealGoogleClient:
                 max_results)
         # The CALLER decides what a short window costs. Logging it here and returning a bare
         # list is what let `_find_ours` read absence as "we never created this" -- the exact
-        # harm this method's own docstring describes. `return_truncated` is opt-in so every
-        # other Fetcher-shaped client (and the suite's fakes) keeps working unchanged.
-        return (items, truncated) if return_truncated else items
+        # harm this method's own docstring describes.
+        #
+        # ALWAYS a pair. This was an opt-in `return_truncated=True` kwarg with a
+        # `try/except TypeError` fallback for clients that predate it -- which does not work:
+        # a `**kwargs` fake SWALLOWS the unknown kwarg rather than raising, so no TypeError
+        # ever fires and the caller unpacks a bare list. Executed against this repo's own
+        # `tests/harness/google.py` it raised `ValueError: not enough values to unpack`, and
+        # with exactly two events in the window it silently bound `events` and `truncated` to
+        # two event dicts instead. The compatibility test missed it by using the one signature
+        # shape (positional-only) that the probe handles.
+        return items, truncated
 
     def insert_event(self, body):
         return self._cal_svc().events().insert(calendarId="primary", body=body).execute()["id"]

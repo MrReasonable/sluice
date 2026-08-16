@@ -79,13 +79,13 @@ def test_search_messages_reads_every_page(monkeypatch):
              {"messages": [{"id": "c"}], "nextPageToken": "t2"},
              {"messages": [{"id": "d"}]}]
     gmail = _GmailPaged(pages)
-    ids = _client_with(monkeypatch, gmail=gmail).search_messages("after:2026/01/01")
+    ids, _trunc = _client_with(monkeypatch, gmail=gmail).search_messages("after:2026/01/01")
     assert ids == ["a", "b", "c", "d"], "a truncated page was read as the complete set"
 
 
 def test_search_messages_stops_at_the_last_page(monkeypatch):
     gmail = _GmailPaged([{"messages": [{"id": "a"}]}])
-    assert _client_with(monkeypatch, gmail=gmail).search_messages("q") == ["a"]
+    assert _client_with(monkeypatch, gmail=gmail).search_messages("q") == (["a"], False)
     assert len(gmail.messages_ep.calls) == 1, "no nextPageToken means exactly one request"
 
 
@@ -98,7 +98,7 @@ def test_search_messages_is_bounded_so_a_runaway_cannot_hang_a_run(monkeypatch):
     """
     endless = [{"messages": [{"id": f"m{i}"}], "nextPageToken": "t"} for i in range(500)]
     gmail = _GmailPaged(endless)
-    ids = _client_with(monkeypatch, gmail=gmail).search_messages("q", max_results=10)
+    ids, _trunc = _client_with(monkeypatch, gmail=gmail).search_messages("q", max_results=10)
     assert len(ids) == 10
 
 
@@ -116,7 +116,7 @@ def test_list_events_reads_every_page(monkeypatch):
     pages = [{"items": [{"id": "e1"}], "nextPageToken": "t1"},
              {"items": [{"id": "e2"}]}]
     cal = _CalPaged(pages)
-    got = _client_with(monkeypatch, cal=cal).list_events("2026-01-01T00:00:00+00:00",
+    got, _trunc = _client_with(monkeypatch, cal=cal).list_events("2026-01-01T00:00:00+00:00",
                                                          "2026-03-01T00:00:00+00:00")
     assert [e["id"] for e in got] == ["e1", "e2"], (
         "our own tagged event sitting on page 2 would read as absent, so sync_event would "
@@ -126,7 +126,7 @@ def test_list_events_reads_every_page(monkeypatch):
 def test_list_events_is_bounded_too(monkeypatch):
     endless = [{"items": [{"id": f"e{i}"}], "nextPageToken": "t"} for i in range(500)]
     cal = _CalPaged(endless)
-    got = _client_with(monkeypatch, cal=cal).list_events("a", "b", max_results=5)
+    got, _trunc = _client_with(monkeypatch, cal=cal).list_events("a", "b", max_results=5)
     assert len(got) == 5
 
 

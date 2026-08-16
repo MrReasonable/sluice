@@ -686,6 +686,20 @@ def cmd_track_run(args, config) -> int:
         print("  WARNING: the dead-letter store could not be written, so the lastrun "
               "watermark is being HELD. Every run will re-query a widening window until "
               "this is fixed.", file=sys.stderr)
+    if rep.search_truncated:
+        # The Gmail search capped out, so this run never saw some matching messages.
+        #
+        # This does NOT hold the watermark, and that is deliberate. `search_messages` caps
+        # BEFORE `engine.run` filters against `seen`, and Gmail returns newest-first, so
+        # holding it keeps `after:` wide -> more matches -> the same newest N -> the starved
+        # OLDEST stay starved, on a window that grows every run. Holding loses the same
+        # messages as advancing AND adds the unbounded-widening stall this sub-app has already
+        # been bitten by twice. Advancing at least self-heals. The honest position is that the
+        # over-cap messages are lost either way and the operator has to narrow the query.
+        print("  WARNING: the Gmail search hit its cap -- this run did NOT see every matching "
+              "message, and the ones it missed are the OLDEST. Narrow track.gmail_extra_query "
+              "or shorten the lookback; the missed messages will not be picked up later.",
+              file=sys.stderr)
     if rep.failures:
         # track was the ONLY sub-app that never notified (ingest, triage and cv all do), so
         # under cron a dropped interview invite reached nobody: the digest goes to a stderr
