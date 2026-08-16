@@ -151,3 +151,75 @@ def test_a_path_with_a_leading_double_slash_still_loads(tmp_path):
     doubled = "/" + str(real)          # //private/var/... -- same file, legal spelling
     assert doubled.startswith("//")
     assert "https://a/1" in SeenDb(doubled).load()
+
+
+# ---- a failed write must not leak the connection -------------------------------------------
+
+def _writers(db_path):
+    """Every SeenDb method that OPENS a connection to write. Enumerated so a third one is
+    covered by existing rather than by being remembered -- `load` had the `finally` and the
+    two writers did not, which is the miss this pins."""
+    from sluice.core.leads import Lead
+
+    s = SeenDb(db_path)
+    return {
+        "_init": lambda: s._init(),
+        "save": lambda: s.save([Lead(source="x", search="s", title="T",
+                                     url="https://example.invalid/1")]),
+    }
+
+
+# The SQL each writer is the only one to issue, so a fake can fail exactly one of them.
+_FAIL_SQL = {"_init": "CREATE TABLE", "save": "INSERT OR IGNORE"}
+
+
+@pytest.mark.parametrize("name", sorted(_FAIL_SQL))
+def test_a_raising_write_still_closes_the_connection(name, tmp_path, monkeypatch):
+    """An un-closed sqlite connection keeps its LOCK, so the next writer fails too -- and on
+    Windows the file cannot be replaced at all. `load` already used try/finally; these did
+    not, which is the same acquire-without-release shape review found in the browser tab.
+    """
+    import sqlite3
+
+    _fail_on = _FAIL_SQL[name]
+    opened = []
+    real_connect = sqlite3.connect
+
+    class _Conn:
+        def __init__(self, inner):
+            self._inner, self.closed = inner, False
+            opened.append(self)
+
+        def execute(self, sql, *a, **k):
+            # Only the statement under test fails. Failing EVERY execute made `_init` raise
+            # first, so `save` never opened its own connection and the `save` mutant survived
+            # while the test looked green -- the fixture made the mutant equivalent.
+            if _fail_on in sql:
+                raise sqlite3.OperationalError("disk I/O error")
+            return self._inner.execute(sql, *a, **k)
+
+        def commit(self):
+            return self._inner.commit()
+
+        def close(self):
+            self.closed = True
+            self._inner.close()
+
+    monkeypatch.setattr(sqlite3, "connect", lambda p, *a, **k: _Conn(real_connect(p, *a, **k)))
+    run = _writers(str(tmp_path / "seen.db"))[name]
+    opened.clear()
+    with pytest.raises(sqlite3.OperationalError):
+        run()
+    assert opened, "the test never opened a connection -- it is not exercising the writer"
+    assert all(c.closed for c in opened), (
+        f"{name} leaked {sum(not c.closed for c in opened)} of {len(opened)} connection(s)")
+
+
+def test_the_ordinary_write_path_still_works(tmp_path):
+    # The finally must not change the happy path.
+    from sluice.core.leads import Lead
+
+    s = SeenDb(str(tmp_path / "seen.db"))
+    assert s.save([Lead(source="x", search="s", title="T",
+                        url="https://example.invalid/1")]) == 1
+    assert s.load() == {"https://example.invalid/1"}
