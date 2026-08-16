@@ -4,6 +4,7 @@ Role preferences are personal. The suite must not encode any real person's targe
 or anti-target titles, so it generates its own fictional lists with a fixed seed:
 deterministic enough to assert on, and revealing nothing about whoever runs sluice.
 """
+import logging
 import os
 
 import pytest
@@ -67,6 +68,23 @@ def _pin_paths(tmp_path, monkeypatch):
     # That is precisely the 2026-08-15 incident config, on the machine most likely to have it.
     for var in ("CAMOFOX_USER", "CAMOFOX_SESSION", "CAMOFOX_URL"):
         monkeypatch.delenv(var, raising=False)
+    # SLUICE_LOG_LEVEL, same hole, and it needs TWO steps rather than one (#144).
+    #
+    # `get_logger` sets a logger's level exactly ONCE -- the whole body is guarded on
+    # `if not logger.handlers` -- so by the time any test runs, every `sluice.*` logger
+    # created at import already has the developer's exported level baked in. Deleting the
+    # env var only affects loggers created AFTER this point, which is almost none of them.
+    #
+    # Measured: `SLUICE_LOG_LEVEL=CRITICAL python -m pytest` gave 34 failures across ten
+    # files, because a bare `caplog.at_level("WARNING")` with no `logger=` only raises the
+    # ROOT logger's level, and `get_logger` sets `propagate = False`, so a suppressed record
+    # never reaches caplog's handler at all. Fixed here rather than by adding `logger=` to
+    # 29 call sites: the defect is that the suite reads an ambient env var, not that any one
+    # test forgot an argument, and a per-site fix leaves the next bare call to reintroduce it.
+    monkeypatch.delenv("SLUICE_LOG_LEVEL", raising=False)
+    for name, obj in list(logging.Logger.manager.loggerDict.items()):
+        if name.startswith("sluice.") and isinstance(obj, logging.Logger):
+            monkeypatch.setattr(obj, "level", logging.INFO, raising=False)
 
 
 def _title_pool(n=60):
