@@ -179,17 +179,26 @@ class BrowserListSource:
         tid = cam.create_tab(search.url)
         if not tid:
             return {"result": [], "landed": "", "requested": search.url, "error": "no-tab"}
-        sleep(self.wait)
-        if self.dismiss_js:
-            cam.evaluate(tid, self.dismiss_js)
-            sleep(0.5)
-        for _ in range(self.scrolls):
-            self._scroll_step(cam, tid)
-            sleep(0.5)
-        result = cam.evaluate(tid, self.extractor_js)
-        landed = cam.evaluate(tid, "location.href")
-        auth_missing, probe_error = self._read_auth_probe(cam, tid)
-        cam.close_tab(tid)
+        # try/finally from the moment the tab EXISTS. `Camofox._api` turns its own failures
+        # into `{"error": ...}` rather than raising, but nothing guarantees that of the
+        # transport underneath it, of an injected fake, or of `sleep`. And `_run_source`
+        # retries on `Exception`, so a raise here does not leak one tab -- it leaks one PER
+        # ATTEMPT, and an exhausted Camofox is exactly the outage that retired every source
+        # and produced this PR. `core/app.py` already sets the precedent for the doctor probe:
+        # "`finally`, not a `close_tab` call repeated on every branch".
+        try:
+            sleep(self.wait)
+            if self.dismiss_js:
+                cam.evaluate(tid, self.dismiss_js)
+                sleep(0.5)
+            for _ in range(self.scrolls):
+                self._scroll_step(cam, tid)
+                sleep(0.5)
+            result = cam.evaluate(tid, self.extractor_js)
+            landed = cam.evaluate(tid, "location.href")
+            auth_missing, probe_error = self._read_auth_probe(cam, tid)
+        finally:
+            cam.close_tab(tid)
         rows = result.get("result") if isinstance(result, dict) else None
         # `Camofox._api` captures every failure as {"error": ...} rather than raising, so an
         # evaluate that failed is indistinguishable from one that returned nothing unless we
@@ -290,23 +299,28 @@ class CarouselSource:
         tid = cam.create_tab(search.url)
         if not tid:
             return {"jobs": [], "landed": "", "requested": search.url, "error": "no-tab"}
-        sleep(self.wait)
+        # Same try/finally as BrowserListSource, for the same reason. `health_hint` was fixed
+        # in one implementation and not the other twice on this branch; a resource leak is no
+        # different, so both close together.
         jobs, seen = [], set()
-        for _ in range(self.max_jobs):
-            read = cam.evaluate(tid, self.read_js)
-            job = read.get("result") if isinstance(read, dict) else None
-            if not isinstance(job, dict):
-                break
-            sig = job.get("link") or job.get("title")
-            if not sig or sig in seen:  # "all caught up" / repeat
-                break
-            seen.add(sig)
-            jobs.append(job)
-            advanced = cam.evaluate(tid, _advance_js(self.advance_selector))
-            if not (isinstance(advanced, dict) and advanced.get("result")):
-                break
-            sleep(0.5)
-        cam.close_tab(tid)
+        try:
+            sleep(self.wait)
+            for _ in range(self.max_jobs):
+                read = cam.evaluate(tid, self.read_js)
+                job = read.get("result") if isinstance(read, dict) else None
+                if not isinstance(job, dict):
+                    break
+                sig = job.get("link") or job.get("title")
+                if not sig or sig in seen:  # "all caught up" / repeat
+                    break
+                seen.add(sig)
+                jobs.append(job)
+                advanced = cam.evaluate(tid, _advance_js(self.advance_selector))
+                if not (isinstance(advanced, dict) and advanced.get("result")):
+                    break
+                sleep(0.5)
+        finally:
+            cam.close_tab(tid)
         return {"jobs": jobs, "landed": search.url, "requested": search.url}
 
     def parse(self, raw: dict, search: Search) -> list:

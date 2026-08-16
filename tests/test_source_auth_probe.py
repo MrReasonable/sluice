@@ -34,6 +34,7 @@ class _Cam:
         self.rows, self.probe_result = rows, probe_result
         self.evaluated = []      # (tid, expr)
         self.tabs_opened = 0
+        self.closed = 0          # every tab opened must be closed, even on a raise
 
     def create_tab(self, url=""):
         self.tabs_opened += 1
@@ -51,6 +52,7 @@ class _Cam:
         return {}
 
     def close_tab(self, tid):
+        self.closed += 1
         return {}
 
 
@@ -383,3 +385,52 @@ def test_the_conformance_sweep_actually_sees_the_overriding_sources():
                   if type(s).health_hint not in (BrowserListSource.health_hint,
                                                  CarouselSource.health_hint)]
     assert overriders, "no overriding health_hint reached the sweep -- it cannot catch one"
+
+
+# ---- a raised evaluation must not leak the tab ---------------------------------------------
+
+@pytest.fixture
+def _no_prefetch_probes(monkeypatch):
+    """Neutralise any network pre-check a source runs before opening its tab.
+
+    `workinstartups` HEAD-checks for a 429 first, which `conftest` rightly blocks as DNS.
+    Patched across every source module that has one rather than excluding that source, so the
+    sweep keeps covering it -- excluding the awkward member is how a sweep quietly stops being
+    a sweep.
+    """
+    import sys
+
+    for src in _every_registered_source():
+        mod = sys.modules.get(type(src).__module__)
+        if mod is not None and hasattr(mod, "head_rate_limited"):
+            monkeypatch.setattr(mod, "head_rate_limited", lambda _url: None)
+
+
+@pytest.mark.parametrize("src", _every_registered_source(), ids=lambda s: s.id)
+def test_a_RAISING_evaluate_still_closes_the_tab(src, _no_prefetch_probes):
+    """`_run_source` retries on `Exception`, so a leaked tab is leaked once PER ATTEMPT.
+
+    `Camofox._api` turns its own failures into `{"error": ...}` rather than raising, which is
+    why this never showed up in practice -- but nothing guarantees that of the transport
+    underneath it, an injected fake, or `sleep`. And the failure mode is the one that produced
+    this whole PR: an exhausted Camofox, with every source reporting an unexplained zero.
+
+    Swept over the registry rather than the two classes, because `fetch` is a protocol member
+    and this branch has already fixed one implementation and not its twin twice.
+    """
+    class _Boom(_Cam):
+        def evaluate(self, tid, expr):
+            raise RuntimeError("transport blew up mid-evaluate")
+
+    cam = _Boom(rows=[])
+    with pytest.raises(RuntimeError):
+        src.fetch(_ctx(cam), Search("A", "http://x"))
+    assert cam.closed == cam.tabs_opened, (
+        f"{type(src).__name__} opened {cam.tabs_opened} tab(s) and closed {cam.closed}")
+
+
+def test_the_ordinary_path_still_closes_exactly_once():
+    # The finally must not double-close, which would be a second API call per fetch.
+    cam = _Cam(rows=[{"title": "T"}])
+    _src().fetch(_ctx(cam), Search("A", "http://x"))
+    assert cam.closed == 1 and cam.tabs_opened == 1
