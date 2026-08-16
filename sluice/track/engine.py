@@ -303,10 +303,13 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                     # this yourself" (see the else branch); a runnable and WRONG one is worse
                     # than either.
                     uid = getattr(ev.ics, "uid", "") or "?"
+                    # Deliberately does NOT name a cause. `unresolved` now covers two (no
+                    # DTSTART to search with, and a calendar window we know was truncated),
+                    # and an earlier version hardcoded the first -- which became a false
+                    # statement the moment the second was added.
                     hint = (f'(cancellation for uid "{uid}" could not be matched to a calendar '
-                            f'entry -- the invite carried no DTSTART, so nothing was searched. '
-                            f'Check your calendar and delete it by hand, then '
-                            f'`job-sluice track dismiss --id {mid}`)')
+                            f'entry, so nothing was deleted. Check your calendar and remove it '
+                            f'by hand, then `job-sluice track dismiss --id {mid}`)')
                 elif ev.lead_slug and target:
                     hint = f'job-sluice track confirm --lead "{ev.lead_slug}" --to {target}'
                 elif ev.candidates:
