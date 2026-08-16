@@ -25,7 +25,7 @@ _PROPOSE_TARGET = {"phone_screen": "phone_screen", "interview": "interview",
                    "rejection": "rejected", "offer": "offer", "receipt": "applied"}
 
 
-@dataclass
+@dataclass(repr=False)
 class TrackFailure:
     """One message that could not be processed, in two renderings.
 
@@ -75,6 +75,15 @@ class TrackFailure:
         the full text is available, but you have to ask for it by name."""
         return self.safe()
 
+    # `repr=False` on the dataclass, then repr == str. The GENERATED `__repr__` prints every
+    # field, `cause` included, so a safe `__str__` closed only the bare-object case:
+    # `RunReport.failures` is a LIST, and `_log.warning("%s", rep.failures)` -- the most
+    # natural debug line for a list-valued field -- renders each element's repr. `RunReport`
+    # is a dataclass too, so `"%s" % rep` did the same one level up. "Getting it wrong costs
+    # detail rather than causing a disclosure" was true only until the object went into a
+    # container, which is where objects usually are.
+    __repr__ = __str__
+
 
 @dataclass
 class RunReport:
@@ -89,9 +98,10 @@ class RunReport:
     # detail come off one field and cannot disagree. A bare int meant a cron run could
     # say "failures=1" and name nothing, on a stream nobody reads.
     failures: list = field(default_factory=list)
-    # The Gmail search hit its cap, so this run did not see every matching message.
-    # DELIBERATELY not part of app.py's `_save_lastrun` gate -- see the digest warning in
-    # cli.py for why holding the watermark on this makes it strictly worse.
+    # The Gmail search hit its cap, so this run did not see every matching message. HOLDS
+    # the lastrun watermark (see `app.py`'s `_save_lastrun` gate): advancing would move
+    # `after:` to today and put every starved message permanently out of reach, which is the
+    # opposite of recoverable.
     search_truncated: bool = False
     results: list = field(default_factory=list)
     open_proposals: list = field(default_factory=list)  # every currently-open dead-letter Entry
@@ -167,29 +177,40 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
     # run (the original reason), AND any stale row for a message being re-processed collides
     # with the new one on the message_id PRIMARY KEY.
     _open_ev_type = {e.message_id: e.ev_type for e in deadletter.open_entries()}
+    # message_ids this run has filed a row for. `_clear_stale_row` must not delete a row
+    # written moments earlier: the `needs_review` record runs BEFORE the clear and leaves
+    # `_open_ev_type[mid] == EV_TYPE_CALENDAR`, so a clear keyed only on the kind would
+    # remove the very row it just wrote.
+    _recorded_now = set()
 
     def _record_replacing(message_id, entry):
         """Record `entry`, REPLACING whatever row already holds that message_id.
 
-        The TWO proposal record sites go through this. The third -- the failure row at the
-        bottom of the per-message `except` -- deliberately does not: it is guarded on there
-        being no open failure row already, so it never collides with itself, and it must not
-        replace a proposal row that a LATER run will want. The first version of this helper
-        covered two sites while its own docstring said "BOTH", which read as a clean bill to
-        anyone auditing. The table is keyed on
-        message_id, so a row from an earlier run collides with the new one, and `record`
-        raises on a differing row rather than discarding it silently. Missing a site therefore
-        converts the old silent loss into a permanent stall: `deadletter_error` every run, so
-        the watermark never advances and `_gmail_query`'s `after:` widens without bound.
+        THREE record sites go through this: the quiet-receipt branch, the `proposed` branch,
+        and the `needs_review` calendar row. The fourth -- the failure row at the bottom of
+        the per-message `except` -- deliberately does not, because it must never replace a
+        proposal row carrying a runnable `confirm` hint with a bare "failed"; it is guarded
+        instead on there being no open row at all.
+
+        (An earlier version of this docstring said "BOTH", then "the TWO proposal record
+        sites", while the count was three and then four. A helper that exists to stop a site
+        being missed is the worst possible place to miscount the sites.)
+
+        The table is keyed on message_id, so a row from an earlier run collides with the new
+        one, and `record` raises on a differing row rather than discarding it silently.
+        Missing a site converts the old silent loss into a permanent stall: `deadletter_error`
+        every run, so the watermark never advances and `_gmail_query`'s `after:` widens
+        without bound.
 
         Scoped to ANY stale row, not just `failure`. A proposal row differs between runs
         whenever its `proposal` string embeds a model confidence, which is the routine shape
         of a re-processed message, and that hit the raise just as hard."""
         _dl_write(rep, lambda: deadletter.record(entry, replace=message_id in _open_ev_type))
         _open_ev_type[message_id] = entry.ev_type
+        _recorded_now.add(message_id)
 
-    def _clear_stale_failure(message_id):
-        """A message that PROCESSED has resolved its failure row, whatever the outcome was.
+    def _clear_stale_row(message_id):
+        """A message that PROCESSED has resolved its ENGINE-authored row, whatever the outcome.
 
         The clear used to live inside the record helper, so it reached the two outcomes that
         record a row and missed `applied` and `skipped`. On those, a row from one transient
@@ -199,10 +220,28 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
         an operator learns to ignore the real one.
 
         `clear_lead` cannot do this: the failure Entry is written with `lead=""`, so a
-        lead-keyed clear structurally cannot reach it."""
-        if _open_ev_type.get(message_id) == EV_TYPE_FAILURE:
+        lead-keyed clear structurally cannot reach it.
+
+        BEST-EFFORT, unlike every other dead-letter write here. This runs at the very end of a
+        message that SUCCEEDED -- the status advance and the calendar write have both already
+        landed -- so re-raising into the per-message `except` would report a fully-applied
+        message as a failure and skip `seen.add`. Next run then re-processes an advance that
+        has already happened, and for a terminal target `can_advance` refuses, filing a row
+        whose hint is a `confirm` command that can never succeed. `deadletter_error` is still
+        set (the watermark still holds, which is the part that matters); only the raise is
+        swallowed."""
+        # A row filed by THIS run is not stale. Without this the `needs_review` record
+        # above -- which runs first and leaves EV_TYPE_CALENDAR in `_open_ev_type` --
+        # would be deleted by the clear a few lines later.
+        if message_id in _recorded_now:
+            return
+        if _open_ev_type.get(message_id) not in (EV_TYPE_FAILURE, EV_TYPE_CALENDAR):
+            return
+        try:
             _dl_write(rep, lambda m=message_id: deadletter.clear_id(m))
             _open_ev_type.pop(message_id, None)
+        except Exception:
+            _log.exception("track: could not clear the stale row for %s", message_id)
     for mid in ids:
         if mid in seen:
             continue
@@ -338,7 +377,13 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
             elif res.action == "proposed":
                 rep.proposed += 1
                 target = _PROPOSE_TARGET.get(ev.type, "")
-                if res.proposal == "cancel-unresolved":
+                # `startswith`, not an equality on one reason code. `reconcile` now emits
+                # `cancel-unresolved` AND `cancel-foreign`, and matching one literal is
+                # how the second reason would inherit `_PROPOSE_TARGET` and hand the
+                # operator a `confirm --to interview` for an interview that was
+                # cancelled -- the exact runnable-and-wrong hint this branch exists to
+                # prevent.
+                if (res.proposal or "").startswith("cancel-"):
                     # MUST NOT inherit _PROPOSE_TARGET. `ev.type` for a cancelled interview
                     # invite is still "interview", so the generic branch handed the operator
                     # `confirm --to interview` -- a runnable command that BOOKS the thing that
@@ -373,7 +418,8 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                               # A cancel we could not match is a CALENDAR row, not a status
                               # proposal, so an unrelated later advance on the same lead does
                               # not `clear_lead` away the "remove it by hand" instruction.
-                              ev_type=(EV_TYPE_CALENDAR if res.proposal == "cancel-unresolved"
+                              ev_type=(EV_TYPE_CALENDAR
+                                       if (res.proposal or "").startswith("cancel-")
                                        else ev.type),
                               proposal=res.proposal or ev.type, hint=hint,
                               first_seen=today, times_surfaced=1)
@@ -411,7 +457,7 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                 # Whatever the outcome was, this message PROCESSED, so any failure row from an
                 # earlier run is resolved. Here rather than in the record helper, because the
                 # `applied` and `skipped` outcomes record nothing and were therefore missed.
-                _clear_stale_failure(mid)
+                _clear_stale_row(mid)
                 seen.add(mid)
         except GoogleAuthError:
             rep.auth_error = True
@@ -435,7 +481,19 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
             # FAILURE durable instead, with the machinery #49 already built: the row
             # re-surfaces every run via bump_surfaced() and carries a dismiss lever.
             _log.exception("track: message %s failed: %s", mid, exc)
-            if not dry_run and _open_ev_type.get(mid) != EV_TYPE_FAILURE:
+            # ONCE PER MESSAGE, whatever row already holds it -- not just a failure row.
+            # Comparing against EV_TYPE_FAILURE let this through whenever the open row was a
+            # PROPOSAL, and `record` (no `replace` here, deliberately) then raised on the
+            # differing row: `deadletter_error` every run, `_save_lastrun` skipped forever,
+            # `after:` frozen while now advances, the window growing without bound. Reachable
+            # any time a run records a proposal and dies before `_save_seen`, which runs after
+            # `run()` returns.
+            #
+            # NOT `replace=True`: the open proposal carries a runnable `confirm` hint, and
+            # replacing it with "failed" would discard the more useful row. The existing row
+            # keeps surfacing the message, and `rep.failures` + the digest + the notify still
+            # name the failure.
+            if not dry_run and mid not in _open_ev_type:
                 # Once per message. A deterministic failure fails again next run while its row
                 # is still open, and re-recording would turn one broken message into a growing
                 # pile of identical rows -- the digest getting noisier the longer the problem

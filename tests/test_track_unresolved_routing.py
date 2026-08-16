@@ -257,3 +257,109 @@ def test_a_real_start_still_reaches_the_calendar():
     ics = IcsEvent(uid="u1", summary="Screen",
                    start=datetime(2026, 7, 15, 10, 0, tzinfo=timezone.utc))
     assert sync_event(c, TrackConfig(), lead_slug="example-lead", ics=ics) == "created"
+
+
+# ---- a foreign event covering the slot is not "nothing to do" ------------------------------
+
+class _ForeignClient(_TruncatedClient):
+    """A window holding one UNTAGGED event near the invite's start.
+
+    `calendar_match_minutes` ships at 30, so this is not an exotic fixture: any ordinary
+    appointment within half an hour of the interview lands here.
+    """
+
+    def __init__(self):
+        super().__init__(truncated=False)
+        self.events = [{"id": "dentist",
+                        "start": {"dateTime": "2026-07-15T10:20:00+00:00"}}]
+
+
+def test_a_foreign_event_blocking_the_insert_REACHES_a_human():
+    """Executed by review: the interview was never booked, the status advanced, the note got
+    an interview_date, and the digest read `calendar_added=0 failures=0 open=0` -- identical
+    to a message carrying no invite at all."""
+    rep, dl, seen, note = _run(_ForeignClient())
+    assert rep.calendar_added == 0
+    assert "status: interview" in note, "the interview is real; the advance stays"
+    rows = [e for e in dl.open_entries() if e.message_id == "m1"]
+    assert rows, "an unbooked interview left no trace anywhere"
+    assert rows[0].proposal == "calendar-foreign"
+    assert rows[0].ev_type == EV_TYPE_CALENDAR
+
+
+def test_we_still_never_touch_the_foreign_event():
+    # The safety property. Reporting it must not turn into acting on it.
+    client = _ForeignClient()
+    _run(client)
+    assert not client.inserted and not client.updated and not client.deleted
+
+
+def test_an_ordinary_free_slot_still_books_and_stays_quiet():
+    rep, dl, _seen, _note = _run(_TruncatedClient(truncated=False))
+    assert rep.calendar_added == 1
+    assert [e for e in dl.open_entries() if e.message_id == "m1"] == []
+
+
+def test_a_failure_over_an_open_PROPOSAL_row_does_not_stall_the_watermark():
+    """The third record site's guard, which compared against the wrong thing.
+
+    Round 3 widened `_open_ev_type` from failure-rows-only to every kind, routed the two
+    proposal sites through `_record_replacing`, and left the failure site's guard as
+    `!= EV_TYPE_FAILURE`. So when the open row was a PROPOSAL the guard passed, `record` ran
+    without `replace`, and raised on the differing row: `deadletter_error` every run,
+    `_save_lastrun` skipped forever, `after:` frozen while now advances.
+
+    Entry condition is ordinary -- `_save_seen` runs after `run()` returns, so any kill or
+    timeout between recording a proposal and that save leaves exactly this state.
+    """
+    dl = _dl()
+    dl.record(Entry(message_id="m1", lead="Example Tidal - Analyst", candidates="",
+                    ev_type="interview", proposal="interview (conf 0.88)",
+                    hint='job-sluice track confirm --lead "Example Tidal - Analyst" --to interview',
+                    first_seen="2026-07-09", times_surfaced=3))
+
+    class _Poison(OneMsgClient):
+        def get_message(self, mid):
+            raise RuntimeError("deterministic poison")
+
+    rep, _dl2, seen, _note = _run(_Poison(), dl=dl, day="10")
+    assert rep.deadletter_error is False, (
+        "a failure landing on an open proposal row wedged the watermark permanently")
+    assert len(rep.failures) == 1, "the failure must still be reported"
+    rows = [e for e in dl.open_entries() if e.message_id == "m1"]
+    assert len(rows) == 1 and rows[0].ev_type == "interview", (
+        "the existing proposal carries a runnable confirm hint and must not be replaced "
+        'by a bare "failed"')
+    assert "m1" not in seen, "a failed message must stay retryable"
+
+
+def test_a_failing_CLEAR_does_not_report_a_successful_message_as_failed():
+    """The clear is housekeeping, so it must not be able to fail the message.
+
+    `_clear_stale_row` runs at the very end of a message that SUCCEEDED -- the status advance
+    and the calendar write have already landed. Routing it through `_dl_write`'s re-raise put
+    it in the per-message `except`, which appended a `TrackFailure`, pushed a Telegram alert
+    naming a message that worked, and skipped `seen.add`. The re-processed message then found
+    the lead already advanced, `can_advance` refused, and the run filed a proposal whose hint
+    was a `confirm` command `can_transition` refuses forever -- the un-runnable-hint shape #49
+    exists to prevent.
+
+    A failed CLEAR loses nothing: the row survives, re-surfaces, and `track dismiss --id`
+    still works. `deadletter_error` is still set, so the watermark still holds.
+    """
+    dl = _dl()
+    client = _FlakyOnce(truncated=False)
+    _run(client, dl=dl, day="10")
+    assert [e.ev_type for e in dl.open_entries() if e.message_id == "m1"] == [EV_TYPE_FAILURE]
+
+    def _boom(_message_id):
+        raise RuntimeError("readonly database")
+
+    dl.clear_id = _boom
+    rep, _dl2, seen, note = _run(client, dl=dl, day="11")
+
+    assert "status: interview" in note, "the message processed and the write landed"
+    assert rep.failures == [], (
+        "tidying up after a SUCCESSFUL message reported it as a failed one: "
+        f"{[f.detail() for f in rep.failures]}")
+    assert "m1" in seen, "a successful message must be consumed, not re-processed forever"

@@ -40,8 +40,14 @@ def test_update_on_reschedule_same_uid_new_time():
 def test_match_google_auto_added_by_start_proximity():
     # No sluice tag; Google already added the invite at the same start -> no duplicate,
     # and the foreign event must never be inserted/updated/deleted (safety).
+    #
+    # Reports `foreign`, not `present`. The SAFETY property is unchanged and is what the
+    # `not c.inserted` line pins; what changed is the report. `present` is defined as "we
+    # searched a complete window and there was nothing of ours", and this is the opposite --
+    # we found something and deliberately left it alone. Conflating the two meant an interview
+    # was never booked, the status advanced anyway, and `seen.add` consumed the message.
     c = FakeGoogleClient(events=[{"id": "g1", "start": {"dateTime": "2026-07-15T10:10:00+00:00"}}])
-    assert sync_event(c, TrackConfig(), lead_slug="example-lead", ics=_ics()) == "present"
+    assert sync_event(c, TrackConfig(), lead_slug="example-lead", ics=_ics()) == "foreign"
     assert not c.inserted and not c.updated and not c.deleted
 
 
@@ -49,13 +55,17 @@ def test_foreign_event_never_updated_on_reschedule():
     # An untagged event near the OLD time must not be updated when our ics has a new time.
     c = FakeGoogleClient(events=[{"id": "foreign", "start": {"dateTime": "2026-07-15T10:05:00+00:00"}}])
     new = _ics(start=datetime(2026, 7, 15, 10, 0, tzinfo=timezone.utc))
-    assert sync_event(c, TrackConfig(), lead_slug="example-lead", ics=new) == "present"
+    assert sync_event(c, TrackConfig(), lead_slug="example-lead", ics=new) == "foreign"
     assert not c.updated and not c.inserted and not c.deleted
 
 
 def test_foreign_event_never_deleted_on_cancel():
+    # Safety unchanged: we never delete an event we did not create. But the operator's
+    # calendar still shows a cancelled interview -- routinely the recruiter's own invite,
+    # which Google auto-adds from the mail -- so `foreign` routes it to a human instead of
+    # the quiet `present` that told them nothing.
     c = FakeGoogleClient(events=[{"id": "foreign", "start": {"dateTime": "2026-07-15T10:00:00+00:00"}}])
-    assert sync_event(c, TrackConfig(), lead_slug="example-lead", ics=_ics(cancelled=True)) == "present"
+    assert sync_event(c, TrackConfig(), lead_slug="example-lead", ics=_ics(cancelled=True)) == "foreign"
     assert not c.deleted
 
 

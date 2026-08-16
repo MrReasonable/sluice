@@ -197,13 +197,19 @@ def reconcile(event, note_by_slug, vault, cfg, client, dry_run=False, *, shortli
         r.calendar = sync_event(client, cfg, lead_slug=event.lead_slug, ics=event.ics, dry_run=dry_run)
         r.calendar_assumed_tz = _assumed_tz(r.calendar, event.ics)
         r.note = "cancellation"
-        if r.calendar == "unresolved":
-            # A cancel we could not resolve must reach a human. `action="calendar"` matches
+        if r.calendar in ("unresolved", "foreign"):
+            # A cancel we could not ACT ON must reach a human. `action="calendar"` matches
             # none of engine.run's branches, so it wrote nothing and let seen.add consume the
             # message -- the work undone and the evidence gone. `proposed` is the existing
             # route for "we could not act", and already carries a dismiss lever.
+            #
+            # BOTH outcomes, not just `unresolved`. `foreign` means something we did not
+            # create sits at that slot -- routinely the recruiter's own invite, auto-added by
+            # Google from the mail. We must never delete it, but the operator's calendar still
+            # shows a cancelled interview and `present` told them nothing. Sweeping the
+            # sibling producer in the same function, rather than the one that was reported.
             r.action = "proposed"
-            r.proposal = "cancel-unresolved"
+            r.proposal = f"cancel-{r.calendar}"
             return r
         r.action = "calendar"
         return r
@@ -214,17 +220,20 @@ def reconcile(event, note_by_slug, vault, cfg, client, dry_run=False, *, shortli
         if event.ics is not None and event.ics.start is not None:
             r.calendar = sync_event(client, cfg, lead_slug=event.lead_slug, ics=event.ics, dry_run=dry_run)
             r.calendar_assumed_tz = _assumed_tz(r.calendar, event.ics)
-            if r.calendar == "unresolved":
+            if r.calendar in ("unresolved", "foreign"):
                 # The cancel branch above learned this and the scheduling branch did not, so a
-                # refused insert (our event may be off-page in a truncated window, and
-                # inserting would duplicate it) advanced the status to `interview`, booked
-                # NOTHING, wrote no row, and let `seen.add` consume the message. `failures=0`,
-                # `calendar_added=0` -- indistinguishable from a message carrying no invite.
+                # refused insert advanced the status to `interview`, booked NOTHING, wrote no
+                # row, and let `seen.add` consume the message. `failures=0 calendar_added=0`
+                # -- indistinguishable from a message carrying no invite.
+                #
+                # `unresolved`: our event may be off-page in a truncated window, so inserting
+                # could duplicate it. `foreign`: an event we did not create already covers the
+                # slot. `calendar_match_minutes` defaults to 30, so ANY untagged event within
+                # half an hour -- a standup, a dentist appointment -- suppressed the booking.
                 #
                 # The advance itself is correct and stays: the interview genuinely was
-                # scheduled. What was missing is that anyone finds out the calendar entry is
-                # not there.
-                r.needs_review = "calendar-unresolved"
+                # scheduled. What was missing is that anyone finds out the entry is not there.
+                r.needs_review = f"calendar-{r.calendar}"
         r.materials_written = _stamp_materials(vault, note, event, dry_run=dry_run)
         target = _SCHEDULE_TARGET[event.type]
         if _status.can_advance(note.status, target):

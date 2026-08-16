@@ -75,9 +75,13 @@ def notify(text: str, channel: str | None = None, *, sender=None, config=None) -
 
     A str rather than a bool because the two failure modes want different words: nothing is
     configured (install-time, expected, quiet) versus configured and broken (an operator has
-    to look). Callers that ignore the return are unaffected; the truthiness of the old
-    `False` return is deliberately NOT preserved, so `if not notify(...)` fails loudly at
-    review rather than silently treating "failed" as success.
+    to look).
+
+    CAUTION: all three values are TRUTHY. An earlier version of this docstring claimed the
+    old `False` return's falsiness was "deliberately not preserved, so `if not notify(...)`
+    fails loudly" -- which is exactly backwards: a surviving `if not notify(...)` now takes
+    the success path in every state, including "failed". Compare against the STRING, never
+    against truthiness. Every call site in `sluice/` was swept when this changed.
 
     `sender` is injectable for tests -- a fake must return a bool, like the real one."""
     sender = sender or _telegram_sender(config)
