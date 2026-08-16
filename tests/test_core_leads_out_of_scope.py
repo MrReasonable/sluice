@@ -36,6 +36,9 @@ def test_none_when_two_or_more_matches_fall_outside_accepted():
     this function's -- it only adds a NEW outcome for the exactly-one-match case."""
     notes = [_note("Example Ltd - Example Role", "applied"),
             _note("Example Ltd - Example Role Two", "applied", role="Example Role Two")]
+    # Non-vacuity: this must be the TWO-match arm, not the zero-match arm --
+    # both return None.
+    assert sum(1 for n in notes if slug_matches(n, "Example Ltd")) == 2
     assert out_of_scope_verdict(notes, "Example Ltd", matcher=slug_matches,
                                 accepted=frozenset({"shortlist"})) is None
 
