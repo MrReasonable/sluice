@@ -130,26 +130,42 @@ def _window_bounds(cfg, ics):
     return (start - window).isoformat(), (start + window).isoformat()
 
 
-def _find_ours(client, cfg, ics):
+def _window(client, cfg, ics) -> tuple:
+    """`(events, truncated)` for this ics's window -- fetched ONCE per sync_event.
+
+    `_find_ours` and `_foreign_at_start` used to make the identical call with identical
+    bounds. That was 2 requests per invite before #137 lifted the page cap and up to 20
+    after, so a 20-invite run could issue 400 sequential round trips against a 90-day window
+    that `singleEvents=True` expands recurrences into.
+
+    `truncated` comes back because a SHORT window cannot answer "is there an event of ours".
+    A client that predates the kwarg simply reports not-truncated, which is the pre-existing
+    behaviour."""
+    bounds = _window_bounds(cfg, ics)
+    try:
+        return client.list_events(*bounds, return_truncated=True)
+    except TypeError:
+        # A Fetcher-shaped client without the kwarg (third-party, or a test fake). It cannot
+        # tell us, so assume complete -- the same answer it gave before this existed.
+        return client.list_events(*bounds), False
+
+
+def _find_ours(events, ics):
     """The event WE created for this ics UID (by our sluice-track-uid tag), or None.
     Never returns a foreign event."""
-    if ics.start is None:
-        return None
-    for ev in client.list_events(*_window_bounds(cfg, ics)):
+    for ev in events:
         if _uid_of(ev) == ics.uid:
             return ev
     return None
 
 
-def _foreign_at_start(client, cfg, ics):
+def _foreign_at_start(events, cfg, ics):
     """True if a NON-sluice event already sits within calendar_match_minutes of ics.start
     (e.g. Google auto-added the recruiter's own invite). Used only to avoid a duplicate
     insert; such events are NEVER mutated or deleted."""
-    if ics.start is None:
-        return False
     near = timedelta(minutes=cfg.calendar_match_minutes)
     tz = assumed_zone(cfg)[0]
-    for ev in client.list_events(*_window_bounds(cfg, ics)):
+    for ev in events:
         if _uid_of(ev) is None:
             est = _event_start(ev)
             if est and abs(_aware(est, tz) - _aware(ics.start, tz)) <= near:
@@ -181,22 +197,34 @@ def _event_body(cfg, lead_slug, ics):
 def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
     """One of: created | updated | cancelled | present | unresolved.
 
-    `unresolved` is the answer to a question we could not ASK -- distinct from `present`,
-    which means we looked and there was nothing of ours. Conflating them cost a cancelled
-    interview its deletion and then consumed the message: reconcile mapped the old `present`
-    to an action engine.run ignored, so no dead-letter row was written and `seen.add` ran
-    anyway (#138)."""
-    ours = _find_ours(client, cfg, ics)
+    `unresolved` is the answer to a question we could not ASK, or asked over a window we know
+    was incomplete -- distinct from `present`, which means we searched a complete window and
+    there was nothing of ours. Conflating them cost a cancelled interview its deletion and
+    then consumed the message: reconcile mapped the old `present` to an action engine.run
+    ignored, so no dead-letter row was written and `seen.add` ran anyway (#138).
+
+    HONEST LIMIT: one cause remains folded into `present`. An event that exists but sits
+    OUTSIDE the +/- calendar_lookahead_days window is indistinguishable from absence without a
+    UID-keyed query, so it is not guessed at here. Google's `events.list` accepts a
+    `privateExtendedProperty` filter, which would let `_find_ours` search by the
+    sluice-track-uid tag with no time window at all -- worth confirming and building on, and
+    it would make `unresolved` rare rather than routine."""
+    if ics.start is None:
+        # We cannot even build a window, so nothing was searched. A bare `METHOD:CANCEL` +
+        # `UID` VEVENT is legal RFC 5545 and lands here.
+        return "unresolved" if ics.cancelled else "present"
+    events, truncated = _window(client, cfg, ics)
+    ours = _find_ours(events, ics)
     if ics.cancelled:
         if ours:
             if not dry_run:
                 client.delete_event(ours["id"])
             return "cancelled"
-        if ics.start is None:
-            # We never searched. `_find_ours` bails on a missing start, so "no event of ours"
-            # here is not a finding -- and a bare `METHOD:CANCEL` + `UID` VEVENT, with no
-            # DTSTART, is legal and is exactly what some senders emit. Saying `present` to
-            # this is asserting a fact from an unasked question.
+        if truncated:
+            # We looked, but the window was SHORT and we know it -- our event may be one of
+            # the ones that did not fit. Saying `present` here asserts a fact from an
+            # incomplete search, which is how a cancelled interview stayed in the calendar
+            # with `seen.add` consuming the message and no trace left anywhere.
             return "unresolved"
         return "present"  # never delete a foreign event
     if ours:
@@ -209,8 +237,12 @@ def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
             _warn_if_floating(cfg, ics, "updated")
             return "updated"
         return "present"
-    if _foreign_at_start(client, cfg, ics):
+    if _foreign_at_start(events, cfg, ics):
         return "present"  # a foreign event already covers this slot; do NOT insert or touch it
+    if truncated:
+        # Our own entry may be off-page, so inserting would DUPLICATE it. Refusing and
+        # surfacing beats silently double-booking an interview.
+        return "unresolved"
     if not dry_run:
         client.insert_event(_event_body(cfg, lead_slug, ics))
     _warn_if_floating(cfg, ics, "created")

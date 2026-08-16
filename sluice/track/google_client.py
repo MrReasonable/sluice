@@ -176,7 +176,8 @@ class RealGoogleClient:
         return {"headers": headers, "body_text": body_text,
                 "thread_id": msg.get("threadId", ""), "attachments": attachments}
 
-    def list_events(self, time_min_iso, time_max_iso, max_results=2500):
+    def list_events(self, time_min_iso, time_max_iso, max_results=2500,
+                    return_truncated=False):
         """Every event in the window, across pages, capped at `max_results`.
 
         A truncated page here is not a smaller answer, it is a WRONG one. `_find_ours` reads
@@ -195,7 +196,11 @@ class RealGoogleClient:
                 "track: calendar window returned more than %d events -- an event of ours may "
                 "be off-page, which reads as absent. Reduce calendar_lookahead_days.",
                 max_results)
-        return items
+        # The CALLER decides what a short window costs. Logging it here and returning a bare
+        # list is what let `_find_ours` read absence as "we never created this" -- the exact
+        # harm this method's own docstring describes. `return_truncated` is opt-in so every
+        # other Fetcher-shaped client (and the suite's fakes) keeps working unchanged.
+        return (items, truncated) if return_truncated else items
 
     def insert_event(self, body):
         return self._cal_svc().events().insert(calendarId="primary", body=body).execute()["id"]
