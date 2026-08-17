@@ -135,7 +135,10 @@ def test_floating_start_is_booked_as_utc_but_says_so_loudly(caplog):
     # this input could not reach a write at all. It books at the guessed instant now, so the
     # guess has to be audible -- otherwise every signal (no failure, an ordinary-looking
     # entry) says success while the hour is wrong.
-    ics = parse_ics("BEGIN:VEVENT\r\nUID:u1\r\n"
+    # A UID shaped like one off a real invite -- these are counterparty-supplied and often
+    # carry the sender's domain, which is why the warning names the calendar ENTRY instead.
+    uid = "uid-4b2a@mail.example-tidal.invalid"
+    ics = parse_ics(f"BEGIN:VEVENT\r\nUID:{uid}\r\n"
                     "DTSTART;TZID=Nowhere/Notreal:20260715T110000\r\nEND:VEVENT")
     c = FakeGoogleClient(events=[])
     with caplog.at_level("WARNING", logger="sluice.track.calendar_sync"):
@@ -143,8 +146,15 @@ def test_floating_start_is_booked_as_utc_but_says_so_loudly(caplog):
     assert c.inserted[0]["start"]["timeZone"] == "UTC"      # the guess itself is unchanged
     said = [r.getMessage() for r in caplog.records if r.name == "sluice.track.calendar_sync"]
     assert any("Nowhere/Notreal" in m for m in said), f"the unresolved zone is not named: {said}"
-    assert any("u1" in m for m in said), f"the uid is not named: {said}"
     assert any("ASSUMING UTC" in m for m in said), f"the assumption is not stated: {said}"
+    # The ENTRY, by the id Google just returned. This used to pin the ics UID, on the reasoning
+    # that a warning telling you to go and verify an hour must say WHICH entry -- which is
+    # right, and an event id serves it better: it is what finds the entry in the calendar UI or
+    # the API, while the UID identifies the invite and cannot be searched for by hand. Swapping
+    # it also stops a domain-bearing UID reaching a log, the rule `search_messages` keeps its
+    # own query out of the log for.
+    assert any("ev-new" in m for m in said), f"the entry to verify is not named: {said}"
+    assert not any(uid in m for m in said), f"the warning leaked the inbound invite id: {said}"
 
 
 def _floating(uid="u1"):
