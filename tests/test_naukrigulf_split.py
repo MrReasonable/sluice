@@ -132,6 +132,29 @@ def test_recover_falls_back_to_url_key_when_link_is_absent():
     assert (out["title"], out["company"]) == ("Banker", "Acme")
 
 
+def test_recover_warns_when_the_url_seam_proves_a_split_but_recovery_finds_none(caplog):
+    # Row 26's exact production shape (task-5 review finding, #151): the mashing boundary is
+    # an en dash surrounded by spaces, not a camelCase letter pair, so the ORIGINAL
+    # `[a-z][A-Z]`-on-the-title heuristic could never see it as "looks mashed" -- yet the URL
+    # DOES carry the "-jobs-in-" seam, proving a split exists, and recovery still comes back
+    # with nothing. That combination (seam present, split absent) is the corrected condition:
+    # it is what should warn, regardless of what the title visually looks like.
+    row = {
+        "title": "Site Banker – Example Ventures",
+        "company": "",
+        "link": "https://example.com/site-banker-jobs-in-dubai-in-example-ventures-26",
+    }
+    with caplog.at_level("WARNING", logger="sluice.ingest.naukrigulf"):
+        out = _recover(row)
+    assert out["title"] == "Site Banker – Example Ventures"  # left mashed, per the ruling
+    assert out["company"] == ""
+    said = [r.getMessage() for r in caplog.records if r.name == "sluice.ingest.naukrigulf"]
+    assert said, "a URL-proven seam with no recoverable split must warn"
+    joined = " ".join(said)
+    assert row["link"] in joined, "the warning must name the URL that proved the seam"
+    assert row["title"] in joined, "the warning must name the title recovery gave up on"
+
+
 # --- _NaukrigulfSource.parse -------------------------------------------------
 
 def _search():
