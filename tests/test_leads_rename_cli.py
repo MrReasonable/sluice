@@ -285,6 +285,67 @@ def test_an_unreachable_deadletter_store_refuses_the_whole_apply_with_zero_renam
     assert not os.path.exists(os.path.join(leads, "Example Co - Example Role.md"))
 
 
+def test_the_deadletter_failure_remedy_names_the_old_slug_not_the_new_one(
+        tmp_path, capsys, monkeypatch):
+    """Task 10 review, Finding 1. `DeadLetterDb.rename_lead` is a single `UPDATE ... WHERE
+    lead=?` + `commit()` -- on ANY failure the rows are STILL filed under the OLD slug, never
+    the new one (see the facade's own docstring, `core/app.py`'s `rename` method). The printed
+    remedy's `track dismiss --lead` argument therefore MUST be `old_slug`: naming `new_slug`
+    sends the operator to a command that matches zero rows (`clear_lead` returns 0, `track
+    dismiss` prints "cleared 0 entries" and exits 0), reading as "handled" while the stray rows
+    silently remain.
+
+    A test that only checked *some* slug appeared would pass even with the old, wrong
+    `new_slug` wording -- so this asserts old_slug is quoted as the `--lead` ARGUMENT
+    specifically, and that new_slug is NOT quoted there (new_slug legitimately still appears
+    earlier in the line, in the `old -> new FAILED` phrase)."""
+    cfg, leads, _seen_db = _cfg(tmp_path, monkeypatch)
+    old_slug = "Unknown - Example Role"
+    new_slug = "Example Co - Example Role"
+    _make_deadletter_failed(leads, monkeypatch)
+
+    assert cmd_leads_rename(_Args(apply=True), cfg) == 1
+    err = capsys.readouterr().err
+    assert f'--lead "{old_slug}"' in err, (
+        f"remedy did not quote the OLD slug as the --lead argument: {err!r}")
+    assert f'--lead "{new_slug}"' not in err, (
+        f"remedy quoted the NEW slug as the --lead argument -- matches zero rows: {err!r}")
+    assert "OLD slug" in err
+
+
+def test_a_relocated_seen_db_refuses_apply_with_a_clear_message_not_a_traceback(
+        tmp_path, capsys, monkeypatch):
+    """Task 10 review, Finding 2 (plan-mandated). `Sluice.rename(apply=True)`'s preflight --
+    `load_track_config(refuse_relocated_seen_db=True)` -- refuses via `RuntimeError`
+    (`core/paths.py`'s `resolve(..., fatal=True)`) when `track.seen_db` has been left behind at
+    its pre-#80 legacy location and nothing names it explicitly. `main()` only catches
+    `ValueError` around this dispatch (`cli.py`), so without a catch in `cmd_leads_rename`
+    itself this would reach the operator as a raw traceback instead of the plan's required
+    "clear message" -- exactly the shape `StoreCannotRename` already gets. Same mechanism as
+    `tests/test_path_refusal.py`'s `legacy` fixture, reused here at the CLI layer."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("SEEN_DB", raising=False)
+    monkeypatch.delenv("SLUICE_CONFIG", raising=False)  # no explicit track.seen_db to configure
+    # A legacy track-seen.db sitting in the cwd -- `paths.resolve`'s legacy check is keyed on
+    # this relative literal (`_LEGACY["track-seen.db"] == "./track-seen.db"`).
+    (tmp_path / "track-seen.db").write_text("legacy dedup state", encoding="utf-8")
+
+    vault_dir = tmp_path / "vault"
+    cfg = Config(vault_dir=str(vault_dir))
+    leads = Sluice(cfg).store().leads_dir
+    os.makedirs(leads, exist_ok=True)
+    _seed(leads, "Unknown - Example Role.md", company="Example Co", role="Example Role")
+
+    assert cmd_leads_rename(_Args(apply=True), cfg) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("job-sluice: "), f"escaped as something other than a clean message: {err!r}"
+    assert "Traceback" not in err
+    assert "track-seen.db" in err
+    # The preflight fires BEFORE any note is renamed -- ZERO renames landed.
+    assert os.path.isfile(os.path.join(leads, "Unknown - Example Role.md"))
+    assert not os.path.exists(os.path.join(leads, "Example Co - Example Role.md"))
+
+
 def test_a_corrupt_deadletter_store_does_not_fail_the_report(tmp_path, monkeypatch):
     """`rename_report()` must be best-effort on the dead-letter side: a report command must not
     fail over a store it isn't writing."""

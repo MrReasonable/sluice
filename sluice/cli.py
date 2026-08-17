@@ -255,6 +255,8 @@ def cmd_leads_reconcile(args, config) -> int:
 
 
 def cmd_leads_rename(args, config) -> int:
+    import sqlite3
+
     from sluice.core.app import Sluice, StoreCannotRename
 
     try:
@@ -263,6 +265,24 @@ def cmd_leads_rename(args, config) -> int:
     except StoreCannotRename as exc:
         # A sentence and rc 2, not a traceback -- same shape as cmd_leads_reconcile's
         # StoreHasNoLayout arm.
+        print(f"job-sluice: {exc}", file=sys.stderr)
+        return 2
+    except (RuntimeError, sqlite3.DatabaseError) as exc:
+        # `Sluice.rename(apply=True)`'s preflight -- `load_track_config(refuse_relocated_seen_db=
+        # True)` then `dl.check_reachable()`, both BEFORE any note is renamed -- can raise either
+        # of these, and the plan asks for "refuse the whole operation with a clear message" for
+        # exactly this failure, not a stack trace. `RuntimeError` is `resolve(..., fatal=True)`
+        # (core/paths.py) firing when track.seen_db has relocated since #80;
+        # `sqlite3.DatabaseError` is `check_reachable()`'s probe DELETE hitting a corrupt or
+        # unreadable dead-letter store (`sqlite3.OperationalError` is a subclass, so it's covered
+        # too). `main()` only catches ValueError around this dispatch, so without this either one
+        # would reach the user as a raw traceback -- exactly what the preflight check exists to
+        # avoid, making its own justification pure prose. Same sentence-and-rc-2 shape as
+        # StoreCannotRename above (which is itself a RuntimeError subclass, but is caught by the
+        # more specific clause first since except clauses try in order).
+        #
+        # `cmd_track_confirm` has this identical gap for an unrelated, pre-existing command --
+        # deliberately left alone here; see #151 Task 10's review.
         print(f"job-sluice: {exc}", file=sys.stderr)
         return 2
 
@@ -287,8 +307,15 @@ def cmd_leads_rename(args, config) -> int:
             print(f"rename: {slug} -> {target}: renamed, but the OLD name reappeared -- a "
                   f"concurrent writer raced this move; investigate before trusting either note")
         for old_slug, new_slug, err in dl.get("failed", []):
+            # The vault-side rename already landed (see `Sluice.rename`'s docstring), but
+            # `rename_lead`'s `UPDATE ... WHERE lead=?` failed, so the rows are STILL filed
+            # under the OLD slug -- not the new one. The actionable slug in the remedy MUST be
+            # `old_slug`: printing `new_slug` sends the operator to run a `track dismiss` that
+            # matches zero rows (`clear_lead` returns 0), which prints "cleared 0 entries" and
+            # exits 0 -- reading as "handled" while the stray rows silently remain.
             print(f"rename: dead-letter migration {old_slug} -> {new_slug} FAILED: {err} -- "
-                  f'clear it by hand: job-sluice track dismiss --lead "{new_slug}"',
+                  f"rows remain filed under the OLD slug {old_slug!r}; clear them by hand: "
+                  f'job-sluice track dismiss --lead "{old_slug}"',
                   file=sys.stderr)
         # `unresolved` is DELIBERATELY a COUNT-ONLY on the summary line below, never listed
         # item-by-item here: it is typically hundreds of notes an operator cannot act on yet (the
