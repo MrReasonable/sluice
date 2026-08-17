@@ -32,14 +32,14 @@ def test_splits_a_multi_word_role():
 
 def test_splits_a_punctuation_heavy_role():
     role = "ETIC, AI Engineer - Manager"
-    assert (_split_mashed_title(f"{role}Vandelay", _url(_slug(role)))
-            == (role, "Vandelay"))
+    assert (_split_mashed_title(f"{role}Example Group", _url(_slug(role)))
+            == (role, "Example Group"))
 
 
 def test_splits_a_parenthesised_role():
     role = "Rail Systems Banker (High Speed Rail)"
-    assert (_split_mashed_title(f"{role}Praxis Corporation", _url(_slug(role)))
-            == (role, "Praxis Corporation"))
+    assert (_split_mashed_title(f"{role}Example Holdings", _url(_slug(role)))
+            == (role, "Example Holdings"))
 
 
 def test_splits_a_role_containing_the_literal_words_jobs_in():
@@ -82,6 +82,22 @@ def test_lowercase_opening_remainder_abstains():
     # No separator AND the "company" continuation does not open a fresh
     # capitalised token -- nothing proves a genuine second word started here.
     assert _split_mashed_title("Bankeracme", _url("banker")) is None
+
+
+def test_a_hyphen_at_the_boundary_abstains():
+    # "Banker-Acme" already carries an explicit separator -- the mashing signature this
+    # function recovers is the ABSENCE of one. Without the delimiter check, the boundary
+    # at i=7 (title[:7]="Banker-") slips past the whitespace check (a hyphen is not
+    # whitespace) and title[7]="A" satisfies the uppercase check, so the old code accepted
+    # ("Banker-", "Acme") -- a role with the delimiter left dangling on it.
+    assert _split_mashed_title("Banker-Acme", _url("banker")) is None
+
+
+def test_a_slash_or_dash_at_the_boundary_abstains():
+    # Same shape, the other delimiter characters this fix added.
+    assert _split_mashed_title("Banker/Acme", _url("banker")) is None
+    assert _split_mashed_title("Banker–Acme", _url("banker")) is None  # en dash
+    assert _split_mashed_title("Banker—Acme", _url("banker")) is None  # em dash
 
 
 def test_no_seam_in_url_abstains():
@@ -230,14 +246,15 @@ def test_fixture_recovers_previously_mashed_rows():
     l11 = lead_at("https://example.com/cluster-banker-jobs-in-dubai-in-massive-dynamic-11")
     assert (l11.title, l11.company) == ("Cluster Banker", "Massive Dynamic")
 
-    # Row 18: "ETIC, AI Engineer - ManagerVandelay" -- punctuation-heavy role.
-    l18 = lead_at("https://example.com/etic-ai-engineer-manager-jobs-in-cairo-in-vandelay-18")
-    assert (l18.title, l18.company) == ("ETIC, AI Engineer - Manager", "Vandelay")
+    # Row 18: "ETIC, AI Engineer - ManagerExample Group" -- punctuation-heavy role.
+    l18 = lead_at(
+        "https://example.com/etic-ai-engineer-manager-jobs-in-cairo-in-example-group-18")
+    assert (l18.title, l18.company) == ("ETIC, AI Engineer - Manager", "Example Group")
 
     # Row 19: parenthesised role.
     l19 = lead_at(
-        "https://example.com/rail-systems-banker-high-speed-rail-jobs-in-abu-dhabi-in-praxis-corporation-19")
-    assert (l19.title, l19.company) == ("Rail Systems Banker (High Speed Rail)", "Praxis Corporation")
+        "https://example.com/rail-systems-banker-high-speed-rail-jobs-in-abu-dhabi-in-example-holdings-19")
+    assert (l19.title, l19.company) == ("Rail Systems Banker (High Speed Rail)", "Example Holdings")
 
     # Row 25: "Banker II - Financial ServicesFabrikam".
     l25 = lead_at("https://example.com/banker-ii-financial-services-jobs-in-cairo-in-fabrikam-25")

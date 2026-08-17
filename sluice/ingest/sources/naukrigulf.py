@@ -22,7 +22,7 @@ from sluice.ingest.sources import register
 
 _log = get_logger("ingest.naukrigulf")
 
-_JS = """(()=>{const r=[];document.querySelectorAll('div.srp-tuple').forEach(c=>{const a=c.querySelector('a.info-position');const t=a?.textContent?.trim()||'';const co=c.querySelector('a.info-org')?.textContent?.trim()||'';const lo=c.querySelector('.info-loc,[class*="location"],[class*="loc"]')?.textContent?.trim()||'';const ln=a?.href||'';if(t&&t.length>5)r.push({title:t,company:co,location:lo||'UAE',link:ln,salary:''})});return r.slice(0,25)})()"""
+_JS = """(()=>{const r=[];document.querySelectorAll('div.srp-tuple').forEach(c=>{const a=c.querySelector('a.info-position');const cl=a?a.cloneNode(true):null;cl?.querySelectorAll('.info-org,[class*="org"]').forEach(e=>e.remove());const t=cl?.textContent?.trim()||'';const co=(c.querySelector('a.info-org')||a?.querySelector('.info-org,[class*="org"]'))?.textContent?.trim()||'';const lo=c.querySelector('.info-loc,[class*="location"],[class*="loc"]')?.textContent?.trim()||'';const ln=a?.href||'';if(t&&t.length>5)r.push({title:t,company:co,location:lo||'UAE',link:ln,salary:''})});return r.slice(0,25)})()"""
 
 
 def _slug(text: str) -> str:
@@ -43,6 +43,14 @@ def _url_has_seam(url: str) -> bool:
     return bool(_SEAM_RE.search(urlparse(url or "").path))
 
 
+# Hyphen, slash, en dash, em dash: explicit separators a title can already carry at the
+# cut point. The mashing signature this function recovers is the ABSENCE of any separator
+# ("BankerAcme"); a title like "Banker-Acme" already has one, and the boundary check must
+# reject it the same way it rejects a space -- otherwise "Banker-" is accepted as the role,
+# with the delimiter left dangling on it (CodeRabbit finding, PR #152 on 2926e99).
+_BOUNDARY_DELIMITERS = "-/–—"
+
+
 def _split_mashed_title(title: str, url: str) -> tuple[str, str] | None:
     """(role, company) recovered from a title where the board mashed them together with no
     separator, proven by the listing URL's own "...-jobs-in-<city>-in-<company>-..." seam.
@@ -55,8 +63,8 @@ def _split_mashed_title(title: str, url: str) -> tuple[str, str] | None:
     for i in range(1, len(title)):
         if _slug(title[:i]) not in candidates:
             continue
-        if title[i - 1].isspace():        # the mashing signature: no separating space
-            continue
+        if title[i - 1].isspace() or title[i - 1] in _BOUNDARY_DELIMITERS:
+            continue                      # the mashing signature: no separator at the cut
         if not title[i].isupper():        # company opens a fresh capitalised token
             continue
         best = i
