@@ -1,10 +1,10 @@
 """Tier 0 (#151, free, a regex over the role text itself), tier 1 (free, URL-pattern),
 tier 2 (a real, no-LLM page visit), then tier 3 (an LLM read of the SAME page data tier 2
-already fetched -- no new fetch) for a blank-company `needs_review` lead (#109, #120). All
-four abstain rather than guess: classify.py's blank-company branch already treats a blank
-company as the honest "unknown" state, and a wrong company would silently carry through
-keep -> judge -> apply -> a CV addressed to the wrong employer, which is worse than staying
-blank.
+already fetched -- no new fetch) for a blank/placeholder-company `needs_review` lead
+(#109, #120, #151). All four abstain rather than guess: classify.py's blank/placeholder-company
+branch already treats a blank/placeholder company as the honest "unknown" state, and a wrong
+company would silently carry through keep -> judge -> apply -> a CV addressed to the wrong
+employer, which is worse than staying blank.
 
 Tier 3 is qualitatively different from tiers 0, 1 and 2: they EXTRACT a candidate that is
 already, verbatim, on the page (or, for tier 0, in the role text a board already wrote);
@@ -445,7 +445,7 @@ def _host_label(url: str) -> str:
 
 def _is_board_name(candidate: str, fm: dict) -> bool:
     """H2: a board's OWN name (LinkedIn, Otta, Workable, ...) is frequently the MOST
-    repeated proper noun across a blank-company lead's evidence -- boards commonly
+    repeated proper noun across a blank/placeholder-company lead's evidence -- boards commonly
     emit a site-wide Organization JSON-LD node ahead of the page's own JobPosting
     node (see test_from_dossier_finds_a_jobposting_that_is_not_the_first_block
     above, built against exactly that shape). A grounded, plausible, WRONG answer

@@ -175,7 +175,7 @@ whichever neighbour it was written next to:
 2. **triage** (`sluice/triage/`): `classify.py` resolves obvious cases
    deterministically, for free; only kept, ambiguous leads are enriched
    and sent to an LLM judge (`judge.py`, `prompt.py`, over `core.backends`).
-   A lead classify() leaves at blank-company `needs_review` gets one
+   A lead classify() leaves at blank/placeholder-company `needs_review` gets one
    resolution attempt (`resolve.py`, #109/#120/#151) before that: a free
    regex over the role text's own trailing "<role> at <Company>" clause,
    tier 0, a free URL-pattern tier 1, an opt-in, no-LLM page-visit tier 2,
@@ -183,7 +183,7 @@ whichever neighbour it was written next to:
    read of that SAME page data, tier 3, on a SEPARATE backend from the
    judge's (always the cheap "fallback" role, regardless of `--backend`)
    -- so "for free" no longer describes the WHOLE classify pass
-   unconditionally: a blank-company lead can trigger a real page visit when
+   unconditionally: a blank/placeholder-company lead can trigger a real page visit when
    `triage.company_resolve_fetch` is on, and an LLM call when
    `triage.company_resolve_llm` is also on. `apply.py` writes verdicts
    back, skipping any lead already in the application lifecycle (its own

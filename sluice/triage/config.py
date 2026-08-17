@@ -60,7 +60,7 @@ class TriageConfig:
     claude_max_path: str = "claude"
     route_borderline: bool = False
     # Off by default (#109): gates the tier-2 (real, no-LLM page-visit) half of
-    # blank-company resolution independently of --no-llm. An unconfigured install
+    # blank/placeholder-company resolution independently of --no-llm. An unconfigured install
     # must not start opening real browser tabs against arbitrary third-party sites
     # for its whole needs_review backlog the moment it upgrades -- the same
     # abstain-by-default posture as lead_ttl_days/lead_layout. Tier 1 (free,
@@ -131,7 +131,7 @@ def load_triage_config(path: str | None = None) -> TriageConfig:
         raise ValueError(
             "triage.company_resolve_llm is on but triage.company_resolve_fetch is off. "
             "Tier 3 reads the page data tier 2 fetches, so on its own it can never "
-            "fire: the knob would be silently inert, every blank-company lead would "
+            "fire: the knob would be silently inert, every blank/placeholder-company lead would "
             "stay unresolved, and the config would say otherwise. Set "
             "company_resolve_fetch: true as well, or turn company_resolve_llm off.")
     # AFTER the loop, so `audit_jsonl: ""` in a config file resolves rather than

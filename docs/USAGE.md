@@ -80,7 +80,7 @@ Classify leads.
 | `--no-llm` | off | deterministic rules only; touches no backend at all, judge or resolution |
 
 Deterministic rules resolve obvious cases; ambiguous leads go to the LLM judge (skipped
-entirely under `--no-llm`). A blank-company `needs_review` lead gets one resolution
+entirely under `--no-llm`). A blank/placeholder-company `needs_review` lead gets one resolution
 attempt first: a free regex over the role text's own trailing `"<role> at <Company>"`
 clause, tier 0, then a free URL-pattern tier 1, an opt-in real page-visit tier 2
 (`triage.company_resolve_fetch`), then an opt-in LLM read of that SAME page data, tier 3

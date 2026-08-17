@@ -186,6 +186,6 @@ def classify(lead: dict, cfg) -> tuple[str, str]:
     # after every reject check above: a placeholder company must not short-circuit
     # a role/location/pay reject the lead would otherwise earn.
     if is_placeholder_company(company):
-        return "needs_review", "No company name; visit URL to identify"
+        return "needs_review", "Blank/placeholder company; visit URL to identify"
 
     return "keep", ""

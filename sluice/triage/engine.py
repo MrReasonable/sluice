@@ -1,7 +1,7 @@
 """Triage orchestrator: load -> classify -> resolve -> enrich -> judge -> apply -> audit.
 
 Deterministic classify resolves the obvious cases for free (no dossier, no LLM). A lead
-classify() leaves at blank-company needs_review gets ONE resolution attempt: a free
+classify() leaves at blank/placeholder-company needs_review gets ONE resolution attempt: a free
 regex-over-the-role-text tier 0 (#151), then a free URL-pattern tier 1 (#109), then --
 opt-in via cfg.company_resolve_fetch -- a real, no-LLM page-visit tier 2 (#109), reusing
 the same fetch/cache the enrich pass needs anyway, then -- opt-in via
@@ -62,7 +62,7 @@ class TriageReport:
     judged: int = 0
     backend: str | None = None
     failures: list = field(default_factory=list)
-    # #120: which tier actually filled a blank company, counted only where the
+    # #120: which tier actually filled a blank/placeholder company, counted only where the
     # write LANDED (or would have, under dry_run) -- the same discipline `_audit`
     # already applies to a classify decision, and for the identical reason: a count
     # that includes a write the vault refused claims a resolution that never
@@ -116,7 +116,7 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
     for note in notes:
         company = (note.fm.get("company") or "").strip()
         decision, reason = classify(note.fm, cfg)
-        # #109/#120: resolution attempted only for classify()'s OWN blank-company
+        # #109/#120: resolution attempted only for classify()'s OWN blank/placeholder-company
         # needs_review branch, never ahead of its existing title/location/pay
         # rejects (which don't depend on company at all) -- so a lead classify
         # would reject regardless never triggers a tier-2 page visit or a tier-3
@@ -194,7 +194,7 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
                                     "role": note.fm.get("role", ""),
                                     "url": note.fm.get("url", ""), "stage": "resolve",
                                     "tier": res.tier,
-                                    "reason": "blank company resolved from the posting"})
+                                    "reason": "blank/placeholder company resolved from the posting"})
                     decision, reason = classify(note.fm, cfg)
         if decision == "keep":
             report.counts["keep"] += 1
@@ -293,7 +293,7 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
                 report.failures.append(f"dossier {note.ref}: {e}")
                 continue
             # #109: get_or_build SNAPSHOTS these four off the lead at BUILD time, and the
-            # classify pass above resolves a blank company into note.fm AFTER that --
+            # classify pass above resolves a blank/placeholder company into note.fm AFTER that --
             # while the url-hash cache_key makes both passes land on the SAME entry,
             # which is exactly the double-fetch saving it was added for. So the cheaper
             # fetch and a stale judge input are the same fact, and the entry keeps
