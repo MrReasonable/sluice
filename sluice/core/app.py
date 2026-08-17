@@ -166,6 +166,15 @@ class StoreHasNoLayout(RuntimeError):
     turns it into a usage error (rc 2) rather than letting it reach the user as a traceback."""
 
 
+class StoreCannotRename(RuntimeError):
+    """The configured store has no filename-reconciliation pass, so `leads rename` has nothing to
+    do. Mirrors `StoreHasNoLayout` exactly, for the identical reason: `reconcile_names` (#151) is
+    a vault-only mechanism, not on the Store protocol -- a synthetic-id store has no on-disk
+    basename to disagree with a lead's frontmatter, so there is nothing here for it to implement.
+    Raised rather than silently reporting an empty sweep, and turned into a usage error (rc 2) by
+    the CLI rather than an uncaught traceback."""
+
+
 _STORE_SEAM = "store"
 _FETCHER_SEAM = "fetcher"
 _RENDERER_SEAM = "renderer"
@@ -930,6 +939,111 @@ class Sluice:
         report -- the same report-first shape as `dedupe_report`/`expire_report`, where a mistyped
         invocation prints a list rather than moving a hundred notes."""
         return self._layout_store()(apply=apply)
+
+    def _naming_store(self):
+        """The store, if it implements the filename-reconciliation pass (#151).
+
+        Mirrors `_layout_store` exactly, down to the getattr-not-isinstance reasoning: importing
+        the concrete Vault into the facade to type-test it would put the store implementation back
+        on the composition root's import path, which cli.py's lazy-import discipline exists to
+        keep off it. `reconcile_names` is deliberately NOT on the Store protocol for the same
+        reason `reconcile_layout` is not -- a note's on-disk BASENAME disagreeing with its
+        frontmatter is a vault mechanism, not an obligation every store shares."""
+        store = self.store()
+        fn = getattr(store, "reconcile_names", None)
+        if not callable(fn):
+            raise StoreCannotRename(
+                f"the configured store ({type(store).__name__}) cannot rename lead notes, so "
+                f"`leads rename` has nothing to do")
+        return fn
+
+    def rename_report(self) -> dict:
+        """The #151 filename REPORT: which lead notes' basenames disagree with their frontmatter.
+        Changes nothing on the vault side. See `Vault.reconcile_names`.
+
+        Additionally computes a BEST-EFFORT dead-letter PREVIEW under `report["deadletter"]`: for
+        stores that expose the mechanism, how many OPEN dead-letter rows are filed against a slug
+        this report would rename away. This is read-only on the dead-letter side too (no row is
+        migrated here -- see `rename(apply=True)` for the write), and it must NEVER fail the whole
+        report: a command that only READS is not entitled to fail over a store it isn't writing,
+        so any exception (a corrupt/unreadable dead-letter file, a malformed track config, ...)
+        becomes `report["deadletter"]["error"]` instead of propagating.
+
+        `refuse_relocated_seen_db=True` on the config load -- even on this read-only path -- is
+        deliberate rather than borrowed carelessly from the writers: it is what turns a RELOCATED
+        dead-letter store into a loud `deadletter.error` instead of a silent `pending: 0` that
+        looks identical to "nothing pending". Both outcomes are caught by the same except below,
+        so this choice costs nothing in safety and buys a truthful signal instead of a misleading
+        one."""
+        rep = self._naming_store()(apply=False)
+        rep["deadletter"] = {"pending": 0}
+        try:
+            from sluice.track.config import load_track_config
+            from sluice.track.deadletter import DeadLetterDb, deadletter_path
+            tcfg = load_track_config(refuse_relocated_seen_db=True)
+            dl = DeadLetterDb(deadletter_path(tcfg.seen_db))
+            old_slugs = {slug for slug, _target, _folder in rep["renames"]}
+            rep["deadletter"]["pending"] = sum(
+                1 for e in dl.open_entries() if e.lead in old_slugs)
+        except Exception as e:  # noqa: BLE001 -- best-effort preview; see docstring above.
+            rep["deadletter"]["error"] = str(e)
+        return rep
+
+    def rename(self, apply: bool = False) -> dict:
+        """Rename lead notes whose basename disagrees with their frontmatter (#151). `apply=False`
+        (the default) delegates to `rename_report()` -- one implementation of the read path,
+        never two that can drift apart, the same shape `reconcile`/`reconcile_report` do NOT
+        share only because `reconcile_report` predates this method's existence.
+
+        Under `apply=True` this ALSO migrates the dead-letter store's rows for every note actually
+        renamed (Task 9's `DeadLetterDb.rename_lead`): a dead-letter row is keyed on the lead's
+        SLUG, and a rename changes that slug, so a proposal filed against the OLD slug would
+        otherwise become permanently unreachable by `track confirm`/`track dismiss --lead` the
+        moment the note moves out from under it -- the #49 silent-loss class arriving through a
+        new door.
+
+        The dead-letter store's reachability is checked *before* any note is renamed, loaded the
+        same way `track()`/`track_confirm()` load it (`refuse_relocated_seen_db=True`,
+        `DeadLetterDb(deadletter_path(tcfg.seen_db))`) and probed with `check_reachable()` before
+        the first write, exactly as `track.engine.confirm` probes it before ITS status write: a
+        dead-letter store known to be unreachable refuses the WHOLE operation, and nothing below
+        that check runs -- zero notes renamed, not "some notes renamed, their proposals stranded
+        with no way to migrate them".
+
+        Once vault renames have actually happened, a PER-PAIR dead-letter migration failure is
+        isolated into `report["deadletter"]["failed"]` rather than aborting the loop: the rename
+        that already landed on disk is the more important of the two states to preserve. Rolling
+        it back because ITS dead-letter migration failed would trade a recoverable problem (a
+        stray dead-letter row still filed under the old slug, clearable by hand via `track
+        dismiss --lead <old slug>`) for the unrecoverable one this whole feature exists to
+        prevent -- a duplicate note minted on the next scrape because the rename never happened."""
+        if not apply:
+            return self.rename_report()
+
+        from sluice.track.config import load_track_config
+        from sluice.track.deadletter import DeadLetterDb, deadletter_path
+
+        fn = self._naming_store()
+        tcfg = load_track_config(refuse_relocated_seen_db=True)
+        dl = DeadLetterDb(deadletter_path(tcfg.seen_db))
+        # BEFORE any note is renamed -- see the docstring. A raise here propagates straight out
+        # of this method: nothing below has executed yet, so a known-unreachable dead-letter
+        # store leaves the vault completely untouched.
+        dl.check_reachable()
+
+        rep = fn(apply=True)
+        refiled = 0
+        failed = []
+        for old_slug, new_slug, _folder in rep["renames"]:
+            try:
+                refiled += dl.rename_lead(old_slug, new_slug)
+            except Exception as e:  # noqa: BLE001 -- isolate a per-pair failure; see docstring.
+                # Vault state (the rename that already happened) is preserved; only the
+                # dead-letter migration for THIS pair is reported as failed, so the loop can
+                # continue to the next rename rather than abandoning the whole sweep.
+                failed.append((old_slug, new_slug, str(e)))
+        rep["deadletter"] = {"refiled": refiled, "failed": failed}
+        return rep
 
     def health_report(self) -> list:
         """The per-source health REPORT `job-sluice health` and the MCP `health` tool

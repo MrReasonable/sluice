@@ -254,6 +254,76 @@ def cmd_leads_reconcile(args, config) -> int:
     return 1 if (rep["collisions"] or rep["skipped"] or rep["ambiguous"]) else 0
 
 
+def cmd_leads_rename(args, config) -> int:
+    from sluice.core.app import Sluice, StoreCannotRename
+
+    try:
+        app = Sluice(config)
+        rep = app.rename(apply=True) if args.apply else app.rename_report()
+    except StoreCannotRename as exc:
+        # A sentence and rc 2, not a traceback -- same shape as cmd_leads_reconcile's
+        # StoreHasNoLayout arm.
+        print(f"job-sluice: {exc}", file=sys.stderr)
+        return 2
+
+    dl = rep["deadletter"]
+    if args.json:
+        print(json.dumps(rep))
+    else:
+        # Human report to stdout (`| grep` stays useful, matches --json which is also stdout);
+        # the trailing summary to stderr -- the same split as `leads reconcile`.
+        verb = "renamed" if args.apply else "would rename"
+        for slug, target, folder in rep["renames"]:
+            print(f"rename: {verb} {slug} -> {target} ({folder})")
+        for slug, refs in sorted(rep["ambiguous"].items()):
+            print(f"rename: {slug}: NOT renamed -- {len(refs)} notes claim this slug "
+                  f"({', '.join(refs)}); merge them (job-sluice leads dedupe) or rename one "
+                  f"by hand")
+        for slug, target, reason in rep["collisions"]:
+            print(f"rename: {slug}: NOT renamed -- {target} is taken ({reason})")
+        for slug, reason in rep["skipped"]:
+            print(f"rename: {slug}: NOT renamed -- {reason}")
+        for slug, target in rep["resurrected"]:
+            print(f"rename: {slug} -> {target}: renamed, but the OLD name reappeared -- a "
+                  f"concurrent writer raced this move; investigate before trusting either note")
+        for old_slug, new_slug, err in dl.get("failed", []):
+            print(f"rename: dead-letter migration {old_slug} -> {new_slug} FAILED: {err} -- "
+                  f'clear it by hand: job-sluice track dismiss --lead "{new_slug}"',
+                  file=sys.stderr)
+        # `unresolved` is DELIBERATELY a COUNT-ONLY on the summary line below, never listed
+        # item-by-item here: it is typically hundreds of notes an operator cannot act on yet (the
+        # fix belongs at the ingest/resolution layer that still hands over a blank/sentinel
+        # company, not at this pass), and listing them would bury the handful of
+        # renames/collisions/skips/resurrected rows the operator CAN act on today. Do not "fix"
+        # this into a full per-item listing -- see
+        # tests/test_leads_rename_cli.py::test_unresolved_is_counted_not_listed_in_the_human_report.
+        summary = (f"rename: examined={rep['examined']} {verb}={len(rep['renames'])} "
+                   f"unresolved={len(rep['unresolved'])} ambiguous={len(rep['ambiguous'])} "
+                   f"collisions={len(rep['collisions'])} skipped={len(rep['skipped'])} "
+                   f"resurrected={len(rep['resurrected'])}")
+        if "pending" in dl:
+            summary += f" deadletter_pending={dl['pending']}"
+        if "refiled" in dl:
+            summary += f" deadletter_refiled={dl['refiled']}"
+        if dl.get("failed"):
+            summary += f" deadletter_failed={len(dl['failed'])}"
+        if "error" in dl:
+            summary += f" deadletter_error={dl['error']!r}"
+        if not args.apply:
+            summary += " (report only -- pass --apply to rename)"
+        print(summary, file=sys.stderr)
+    if not args.apply:
+        return 0
+    # Matches `leads reconcile`'s exit-code rule, widened to this pass's own extra buckets:
+    # `resurrected` (this pass's race-report bucket, `reconcile`'s `ambiguous` equivalent) and
+    # `deadletter["failed"]` both mean the user asked for a write and did not fully get it.
+    # `unresolved` does NOT count -- same treatment as `reconcile`'s `unknown`/`user_filed`: it
+    # is a state this pass is DESIGNED to leave alone, so counting it would make a correct run
+    # exit 1 forever.
+    return 1 if (rep["collisions"] or rep["ambiguous"] or rep["resurrected"]
+                or rep["skipped"] or dl.get("failed")) else 0
+
+
 def cmd_health(args, config) -> int:
     from sluice.core.app import Sluice
 
@@ -1335,6 +1405,27 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="actually move the notes this would otherwise only report")
     rc.add_argument("--json", action="store_true", help="machine-readable report")
     rc.set_defaults(func=cmd_leads_reconcile)
+
+    rn = leads.add_parser(
+        "rename",
+        help="report/rename lead notes whose filename disagrees with their frontmatter",
+        description="Report, or with --apply rename, each lead note whose on-disk BASENAME "
+                    "disagrees with its frontmatter company (#151) -- a note created with a "
+                    "blank/sentinel company, once triage backfills a real one, sits at a stale "
+                    "filename its own frontmatter no longer matches. Do NOT run --apply "
+                    "concurrently with a pipeline command (ingest/triage/cv/apply/track): a "
+                    "rename landing inside another writer's compare-and-set window re-creates "
+                    "the source at the OLD basename, leaving two notes where there was one. "
+                    "That state is reported under `resurrected` rather than prevented. A "
+                    "renamed note is found by the next scrape only once that scrape ALSO "
+                    "carries the correct company -- for a source not yet fixed at ingest, that "
+                    "guarantee lives entirely in seen.db (keyed on the listing URL, never the "
+                    "filename), and it disappears the moment seen.db is rebuilt or relocated.")
+    # No --dry-run: the default IS the dry run, same shape as `leads reconcile`/`dedupe`/`expire`.
+    rn.add_argument("--apply", action="store_true",
+                    help="actually rename the notes this would otherwise only report")
+    rn.add_argument("--json", action="store_true", help="machine-readable report")
+    rn.set_defaults(func=cmd_leads_rename)
 
     health = top.add_parser("health", help="per-source baseline + retire state")
     health.set_defaults(func=cmd_health)
