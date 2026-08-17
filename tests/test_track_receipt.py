@@ -1,6 +1,7 @@
 import pathlib
 import re
 from types import SimpleNamespace
+import pytest
 from sluice.track.config import TrackConfig
 from sluice.track.receipt import match_receipt, ReceiptMatch, _suffix_match
 
@@ -10,8 +11,12 @@ from sluice.track.receipt import match_receipt, ReceiptMatch, _suffix_match
 ATS = {"ats.example.invalid": "example-ats", "relay.example.invalid": "example-relay"}
 
 
-def _lead(slug, url, company="Example"):
-    return SimpleNamespace(slug=slug, fm={"url": url, "company": company})
+def _lead(slug, url, company="Example", applied_url=None):
+    # applied_url defaults to None (never a bare ""), matching how a real note's
+    # frontmatter reads when `apply record` ran without `--url`: the key is simply
+    # ABSENT, not present-and-empty -- `.fm.get("applied_url")` returns None either way,
+    # so the distinction is invisible to _lead_hosts, but None is the honest fixture.
+    return SimpleNamespace(slug=slug, fm={"url": url, "company": company, "applied_url": applied_url})
 
 
 def _dkim_pass(domain):
@@ -488,3 +493,127 @@ def test_authentication_alone_never_creates_a_match():
     m = match_receipt(_msg(frm="jobs@other.invalid", auth=_dkim_pass("other.invalid")),
                       _unauth_lead(), ATS)
     assert m == ReceiptMatch(None, "none", [])
+
+
+# ── applied_url as a second lead-side host (#136) ────────────────────────────
+#
+# apply/record.py (a DIFFERENT sub-app) stamps `applied_url` at apply time -- the URL
+# the user actually submitted to -- only when `apply record --url` supplied one. `url`
+# is still the ingest source, kept as a fallback because `applied_url` is optional.
+# Before this change the matcher read nothing but `url`, so a receipt from an
+# employer's own mail domain could never proof-match a lead that was scraped from a
+# multi-tenant board (which is most leads).
+
+
+def test_proof_via_applied_url_when_url_is_a_board():
+    # THE new capability: `url` sits on a shipped, multi-tenant board (so it alone
+    # could never reach proof -- see test_board_sourced_lead_is_never_proof_matched),
+    # but `applied_url` names the employer's own clean domain. A receipt sent directly
+    # from that domain, aligned, must now reach proof via the SECOND host.
+    cfg = TrackConfig()
+    board = _shipped(cfg.job_board_domains)
+    leads = [_lead("Alpha - Analyst", f"https://www.{board}/jobs/view/1111", company="Alpha",
+                   applied_url="https://alpha.example.invalid/apply")]
+    m = match_receipt(_msg(frm="jobs@alpha.example.invalid",
+                           auth=_dkim_pass("alpha.example.invalid")),
+                      leads, cfg.ats_relay_domains, cfg.job_board_domains)
+    assert m == ReceiptMatch("Alpha - Analyst", "proof", [])
+
+
+def test_multi_tenant_applied_url_still_withholds_proof():
+    # `applied_url` is not exempt from the multi-tenant exclusion just because it is the
+    # user's own recorded value -- a lead applied to THROUGH an ATS's own hosted form
+    # still has an ATS-relay applied_url, and a receipt sent from that same relay must
+    # degrade to corroboration like any other ATS-sent receipt, never reach proof.
+    cfg = TrackConfig()
+    ats_host = _shipped(cfg.ats_relay_domains)
+    leads = [_lead("Alpha - Analyst", "", company="Alpha",
+                   applied_url=f"https://{ats_host}/alpha/apply")]
+    m = match_receipt(_msg(frm=f"no-reply@{ats_host}", auth=_dkim_pass(ats_host),
+                           body="Alpha has received your application."),
+                      leads, cfg.ats_relay_domains, cfg.job_board_domains)
+    assert m.tier != "proof"
+    assert m.tier == "corroborated" and m.lead_slug == "Alpha - Analyst"
+
+
+def test_board_url_does_not_ride_in_on_a_clean_applied_url():
+    # THE critical regression case. A lead carries BOTH a multi-tenant board `url` AND a
+    # clean, employer-owned `applied_url` at once, and the receipt is sent from the
+    # BOARD's own host -- not the employer. It must NOT reach proof: the board host is
+    # the one that actually matched the sender, and it is exactly the shared,
+    # thousands-of-employers host the multi-tenant exclusion exists to withhold proof
+    # from. That the SAME lead also happens to carry an unrelated clean host must not
+    # launder the match.
+    #
+    # Constructed like test_lead_side_multi_tenant_check_is_not_redundant: the board key
+    # is a non-registrable "jobs.board.invalid", and the sender is its PARENT
+    # "board.invalid" -- not itself denylisted, so it only fails via `_hosts_match`'s
+    # bidirectional subdomain rule pairing it with the lead's flagged `url`. This is the
+    # shape that actually exercises the per-host pairing: a sender that passes ITS OWN
+    # `_is_multi_tenant` check outright would already be rejected by the OUTER
+    # `not _is_multi_tenant(sender, ...)` term regardless of anything on the lead side,
+    # and would witness nothing about the `any(...)` pairing under test here.
+    #
+    # Witnessed by hoisting the per-host multi-tenant check out of the `any(...)` in
+    # `match_receipt` -- that mutation must make this test fail. Confirmed by hand: with
+    # `host_proof = (not _is_multi_tenant(sender, ats, boards) and
+    # any(_hosts_match(sender, h) for h in _lead_hosts(lead)) and
+    # any(not _is_multi_tenant(h, ats, boards) for h in _lead_hosts(lead)))` -- multi-
+    # tenancy checked ONCE over "does ANY host clear it", decoupled from which host
+    # matched -- this test goes RED: the sender matches the board host, but the
+    # unrelated clean `applied_url` satisfies the hoisted-out clean-host check, and the
+    # lead wrongly reaches `proof`. Reverted after confirming.
+    boards = {"jobs.board.invalid": "example-board"}
+    leads = [_lead("Alpha - Analyst", "https://jobs.board.invalid/1", company="Alpha",
+                   applied_url="https://employer.example.invalid/apply")]
+    m = match_receipt(_msg(frm="noreply@board.invalid", auth=_dkim_pass("board.invalid")),
+                      leads, ATS, boards)
+    assert m.tier != "proof"
+
+
+def test_no_applied_url_still_reaches_proof_via_url_alone():
+    # Pre-existing contract, unchanged by the applied_url widening: a lead with no
+    # applied_url at all (never had `apply record --url` run against it -- roughly half
+    # of in-flight leads, per #136) must still reach proof via `url` exactly as it did
+    # before this change. `_lead_hosts` falls back to `url` whenever `applied_url` is
+    # absent, and this must stay green with zero change in behaviour.
+    leads = [_lead("Example - Analyst", "https://example.com/careers/1")]
+    m = match_receipt(_msg(frm="jobs@example.com", subject="Thanks for applying",
+                           auth=_dkim_pass("example.com")), leads, ATS)
+    assert m == ReceiptMatch("Example - Analyst", "proof", [])
+
+
+_MONOTONIC_LEADS = [
+    ("Alpha - Analyst", "alpha.example.invalid"),
+    ("Beta - Analyst", "beta.example.invalid"),
+]
+
+
+def _proof_set(boards):
+    """Which of _MONOTONIC_LEADS' slugs proof-match a message from their OWN aligned
+    sender, under this board denylist. Each lead is checked via its own single-lead
+    match_receipt call, its own message, its own sender -- combining both leads into one
+    shortlist would risk the ambiguous-match refusal masking the per-lead question this
+    helper exists to answer, which is membership in the proof set, not disambiguation."""
+    proof = set()
+    for slug, host in _MONOTONIC_LEADS:
+        lead = [_lead(slug, "", applied_url=f"https://{host}/apply")]
+        m = match_receipt(_msg(frm=f"jobs@{host}", auth=_dkim_pass(host)), lead, ATS, boards)
+        if m.tier == "proof":
+            proof.add(slug)
+    return proof
+
+
+@pytest.mark.parametrize("boards,expected", [
+    ({}, {"Alpha - Analyst", "Beta - Analyst"}),
+    ({"alpha.example.invalid": "x"}, {"Beta - Analyst"}),
+    ({"alpha.example.invalid": "x", "beta.example.invalid": "y"}, set()),
+])
+def test_widening_the_board_denylist_only_shrinks_proof_membership(boards, expected):
+    # Each row's denylist is a SUPERSET of the previous row's, and each row's expected
+    # proof set is a SUBSET of the previous row's: widening a SAFETY DENYLIST (see
+    # `_is_multi_tenant`'s docstring -- an empty one means "nothing known to be shared",
+    # not "match nothing") can only REMOVE a lead from proof eligibility, never add one.
+    # If some future change made widening this denylist unlock a NEW proof match, that
+    # would be exactly backwards for a safety gate, and this table would catch it.
+    assert _proof_set(boards) == expected
