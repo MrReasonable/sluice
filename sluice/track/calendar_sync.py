@@ -495,10 +495,19 @@ def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
         # `orderBy`, so "the first" is whatever Google happened to return -- and it would
         # leave the others behind while reporting success. The cancel arm above can delete
         # them all because removal is unambiguous; a reschedule cannot.
+        # Names the Google EVENT IDS, not the ics UID. Better on both counts. They are what
+        # the operator actually needs -- the message says "delete the stale entries", and an
+        # event id is what identifies one in the calendar UI or the API, whereas the UID
+        # identifies the invite and cannot be searched for by hand. And an inbound UID is
+        # attacker-and-counterparty-supplied text that sometimes encodes the sender's domain,
+        # which is precisely the leak `search_messages` keeps its query out of the log for:
+        # a log line travels further than the mailbox does. A Google event id is opaque and
+        # says nothing about who the interview is with.
         _log.warning(
-            "track: uid %s matches %d calendar entries of ours -- refusing to guess which one "
-            "the reschedule applies to. Delete the stale entries and the next run will "
-            "reconcile it.", ics.uid, len(mine))
+            "track: %d calendar entries of ours carry the same invite id (%s) -- refusing to "
+            "guess which one the reschedule applies to. Delete the stale entries and the next "
+            "run will reconcile it.", len(mine), ", ".join(sorted(
+                str(ev.get("id")) for ev in mine)))
         return "unresolved"
     if mine:
         ours = mine[0]
