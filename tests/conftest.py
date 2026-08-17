@@ -140,9 +140,9 @@ def cfg_titles(titles):
 # discriminator that tests assert into filenames, so these must be clearly FICTIONAL
 # (never a real place, however a seeded Faker city might land) and pairwise token-disjoint,
 # so any two read DIFFERENT under _compare_locations. NATO-phonetic placeholders, matching
-# the Aye/Bee/Cee convention for synthetic companies. "Delta" is skipped -- a real place
-# (river deltas) and brand name (Delta Air Lines), unlike the other four, which name
-# neither. Module-level (importable) because the bare `_lead()` helpers in test_vault.py
+# the Aye/Bee/Cee convention for synthetic companies. "Delta" is skipped -- a real
+# geographic term (river deltas) and a real airline brand, unlike the other four, which
+# name neither. Module-level (importable) because the bare `_lead()` helpers in test_vault.py
 # and the conformance suite cannot receive a fixture.
 LOCATIONS = ("Alfa", "Bravo", "Charlie", "Foxtrot")
 
