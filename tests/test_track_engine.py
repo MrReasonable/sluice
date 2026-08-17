@@ -944,9 +944,10 @@ def test_receipt_proposal_carries_real_confirm_command():
 class InFlightReceiptClient(FakeGoogleClient):
     def __init__(self):
         super().__init__(messages={
-            # Sender domain matches nothing (Example Tidal carries no `url` at all in `_vault`),
-            # so match_receipt (shortlist-only) can never find this lead -- it is already
-            # `applied`, past shortlist. The LLM's own guess is the only signal available.
+            # Sender domain matches nothing because Example Tidal carries no `url` and no
+            # `applied_url` at all in `_vault` -- since #136 match_receipt DOES search
+            # in-flight leads too, but has no host to compare against for this one, so it
+            # still cannot domain-match. The LLM's own guess is the only signal available.
             # The domain itself is arbitrary for that purpose -- example.com (RFC 2606
             # reserved) keeps this branch's new fixtures out of real-firm-name territory.
             "r1": {"headers": {"from": "jobs@example.com", "subject": "Thanks for applying"},
@@ -955,10 +956,13 @@ class InFlightReceiptClient(FakeGoogleClient):
 
 
 def test_receipt_about_inflight_lead_surfaces_without_writing():
-    # Finding 2: a receipt about a lead that has already advanced PAST shortlist can never
-    # match_receipt-match (it only searches shortlist_by_slug) -- reproduced by the reviewer
-    # as a genuine #40-class silent loss (a mislabelled rejection would vanish with the lead
-    # stuck at `applied` forever, zero signal anywhere). The LLM's own name resolution
+    # Finding 2 (pre-#136): a receipt about a lead that had already advanced PAST shortlist
+    # could never match_receipt-match, since the matcher searched shortlist only. Since #136
+    # the matcher searches in-flight leads too, so this fixture is deliberately url-less
+    # (see InFlightReceiptClient above) to keep this specific scenario -- genuinely no domain
+    # evidence at all -- reachable; the safety property this test pins predates #136 and is
+    # unaffected by it: a genuine #40-class silent loss (a mislabelled rejection would vanish
+    # with the lead stuck at `applied` forever, zero signal anywhere). The LLM's own name resolution
     # (llm_lead_slug) must surface exactly one dead-letter row naming the lead, WITHOUT
     # writing to the note at all -- no status change, no evidence section.
     v, path = _vault("applied")  # Example Tidal, url-less, already in-flight

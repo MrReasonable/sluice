@@ -301,12 +301,17 @@ transition when a confirmation receipt arrives (`track/receipt.py`, #10) — bot
 through the one `can_apply` predicate (`can_transition` dispatches a `--to applied` request to it,
 since `track confirm` accepts an arbitrary target), so apply-on-send and track-on-receipt are the
 sole crossings into the application lifecycle; every later move is an on-ladder `can_advance` step.
-A receipt auto-advances only under the FULL guard set — a `proof`-tier match (the sender host is the
-lead's own host, on a message whose `Authentication-Results` records a PASS aligned with that
-sender, and neither host multi-tenant: no ATS relay, no job board sluice scrapes), the lead present
-in `shortlist_by_slug`, `can_apply`, and `confidence >= auto_apply_min`. Every weaker outcome
+A receipt auto-advances only under the FULL guard set — a `proof`-tier match (the sender host
+matches one of the lead's known hosts — `applied_url` then `url`, #136 — on a message whose
+`Authentication-Results` records a PASS aligned with that sender, and neither host multi-tenant: no
+ATS relay, no job board sluice scrapes), the lead present in `receipt_by_slug` (the combined
+shortlist ∪ in-flight index `track/engine.py` matches receipts against, so a lead already at
+`applied` or later can be domain-matched too — `can_apply` below is what actually restricts the
+WRITE to `shortlist`), `can_apply`, and `confidence >= auto_apply_min`. Every weaker outcome
 proposes to the dead-letter for a human, because a wrong `applied` silently suppresses a real
-application and is irreversible.
+application and is irreversible. A domain match for a lead ALREADY past `shortlist` cannot write
+(`can_apply` refuses), so it stamps the evidence onto the lead's own note instead of proposing —
+see `docs/ARCHITECTURE.md`'s track paragraph for the reasoning.
 An unrecognized status is passed through untouched rather than silently rewritten.
 `job-sluice leads expire` (#9) writes `dismiss` — triage-owned, so never-regress permits it — and never
 a `_TERMINAL`, since every terminal is application-owned. It reads only

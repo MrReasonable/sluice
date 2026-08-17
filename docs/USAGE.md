@@ -161,7 +161,7 @@ above the configured confidence floor; every weaker signal becomes a dead-letter
 resurfaces on every run until a human acts. Prints a summary plus the open-proposal list to
 **stderr** (the whole block, including the digest line):
 ```text
-track: msgs=N classified=N auto=N proposed=N calendar_added=N failures=N open=N
+track: msgs=N classified=N auto=N proposed=N calendar_added=N receipts_recorded=N failures=N open=N
   FAILED <message_id>: <cause>
   WARNING: N calendar entries booked from a DTSTART with no usable timezone ...
   WARNING: the dead-letter store could not be written, so the lastrun watermark is being HELD ...
@@ -170,6 +170,13 @@ track: msgs=N classified=N auto=N proposed=N calendar_added=N failures=N open=N
   OPEN PROPOSALS (awaiting action):
   [<first_seen> x<times_surfaced>[ (new)]] <lead|candidates|?> <<message_id>>: <proposal> :: <hint>
 ```
+`receipts_recorded` counts a domain-matched receipt for a lead already past `shortlist` — it
+cannot advance anything (`can_apply` refuses), so its evidence (sender, subject, date, match
+tier) is stamped onto the lead's own note instead, and the count is what makes that visible
+without reading the log stream, which is discarded under cron. Under `--dry-run` the count
+reports evidence sections that WOULD be stamped, exactly like `calendar_added` beside it — no
+note is written.
+
 Every failed message is NAMED, not just counted, and a real (non-`--dry-run`) run with any
 failure Telegram-notifies **if a token is configured**. The digest reports which of the three
 outcomes happened rather than leaving you to assume it went out: delivered (silent),

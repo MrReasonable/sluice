@@ -224,8 +224,12 @@ whichever neighbour it was written next to:
    application receipt (`track/receipt.py`) advances a `shortlist` lead to
    `applied`: a proof-grade match auto-advances with evidence recorded, but
    only when `event.confidence >= cfg.auto_apply_min` -- below that floor it
-   proposes like any weaker match. Proof means the SENDER host is the lead's
-   own host (never a body link, which the sender controls); the delivering
+   proposes like any weaker match. Proof means the SENDER host matches one of
+   the lead's known hosts -- `applied_url` (the URL actually submitted to,
+   written by `apply/record.py` at apply time) then `url` (the ingest source),
+   checked independently per host so a clean `applied_url` can never lend its
+   multi-tenant-free status to a different, multi-tenant `url` on the same
+   lead (#136; never a body link, which the sender controls); the delivering
    server AUTHENTICATED that domain (an `Authentication-Results` dkim/dmarc/
    spf PASS whose domain aligns with the sender, since a `From` header is
    free text anyone can forge); and neither side is multi-tenant -- an ATS
@@ -233,20 +237,49 @@ whichever neighbour it was written next to:
    (`job_board_domains`), since a board-sourced lead's `url` identifies the
    board, not the employer. Failing or missing authentication degrades to a
    proposal rather than dropping the signal. A weaker corroborated or
-   cross-lead-ambiguous match only proposes. Receipt proposals have two
-   producers: reconcile's own corroborated/below-floor path, and -- when
-   deterministic matching finds nothing at all (tier `none`) while the LLM
-   named a lead that is already in-flight -- an engine-level fallback that
-   records a dead-letter row and never writes. Un-acted-on work is durably
-   surfaced via `track/deadletter.py` -- a sqlite dead-letter re-emitted every
-   run until `track confirm`/`track dismiss` clears it, or a lead's own
-   proposals are cleared automatically when it auto-advances -- so it never
-   vanishes after a single report. The store holds three kinds of row, not
-   just status proposals: a `failure` row for a message that could not be
-   processed at all, and a `calendar` row for a calendar action that could not
-   be completed or verified. An auto-advance clears a lead's STATUS proposals
-   only -- advancing to `rejected` does not remove a stale calendar entry, nor
-   make a failed message succeed.
+   cross-lead-ambiguous match only proposes.
+
+   The matcher searches `receipt_by_slug` -- shortlist AND in-flight leads
+   together, indexed by `index_by_slug` over their concatenation rather than a
+   dict merge, so a slug claimed by one note in each set is dropped as a twin
+   rather than silently resolved to whichever came last (#136). Searching
+   in-flight leads too matters because a lead reaches `applied` at apply time
+   and its receipt normally arrives AFTER: in steady state the shortlist set
+   alone is nearly always empty, so before #136 the deterministic matcher
+   could almost never find the lead a receipt actually concerned. A domain
+   match for a lead already past `shortlist` can never WRITE (`can_apply`
+   refuses everything but `shortlist`), so `reconcile` stamps the evidence
+   (sender, subject, date, tier) onto the lead's own note -- via the same
+   idempotent-by-tag helper the auto-advance path uses -- and reports it quiet
+   rather than either advancing or proposing. That stamp is what still catches
+   a model mislabelling a genuine rejection as a "receipt": the real subject
+   line ends up on the note even though nothing else changes.
+
+   Receipt proposals have two producers: reconcile's own corroborated/
+   below-floor path, and -- when deterministic matching finds nothing at all
+   (tier `none`) while the LLM named a lead that is already in-flight -- an
+   engine-level fallback that records a dead-letter row and never writes. That
+   fallback's hint offers `job-sluice track dismiss --id <mid>` rather than a
+   bare "review manually", with one deliberate exception: a slug claimed by
+   two notes (a same-set OR cross-set twin) gets a hint naming both notes to
+   rename or merge, with no `dismiss` lever, because that row has a real
+   remedy and must keep re-surfacing until a human applies it. Un-acted-on
+   work is durably surfaced via `track/deadletter.py` -- a sqlite dead-letter
+   re-emitted every run until `track confirm`/`track dismiss` clears it, or a
+   lead's own proposals are cleared automatically when it auto-advances -- so
+   it never vanishes after a single report. The store holds three kinds of
+   row, not just status proposals: a `failure` row for a message that could
+   not be processed at all, and a `calendar` row for a calendar action that
+   could not be completed or verified. An auto-advance clears a lead's STATUS
+   proposals only -- advancing to `rejected` does not remove a stale calendar
+   entry, nor make a failed message succeed. A hint offering `track confirm`
+   is filtered through `_confirmable`, the same `can_transition` predicate
+   `confirm()` itself calls, so a hint and the command it offers can never
+   disagree -- an ambiguous receipt match that includes an in-flight candidate
+   never mints a `--to applied` command for it, which `can_apply` would refuse
+   forever. `RunReport.receipts_recorded` counts the quiet-skip stamps in the
+   run digest, alongside the log-stream trace, since the digest is what
+   survives under cron.
 
 ## `onboard/` — a command package, not a sixth sub-app
 
@@ -592,7 +625,8 @@ basename. A recursive scan removes that guarantee: with notes at
 `Active/Acme - Analyst.md` and `Archive/Acme - Analyst.md`, `read_leads` returns
 BOTH, at one slug. Three consumers key a dict on exact slug equality and silently
 keep whichever twin they see last — `track/engine.py`'s `note_by_slug` and
-`shortlist_by_slug`, and `core/app.py`'s `by_slug` in `expire`. A fourth,
+`receipt_by_slug` (named `shortlist_by_slug` before #136 widened it to also index
+in-flight leads), and `core/app.py`'s `by_slug` in `expire`. A fourth,
 `apply/select.py: select_all`, keys on nothing at all: it iterates
 `read_leads({"shortlist"})` directly, so it kept BOTH twins. That one is the reason
 a fix aimed at the slug-keyed dicts is not the whole fix — the batch path never had
@@ -619,7 +653,7 @@ string, and `cli.py` exits non-zero on each rather than printing a skip row amon
 ordinary ones. Neither touches `slug_matches` itself: `expire` narrows by EQUALITY for
 its own stated reason, and tightening the shared matcher would silently change `apply`.
 
-`shortlist_by_slug` is the set `match_receipt` searches, so the dropped twin is
+`receipt_by_slug` is the set `match_receipt` searches, so the dropped twin is
 invisible to the receipt matcher and a receipt whose evidence fits it is weighed
 against the survivor instead — and where the survivor's url HOST satisfies
 `_hosts_match` against the sender with neither side multi-tenant, that survivor can
@@ -627,7 +661,13 @@ be auto-advanced to `applied`, an application recorded against the wrong note. R
 that on the host, not the url: `match_receipt` never compares urls, and
 `_hosts_match` accepts a subdomain relation in either direction, so two twins on one
 employer's site whose urls differ only by subdomain or path BOTH satisfy it.
-Identical urls are sufficient, never necessary.
+Identical urls are sufficient, never necessary. Since #136 this is no longer confined
+to two notes both filed as shortlist: `receipt_by_slug` is built by running
+`index_by_slug` over shortlist AND in-flight leads TOGETHER (one call over their
+concatenation, never a dict merge of two separately-indexed sets — a merge would
+silently keep whichever twin came last rather than dropping the pair), so a slug
+claimed by one shortlist note and one in-flight note is caught by the exact same
+mechanism, which neither index alone could see.
 
 And `leads expire --expire <slug>` acts on one twin while the other is neither
 expired nor reported `no-match`, so the human sees no sign the second exists.
