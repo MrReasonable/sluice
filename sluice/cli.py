@@ -291,16 +291,24 @@ def cmd_leads_rename(args, config) -> int:
         # StoreCannotRename above (which is itself a RuntimeError subclass, but is caught by the
         # more specific clause first since except clauses try in order).
         #
-        # Catching bare OSError this widely is safe ONLY because of two facts together, both
+        # Catching bare OSError this widely is safe ONLY because of three facts together, all
         # verified against the real code rather than assumed: `dl.check_reachable()` runs BEFORE
         # `fn(apply=True)` -- the call that actually renames notes -- inside `Sluice.rename`, so a
-        # preflight OSError always fires with zero notes touched; and `Vault.reconcile_names`'s
-        # own move loop wraps every `_reserve_and_move` call in `except FileExistsError` then
+        # preflight OSError always fires with zero notes touched; `Vault.reconcile_names`'s own
+        # move loop wraps every `_reserve_and_move` call in `except FileExistsError` then
         # `except OSError`, isolating a per-note failure into its `collisions`/`skipped` buckets
-        # and `continue`-ing rather than raising -- so `reconcile_names` itself can never propagate
-        # an uncaught OSError once notes have started moving. There is therefore no window in
-        # which this clause could catch a genuine mid-sweep failure (some notes already renamed on
-        # disk) and misreport it as "nothing renamed, refused cleanly".
+        # and `continue`-ing rather than raising; and its POST-SWEEP resurrection probe -- which
+        # runs AFTER that move loop, re-checking each renamed note's old path for a raced
+        # reappearance -- is wrapped in the identical per-note `except OSError` shape, filing a
+        # probe failure into `skipped` rather than letting `_is_note_file`'s own deliberate OSError
+        # propagation (see that function's docstring) escape uncaught. Earlier drafts of this
+        # comment named only the move loop and missed that the post-sweep probe had no such
+        # isolation, which was a real gap: it runs after real renames land, with nothing between
+        # it and this `except OSError` clause. Now all three phases together mean
+        # `reconcile_names` can never propagate an uncaught OSError once notes have started
+        # moving -- there is no window in which this clause could catch a genuine mid-sweep
+        # failure (some notes already renamed on disk) and misreport it as "nothing renamed,
+        # refused cleanly".
         #
         # `cmd_track_confirm` has this identical gap for an unrelated, pre-existing command --
         # deliberately left alone here; see #151 Task 10's review.

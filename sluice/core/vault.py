@@ -30,6 +30,7 @@ from sluice.core.leads import (
     Lead,
     _norm_url,
     EMPTY_RECONCILE_REPORT,
+    NON_ANSWER_COMPANIES,
     fold_company_answer,
     index_by_slug,
     is_placeholder_company,
@@ -762,10 +763,19 @@ class Vault:
         docstring) -- and the FAILURE DIRECTION differs on purpose: there, a failed re-derivation
         resurrects a merged-away lead (fail-open, on the one arm that must never fail open); here,
         a failed re-derivation just leaves the note unrenamed (fail-closed, to the status quo).
+
+        The placeholder-head check is `_is_placeholder_head`, never the bare `is_placeholder_company`
+        import: `head` comes from the note's FILENAME stem, which already went through `_sanitize`
+        when the note was created, and `_sanitize` maps every filename-illegal character (`/`
+        among them) to `-`. A note whose company was "N/A" is therefore seated on disk as
+        "N-A - <role>.md", and `is_placeholder_company("N-A")` is False -- "n-a" is not itself a
+        NON_ANSWER_COMPANIES member, only "n/a" is (CodeRabbit finding 3, #151). See
+        `_is_placeholder_head`'s own docstring for why the fix sanitizes the CANDIDATE side rather
+        than trying to invert `_sanitize` on `head`.
         """
         stem = note.slug
         head, sep, _ = stem.partition(_SEP)
-        if not sep or not is_placeholder_company(head):
+        if not sep or not _is_placeholder_head(head):
             return None, None
         role = note.fm.get("role", "")
         location = note.fm.get("location", "")
@@ -1866,7 +1876,12 @@ class Vault:
         docstring); if so, both halves of the raced pair are now real notes, filed under
         `resurrected` -- deliberately a DIFFERENT bucket from `ambiguous`,
         because the two residuals need different human fixes (merge two notes sharing one name,
-        versus investigate why an old name came back at all).
+        versus investigate why an old name came back at all). The probe call itself is wrapped
+        in its own per-note `except OSError`, filing into `skipped` on failure: by the time this
+        loop runs, `n` has already been renamed on disk, so letting `_is_note_file`'s own
+        (deliberate) OSError propagation escape this loop would abort the whole sweep with real
+        renames already landed -- exactly the gap `cmd_leads_rename`'s dispatcher-level comment
+        now documents as closed.
 
         `_rescan_dirs()` IS called once, immediately before layer 1's precheck loop begins (see
         there for why). `reconcile_layout`'s OWN `_rescan_dirs()` call, by contrast, runs AFTER
@@ -1930,6 +1945,16 @@ class Vault:
                 summary["skipped"].append(
                     (n.slug, "note is a symlink; this pass does not reorganise a "
                              "structure the user deliberately built"))
+                continue
+            if target == n.slug:
+                # The re-derivation reproduced the note's OWN current name -- reachable when
+                # the frontmatter company folds to the SANITIZED spelling of a placeholder
+                # (e.g. `_sanitize` renders "N/A" as "N-A", which `_frontmatter_name`'s
+                # placeholder-head comparison recognises via that same sanitize step, but
+                # `is_placeholder_company` does not -- only "n/a"/"na" are members). There is
+                # nothing to rename here: the note is already correctly seated. Skipping it
+                # BEFORE layer 1 (rather than letting layer 1 find the note as its own
+                # blocker) avoids reporting a phantom self-collision on every run forever.
                 continue
             candidates.append((n, target))
 
@@ -2014,7 +2039,27 @@ class Vault:
                 # unstatable old path (a race against an unreadable parent directory) would
                 # silently read as "gone", and this is the ONE bucket whose entire purpose is
                 # reporting exactly that a genuine resurrection happened.
-                if _is_note_file(n.ref):
+                #
+                # But `_is_note_file` propagating is correct for ITS contract and dangerous
+                # for THIS caller's: by the time this loop runs, `n` has already been renamed
+                # on disk (it only reaches `renamed` after Phase 2's move succeeded), so an
+                # uncaught OSError here would escape reconcile_names with real renames already
+                # landed -- and cmd_leads_rename's broad `except OSError` would then print a
+                # generic refusal and misreport "nothing renamed" for notes that DID move,
+                # skipping the dead-letter migration loop for them too. Isolate per-note, the
+                # same way Phase 2's move loop just above isolates FileExistsError/OSError,
+                # so one unreadable old path cannot abort the probe for every other note in
+                # this sweep.
+                try:
+                    old_path_reoccupied = _is_note_file(n.ref)
+                except OSError as e:
+                    summary["skipped"].append(
+                        (n.slug, f"could not check the old name for a resurrected note "
+                                 f"after renaming to {target!r}: {e}"))
+                    _log.warning("rename: resurrection probe for %s -> %s failed: %s",
+                                 n.slug, target, e)
+                    continue
+                if old_path_reoccupied:
                     summary["resurrected"].append((n.slug, target))
         return summary
 
@@ -2948,6 +2993,37 @@ def _sanitize(s: str) -> str:
     population is ~0 (job strings almost never carry these; #5's location suffixes are
     brand new), which is why the fix is applied rather than narrowed. See #5, #44."""
     return re.sub(r'[<>:"/\\|?*\x00-\x1f]', "-", s)
+
+
+# Every NON_ANSWER_COMPANIES member, run through the SAME `_sanitize` a company string goes
+# through on its way into a filename stem, then casefolded so the comparison in
+# `_is_placeholder_head` is case-insensitive like `is_placeholder_company` itself. Computed
+# once at import time -- `_sanitize` must already be defined above this line for that to work,
+# which is why this sits here rather than beside `_is_placeholder_head`'s call site up in
+# `_frontmatter_name`. ~19 members, never mutated at runtime.
+_SANITIZED_NON_ANSWERS = frozenset(_sanitize(c).casefold() for c in NON_ANSWER_COMPANIES)
+
+
+def _is_placeholder_head(head: str) -> bool:
+    """Is `head` -- text `_frontmatter_name` pulled from a note's FILENAME stem -- a placeholder
+    company, once the filename's own `_sanitize` pass is accounted for?
+
+    `is_placeholder_company` alone is not enough here, and that gap is exactly CodeRabbit
+    finding 3 (#151): `head` is text already run through `_sanitize` when the note was
+    created, so a company of "N/A" is seated on disk as "N-A - <role>.md" (`_sanitize` maps
+    the filename-illegal `/` to `-`). `is_placeholder_company("N-A")` folds and compares
+    against the UNSANITIZED members of NON_ANSWER_COMPANIES, and "n-a" is not one of them --
+    only "n/a" is -- so that note was invisible to the rename pass forever, even after its
+    frontmatter company was correctly backfilled.
+
+    The fix sanitizes the CANDIDATE side instead of trying to invert `_sanitize` on `head`:
+    `_sanitize` is lossy (`/`, `\\`, `:`, `"`, `|`, `?`, `*` and every C0 control char all
+    collapse to the same `-`), so there is no single original string to recover from "N-A"
+    even in principle -- comparing forward, not inverting backward, is the only sound
+    direction. `fold_company_answer`, not a bare `.casefold()`, folds `head` the same way
+    every other placeholder comparison in this codebase folds a candidate (strip, then
+    trailing `.`/`!`, then casefold), so this stays in step if that folding rule ever changes."""
+    return is_placeholder_company(head) or fold_company_answer(head) in _SANITIZED_NON_ANSWERS
 
 
 def _clamp_bytes(s: str, limit: int) -> str:

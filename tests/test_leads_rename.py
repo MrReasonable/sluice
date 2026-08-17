@@ -72,6 +72,42 @@ def test_a_sentinel_named_note_renames_once_company_is_real(tmp_path):
     assert not os.path.exists(src)
 
 
+def test_a_sanitize_mangled_placeholder_note_is_still_recognized(tmp_path):
+    """CodeRabbit finding 3 (#151): a note originally seated with company "N/A" is written to
+    disk as "N-A - <role>.md" -- `_sanitize` maps the filename-illegal `/` to `-` -- and
+    `is_placeholder_company("N-A")` is False, since only "n/a" itself (not its sanitized
+    spelling) is a recognized NON_ANSWER_COMPANIES member. Before the fix this note was
+    invisible to the rename pass forever, even once a real company was backfilled."""
+    v = _v(tmp_path)
+    src = _seed(v, "N-A - Example Role.md", company="Example Co", role="Example Role")
+    rep = v.reconcile_names(apply=True)
+    assert rep["renames"] == [
+        ("N-A - Example Role", "Example Co - Example Role", ".")]
+    dest = os.path.join(v.leads_dir, "Example Co - Example Role.md")
+    assert os.path.isfile(dest)
+    assert not os.path.exists(src)
+
+
+def test_a_frontmatter_company_matching_its_own_sanitized_head_is_never_a_phantom_collision(
+        tmp_path):
+    """CodeRabbit finding 1 (PR #152, on 2926e99): the fix above makes `_is_placeholder_head`
+    recognize "N-A" as a placeholder HEAD, but `is_placeholder_company` still does not
+    recognize "N-A" as a placeholder VALUE -- only "n/a"/"na" are members. So a note seated at
+    "N-A - <role>.md" whose frontmatter company ALSO literally reads "N-A" (not backfilled to
+    anything real) reaches `_frontmatter_name` with `is_placeholder_company("N-A")` False,
+    treats "N-A" as a real resolved company, and `_candidate_names("N-A", ...)` re-derives the
+    note's OWN current name. Without the `target == n.slug` skip, layer 1 would then find the
+    note as its own blocker and report a permanent phantom self-collision -- the note is
+    already correctly seated, there is nothing to rename, and nothing should be reported."""
+    v = _v(tmp_path)
+    src = _seed(v, "N-A - Example Role.md", company="N-A", role="Example Role")
+    rep = v.reconcile_names(apply=True)
+    assert rep["renames"] == []
+    assert rep["collisions"] == []
+    assert rep["unresolved"] == []
+    assert os.path.isfile(src)
+
+
 @pytest.mark.parametrize("stale_name,company", [
     (" - Example Role.md", ""),
     ("Unknown - Example Role.md", "Unknown"),
@@ -294,6 +330,46 @@ def test_a_raced_rename_produces_resurrected_not_ambiguous(tmp_path, monkeypatch
     assert os.path.isfile(src), "the fixture did not reproduce the resurrected old path"
     assert rep["resurrected"] == [("Unknown - Example Role", "Example Co - Example Role")]
     assert rep["ambiguous"] == {}, "the two passes' residuals must not be merged into one bucket"
+
+
+def test_a_resurrection_probe_failure_is_isolated_not_raised(tmp_path, monkeypatch):
+    """`_is_note_file` deliberately propagates every OSError it cannot resolve to a definite
+    verdict (see that function's own docstring) -- correct for ITS contract, but the post-sweep
+    probe calls it AFTER real renames have already landed on disk. An uncaught OSError here would
+    escape `reconcile_names` with those renames done, and `cmd_leads_rename`'s broad
+    `except OSError` would then misreport "nothing renamed" for notes that DID move -- the exact
+    gap review found the safety comment claiming did not exist. This pins the fix: the probe's
+    own OSError is isolated per-note into `skipped`, a SECOND, unaffected note in the same sweep
+    still renames and gets probed normally, and nothing propagates out of reconcile_names."""
+    v = _v(tmp_path)
+    src1 = _seed(v, "Unknown - Example Role.md", company="Example Co", role="Example Role")
+    _seed(v, "Unknown - Second Role.md", company="Example Co", role="Second Role")
+
+    from sluice.core import vault as vaultmod
+    real_is_note_file = vaultmod._is_note_file
+
+    def flaky(path):
+        if path == src1:
+            raise PermissionError(f"probe denied: {path}")
+        return real_is_note_file(path)
+
+    monkeypatch.setattr(vaultmod, "_is_note_file", flaky)
+    rep = v.reconcile_names(apply=True)  # must not raise
+
+    # Both renames landed on disk -- the probe failure on one note's OLD path must not have
+    # rolled back or blocked the moves, which already happened before the probe ever runs.
+    assert len(rep["renames"]) == 2
+    assert os.path.isfile(os.path.join(v.leads_dir, "Example Co - Example Role.md"))
+    assert os.path.isfile(os.path.join(v.leads_dir, "Example Co - Second Role.md"))
+
+    # The failing probe is reported under `skipped`, not silently dropped and not raised.
+    assert rep["skipped"] == [
+        ("Unknown - Example Role",
+         f"could not check the old name for a resurrected note after renaming to "
+         f"'Example Co - Example Role': probe denied: {src1}")]
+
+    # The unaffected note's probe still ran for real and found nothing resurrected.
+    assert rep["resurrected"] == []
 
 
 def test_the_moved_notes_bytes_are_identical_before_and_after(tmp_path):
