@@ -48,6 +48,14 @@ _GUARDED_UPSTREAM = {
     ("triage/engine.py", "company"),
 }
 
+# The naming convention every write in this file's OWN sweep relies on: a variable named
+# exactly `safe` or prefixed `safe_...` (round-5 review finding) -- NOT a bare substring
+# check, which also matched inside `unsafe`/`unsafe_value`, silently exempting the exact
+# shape this file exists to catch. `\b` alone does not suffice on the trailing edge of
+# `safe_...`: `_` is a word character, so `\bsafe\b` never terminates before it -- the
+# second alternative names that shape explicitly.
+_SANITISED_VALUE = re.compile(r"\b(?:safe|safe_[A-Za-z0-9_]+)\b")
+
 
 def _writes():
     """(relative path, line number, line) for every interpolated quoted-scalar write."""
@@ -90,7 +98,7 @@ def test_no_interpolated_frontmatter_write_is_unguarded():
         # field is still caught.
         if ".isoformat()" in line:
             continue
-        if "safe" in line:
+        if _SANITISED_VALUE.search(line):
             continue
         key = re.search(r"""['"]([\w_]+)['"]""", line)
         if key and (rel, key.group(1)) in _GUARDED_UPSTREAM:
@@ -101,6 +109,19 @@ def test_no_interpolated_frontmatter_write_is_unguarded():
         "A `\"` closes the scalar early and everything after it parses as frontmatter -- "
         "including a second `status:` key, which YAML resolves last-wins.\n  "
         + "\n  ".join(offenders))
+
+
+def test_the_sanitised_value_pattern_does_not_exempt_unsafe():
+    """The vacuity risk the round-5 review finding named directly: a bare `"safe" in line`
+    substring check also matches inside `unsafe`/`unsafe_value`, which would silently
+    exempt exactly the shape this sweep exists to catch. Pinned against the pattern
+    itself, not against the live codebase (which has no such write today) -- a future
+    write naming its interpolated variable `unsafe_value` must not slip past this sweep
+    the same way this bug would have let it."""
+    assert not _SANITISED_VALUE.search('fields["culture_flags"] = f\'"{unsafe_value}"\'')
+    assert not _SANITISED_VALUE.search('fields["k"] = f\'"{unsafe}"\'')
+    assert _SANITISED_VALUE.search('fields["k"] = f\'"{safe_value}"\'')
+    assert _SANITISED_VALUE.search('fields["k"] = f\'"{safe}"\'')
 
 
 @pytest.mark.parametrize("payload", ['a" \nstatus: rejected\nx: "b', "a\\b"])
@@ -155,15 +176,25 @@ def test_an_ordinary_verdict_still_writes_both_fields(tmp_path):
 def test_set_fm_is_still_the_only_frontmatter_setter():
     """The sweep's `_SET_FM` pattern names one function. That is only sound while that
     function is the sole way a frontmatter key gets written -- so assert it, rather than
-    leave the sweep resting on a fact nobody rechecks."""
+    leave the sweep resting on a fact nobody rechecks.
+
+    Asserts on SCOPE (exactly one match, in the right file) rather than an exact line
+    number: this test is main's own, and a branch that adds unrelated content earlier in
+    `core/vault.py` (a new decision comment, a new method) shifts every line number below
+    it with zero change to whether a sibling setter exists -- which is exactly what this
+    test found on #131/#132's branch, a false failure with nothing to fix. The line-pinned
+    form only protects against ONE more thing (a setter moving within the file with the
+    total count unchanged) than the scope-only form below does, and that shape is not
+    something either test's own docstring claims to guard against."""
     setters = []
     for py in sorted(_PKG.rglob("*.py")):
         for i, line in enumerate(py.read_text(encoding="utf-8").splitlines(), 1):
             if re.search(r"^\s*def _set_\w*fm\w*\(", line):
                 setters.append(f"{py.relative_to(_PKG).as_posix()}:{i}")
-    assert setters == ["core/vault.py:2238"], (
-        f"the frontmatter setter moved or gained a sibling: {setters}. The sweep's _SET_FM "
-        "pattern must be updated to match, or writes through the new one go unchecked.")
+    assert len(setters) == 1 and setters[0].startswith("core/vault.py:"), (
+        f"the frontmatter setter moved to a different FILE or gained a sibling: {setters}. "
+        "The sweep's _SET_FM pattern must be updated to match, or writes through the new "
+        "one go unchecked.")
 
 
 def test_an_append_note_cannot_inject_frontmatter(tmp_path):
