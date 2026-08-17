@@ -115,7 +115,10 @@ class TrackConfig:
     # class for another, with no way to just raise the ceiling.
     #
     # What narrowing the lookahead costs has SHRUNK since #146: our own event is now found by
-    # its tag regardless of where it moved, so a short window no longer orphans it.
+    # its tag regardless of where it moved, so a short window no longer orphans it. That holds
+    # for an invite carrying a UID, which is nearly all of them; one without carries no
+    # identity to search on and is deliberately never matched (see `_uid_of`), so for those the
+    # window is still the only thing standing between a re-send and a duplicate.
     #
     # It costs less than it looks, in fact. `_foreign_at_start` only ever matches within
     # `calendar_match_minutes` (30 by default) of the same start the window is CENTRED on, and

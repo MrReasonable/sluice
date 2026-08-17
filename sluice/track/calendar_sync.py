@@ -436,8 +436,9 @@ def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
     # COMPLETE to be reported as one: deleting the entry at the current time while another of
     # ours sits at the old one would answer `cancelled` with a cancelled interview still in the
     # calendar. Scheduling asks only on the miss, keeping the steady state to one round trip.
+    tag_unsettled = False
     if not mine or ics.cancelled:
-        far, unsettled = _find_ours_by_tag(client, ics)
+        far, tag_unsettled = _find_ours_by_tag(client, ics)
         # Union by id: an entry at the invite's current time is found by BOTH searches, and
         # without this a cancel would issue `delete_event` twice for it and the second call
         # would 404 out of a run that had already done the work.
@@ -447,7 +448,11 @@ def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
         # one never narrows it. Clearing it would license an insert on the strength of the
         # matching behaviour nobody has executed against a live calendar -- an unverified
         # external contract converted into a silent duplicate, the exact harm this removes.
-        truncated = truncated or (not mine and unsettled)
+        #
+        # `not mine and ...` is right for the SCHEDULING arm, which needs one positive
+        # identification and nothing more. It is NOT sufficient for a cancel, which needs
+        # completeness -- so that arm reads `tag_unsettled` directly rather than this flag.
+        truncated = truncated or (not mine and tag_unsettled)
     if ics.cancelled:
         if mine:
             # ALL of them. The interview is cancelled, so every entry we created for this UID
@@ -457,6 +462,18 @@ def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
             if not dry_run:
                 for ev in mine:
                     client.delete_event(ev["id"])
+            if tag_unsettled:
+                # We removed everything we could SEE, and still cannot call it done. The tag
+                # query was short, so another entry under this UID may be off-page -- and
+                # `cancelled` is exactly the positive claim of complete removal that the
+                # paragraph above refuses to make on incomplete evidence.
+                #
+                # The `truncated` flag cannot carry this: it is computed as
+                # `not mine and tag_unsettled`, which is deliberately False here BECAUSE we
+                # found something, and the `if mine:` branch returns before it is ever read.
+                # Reported after the deletes, not instead of them: the work we could do is
+                # still worth doing, and a human is told the rest is unconfirmed.
+                return "unresolved"
             return "cancelled"
         if truncated:
             # We looked, but the window was SHORT and we know it -- our event may be one of
