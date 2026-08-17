@@ -181,7 +181,9 @@ class BrowserListSource:
         return [_mk_search(spec) for spec in self.searches_spec]
 
     def _scroll_step(self, cam, tid) -> None:
-        """One scroll step, and the ONLY thing a list-shaped source may override.
+        """One scroll step -- one of TWO sanctioned override points for a list-shaped source,
+        the other being `parse` (see below). This one is for HOW the page scrolls; `parse` is
+        for WHAT a scraped row means.
 
         Its result is deliberately NOT folded into `errors` below, and that is a judgement
         rather than an oversight. A failed scroll does not produce the unexplained ZERO this
@@ -194,10 +196,19 @@ class BrowserListSource:
         broken, the extractor evaluate errors too and IS recorded.
 
         A board that virtualizes its results (LinkedIn) must scroll the results PANEL rather
-        than the window. That is its sole difference from this class, so it is the sole thing
-        it gets to change. Overriding `fetch` wholesale is how the LinkedIn subclass silently
-        shipped without the auth probe: the registration declared one, so everything READ as
-        covered while the override never evaluated it."""
+        than the window. That is its sole difference from this class on the SCROLL axis, so
+        it is the only thing it gets to change here. Overriding `fetch` wholesale is how the
+        LinkedIn subclass silently shipped without the auth probe: the registration declared
+        one, so everything READ as covered while the override never evaluated it.
+
+        `parse` is the other axis, for row-level REPAIR rather than scroll mechanics --
+        `_NaukrigulfSource.parse` (recovering a company mashed into the title via the listing
+        URL's own seam, #151) and `WellfoundSource.parse` (dropping company-profile-card rows
+        the extractor's selector lets through, #151) both override it instead of this method,
+        PROVIDED they delegate to `super().parse(...)` so `_row_to_lead` and this class's own
+        title-non-empty filter still run underneath the repair -- which both do. A `parse`
+        override that skips that delegation reimplements row-shaping from scratch and silently
+        loses that filter."""
         cam.scroll(tid, self.scroll_amount)
 
     def fetch(self, ctx: Ctx, search: Search) -> dict:
