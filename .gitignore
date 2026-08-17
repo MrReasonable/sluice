@@ -4,6 +4,11 @@ __pycache__/
 .pytest_cache/
 .venv/
 *.egg-info/
+
+# Root-level scratch worktrees (superpowers:using-git-worktrees' fallback location when no
+# native worktree tool applies). `.claude/worktrees/` is already covered by `/.claude/*`
+# below; this is the separate top-level default the skill falls back to.
+/.worktrees/
 # `python -m build` drops these beside pyproject.toml (measured); tests/test_packaging.py
 # builds real wheels to prove the shipped template reaches one, and the build's own output
 # must not leak into this public repo. tests/test_no_leaked_files.py is the other guard for
