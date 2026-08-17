@@ -300,7 +300,7 @@ Pass `--write` to also register five write-capable tools -- `dismiss_lead`,
 `apply_record`, `cv_run`, `cv_signoff`, `create_lead` -- each a thin translation
 layer over one `Sluice` write method, never a raw store write. `--write` is a
 per-registration trust decision about one MCP client, not a property of the
-install: every existing read-only registration is unaffected, and a read-only
+installation: every existing read-only registration is unaffected, and a read-only
 server's `tools/list` genuinely omits the five write tools' names and schemas, not
 merely refusing them at call time.
 

@@ -212,8 +212,8 @@ Maintenance passes. **Report by default; none of these offers `--dry-run`, becau
 default *is* the dry run** — a write happens only with the flag named below.
 **Exception: `leads dismiss` writes unconditionally on every call** (#131), like the
 pipeline commands (`ingest run`/`triage run`/`cv run`/`apply record`/`track run`), not
-like its `leads` siblings — the distinguishing property is whose judgement the write
-encodes: `dismiss` acts on a verdict the user typed (`--lead`/`--reason`), while
+like its `leads` siblings — the distinguishing property is who decided what to write:
+`dismiss` acts on a verdict the USER typed (`--lead`/`--reason`), while
 `dedupe`/`expire`/`reconcile` write over a set the TOOL computed.
 
 ### `job-sluice leads dedupe [--merge ID ...] [--json]`
@@ -292,7 +292,7 @@ Blocks for the life of the process once started; there is no `--dry-run`.
 - `apply_record(lead, ats=None, url=None)` -- record a sent application (shortlist
   -> applied).
 - `cv_run(lead, backend="auto")` -- compose and render a CV for one shortlisted
-  lead. The composed text itself is never returned in the response.
+  lead. The composed text itself is never included in the response.
 - `cv_signoff(lead, discard=False, confirm_token=None)` -- resolve a #60 sign-off
   hold. `discard=True` clears it outright. **Promoting needs TWO calls**: the first
   (no `confirm_token`) writes nothing and returns a `confirm_token` bound to the
