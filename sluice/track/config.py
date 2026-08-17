@@ -10,10 +10,33 @@ try:
 except ImportError:  # pragma: no cover
     yaml = None
 
+# Entries are multi-tenant recruiting-platform vendors: one registrable domain serving many
+# unrelated employers, both as the candidate-facing listing/application host and as the
+# domain candidate notification email is sent from. Membership is decided by the vendor's
+# hosting model (checkable from the vendor's own public documentation), never by whether
+# any particular mailbox has seen it -- an entry here must never be traceable to any one
+# person's job search. Never a bare TLD or a two-label domain a real employer could sit
+# under: `_suffix_match` (`sluice/track/receipt.py`) is dot-anchored, so a short key would
+# swallow every subdomain under it.
 _ATS_RELAY_DOMAINS = {
     "greenhouse.io": "greenhouse", "ashbyhq.com": "ashby", "lever.co": "lever",
     "workable.com": "workable", "icims.com": "icims", "teamtailor.com": "teamtailor",
-    "myworkday.com": "workday", "smartrecruiters.com": "smartrecruiters",
+    # myworkday.com is Workday's EMPLOYER-facing HCM admin domain -- it never appears in a
+    # candidate-facing URL or a candidate notification's From, so this entry has never
+    # actually matched a real receipt. myworkdayjobs.com is the separate, candidate-facing
+    # TENANT domain (e.g. https://acme.wd5.myworkdayjobs.com/...) that DOES appear there.
+    # Keep both: they are genuinely different domains, not a duplicate to dedupe away.
+    "myworkday.com": "workday", "myworkdayjobs.com": "workday-candidate",
+    "smartrecruiters.com": "smartrecruiters",
+    "successfactors.com": "successfactors", "successfactors.eu": "successfactors-eu",
+    "zohorecruit.com": "zoho-recruit", "zohorecruit.eu": "zoho-recruit-eu",
+    "recruitee.com": "recruitee",
+    "whitecarrot.io": "whitecarrot", "whitecarrot.ai": "whitecarrot",
+    "jobvite.com": "jobvite", "bamboohr.com": "bamboohr", "breezy.hr": "breezy",
+    "pinpointhq.com": "pinpoint", "applytojob.com": "jazzhr",
+    "taleo.net": "taleo", "avature.net": "avature", "eightfold.ai": "eightfold",
+    "phenompeople.com": "phenom", "phenom.com": "phenom",
+    "networxrecruitment.com": "networx",
 }
 
 # The job boards sluice itself scrapes, keyed by their REGISTRABLE domain and valued by

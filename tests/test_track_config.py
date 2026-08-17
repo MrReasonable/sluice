@@ -185,3 +185,36 @@ def test_the_swept_key_list_matches_the_module(tmp_path):
 
     assert set(_POSITIVE_INT_CONFIG_KEYS) == set(_POSITIVE_INT_KEYS), (
         "this test's key list has drifted from sluice/track/config.py")
+
+
+def test_every_shipped_relay_key_is_a_real_multi_label_host():
+    """Both safety denylists (`ats_relay_domains`, `job_board_domains`) are dot-anchored
+    suffix matchers (`receipt._suffix_match`: `host == k or host.endswith("." + k)`), so a
+    key with fewer than two dot-separated labels -- a bare TLD like "com", or nothing at
+    all -- would swallow every host under that TLD, not just the intended vendor. And a key
+    that is itself a dot-separated SUFFIX of another key in the same dict makes the longer
+    one redundant (the shorter one already matches every host the longer one would), which
+    is a sign the roster was assembled by appending rather than by checking against what is
+    already there.
+
+    Read from `TrackConfig()`'s actual fields, not the module's `_ATS_RELAY_DOMAINS` /
+    `_JOB_BOARD_DOMAINS` constants directly -- the property under test is what a FRESH
+    INSTALL gets, and re-importing the same module constants the dataclass fields are built
+    from would only prove the constants agree with themselves.
+    """
+    cfg = TrackConfig()
+    for denylist in (cfg.ats_relay_domains, cfg.job_board_domains):
+        # Assert the SCOPE before the property: `all()` over an empty collection is
+        # vacuously True, so a denylist that silently emptied out would make every
+        # assertion below pass for the wrong reason -- CLAUDE.md's "Guard tests fail
+        # open" section names this exact shape.
+        assert denylist, "a shipped safety denylist must be non-empty"
+        for key in denylist:
+            labels = key.split(".")
+            assert len(labels) >= 2, (
+                f"{key!r} has fewer than two dot-separated labels -- a bare TLD or "
+                "single label as a suffix-match key would swallow every host under it")
+            others = [other for other in denylist if other != key]
+            assert not any(key == other or key.endswith("." + other) for other in others), (
+                f"{key!r} is a dot-separated suffix of another key in the same denylist, "
+                "making the longer entry redundant")
