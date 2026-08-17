@@ -156,7 +156,7 @@ def test_a_cross_folder_target_collision_is_caught_only_by_the_vault_wide_preche
     assert rep["renames"] == []
     assert rep["collisions"] == [
         ("Unknown - Example Role", "Example Co - Example Role",
-         "a note is already seated at this name elsewhere in the vault")]
+         "a note is already seated at this name in the vault")]
     assert os.path.isfile(stale), "the stale note was renamed despite the cross-folder clash"
     assert os.path.isfile(blocker)
     assert not os.path.exists(os.path.join(v.leads_dir, "Example Co - Example Role.md")), (
@@ -191,7 +191,7 @@ def test_layer_one_catches_a_collision_in_a_folder_created_after_the_scan_cache_
         "_locate verdict")
     assert rep["collisions"] == [
         ("Unknown - Example Role", "Example Co - Example Role",
-         "a note is already seated at this name elsewhere in the vault")]
+         "a note is already seated at this name in the vault")]
     assert os.path.isfile(stale)
     assert os.path.isfile(blocker)
     assert not os.path.exists(os.path.join(v.leads_dir, "Example Co - Example Role.md")), (
@@ -207,7 +207,7 @@ def test_a_same_folder_collision_refuses_and_is_never_suffixed(tmp_path):
     assert rep["renames"] == []
     assert rep["collisions"] == [
         ("Unknown - Example Role", "Example Co - Example Role",
-         "a note is already seated at this name elsewhere in the vault")]
+         "a note is already seated at this name in the vault")]
     assert os.path.isfile(stale) and os.path.isfile(blocker)
     assert not os.path.exists(os.path.join(v.leads_dir, "Example Co - Example Role.1.md"))
 

@@ -1862,8 +1862,9 @@ class Vault:
         so `index_by_slug` sees two entirely distinct, individually-UNIQUE slugs and reports
         nothing: the race is invisible to that probe. So this pass runs a narrower probe of its
         own instead: for each note that WAS renamed this sweep, re-check whether its OLD path
-        still exists (`os.path.exists`); if so, both halves of the raced pair are now real
-        notes, filed under `resurrected` -- deliberately a DIFFERENT bucket from `ambiguous`,
+        still names a note (`_is_note_file`, never `os.path.exists` -- see that probe's own
+        docstring); if so, both halves of the raced pair are now real notes, filed under
+        `resurrected` -- deliberately a DIFFERENT bucket from `ambiguous`,
         because the two residuals need different human fixes (merge two notes sharing one name,
         versus investigate why an old name came back at all).
 
@@ -1901,6 +1902,14 @@ class Vault:
         candidates = []   # [(note, target)] -- notes with a real, computed rename target
         for n in index.values():
             target, head = self._frontmatter_name(n)
+            # `is None`, never a falsy check: `head` is the placeholder the CURRENT name was
+            # minted from, and for the blank-company population -- this feature's primary
+            # target -- that placeholder IS the empty string `""`, which is falsy but NOT
+            # None. `if not head` would treat every blank-company note as "not one this store
+            # minted" and skip it here even when `target` holds a real, freshly-resolved
+            # rename -- silently dropping the whole blank-company population from ever being
+            # renamed. Only `target is None and head is None` -- `_frontmatter_name`'s own
+            # documented "leave alone entirely" sentinel -- may take this branch.
             if target is None and head is None:
                 continue  # not a name THIS STORE minted from a placeholder -- leave it alone
             if target is None:
@@ -1939,9 +1948,13 @@ class Vault:
         survivors = []
         for n, target in candidates:
             if self._locate(target):
+                # _locate is VAULT-WIDE, so this fires for a blocking note in the SAME folder
+                # too, not only a genuinely different one -- "elsewhere in the vault" would
+                # send an operator looking in the wrong place for a note sitting right next to
+                # the one they are reading about. Neutral wording instead, accurate either way.
                 summary["collisions"].append(
                     (n.slug, target,
-                     "a note is already seated at this name elsewhere in the vault"))
+                     "a note is already seated at this name in the vault"))
                 continue
             survivors.append((n, target))
 
@@ -1996,7 +2009,12 @@ class Vault:
         # re-read after the move), which is exactly the old path this probe needs.
         if apply:
             for n, target in renamed:
-                if os.path.exists(n.ref):
+                # _is_note_file, never os.path.exists -- the same rule this file's OWN
+                # _is_note_file docstring states: os.path.exists swallows EVERY OSError, so an
+                # unstatable old path (a race against an unreadable parent directory) would
+                # silently read as "gone", and this is the ONE bucket whose entire purpose is
+                # reporting exactly that a genuine resurrection happened.
+                if _is_note_file(n.ref):
                     summary["resurrected"].append((n.slug, target))
         return summary
 
