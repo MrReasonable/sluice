@@ -34,6 +34,18 @@ _PROPOSE_TARGET = {"phone_screen": "phone_screen", "interview": "interview",
 # is still "interview", so the generic proposal hint would hand the operator a runnable
 # command that BOOKS the thing that was just cancelled. An unrunnable hint is worse than an
 # honest "look at this yourself"; a runnable and WRONG one is worse than either.
+#
+# NONE of these names the inbound iCalendar UID, which all four used to quote. A UID is
+# counterparty-supplied text that sometimes encodes the sender's domain, and these hints are
+# both printed to stderr (`cmd_track_run`) and persisted in the dead-letter store indefinitely
+# -- a longer-lived signpost than the log lines the same rule already covers in
+# `calendar_sync.py`. The sweep stopping at the module boundary was an oversight, not a
+# judgement.
+#
+# It costs the operator nothing, which is what makes it an easy call rather than a trade: the
+# row is RENDERED as `[date xN] {lead} <{message_id}>: {proposal} :: {hint}`, so the lead and
+# the message id -- sluice's own identifiers, both more useful for finding the thing than an
+# opaque UID -- are already on the line before the hint starts.
 _NEEDS_REVIEW_HINT = {
     # Deliberately does NOT say "nothing was deleted", which it used to. Since #146 a cancel
     # can delete every entry it managed to identify and STILL answer `unresolved`, because a
@@ -42,19 +54,19 @@ _NEEDS_REVIEW_HINT = {
     # already gone. One reason value covering two situations has to be true of both -- the
     # failure this table's own header describes, arriving through a new door.
     "cancel-unresolved":
-        '(cancellation for uid "{uid}" could not be fully resolved: sluice removed any entry '
-        "it could identify, but its search was incomplete, so a copy may remain. Check your "
-        "calendar and remove anything still there, then `job-sluice track dismiss --id {mid}`)",
+        "(this cancellation could not be fully resolved: sluice removed any entry it could "
+        "identify, but its search was incomplete, so a copy may remain. Check your calendar "
+        "and remove anything still there, then `job-sluice track dismiss --id {mid}`)",
     "cancel-foreign":
-        '(cancellation for uid "{uid}" -- the entry at that slot was not created by sluice '
+        "(this interview was cancelled -- the entry at that slot was not created by sluice "
         "(usually the sender's own invite, auto-added by Google), so it was left alone. "
         "Remove it by hand, then `job-sluice track dismiss --id {mid}`)",
     "calendar-unresolved":
-        '(the calendar entry for uid "{uid}" could NOT be created or verified -- the lead was '
-        "still advanced, but check your calendar and add it by hand, then "
+        "(the calendar entry for this interview could NOT be created or verified -- the lead "
+        "was still advanced, but check your calendar and add it by hand, then "
         "`job-sluice track dismiss --id {mid}`)",
     "calendar-foreign":
-        '(no calendar entry was created for uid "{uid}": an event sluice did not create '
+        "(no calendar entry was created for this interview: an event sluice did not create "
         "already covers that slot, so booking would have duplicated it. The lead was still "
         "advanced -- check the slot is really your interview, then "
         "`job-sluice track dismiss --id {mid}`)",
@@ -483,8 +495,9 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                 # resolved a hypothetical collision first-writer-wins -- silently dropping the
                 # calendar instruction in favour of a status proposal, which is the opposite
                 # of the priority `clear_lead` establishes three lines down.
-                uid = getattr(ev.ics, "uid", "") or "?"
-                hint = _NEEDS_REVIEW_HINT[res.needs_review].format(uid=uid, mid=mid)
+                # No `uid=` any more: see the table's own note. The Entry below carries `lead`
+                # and `message_id`, which is what the rendered row identifies it by.
+                hint = _NEEDS_REVIEW_HINT[res.needs_review].format(mid=mid)
                 entry = Entry(
                     message_id=mid, lead=ev.lead_slug or "", candidates="",
                     ev_type=EV_TYPE_CALENDAR, proposal=res.needs_review, hint=hint,

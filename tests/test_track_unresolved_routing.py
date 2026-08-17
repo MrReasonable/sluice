@@ -57,7 +57,16 @@ def test_a_refused_insert_is_RECORDED_even_though_the_status_advanced():
     assert rows, ("the calendar entry was never created and NOTHING recorded it -- "
                   "seen.add consumed the message and the interview is not in the calendar")
     assert rows[0].proposal == "calendar-unresolved"
-    assert "u1" in rows[0].hint, "the hint must name the uid so the entry can be found"
+    # The row must be IDENTIFIABLE, which is what this line has always been about. It used to
+    # require the ics UID inside the hint; the UID is counterparty-supplied text that can carry
+    # the sender's domain, and these rows are printed to stderr AND persisted indefinitely.
+    # Nothing is lost by dropping it: `cmd_track_run` renders the row as
+    # `{lead} <{message_id}>: {proposal} :: {hint}`, so it is identified by sluice's own
+    # identifiers -- both better handles than an opaque UID -- before the hint even starts.
+    assert rows[0].lead == "Example Tidal - Analyst", rows[0].lead
+    assert rows[0].message_id == "m1"
+    assert "m1" in rows[0].hint, "the hint must still carry the id its own command needs"
+    assert "u1" not in rows[0].hint, f"the hint leaked the inbound invite id: {rows[0].hint}"
 
 
 def test_the_refused_insert_hint_does_not_claim_the_entry_exists():

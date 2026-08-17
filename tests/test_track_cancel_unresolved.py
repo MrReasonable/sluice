@@ -228,4 +228,9 @@ def test_the_unresolved_cancel_hint_does_NOT_offer_to_advance_the_lead():
     hint = rows[0].hint
     assert "--to interview" not in hint, (
         f"the row hands the operator a command that BOOKS the cancelled interview: {hint}")
-    assert "u1" in hint, f"the hint should name the UID so the entry can be found: {hint}"
+    # Identifiable, but NOT by the inbound UID -- that is counterparty text which can carry the
+    # sender's domain, and this row is printed to stderr and persisted indefinitely. The
+    # rendered line leads with `{lead} <{message_id}>`, so nothing is lost.
+    assert rows[0].lead == "Example Tidal - Analyst", rows[0].lead
+    assert "m1" in hint, f"the hint must still carry the id its own command needs: {hint}"
+    assert "u1" not in hint, f"the hint leaked the inbound invite id: {hint}"
