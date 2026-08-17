@@ -55,6 +55,13 @@ def is_http_url(url: str) -> bool:
 # a CV would be composed for "Confidential" -- and because require_blank
 # (engine.py) refuses a write once the field is non-blank, THAT bad value could
 # never be corrected by a later run; only a human editing the note by hand could.
+#
+# The pre-folding is load-bearing for a second reason, not just tidiness: this set is
+# passed verbatim as `Store.update_fields`'s `blank_values` (engine.py), and that guard
+# folds only the FRESH STORED side -- it compares `blank_values` members as-is (see
+# `core/vault.py`'s `_counts_as_blank`). An unfolded member added here (e.g. "Unknown"
+# with a capital U) would silently never match anything, the same failure mode an
+# unnormalized `require_status` set would have.
 NON_ANSWER_COMPANIES = frozenset({
     "confidential", "undisclosed", "unknown", "n/a", "na", "not disclosed",
     "not specified", "private", "private company", "stealth", "stealth startup",
