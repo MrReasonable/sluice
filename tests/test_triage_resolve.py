@@ -772,6 +772,17 @@ def test_company_from_role_greedy_role_group_uses_the_last_at_not_the_first():
     # separating whitespace at all, and critically no " at " substring anywhere in
     # it -- this must fall through to tier 1 untouched, not produce a false hit.
     ("QA Engineer / ManagerExample Trading Company", "defect-1 concatenation, no ' at '"),
+    # The Title-Case sibling of "Engineer at scale" above: board listings commonly
+    # render role text in Title Case (this repo's own fixtures use .title()), which
+    # capitalizes the idiom's tail too and defeats _looks_like_a_name's lowercase-
+    # opening check on its own. _is_idiom_tail is the second guard that must catch
+    # these -- both cases abstain, for related but distinct reasons, and a
+    # mutation deleting either mechanism must turn at least one of these red.
+    ("Editor at Large", "title-case idiom tail ('at large'), case check alone misses it"),
+    ("Senior Editor At Large", "title-case idiom tail, 'At' itself also capitalized"),
+    ("Engineer At Scale", "title-case idiom tail ('at scale')"),
+    ("Ambassador at Large", "title-case idiom tail, a different role sharing the idiom"),
+    ("Customer Service Representative - Work at Home", "compound role; idiom tail after the last ' at '"),
 ])
 def test_company_from_role_abstains(role, reason):
     assert resolve._company_from_role(role) is None, reason
