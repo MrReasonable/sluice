@@ -191,6 +191,28 @@ def _is_multi_tenant(host: str, ats, boards) -> bool:
     return _suffix_match(host, ats) or _suffix_match(host, boards)
 
 
+def _lead_hosts(lead) -> list[str]:
+    """Every host that can stand in for "the lead's own domain", in priority order:
+    `applied_url` first, then `url`. `applied_url` is what the user actually SUBMITTED
+    their application to -- stamped by a DIFFERENT sub-app, `apply/record.py`, and only
+    when `apply record --url` supplied a value, so it names the employer (or an ATS
+    tenant subdomain) rather than wherever sluice happened to scrape the lead from.
+    `url` is the ingest source (see `_is_multi_tenant`'s docstring on why that is
+    usually a multi-tenant board, not the employer) and stays a fallback because
+    `applied_url` is OPTIONAL: roughly half of in-flight leads never had `--url` passed
+    at apply time and so carry only `url`.
+
+    Deduplicated -- a lead with no `applied_url` would otherwise test the same `url`
+    host twice -- and empty hosts are dropped, so `match_receipt`'s per-lead loop can
+    run `any(...)` over the result with no separate emptiness check at each call site."""
+    hosts = []
+    for key in ("applied_url", "url"):
+        h = _host(lead.fm.get(key) or "")
+        if h and h not in hosts:
+            hosts.append(h)
+    return hosts
+
+
 def match_receipt(msg, shortlist_leads, ats_relay_domains, job_board_domains=None) -> ReceiptMatch:
     ats, boards = ats_relay_domains or {}, job_board_domains or {}
     # Only the SENDER host is evidence of who sent the mail. Body links are sender-
@@ -210,14 +232,22 @@ def match_receipt(msg, shortlist_leads, ats_relay_domains, job_board_domains=Non
     from_ats = _suffix_match(sender, ats)
     proof, corrob = [], []
     for lead in shortlist_leads:
-        lead_host = _host(lead.fm.get("url") or "")
-        # The host half of proof: the sender IS the lead's own host, and neither side is a
-        # host shared by many employers. `_hosts_match` is False when either host is
-        # empty, so a url-less lead or an unparseable From abstains rather than matching
-        # everything.
-        host_proof = (_hosts_match(sender, lead_host)
-                      and not _is_multi_tenant(sender, ats, boards)
-                      and not _is_multi_tenant(lead_host, ats, boards))
+        # The host half of proof: the sender IS one of the lead's own hosts (`applied_url`
+        # or `url`, via `_lead_hosts`), and neither side is a host shared by many
+        # employers. `_hosts_match` is False when either host is empty, so a lead with no
+        # populated host or an unparseable From abstains rather than matching everything.
+        #
+        # The per-host multi-tenant check MUST live INSIDE the `any(...)`, paired with the
+        # SAME host it is being tested against -- never hoisted out as one check over "any
+        # host is clean". A lead can carry a multi-tenant board `url` AND a clean,
+        # employer-owned `applied_url` at once: hoisted out, a receipt sent FROM THE BOARD
+        # (a host shared by thousands of employers) would pass proof, because the
+        # "not multi-tenant" half would be satisfied by looking at the OTHER host
+        # (`applied_url`) rather than the one that actually matched the sender. Each host
+        # must clear both conditions on its own turn through the loop, or not at all.
+        host_proof = (not _is_multi_tenant(sender, ats, boards)
+                      and any(_hosts_match(sender, h) and not _is_multi_tenant(h, ats, boards)
+                              for h in _lead_hosts(lead)))
         # proof needs BOTH halves: the host lines up AND the delivering server
         # authenticated that domain. An ADDITIONAL conjunct, never a replacement -- the
         # multi-tenant exclusions still do all the work they did before.
