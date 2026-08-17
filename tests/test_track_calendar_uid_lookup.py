@@ -234,6 +234,64 @@ def test_a_TRUNCATED_tag_query_that_DID_find_something_still_refuses_to_claim_a_
     assert c.deleted == ["ev1"], "the entry we COULD see must still be removed"
 
 
+def test_the_row_for_a_PARTIAL_cancel_does_not_claim_nothing_was_deleted():
+    """The operator-facing half of the case above, and it was a real defect.
+
+    `sync_event` deleting entries and still answering `unresolved` is new, and the
+    `cancel-unresolved` hint said "so nothing was deleted. Check your calendar and remove it by
+    hand" -- a false statement in exactly this case, sending the operator after something
+    already gone. One reason value covering two situations has to be true of both.
+
+    Drives `engine.run` because the hint is assembled there and a `sync_event` return value
+    cannot see it. Asserts the FACT (the row does not claim inaction) rather than the exact
+    sentence, so rewording stays free."""
+    import json
+    import pathlib
+    import tempfile
+
+    from sluice.core.vault import Vault
+    from sluice.track import engine as E
+    from tests.test_track_engine import FakeBackend, OneMsgClient, _dl
+
+    root = pathlib.Path(tempfile.mkdtemp())
+    leads = root / "Job Applications" / "Job Leads"
+    leads.mkdir(parents=True)
+    (leads / "Example Tidal - Analyst.md").write_text(
+        '---\ncompany: "Example Tidal"\nrole: "Analyst"\nstatus: interview\n---\n\nBODY\n')
+    v = Vault(str(root))
+
+    class _PartialCancel(OneMsgClient):
+        """A cancel whose tag query IS truncated and DOES find one of ours."""
+
+        def __init__(self):
+            super().__init__()
+            self.events = [_ours(start_iso="2026-10-01T10:00:00+00:00")]
+            self.tag_truncated = True
+
+        def get_message(self, mid):
+            msg = super().get_message(mid)
+            msg["attachments"] = [{
+                "filename": "invite.ics", "mime": "text/calendar",
+                "data": (b"BEGIN:VCALENDAR\r\nMETHOD:CANCEL\r\nBEGIN:VEVENT\r\nUID:u1\r\n"
+                         b"DTSTART:20261001T100000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")}]
+            return msg
+
+    c, dl = _PartialCancel(), _dl()
+    E.run(v, TrackConfig(), c,
+          FakeBackend(json.dumps({"lead": "Example Tidal - Analyst", "type": "interview",
+                                  "confidence": 0.9, "when": None, "links": [],
+                                  "materials": [], "summary": "cancelled"})),
+          seen=set(), deadletter=dl, now_iso="2026-07-10T12:00:00+00:00")
+
+    assert c.deleted == ["ev1"], "the entry we could see must still have been removed"
+    rows = [e for e in dl.open_entries() if e.message_id == "m1"]
+    assert rows, "an unconfirmed cancel must still leave a durable row"
+    hint = rows[0].hint
+    assert "nothing was deleted" not in hint, (
+        f"the row tells the operator to remove something sluice already removed: {hint}")
+    assert "dismiss" in hint, f"the row must still offer a way to close it: {hint}"
+
+
 def test_a_CLEAN_tag_query_does_not_clear_a_SHORT_window():
     """`truncated` is a one-way ratchet, and this is the test that keeps it one.
 
