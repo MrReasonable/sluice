@@ -26,6 +26,15 @@ class ReconcileResult:
     # DEFAULT would make it read as false the moment somebody sets the key.
     calendar_assumed_tz: bool = False
     materials_written: bool = False
+    # #136 Task 5c: did THIS reconcile() call file the receipt's evidence onto the note
+    # via `_skip_with_evidence`? Digest-visible trace of the quiet-skip write closing the
+    # #40 safety gap -- a domain-matched receipt that cannot advance status (because the
+    # lead is already past shortlist) used to record nothing anywhere. Deliberately does
+    # NOT cover the auto-advance path's own (pre-existing, unrelated) evidence-first
+    # stamp on a successful advance -- that case is already visible via `action`/
+    # `status_to`, so folding it in here would double-count against `rep.auto` for no
+    # added visibility.
+    receipt_stamped: bool = False
     proposal: "str | None" = None
     note: str = ""
     # Something needs a HUMAN, independently of `action`. `action` conflates "what we wrote"
@@ -64,13 +73,21 @@ def _stamp_materials(vault, note, ev, dry_run=False):
     return vault.append_body_section(note.ref, tag, section)
 
 
-def _stamp_receipt(vault, note, ev):
-    # Evidence for a receipt-driven advance. append_body_section is idempotent by tag,
-    # so a re-processed receipt (same message_id) never double-writes; body untouched.
-    # No dry_run parameter here: the sole call site already sits inside the reconcile()
-    # `if not dry_run:` block below, so a dry-run guard on this function would be
-    # unreachable dead code (a whole-branch review caught it: deleting the guard could
-    # not redden any test).
+def _stamp_receipt(vault, note, ev, dry_run=False):
+    # Evidence for a receipt-driven advance, OR (#136 Task 5c/5d) for a receipt that
+    # domain-matched a lead that cannot be advanced any further -- reconcile() now has
+    # TWO call sites for this, not one: the auto-advance branch below (nested inside its
+    # own `if not dry_run:`, so `dry_run` there is always False) and the quiet-skip tail
+    # (`_skip_with_evidence`, further down), which is NOT nested inside any such guard --
+    # a receipt that cannot advance status is exactly as real under a dry run as under a
+    # real one, and reporting what a dry run WOULD do is the whole point of `dry_run`, so
+    # that call site needs this function's own guard to keep from writing. `dry_run`
+    # mirrors `_stamp_materials` immediately above for exactly that reason: this is no
+    # longer a function with one call site whose caller's guard could be trusted
+    # implicitly. append_body_section is idempotent by tag, so a re-processed receipt
+    # (same message_id) never double-writes; body untouched otherwise.
+    if dry_run:
+        return True
     tag = f"track-receipt-{ev.message_id or ev.type}"
     section = (f"## Application receipt <!--{tag}-->\n"
                f"- Received: {date.today().isoformat()}\n"
@@ -78,6 +95,42 @@ def _stamp_receipt(vault, note, ev):
                f"- Subject: {ev.subject}\n"
                f"- Match: {ev.receipt_tier}")
     return vault.append_body_section(note.ref, tag, section)
+
+
+def _skip_with_evidence(r, vault, note, event, dry_run, *, stamped=None) -> ReconcileResult:
+    """Shared tail for a domain-matched receipt that will NOT advance status this call --
+    either because the note was already past shortlist when it was matched (the
+    steady-state case, #136 Task 5c) or because the fresh CAS re-read inside the
+    auto-advance write below found the note had left shortlist between THIS call's own
+    read and its write (#136 Task 5d's race). Both stamp the receipt's evidence onto the
+    note via the same idempotent `_stamp_receipt` the auto-advance path uses on success,
+    additive-only, status untouched -- see the two call sites for why going quiet with
+    nothing recorded would drop the #40 safety cover.
+
+    `stamped` (the Task 5d call site only) is the auto-advance branch's OWN
+    `_stamp_receipt` return, passed through verbatim rather than left for this function to
+    re-derive: that branch already stamped evidence BEFORE attempting its status write
+    (evidence-first, so a raced or conflicted status write never loses it), so by the time
+    the race is discovered the write already happened and its real result is already
+    known. Re-deriving it here by calling `_stamp_receipt` a second time would be a real,
+    if idempotent-on-disk, second I/O attempt -- and could silently report the wrong
+    value: if THIS message was already stamped by an earlier run (the first attempt's
+    status write raised `VaultConflict` after a successful stamp, so the message retried),
+    the caller's own call already correctly returned False (tag already present), but a
+    second call here would ALSO return False for the same reason -- so passing the
+    caller's real result through is not just cheaper, it is the only way this function can
+    ever report False for a genuinely-already-stamped message rather than defaulting to
+    True unconditionally. `stamped=None` (the Task 5c call site's default, which has not
+    stamped anything yet) means this function must perform the stamp itself. A
+    VaultConflict from the stamp write itself is deliberately never caught here either
+    way, whichever call site raised it: it propagates into engine.run's per-message
+    `except`, which skips `seen.add` so the message retries next run -- and the retry is a
+    no-op, since append_body_section is idempotent by tag."""
+    r.status_from = note.status
+    r.receipt_stamped = stamped if stamped is not None else _stamp_receipt(vault, note, event, dry_run=dry_run)
+    r.action = "skipped"
+    r.note = event.summary
+    return r
 
 
 def _advance(vault, note, target, ev, dry_run=False):
@@ -114,8 +167,8 @@ def _advance(vault, note, target, ev, dry_run=False):
         vault.update_fields(note.ref, fields)
 
 
-def reconcile(event, note_by_slug, vault, cfg, client, dry_run=False, *, shortlist_by_slug=None) -> ReconcileResult:
-    shortlist_by_slug = shortlist_by_slug or {}
+def reconcile(event, note_by_slug, vault, cfg, client, dry_run=False, *, receipt_by_slug=None) -> ReconcileResult:
+    receipt_by_slug = receipt_by_slug or {}
     r = ReconcileResult(lead=event.lead_slug or ",".join(event.candidates) or "?")
     # Classification failed (#40): we have no trustworthy signal, so take no action beyond
     # surfacing it. Handled first, before any lead lookup or additive write, so a failed
@@ -128,11 +181,15 @@ def reconcile(event, note_by_slug, vault, cfg, client, dry_run=False, *, shortli
         return r
     # Application receipt (#10): advance shortlist->applied on a domain-PROOF match.
     # Placed BEFORE the generic no-match guard: a receipt's lead is resolved by the
-    # deterministic matcher (engine) against the SHORTLIST set, not note_by_slug, and
-    # carries its own tier. never-regress: can_apply is True only for shortlist, so a
-    # receipt can never pull a lead out of the application ladder.
+    # deterministic matcher (engine) against the COMBINED shortlist + in-flight index
+    # (#136, engine.run's receipt_by_slug -- a lead reaches `applied` at apply time and
+    # its receipt normally arrives AFTER, so a shortlist-only index left the matcher
+    # structurally blind in steady state), and carries its own tier. never-regress:
+    # can_apply is True only for shortlist, so a receipt can never pull a lead out of
+    # the application ladder -- see the two branches below for what happens to a receipt
+    # that domain-matches a note can_apply already refuses.
     if event.type == "receipt":
-        note = shortlist_by_slug.get(event.lead_slug) if event.lead_slug else None
+        note = receipt_by_slug.get(event.lead_slug) if event.lead_slug else None
         if event.receipt_tier == "proof" and note is not None \
                 and _status.can_apply(note.status) and event.confidence >= cfg.auto_apply_min:
             r.status_from = note.status
@@ -148,12 +205,40 @@ def reconcile(event, note_by_slug, vault, cfg, client, dry_run=False, *, shortli
                 # double-write. (A vault-level CAS across both writes was considered and
                 # declined: it buys nothing this ordering does not, and `_advance` below
                 # has the same shape.)
-                _stamp_receipt(vault, note, event)
+                receipt_stamped = _stamp_receipt(vault, note, event, dry_run=dry_run)
                 # Receipt-specific field set: status + last_signal ONLY. Do NOT reuse
                 # _advance, which stamps interview_date/interview_link from ev.when/links
                 # -- wrong for an `applied` lead (a receipt is not an interview signal).
-                vault.update_fields(note.ref, {"status": "applied",
-                                               "last_signal": date.today().isoformat()})
+                #
+                # #136 Task 5d: require_status re-reads the status from the FRESH note
+                # inside the atomic compare-and-set transform and refuses to write if it
+                # is no longer `shortlist` -- closing the gap between when `note.status`
+                # was read (can_apply above, a snapshot possibly seconds stale) and this
+                # write actually landing. Mirrors apply/record.py's identical guard for
+                # the identical snapshot-staleness hazard. Reaching this call at all means
+                # the snapshot said shortlist, so `wrote is False` unambiguously means the
+                # note left shortlist in that window -- a genuine race, not a
+                # hypothetical.
+                wrote = vault.update_fields(
+                    note.ref, {"status": "applied", "last_signal": date.today().isoformat()},
+                    require_status=frozenset({"shortlist"}))
+                if not wrote:
+                    # Reporting action="applied" here would be a lie -- the write never
+                    # landed -- and would also trip engine.py's clear_lead dead-letter-
+                    # clearing logic on a status that never actually moved. The evidence
+                    # stamp above already landed (it ran BEFORE this write,
+                    # unconditionally, evidence-first), so this falls through to the same
+                    # quiet-skip-and-stamp shape as the domain-matched-but-already-applied
+                    # branch below -- this IS that case now, just discovered a few
+                    # microseconds later than a snapshot read could have told us.
+                    # `receipt_stamped` (not a hardcoded True) is threaded through: on a
+                    # message that already raced once -- an EARLIER run's status write
+                    # raised VaultConflict after its own stamp landed, so this run is a
+                    # retry -- the call above is itself a no-op (tag already present) and
+                    # correctly returns False, which must survive here rather than being
+                    # overwritten to a True the message did not earn THIS run.
+                    return _skip_with_evidence(r, vault, note, event, dry_run,
+                                               stamped=receipt_stamped)
             r.action = "applied"
             r.status_to = "applied"
             return r
@@ -164,11 +249,19 @@ def reconcile(event, note_by_slug, vault, cfg, client, dry_run=False, *, shortli
         # commonest producer is a SECOND receipt for a lead this same run already
         # advanced. engine.run's in-flight LLM-fallback path already reasons exactly this
         # way -- it withholds `--to applied` for in-flight candidates -- so the two agree.
+        #
+        # #136: this is also the STEADY-STATE case -- a lead reaches `applied` before its
+        # receipt arrives, so THIS branch fires on every ordinary confirmation, not an
+        # edge case. Going quiet on the STATUS is right (no `track confirm` could ever
+        # act on it), but going quiet with NOTHING recorded anywhere would drop the #40
+        # safety cover engine.run's LLM-name fallback used to provide for a mislabelled
+        # rejection: if the model called a real rejection a "receipt" and it happens to
+        # domain-match, the lead would sit at `applied` forever with zero trace. So the
+        # evidence goes on the note instead, via `_skip_with_evidence` -- the SAME
+        # idempotent, CAS-routed `_stamp_receipt` helper the auto-advance path above
+        # already uses, additive-only, status untouched.
         if note is not None and not _status.can_apply(note.status):
-            r.status_from = note.status
-            r.action = "skipped"
-            r.note = event.summary
-            return r
+            return _skip_with_evidence(r, vault, note, event, dry_run)
         # corroborated, ambiguous, or proof below the confidence floor -> propose.
         if note is not None or event.candidates:
             r.status_from = note.status if note is not None else None

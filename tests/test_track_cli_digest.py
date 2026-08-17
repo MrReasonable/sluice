@@ -75,3 +75,22 @@ def test_no_warning_when_no_instant_was_guessed(_report, capsys):
     err = _stderr(capsys)
     assert "WARNING" not in err, err
     assert "calendar_added=1" in err, "the ordinary digest line should still print"
+
+
+def test_receipts_recorded_appears_in_the_digest_line(_report, capsys):
+    # #136 Task 6: the digest-visible trace of a quiet-skip receipt stamp
+    # (ReconcileResult.receipt_stamped, summed into rep.receipts_recorded) must reach
+    # the operator's stderr the same way every other per-run counter does -- under cron
+    # this line is the only surviving evidence a stamp happened at all.
+    rep = RunReport(msgs=3, classified=3, receipts_recorded=2)
+    assert cli.cmd_track_run(_report(rep), Config()) == 0
+    assert "receipts_recorded=2" in _stderr(capsys)
+
+
+def test_receipts_recorded_is_zero_by_default_in_the_digest_line(_report, capsys):
+    # The ordinary run -- nothing stamped -- must still print the key at 0, or a
+    # dropped key would read as indistinguishable from a run that silently crashed
+    # before reaching this line.
+    rep = RunReport(msgs=1, classified=1)
+    assert cli.cmd_track_run(_report(rep), Config()) == 0
+    assert "receipts_recorded=0" in _stderr(capsys)
