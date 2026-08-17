@@ -176,13 +176,14 @@ whichever neighbour it was written next to:
    deterministically, for free; only kept, ambiguous leads are enriched
    and sent to an LLM judge (`judge.py`, `prompt.py`, over `core.backends`).
    A lead classify() leaves at blank-company `needs_review` gets one
-   resolution attempt (`resolve.py`, #109/#120) before that: a free
-   URL-pattern tier 1, an opt-in, no-LLM page-visit tier 2, then -- also
-   opt-in, and only when tier 1/2 abstain -- an LLM read of that SAME
-   page data, tier 3, on a SEPARATE backend from the judge's (always the
-   cheap "fallback" role, regardless of `--backend`) -- so "for free" no
-   longer describes the WHOLE classify pass unconditionally: a
-   blank-company lead can trigger a real page visit when
+   resolution attempt (`resolve.py`, #109/#120/#151) before that: a free
+   regex over the role text's own trailing "<role> at <Company>" clause,
+   tier 0, a free URL-pattern tier 1, an opt-in, no-LLM page-visit tier 2,
+   then -- also opt-in, and only when tiers 0-2 all abstain -- an LLM
+   read of that SAME page data, tier 3, on a SEPARATE backend from the
+   judge's (always the cheap "fallback" role, regardless of `--backend`)
+   -- so "for free" no longer describes the WHOLE classify pass
+   unconditionally: a blank-company lead can trigger a real page visit when
    `triage.company_resolve_fetch` is on, and an LLM call when
    `triage.company_resolve_llm` is also on. `apply.py` writes verdicts
    back, skipping any lead already in the application lifecycle (its own
@@ -768,6 +769,81 @@ frozen. Sluice does not create this state — it arrives from a human with a fil
 — and repairing it belongs with `job-sluice leads dedupe --merge` (or a hand
 rename). `leads reconcile` REPORTS such a pair and declines to move either note:
 the filename is the slug, so it cannot rename, and it must not pick a survivor.
+
+**`job-sluice leads rename`** (#151) is the file-*name* analogue of `leads reconcile` — the
+two axes this store tracks, WHICH FOLDER a note sits in and WHAT BASENAME it carries, are
+orthogonal, so the two passes can run in either order and neither disturbs the other's work.
+`reconcile_layout` only ever moves a note between directories (its basename untouched);
+`Vault.reconcile_names` only ever renames a note within its OWN directory (its folder
+untouched) -- there is no `_managed_dirs()` gate the way `reconcile_layout` has one, so a note
+the user filed by hand keeps that folder here, and no `lead_layout` gate either, since a wrong
+basename exists whether or not a layout is even configured. It reports by default and moves on
+`--apply`, the same shape as `reconcile_layout` and for the same reason -- there is no
+`dry_run` parameter to be inert.
+
+A note created against a blank or sentinel ("Unknown", ...) company (#151) is seated at
+`" - <role>.md"`/`"Unknown - <role>.md"`; once triage backfills a real company the frontmatter
+and the filename disagree, and `_resolve_path`'s candidate walk is keyed on the FILENAME,
+never the frontmatter, so a re-scrape of the same posting mints a SECOND note rather than
+finding the one already there. `reconcile_names` closes that gap by renaming the note in
+place -- like `reconcile_layout`, it writes no note BYTES, only a directory entry.
+
+The qualification is `_frontmatter_name`'s job, and it is an exact RE-DERIVATION rather than a
+`" - "`-prefix heuristic: the current stem must be byte-identical to one of `_candidate_names`'
+own outputs when called with the PLACEHOLDER head, so a human-renamed note, or one whose role
+has drifted since it was seated without the file being renamed, is invisible to this pass by
+construction. The rename target is ALWAYS candidate 1 -- never a location- or digest-suffixed
+candidate the note may currently be seated at -- because `_resolve_path` always tries
+candidate 1 first, and a note not sitting there is invisible to that first probe.
+
+The report has seven buckets: `examined` (a count); `renames` (`(slug, target, folder)`
+triples); `unresolved` (`(slug, company)` pairs -- the current name IS one this store minted
+from a placeholder, but the frontmatter still offers nothing safe to rename to); `collisions`
+(`(slug, target, reason)` TRIPLES, unlike `reconcile_layout`'s bare pair, because the reason
+distinguishes which of three collision layers refused); `ambiguous` (the same
+`index_by_slug`-derived bucket `reconcile_layout` reports -- two notes already claiming one
+slug cannot be repaired by either pass); `resurrected` (a note whose OLD basename re-appeared
+after an applied rename, on a probe narrower than `reconcile_layout`'s own post-sweep
+`ambiguous` re-read: a raced RENAME re-creates the source at a DIFFERENT slug from the new
+one, invisible to `index_by_slug`, so this pass instead re-checks `os.path.exists` on each
+renamed note's pre-sweep path); and `skipped` (a symlinked note -- left alone as a structure
+the user deliberately built, not a detachment hazard, since source dir == dest dir for a
+rename -- or an `OSError`).
+
+COLLISION HANDLING has three layers, because `_reserve_and_move`'s own `O_EXCL` reservation is
+scoped to ONE directory, and source dir == dest dir for a rename -- so it alone cannot see a
+note already seated at the target basename in a DIFFERENT folder, exactly the cross-folder
+duplicate shape #151 itself reports and that only a recursive, layout-aware vault makes
+possible. Layer 1 is a vault-wide precheck, `self._locate(target)`, against the pre-sweep
+vault (re-derived via `self._rescan_dirs()` immediately beforehand, mirroring
+`_resolve_path`'s own re-derive before trusting an absent verdict). Layer 2 is a within-run
+precheck: two stale notes in the SAME sweep that would both mint the identical target are
+grouped and BOTH refused, computed as a separate pass over every note's already-decided target
+so the outcome cannot depend on iteration order. Layer 3 is
+`_reserve_and_move(..., suffix_on_collision=False)` itself, the last word against a writer
+racing outside this sweep's own read -- refused rather than suffixed, since a numeric suffix
+would change the basename, which is the slug, orphaning the note from the very re-scrape this
+pass exists to let find it.
+
+The ACCEPTED RESIDUAL: layer 2 refuses BOTH notes whenever two genuinely DISTINCT leads --
+same company and role, a different city, say -- happen to backfill to the identical bare
+candidate-1 target, with no candidate-2/3 fallback attempted ("always candidate 1" is the
+deliberate simplifying rule, not an oversight). They are reported as colliding on every run,
+forever, with nothing here telling the operator they are not actually a duplicate pair; the
+remedy is manual -- a human renames one of the two by hand to a name outside
+`_frontmatter_name`'s minted set, which this pass then leaves alone by construction.
+
+`Sluice.rename(apply=True)` additionally migrates the dead-letter store's rows for every note
+actually renamed, since a dead-letter proposal is keyed on the lead's slug and a rename
+changes it -- otherwise a proposal filed against the OLD slug becomes permanently unreachable
+by `track confirm`/`track dismiss --lead` the moment the note moves out from under it. The
+dead-letter store's reachability is checked BEFORE any vault rename runs, so an unreachable
+store refuses the WHOLE operation with zero notes renamed rather than stranding some
+proposals; once renames have actually landed, a PER-PAIR migration failure is isolated into
+`report["deadletter"]["failed"]` rather than rolled back, since undoing a rename that already
+succeeded would trade a recoverable problem (a stray dead-letter row still filed under the old
+slug) for the unrecoverable one this feature exists to prevent -- a duplicate note minted on
+the next scrape.
 
 An unreadable directory in the scan set **raises** (`os.walk(..., onerror=)`). The
 default swallows it and yields nothing, which would make every lead beneath it

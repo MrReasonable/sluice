@@ -81,7 +81,8 @@ Classify leads.
 
 Deterministic rules resolve obvious cases; ambiguous leads go to the LLM judge (skipped
 entirely under `--no-llm`). A blank-company `needs_review` lead gets one resolution
-attempt first: a free URL-pattern tier 1, an opt-in real page-visit tier 2
+attempt first: a free regex over the role text's own trailing `"<role> at <Company>"`
+clause, tier 0, then a free URL-pattern tier 1, an opt-in real page-visit tier 2
 (`triage.company_resolve_fetch`), then an opt-in LLM read of that SAME page data, tier 3
 (`triage.company_resolve_llm`). Never touches a lead already in the application
 lifecycle. `--dry-run` still COMPUTES every resolution tier -- including a real tier-3
