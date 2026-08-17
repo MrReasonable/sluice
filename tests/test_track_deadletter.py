@@ -1,6 +1,8 @@
 import os, tempfile, pathlib, sqlite3
 import pytest
-from sluice.track.deadletter import DeadLetterDb, Entry, deadletter_path, _DEADLETTER_SUFFIX
+from sluice.track.deadletter import (
+    DeadLetterDb, Entry, deadletter_path, _DEADLETTER_SUFFIX, EV_TYPE_CALENDAR,
+)
 
 
 def _db():
@@ -59,6 +61,41 @@ def test_clear_lead_and_clear_id_return_counts():
     assert [e.message_id for e in db.open_entries()] == ["m3"]
     assert db.clear_id("m3") == 1
     assert db.open_entries() == []
+
+
+def test_rename_lead_moves_every_row_kind_not_just_status_proposals():
+    # clear_lead's status_only split deliberately SKIPS the two engine-authored kinds
+    # (failure/calendar). rename_lead must not inherit that split: a rename changes the
+    # lead's identity, it does not resolve what a calendar row is still proposing.
+    db = _db()
+    db.record(_entry("m1", lead="Example Tidal - Analyst", ev_type="rejection"))
+    db.record(_entry("m2", lead="Example Tidal - Analyst", ev_type=EV_TYPE_CALENDAR))
+    db.record(_entry("m3", lead="Other - Role"))  # a different lead, must stay untouched
+    assert db.rename_lead("Example Tidal - Analyst", "Example Tidal Ltd - Analyst") == 2
+    leads = {e.message_id: e.lead for e in db.open_entries()}
+    assert leads["m1"] == "Example Tidal Ltd - Analyst"
+    assert leads["m2"] == "Example Tidal Ltd - Analyst"
+    assert leads["m3"] == "Other - Role"
+
+
+def test_rename_lead_on_missing_db_is_noop_and_creates_no_file():
+    db = _db()
+    assert db.rename_lead("old-slug", "new-slug") == 0
+    assert not os.path.exists(db.path)   # a no-op write must not create the store
+
+
+def test_rename_lead_on_corrupt_db_raises_same_exception_type_as_clear_lead():
+    # Not a hardcoded exception class: the brief requires PARITY with clear_lead's own
+    # failure mode on the identical corrupt-store shape, so derive the expected type from
+    # clear_lead itself rather than asserting a guessed sqlite3 class that could drift.
+    db = _db()
+    os.makedirs(os.path.dirname(db.path), exist_ok=True)
+    with open(db.path, "w") as f:
+        f.write("not a sqlite file")
+    with pytest.raises(Exception) as clear_exc:
+        db.clear_lead("x")
+    with pytest.raises(type(clear_exc.value)):
+        db.rename_lead("old-slug", "new-slug")
 
 
 def test_clear_on_missing_db_is_noop_and_creates_no_file():
