@@ -340,6 +340,28 @@ def _find_ours_by_tag(client, ics) -> tuple:
     return _find_ours(tagged, ics), tag_truncated
 
 
+def _cancel_all(client, mine, unsettled, dry_run) -> str:
+    """Remove every entry of ours, and say honestly whether that was the whole job.
+
+    ONE definition for BOTH cancel arms -- the windowed one and the startless one. They carried
+    two copies of this rule and only one copy got the truncation guard, so on identical evidence
+    a startless cancel claimed `cancelled` while a windowed one said `unresolved`. The version
+    that claimed completeness set no `needs_review`, wrote no dead-letter row, and let
+    `seen.add` consume the message: a second entry for a cancelled interview, with nothing
+    anywhere pointing at it.
+
+    That is the third time on this branch that a rule living in two places got updated in one,
+    so it now lives in one place. PRECONDITION: `mine` is non-empty -- an empty removal is not a
+    cancellation, and both callers decide that for themselves because their fallbacks differ."""
+    if not dry_run:
+        for ev in mine:
+            client.delete_event(ev["id"])
+    # `unresolved` AFTER the deletes, never instead of them. The work we could do is real and
+    # worth doing; what we cannot do is claim it was complete, because a truncated tag query
+    # leaves another copy possible off-page. `cancelled` is a positive claim of full removal.
+    return "unresolved" if unsettled else "cancelled"
+
+
 def _foreign_at_start(events, cfg, ics):
     """True if a NON-sluice event already sits within calendar_match_minutes of ics.start
     (e.g. Google auto-added the recruiter's own invite). Used only to avoid a duplicate
@@ -440,18 +462,11 @@ def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
         if ics.cancelled:
             mine, unsettled = _find_ours_by_tag(client, ics)
             if mine:
-                if not dry_run:
-                    for ev in mine:
-                        client.delete_event(ev["id"])
-                # Same rule as the windowed cancel below, and this arm needs it MORE. There the
-                # tag query supplements a window scan; here it is the ONLY evidence there is,
-                # so a truncated one leaves us with no independent reason to believe we saw
-                # every copy. Claiming `cancelled` would set no `needs_review`, write no
-                # dead-letter row, and let `seen.add` consume the message -- a second entry for
-                # a cancelled interview left in the calendar with nothing anywhere pointing at
-                # it. That is #138's harm, and an earlier version of this arm had it, because
-                # the rule was applied next door and not here.
-                return "unresolved" if unsettled else "cancelled"
+                # `_cancel_all` rather than an inline copy: this arm needs the truncation rule
+                # MORE than the windowed one does -- there the tag query supplements a window
+                # scan, here it is the only evidence there is -- and it is the arm that got the
+                # rule LAST when the two were separate.
+                return _cancel_all(client, mine, unsettled, dry_run)
             # NOT `present` when the tag query comes back empty, even though it searched
             # without a window and "nothing of ours" is what `present` means. That would be
             # #138 rebuilt on an assumption: `present` is a positive claim, and the only
@@ -501,22 +516,11 @@ def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
             # is stale -- and an operator arriving with #146's orphan plus its duplicate is
             # precisely who this branch meets. Deleting one and reporting `cancelled` is the
             # #138 conflation rebuilt: a positive claim of removal over an incomplete one.
-            if not dry_run:
-                for ev in mine:
-                    client.delete_event(ev["id"])
-            if tag_unsettled:
-                # We removed everything we could SEE, and still cannot call it done. The tag
-                # query was short, so another entry under this UID may be off-page -- and
-                # `cancelled` is exactly the positive claim of complete removal that the
-                # paragraph above refuses to make on incomplete evidence.
-                #
-                # The `truncated` flag cannot carry this: it is computed as
-                # `not mine and tag_unsettled`, which is deliberately False here BECAUSE we
-                # found something, and the `if mine:` branch returns before it is ever read.
-                # Reported after the deletes, not instead of them: the work we could do is
-                # still worth doing, and a human is told the rest is unconfirmed.
-                return "unresolved"
-            return "cancelled"
+            #
+            # `tag_unsettled`, NOT `truncated`: the latter is computed as
+            # `not mine and tag_unsettled`, deliberately False here BECAUSE we found something,
+            # and this branch returns before it would be read anyway.
+            return _cancel_all(client, mine, tag_unsettled, dry_run)
         if truncated:
             # We looked, but the window was SHORT and we know it -- our event may be one of
             # the ones that did not fit. Saying `present` here asserts a fact from an
