@@ -45,7 +45,7 @@ def test_cmd_apply_record_warns_when_the_ats_flag_is_dropped(tmp_path, monkeypat
     note = Vault(str(tmp_path)).read_leads({"shortlist"})[0]
 
     args = _build_parser().parse_args(
-        ["apply", "record", "--lead", note.slug, "--ats", 'greenhouse"; status: applied'])
+        ["apply", "record", "--lead", note.slug, "--ats", 'example-ats"; status: applied'])
     assert cmd_apply_record(args, Config()) == 0
     err = capsys.readouterr().err
     # The success line's own "(ats=(dropped) ...)" already satisfies a bare "ats" +
