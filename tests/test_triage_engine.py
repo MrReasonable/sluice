@@ -530,6 +530,12 @@ def test_sentinel_company_lead_is_resolved_and_rewritten(tmp_path, titles):
 
     after = v.read_leads()[0]
     assert after.fm["company"] == "Resolved Co"
+    # tier 0 must have genuinely ABSTAINED here, not merely have run before tier 1 without
+    # anyone checking -- the fixture role text has no " at " clause for _ROLE_AT_COMPANY to
+    # match today, but nothing pins that; without this a future change to either the regex
+    # or this test's title fixture could make tier 0 silently produce the write instead, and
+    # the tier1 assertion below would still pass for the wrong reason (CodeRabbit finding 8).
+    assert report.resolved.get("tier0", 0) == 0
     assert report.resolved.get("tier1", 0) == 1     # tier 1 (company_from_url) did the resolving
     assert not any("company-resolve" in f for f in report.failures)
 
@@ -597,6 +603,14 @@ def test_a_human_typing_unknown_mid_run_does_not_block_the_resolution_write(
     after = v.read_leads()[0]
     assert after.fm["company"] == "Resolved Co"
     assert not any("company-resolve" in f for f in report.failures)
+    # The racer must have actually fired, not silently done nothing (CodeRabbit finding 6):
+    # without this, a broken monkeypatch/injection would leave every assertion above passing
+    # for the wrong reason -- the write would simply land unraced. Measured: `racer` is
+    # invoked exactly twice per note in this run (the company-resolve write, where the
+    # injected "Unknown" re-type happens first at calls["n"] == 1, then the later classify
+    # status write), so >= 2 proves both the injected write's call site and the real
+    # resolution write's call site were genuinely exercised through the intercepted path.
+    assert calls["n"] >= 2
 
 
 def test_a_backslash_in_a_resolved_company_does_not_kill_the_batch(tmp_path, titles):
