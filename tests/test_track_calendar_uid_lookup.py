@@ -363,6 +363,30 @@ def test_a_RESCHEDULE_onto_two_entries_of_ours_refuses_to_guess():
     assert not c.updated and not c.inserted, "moved an arbitrary one of two candidates"
 
 
+def test_the_duplicate_warning_names_the_ENTRIES_and_not_the_inbound_uid(caplog):
+    """A warning telling you to delete something must say WHICH something.
+
+    Event ids, not the ics UID, and that is better on both axes at once. The operator can act
+    on an event id -- it is what identifies an entry in the calendar UI and the API -- whereas
+    the UID identifies the invite and cannot be searched for by hand. And an inbound UID is
+    counterparty-supplied text that sometimes encodes the sender's domain, which is the leak
+    `search_messages` deliberately keeps its query out of the log for: a log line travels
+    further than the mailbox does. A Google event id is opaque about who the interview is
+    with."""
+    uid = "uid-7c11@mail.example-tidal.invalid"
+    both = [_ours(uid=uid, event_id="one-of-two"), _ours(uid=uid, event_id="two-of-two")]
+    c = FakeGoogleClient(events=both)
+    with caplog.at_level("WARNING", logger="sluice.track.calendar_sync"):
+        assert sync_event(c, TrackConfig(), lead_slug="example-lead",
+                          ics=_ics(uid=uid)) == "unresolved"
+    said = " ".join(r.getMessage() for r in caplog.records
+                    if r.name == "sluice.track.calendar_sync")
+    assert said, "refusing to act must not be silent -- nothing else tells the operator"
+    assert "one-of-two" in said and "two-of-two" in said, (
+        f"the entries to delete are not named, so the advice cannot be followed: {said}")
+    assert uid not in said, f"the warning leaked the inbound invite id: {said}"
+
+
 def test_a_tag_query_that_RAISES_does_not_fall_through_to_an_insert():
     """The narrow softening that the missing-method test cannot catch.
 
