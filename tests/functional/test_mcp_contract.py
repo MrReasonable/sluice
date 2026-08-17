@@ -274,7 +274,11 @@ def test_tools_list_under_write_true_returns_all_nine_with_exact_schemas():
     # needs_confirmation branch, never a silent promote.
     schema_props = by_name["cv_signoff"].input_schema["properties"]
     assert schema_props.get("discard", {}).get("default") is False
-    assert schema_props.get("confirm_token", {}).get("default") is None
+    # A MISSING "default" key also reads as None via .get(...) -- assert the key is
+    # actually PRESENT first, or a dropped default would pass this silently (round-6
+    # review finding).
+    assert "default" in schema_props.get("confirm_token", {})
+    assert schema_props["confirm_token"]["default"] is None
     assert set(by_name["create_lead"].input_schema["properties"]) == {
         "title", "company", "url", "location", "salary", "job_type", "source"}
 
