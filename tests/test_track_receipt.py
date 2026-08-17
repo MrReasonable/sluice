@@ -241,6 +241,18 @@ def test_empty_company_never_corroborates():
     assert m.tier == "none"
 
 
+def test_placeholder_company_never_corroborates():
+    # A lead with a placeholder company ("Unknown") must not corroborate-match even
+    # when an ATS receipt's body contains the literal word "unknown": the company token
+    # would match _norm_tokens("unknown"), but is_placeholder_company guards against
+    # treating placeholders as real employer identifiers. A placeholder company is as
+    # weak as no company at all for corroboration purposes.
+    leads = [_lead("Example - Analyst", "https://boards.ats.example.invalid/example/jobs/1", company="Unknown")]
+    m = match_receipt(_msg(frm="no-reply@ats.example.invalid", auth=_dkim_pass("ats.example.invalid"),
+                           body="Unknown has received your application."), leads, ATS)
+    assert m.tier == "none"
+
+
 def _shipped(denylist):
     """One host DERIVED from a shipped denylist. The four tests below are about the
     SHIPPED defaults -- that they are non-empty and that a host in them cannot prove a

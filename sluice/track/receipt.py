@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from email.utils import parseaddr
 from urllib.parse import urlparse
 
-from sluice.core.leads import _norm_tokens
+from sluice.core.leads import _norm_tokens, is_placeholder_company
 
 _EMAIL_DOMAIN_RE = re.compile(r"[\w.+-]+@([\w.-]+)")
 _COMMENT_RE = re.compile(r"\([^()]*\)")
@@ -235,9 +235,11 @@ def match_receipt(msg, shortlist_leads, ats_relay_domains, job_board_domains=Non
             corrob.append(lead.slug)
             continue
         # corroborated: from an ATS relay host, with the company named in the body.
+        # A placeholder company (e.g. "Unknown") is not sufficient to corroborate,
+        # since it provides no real employer identity.
         if from_ats:
             company = _norm_tokens(lead.fm.get("company") or "")
-            if company and company <= tokens:
+            if company and not is_placeholder_company(lead.fm.get("company") or "") and company <= tokens:
                 corrob.append(lead.slug)
     # No cross-tier ambiguity check: with both tiers keyed off the sender, the two are
     # now DISJOINT by construction -- corroboration requires an ATS sender, proof
