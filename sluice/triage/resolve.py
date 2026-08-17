@@ -19,7 +19,7 @@ import json
 import re
 
 from sluice.core.backends import BackendError
-from sluice.core.leads import UNTRUSTED_SCRAPED_CONTENT_WARNING
+from sluice.core.leads import UNTRUSTED_SCRAPED_CONTENT_WARNING, is_placeholder_company
 from sluice.core.log import get_logger
 from sluice.core.vault import frontmatter_safe
 
@@ -97,23 +97,6 @@ _CANDIDATE_CHARS = 120
 # frontmatter_safe has no length bound of its own, and the accepted value is later
 # rendered into render_rejected_note's bullet list.
 _MAX_COMPANY_CHARS = 80
-
-# Case-folded (after .strip().rstrip(".!").casefold()) non-answers a real employer
-# name never legitimately collides with. These are the model's HONEST, common
-# answer on exactly the population tier 3 runs on -- a recruiter listing that
-# withholds its client -- and frontmatter_safe alone would accept every one of
-# them: none contain a frontmatter-structural character, all are printable,
-# non-blank text. Left unguarded, "Confidential" is neither blank nor classify.py's
-# own "unknown" sentinel, so classify() would return "keep" (not needs_review) and
-# a CV would be composed for "Confidential" -- and because require_blank
-# (engine.py) refuses a write once the field is non-blank, THAT bad value could
-# never be corrected by a later run; only a human editing the note by hand could.
-_NON_ANSWERS = frozenset({
-    "confidential", "undisclosed", "unknown", "n/a", "na", "not disclosed",
-    "not specified", "private", "private company", "stealth", "stealth startup",
-    "various", "various clients", "client", "the client", "our client",
-    "recruitment agency", "recruiter", "agency",
-})
 
 _RESOLVE_PROMPT_HEAD = f"""You are the company-name resolution step of a job-lead triage pipeline.
 
@@ -327,9 +310,9 @@ def _company_from_reply(reply) -> str | None:
 def _is_non_answer(candidate: str) -> bool:
     """H1: 'Confidential'/'Unknown'/'N/A'/... is the model's HONEST answer on
     exactly the population tier 3 runs on (a recruiter listing hiding its client),
-    and frontmatter_safe alone accepts every one of them -- see _NON_ANSWERS above
-    for the concrete downstream harm."""
-    return candidate.rstrip(".!").strip().casefold() in _NON_ANSWERS
+    and frontmatter_safe alone accepts every one of them -- see NON_ANSWER_COMPANIES
+    in core.leads for the concrete downstream harm."""
+    return is_placeholder_company(candidate)
 
 
 def _host_label(url: str) -> str:

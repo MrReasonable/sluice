@@ -45,6 +45,40 @@ def is_http_url(url: str) -> bool:
     nothing after it, none of which sluice's apply/track flow can act on."""
     return url.lower().startswith(("http://", "https://"))
 
+# Case-folded (after .strip().rstrip(".!").casefold()) non-answers a real employer
+# name never legitimately collides with. These are the model's HONEST, common
+# answer on exactly the population tier 3 runs on -- a recruiter listing that
+# withholds its client -- and frontmatter_safe alone would accept every one of
+# them: none contain a frontmatter-structural character, all are printable,
+# non-blank text. Left unguarded, "Confidential" is neither blank nor classify.py's
+# own "unknown" sentinel, so classify() would return "keep" (not needs_review) and
+# a CV would be composed for "Confidential" -- and because require_blank
+# (engine.py) refuses a write once the field is non-blank, THAT bad value could
+# never be corrected by a later run; only a human editing the note by hand could.
+NON_ANSWER_COMPANIES = frozenset({
+    "confidential", "undisclosed", "unknown", "n/a", "na", "not disclosed",
+    "not specified", "private", "private company", "stealth", "stealth startup",
+    "various", "various clients", "client", "the client", "our client",
+    "recruitment agency", "recruiter", "agency",
+})
+
+
+def fold_company_answer(value: str) -> str:
+    """Normalise a company-field candidate the same way for every reader that needs to
+    recognise a placeholder, so the write guard, the resolution gate, and the rename pass
+    cannot drift on what counts as blank."""
+    return (value or "").rstrip(".!").strip().casefold()
+
+
+def is_placeholder_company(value: str) -> bool:
+    """True when `value` names no real employer: blank, or a folded match against
+    NON_ANSWER_COMPANIES (the board's own honest non-answers: "Unknown", "Confidential",
+    "N/A", ...)."""
+    stripped = (value or "").strip()
+    if not stripped:
+        return True
+    return fold_company_answer(value) in NON_ANSWER_COMPANIES
+
 
 def _norm_url(u: str) -> str:
     """Canonicalize a URL for dedup by dropping only the #fragment, keeping the
