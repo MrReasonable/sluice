@@ -40,15 +40,13 @@ _COMPANY_URL_RE = re.compile(
     rf"^https?://{_HOST_RE}/company/([a-z0-9-]+)(?=[/?#]|$)")
 
 
-# The extractor's own selector (`_JS` above) matches BOTH `a[href*="/company/"]` and
-# `a[href*="/jobs/"]` anchors -- deliberately, since a job card's own DOM sometimes nests a
-# company-profile link the extractor cannot distinguish at scrape time. That means some rows
-# it returns are not job postings at all: a company-*profile* CARD, whose only visible text is
-# the company's own name, so `title` ends up holding that name with `company` left empty ("").
-# There is no role to recover there -- it is not a lead with a missing company, it is not a
-# lead. `_is_company_card` is the filter `parse` (below) applies to drop those rows before
-# `_row_to_lead` ever sees them, using the SAME measured discriminator this module's own
-# docstring already records for `company_from_url`: a real job card links `/jobs/<id>-<slug>`,
+# The extractor's own selector (`_JS` above) now matches ONLY `a[href*="/jobs/"]` anchors.
+# `_is_company_card` is retained as defence-in-depth against nested and edge-case DOM shapes:
+# a job card's own DOM sometimes nests a company-profile link the extractor cannot distinguish
+# at scrape time (a `/company/`-shaped URL), or a future DOM change could reintroduce the
+# ambiguity. Rows carrying a `/company/` link and no role text are not leads and must be dropped
+# before `_row_to_lead` ever sees them. The filter uses the measured discriminator this module's
+# own docstring already records for `company_from_url`: a real job card links `/jobs/<id>-<slug>`,
 # a real company card links a BARE `/company/<slug>` with no trailing path.
 _COMPANY_CARD_PATH_RE = re.compile(r"^/company/[a-z0-9-]+$")
 
