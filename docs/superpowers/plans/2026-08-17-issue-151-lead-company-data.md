@@ -1,8 +1,9 @@
 # Fix issue #151 — three defects leaving 32% of lead notes with no usable company
 
-Spec: GitHub issue #151 (`gh issue view 151`), and the fully-researched, user-approved plan at
-`/Users/iandominey/.claude/plans/please-pickup-and-fixissue-zippy-firefly.md`. That plan is the
-binding authority for every design decision below; this document restates it as SDD tasks.
+Spec: GitHub issue #151 (`gh issue view 151`), and the fully-researched, user-approved plan
+produced in the preceding planning session (a local working document, outside this repo). That
+plan is the binding authority for every design decision below; this document restates it as
+SDD tasks.
 
 ## Context
 
