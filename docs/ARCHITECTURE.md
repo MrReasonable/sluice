@@ -1043,7 +1043,12 @@ Four points in the config are the seams for pluggable adapters.
   `Renderer.precheck` above -- `Sluice.triage()` threads `sources.get` into
   `triage.engine.run` as `get_source`, the same lazy inside-the-method import
   `ingest()` already uses; `triage/` itself never imports `sluice.ingest`
-  directly.
+  directly. A `BrowserListSource` subclass may also override `parse` itself for
+  row-level repair, provided it delegates to `super().parse(...)` so
+  `_row_to_lead` and the base class's title-non-empty filter still run:
+  `naukrigulf` overrides it to recover a company mashed into the title via the
+  listing URL's own seam (#151), `wellfound` to drop company-profile-card rows
+  its extractor selector lets through (#151).
 
 `job-sluice doctor` is a read-only preflight over the whole pipeline, not only the backend
 seam: it enumerates every configured backend (primary and fallback, per sub-app) and
