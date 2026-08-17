@@ -267,6 +267,29 @@ reported under `ambiguous` rather than prevented. Exits 1 on `--apply` if `colli
 `skipped` or `ambiguous` is non-empty; exit 2 (`sluice: <exc>`) if the store has no layout
 support at all.
 
+### `job-sluice leads rename [--apply] [--json]`
+
+Reports (or with `--apply`, renames) each lead note whose on-disk *basename* disagrees with its
+frontmatter company (#151). A lead note created with a blank or sentinel ("Unknown", ...)
+company is seated at a stale filename; once triage backfills a real company, this pass renames
+the note in place to match — the same folder, a corrected basename — so a later re-scrape of the
+same posting finds the existing note instead of minting a duplicate. **Do not run `--apply`
+concurrently with `ingest`/`triage`/`cv`/`apply`/`track`**: a rename landing inside another
+writer's compare-and-set window re-creates the source at the *old* basename, leaving two notes
+where there was one — reported under `resurrected` rather than prevented. A renamed note is
+found by the next scrape only once that scrape *also* carries the correct company; for a source
+not yet fixed at ingest, that guarantee lives entirely in `seen.db` (keyed on the listing URL,
+never the filename), and it disappears the moment `seen.db` is rebuilt or relocated.
+
+The human report lists `renames`/`collisions`/`skipped`/`resurrected`/`ambiguous`;
+`unresolved` (notes whose frontmatter still offers no real company to rename to — typically a
+large, unactionable backlog) is a **count only** on the trailing summary line, never listed
+item-by-item. Under `--apply`, also migrates the dead-letter store's rows for each renamed lead
+(so `track confirm`/`track dismiss --lead` keep finding them under the new slug); a dead-letter
+store known to be unreachable refuses the *whole* run before any note is renamed. Exits 1 on
+`--apply` if `collisions`, `ambiguous`, `resurrected`, `skipped`, or a dead-letter migration
+failure is non-empty; exit 2 (`job-sluice: <exc>`) if the store cannot rename notes at all.
+
 ## `job-sluice health`
 
 No flags. Per-source scrape baseline and retire state, one line each:
