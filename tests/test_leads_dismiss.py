@@ -9,6 +9,7 @@ import pytest
 from sluice.core.app import Sluice
 from sluice.core.config import Config
 from sluice.core.leads import Lead
+from sluice.core.protocols import VaultConflict
 from sluice.core.vault import Vault
 
 
@@ -106,6 +107,28 @@ def test_same_day_repeat_is_unchanged_and_note_appended_is_false(tmp_path):
 
 
 # ── CAS proofs ──────────────────────────────────────────────────────────────────
+
+def test_dismiss_lead_returns_conflict_on_a_sustained_vault_conflict(tmp_path, monkeypatch):
+    """A sustained write race (#16) must become a graceful `conflict` outcome, the same
+    contract dismiss_lead's siblings already provide and are already tested for
+    (test_apply_record.py::test_record_returns_conflict_on_vault_conflict,
+    test_cv.py::test_cv_signoff_conflict_returns_1) -- dismiss_lead's own `except
+    VaultConflict` had NO test anywhere in the suite (round-5 review finding, PR #132):
+    deleting the whole try/except left the full suite green. Mutation: deleting the
+    except clause must independently turn this test red (an unhandled VaultConflict
+    propagating out of dismiss_lead instead of a DismissResult)."""
+    slug = _seed(tmp_path, status="shortlist")
+    app = _app(tmp_path)
+
+    def boom(*a, **k):
+        raise VaultConflict("x")
+    monkeypatch.setattr(Vault, "update_fields", boom)
+
+    result = app.dismiss_lead(lead=slug, reason="no fit")
+    assert result.outcome == "conflict"
+    text = pathlib.Path(Vault(str(tmp_path)).read_leads()[0].ref).read_text()
+    assert "status: dismiss" not in text   # untouched
+
 
 def test_cas_proof_refuses_on_a_status_that_changed_between_resolve_and_write(tmp_path, monkeypatch):
     """Testing item 3: dismiss_lead resolves a note, then a DIFFERENT writer moves it

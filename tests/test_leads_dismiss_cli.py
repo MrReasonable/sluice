@@ -87,6 +87,24 @@ def test_refused_status_names_the_drifted_status_and_exits_1(tmp_path, monkeypat
     assert f"leads dismiss: {slug}: refused (status=applied)" in err
 
 
+def test_conflict_on_a_sustained_vault_conflict_exits_1(tmp_path, monkeypatch, capsys):
+    """Round-5 review finding (PR #132): dismiss_lead's `conflict` outcome had zero CLI
+    coverage -- mirrors tests/test_leads_dismiss.py's app-layer
+    test_dismiss_lead_returns_conflict_on_a_sustained_vault_conflict down to the CLI's
+    own printed output and exit code."""
+    from sluice.core.protocols import VaultConflict
+
+    slug = _seed(tmp_path)
+
+    def boom(*a, **k):
+        raise VaultConflict("x")
+    monkeypatch.setattr(Vault, "update_fields", boom)
+
+    assert _run(tmp_path, monkeypatch, "--lead", slug, "--reason", "x") == 1
+    err = capsys.readouterr().err
+    assert f"leads dismiss: {slug}: conflict" in err
+
+
 def test_same_day_repeat_is_unchanged_and_exits_zero(tmp_path, monkeypatch, capsys):
     """Deferred #6 (final whole-branch review): `rc == 0` alone cannot
     distinguish "genuinely took the unchanged branch" from "silently no-oped
