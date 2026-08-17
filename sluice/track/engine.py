@@ -35,10 +35,16 @@ _PROPOSE_TARGET = {"phone_screen": "phone_screen", "interview": "interview",
 # command that BOOKS the thing that was just cancelled. An unrunnable hint is worse than an
 # honest "look at this yourself"; a runnable and WRONG one is worse than either.
 _NEEDS_REVIEW_HINT = {
+    # Deliberately does NOT say "nothing was deleted", which it used to. Since #146 a cancel
+    # can delete every entry it managed to identify and STILL answer `unresolved`, because a
+    # truncated tag query cannot rule out another copy off-page. That made the old wording a
+    # false statement in exactly the new case, sending the operator to remove by hand something
+    # already gone. One reason value covering two situations has to be true of both -- the
+    # failure this table's own header describes, arriving through a new door.
     "cancel-unresolved":
-        '(cancellation for uid "{uid}" could not be matched to a calendar entry, so nothing '
-        'was deleted. Check your calendar and remove it by hand, then '
-        "`job-sluice track dismiss --id {mid}`)",
+        '(cancellation for uid "{uid}" could not be fully resolved: sluice removed any entry '
+        "it could identify, but its search was incomplete, so a copy may remain. Check your "
+        "calendar and remove anything still there, then `job-sluice track dismiss --id {mid}`)",
     "cancel-foreign":
         '(cancellation for uid "{uid}" -- the entry at that slot was not created by sluice '
         "(usually the sender's own invite, auto-added by Google), so it was left alone. "
