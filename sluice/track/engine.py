@@ -151,6 +151,13 @@ class RunReport:
     proposed: int = 0
     calendar_added: int = 0
     calendar_assumed_tz: int = 0   # of those, how many booked an instant we GUESSED
+    # #136 Task 5c/5d: how many receipts got their evidence filed onto a note via
+    # reconcile()'s `_skip_with_evidence` (res.receipt_stamped) -- the digest-visible
+    # trace of a write that would otherwise be invisible, since the note's `action`
+    # stays "skipped" and neither `auto` nor `proposed` counts it. A dry run's would-be
+    # stamps count too, exactly like `calendar_added` beside it, so a preview can warn
+    # about them the same way.
+    receipts_recorded: int = 0
     # list[TrackFailure], not a count -- matching triage's RunReport, which set the
     # precedent. `failures=N` in the digest is len() of this list, so the count and the
     # detail come off one field and cannot disagree. A bare int meant a cron run could
@@ -374,15 +381,11 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                 m = match_receipt(msg, receipt_by_slug.values(), cfg.ats_relay_domains,
                                   cfg.job_board_domains)
                 ev.lead_slug, ev.candidates, ev.receipt_tier = m.lead_slug, m.candidates, m.tier
-            # `shortlist_by_slug=` is reconcile()'s own parameter name, not renamed here --
-            # that rename is a follow-up task in this same branch's history, touching
-            # reconcile.py itself (off limits to this change) and its call site together.
-            # The VALUE passed is receipt_by_slug: reconcile's receipt branch only ever
-            # reads it via `.get(event.lead_slug)`, so the parameter's name is cosmetic to
-            # this call site and the rename can land as a pure signature change later.
             res = reconcile(ev, note_by_slug, vault, cfg, client, dry_run=dry_run,
-                             shortlist_by_slug=receipt_by_slug)
+                             receipt_by_slug=receipt_by_slug)
             rep.results.append(res)
+            if res.receipt_stamped:
+                rep.receipts_recorded += 1
             # Never-regress across messages in one run: reflect the just-written
             # status back into the snapshot so the next message for this lead
             # reconciles against current, not stale, state. Only meaningful when

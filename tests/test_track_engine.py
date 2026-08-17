@@ -556,7 +556,22 @@ def test_confirm_to_applied_from_shortlist_and_refused_otherwise():
 
 
 def test_two_receipts_same_lead_one_run_advance_once():
-    # The second receipt in one run sees the REFLECTED `applied` snapshot -> no-op.
+    # The second receipt in one run sees the REFLECTED `applied` snapshot -> a STATUS
+    # no-op (the property this test's name promises: the lead advances exactly once).
+    #
+    # #136 Task 5c changed what "no-op" means for the EVIDENCE, deliberately: it is no
+    # longer a full no-op. The first receipt (r1) auto-advances shortlist -> applied and
+    # stamps its own evidence section. The second receipt (r2), reconciled against the
+    # now-reflected `applied` snapshot, hits reconcile's domain-matched-but-already-
+    # applied branch -- which used to record nothing at all, and now (via
+    # `_skip_with_evidence`) files ITS OWN evidence section too, tagged by its own
+    # message_id (`track-receipt-r2`, distinct from r1's). Two distinct real messages
+    # are two distinct filed facts, not a duplicate of one: had r2 instead been a
+    # mislabelled REJECTION that happened to domain-match, #136's whole point is that
+    # losing it silently here would be exactly the #40 loss class again. So the count
+    # is deliberately 2, not 1 -- see test_two_receipts_same_lead_one_run_records_no_deadletter_row
+    # immediately below for the independent proof that the STATUS-advance property this
+    # test's name is about (`rep.auto == 1`) is untouched by that change.
     v, path = _vault_shortlist("https://example.com/careers/1")
     be = FakeBackend(json.dumps({"lead": None, "type": "receipt", "confidence": 0.9,
                                  "when": None, "links": [], "materials": [], "summary": "received"}))
@@ -564,7 +579,7 @@ def test_two_receipts_same_lead_one_run_advance_once():
           now_iso="2026-07-25T09:00:00+00:00")
     text = pathlib.Path(path).read_text()
     assert "status: applied" in text
-    assert text.count("## Application receipt") == 1
+    assert text.count("## Application receipt") == 2
 
 
 def test_two_receipts_same_lead_one_run_records_no_deadletter_row():
@@ -574,6 +589,12 @@ def test_two_receipts_same_lead_one_run_records_no_deadletter_row():
     # (reason: applied). Worse, clear_lead had already run for message 1, so the row was
     # recorded AFTER the clear and re-surfaced on every future run with no way to act on
     # it. reconcile now skips a matched note that can_apply rules out.
+    #
+    # `rep.auto == 1` is the independent proof that #136 Task 5c's evidence-stamping
+    # change (see the sibling test above -- the section count is now 2, not 1) left the
+    # actual safety property this test's name promises -- a single auto-advance, no
+    # dead-letter row -- untouched: the second receipt is still a quiet STATUS no-op,
+    # only its evidence is no longer silently dropped.
     v, path = _vault_shortlist("https://example.com/careers/1")
     be = FakeBackend(json.dumps({"lead": None, "type": "receipt", "confidence": 0.9,
                                  "when": None, "links": [], "materials": [], "summary": "received"}))
@@ -582,7 +603,38 @@ def test_two_receipts_same_lead_one_run_records_no_deadletter_row():
                 now_iso="2026-07-25T09:00:00+00:00")
     assert dl.open_entries() == []
     assert rep.auto == 1 and rep.proposed == 0
-    assert pathlib.Path(path).read_text().count("## Application receipt") == 1
+    assert pathlib.Path(path).read_text().count("## Application receipt") == 2
+
+
+def test_receipts_recorded_counts_only_the_quiet_skip_stamp_not_the_auto_advance_one():
+    # #136 Task 6: `rep.receipts_recorded` is the digest-visible trace of a write that
+    # would OTHERWISE be invisible -- reusing the exact TwoReceiptClient scenario above.
+    # r1 auto-advances (action="applied", already visible via rep.auto == 1) and its own
+    # evidence-first stamp deliberately does NOT count here -- see ReconcileResult.
+    # receipt_stamped's own comment for why folding it in would double-count against
+    # rep.auto for no added visibility. r2 hits the quiet-skip branch (action="skipped",
+    # invisible to every OTHER counter) and its stamp is exactly what this counter
+    # exists to surface. So the count is 1, not 2, even though the note gained two
+    # evidence sections (pinned separately, by section COUNT, in the sibling test
+    # above).
+    v, path = _vault_shortlist("https://example.com/careers/1")
+    be = FakeBackend(json.dumps({"lead": None, "type": "receipt", "confidence": 0.9,
+                                 "when": None, "links": [], "materials": [], "summary": "received"}))
+    rep = E.run(v, TrackConfig(), TwoReceiptClient(), be, seen=set(), deadletter=_dl(),
+                now_iso="2026-07-25T09:00:00+00:00")
+    assert rep.auto == 1
+    assert rep.receipts_recorded == 1
+
+
+def test_receipts_recorded_is_zero_when_nothing_was_stamped():
+    # The ordinary run -- no receipt at all -- must leave the counter at its default, or
+    # the digest line stops meaning anything.
+    v, _ = _vault_shortlist("https://example.com/careers/1")
+    be = FakeBackend(json.dumps({"lead": None, "type": "not_job", "confidence": 0.9,
+                                 "when": None, "links": [], "materials": [], "summary": "n/a"}))
+    rep = E.run(v, TrackConfig(), OneMsgClient(), be, seen=set(), deadletter=_dl(),
+                now_iso="2026-07-10T12:00:00+00:00")
+    assert rep.receipts_recorded == 0
 
 
 def test_dry_run_receipt_advance_does_not_mutate_the_status_snapshot():

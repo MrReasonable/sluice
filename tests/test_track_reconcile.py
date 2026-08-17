@@ -184,7 +184,7 @@ def test_applied_lead_with_unclassifiable_mail_is_not_silently_unchanged():
 def test_receipt_proof_advances_shortlist_to_applied():
     v, sl, path = _shortlist_with("Example - Analyst", "https://example.com/careers/1")
     ev = _receipt_ev("proof", "Example - Analyst")
-    res = R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), shortlist_by_slug=sl)
+    res = R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), receipt_by_slug=sl)
     assert res.action == "applied" and res.status_to == "applied"
     text = pathlib.Path(path).read_text()
     assert "status: applied" in text and "## Application receipt" in text
@@ -193,14 +193,14 @@ def test_receipt_proof_advances_shortlist_to_applied():
 def test_receipt_below_confidence_floor_proposes():
     v, sl, path = _shortlist_with("Example - Analyst", "https://example.com/careers/1")
     ev = _receipt_ev("proof", "Example - Analyst", conf=0.5)  # below auto_apply_min
-    res = R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), shortlist_by_slug=sl)
+    res = R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), receipt_by_slug=sl)
     assert res.action == "proposed" and "status: shortlist" in pathlib.Path(path).read_text()
 
 
 def test_receipt_corroborated_proposes_not_advances():
     v, sl, path = _shortlist_with("Example - Analyst", "https://example.com/careers/1")
     ev = _receipt_ev("corroborated", "Example - Analyst")
-    res = R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), shortlist_by_slug=sl)
+    res = R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), receipt_by_slug=sl)
     assert res.action == "proposed"
     text = pathlib.Path(path).read_text()
     assert "status: shortlist" in text and "## Application receipt" not in text  # absence-of-write
@@ -210,19 +210,25 @@ def test_receipt_ambiguous_proposes_neither():
     v, sl, path = _shortlist_with("Example - Analyst", "https://example.com/careers/1")
     ev = Event(type="receipt", receipt_tier="corroborated", lead_slug=None,
                candidates=["Example - Analyst", "Example - Manager"], confidence=0.9)
-    res = R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), shortlist_by_slug=sl)
+    res = R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), receipt_by_slug=sl)
     assert res.action == "proposed" and "status: shortlist" in pathlib.Path(path).read_text()
 
 
 def test_receipt_cannot_regress_non_shortlist():
     # A receipt whose matched note is already at interview must NOT advance/regress it,
     # and must not PROPOSE it either -- see the next test for why proposing is its own
-    # defect rather than a harmless fallback.
+    # defect rather than a harmless fallback. #136 Task 5c: this branch now files the
+    # receipt's evidence on the note (never-clobber additive-only) rather than going
+    # fully silent -- see test_receipt_for_already_applied_lead_is_skipped_not_proposed
+    # for the full "why", pinned once there rather than repeated at every status this
+    # branch can be reached from.
     v, sl, path = _shortlist_with("Example - Analyst", "https://example.com/careers/1", status="interview")
     ev = _receipt_ev("proof", "Example - Analyst")
-    res = R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), shortlist_by_slug=sl)
+    res = R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), receipt_by_slug=sl)
     assert res.status_to is None and "status: interview" in pathlib.Path(path).read_text()
     assert res.action == "skipped"
+    assert res.receipt_stamped is True
+    assert "## Application receipt" in pathlib.Path(path).read_text()
 
 
 def test_receipt_for_already_applied_lead_is_skipped_not_proposed():
@@ -231,31 +237,50 @@ def test_receipt_for_already_applied_lead_is_skipped_not_proposed():
     # through that SAME predicate and is refused forever, while the dead-letter row it
     # creates re-surfaces on every future run -- #49's un-runnable-hint shape. The
     # commonest producer is a second receipt for a lead this same run already advanced.
+    #
+    # #136 Task 5c (behavior change from this branch's prior form, which recorded
+    # NOTHING here): this is the STEADY-STATE case -- a lead reaches `applied` before its
+    # receipt arrives, so this fires on every ordinary confirmation, not an edge case.
+    # Silence here would drop the #40 safety cover: if the model mislabelled a genuine
+    # REJECTION as "receipt" and it happens to domain-match, the lead would sit at
+    # `applied` forever with zero trace anywhere. So the evidence is now filed on the
+    # note -- additive-only (frontmatter byte-identical), never the status.
     v, sl, path = _shortlist_with("Example - Analyst", "https://example.com/careers/1",
                                   status="applied")
+    before = pathlib.Path(path).read_text()
     ev = _receipt_ev("proof", "Example - Analyst")
-    res = R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), shortlist_by_slug=sl)
+    res = R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), receipt_by_slug=sl)
     assert res.action == "skipped" and res.proposal is None
     assert res.status_from == "applied" and res.status_to is None
-    assert "## Application receipt" not in pathlib.Path(path).read_text()   # absence-of-write
+    assert res.receipt_stamped is True
+    after = pathlib.Path(path).read_text()
+    assert "## Application receipt" in after
+    # Additive-only, never-clobber: everything ABOVE the appended section -- frontmatter
+    # included -- is byte-identical to before. This is also the witness for "truly
+    # additive": had the stamp path accidentally written through `status` (a regression
+    # this repo has hit before via a shared write helper), this line would catch it, since
+    # `before` was captured with status already at `applied` and any second write to that
+    # key would still read `status: applied` today but would no longer be BYTE-IDENTICAL
+    # if the write touched key order, quoting, or a trailing key.
+    assert after.startswith(before)
 
 
 def test_receipt_idempotent_no_double_evidence():
     v, sl, path = _shortlist_with("Example - Analyst", "https://example.com/careers/1")
     ev = _receipt_ev("proof", "Example - Analyst"); ev.message_id = "m1"
-    R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), shortlist_by_slug=sl)
+    R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), receipt_by_slug=sl)
     # Re-read the now-applied note; a second identical receipt must not double-write.
     note2 = [n for n in v.read_leads() if n.slug == "Example - Analyst"][0]
     ev2 = _receipt_ev("proof", "Example - Analyst"); ev2.message_id = "m1"
     R.reconcile(ev2, {}, v, TrackConfig(), FakeGoogleClient(),
-                shortlist_by_slug={"Example - Analyst": note2})
+                receipt_by_slug={"Example - Analyst": note2})
     assert pathlib.Path(path).read_text().count("## Application receipt") == 1
 
 
 def test_receipt_advance_writes_no_interview_fields():
     v, sl, path = _shortlist_with("Example - Analyst", "https://example.com/careers/1")
     ev = _receipt_ev("proof", "Example - Analyst"); ev.links = ["https://example.com/portal"]
-    R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), shortlist_by_slug=sl)
+    R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), receipt_by_slug=sl)
     text = pathlib.Path(path).read_text()
     assert "interview_date" not in text and "interview_link" not in text
 
@@ -268,7 +293,7 @@ def test_receipt_dry_run_reports_advance_but_writes_nothing():
     v, sl, path = _shortlist_with("Example - Analyst", "https://example.com/careers/1")
     before = pathlib.Path(path).read_text()
     ev = _receipt_ev("proof", "Example - Analyst")
-    res = R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), True, shortlist_by_slug=sl)
+    res = R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), True, receipt_by_slug=sl)
     assert res.action == "applied" and res.status_to == "applied"
     after = pathlib.Path(path).read_text()
     assert after == before  # byte-unchanged: no frontmatter edit, no evidence section
@@ -285,13 +310,17 @@ def test_receipt_evidence_survives_a_status_write_conflict():
     v, sl, path = _shortlist_with("Example - Analyst", "https://example.com/careers/1")
 
     class ConflictOnStatus(Vault):
-        def update_fields(self, ref, fields):
+        def update_fields(self, ref, fields, **kwargs):
+            # **kwargs, not a bare (self, ref, fields): #136 Task 5d's require_status=
+            # kwarg is now part of the real call this override stands in for, and a
+            # narrower signature would raise TypeError instead of the VaultConflict this
+            # test means to simulate.
             raise VaultConflict("concurrent edit")
 
     boom = ConflictOnStatus(v.dir)
     ev = _receipt_ev("proof", "Example - Analyst"); ev.message_id = "m1"
     with pytest.raises(VaultConflict):
-        R.reconcile(ev, {}, boom, TrackConfig(), FakeGoogleClient(), shortlist_by_slug=sl)
+        R.reconcile(ev, {}, boom, TrackConfig(), FakeGoogleClient(), receipt_by_slug=sl)
     text = pathlib.Path(path).read_text()
     assert "status: shortlist" in text                  # never left the retryable state
     assert "## Application receipt" in text             # evidence already durable
@@ -301,7 +330,7 @@ def test_receipt_evidence_survives_a_status_write_conflict():
     note2 = [n for n in v2.read_leads() if n.slug == "Example - Analyst"][0]
     ev2 = _receipt_ev("proof", "Example - Analyst"); ev2.message_id = "m1"
     res = R.reconcile(ev2, {}, v2, TrackConfig(), FakeGoogleClient(),
-                      shortlist_by_slug={"Example - Analyst": note2})
+                      receipt_by_slug={"Example - Analyst": note2})
     text2 = pathlib.Path(path).read_text()
     assert res.action == "applied" and "status: applied" in text2
     assert text2.count("## Application receipt") == 1
@@ -313,6 +342,140 @@ def test_receipt_confidence_floor_is_inclusive():
     # off the floor and can't distinguish >= from >.
     v, sl, path = _shortlist_with("Example - Analyst", "https://example.com/careers/1")
     ev = _receipt_ev("proof", "Example - Analyst", conf=TrackConfig().auto_apply_min)
-    res = R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), shortlist_by_slug=sl)
+    res = R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), receipt_by_slug=sl)
     assert res.action == "applied" and res.status_to == "applied"
     assert "status: applied" in pathlib.Path(path).read_text()
+
+
+# ── #136 Task 5c/5d: a domain-matched receipt that cannot advance an in-flight
+# lead still files its evidence, via _skip_with_evidence -----------------------
+
+
+def test_a_domain_matched_receipt_for_an_inflight_lead_stamps_evidence_additively():
+    """The steady-state case (#136): a lead reaches `applied` before its receipt
+    arrives, so match_receipt's tier is real (proof or corroborated -- the branch under
+    test does not care which) but can_apply already refuses the note. Going quiet used
+    to record nothing anywhere; now the SAME _stamp_receipt helper the auto-advance
+    path uses files the evidence, additive-only, status untouched.
+
+    Witnessed by hand: deleting the `_stamp_receipt(...)` call from
+    `_skip_with_evidence` turns this test RED (no section written, receipt_stamped
+    stays False). Reverted after confirming."""
+    v, notes, path = _vault_with("Example Tidal - EM", "applied")
+    before = pathlib.Path(path).read_text()
+    ev = _receipt_ev("corroborated", "Example Tidal - EM")
+    ev.message_id = "r1"
+    res = R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), receipt_by_slug=notes)
+    assert res.action == "skipped"
+    assert res.receipt_stamped is True
+    after = pathlib.Path(path).read_text()
+    assert after.count("## Application receipt <!--track-receipt-r1-->") == 1
+    # Additive-only: everything that existed before is still there, byte-for-byte,
+    # including the frontmatter -- this is also the witness for "truly additive": had
+    # the stamp path accidentally routed through a status-touching write, `before`
+    # (captured pre-call, status already `applied`) would no longer be a strict PREFIX
+    # of `after` even though a bare substring check on `status: applied` would still
+    # pass.
+    assert after.startswith(before)
+
+
+def test_a_domain_matched_receipt_stamp_is_idempotent_across_two_reconcile_calls():
+    """append_body_section's idempotency (already pinned for the auto-advance call site
+    by test_receipt_idempotent_no_double_evidence), exercised through the NEW
+    quiet-skip call site: the same message_id reconciled twice against the same
+    in-flight note must leave exactly one section, never two."""
+    v, notes, path = _vault_with("Example Tidal - EM", "applied")
+    ev = _receipt_ev("proof", "Example Tidal - EM")
+    ev.message_id = "r1"
+    R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), receipt_by_slug=notes)
+    ev2 = _receipt_ev("proof", "Example Tidal - EM")
+    ev2.message_id = "r1"
+    R.reconcile(ev2, {}, v, TrackConfig(), FakeGoogleClient(), receipt_by_slug=notes)
+    assert pathlib.Path(path).read_text().count("## Application receipt") == 1
+
+
+def test_a_domain_matched_receipt_dry_run_reports_the_stamp_but_writes_nothing():
+    """Per _stamp_materials' existing pattern, a dry run reports what it WOULD do
+    (receipt_stamped is True) while leaving the vault untouched -- a `--dry-run` that
+    writes to a real note is a serious defect, not a cosmetic one.
+
+    Witnessed by hand: deleting the `if dry_run: return True` line from
+    `_stamp_receipt` turns this test RED (the note changes under dry-run). Reverted
+    after confirming."""
+    v, notes, path = _vault_with("Example Tidal - EM", "applied")
+    before = pathlib.Path(path).read_text()
+    ev = _receipt_ev("corroborated", "Example Tidal - EM")
+    ev.message_id = "r1"
+    res = R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), True, receipt_by_slug=notes)
+    assert res.action == "skipped"
+    assert res.receipt_stamped is True
+    assert pathlib.Path(path).read_text() == before
+
+
+def test_receipt_auto_advance_refuses_when_the_note_left_shortlist_between_read_and_write():
+    """The CAS proof (mirrors tests/test_apply_record.py::
+    test_record_require_status_refuses_when_the_note_left_shortlist_between_read_and_write,
+    #136 Task 5d): can_apply's own check reads a SNAPSHOT (note.status, resolved before
+    this call) -- byte-identical to no guard at all against a concurrent writer.
+    require_status re-reads FRESH inside the CAS transform. Simulated here by writing
+    "applied" to disk directly, between when `note` was resolved (still says
+    "shortlist") and when reconcile's auto-advance branch writes.
+
+    The race must not silently "succeed" over the concurrent writer: reconcile must
+    neither report action="applied" (a lie -- nothing changed) nor overwrite
+    last_signal on a note it no longer owns. It falls through to the same
+    quiet-skip-and-stamp shape Task 5c uses for a domain-matched receipt that cannot
+    advance -- which, as of the fresh read, this now is.
+
+    Witnessed by hand: deleting `require_status=frozenset({"shortlist"})` from the
+    auto-advance write turns this test RED -- the race is no longer caught,
+    `last_signal` is written over the concurrent writer's status change, and
+    res.action reads "applied" despite the stale read. Reverted after confirming."""
+    v, sl, path = _shortlist_with("Example - Analyst", "https://example.com/careers/1")
+    note = sl["Example - Analyst"]                       # STALE snapshot: still "shortlist"
+    v.update_fields(note.ref, {"status": "applied"})     # a "concurrent" writer wins first
+    ev = _receipt_ev("proof", "Example - Analyst")
+    res = R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), receipt_by_slug=sl)
+    assert res.action != "applied"
+    assert res.action == "skipped"
+    assert res.receipt_stamped is True
+    text = pathlib.Path(path).read_text()
+    assert "last_signal" not in text     # reconcile's own attempted write never landed
+    assert "status: applied" in text     # left exactly where the concurrent writer put it
+    assert "## Application receipt" in text   # evidence still filed, per Task 5c's fallback
+
+
+def test_receipt_auto_advance_race_reports_the_stamps_real_result_not_a_hardcoded_true():
+    """Review finding for #136: the race-fallback call site passed a hardcoded
+    `stamped=True` to `_skip_with_evidence` rather than the auto-advance branch's OWN
+    `_stamp_receipt` return -- correct for the common case (this run's stamp genuinely
+    landed), but wrong for a message reprocessed AFTER an earlier run's race: if that
+    earlier run's status write raised VaultConflict (a SUSTAINED conflict, not the
+    require_status refusal this test's sibling above exercises) after its own stamp had
+    already landed, the message retries next run, `seen.add` never having fired. On the
+    retry, THIS run's own `_stamp_receipt` call is a genuine no-op (the tag is already on
+    the note from the earlier run) and correctly returns False -- but the old code
+    discarded that return and hardcoded True regardless, so `res.receipt_stamped` lied
+    about whether THIS call wrote anything.
+
+    Simulated by pre-seeding the note with the exact tag `_stamp_receipt` would use for
+    this event (`_receipt_ev` sets no `message_id`, so the tag falls back to `ev.type`:
+    `track-receipt-receipt`), so `append_body_section`'s idempotency check makes this
+    run's own append a real no-op before the race is even triggered.
+
+    Witnessed by hand: reverting the call site to `stamped=True` (discarding
+    `receipt_stamped`'s real value) turns this test RED -- `res.receipt_stamped` reads
+    True even though no NEW evidence was written this call. Reverted after confirming."""
+    v, sl, path = _shortlist_with("Example - Analyst", "https://example.com/careers/1")
+    pre_existing = ("## Application receipt <!--track-receipt-receipt-->\n"
+                    "- Received: 2026-01-01\n- From: jobs@example.com\n"
+                    "- Subject: Thanks for applying\n- Match: proof")
+    note = sl["Example - Analyst"]
+    v.append_body_section(note.ref, "track-receipt-receipt", pre_existing)
+    v.update_fields(note.ref, {"status": "applied"})     # a "concurrent" writer wins first
+    ev = _receipt_ev("proof", "Example - Analyst")
+    res = R.reconcile(ev, {}, v, TrackConfig(), FakeGoogleClient(), receipt_by_slug=sl)
+    assert res.action == "skipped"
+    assert res.receipt_stamped is False    # THIS call wrote no new evidence -- it was already there
+    text = pathlib.Path(path).read_text()
+    assert text.count("## Application receipt") == 1   # still exactly one section, not doubled

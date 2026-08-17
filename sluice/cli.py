@@ -845,6 +845,7 @@ def cmd_track_run(args, config) -> int:
         return 1
     print(f"track: msgs={rep.msgs} classified={rep.classified} auto={rep.auto} "
           f"proposed={rep.proposed} calendar_added={rep.calendar_added} "
+          f"receipts_recorded={rep.receipts_recorded} "
           f"failures={len(rep.failures)} open={len(rep.open_proposals)}", file=sys.stderr)
     # Each one NAMED, the way cmd_triage_run already does it. A bare count cannot tell a
     # one-off blip from a message that fails deterministically every run.
