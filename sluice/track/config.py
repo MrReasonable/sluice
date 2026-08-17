@@ -117,8 +117,11 @@ class TrackConfig:
     # What narrowing the lookahead costs has SHRUNK since #146: our own event is now found by
     # its tag regardless of where it moved, so a short window no longer orphans it. That holds
     # for an invite carrying a UID, which is nearly all of them; one without carries no
-    # identity to search on and is deliberately never matched (see `_uid_of`), so for those the
-    # window is still the only thing standing between a re-send and a duplicate.
+    # identity to search on and is deliberately never matched (see `_uid_of`). The lookahead
+    # was never what protected THOSE either -- `_find_ours` returns nothing for them at any
+    # width -- so this is not a case where narrowing costs more. What stops a re-sent UID-less
+    # invite double-booking is `_foreign_at_start` seeing our own untagged-looking entry, which
+    # is the same start-proximity check described below and needs no lookahead to speak of.
     #
     # It costs less than it looks, in fact. `_foreign_at_start` only ever matches within
     # `calendar_match_minutes` (30 by default) of the same start the window is CENTRED on, and
