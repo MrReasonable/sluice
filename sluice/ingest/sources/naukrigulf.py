@@ -30,12 +30,25 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 
 
+_SEAM_RE = re.compile(r"-jobs-in-")
+
+
+def _url_has_seam(url: str) -> bool:
+    """True when the listing URL carries the "...-jobs-in-..." split seam that
+    `_split_mashed_title` requires before it will even attempt a split. Factored out (rather
+    than re-deriving the regex at each call site) so `_recover` can tell "no seam at all"
+    (nothing proven, nothing to warn about) apart from "seam present but no valid split"
+    (the URL proved a split existed and recovery still came up blank -- the case worth an
+    operator's attention, #151 fixup)."""
+    return bool(_SEAM_RE.search(urlparse(url or "").path))
+
+
 def _split_mashed_title(title: str, url: str) -> tuple[str, str] | None:
     """(role, company) recovered from a title where the board mashed them together with no
     separator, proven by the listing URL's own "...-jobs-in-<city>-in-<company>-..." seam.
     None means abstain -- the title is left exactly as scraped."""
     path = urlparse(url or "").path
-    candidates = [path[:m.start()].lstrip("/") for m in re.finditer(r"-jobs-in-", path)]
+    candidates = [path[:m.start()].lstrip("/") for m in _SEAM_RE.finditer(path)]
     if not candidates:
         return None
     best = None
@@ -58,12 +71,21 @@ def _split_mashed_title(title: str, url: str) -> tuple[str, str] | None:
 def _recover(row: dict) -> dict:
     if (row.get("company") or "").strip():
         return row   # never touch a populated field
-    split = _split_mashed_title(row.get("title") or "", row.get("link") or row.get("url") or "")
+    url = row.get("link") or row.get("url") or ""
+    split = _split_mashed_title(row.get("title") or "", url)
     if split is None:
-        if re.search(r"[a-z][A-Z]", row.get("title") or ""):
+        # Warn on the URL's own signal, not a guess from the title's visual shape. The
+        # original `[a-z][A-Z]` heuristic missed the exact abstain case this recovery is
+        # built to leave alone: "Site Banker – Example Ventures" mashes role and company
+        # across an en dash, which has no camelCase-letter adjacency anywhere, even though
+        # the URL seam is right there proving a split exists. "The URL proved a split existed
+        # here and we still couldn't recover it" is the operator-relevant condition; it
+        # covers that case and the original camelCase one uniformly, and it is exactly what
+        # `_split_mashed_title` itself checked before it even tried.
+        if _url_has_seam(url):
             _log.warning(
-                "naukrigulf: title %r looks mashed but the URL seam did not prove a split; "
-                "lead kept as-is", row.get("title"))
+                "naukrigulf: URL %r proved a role/company split exists but recovery could "
+                "not locate it in title %r; lead kept as-is", url, row.get("title"))
         return row
     role, company = split
     return {**row, "title": role, "company": company}
