@@ -24,7 +24,12 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from sluice.core import status as _status
-from sluice.core.leads import ambiguous_slug_warnings, index_by_slug
+from sluice.core.leads import (
+    NON_ANSWER_COMPANIES,
+    ambiguous_slug_warnings,
+    index_by_slug,
+    is_placeholder_company,
+)
 from sluice.core.log import get_logger
 from sluice.core.protocols import VaultConflict
 from sluice.triage import resolve
@@ -122,7 +127,7 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
         # A cost gap, not a safety gap -- the write guard already protects the
         # vault -- but there is no reason to pay for a fetch/call whose result is
         # guaranteed to be discarded.
-        if (decision == "needs_review" and not company
+        if (decision == "needs_review" and is_placeholder_company(company)
                 and note.status in _status.TRIAGE_OWNED):
             res = resolve.resolve_company(
                 note.fm, get_source, dossier_cache, no_llm=no_llm,
@@ -148,26 +153,37 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
                 if not dry_run:
                     try:
                         # require_blank, alongside require_status: this decision ("company
-                        # is blank, so filling it in is safe") was made from the read_leads
-                        # snapshot, and tier 2/3 spend SECONDS on a real page load or an LLM
-                        # round trip before getting here. A human typing the company into
-                        # Obsidian in that window must win -- never-clobber -- so the
-                        # blankness check has to be a FRESH re-read inside the CAS
-                        # transform, exactly like require_status beside it. A caller-side
-                        # check on `company` above is stale by construction and would be an
-                        # equivalent mutant.
+                        # is blank/placeholder, so filling it in is safe") was made from
+                        # the read_leads snapshot, and tier 2/3 spend SECONDS on a real
+                        # page load or an LLM round trip before getting here. A human
+                        # typing the company into Obsidian in that window must win --
+                        # never-clobber -- so the blankness check has to be a FRESH
+                        # re-read inside the CAS transform, exactly like require_status
+                        # beside it. A caller-side check on `company` above is stale by
+                        # construction and would be an equivalent mutant.
+                        #
+                        # blank_values=NON_ANSWER_COMPANIES widens what counts as blank
+                        # for THIS guard to the same placeholder set the gate above
+                        # already recognises -- a note that already reads "Unknown" is
+                        # exactly the shape this resolution pass exists to repair, and
+                        # without this the write would refuse on presence forever, since
+                        # require_blank has no other route to accept a non-empty value.
+                        # A human's own REAL company typed in the race window is still
+                        # refused: it folds to something outside NON_ANSWER_COMPANIES,
+                        # so the guard's never-clobber promise is unchanged for it.
                         wrote = vault.update_fields(
                             note.ref, {"company": f'"{resolved}"'},
                             require_status=frozenset(_status.TRIAGE_OWNED),
-                            require_blank=frozenset({"company"}))
+                            require_blank=frozenset({"company"}),
+                            blank_values=NON_ANSWER_COMPANIES)
                     except VaultConflict as e:
                         report.failures.append(f"company-resolve {note.ref}: {e}")
                     else:
                         if not wrote:
                             report.failures.append(
                                 f"company-resolve {note.ref}: company write did not land "
-                                "(status changed, company was already set, or the "
-                                "status is not one triage owns)")
+                                "(status changed, company was already set to a real "
+                                "name, or the status is not one triage owns)")
                 if wrote or dry_run:
                     note.fm["company"] = resolved
                     report.resolved[res.tier] = report.resolved.get(res.tier, 0) + 1

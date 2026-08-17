@@ -1029,6 +1029,80 @@ def test_update_fields_require_blank_writes_when_the_field_is_blank(store_name, 
     assert store.read_leads()[0].fm["company"] == "Scraped Co"
 
 
+def test_update_fields_blank_values_lets_a_write_replace_a_listed_placeholder(store_name,
+                                                                              tmp_path,
+                                                                              monkeypatch):
+    """#151: a stored value that FOLDS into `blank_values` counts as blank for
+    `require_blank`, so a note already carrying a placeholder like "Unknown" -- legacy or
+    foreign data sluice never writes itself -- can still be repaired by a resolution pass,
+    exactly as if the field had been empty."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    store.upsert(_lead())
+    ref = store.read_leads()[0].ref
+    store.update_fields(ref, {"company": '"Unknown"'})
+
+    wrote = store.update_fields(ref, {"company": '"Resolved Co"'},
+                                require_blank=frozenset({"company"}),
+                                blank_values=frozenset({"unknown"}))
+
+    assert wrote is True
+    assert store.read_leads()[0].fm["company"] == "Resolved Co"
+
+
+def test_update_fields_blank_values_still_refuses_a_value_outside_the_set(store_name, tmp_path,
+                                                                          monkeypatch):
+    """The set WIDENS what counts as blank; it does not remove the refusal for anything
+    else. A real company a human typed mid-run -- "Example Foundry", not a listed
+    placeholder -- must still block the write, or `blank_values` would be indistinguishable
+    from `require_blank` gating nothing at all."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    store.upsert(_lead())
+    ref = store.read_leads()[0].ref
+    store.update_fields(ref, {"company": '"Example Foundry"'})
+
+    wrote = store.update_fields(ref, {"company": '"Scraped Co"'},
+                                require_blank=frozenset({"company"}),
+                                blank_values=frozenset({"unknown"}))
+
+    assert wrote is False
+    assert store.read_leads()[0].fm["company"] == "Example Foundry"
+
+
+def test_update_fields_blank_values_comparison_is_folded(store_name, tmp_path, monkeypatch):
+    """Both sides fold through the same rule `is_placeholder_company` uses (strip, drop a
+    trailing '.'/'!', casefold): a lowercase set member ("unknown") must still match a
+    stored value carrying real-world punctuation and casing ("Unknown.") -- the shape a
+    board's own rendering, not sluice, actually produces."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    store.upsert(_lead())
+    ref = store.read_leads()[0].ref
+    store.update_fields(ref, {"company": '"Unknown."'})
+
+    wrote = store.update_fields(ref, {"company": '"Resolved Co"'},
+                                require_blank=frozenset({"company"}),
+                                blank_values=frozenset({"unknown"}))
+
+    assert wrote is True
+    assert store.read_leads()[0].fm["company"] == "Resolved Co"
+
+
+def test_update_fields_blank_values_without_require_blank_is_inert(store_name, tmp_path,
+                                                                    monkeypatch):
+    """`blank_values` given alone gates nothing: it only ever widens what `require_blank`
+    accepts, so passing it without `require_blank` must not turn it into a guard of its
+    own -- the write proceeds exactly as it would with neither keyword given."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    store.upsert(_lead())
+    ref = store.read_leads()[0].ref
+    store.update_fields(ref, {"company": '"Example Foundry"'})
+
+    wrote = store.update_fields(ref, {"company": '"Scraped Co"'},
+                                blank_values=frozenset({"unknown"}))
+
+    assert wrote is True
+    assert store.read_leads()[0].fm["company"] == "Scraped Co"
+
+
 def test_update_fields_reports_False_when_the_record_does_not_change(store_name, tmp_path,
                                                                     monkeypatch):
     """The bool reports whether the stored record CHANGED, not whether the guard passed.

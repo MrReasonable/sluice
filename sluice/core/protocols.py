@@ -283,7 +283,8 @@ class Store(Protocol):
 
     def update_fields(self, ref, fields: dict, *, append_note=None, note_tag=None,
                       require_status: frozenset | None = None,
-                      require_blank: frozenset | None = None) -> bool:
+                      require_blank: frozenset | None = None,
+                      blank_values: frozenset | None = None) -> bool:
         """Set exactly the named frontmatter keys, leaving the body byte-for-byte intact.
         This is the sanctioned write path for triage, cv, apply and track. MAY raise
         VaultConflict if the note changed under a sustained concurrent edit and the store
@@ -315,7 +316,17 @@ class Store(Protocol):
         refuse on PRESENCE rather than on inequality -- a value DIFFERING from the one
         offered is the harmful case, and it is the one a store comparing values would
         wave through. Same delegation argument as above: a caller-side blankness check
-        reads the pre-fetch snapshot and is byte-identical to no check at all."""
+        reads the pre-fetch snapshot and is byte-identical to no check at all.
+
+        `blank_values`, when given alongside `require_blank`, names the stored values
+        that count as BLANK for that guard in addition to empty/whitespace-only. Both
+        sides of the comparison are normalised through `core.leads.fold_company_answer`
+        (strip, drop a trailing `.`/`!`, casefold) -- the same delegation `require_status`
+        already makes to `core.status.normalize`. It widens exactly one thing: a value in
+        the given set now counts as blank for the presence check. Every other non-blank
+        value is still refused, including one that merely *differs* from the value being
+        written -- never-clobber holds for anything not named here. `blank_values` given
+        without `require_blank` is inert and must never become a guard of its own."""
         ...
 
     def merge_cluster(self, survivor_ref, loser_refs, *, alt_urls, first_seen, last_seen) -> list:

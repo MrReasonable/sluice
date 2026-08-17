@@ -1,5 +1,6 @@
 import pytest
 
+from sluice.core.leads import NON_ANSWER_COMPANIES
 from sluice.triage.classify import classify
 from sluice.triage.config import TriageConfig
 
@@ -71,6 +72,48 @@ def test_configured_reject_company_is_skipped(titles):
 def test_needs_review_when_no_company(titles):
     d, r = classify(L(titles, company="", url="https://x/y"), _cfg(titles))
     assert d == "needs_review"
+
+
+# #151: the sentinel check used to be a hand-rolled `not company or company.lower() ==
+# "unknown"`, which recognised exactly one placeholder spelling. `is_placeholder_company`
+# recognises the whole `NON_ANSWER_COMPANIES` vocabulary -- legacy/foreign notes carry
+# "Confidential", "N/A", "Undisclosed", ... none of which sluice itself ever writes, but
+# all of which are equally unusable as a real employer name. Sampled rather than
+# exhaustive (`NON_ANSWER_COMPANIES` has 19 members): the exhaustive sweep belongs to
+# `test_all_non_answers_are_placeholders` in `tests/test_leads_company.py` (Task 1),
+# which already covers every member and casing; this test only needs to prove classify()
+# DELEGATES to that predicate rather than its own narrower copy.
+_SAMPLE_PLACEHOLDERS = ("unknown", "confidential", "n/a", "not disclosed", "stealth startup")
+assert set(_SAMPLE_PLACEHOLDERS) <= NON_ANSWER_COMPANIES, (
+    "the sample drifted from the real vocabulary -- pick values that still exist")
+
+
+@pytest.mark.parametrize("value", _SAMPLE_PLACEHOLDERS)
+@pytest.mark.parametrize("casing", [str.lower, str.upper, str.title])
+def test_placeholder_company_is_needs_review(titles, value, casing):
+    d, _ = classify(L(titles, company=casing(value), url="https://x/y"), _cfg(titles))
+    assert d == "needs_review"
+
+
+def test_real_company_is_not_needs_review_on_company_alone(titles):
+    # Control case: a real employer name must classify normally (keep, here, since
+    # nothing else about the lead is disqualifying) rather than tripping the
+    # placeholder gate.
+    d, _ = classify(L(titles, company="Example Foundry"), _cfg(titles))
+    assert d == "keep"
+
+
+def test_placeholder_company_does_not_shield_a_rejected_title(titles):
+    # The placeholder check sits LAST in classify() -- after the title/location/pay
+    # rejects -- on purpose (see the comment in classify.py). A lead with BOTH a
+    # placeholder company and a rejected title must still reject: the resolution
+    # pass this gate feeds is for leads that are otherwise worth pursuing, not a
+    # backdoor around every other filter.
+    _, reject = titles
+    verdict, why = classify(
+        L(titles, role=reject[0].title(), company="Unknown"), _cfg(titles))
+    assert verdict == "reject"
+    assert reject[0] in why
 
 
 def test_reason_is_plain_no_em_dash(titles):

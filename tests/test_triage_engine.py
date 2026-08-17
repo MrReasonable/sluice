@@ -87,6 +87,19 @@ def _blank_fields(role, *, source="ex-board", url="https://x/y", status="new"):
            'culture_flags: ""', 'relevance_notes: ""']
 
 
+def _sentinel_fields(role, *, source="ex-board", url="https://x/y", status="new",
+                     sentinel="Unknown"):
+    # #151: sibling of _blank_fields seeding a PLACEHOLDER company rather than a blank
+    # one -- the legacy/foreign-note shape this task's gate+guard fix exists for.
+    # `sentinel` is a parameter (not hardcoded) so a test can pick a different
+    # NON_ANSWER_COMPANIES member/casing without a second near-identical helper.
+    return [f'company: "{sentinel}"', f'role: "{role}"', 'location: "remote"',
+           'salary: ""', 'role_type: "permanent"', f'url: "{url}"',
+           f'source: "{source}"',
+           f"status: {status}", "score: 0", 'glassdoor_rating: ""',
+           'culture_flags: ""', 'relevance_notes: ""']
+
+
 class _RecordingCache(DossierCache):
     """A DossierCache stand-in recording get_or_build calls without touching disk,
     for proving how many fetches a run actually performs.
@@ -496,6 +509,94 @@ def test_company_write_never_overwrites_a_company_a_human_typed_mid_run(tmp_path
     # presence, not merely no-op on an identical value the way rev2-001 does.
     assert after.fm["company"] == "Human Typed Co"
     assert any("company-resolve" in f for f in report.failures)
+
+
+def test_sentinel_company_lead_is_resolved_and_rewritten(tmp_path, titles):
+    # #151: the load-bearing case this task exists for. A note that already reads
+    # "Unknown" -- legacy/foreign data, never something sluice itself writes -- must
+    # be picked up by the SAME resolution pass a blank company gets: the gate
+    # (`is_placeholder_company`) must fire, and the write guard
+    # (`require_blank` + `blank_values=NON_ANSWER_COMPANIES`) must actually let the
+    # write land rather than refusing on the sentinel's mere presence.
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "sentinel.md", _sentinel_fields(accept[0].title(), source="ex-board"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.company_resolve_fetch = True
+
+    report = eng.run(v, cfg, _Backend(), _RecordingCache(), audit, statuses=("new",),
+                     get_source=_get_source({"ex-board": _tier1_source("Resolved Co")}))
+
+    after = v.read_leads()[0]
+    assert after.fm["company"] == "Resolved Co"
+    assert report.resolved.get("tier1", 0) == 1     # tier 1 (company_from_url) did the resolving
+    assert not any("company-resolve" in f for f in report.failures)
+
+
+def test_sentinel_company_write_never_overwrites_a_real_company_a_human_typed_mid_run(
+        tmp_path, titles, monkeypatch):
+    # The race-safety control (test_company_write_never_overwrites_a_company_a_human_
+    # typed_mid_run, above, unmodified) starts from a BLANK company. This is the same
+    # race starting from a SENTINEL company instead, because `blank_values` widens
+    # what require_blank treats as absent, and that widening must not also widen what
+    # it treats as a human's REAL answer: "Example Real Co" folds to something outside
+    # NON_ANSWER_COMPANIES, so it must still block the write exactly like the blank
+    # case does.
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "sentinel.md", _sentinel_fields(accept[0].title(), source="ex-board"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.company_resolve_fetch = True
+
+    real = v.update_fields
+    calls = {"n": 0}
+    def racer(ref, fields, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            real(ref, {"company": '"Example Real Co"'})   # a human edits it in Obsidian
+        return real(ref, fields, **kw)
+    monkeypatch.setattr(v, "update_fields", racer)
+
+    report = eng.run(v, cfg, _Backend(), _RecordingCache(), audit, statuses=("new",),
+                     get_source=_get_source({"ex-board": _tier1_source("Resolved Co")}))
+
+    after = v.read_leads()[0]
+    assert after.fm["company"] == "Example Real Co"
+    assert any("company-resolve" in f for f in report.failures)
+
+
+def test_a_human_typing_unknown_mid_run_does_not_block_the_resolution_write(
+        tmp_path, titles, monkeypatch):
+    # The deliberate, reasoned exception `blank_values` exists for: require_blank's
+    # promise is "never replace a human's ANSWER", and typing "Unknown" back into the
+    # company field is not an answer -- it is the same non-answer the note already
+    # held. So a human re-typing (or a stray concurrent process re-writing) the
+    # identical placeholder mid-run must NOT block this run's resolution from landing,
+    # unlike the REAL-company race above.
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "sentinel.md", _sentinel_fields(accept[0].title(), source="ex-board"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.company_resolve_fetch = True
+
+    real = v.update_fields
+    calls = {"n": 0}
+    def racer(ref, fields, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            real(ref, {"company": '"Unknown"'})   # a human re-types the same non-answer
+        return real(ref, fields, **kw)
+    monkeypatch.setattr(v, "update_fields", racer)
+
+    report = eng.run(v, cfg, _Backend(), _RecordingCache(), audit, statuses=("new",),
+                     get_source=_get_source({"ex-board": _tier1_source("Resolved Co")}))
+
+    after = v.read_leads()[0]
+    assert after.fm["company"] == "Resolved Co"
+    assert not any("company-resolve" in f for f in report.failures)
 
 
 def test_a_backslash_in_a_resolved_company_does_not_kill_the_batch(tmp_path, titles):
