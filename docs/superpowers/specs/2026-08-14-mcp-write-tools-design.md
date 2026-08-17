@@ -583,7 +583,7 @@ explicitly deferred, matching #105's own deferred list.
 
 ## Architecture
 
-```
+```text
 MCP client (agent, e.g. Claude Code)
       │
       ▼
