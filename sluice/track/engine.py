@@ -53,10 +53,20 @@ _NEEDS_REVIEW_HINT = {
     # false statement in exactly the new case, sending the operator to remove by hand something
     # already gone. One reason value covering two situations has to be true of both -- the
     # failure this table's own header describes, arriving through a new door.
+    # THREE producers now, and the wording has to be true of all three -- which is this
+    # table's recurring failure, twice over on one branch. It first said "nothing was deleted",
+    # false once a cancel could delete and still answer `unresolved`. It then said "its search
+    # was incomplete", false for the startless cancel whose tag query COMPLETED and found
+    # nothing: there sluice distrusts a filter it has never executed against a live calendar,
+    # which is not the same as knowing the read was short.
+    #
+    # What holds across all three is the weaker claim, so that is what it says: sluice cannot
+    # CONFIRM that no matching entry remains. True whether it deleted several, read a short
+    # page, or simply does not trust the answer it got.
     "cancel-unresolved":
-        "(this cancellation could not be fully resolved: sluice removed any entry it could "
-        "identify, but its search was incomplete, so a copy may remain. Check your calendar "
-        "and remove anything still there, then `job-sluice track dismiss --id {mid}`)",
+        "(this cancellation could not be confirmed complete: any entry sluice could identify "
+        "has been removed, but it cannot confirm that no matching entry remains. Check your "
+        "calendar and remove anything still there, then `job-sluice track dismiss --id {mid}`)",
     "cancel-foreign":
         "(this interview was cancelled -- the entry at that slot was not created by sluice "
         "(usually the sender's own invite, auto-added by Google), so it was left alone. "

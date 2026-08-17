@@ -183,6 +183,61 @@ def test_an_unresolved_cancel_REACHES_A_HUMAN(tmp_path):
         "a cancellation must still never advance or regress the status"
 
 
+def test_the_hint_is_true_for_the_COMPLETE_no_match_cancel_too():
+    """`cancel-unresolved` has THREE producers and the hint has to be true of every one.
+
+    This is the one that keeps catching this table out. The wording first said "nothing was
+    deleted", which went false when a cancel could delete and still answer `unresolved`. It
+    then said "its search was incomplete", which is false HERE: a startless cancel whose tag
+    query completed and matched nothing. Sluice answers `unresolved` there because it does not
+    trust a filter nobody has executed against a live calendar -- not because the read was
+    short. Two different reasons, one sentence, and the sentence has to hold for both.
+
+    Asserted as the property rather than the phrasing: the row may claim only that completeness
+    is UNCONFIRMED, never that a search was cut short or that nothing was removed."""
+    import pathlib
+    import tempfile
+
+    from sluice.core.vault import Vault
+    from sluice.track import engine as E
+    from tests.test_track_engine import FakeBackend, OneMsgClient, _dl
+
+    root = pathlib.Path(tempfile.mkdtemp())
+    leads = root / "Job Applications" / "Job Leads"
+    leads.mkdir(parents=True)
+    (leads / "Example Tidal - Analyst.md").write_text(
+        '---\ncompany: "Example Tidal"\nrole: "Analyst"\nstatus: interview\n---\n\nBODY\n')
+    v = Vault(str(root))
+
+    class _StartlessCancel(OneMsgClient):
+        """Empty calendar, COMPLETE tag query -- the producer whose search was not short."""
+
+        def get_message(self, mid):
+            msg = super().get_message(mid)
+            msg["attachments"] = [{
+                "filename": "invite.ics", "mime": "text/calendar",
+                "data": (b"BEGIN:VCALENDAR\r\nMETHOD:CANCEL\r\nBEGIN:VEVENT\r\nUID:u1\r\n"
+                         b"END:VEVENT\r\nEND:VCALENDAR\r\n")}]
+            return msg
+
+    c, dl = _StartlessCancel(), _dl()
+    assert c.tag_truncated is False, "fixture premise: this producer's search was COMPLETE"
+    E.run(v, TrackConfig(), c,
+          FakeBackend('{"lead": "Example Tidal - Analyst", "type": "interview", '
+                      '"confidence": 0.9, "when": null, "links": [], "materials": [], '
+                      '"summary": "cancelled"}'),
+          seen=set(), deadletter=dl, now_iso="2026-07-10T12:00:00+00:00")
+
+    rows = [e for e in dl.open_entries() if e.message_id == "m1"]
+    assert rows and rows[0].proposal == "cancel-unresolved", rows
+    low = rows[0].hint.lower()
+    assert "cannot confirm" in low, (
+        f"the row must claim only that completeness is unconfirmed: {rows[0].hint}")
+    for lie in ("search was incomplete", "nothing was deleted", "no entry was deleted"):
+        assert lie not in low, (
+            f"the row asserts something untrue of this producer: {rows[0].hint}")
+
+
 def test_the_unresolved_cancel_hint_does_NOT_offer_to_advance_the_lead():
     """Routing to `proposed` inherits `_PROPOSE_TARGET[ev.type]`, and `ev.type` for a
     cancelled interview invite is "interview".
