@@ -611,7 +611,7 @@ def cmd_cv_signoff(args, config) -> int:
 
     result = Sluice(config).sign_off_cv(lead=args.lead, accept=not args.discard, confirm=confirm)
     if result.outcome == "not_found":
-        print(f"cv signoff: no shortlist lead matching '{args.lead}'", file=sys.stderr)
+        print(f"cv signoff: no lead matching '{args.lead}'", file=sys.stderr)
         return 1
     if result.outcome == "ambiguous":
         # #131: candidates is now a slug list (decision 15), not the old joined-ref

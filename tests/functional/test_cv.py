@@ -255,9 +255,12 @@ def test_cv_signoff_stale_returns_1(cli, monkeypatch):
 
 
 def test_cv_signoff_no_match_returns_1(cli):
+    # sign_off_cv resolves over ALL of TRIAGE_OWNED, not shortlist alone (a held lead
+    # can legitimately leave shortlist) -- the message must not claim a narrower scope
+    # than the lookup it describes.
     h, run = cli(backend=ScriptedBackend())
     rc, _out, err = run(["cv", "signoff", "--lead", "no-such-lead", "--yes"])
-    assert rc == 1 and "no shortlist lead matching" in err
+    assert rc == 1 and "no lead matching" in err
 
 
 def test_cv_signoff_ambiguous_lead_refuses_and_returns_1(cli):
