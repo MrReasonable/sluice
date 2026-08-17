@@ -481,6 +481,23 @@ def test_dismiss_lead_tool_refused_signoff_hold_names_the_remedy(tmp_path):
     assert "cv_signoff" in out["detail"] and "discard=true" in out["detail"]
 
 
+def test_dismiss_lead_tool_conflict_on_a_sustained_vault_conflict(tmp_path, monkeypatch):
+    """Round-5 review finding (PR #132): dismiss_lead's `conflict` outcome had zero
+    coverage at the MCP tool layer -- mirrors tests/test_leads_dismiss.py's app-layer
+    test_dismiss_lead_returns_conflict_on_a_sustained_vault_conflict through this
+    tool's own passthrough shape."""
+    from sluice.core.protocols import VaultConflict
+
+    slug = _seed(tmp_path, status="shortlist")
+
+    def boom(*a, **k):
+        raise VaultConflict("x")
+    monkeypatch.setattr(Vault, "update_fields", boom)
+
+    out = dismiss_lead(_app(tmp_path), slug, "no fit")
+    assert out == {"outcome": "conflict", "slug": slug}
+
+
 # ── apply_record ─────────────────────────────────────────────────────────────
 
 def test_apply_record_tool_not_found(tmp_path):
@@ -523,6 +540,42 @@ def test_apply_record_tool_recorded_with_quoted_ats_and_dropped_flags(tmp_path):
     assert "ats" not in out["fields"]
     assert out["ats_dropped"] is True
     assert out["fields"]["applied_url"] == "https://x/apply"
+
+
+def test_apply_record_tool_raced_when_the_note_left_shortlist_between_read_and_write(
+        tmp_path, monkeypatch):
+    """Round-5 review finding (PR #132): record()'s `raced` outcome (require_status's
+    fresh re-check failing, #131 decision 8) reached this tool's `if not out["ok"]:
+    return {"outcome": out["reason"]}` passthrough with zero coverage -- mirrors
+    tests/test_apply_record_cli.py's
+    test_cmd_apply_record_prints_a_distinct_message_on_raced technique exactly, down
+    to this tool's own passthrough shape."""
+    v = Vault(str(tmp_path))
+    slug = _seed(tmp_path, status="shortlist")
+    note = v.read_leads({"shortlist"})[0]          # STALE snapshot
+    v.update_fields(note.ref, {"status": "applied"})  # a "concurrent" writer wins first
+
+    monkeypatch.setattr("sluice.apply.select.resolve", lambda vault, s: [note])
+
+    out = apply_record(_app(tmp_path), slug)
+    assert out == {"outcome": "raced"}
+
+
+def test_apply_record_tool_conflict_on_a_sustained_vault_conflict(tmp_path, monkeypatch):
+    """Round-5 review finding (PR #132): record()'s `conflict` outcome (a sustained
+    VaultConflict, #16) reached this tool's passthrough with zero coverage either --
+    mirrors tests/test_apply_record.py::test_record_returns_conflict_on_vault_conflict
+    through this tool's own passthrough shape."""
+    from sluice.core.protocols import VaultConflict
+
+    slug = _seed(tmp_path, status="shortlist")
+
+    def boom(*a, **k):
+        raise VaultConflict("x")
+    monkeypatch.setattr(Vault, "update_fields", boom)
+
+    out = apply_record(_app(tmp_path), slug)
+    assert out == {"outcome": "conflict"}
 
 
 # ── cv_run ───────────────────────────────────────────────────────────────────
@@ -855,6 +908,33 @@ def test_cv_signoff_tool_vault_stale_outcome_carries_a_detail(tmp_path, monkeypa
     assert "detail" in second and second["detail"]
     text = pathlib.Path(Vault(str(tmp_path)).read_leads()[0].ref).read_text()
     assert "tailored_cv:" not in text   # nothing promoted
+
+
+def test_cv_signoff_tool_conflict_on_a_sustained_vault_conflict(tmp_path, monkeypatch):
+    """Round-5 review finding (PR #132): the SAME gap shape as dismiss_lead's and
+    apply_record's own conflict-passthrough gaps above -- Vault.sign_off's `conflict`
+    outcome (a sustained write race, #16, distinct from the CAS-fresh `stale` outcome
+    tested above) reached this tool's generic `out = {"outcome": result.outcome, ...}`
+    passthrough with zero coverage. Forced at the store method (mirrors
+    tests/functional/test_cv.py::test_cv_signoff_conflict_returns_1's CLI-layer
+    technique) rather than a real race, so the test is deterministic. discard=True
+    reaches the write directly, with no confirm_token round-trip needed."""
+    from sluice.core.protocols import VaultConflict
+
+    v = Vault(str(tmp_path))
+    slug = _seed(tmp_path, status="shortlist")
+    note = v.read_leads()[0]
+    v.hold_for_signoff(note.ref, pending="CV_deadbeef.pdf (2026-08-14)",
+                       claims='["unsupported claim"]')
+
+    def _always_conflicts(self, ref, *, accept=True, require_pending=None):
+        raise VaultConflict(ref)
+    monkeypatch.setattr(Vault, "sign_off", _always_conflicts)
+
+    out = cv_signoff(_app(tmp_path), slug, discard=True)
+    assert out == {"outcome": "conflict", "slug": slug}
+    text = pathlib.Path(Vault(str(tmp_path)).read_leads()[0].ref).read_text()
+    assert "pending_cv:" in text and "tailored_cv:" not in text   # hold intact
 
 
 def test_confirm_token_is_keyed_and_not_forgeable_from_a_bare_sha256(tmp_path):
