@@ -1332,6 +1332,9 @@ def test_tier0_resolves_a_sentinel_company_note_on_a_fully_zero_config_install(t
 
     after = v.read_leads()[0]
     assert after.fm["company"] == "Example Meridian"
+    # Tier 0 recovers a company from role TEXT but must never REWRITE the role
+    # field itself -- it is read-only evidence, not a field this tier owns.
+    assert after.fm["role"] == "Head of Platform Engineering at Example Meridian"
     assert report.resolved["tier0"] == 1
     assert report.llm_calls == 0
     assert cache.calls == []   # no page visit and no LLM call -- the role text alone resolved it

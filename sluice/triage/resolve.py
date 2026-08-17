@@ -76,8 +76,43 @@ def _looks_like_a_name(candidate: str) -> bool:
     is almost always the tail end of an ordinary preposition phrase, not a name.
     Deliberately checks islower() rather than isupper(), so a non-Latin-script name
     is not thrown away by this check; the cost is a genuinely lowercase brand, which
-    abstains -- the safe direction for a tier that must never guess."""
+    abstains -- the safe direction for a tier that must never guess.
+
+    This check alone carries NO signal once the surrounding role text is Title
+    Case -- a common board convention (this repo's own fixtures model role text as
+    Title Case via `.title()`) -- because every word, including an idiom's tail,
+    opens uppercase. "Editor at Large", "Engineer At Scale" and "... - Work at
+    Home" all pass this check outright; `_is_idiom_tail` below is the second,
+    case-BLIND guard that catches exactly that gap."""
     return bool(candidate) and not candidate[0].islower()
+
+
+# Case-folded, single-word "<role> at <X>" tails that are ordinary job-title idioms,
+# never an employer name -- the deny-list `_looks_like_a_name`'s case check cannot
+# catch once the role text is Title Case (see that function's docstring). Same
+# shape as `NON_ANSWER_COMPANIES`/`_is_non_answer` (core/leads.py): a membership
+# check against known non-answers, not a new mechanism. Each category, so a future
+# addition states its own reasoning rather than growing an unexplained list:
+#   large, pace, speed -- "<role> at large/pace/speed": established adverbial
+#                          idioms ("broadly", "at a fast rate"), never an employer.
+#   scale              -- "<role> at scale": the engineering idiom ("operating at
+#                          scale"), likewise never an employer.
+#   home, work         -- "... at home"/"... at work": location-of-work idioms
+#                          ("Work at Home", "Remote at Work"), not an employer name.
+#   will               -- "<role> at will": the employment-law phrase ("employment
+#                          at will"), never an employer.
+# Deliberately a targeted patch, not an exhaustive stop-word dictionary -- extend it
+# only with idioms of this same measured shape, not a general vocabulary sweep.
+_IDIOM_TAIL_WORDS = frozenset({"large", "scale", "pace", "home", "speed", "will", "work"})
+
+
+def _is_idiom_tail(candidate: str) -> bool:
+    """True when the whole candidate (case-folded) is one of the idiom tails above.
+    Whole-string, not per-token, on purpose: this must never reject a real
+    multi-word employer name that happens to CONTAIN one of these words (e.g. an
+    "... at Homebase" or "... at Scale AI" employer), only a tail that IS the bare
+    idiom word."""
+    return candidate.strip().casefold() in _IDIOM_TAIL_WORDS
 
 
 def _company_from_role(role) -> str | None:
@@ -100,6 +135,8 @@ def _company_from_role(role) -> str | None:
     if not candidate or not m.group("role").strip():
         return None
     if not _looks_like_a_name(candidate):
+        return None
+    if _is_idiom_tail(candidate):
         return None
     if len(candidate) > _MAX_COMPANY_CHARS or len(candidate.split()) > _MAX_ROLE_COMPANY_WORDS:
         return None
