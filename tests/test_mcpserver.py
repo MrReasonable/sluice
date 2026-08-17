@@ -14,6 +14,7 @@ import sluice.mcpserver as mcpserver_mod
 from sluice.core.app import Sluice
 from sluice.core.config import Config
 from sluice.core.leads import UNTRUSTED_SCRAPED_CONTENT_WARNING, Lead
+from sluice.core.protocols import Store
 from sluice.core.vault import Vault
 from sluice.mcpserver import (
     apply_record,
@@ -1012,17 +1013,25 @@ _ISOLATION_ALLOWED_MODULES = frozenset({
     "sluice.core.app", "sluice.core.leads", "sluice.core.status",
 })
 
-# Every WRITE method on the Store protocol (sluice/core/protocols.py), read
-# directly off that Protocol rather than hand-guessed -- its read-only members
-# (read_leads, read_experience_entries, read_baseline, read_criteria; the
-# optional preflight hook) are deliberately excluded, since a read reaching
-# this deep is exactly what the module-allow-list above already permits via
-# Sluice's own store() access.
-_STORE_WRITE_METHODS = frozenset({
-    "upsert", "update_fields", "merge_cluster", "append_body_section",
-    "set_tailored_cv", "hold_for_signoff", "sign_off", "write_document",
-    "normalize_all_statuses",
+# Every WRITE method on the Store protocol (sluice/core/protocols.py), DERIVED off
+# that Protocol's own `vars()` rather than hand-listed -- round-4 review finding: the
+# previous version's comment already claimed this and the literal set happened to
+# agree, but a future write method added to Store would silently miss this sweep
+# with no test failure to say so. Its read-only members (read_leads,
+# read_experience_entries, read_baseline, read_criteria; the optional preflight
+# hook, which is never declared in the class body at all) are excluded by name,
+# since a read reaching this deep is exactly what the module-allow-list above
+# already permits via Sluice's own store() access.
+_STORE_READ_METHODS = frozenset({
+    "read_leads", "read_experience_entries", "read_baseline", "read_criteria",
 })
+_STORE_WRITE_METHODS = frozenset(
+    name for name, member in vars(Store).items()
+    if not name.startswith("_") and callable(member)
+) - _STORE_READ_METHODS
+assert _STORE_WRITE_METHODS, (
+    "Store protocol introspection found no write methods -- the derivation above is "
+    "broken, not the protocol; the isolation sweep would silently guard nothing")
 
 
 def _isolation_violations(tree) -> list:
