@@ -154,8 +154,45 @@ def test_a_cross_folder_target_collision_is_caught_only_by_the_vault_wide_preche
                      company="Example Co", role="Example Role")
     rep = v.reconcile_names(apply=True)
     assert rep["renames"] == []
-    assert rep["collisions"] == [("Unknown - Example Role", "Example Co - Example Role")]
+    assert rep["collisions"] == [
+        ("Unknown - Example Role", "Example Co - Example Role",
+         "a note is already seated at this name elsewhere in the vault")]
     assert os.path.isfile(stale), "the stale note was renamed despite the cross-folder clash"
+    assert os.path.isfile(blocker)
+    assert not os.path.exists(os.path.join(v.leads_dir, "Example Co - Example Role.md")), (
+        "a duplicate was created at the leads-dir root")
+
+
+def test_layer_one_catches_a_collision_in_a_folder_created_after_the_scan_cache_warmed(
+        tmp_path):
+    """`_scan_dirs` caches the directory list on the FIRST call and only `_rescan_dirs` clears
+    it (`_resolve_path` re-derives before trusting an absent verdict for the identical kind of
+    decision -- see its own docstring: a stale scan set is "invisible by construction -- both
+    lists agree, both are wrong, and the wrong answer looks like a real one"). This test warms
+    that cache on a memoized `Vault` instance BEFORE the colliding folder exists on disk --
+    mirroring an `upsert` that creates a new folder mid-run -- then confirms layer 1 still
+    catches the collision on a LATER `reconcile_names` call against that same instance. Without
+    re-deriving the scan set before layer 1 trusts `self._locate`'s empty answer, the stale
+    cache would omit the new folder entirely and the rename would proceed, creating a live
+    cross-folder duplicate -- exactly the failure this whole layer exists to prevent."""
+    v = _v(tmp_path)
+    stale = _seed(v, "Unknown - Example Role.md", company="Example Co", role="Example Role")
+    # Warm the scan-set cache before FolderB exists on disk -- the first `_scan_dirs()` call on
+    # this instance, exactly like the first `_locate` a real run performs.
+    warmed = v._scan_dirs()
+    assert os.path.join(v.leads_dir, "FolderB") not in warmed, (
+        "the fixture's premise (FolderB not yet reflected in the warmed cache) does not hold")
+    blocker = _seed(v, os.path.join("FolderB", "Example Co - Example Role.md"),
+                     company="Example Co", role="Example Role")
+    rep = v.reconcile_names(apply=True)
+    assert rep["renames"] == [], (
+        "the stale scan-set cache let layer 1 miss a collision in a folder created after it "
+        "warmed -- reconcile_names must re-derive the scan set before trusting an absent "
+        "_locate verdict")
+    assert rep["collisions"] == [
+        ("Unknown - Example Role", "Example Co - Example Role",
+         "a note is already seated at this name elsewhere in the vault")]
+    assert os.path.isfile(stale)
     assert os.path.isfile(blocker)
     assert not os.path.exists(os.path.join(v.leads_dir, "Example Co - Example Role.md")), (
         "a duplicate was created at the leads-dir root")
@@ -168,7 +205,9 @@ def test_a_same_folder_collision_refuses_and_is_never_suffixed(tmp_path):
                      company="Example Co", role="Example Role")
     rep = v.reconcile_names(apply=True)
     assert rep["renames"] == []
-    assert rep["collisions"] == [("Unknown - Example Role", "Example Co - Example Role")]
+    assert rep["collisions"] == [
+        ("Unknown - Example Role", "Example Co - Example Role",
+         "a note is already seated at this name elsewhere in the vault")]
     assert os.path.isfile(stale) and os.path.isfile(blocker)
     assert not os.path.exists(os.path.join(v.leads_dir, "Example Co - Example Role.1.md"))
 
@@ -182,8 +221,9 @@ def test_two_stale_notes_racing_to_one_target_both_refuse(tmp_path):
     rep = v.reconcile_names(apply=True)
     assert rep["renames"] == []
     target = "Example Co - Example Role"
+    reason = "two notes in this sweep both resolve to this target"
     assert sorted(rep["collisions"]) == sorted([
-        ("Unknown - Example Role", target), (" - Example Role", target)])
+        ("Unknown - Example Role", target, reason), (" - Example Role", target, reason)])
     assert os.path.isfile(a) and os.path.isfile(b)
     assert not os.path.exists(os.path.join(v.leads_dir, f"{target}.md"))
 
@@ -201,8 +241,13 @@ def test_an_archived_loser_is_never_a_rename_source(tmp_path):
 
 
 def test_a_symlinked_note_is_refused_into_skipped_not_renamed(tmp_path):
-    """A rename via os.replace on a symlink would move the LINK, not the file it points to,
-    silently detaching the note. Refused into `skipped`, before any move is attempted."""
+    """Unlike `reconcile_layout`'s symlink guard (whose destination directory genuinely
+    changes, and whose detachment IS real), a rename's source dir and dest dir are the SAME
+    directory: `os.replace` renames the link's directory entry in place, and a relative link
+    keeps resolving correctly afterward, so nothing is actually detached here (measured; see
+    `reconcile_names`'s own docstring). The guard is kept anyway for the honest reason -- a
+    symlinked note is a structure the user deliberately built, and this pass does not
+    reorganise it -- so it is still refused into `skipped`, before any move is attempted."""
     v = _v(tmp_path)
     real = tmp_path / "elsewhere.md"
     real.write_text(
@@ -213,8 +258,9 @@ def test_a_symlinked_note_is_refused_into_skipped_not_renamed(tmp_path):
 
     rep = v.reconcile_names(apply=True)
     assert rep["renames"] == []
-    assert rep["skipped"] == [("Unknown - Example Role", "note is a symlink; renaming would "
-                                                           "move the link, not the file")]
+    assert rep["skipped"] == [
+        ("Unknown - Example Role", "note is a symlink; this pass does not reorganise a "
+                                    "structure the user deliberately built")]
     assert os.path.islink(link_path), "the symlink itself was moved"
     assert real.read_text(encoding="utf-8") == (
         "---\ncompany: Example Co\nrole: Example Role\nlocation: \nstatus: new\n"
