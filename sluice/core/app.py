@@ -991,9 +991,10 @@ class Sluice:
 
     def rename(self, apply: bool = False) -> dict:
         """Rename lead notes whose basename disagrees with their frontmatter (#151). `apply=False`
-        (the default) delegates to `rename_report()` -- one implementation of the read path,
-        never two that can drift apart, the same shape `reconcile`/`reconcile_report` do NOT
-        share only because `reconcile_report` predates this method's existence.
+        (the default) delegates to `rename_report()` rather than re-implementing the read path
+        here: `rename_report()` additionally computes the dead-letter PREVIEW
+        (`report["deadletter"]`), so delegating is what makes `rename(apply=False)` carry that
+        preview too, instead of maintaining a second, narrower read path that would drift from it.
 
         Under `apply=True` this ALSO migrates the dead-letter store's rows for every note actually
         renamed (Task 9's `DeadLetterDb.rename_lead`): a dead-letter row is keyed on the lead's
