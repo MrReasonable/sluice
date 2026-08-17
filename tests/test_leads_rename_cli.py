@@ -285,6 +285,61 @@ def test_an_unreachable_deadletter_store_refuses_the_whole_apply_with_zero_renam
     assert not os.path.exists(os.path.join(leads, "Example Co - Example Role.md"))
 
 
+def test_the_cli_refuses_a_corrupt_deadletter_store_with_a_clear_message_not_a_traceback(
+        tmp_path, capsys, monkeypatch):
+    """Task 10 review round 2, Finding 2's remaining CLI-layer gap: the test above only asserts
+    `Sluice(cfg).rename(apply=True)` raises `sqlite3.DatabaseError` -- it never reaches
+    `cmd_leads_rename`'s except clause at all, so deleting `sqlite3.DatabaseError` from that
+    clause's tuple left the whole suite green. This test goes through `cmd_leads_rename` itself,
+    the same way `test_a_relocated_seen_db_refuses_apply_with_a_clear_message_not_a_traceback`
+    below does for the `RuntimeError` arm."""
+    cfg, leads, seen_db = _cfg(tmp_path, monkeypatch)
+    src = _seed(leads, "Unknown - Example Role.md", company="Example Co", role="Example Role")
+    dl_path = deadletter_path(seen_db)
+    os.makedirs(os.path.dirname(dl_path), exist_ok=True)
+    with open(dl_path, "w", encoding="utf-8") as fh:
+        fh.write("not a sqlite database")  # corrupt: check_reachable's DELETE raises on this
+
+    assert cmd_leads_rename(_Args(apply=True), cfg) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("job-sluice: "), (
+        f"escaped as something other than a clean message: {err!r}")
+    assert "Traceback" not in err
+
+    # ZERO renames landed -- assert the vault itself, not just the exit code.
+    assert os.path.isfile(src)
+    assert not os.path.exists(os.path.join(leads, "Example Co - Example Role.md"))
+
+
+def test_the_cli_refuses_a_dangling_deadletter_symlink_with_a_clear_message_not_a_traceback(
+        tmp_path, capsys, monkeypatch):
+    """Task 10 review round 2, Finding 2's headline case -- `check_reachable`'s docstring lists
+    a dangling symlink FIRST as the primary thing the probe exists to catch, and it is the shape
+    a user hits by following this codebase's OWN printed relocation remedy elsewhere (`mv <old>
+    <new>` leaves a RELATIVE symlink pointing nowhere). `core/paths.py`'s `absent()` raises
+    `FileNotFoundError` for this -- an `OSError` subtype, distinct from the `sqlite3.DatabaseError`
+    case above -- so `cmd_leads_rename`'s except clause must catch `OSError` too, not just
+    `RuntimeError`/`sqlite3.DatabaseError`. Same dangling-symlink fixture shape as
+    `tests/test_state_file_tiers.py::test_every_dead_letter_reader_refuses_a_dangling_store`,
+    reused here at the CLI layer."""
+    cfg, leads, seen_db = _cfg(tmp_path, monkeypatch)
+    src = _seed(leads, "Unknown - Example Role.md", company="Example Co", role="Example Role")
+    dl_path = deadletter_path(seen_db)
+    os.makedirs(os.path.dirname(dl_path), exist_ok=True)
+    os.symlink(os.path.join(os.path.dirname(dl_path), "nothere.db"), dl_path)
+
+    assert cmd_leads_rename(_Args(apply=True), cfg) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("job-sluice: "), (
+        f"escaped as something other than a clean message: {err!r}")
+    assert "Traceback" not in err
+    assert "symlink" in err
+
+    # ZERO renames landed -- assert the vault itself, not just the exit code.
+    assert os.path.isfile(src)
+    assert not os.path.exists(os.path.join(leads, "Example Co - Example Role.md"))
+
+
 def test_the_deadletter_failure_remedy_names_the_old_slug_not_the_new_one(
         tmp_path, capsys, monkeypatch):
     """Task 10 review, Finding 1. `DeadLetterDb.rename_lead` is a single `UPDATE ... WHERE
