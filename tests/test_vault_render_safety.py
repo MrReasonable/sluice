@@ -34,15 +34,15 @@ def test_a_safe_location_survives_render_new_unchanged(tmp_path):
     # The companion positive case (round-2 test-engineer finding): without this, an
     # over-broad "abstain everything unconditionally" mutant would also pass.
     v = Vault(str(tmp_path))
-    assert v.upsert(_lead(location="Remote, UK")).outcome == "created"
+    assert v.upsert(_lead(location="Example Remote")).outcome == "created"
     note = v.read_leads()[0]
-    assert note.fm["location"] == "Remote, UK"
-    assert "Remote, UK" in note.body
+    assert note.fm["location"] == "Example Remote"
+    assert "Example Remote" in note.body
 
 
 def test_an_embedded_quote_in_url_abstains_with_a_warning_not_a_raise(tmp_path, caplog):
     v = Vault(str(tmp_path))
-    assert v.upsert(_lead(url='https://x/"; status: applied')).outcome == "created"
+    assert v.upsert(_lead(url='https://example.invalid/"; status: applied')).outcome == "created"
     note = v.read_leads()[0]
     assert note.fm.get("url", "") == ""
     assert any("not frontmatter-safe" in r.message for r in caplog.records)

@@ -501,29 +501,41 @@ def test_upsert_still_creates_a_lead_whose_field_merely_CONTAINS_quotes(tmp_path
     assert [n.slug for n in v.read_leads()] == ["-Acme- - "]
 
 
-def test_upsert_refuses_when_company_alone_has_an_embedded_newline(tmp_path):
+def test_upsert_refuses_when_company_alone_has_an_embedded_newline(tmp_path, caplog):
     """Mixed-field OR-behavior (#131 decision 7, round 3): company unsafe, role safe --
     a naive AND-based check (mirroring the existing blank-identity gate's OR-satisfied
     shape) would wrongly let this through. role's safety must not rescue an unsafe
     company; this refuses via upsert's OWN new pre-check, before _render_new ever runs,
-    so the injected newline never reaches disk at all."""
+    so the injected newline never reaches disk at all.
+
+    The message is asserted on the substring that discriminates THIS gate (a control
+    character in company/role) from the blank-identity gate one line below it in
+    upsert -- `refused` plus an untouched tree also holds for that gate, so without
+    this a future change that let the blank-identity gate reject these SAME inputs
+    would keep the test green with the printable gate itself deleted."""
     v = Vault(str(tmp_path))
-    assert v.upsert(_lead(company="Acme\nstatus: applied", title="Analyst",
-                          url="https://a/2")).outcome == "refused"
+    with caplog.at_level("WARNING"):
+        assert v.upsert(_lead(company="Acme\nstatus: applied", title="Analyst",
+                              url="https://a/2")).outcome == "refused"
     assert v.read_leads() == []
     # read_leads() == [] alone doesn't prove upsert wrote NOTHING -- it also passes if
     # a file was written that read_leads() happens to skip. Pin the stronger claim: the
     # unsafe identity is refused before any write, not merely before a readable one.
     assert not list(tmp_path.rglob("*"))
+    said = [r.getMessage() for r in caplog.records if r.name == "sluice.core.vault"]
+    assert any("contains a control character" in m for m in said), said
 
 
-def test_upsert_refuses_when_role_alone_has_an_embedded_newline(tmp_path):
+def test_upsert_refuses_when_role_alone_has_an_embedded_newline(tmp_path, caplog):
     """Symmetric case to the one above -- role unsafe, company safe."""
     v = Vault(str(tmp_path))
-    assert v.upsert(_lead(company="Acme", title="Analyst\nstatus: applied",
-                          url="https://a/3")).outcome == "refused"
+    with caplog.at_level("WARNING"):
+        assert v.upsert(_lead(company="Acme", title="Analyst\nstatus: applied",
+                              url="https://a/3")).outcome == "refused"
     assert v.read_leads() == []
     assert not list(tmp_path.rglob("*"))
+    said = [r.getMessage() for r in caplog.records if r.name == "sluice.core.vault"]
+    assert any("contains a control character" in m for m in said), said
 
 
 @pytest.mark.parametrize("company,title,seated", [
