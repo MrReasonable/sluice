@@ -468,6 +468,16 @@ frozen `StalenessPolicy` built by `Sluice.staleness()`. Staleness is a cheap
 proxy: whether a role is still open can only be answered on the employer's own
 site, so it does not replace checking before applying.
 
+**`job-sluice leads dismiss --lead SLUG --reason REASON`** (#131) writes `dismiss`
+by the same route as `leads expire` -- `require_status=_DISMISSABLE_FROM` re-read
+inside the CAS transform, `require_blank={"pending_cv"}` refusing a lead holding
+a #60 sign-off hold -- but is the ONE `leads` pass that writes unconditionally on
+every call rather than reporting by default: the verdict it writes is one the
+USER typed (`--lead`/`--reason`), not one this tool computed, matching the
+pipeline commands' contract rather than `dedupe`/`expire`/`reconcile`'s. Resolves
+by EXACT slug equality, never substring, and refuses (writes nothing) when the
+slug names two or more notes rather than picking one.
+
 **Preventing overwrites of hand-edits** (#109): a sibling guard to
 `require_status`, also on `Vault.update_fields`, named `require_blank`. It
 re-reads the named fields' **current** content inside the CAS transform and

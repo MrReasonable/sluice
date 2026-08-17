@@ -198,7 +198,10 @@ print and change nothing until told otherwise, and none offers `--dry-run` — t
 run, and a flag that does nothing is drift. `triage run`/`ingest run`/`track run` invert both halves. The distinguishing
 property is whose judgement the write encodes: a pipeline command acts on a verdict the user
 configured, while a `leads` pass writes over a set the TOOL computed, so a mistyped one should print
-a list rather than change a hundred notes. (`docs/ARCHITECTURE.md` has the per-pass mechanics.)
+a list rather than change a hundred notes. **Exception: `leads dismiss` writes unconditionally on
+every call** (#131), like the pipeline commands, not like its `leads` siblings — the verdict it
+writes is the one the user typed (`--lead`/`--reason`), not one the tool computed. (`docs/ARCHITECTURE.md`
+has the per-pass mechanics.)
 
 **Backends are selected by role, not provider.** `--backend` takes `auto|primary|fallback`
 (`claude-max`/`deepseek` survive as deprecated aliases). Which provider fills each role is config
