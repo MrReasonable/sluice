@@ -4,7 +4,7 @@
       "title": "Acme Appraisals",
       "company": "",
       "location": "",
-      "link": "https://example.com/jobs/1",
+      "link": "https://example.com/company/acme-appraisals",
       "salary": ""
     },
     {
@@ -18,7 +18,7 @@
       "title": "Globex Logic",
       "company": "",
       "location": "",
-      "link": "https://example.com/jobs/3",
+      "link": "https://example.com/company/globex-logic",
       "salary": ""
     },
     {
@@ -32,7 +32,7 @@
       "title": "Vertex Voice",
       "company": "",
       "location": "",
-      "link": "https://example.com/jobs/5",
+      "link": "https://example.com/company/vertex-voice",
       "salary": ""
     },
     {
@@ -46,7 +46,7 @@
       "title": "Umbrella Astra",
       "company": "",
       "location": "",
-      "link": "https://example.com/jobs/7",
+      "link": "https://example.com/company/umbrella-astra",
       "salary": ""
     },
     {
@@ -60,14 +60,14 @@
       "title": "Hooli Interactive Software",
       "company": "",
       "location": "",
-      "link": "https://example.com/jobs/9",
+      "link": "https://example.com/company/hooli-interactive-software",
       "salary": ""
     },
     {
       "title": "Stark Permit",
       "company": "",
       "location": "",
-      "link": "https://example.com/jobs/10",
+      "link": "https://example.com/company/stark-permit",
       "salary": ""
     },
     {
@@ -88,14 +88,14 @@
       "title": "Wayne Finance",
       "company": "",
       "location": "",
-      "link": "https://example.com/jobs/13",
+      "link": "https://example.com/company/wayne-finance",
       "salary": ""
     },
     {
       "title": "Wonka Rewards",
       "company": "",
       "location": "",
-      "link": "https://example.com/jobs/14",
+      "link": "https://example.com/company/wonka-rewards",
       "salary": ""
     },
     {

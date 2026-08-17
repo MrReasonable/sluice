@@ -183,3 +183,67 @@ def test_host_re_matches_the_boards_own_registered_search_url():
     from sluice.ingest.sources import wellfound as wf
     real_host = urlparse(sources.get("wellfound").searches()[0].url).netloc
     assert re.fullmatch(wf._HOST_RE, real_host)
+
+
+# _is_company_card / WellfoundSource.parse (#151): company_from_url (above) only
+# resolves a NAME from a URL that already carries one -- it says nothing about the
+# other defect the same capture measured, a company-*profile* CARD (no role at
+# all) landing in the extractor's row list with the company's own name misread as
+# `title` and `company` left blank. That is not a lead with a missing company; it
+# is not a lead at all, so `parse` drops the row before `_row_to_lead` ever sees
+# it. Deliberately host-blind (see the function's own docstring), so these run
+# against `example.com` directly -- no `wellfound` fixture / host monkeypatch
+# needed, unlike the `company_from_url` suite above.
+@pytest.mark.parametrize("url", [
+    "https://example.com/company/example-co",
+    "https://example.com/company/example-co?ref=x",   # query string sits in
+                                                        # urlparse().query, not
+                                                        # .path -- doesn't touch
+                                                        # the end anchor
+])
+def test_is_company_card_matches_the_measured_bare_shape(url):
+    from sluice.ingest.sources import wellfound as wf
+    assert wf._is_company_card(url) is True
+
+
+@pytest.mark.parametrize("url", [
+    "https://example.com/jobs/2837465-example-role",   # real job card: no /company/ segment
+    "https://example.com/company/example-co/jobs/1",   # trailing path -- a job card, not a
+                                                         # profile card, per this module's own
+                                                         # measured discriminator
+    "https://example.com/company/example-co/",         # trailing slash: not the exact bare shape
+    "",                                                 # empty URL
+    "http://[::1",                                      # unparseable -- urlparse itself raises
+                                                         # ValueError; caught and treated as "not
+                                                         # the measured shape", never as "drop it"
+])
+def test_is_company_card_abstains_on_every_mirror_case(url):
+    from sluice.ingest.sources import wellfound as wf
+    assert wf._is_company_card(url) is False
+
+
+def test_wellfound_parse_drops_only_the_company_card_row():
+    # Two rows, one of each shape -- the row with a company-card link is filtered
+    # out entirely (never reaches `_row_to_lead`); the genuine job row is untouched.
+    raw = {"result": [
+        {"title": "Example Co", "company": "", "location": "",
+         "link": "https://example.com/company/example-co", "salary": ""},
+        {"title": "Staff Engineer", "company": "", "location": "",
+         "link": "https://example.com/jobs/1-staff-engineer", "salary": ""},
+    ]}
+    src = sources.get("wellfound")
+    leads = src.parse(raw, src.searches()[0])
+    assert [lead.title for lead in leads] == ["Staff Engineer"]
+
+
+def test_wellfound_fixture_drops_all_eight_company_profile_cards():
+    # The golden fixture (captured from a real board, host sanitized) mixes 8
+    # company-profile cards with 7 genuine job postings -- this is the
+    # fixture-level guarantee that parse's filter reaches the real payload shape,
+    # not just the two-row synthetic case above.
+    from sluice.ingest.sources import wellfound as wf
+    raw = json.loads((FIX / "wellfound" / "raw.json").read_text())
+    src = sources.get("wellfound")
+    leads = src.parse(raw, src.searches()[0])
+    assert len(leads) == 7
+    assert all(not wf._is_company_card(lead.url) for lead in leads)

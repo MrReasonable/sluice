@@ -22,6 +22,7 @@ only safe answer for a shape the capture never showed: tier 2 is still there,
 and a wrong tier-1 name is written to the lead as if it were proven.
 """
 import re
+from urllib.parse import urlparse
 
 from sluice.ingest.base import BrowserListSource
 from sluice.ingest.sources import register
@@ -39,7 +40,49 @@ _COMPANY_URL_RE = re.compile(
     rf"^https?://{_HOST_RE}/company/([a-z0-9-]+)(?=[/?#]|$)")
 
 
+# The extractor's own selector (`_JS` above) matches BOTH `a[href*="/company/"]` and
+# `a[href*="/jobs/"]` anchors -- deliberately, since a job card's own DOM sometimes nests a
+# company-profile link the extractor cannot distinguish at scrape time. That means some rows
+# it returns are not job postings at all: a company-*profile* CARD, whose only visible text is
+# the company's own name, so `title` ends up holding that name with `company` left empty ("").
+# There is no role to recover there -- it is not a lead with a missing company, it is not a
+# lead. `_is_company_card` is the filter `parse` (below) applies to drop those rows before
+# `_row_to_lead` ever sees them, using the SAME measured discriminator this module's own
+# docstring already records for `company_from_url`: a real job card links `/jobs/<id>-<slug>`,
+# a real company card links a BARE `/company/<slug>` with no trailing path.
+_COMPANY_CARD_PATH_RE = re.compile(r"^/company/[a-z0-9-]+$")
+
+
+def _is_company_card(url: str) -> bool:
+    """True only for the exact measured company-card shape. The asymmetry that shapes this
+    function: a wrong *keep* costs one junk lead a human dismisses in one glance; a wrong
+    *drop* silently bins a real job with no trace. So the regex matches only the end-anchored
+    bare slug -- anything not byte-shaped exactly like that capture (a trailing `/jobs/...`, a
+    trailing slash, an unparseable URL) is kept rather than guessed at.
+
+    Path-only and deliberately host-blind: `parse` only ever hands this rows THIS source's own
+    extractor already collected, so re-checking the host adds nothing, and anchoring on the
+    real host would make the sanitized `example.com` golden fixture unable to exercise the
+    filter at all.
+    """
+    try:
+        return bool(_COMPANY_CARD_PATH_RE.match(urlparse(url or "").path))
+    except ValueError:
+        return False   # unparseable is not the measured card shape either -- keep the row
+
+
 class WellfoundSource(BrowserListSource):
+    def parse(self, raw, search):
+        # Normalise defensively, matching `BrowserListSource.health_hint`'s own guard: a non-
+        # dict `raw` must not raise here any more than it may there.
+        raw = raw if isinstance(raw, dict) else {}
+        rows = [row for row in (raw.get("result") or [])
+                if not (isinstance(row, dict) and _is_company_card(row.get("link") or ""))]
+        return super().parse({**raw, "result": rows}, search)
+
+    # company_from_url stays exactly as it is: a separate, triage-time hook that resolves a
+    # company NAME from a URL that already carries one. This filter runs earlier, at parse
+    # time, on rows that carry no role at all -- the two never overlap.
     def company_from_url(self, url: str) -> str | None:
         m = _COMPANY_URL_RE.match(url or "")
         if not m:
