@@ -2,15 +2,18 @@
 
 Deterministic classify resolves the obvious cases for free (no dossier, no LLM). A lead
 classify() leaves at blank-company needs_review gets ONE resolution attempt: a free
-URL-pattern tier 1 (#109), then -- opt-in via cfg.company_resolve_fetch -- a real, no-LLM
-page-visit tier 2 (#109), reusing the same fetch/cache the enrich pass needs anyway, then
--- opt-in via cfg.company_resolve_llm, and only when a resolve_backend was threaded in --
-tier 3 (#120), an LLM read of the SAME page data tier 2 already fetched, on a SEPARATE
-backend from the judge's (always the cheap "fallback" role, built in Sluice.triage()).
+regex-over-the-role-text tier 0 (#151), then a free URL-pattern tier 1 (#109), then --
+opt-in via cfg.company_resolve_fetch -- a real, no-LLM page-visit tier 2 (#109), reusing
+the same fetch/cache the enrich pass needs anyway, then -- opt-in via
+cfg.company_resolve_llm, and only when a resolve_backend was threaded in -- tier 3 (#120),
+an LLM read of the SAME page data tier 2 already fetched, on a SEPARATE backend from the
+judge's (always the cheap "fallback" role, built in Sluice.triage()). Tier 0, like tier 1,
+needs neither cfg.company_resolve_fetch nor an LLM, so both run unconditionally on a
+zero-config `--no-llm` install.
 Only the kept, ambiguous leads are enriched and judged. dry_run computes and reports but
 writes nothing (no vault edits, no audit lines) -- resolution's COMPUTATION still runs
 under dry_run, including a real tier-3 backend call, only its WRITE is skipped. no_llm
-runs classify + (tier-1-only) resolve + apply + audit only -- no backend of any kind is
+runs classify + (tier-0/tier-1-only) resolve + apply + audit only -- no backend of any kind is
 ever built. Every lead already in the application lifecycle is skipped by the apply layer,
 so triage never clobbers human state -- and a skipped lead is audited nowhere, because no
 decision of ours landed on it.
@@ -70,7 +73,7 @@ class TriageReport:
     # (keep/shortlist/...) that cmd_triage_run prints and notify() sends to
     # Telegram verbatim -- mixing resolution PROVENANCE into that dict would make
     # its rows stop summing to the lead total a human reads in a phone notification.
-    resolved: dict = field(default_factory=lambda: {"tier1": 0, "tier2": 0, "tier3": 0})
+    resolved: dict = field(default_factory=lambda: {"tier0": 0, "tier1": 0, "tier2": 0, "tier3": 0})
     llm_calls: int = 0
 
 

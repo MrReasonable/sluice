@@ -1071,7 +1071,7 @@ def test_tier3_resolution_writes_the_company_and_is_counted_under_its_own_tier(
 
     after = v.read_leads()[0]
     assert after.fm["company"] == "Resolved Co"
-    assert report.resolved == {"tier1": 0, "tier2": 0, "tier3": 1}
+    assert report.resolved == {"tier0": 0, "tier1": 0, "tier2": 0, "tier3": 1}
     assert report.llm_calls == 1
 
 
@@ -1112,7 +1112,7 @@ def test_tier3_calls_are_counted_even_when_the_model_abstains(tmp_path, titles):
                 get_source=None, resolve_backend=resolve_backend)
 
     assert report.llm_calls == 2
-    assert report.resolved == {"tier1": 0, "tier2": 0, "tier3": 0}
+    assert report.resolved == {"tier0": 0, "tier1": 0, "tier2": 0, "tier3": 0}
 
 
 def test_a_tier3_resolution_is_audited_and_never_reaches_the_rejected_leads_note(
@@ -1262,7 +1262,7 @@ def test_a_tier3_resolution_whose_write_was_refused_is_neither_counted_nor_audit
 
     after = v.read_leads()[0]
     assert after.fm["company"] == "Human Typed Co"      # the concurrent write survives
-    assert report.resolved == {"tier1": 0, "tier2": 0, "tier3": 0}
+    assert report.resolved == {"tier0": 0, "tier1": 0, "tier2": 0, "tier3": 0}
     assert any("company-resolve" in f for f in report.failures)
     entries = audit.read_recent(30)
     assert not any(e.get("stage") == "resolve" for e in entries)
@@ -1281,7 +1281,7 @@ def test_the_engine_leaves_tier3_off_when_no_resolve_backend_was_threaded(tmp_pa
     report = run(v, cfg, None, cache, audit, statuses=("new",), no_llm=True,
                 get_source=None, resolve_backend=None)   # ...but no backend was built
 
-    assert report.resolved == {"tier1": 0, "tier2": 0, "tier3": 0}
+    assert report.resolved == {"tier0": 0, "tier1": 0, "tier2": 0, "tier3": 0}
     assert report.llm_calls == 0
 
 
@@ -1308,4 +1308,30 @@ def test_the_circuit_breaker_stops_tier3_after_3_consecutive_backend_errors_and_
     assert len(resolve_backend.calls) == 3
     assert report.llm_calls == 3
     assert sum(1 for f in report.failures if "tier 3 disabled" in f) == 1
-    assert report.resolved == {"tier1": 0, "tier2": 0, "tier3": 0}
+    assert report.resolved == {"tier0": 0, "tier1": 0, "tier2": 0, "tier3": 0}
+
+
+# ── tier 0 (#151): engine-level wiring ─────────────────────────────────────────
+
+def test_tier0_resolves_a_sentinel_company_note_on_a_fully_zero_config_install(tmp_path):
+    # #151: proven end-to-end on exactly the install shape tier 0 exists for --
+    # `--no-llm`, no page-visit budget (company_resolve_fetch off), no LLM budget
+    # (company_resolve_llm off), and no source registry at all (get_source=None).
+    # Nothing about tier 0 needs any of those; only the role text itself does the work.
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "sentinel.md",
+         _sentinel_fields("Head of Platform Engineering at Example Meridian", source="ex-board"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.company_resolve_fetch = False
+    cfg.company_resolve_llm = False
+    cache = _RecordingCache()
+
+    report = eng.run(v, cfg, None, cache, audit, statuses=("new",),
+                     no_llm=True, get_source=None, resolve_backend=None)
+
+    after = v.read_leads()[0]
+    assert after.fm["company"] == "Example Meridian"
+    assert report.resolved["tier0"] == 1
+    assert report.llm_calls == 0
+    assert cache.calls == []   # no page visit and no LLM call -- the role text alone resolved it

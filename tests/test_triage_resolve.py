@@ -741,3 +741,126 @@ def test_the_scripted_backends_resolve_prefix_still_matches_the_real_prompt():
     from tests.harness.backend import _RESOLVE
     prompt = resolve._build_resolve_prompt(_NONEMPTY_DOSSIER)
     assert prompt.startswith(_RESOLVE)
+
+
+# ── tier 0 (#151): recover the employer from a trailing "<role> at <Company>" clause in
+# the role text itself -- the cheapest tier, no fetch, no LLM. Pure-function unit tests
+# first (_company_from_role directly), then a handful proving the composition at
+# resolve_company's own call site (board-name refusal, frontmatter_safe, tier ordering).
+
+def test_company_from_role_recovers_a_trailing_at_company_clause():
+    assert (resolve._company_from_role("Head of Platform Engineering at Example Meridian")
+           == "Example Meridian")
+
+
+def test_company_from_role_greedy_role_group_uses_the_last_at_not_the_first():
+    # THE regression test for the deliberately-greedy role group: (?P<role>.*\S) backtracks
+    # from the end of the string, so it lands on the LAST " at ", not the first. Flipping
+    # `.*\S` to the lazy `.*?\S` would instead split on the FIRST " at " and answer "Scale at
+    # Example Meridian" -- this must go red the moment that happens.
+    assert (resolve._company_from_role("Engineer at Scale at Example Meridian")
+           == "Example Meridian")
+
+
+@pytest.mark.parametrize("role,reason", [
+    ("Engineer at scale", "lowercase-opening tail"),
+    ("Engineer at Example Meridian, London", "comma in the tail"),
+    ("Engineer at Example Meridian | Remote", "pipe in the tail"),
+    ("Staff Engineer", "no \" at \" at all"),
+    ("at Example Meridian", "nothing before \" at \""),
+    # defect 1's mashed-role shape: a title and a company concatenated with no
+    # separating whitespace at all, and critically no " at " substring anywhere in
+    # it -- this must fall through to tier 1 untouched, not produce a false hit.
+    ("QA Engineer / ManagerExample Trading Company", "defect-1 concatenation, no ' at '"),
+])
+def test_company_from_role_abstains(role, reason):
+    assert resolve._company_from_role(role) is None, reason
+
+
+def test_company_from_role_abstains_past_the_word_cap():
+    tail = " ".join(f"Word{i}" for i in range(resolve._MAX_ROLE_COMPANY_WORDS + 1))
+    assert resolve._company_from_role(f"Engineer at {tail}") is None
+
+
+def test_company_from_role_accepts_a_tail_at_the_word_cap():
+    # The control for the boundary test above: proves the cap is off-by-one correct,
+    # not merely "very long tails abstain for some other reason".
+    tail = " ".join(f"Word{i}" for i in range(resolve._MAX_ROLE_COMPANY_WORDS))
+    assert resolve._company_from_role(f"Engineer at {tail}") == tail
+
+
+def test_company_from_role_abstains_past_the_char_cap():
+    tail = "E" * (resolve._MAX_COMPANY_CHARS + 1)
+    assert resolve._company_from_role(f"Engineer at {tail}") is None
+
+
+def test_company_from_role_accepts_a_tail_at_the_char_cap():
+    tail = "E" * resolve._MAX_COMPANY_CHARS
+    assert resolve._company_from_role(f"Engineer at {tail}") == tail
+
+
+def test_company_from_role_abstains_on_a_deny_listed_tail():
+    # The deny-list check lives INSIDE _company_from_role itself (not only at
+    # resolve_company's call site), so "Engineer at Confidential" can never write a
+    # deny-listed value through this path regardless of how the helper is called.
+    assert resolve._company_from_role("Engineer at Confidential") is None
+
+
+@pytest.mark.parametrize("role", [None, 123, "", "   ", ["Engineer", "at", "Example Co"]])
+def test_company_from_role_abstains_on_non_string_or_missing_role_without_raising(role):
+    assert resolve._company_from_role(role) is None
+
+
+# ── tier 0 wired into resolve_company ──────────────────────────────────────────
+
+def test_resolve_company_tier0_positive_case():
+    fm = {"role": "Head of Platform Engineering at Example Meridian"}
+    got = resolve.resolve_company(fm, None, _RecordingCache(), no_llm=True)
+    assert got.company == "Example Meridian"
+    assert got.tier == "tier0"
+
+
+def test_tier0_abstains_via_is_board_name_when_the_tail_reads_the_boards_own_name():
+    # A role from a board source whose tail happens to read the board's OWN name --
+    # composed through resolve_company (not _company_from_role alone), since
+    # _is_board_name is applied at the call site, not inside the helper.
+    fm = {"role": "Software Engineer at Examplecareers", "source": "examplecareers",
+         "url": "https://examplecareers.invalid/jobs/1"}
+    got = resolve.resolve_company(fm, None, _RecordingCache(), no_llm=True)
+    assert got.company is None
+    assert got.tier is None
+
+
+def test_tier0_candidate_with_a_structural_character_abstains_via_frontmatter_safe():
+    # The regex's own character-class exclusions do not exclude a quote character, so
+    # this proves frontmatter_safe -- applied at resolve_company's call site -- is what
+    # actually catches it, not _company_from_role itself.
+    role = 'Engineer at Example "Corp"'
+    assert resolve._company_from_role(role) == 'Example "Corp"'   # the helper accepts it
+    got = resolve.resolve_company({"role": role}, None, _RecordingCache(), no_llm=True)
+    assert got.company is None                                    # frontmatter_safe rejects it
+    assert got.tier is None
+
+
+def test_tier0_wins_ahead_of_a_tier1_hit_that_would_answer_differently():
+    calls = []
+    def _tier1_extractor(url):
+        calls.append(url)
+        return "Example URL Co"
+    src = _source(company_from_url=_tier1_extractor)
+    fm = {**FM, "role": "Engineer at Example Role Co"}
+    got = resolve.resolve_company(fm, _get_source({"example-board": src}), _RecordingCache(),
+                                  no_llm=False, company_resolve_fetch=True)
+    assert got.company == "Example Role Co"
+    assert got.tier == "tier0"
+    assert calls == [], "tier 1's extractor must never even be reached once tier 0 answers"
+
+
+def test_tier0_fires_on_a_fully_zero_config_install():
+    # no_llm=True, company_resolve_fetch's default (False), and no source adapter at
+    # all (get_source=None) -- the install shape tier 0 exists for.
+    fm = {"role": "Engineer at Example Meridian"}
+    got = resolve.resolve_company(fm, None, _RecordingCache(), no_llm=True,
+                                  company_resolve_fetch=False)
+    assert got.company == "Example Meridian"
+    assert got.tier == "tier0"
