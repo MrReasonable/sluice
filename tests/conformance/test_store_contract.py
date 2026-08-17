@@ -1068,11 +1068,13 @@ def test_update_fields_blank_values_still_refuses_a_value_outside_the_set(store_
     assert store.read_leads()[0].fm["company"] == "Example Foundry"
 
 
-def test_update_fields_blank_values_comparison_is_folded(store_name, tmp_path, monkeypatch):
-    """Both sides fold through the same rule `is_placeholder_company` uses (strip, drop a
-    trailing '.'/'!', casefold): a lowercase set member ("unknown") must still match a
-    stored value carrying real-world punctuation and casing ("Unknown.") -- the shape a
-    board's own rendering, not sluice, actually produces."""
+def test_update_fields_blank_values_comparison_folds_the_stored_side(store_name, tmp_path,
+                                                                      monkeypatch):
+    """The FRESH STORED value folds through the same rule `is_placeholder_company` uses
+    (strip, drop a trailing '.'/'!', casefold): a lowercase set member ("unknown") must
+    still match a stored value carrying real-world punctuation and casing ("Unknown.") --
+    the shape a board's own rendering, not sluice, actually produces. `blank_values`
+    itself is NOT folded (see the next test) -- only this one side is."""
     store = _make_store(store_name, tmp_path, monkeypatch)
     store.upsert(_lead())
     ref = store.read_leads()[0].ref
@@ -1084,6 +1086,30 @@ def test_update_fields_blank_values_comparison_is_folded(store_name, tmp_path, m
 
     assert wrote is True
     assert store.read_leads()[0].fm["company"] == "Resolved Co"
+
+
+def test_update_fields_blank_values_members_must_already_be_folded(store_name, tmp_path,
+                                                                    monkeypatch):
+    """#151 finding: `blank_values` members are compared VERBATIM against the folded
+    stored value -- the set itself is never folded, mirroring `require_status` taking
+    its own set as already-canonical rather than normalizing it too (core.status.
+    normalize folds only the stored status). An unfolded member ("Unknown", capital U)
+    must NOT match a stored value that folds to the same thing ("unknown") -- if it did,
+    both sides would be folding and this test, and the docstrings it pins, would be
+    wrong. `core.leads.NON_ANSWER_COMPANIES`, the one production caller, is built
+    already-folded for exactly this reason."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    store.upsert(_lead())
+    ref = store.read_leads()[0].ref
+    store.update_fields(ref, {"company": '"unknown"'})
+
+    wrote = store.update_fields(ref, {"company": '"Resolved Co"'},
+                                require_blank=frozenset({"company"}),
+                                blank_values=frozenset({"Unknown"}))
+
+    assert wrote is False, \
+        "an unfolded blank_values member must not silently match a folded stored value"
+    assert store.read_leads()[0].fm["company"] == "unknown"
 
 
 def test_update_fields_blank_values_without_require_blank_is_inert(store_name, tmp_path,

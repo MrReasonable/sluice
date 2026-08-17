@@ -1055,11 +1055,15 @@ class Vault:
         that FOLDS (via `fold_company_answer` -- strip, drop a trailing `.`/`!`, casefold)
         into this set counts as blank alongside empty/whitespace-only, so a note already
         reading a placeholder like "Unknown" or "Confidential" can be repaired the same way
-        a genuinely blank one can. It widens exactly one thing -- membership in the set --
-        and nothing else: a value that merely differs from the one being written is still
-        refused, so a human's real answer typed into the same field mid-run is unaffected.
-        Given without `require_blank` it gates nothing; the presence check it widens simply
-        never runs.
+        a genuinely blank one can. Only the fresh STORED value is folded -- `blank_values`
+        itself is compared verbatim, so its members must already be pre-folded by the
+        caller, exactly as `require_status` takes its own set as already-canonical rather
+        than normalizing it too. `core.leads.NON_ANSWER_COMPANIES` is the one production
+        caller and is built lowercase with no trailing punctuation for this reason. It
+        widens exactly one thing -- membership in the set -- and nothing else: a value that
+        merely differs from the one being written is still refused, so a human's real
+        answer typed into the same field mid-run is unaffected. Given without
+        `require_blank` it gates nothing; the presence check it widens simply never runs.
 
         Both guards assume a well-formed note: `require_status`/`require_blank` read via
         `_fm_value` (FIRST occurrence of `key:`), while `note.fm` -- what a caller's own
@@ -2386,12 +2390,18 @@ def _fm_value(inner: str | None, key: str) -> str:
 def _counts_as_blank(value: str, blank_values: frozenset | None) -> bool:
     """Whether `value` (a fresh `_fm_value` read) satisfies `update_fields`'s
     `require_blank` guard: genuinely empty, or -- when `blank_values` names a set --
-    a fold-match against it (#151). Folded through `fold_company_answer` so "Unknown",
-    "Unknown.", " unknown " and "UNKNOWN!" are the same value to this check, exactly as
-    they already are to the resolution gate that decided the write was safe. Anything
-    else, including a value that merely differs from the one being written, is NOT
-    blank -- the whole point of require_blank is refusal on presence, and this helper
-    only ever narrows what counts as absent, never what counts as a difference."""
+    a fold-match against it (#151). Only `value` -- the fresh stored side -- is folded
+    through `fold_company_answer`, so "Unknown", "Unknown.", " unknown " and "UNKNOWN!"
+    are the same value to this check, exactly as they already are to the resolution gate
+    that decided the write was safe. `blank_values` members are compared VERBATIM, never
+    folded -- mirroring `_status.normalize` folding only the stored status and taking
+    `require_status` as already-canonical -- so every member the caller passes MUST
+    already be pre-folded (`core.leads.NON_ANSWER_COMPANIES` is; see its own definition).
+    An unfolded member silently never matches anything, which is why this asymmetry is
+    stated here rather than left implicit. Anything else, including a value that merely
+    differs from the one being written, is NOT blank -- the whole point of require_blank
+    is refusal on presence, and this helper only ever narrows what counts as absent,
+    never what counts as a difference."""
     if not value.strip():
         return True
     return blank_values is not None and fold_company_answer(value) in blank_values

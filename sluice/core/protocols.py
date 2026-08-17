@@ -319,14 +319,19 @@ class Store(Protocol):
         reads the pre-fetch snapshot and is byte-identical to no check at all.
 
         `blank_values`, when given alongside `require_blank`, names the stored values
-        that count as BLANK for that guard in addition to empty/whitespace-only. Both
-        sides of the comparison are normalised through `core.leads.fold_company_answer`
-        (strip, drop a trailing `.`/`!`, casefold) -- the same delegation `require_status`
-        already makes to `core.status.normalize`. It widens exactly one thing: a value in
-        the given set now counts as blank for the presence check. Every other non-blank
-        value is still refused, including one that merely *differs* from the value being
-        written -- never-clobber holds for anything not named here. `blank_values` given
-        without `require_blank` is inert and must never become a guard of its own."""
+        that count as BLANK for that guard in addition to empty/whitespace-only. Only the
+        FRESH STORED side is normalised, through `core.leads.fold_company_answer` (strip,
+        drop a trailing `.`/`!`, casefold) -- the identical asymmetry `require_status`
+        already has with `core.status.normalize`, which folds the stored status but takes
+        `require_status` itself as already-canonical. `blank_values` members MUST already
+        be folded by the caller (`core.leads.NON_ANSWER_COMPANIES` is built that way for
+        exactly this reason); an unfolded member silently never matches, the same failure
+        mode an unnormalized `require_status` set would have. It widens exactly one thing:
+        a value in the given set now counts as blank for the presence check. Every other
+        non-blank value is still refused, including one that merely *differs* from the
+        value being written -- never-clobber holds for anything not named here.
+        `blank_values` given without `require_blank` is inert and must never become a
+        guard of its own."""
         ...
 
     def merge_cluster(self, survivor_ref, loser_refs, *, alt_urls, first_seen, last_seen) -> list:

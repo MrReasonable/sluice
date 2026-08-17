@@ -17,6 +17,18 @@ class TestNonAnswerCompanies:
         # Copied verbatim from triage/resolve.py's current _NON_ANSWERS
         assert len(NON_ANSWER_COMPANIES) == 19
 
+    def test_every_member_is_already_folded(self):
+        """#151: `Store.update_fields`'s `blank_values` guard folds only the FRESH STORED
+        value it re-reads -- `blank_values` members themselves are compared verbatim (see
+        `core/vault.py::_counts_as_blank`). This set is engine.py's one production
+        `blank_values` argument, so a member that is NOT its own fold (e.g. a future
+        addition typed "Unknown" with a capital U) would silently never match anything --
+        exactly the failure mode an unnormalized `require_status` set would have. Pins the
+        constraint the set's own definition comment states, so an unfolded addition fails
+        here rather than shipping as a silent no-op guard."""
+        unfolded = [v for v in NON_ANSWER_COMPANIES if fold_company_answer(v) != v]
+        assert unfolded == []
+
 
 class TestFoldCompanyAnswer:
     """Normalisation for company field candidates."""

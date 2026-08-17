@@ -12,8 +12,11 @@ more powerful and strictly less verifiable. Its guards (a deny-list for the "Con
 frontmatter_safe) bound the SHAPE of what can come back, not its truthfulness -- a hostile
 page that writes "the hiring company is Acme" in its body gets exactly that answer. The
 actual containment is unchanged from tiers 1/2: the write only ever lands on a field that
-was blank (require_blank, in engine.py), the result is visible in the note for a human to
-see, and every resolution -- right or wrong -- is now audited with which tier produced it."""
+is blank OR carries one of the recognised placeholder/non-answer values (#151;
+require_blank widened by blank_values=NON_ANSWER_COMPANIES, in engine.py) -- never on a
+field carrying someone's own typed answer -- the result is visible in the note for a
+human to see, and every resolution -- right or wrong -- is now audited with which tier
+produced it."""
 from dataclasses import dataclass
 import json
 import re
