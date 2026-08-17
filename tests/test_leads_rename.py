@@ -162,7 +162,7 @@ def test_a_location_suffixed_stale_note_renames_to_the_bare_candidate_one(tmp_pa
     # not re-created as a duplicate.
     lead = Lead(source="test", search="q", title="Example Role", company="Example Co",
                 location="Example City", url="")
-    assert v.upsert(lead) == "updated"
+    assert v.upsert(lead).outcome == "updated"
     assert len([n for n in v.read_leads() if "Example Role" in n.slug]) == 1
 
 
@@ -430,7 +430,14 @@ def test_a_renamed_note_is_found_in_place_by_the_next_upsert(tmp_path):
     v.reconcile_names(apply=True)
     lead = Lead(source="test", search="q", title="Example Role", company="Example Co",
                 location="", url="")
-    outcome = v.upsert(lead)
+    outcome = v.upsert(lead).outcome
+    # Not pinned to "updated" alone (CodeRabbit finding, PR #152 round 2 -- checked and
+    # rejected): both sides carry a BLANK location, which same_opportunity/_compare_locations
+    # (core/leads.py) treats as evidence-free by design, so the verdict is UNKNOWN -> "merge",
+    # never SAME -> "update". The sibling test above pins "updated" alone because it gives both
+    # sides a real, matching location, which IS evidence. What this assertion actually pins is
+    # "found in place, either way" -- see the read_leads() count below, which is what would fail
+    # if the rename were not found at all.
     assert outcome in ("updated", "merged")
     assert len(v.read_leads()) == 1, "the rename was not found, so a duplicate was created"
 
@@ -443,7 +450,8 @@ def test_a_note_renamed_then_merged_carries_the_new_name_into_the_archive_stamp(
     v = _v(tmp_path)
     _seed(v, "Unknown - Example Role.md", company="Example Co", role="Example Role",
           url="https://example.test/job/1")
-    survivor = _seed(v, "Beta - Other Role.md", company="Beta", role="Other Role")
+    survivor = _seed(v, "Example Beta - Other Role.md", company="Example Beta",
+                      role="Other Role")
     v.reconcile_names(apply=True)
     renamed_ref = os.path.join(v.leads_dir, "Example Co - Example Role.md")
     assert os.path.isfile(renamed_ref)
@@ -460,7 +468,7 @@ def test_a_note_renamed_then_merged_carries_the_new_name_into_the_archive_stamp(
     v2 = Vault(str(tmp_path), lead_layout="active_archive")
     lead = Lead(source="test", search="q", title="Example Role", company="Example Co",
                 location="", url="https://example.test/job/1")
-    assert v2.upsert(lead) == "merged_away"
+    assert v2.upsert(lead).outcome == "merged_away"
 
 
 def test_a_source_still_scraping_a_blank_company_resolves_to_the_old_stale_name(tmp_path):
@@ -476,7 +484,7 @@ def test_a_source_still_scraping_a_blank_company_resolves_to_the_old_stale_name(
 
     still_broken = Lead(source="test", search="q", title="Example Role", company="",
                         location="", url="")
-    assert v.upsert(still_broken) == "created"
+    assert v.upsert(still_broken).outcome == "created"
     slugs = sorted(n.slug for n in v.read_leads())
     assert slugs == [" - Example Role", "Example Co - Example Role"], (
         "the still-blank scrape either clobbered the renamed note or failed to create its own")
