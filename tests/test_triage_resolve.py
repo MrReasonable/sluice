@@ -763,7 +763,21 @@ def test_company_from_role_greedy_role_group_uses_the_last_at_not_the_first():
 
 
 @pytest.mark.parametrize("role,reason", [
-    ("Engineer at scale", "lowercase-opening tail"),
+    # "Engineer at scale" is NOT, on its own, proof that _looks_like_a_name's
+    # lowercase-opening check is load-bearing: "scale" is ALSO a member of
+    # _IDIOM_TAIL_WORDS, so if _looks_like_a_name were deleted entirely,
+    # _is_idiom_tail would independently catch this exact candidate and the
+    # test would stay green -- witnessed by monkeypatching _looks_like_a_name
+    # to `lambda candidate: True` and re-running: "Engineer at scale" still
+    # abstains. Kept anyway as valid coverage of the idiom-list path, but the
+    # case directly below it is the one that isolates _looks_like_a_name.
+    ("Engineer at scale", "lowercase-opening tail (also an idiom word; see case below for the isolating one)"),
+    # The actual discriminator for _looks_like_a_name: a lowercase-opening tail
+    # whose word is NOT in _IDIOM_TAIL_WORDS, so _is_idiom_tail cannot backstop
+    # it. Witnessed: with _looks_like_a_name deleted (monkeypatched to always
+    # return True), _company_from_role("Engineer at fastgrowth") returns
+    # "fastgrowth" instead of None -- this case alone turns red.
+    ("Engineer at fastgrowth", "lowercase-opening tail, isolates _looks_like_a_name (not an idiom word)"),
     ("Engineer at Example Meridian, London", "comma in the tail"),
     ("Engineer at Example Meridian | Remote", "pipe in the tail"),
     ("Staff Engineer", "no \" at \" at all"),
@@ -772,12 +786,16 @@ def test_company_from_role_greedy_role_group_uses_the_last_at_not_the_first():
     # separating whitespace at all, and critically no " at " substring anywhere in
     # it -- this must fall through to tier 1 untouched, not produce a false hit.
     ("QA Engineer / ManagerExample Trading Company", "defect-1 concatenation, no ' at '"),
-    # The Title-Case sibling of "Engineer at scale" above: board listings commonly
+    # The Title-Case siblings of "Engineer at scale" above: board listings commonly
     # render role text in Title Case (this repo's own fixtures use .title()), which
     # capitalizes the idiom's tail too and defeats _looks_like_a_name's lowercase-
-    # opening check on its own. _is_idiom_tail is the second guard that must catch
-    # these -- both cases abstain, for related but distinct reasons, and a
-    # mutation deleting either mechanism must turn at least one of these red.
+    # opening check entirely (an uppercase opener always passes it). _is_idiom_tail
+    # is the second guard that must catch these on its own -- witnessed: with
+    # _is_idiom_tail deleted (monkeypatched to always return False),
+    # _company_from_role("Editor at Large") returns "Large" instead of None, and
+    # likewise for each sibling below. These are the cases that isolate
+    # _is_idiom_tail, the mirror of "Engineer at fastgrowth" above for
+    # _looks_like_a_name.
     ("Editor at Large", "title-case idiom tail ('at large'), case check alone misses it"),
     ("Senior Editor At Large", "title-case idiom tail, 'At' itself also capitalized"),
     ("Engineer At Scale", "title-case idiom tail ('at scale')"),
