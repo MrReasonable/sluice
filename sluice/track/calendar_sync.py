@@ -390,14 +390,42 @@ def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
     Whoever executes the filter against a live calendar can then let a clean tag query clear
     `truncated` too -- see `_find_ours_by_tag` for what that would buy and what it would cost."""
     if ics.start is None:
-        # We cannot even build a window, so nothing was searched. A bare `METHOD:CANCEL` +
-        # `UID` VEVENT is legal RFC 5545 and lands here.
+        # No start, so no window can be built. A bare `METHOD:CANCEL` + `UID` VEVENT is legal
+        # RFC 5545 and lands here, and `reconcile`'s cancel path calls us with no start guard
+        # (unlike its scheduling path), so this is reached in production rather than in theory.
         #
-        # `unresolved` for BOTH arms. The non-cancel arm used to answer `present`, which this
-        # docstring defines as "we searched a complete window and there was nothing of ours"
-        # -- a positive claim about a search that never happened. Unreachable today, because
-        # `reconcile` guards `ics.start is not None` before the only non-cancel call site, but
-        # the honest value costs nothing and the wrong one sits waiting for a third caller.
+        # A CANCEL is now answerable anyway, which it was not before #146: a tag lookup needs
+        # no window at all -- the UID alone identifies the entry -- so "we cannot even build a
+        # window" stopped being a reason to give up. This was cause #1 of the three that make
+        # `_find_ours` come back empty (see tests/test_track_cancel_unresolved.py); the other
+        # two are already closed, and leaving this one open would have meant answering
+        # `unresolved` to a question we had just acquired the means to answer, sending the
+        # operator to delete by hand.
+        if ics.cancelled:
+            mine, _unsettled = _find_ours_by_tag(client, ics)
+            if mine:
+                if not dry_run:
+                    for ev in mine:
+                        client.delete_event(ev["id"])
+                return "cancelled"
+            # NOT `present` when the tag query comes back empty, even though it searched
+            # without a window and "nothing of ours" is what `present` means. That would be
+            # #138 rebuilt on an assumption: `present` is a positive claim, and the only
+            # evidence for it here is a filter nobody has executed against a live calendar. If
+            # it silently matches nothing, every startless cancel would answer "nothing to do"
+            # while the cancelled interview stayed in the operator's calendar and `seen.add`
+            # consumed the message -- which is precisely the failure this arm was given
+            # `unresolved` for.
+            #
+            # So the lookup can only IMPROVE this branch, never weaken it: a hit cancels, and
+            # anything else falls back to the answer that was already here. That also makes
+            # `unsettled` moot, hence the discard -- both of its values lead here.
+            return "unresolved"
+        # The non-cancel arm still cannot proceed -- `_event_body` has no instant to write.
+        # It used to answer `present`, a positive claim about a search that never happened.
+        # Unreachable today because `reconcile` guards `ics.start is not None` before the only
+        # non-cancel call site, but the honest value costs nothing and the wrong one sits
+        # waiting for a third caller.
         return "unresolved"
     events, truncated = _window(client, cfg, ics)
     mine = _find_ours(events, ics)

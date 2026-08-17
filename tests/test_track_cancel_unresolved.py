@@ -42,16 +42,43 @@ def _cancel(uid="u1", start=None):
     return e
 
 
-def test_a_cancel_with_no_DTSTART_is_UNRESOLVED_not_present():
+def test_a_cancel_with_no_DTSTART_now_FINDS_our_event_and_cancels_it():
     """The legal shape that broke it: `METHOD:CANCEL` + `UID`, no DTSTART.
 
-    `sync_event` returns before it can look, so the old code answered "nothing of ours" to a
-    question it never asked -- while our tagged event sat right there.
+    #138 made this `unresolved` because `sync_event` returned before it could look -- "nothing
+    of ours" was an answer to a question never asked, while our tagged event sat right there.
+    That was the honest value for as long as looking required a window.
+
+    #146 removed that requirement. A UID identifies the entry on its own, so the question can
+    now be ASKED, and the answer to this one is the event we booked. Answering `unresolved`
+    once the means to resolve it exists would just send the operator to delete by hand.
+
+    What has NOT changed is the direction of the guarantee -- see the sibling below.
     """
     ics = parse_ics("BEGIN:VCALENDAR\r\nMETHOD:CANCEL\r\nBEGIN:VEVENT\r\nUID:u1\r\n"
                     "END:VEVENT\r\nEND:VCALENDAR\r\n")
     assert ics.cancelled and ics.start is None, "fixture must be the no-DTSTART cancel"
     c = FakeGoogleClient(events=[_tagged("u1", "2026-07-15T10:00:00+00:00")])
+    assert sync_event(c, TrackConfig(), lead_slug="example-lead", ics=ics) == "cancelled"
+    assert c.deleted == ["ev1"]
+    assert not c.listed, "no window can be built here, so none should have been requested"
+
+
+def test_a_startless_cancel_that_finds_NOTHING_is_still_unresolved_never_present():
+    """#138's actual lesson, kept intact while the case above improved.
+
+    `present` means "we searched and there was nothing of ours" -- a positive claim. The only
+    evidence for it here is a filter this repo has never executed against a live calendar. If
+    that filter silently matches nothing, EVERY startless cancel would answer "nothing to do"
+    while the cancelled interview stayed in the calendar and `seen.add` consumed the message,
+    which is the exact failure #138 was about.
+
+    So the tag lookup is only allowed to improve this branch: a hit cancels, and anything else
+    falls back to the answer that was already here.
+    """
+    ics = parse_ics("BEGIN:VCALENDAR\r\nMETHOD:CANCEL\r\nBEGIN:VEVENT\r\nUID:u1\r\n"
+                    "END:VEVENT\r\nEND:VCALENDAR\r\n")
+    c = FakeGoogleClient(events=[])
     assert sync_event(c, TrackConfig(), lead_slug="example-lead", ics=ics) == "unresolved"
     assert not c.deleted, "must not guess a deletion either"
 
@@ -103,6 +130,11 @@ def test_an_unresolved_cancel_REACHES_A_HUMAN(tmp_path):
     version pinned `action == "proposed"`, which is a mechanism, and mechanisms are what you
     want free to change. The end-to-end consequence -- a dead-letter row with a dismiss lever
     -- is pinned in `test_track_unresolved_routing.py`.
+
+    The calendar is EMPTY here, where it used to hold our tagged event. Since #146 a startless
+    cancel that finds its event is `cancelled`, so the old fixture no longer produces the
+    outcome this test is about. What is under test is the ROUTING of an unresolved cancel, not
+    how one arises -- so the fixture moved to a case that still genuinely cannot be resolved.
     """
     import pathlib
 
@@ -121,8 +153,7 @@ def test_an_unresolved_cancel_REACHES_A_HUMAN(tmp_path):
     ics = parse_ics("BEGIN:VCALENDAR\r\nMETHOD:CANCEL\r\nBEGIN:VEVENT\r\nUID:u1\r\n"
                     "END:VEVENT\r\nEND:VCALENDAR\r\n")
     ev = Event(lead_slug="Example Tidal - EM", type="interview", confidence=0.9, ics=ics)
-    res = R.reconcile(ev, notes, v, TrackConfig(),
-                      FakeGoogleClient(events=[_tagged("u1", "2026-07-15T10:00:00+00:00")]))
+    res = R.reconcile(ev, notes, v, TrackConfig(), FakeGoogleClient(events=[]))
     assert res.calendar == "unresolved"
     assert res.needs_review == "cancel-unresolved", (
         "an unresolved cancel must reach a human, not vanish")
