@@ -321,4 +321,8 @@ def test_call_tool_concurrency_sanity_check_reaches_dismiss_lead_under_overlap(t
 
     a, b = asyncio.run(_run())
     outcomes = sorted(json.loads(r.content[0].text)["outcome"] for r in (a, b))
-    assert outcomes == ["dismissed", "unchanged"]
+    # "conflict" is a legitimate outcome of real overlap (Sluice.dismiss_lead maps a
+    # sustained VaultConflict to it), so pin only what this sanity check claims: both
+    # calls reached dismiss_lead, and exactly one of them wrote.
+    assert set(outcomes) <= {"dismissed", "unchanged", "conflict"}, outcomes
+    assert outcomes.count("dismissed") == 1, outcomes
