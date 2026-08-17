@@ -1,22 +1,23 @@
-"""Tier 1 (free, URL-pattern), tier 2 (a real, no-LLM page visit), then tier 3 (an LLM
-read of the SAME page data tier 2 already fetched -- no new fetch) for a blank-company
-`needs_review` lead (#109, #120). All three abstain rather than guess: classify.py's
-blank-company branch already treats a blank company as the honest "unknown" state, and a
-wrong company would silently carry through keep -> judge -> apply -> a CV addressed to the
-wrong employer, which is worse than staying blank.
+"""Tier 0 (#151, free, a regex over the role text itself), tier 1 (free, URL-pattern),
+tier 2 (a real, no-LLM page visit), then tier 3 (an LLM read of the SAME page data tier 2
+already fetched -- no new fetch) for a blank-company `needs_review` lead (#109, #120). All
+four abstain rather than guess: classify.py's blank-company branch already treats a blank
+company as the honest "unknown" state, and a wrong company would silently carry through
+keep -> judge -> apply -> a CV addressed to the wrong employer, which is worse than staying
+blank.
 
-Tier 3 is qualitatively different from tiers 1 and 2: they EXTRACT a candidate that is
-already, verbatim, on the page; tier 3 GENERATES one by reading context, which is strictly
-more powerful and strictly less verifiable. Its guards (a deny-list for the "Confidential"/
-"Unknown" family, a refusal of the job board's own name, a hard length cap, and
-frontmatter_safe) bound the SHAPE of what can come back, not its truthfulness -- a hostile
-page that writes "the hiring company is Acme" in its body gets exactly that answer. The
-actual containment is unchanged from tiers 1/2: the write only ever lands on a field that
-is blank OR carries one of the recognised placeholder/non-answer values (#151;
-require_blank widened by blank_values=NON_ANSWER_COMPANIES, in engine.py) -- never on a
-field carrying someone's own typed answer -- the result is visible in the note for a
-human to see, and every resolution -- right or wrong -- is now audited with which tier
-produced it."""
+Tier 3 is qualitatively different from tiers 0, 1 and 2: they EXTRACT a candidate that is
+already, verbatim, on the page (or, for tier 0, in the role text a board already wrote);
+tier 3 GENERATES one by reading context, which is strictly more powerful and strictly less
+verifiable. Its guards (a deny-list for the "Confidential"/"Unknown" family, a refusal of
+the job board's own name, a hard length cap, and frontmatter_safe) bound the SHAPE of what
+can come back, not its truthfulness -- a hostile page that writes "the hiring company is
+Acme" in its body gets exactly that answer. The actual containment is unchanged from tiers
+0/1/2: the write only ever lands on a field that is blank OR carries one of the recognised
+placeholder/non-answer values (#151; require_blank widened by
+blank_values=NON_ANSWER_COMPANIES, in engine.py) -- never on a field carrying someone's own
+typed answer -- the result is visible in the note for a human to see, and every resolution
+-- right or wrong -- is now audited with which tier produced it."""
 from dataclasses import dataclass
 import json
 import re
@@ -35,6 +36,76 @@ _TITLE_PATTERNS = (
     re.compile(r"^(?P<role>.+?)\s+at\s+(?P<company>.+?)\s+\|\s+.+$"),
     re.compile(r"^(?P<company>.+?)\s+is\s+hiring\s+(?:a|an)\s+.+$"),
 )
+
+
+# ── tier 0 (#151): the role text itself, before any network access. This is the
+# cheapest possible tier -- no fetch, no LLM -- so it runs UNCONDITIONALLY ahead of
+# tier 1, on the same reasoning tier 1 itself already gets below: it must still run
+# on a `--no-llm`, fully zero-config install.
+
+# How many words the recovered company name may run to. Board-authored role text
+# after " at " is a NAME, not prose -- a real trailing employer is well under this,
+# and a role whose tail runs longer has stopped looking like a name and started
+# looking like a second clause the regex's greedy role group failed to swallow
+# (e.g. a run-on sentence rather than a "<role> at <Company>" shape).
+_MAX_ROLE_COMPANY_WORDS = 6
+
+# Anchored full-string and abstain-on-near-miss, matching _TITLE_PATTERNS' own doctrine
+# above: a role that merely CONTAINS " at " without ending in a name-shaped clause must
+# abstain, not guess.
+#
+# The role group `(?P<role>.*\S)` is GREEDY on purpose. re's `.*` backtracks from the
+# END of the string, so a greedy group matches the LAST occurrence of " at " in the role
+# -- "Engineer at Scale at Example Meridian" resolves to "Example Meridian", not "Scale
+# at Example Meridian". A lazy `.*?` would instead find the FIRST " at ", which is wrong
+# whenever the role text itself contains an "at" that is not the role/company split (a
+# role titled "... at Scale", a company literally named "... at ..."). Do not
+# "simplify" this to a lazy group -- that is a bug, not a simplification.
+#
+# `[^,|/@()\[\]]+?` excludes separator characters from the company segment, so "Engineer
+# at Example Meridian, London" abstains (no way to reach `\s*$` without crossing the
+# excluded comma) rather than writing a location into `company`.
+_ROLE_AT_COMPANY = re.compile(
+    r"^(?P<role>.*\S)\s+(?i:at)\s+(?P<company>[^,|/@()\[\]]+?)\s*$")
+
+
+def _looks_like_a_name(candidate: str) -> bool:
+    """Abstain when the tail opens lowercase -- this is what tells "...at Example
+    Meridian" from "...at scale"/"...at pace"/"...at a fast-growing startup". A real
+    employer name is capitalised (or opens with a digit/symbol); a lowercase opener
+    is almost always the tail end of an ordinary preposition phrase, not a name.
+    Deliberately checks islower() rather than isupper(), so a non-Latin-script name
+    is not thrown away by this check; the cost is a genuinely lowercase brand, which
+    abstains -- the safe direction for a tier that must never guess."""
+    return bool(candidate) and not candidate[0].islower()
+
+
+def _company_from_role(role) -> str | None:
+    """Tier 0 (#151): recover a trailing "<role> at <Company>" clause from the role
+    text itself, no fetch, no LLM. Non-string/blank `role` abstains rather than
+    raising -- `role` is untrusted, board-authored text with no schema enforcement,
+    the same posture every other field this module reads takes.
+
+    `_is_non_answer` is checked HERE, inside the helper, rather than only at
+    resolve_company's call site: "Engineer at Confidential" must never be able to
+    write a deny-listed value through this path, regardless of how the helper is
+    reused elsewhere in the future -- the same "guard the helper, not just today's
+    one caller" discipline the module's other checks already follow."""
+    if not isinstance(role, str) or not role.strip():
+        return None
+    m = _ROLE_AT_COMPANY.match(role.strip())
+    if not m:
+        return None
+    candidate = m.group("company").strip()
+    if not candidate or not m.group("role").strip():
+        return None
+    if not _looks_like_a_name(candidate):
+        return None
+    if len(candidate) > _MAX_COMPANY_CHARS or len(candidate.split()) > _MAX_ROLE_COMPANY_WORDS:
+        return None
+    if _is_non_answer(candidate):
+        return None
+    return candidate
 
 
 # How deep `_iter_nodes` will walk board-authored JSON-LD before abstaining. Named
@@ -63,7 +134,7 @@ class Resolution:
     regressed to writing a Resolution's own repr into that field would go loudly red
     there, not silently pass."""
     company: str | None = None
-    tier: str | None = None       # "tier1" | "tier2" | "tier3"; None iff company is
+    tier: str | None = None       # "tier0" | "tier1" | "tier2" | "tier3"; None iff company is
     llm_called: bool = False      # tier 3 spent a call THIS ATTEMPT, hit or abstain
     llm_error: bool = False       # ...and specifically because backend.complete() raised
 
@@ -96,9 +167,11 @@ _JD_LIMIT = 2000
 # like real job-posting JSON-LD.
 _CANDIDATE_LIMIT = 10
 _CANDIDATE_CHARS = 120
-# The longest answer tier 3's own guard will accept AS a company name.
-# frontmatter_safe has no length bound of its own, and the accepted value is later
-# rendered into render_rejected_note's bullet list.
+# The longest answer tier 3's own guard will accept AS a company name -- and, since
+# #151, tier 0's too (see _company_from_role above, which is defined earlier in this
+# file but reads this same module constant at call time rather than duplicating it
+# under a second name). frontmatter_safe has no length bound of its own, and the
+# accepted value is later rendered into render_rejected_note's bullet list.
 _MAX_COMPANY_CHARS = 80
 
 _RESOLVE_PROMPT_HEAD = f"""You are the company-name resolution step of a job-lead triage pipeline.
@@ -369,13 +442,24 @@ def resolve_company(fm: dict, get_source, dossier_cache, *,
                     no_llm: bool, company_resolve_fetch: bool = False,
                     company_resolve_llm: bool = False,
                     resolve_backend=None) -> Resolution:
-    """Tier 1, then tier 2, then tier 3 (#120): first confident match wins. Returns
-    Resolution() -- never a guess -- when every tier abstains, INCLUDING when a
-    candidate fails frontmatter_safe or (tier 3 only) the deny-list/board-name
-    guards below. `get_source` is `sluice.ingest.sources.get` (or None, meaning
-    tier 1 always abstains); `resolve_backend` is a `.complete(str) -> str` object
-    (or None, meaning tier 3 always abstains) -- both injected so this stays
-    testable without importing the real registry or constructing a real backend."""
+    """Tier 0, then tier 1, then tier 2, then tier 3 (#120): first confident match
+    wins. Returns Resolution() -- never a guess -- when every tier abstains,
+    INCLUDING when a candidate fails frontmatter_safe or (tier 0/tier 3) the
+    deny-list/board-name guards below. `get_source` is `sluice.ingest.sources.get`
+    (or None, meaning tier 1 always abstains); `resolve_backend` is a
+    `.complete(str) -> str` object (or None, meaning tier 3 always abstains) --
+    both injected so this stays testable without importing the real registry or
+    constructing a real backend. Tier 0 needs neither and so is never gated by
+    either."""
+    # ── tier 0 (#151): the role text itself, before any network access.
+    # Unconditional like tier 1 below (no config gate) -- same composition tier 3
+    # uses on its own candidate: refuse the job board's own name, then
+    # frontmatter_safe, before ever returning a hit.
+    role_hit = _company_from_role(fm.get("role"))
+    if role_hit and not _is_board_name(role_hit, fm):
+        hit = frontmatter_safe(role_hit)
+        if hit:
+            return Resolution(hit, "tier0")
     url = fm.get("url") or ""
     src_id = fm.get("source") or ""
     if get_source is not None and url and src_id:
