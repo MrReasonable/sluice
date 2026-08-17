@@ -719,6 +719,89 @@ def test_an_unmatched_receipt_stays_quiet_even_beside_a_duplicate_slug():
     assert rep.proposed == 0 and dl.open_entries() == []
 
 
+# ── receipt_by_slug spans shortlist AND in-flight (#136 Task 3) ─────────────
+
+
+def _vault_cross_set_twins(url, inflight_status="applied"):
+    """Two notes claiming ONE slug ACROSS the shortlist/in-flight boundary Task 3 newly
+    merges into a single index -- one shortlist note, one already in-flight, same
+    company/role (hence the same store-issued slug), in two subfolders so the flat
+    store's one-file-per-basename guarantee cannot mask the collision the way it could
+    not for `_vault_shortlist_twins`' same-SET case. Both carry the SAME url, so a
+    receipt from that domain would (if the collision were missed) satisfy the host
+    match against either twin -- exactly the shape that used to let a bare dict merge
+    silently pick one and act on it."""
+    root = tempfile.mkdtemp()
+    leads = pathlib.Path(root, "Job Applications", "Job Leads")
+    (leads / "Active").mkdir(parents=True)
+    (leads / "Archive").mkdir(parents=True)
+    shortlist_fm = (f'---\ncompany: "Example"\nrole: "Analyst"\nurl: "{url}"\n'
+                    'status: shortlist\n---\n\nBODY\n')
+    inflight_fm = (f'---\ncompany: "Example"\nrole: "Analyst"\nurl: "{url}"\n'
+                   f'status: {inflight_status}\n---\n\nBODY\n')
+    a = leads / "Active" / "Example - Analyst.md"      # the shortlist twin
+    b = leads / "Archive" / "Example - Analyst.md"      # the in-flight twin
+    a.write_text(shortlist_fm)
+    b.write_text(inflight_fm)
+    return Vault(root), str(a), str(b)
+
+
+def test_a_cross_set_twin_between_shortlist_and_inflight_is_dropped_from_the_receipt_index(caplog):
+    """Task 3's whole reason for `index_by_slug(shortlist + leads)` over a dict merge
+    (`{**shortlist_by_slug, **note_by_slug}`): a slug claimed by ONE shortlist note and
+    ONE in-flight note is a real, if rare, vault state, and a merge would silently keep
+    whichever note came last -- handing a receipt to it and potentially auto-advancing
+    (or corroborating a proposal on) the WRONG note. index_by_slug must drop the slug
+    from receipt_by_slug instead, exactly as it already does for a same-set twin
+    (test_a_proof_tier_receipt_never_advances_a_slug_two_notes_claim), and the SAME
+    twin-probe fallback ("rename or merge them") must fire for this NEW cross-set case
+    too (test_a_receipt_for_a_slug_two_notes_claim_proposes_for_review's same-set
+    mirror).
+
+    Witnessed by hand: replacing `index_by_slug(shortlist + leads)` in engine.run with
+    `{**index_by_slug(shortlist)[0], **note_by_slug}` -- a literal dict merge over the
+    two source indices at that point -- turns this test RED, and WORSE than the naive
+    prediction ("the wrong twin gets auto-applied"): the in-flight twin `b` (already
+    `applied`) wins the merge, `match_receipt` reaches proof tier against it, but
+    reconcile's own can_apply guard correctly refuses to re-apply an already-applied
+    note -- so the run reports `rep.proposed == 0` too (measured: both `auto` and
+    `proposed` land on 0, not 1). Because that refusal takes the ordinary
+    `receipt_tier == "proof"` skip path rather than the `receipt_tier == "none"`
+    twin-probe path, NOTHING is recorded and no "claimed by 2 notes" warning fires
+    either -- the collision is completely invisible, not merely mis-attributed. Which
+    twin wins depends on merge order, so the OTHER order can just as easily pick the
+    shortlist twin instead and silently auto-apply the wrong note; this run's order
+    happened to land on the quieter of the two failures. Reverted after confirming."""
+    v, a, b = _vault_cross_set_twins("https://example.com/careers/1")
+    before_a, before_b = pathlib.Path(a).read_text(), pathlib.Path(b).read_text()
+    be = FakeBackend(json.dumps({"lead": None, "type": "receipt", "confidence": 0.9,
+                                 "when": None, "links": [], "materials": [], "summary": "received"}))
+    dl = _dl()
+    with caplog.at_level("WARNING", logger="sluice.track.engine"):
+        rep = E.run(v, TrackConfig(), OneReceiptClient(), be, seen=set(), deadletter=dl,
+                    now_iso="2026-07-10T12:00:00+00:00")
+    # Neither note is written -- not the shortlist twin, not the in-flight one.
+    assert rep.auto == 0
+    assert pathlib.Path(a).read_text() == before_a
+    assert pathlib.Path(b).read_text() == before_b
+    # The twin-probe fallback fires for this cross-set case exactly as it already does
+    # for a same-set twin: a dead-letter row naming the state, never a --to applied
+    # command (confirm() would resolve the slug to two notes and refuse it).
+    assert rep.proposed == 1
+    rows = dl.open_entries()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.proposal == "receipt (lead slug claimed by two notes)"
+    assert "--to applied" not in row.hint, "an unrunnable command is worse than honest prose"
+    assert "Example - Analyst" in row.hint
+    assert a in row.hint and b in row.hint
+    assert row.lead == "" and row.candidates == ""
+    # index_by_slug's own warning still fires (ambiguous_slug_warnings), relabelled to
+    # cover both sets now that one index spans them.
+    said = [r.getMessage() for r in caplog.records if r.name == "sluice.track.engine"]
+    assert any("Example - Analyst" in m and "claimed by 2 notes" in m for m in said), said
+
+
 def test_receipt_proof_advance_regression_guard():
     # Finding 2's fix touches the same "receipt, tier X, action Y" dispatch this single-
     # message proof-grade advance already exercised -- pin that the new "tier none, LLM
@@ -916,6 +999,145 @@ def test_receipt_ambiguous_inflight_fallback_surfaces_both_candidates():
     assert rep.auto == 0 and rep.proposed == 1
     assert pathlib.Path(path1).read_text() == before1   # neither note written
     assert pathlib.Path(path2).read_text() == before2
+
+
+# ── _confirmable: never mint a `track confirm` command that would be refused (#136 Task 4) ──
+
+
+def test_confirm_hint_withheld_for_a_target_past_the_lead_on_the_ladder():
+    """Widening the matcher's input (Task 3) is not the only way an un-runnable hint can
+    reappear: ANY proposal whose target is not a legal move from the lead's CURRENT status
+    must be withheld the same way, receipt or not. Here a lead already at `offer` gets an
+    `interview`-typed event with a structured `when` below the confidence floor (0.5 <
+    auto_status_min's 0.75), so reconcile proposes instead of auto-advancing -- and
+    `interview` is a BACKWARD move from `offer` on the ladder, which `can_advance` refuses.
+    Offering `--to interview` anyway would recreate #136's exact symptom (a permanently
+    un-runnable hint) outside the receipt path entirely -- the Task-7 dismiss hint is the
+    only honest lever left.
+
+    Witnessed by hand: dropping `and _confirmable(ev.lead_slug, target)` from the single-
+    lead arm's condition in engine.run turns this test RED -- the un-runnable
+    `--to interview` command reappears in the hint. Reverted after confirming."""
+    v, _ = _vault("offer")
+    be = FakeBackend(json.dumps({"lead": "Example Tidal", "type": "interview", "confidence": 0.5,
+                                 "when": "2026-07-20T10:00", "links": [], "materials": [],
+                                 "summary": "interview mentioned"}))
+    rep = E.run(v, TrackConfig(), OneMsgClient(), be, seen=set(), deadletter=_dl(),
+                now_iso="2026-07-10T12:00:00+00:00")
+    assert rep.proposed == 1
+    hint = rep.open_proposals[0].hint
+    assert "job-sluice track confirm" not in hint, "offer -> interview is a backward move; can_advance refuses it"
+    assert "job-sluice track dismiss --id m1" in hint
+
+
+def _vault_ambiguous_receipt_mixed_sets():
+    """One shortlist lead and one already-applied (in-flight) lead sharing a company name,
+    so an ATS-relay-sent receipt corroborates BOTH via the same body/company-name match --
+    #136 Task 4's regression case: since Task 3 widened receipt_by_slug to shortlist ∪
+    in-flight, an ambiguous corroborated match can now name an in-flight candidate
+    alongside a genuine shortlist one, and only the shortlist one is confirmable to
+    `applied`. Different roles keep the two slugs distinct -- no cross-set collision, so
+    both survive `index_by_slug` and reach `match_receipt` intact."""
+    root = tempfile.mkdtemp()
+    leads = pathlib.Path(root, "Job Applications", "Job Leads"); leads.mkdir(parents=True)
+    (leads / "Example - Analyst.md").write_text(
+        '---\ncompany: "Example"\nrole: "Analyst"\nstatus: shortlist\n---\n\nBODY\n')
+    (leads / "Example - Manager.md").write_text(
+        '---\ncompany: "Example"\nrole: "Manager"\nstatus: applied\n---\n\nBODY\n')
+    return Vault(root)
+
+
+def test_ambiguous_receipt_hint_offers_only_the_confirmable_candidate():
+    """The ambiguous-candidates hint must be filtered to the candidates `_confirmable`
+    accepts BEFORE it is built, not after: the shortlist twin ("Example - Analyst") is
+    offered, the in-flight one ("Example - Manager") is silently dropped from the hint --
+    its `--to applied` would be refused forever by can_apply, and #136's whole point is
+    that such a command must never be minted.
+
+    Witnessed by hand: using `ev.candidates` directly (unfiltered) in both the elif
+    condition and the opts join turns this test RED -- "Example - Manager" reappears
+    alongside the runnable option. Reverted after confirming."""
+    v = _vault_ambiguous_receipt_mixed_sets()
+    be = FakeBackend(json.dumps({"lead": None, "type": "receipt", "confidence": 0.9,
+                                 "when": None, "links": [], "materials": [], "summary": "received"}))
+    rep = E.run(v, _cfg_with_example_ats(), CorrobReceiptClient(), be, seen=set(), deadletter=_dl(),
+                now_iso="2026-07-10T12:00:00+00:00")
+    assert rep.proposed == 1
+    hint = rep.open_proposals[0].hint
+    assert hint.count("job-sluice track confirm") == 1
+    assert '--lead "Example - Analyst" --to applied' in hint
+    assert "Example - Manager" not in hint
+
+
+# ── runnable residue hint text: `track dismiss --id` (#136 Task 7) ──────────
+
+
+def test_inflight_fallback_hint_offers_a_dismiss_command():
+    """The in-flight LLM-fallback hint ("could not be verified by sender/link domain;
+    review manually") is the honest end of the line for this signal -- there is no
+    runnable confirm command to offer (the candidate is in-flight, so can_apply is False),
+    so the hint must at least name the one command that IS runnable: dismissing the row
+    once a human has looked at it."""
+    v, _ = _vault("applied")
+    be = FakeBackend(json.dumps({"lead": "Example Tidal", "type": "receipt", "confidence": 0.9,
+                                 "when": None, "links": [], "materials": [], "summary": "received"}))
+    dl = _dl()
+    E.run(v, TrackConfig(), InFlightReceiptClient(), be, seen=set(), deadletter=dl,
+          now_iso="2026-07-10T12:00:00+00:00")
+    entries = dl.open_entries()
+    assert len(entries) == 1
+    assert "job-sluice track dismiss --id r1" in entries[0].hint
+
+
+def _vault_two_inflight_offer_same_company():
+    """Two DIFFERENT in-flight leads, both already at `offer`, sharing a company name --
+    an ambiguous name match (`_resolve_lead`) whose candidates are BOTH refused by
+    `_confirmable` for a backward-moving target (offer -> interview), so the candidates-
+    list arm's own filtered-to-empty fall-through is what's under test here, distinct from
+    the single-lead_slug-refused case Task 4's test above already covers."""
+    root = tempfile.mkdtemp()
+    leads = pathlib.Path(root, "Job Applications", "Job Leads"); leads.mkdir(parents=True)
+    p1 = leads / "Example Tidal - Analyst.md"
+    p2 = leads / "Example Tidal - Associate.md"
+    p1.write_text('---\ncompany: "Example Tidal"\nrole: "Analyst"\nstatus: offer\n---\n\nBODY\n')
+    p2.write_text('---\ncompany: "Example Tidal"\nrole: "Associate"\nstatus: offer\n---\n\nBODY\n')
+    return Vault(root), str(p1), str(p2)
+
+
+def test_generic_no_runnable_action_hint_offers_a_dismiss_command():
+    """Task 7's second site: the generic "no runnable action" fallback, reached here
+    because BOTH ambiguous candidates are filtered out by `_confirmable` (offer ->
+    interview is a backward move on the ladder for either lead), must offer the same
+    dismiss lever as the in-flight-fallback arm above."""
+    v, _p1, _p2 = _vault_two_inflight_offer_same_company()
+    be = FakeBackend(json.dumps({"lead": "Example Tidal", "type": "interview", "confidence": 0.5,
+                                 "when": "2026-07-20T10:00", "links": [], "materials": [],
+                                 "summary": "interview mentioned"}))
+    rep = E.run(v, TrackConfig(), OneMsgClient(), be, seen=set(), deadletter=_dl(),
+                now_iso="2026-07-10T12:00:00+00:00")
+    assert rep.proposed == 1
+    hint = rep.open_proposals[0].hint
+    assert "job-sluice track confirm" not in hint
+    assert "job-sluice track dismiss --id m1" in hint
+
+
+def test_twin_slug_hint_never_offers_a_dismiss_command():
+    """The falsifying row CLAUDE.md calls for whenever a comment states an asymmetry: the
+    twin-slug hint ("N notes claim that slug ...; rename or merge them, then re-run") is
+    DELIBERATELY excluded from the Task-7 dismiss-hint treatment above -- that hint has a
+    REAL remedy (rename or merge the notes) and must keep re-surfacing every run until a
+    human acts on it, since a dismiss lever there would let someone hide a genuine
+    data-integrity problem (two notes claiming one slug) without ever fixing it."""
+    v, a, b = _vault_shortlist_twins("https://example.com/careers/1")
+    be = FakeBackend(json.dumps({"lead": None, "type": "receipt", "confidence": 0.9,
+                                 "when": None, "links": [], "materials": [], "summary": "received"}))
+    dl = _dl()
+    rep = E.run(v, TrackConfig(), OneReceiptClient(), be, seen=set(), deadletter=dl,
+                now_iso="2026-07-10T12:00:00+00:00")
+    assert rep.proposed == 1
+    row = dl.open_entries()[0]
+    assert row.proposal == "receipt (lead slug claimed by two notes)"
+    assert "dismiss" not in row.hint
 
 
 def test_a_TRANSPORT_failure_fetching_the_message_list_is_reported_not_raised():

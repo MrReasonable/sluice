@@ -32,13 +32,20 @@ class Event:
     subject: str = ""                   # raw Subject header, for receipt evidence
     # The LLM's OWN name resolution for a receipt, kept in fields lead_slug/candidates can
     # never be confused with -- SURFACING-ONLY, never a write input. match_receipt (the
-    # authoritative, domain-based matcher) only searches the SHORTLIST set, so a receipt
-    # about a lead that already advanced past shortlist (applied/phone_screen/...) can never
-    # match there and always resolves to tier "none" -- silently skipping that would be the
-    # #40 loss class again (a mislabelled rejection vanishes with the lead stuck at `applied`
-    # forever). engine.run reads these ONLY to decide whether to surface a dead-letter row
-    # when the deterministic matcher found nothing; it must never use them to advance status
-    # (#10 fix-round-1).
+    # authoritative, domain-based matcher) now searches shortlist AND in-flight leads
+    # together (#136, engine.run's receipt_by_slug) -- so a lead already advanced past
+    # shortlist (applied/phone_screen/...) is no longer structurally invisible to it the way
+    # it was before, and is often found directly by domain evidence. These fields still
+    # matter when the deterministic matcher's tier lands on "none" (never even a
+    # corroborated match): no populated lead-side host lines up with the sender (a
+    # forwarded message, a personal mailbox), or a slug this run dropped as a twin. A
+    # "corroborated" match is a different case entirely and never reaches this fallback --
+    # it already proposes on its own (reconcile.py's receipt branch), regardless of
+    # confidence. Silently skipping a genuine "none" would be the #40 loss class again (a
+    # mislabelled rejection vanishes with the lead stuck at `applied` forever). engine.run
+    # reads these ONLY to decide whether to surface a dead-letter row when the deterministic
+    # matcher found nothing at all; it must never use them to advance status (#10
+    # fix-round-1).
     llm_lead_slug: "str | None" = None
     llm_candidates: list = field(default_factory=list)
 
@@ -116,8 +123,12 @@ def classify(msg, leads, backend, cfg, ics=None) -> Event:
             # lead_slug/candidates stay unset: engine.run resolves receipts by domain
             # (match_receipt), never by name. The LLM's own guess still goes somewhere --
             # llm_lead_slug/llm_candidates, resolved against this SAME in-flight `leads`
-            # list -- so engine.run can surface (never advance) a receipt about a lead
-            # match_receipt structurally cannot see (it only searches shortlist).
+            # list -- so engine.run can surface (never advance) a receipt whose sender
+            # carries no domain evidence the deterministic matcher can use. Since #136,
+            # match_receipt searches shortlist AND in-flight leads together, so a lead
+            # already advanced past shortlist is no longer structurally invisible to it the
+            # way it once was -- this fallback now covers a message with no usable host
+            # evidence at all, not merely "the lead had already advanced".
             ev.llm_lead_slug, ev.llm_candidates = _resolve_lead(data.get("lead"), leads)
     except Exception:
         # A classification we could NOT make is not evidence of "not a job" (#40). The default

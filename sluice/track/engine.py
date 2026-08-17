@@ -198,7 +198,7 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
     leads = [n for n in vault.read_leads(set(_status.APPLICATION_OWNED))
              if n.status in _INFLIGHT]
     # index_by_slug, never a dict comprehension: two notes at one slug would otherwise leave
-    # whichever came LAST, and for shortlist_by_slug that twin is what match_receipt then
+    # whichever came LAST, and for receipt_by_slug that twin is what match_receipt then
     # weighs a receipt against -- an `applied` written to the wrong note, which is
     # irreversible and silently suppresses the real application. Dropping both instead sends
     # the receipt to the dead-letter for a human, which is where every weaker outcome already
@@ -206,18 +206,29 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
     note_by_slug, inflight_dropped = index_by_slug(leads)
     for msg in ambiguous_slug_warnings("track: in-flight lead", inflight_dropped):
         _log.warning("%s", msg)
-    # A receipt's lead lives in shortlist (pre-application), not note_by_slug (in-flight
-    # application states) -- match_receipt matches against this snapshot by domain.
+    # A receipt's lead can be EITHER pre-application (shortlist) or already applied
+    # (in-flight): it reaches `applied` at apply time and its receipt normally arrives
+    # AFTER, so in steady state the shortlist set alone is nearly always empty and the
+    # deterministic matcher could never find the lead it should (#136). match_receipt
+    # therefore matches against BOTH sets together, via receipt_by_slug below.
     shortlist = vault.read_leads({"shortlist"})
-    shortlist_by_slug, dropped_shortlist = index_by_slug(shortlist)
-    for msg in ambiguous_slug_warnings("track: shortlisted lead", dropped_shortlist):
+    # index_by_slug over the CONCATENATION of shortlist + leads, never a dict merge
+    # (`{**index_by_slug(shortlist)[0], **note_by_slug}`): a merge silently keeps whichever
+    # note came last on a slug collision. A shortlist note and an in-flight note claiming the
+    # SAME slug is a real, if rare, vault state, and a merge would silently hand a receipt to
+    # whichever twin it kept -- potentially auto-advancing (or corroborating a proposal on)
+    # the WRONG note. Running index_by_slug over the concatenated list is what lets it see a
+    # CROSS-SET collision it could never see while the two lists were indexed separately --
+    # a genuine new protection this change adds, not merely a rename.
+    receipt_by_slug, dropped_receipt = index_by_slug(shortlist + leads)
+    for msg in ambiguous_slug_warnings("track: receipt-matchable lead", dropped_receipt):
         _log.warning("%s", msg)
     # The twins index_by_slug DROPPED, kept for the probe below. Refusing to act on them is
     # right; going quieter about them than about a receipt that is merely ambiguous by
     # DOMAIN is not, and that is what dropping them from the matcher's input did. Read off
-    # the grouping the indexer RETURNS -- a second filter over `shortlist` re-derives what
-    # it already computed, and can drift from it.
-    dropped_twins = [n for members in dropped_shortlist.values() for n in members]
+    # the grouping the indexer RETURNS -- a second filter over `shortlist + leads` re-derives
+    # what it already computed, and can drift from it.
+    dropped_twins = [n for members in dropped_receipt.values() for n in members]
     try:
         ids, rep.search_truncated = client.search_messages(_gmail_query(cfg, now_iso, since_iso))
     except GoogleAuthError:
@@ -319,6 +330,27 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
             _open_ev_type.pop(message_id, None)
         except Exception:
             _log.exception("track: could not clear the stale row for %s", message_id)
+
+    def _confirmable(slug, target) -> bool:
+        """A hint may only offer a `track confirm` command that `confirm()` itself would
+        accept -- same predicate confirm() calls internally (`can_transition` routes a
+        `--to applied` request through `can_apply`, everything else through `can_advance`),
+        so a hint and the command it offers can never disagree. Empty target is TRUE:
+        that's today's honest `--to <status>` placeholder for a typed-but-unspecific
+        ambiguous proposal, not a wrong command.
+
+        An unknown slug is refused -- a dropped cross-set twin (the receipt_by_slug change
+        above, #136) has no single note `can_transition` could evaluate against, and
+        `confirm()` would itself refuse it as ambiguous (`vault.read_leads()` there returns
+        both notes for the slug). Widening the matcher's input to include in-flight leads
+        (above) means an ambiguous receipt match can now include an in-flight candidate,
+        for which `--to applied` is refused forever by `can_apply` -- offering it would
+        recreate #136's exact symptom, a permanently un-runnable hint, in a new arm."""
+        if not target:
+            return True
+        n = receipt_by_slug.get(slug)
+        return n is not None and _status.can_transition(n.status, target)
+
     for mid in ids:
         if mid in seen:
             continue
@@ -336,29 +368,40 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
             if ev.type == "receipt":
                 # classify() deliberately leaves lead_slug/candidates unset for a receipt
                 # (it only knows the message IS a receipt, not whose) -- match_receipt
-                # resolves WHICH shortlist lead by domain, here where the raw msg (body/
-                # headers) is still in scope; reconcile only sees the resolved Event.
-                m = match_receipt(msg, shortlist_by_slug.values(), cfg.ats_relay_domains,
+                # resolves WHICH lead (shortlist or in-flight, #136) by domain, here where
+                # the raw msg (body/headers) is still in scope; reconcile only sees the
+                # resolved Event.
+                m = match_receipt(msg, receipt_by_slug.values(), cfg.ats_relay_domains,
                                   cfg.job_board_domains)
                 ev.lead_slug, ev.candidates, ev.receipt_tier = m.lead_slug, m.candidates, m.tier
+            # `shortlist_by_slug=` is reconcile()'s own parameter name, not renamed here --
+            # that rename is a follow-up task in this same branch's history, touching
+            # reconcile.py itself (off limits to this change) and its call site together.
+            # The VALUE passed is receipt_by_slug: reconcile's receipt branch only ever
+            # reads it via `.get(event.lead_slug)`, so the parameter's name is cosmetic to
+            # this call site and the rename can land as a pure signature change later.
             res = reconcile(ev, note_by_slug, vault, cfg, client, dry_run=dry_run,
-                             shortlist_by_slug=shortlist_by_slug)
+                             shortlist_by_slug=receipt_by_slug)
             rep.results.append(res)
             # Never-regress across messages in one run: reflect the just-written
             # status back into the snapshot so the next message for this lead
             # reconciles against current, not stale, state. Only meaningful when
             # something was actually written (never in a dry-run preview). A
-            # receipt-advanced lead lives in shortlist_by_slug, not note_by_slug -- check
-            # both, so a second same-run receipt for the same lead sees the reflected
-            # `applied` snapshot (via shortlist_by_slug). reconcile then fails that note's
-            # can_apply check and SKIPS it: no second write, and -- since the pre-fix code
-            # instead proposed it -- no dead-letter row carrying a `--to applied` command
-            # that confirm() would refuse forever while the row re-surfaced every run.
+            # receipt-advanced shortlist lead lives in receipt_by_slug but not
+            # note_by_slug -- check both, so a second same-run receipt for the same lead
+            # sees the reflected `applied` snapshot (via receipt_by_slug). reconcile then
+            # fails that note's can_apply check and SKIPS it: no second write, and -- since
+            # the pre-fix code instead proposed it -- no dead-letter row carrying a
+            # `--to applied` command that confirm() would refuse forever while the row
+            # re-surfaced every run. (An in-flight lead present in both indices shares the
+            # SAME note object across them -- index_by_slug never copies -- so the first
+            # branch already updates what receipt_by_slug sees for it; the elif exists for
+            # the shortlist-only case, where only receipt_by_slug ever held the note.)
             if not dry_run and res.status_to and ev.lead_slug:
                 if ev.lead_slug in note_by_slug:
                     note_by_slug[ev.lead_slug].status = res.status_to
-                elif ev.lead_slug in shortlist_by_slug:
-                    shortlist_by_slug[ev.lead_slug].status = res.status_to
+                elif ev.lead_slug in receipt_by_slug:
+                    receipt_by_slug[ev.lead_slug].status = res.status_to
             # #1: a receipt for a lead whose slug TWO notes claim never reaches the matcher
             # at all -- index_by_slug dropped both twins, so `match_receipt` searched a set
             # that does not contain them, found nothing, and reconcile filed it as the quiet
@@ -382,17 +425,24 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                 twin_hit = probe if probe.tier != "none" else None
             if quiet_receipt and (twin_hit or ev.llm_lead_slug or ev.llm_candidates):
                 # match_receipt found NO domain evidence at all (never even a corroborated
-                # match) -- the common cause is a receipt about a lead that has already
-                # advanced PAST shortlist (applied/phone_screen/...), since match_receipt
-                # only ever searches shortlist_by_slug and such a lead structurally cannot
-                # appear there. Silently accepting reconcile's "skipped" here would be the
-                # #40 loss class again: if the model mislabelled a REJECTION as "receipt",
-                # that rejection vanishes and the lead sits at `applied` forever with zero
-                # signal anywhere. The LLM's own (lower-trust, name-based) resolution is
-                # good enough to SURFACE a review item even though it is not good enough to
-                # ACT on -- so this branch only ever records a dead-letter row, never a
-                # write; deterministic domain matching still owns every write, unchanged
-                # above (#10 fix-round-1).
+                # match) -- since #136 it searches shortlist AND in-flight leads together
+                # (receipt_by_slug above), so a lead already advanced PAST shortlist
+                # (applied/phone_screen/...) is no longer structurally invisible to it the
+                # way it used to be. The common cause now is a receipt whose sender host
+                # doesn't line up with any lead host and isn't a recognized ATS relay
+                # either: no populated host on the lead (`applied_url`/`url` both blank), a
+                # sender from an unrelated domain, or a slug this run dropped as a cross-set
+                # twin (dropped_twins above). An UNAUTHENTICATED-but-matching sender is a
+                # different case and never lands here either -- it still reaches
+                # "corroborated" tier (match_receipt degrades rather than drops it), which
+                # reconcile proposes on its own. Silently accepting
+                # reconcile's "skipped" here would be the #40 loss class again: if the model
+                # mislabelled a REJECTION as "receipt", that rejection vanishes and the lead
+                # sits at `applied` forever with zero signal anywhere. The LLM's own
+                # (lower-trust, name-based) resolution is good enough to SURFACE a review
+                # item even though it is not good enough to ACT on -- so this branch only
+                # ever records a dead-letter row, never a write; deterministic domain
+                # matching still owns every write, unchanged above (#10 fix-round-1).
                 #
                 # An AMBIGUOUS fallback (the LLM's named company matches several in-flight
                 # leads) is still a KNOWN-lead signal -- the email demonstrably concerns two
@@ -402,8 +452,10 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                 # quiet skip. The wording echoes the generic multi-candidate hint below
                 # ("ambiguous lead; pick one") rather than inventing a new shape, but
                 # deliberately omits a --to applied command: unlike that generic path (whose
-                # candidates are real shortlist matches with can_apply true), these
-                # candidates are already in-flight, so --to applied would be refused
+                # candidates are filtered through `_confirmable` below, since #136 widened
+                # receipt_by_slug to include in-flight leads too), these candidates --
+                # llm_candidates, resolved only against the in-flight `leads` list classify()
+                # was given -- are ALWAYS in-flight, so --to applied would be refused
                 # outright -- an unrunnable command is worse than an honest "look at this
                 # yourself".
                 rep.proposed += 1
@@ -430,7 +482,7 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                 elif ev.llm_lead_slug:
                     hint = (f'(receipt email for in-flight lead "{ev.llm_lead_slug}" -- the '
                             f"match could not be verified by sender/link domain; review "
-                            f"manually)")
+                            f"manually, then `job-sluice track dismiss --id {mid}`)")
                     lead, candidates = ev.llm_lead_slug, []
                 else:
                     names = "; ".join(f'"{c}"' for c in ev.llm_candidates)
@@ -459,9 +511,16 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                 # handled once below. That removes the carve-out that used to live here to
                 # stop `_PROPOSE_TARGET` handing the operator `confirm --to interview` for an
                 # interview that had just been CANCELLED.
-                if ev.lead_slug and target:
+                # Filtered through _confirmable (#136 Task 4): widening the receipt matcher
+                # (receipt_by_slug, above) means an ambiguous receipt match can now include
+                # an in-flight candidate, for which `--to applied` would be refused forever
+                # by can_apply -- offering it here would recreate #136's exact symptom (a
+                # permanently un-runnable hint) in this arm. Computed once and reused below
+                # rather than calling _confirmable twice per candidate.
+                confirmable_candidates = [c for c in ev.candidates if _confirmable(c, target)]
+                if ev.lead_slug and target and _confirmable(ev.lead_slug, target):
                     hint = f'job-sluice track confirm --lead "{ev.lead_slug}" --to {target}'
-                elif ev.candidates:
+                elif confirmable_candidates:
                     # Each option needs its own "job-sluice track confirm" prefix -- prefixing
                     # only the first (as an earlier version did) leaves every option after the
                     # first ";" reading as a bare --lead/--to fragment, not a runnable command.
@@ -470,10 +529,11 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                     # here would break that format rather than just being ugly.
                     opts = "; ".join(
                         f'job-sluice track confirm --lead "{c}" --to {target or "<status>"}'
-                        for c in ev.candidates)
+                        for c in confirmable_candidates)
                     hint = f"(ambiguous lead; pick one: {opts})"
                 else:
-                    hint = f'(no runnable action for type "{ev.type}" / lead "{res.lead}"; review manually)'
+                    hint = (f'(no runnable action for type "{ev.type}" / lead "{res.lead}"; '
+                            f"review manually, then `job-sluice track dismiss --id {mid}`)")
                 entry = Entry(message_id=mid, lead=ev.lead_slug or "",
                               candidates=",".join(ev.candidates),
                               ev_type=ev.type,
