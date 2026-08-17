@@ -743,12 +743,22 @@ def test_upsert_result_slug_is_not_fooled_by_an_unrelated_notes_matching_url(
 
 def test_upsert_result_slug_is_blank_for_every_no_write_outcome(store_name, tmp_path, monkeypatch):
     """refused/merged_away/merged_away_unproven never carry a slug -- confirms the
-    negative half of the contract, not just the positive one above."""
+    negative half of the contract, not just the positive one above.
+
+    All three are MAY-return (Store.upsert's own docstring): a synthetic-id-keyed
+    store never merges-on-uncertainty or hits a naming collision (so it need only
+    ever create/update), and a store with no archive concept never returns either
+    merged_away variant. So each arm is gated on the outcome the store ACTUALLY
+    produced -- asserting the outcome ITSELF would wrongly fail a conformant store
+    that simply never reaches that branch."""
     store = _make_store(store_name, tmp_path, monkeypatch)
 
     refused = store.upsert(_lead(company="", title="", url=""))
-    assert refused.outcome == "refused"
-    assert refused.slug == ""
+    # `refused` is MAY-return: a store that instead CREATES a blank-identity note
+    # is still conformant. Only the slug rule (never populated for a no-write
+    # outcome) is universal.
+    if refused.outcome == "refused":
+        assert refused.slug == ""
 
     # merged_away / merged_away_unproven: same setup as
     # test_merged_away_lead_is_never_recreated -- merge a loser away, then re-scrape
@@ -765,8 +775,10 @@ def test_upsert_result_slug_is_blank_for_every_no_write_outcome(store_name, tmp_
                         first_seen="2026-07-05", last_seen="2026-07-20")
 
     archived = store.upsert(_lead(url="https://example.invalid/4", location=LOCATIONS[1]))
-    assert archived.outcome in ("merged_away", "merged_away_unproven")
-    assert archived.slug == ""
+    # Both merged_away arms are MAY-return, and a store with no archive concept
+    # returns neither -- so assert the slug rule only when one of them is reported.
+    if archived.outcome in ("merged_away", "merged_away_unproven"):
+        assert archived.slug == ""
 
 
 # ── #60: profile-audit sign-off (outcome verdict + never-clobber) ─────────────
