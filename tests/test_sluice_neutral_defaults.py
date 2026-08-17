@@ -401,7 +401,7 @@ def test_example_config_ships_lead_ttl_days_off():
 
 # ── #109: tier-2 company resolution's opt-in gate ────────────────────────────
 # company_resolve_fetch needs its OWN guard, same reasoning as lead_ttl_days above:
-# turning it on lets a blank-company lead trigger a REAL page visit, so an
+# turning it on lets a blank/placeholder-company lead trigger a REAL page visit, so an
 # unconfigured install must never start doing that unprompted the moment it
 # upgrades. The default is NOT the whole guard -- it needs the loader's type check
 # too, for the mirror image of lead_ttl_days' reason: the hazard there is that
