@@ -1785,7 +1785,15 @@ class Vault:
            `_reserve_and_move`'s O_EXCL reservation is scoped to ONE directory (the note's own,
            since source dir and destination dir are the SAME directory for a rename), so it
            cannot by itself see a note with the same target basename sitting elsewhere in the
-           vault -- this layer is what can.
+           vault -- this layer is what can. The scan-set cache is re-derived
+           (`self._rescan_dirs()`) immediately before this precheck runs, mirroring
+           `_resolve_path`'s own re-derive before trusting an absent verdict for the identical
+           kind of decision -- see there ("invisible by construction -- both lists agree, both
+           are wrong, and the wrong answer looks like a real one"). Without it, a `Sluice`
+           instance reused across an `upsert` that creates a NEW folder (`os.makedirs`, which
+           runs AFTER `_resolve_path`'s own re-derive) and a later `reconcile_names` call on
+           that SAME instance would miss a correctly-named note sitting in that new folder,
+           letting this precheck miss the exact collision it exists to catch.
         2. A WITHIN-RUN precheck: two different stale notes in the SAME sweep that would both
            mint the identical target. Both refuse -- neither is picked arbitrarily. This is
            computed as a separate pass over every note's ALREADY-decided target (see below),
@@ -1804,14 +1812,47 @@ class Vault:
         of two colliding notes visited would win by accident of iteration order, which is
         exactly the "picked arbitrarily" outcome layer 2 exists to rule out.
 
+        Each `collisions` entry is a THREE-tuple, `(slug, target, reason)` -- unlike
+        `reconcile_layout`'s bare `(slug, dst_rel)` -- because the three layers above refuse for
+        structurally different causes (a pre-existing duplicate elsewhere in the vault; two
+        notes in this very sweep racing each other; a writer outside the sweep winning a race),
+        and `skipped` already carries a reason string for the same kind of reason: an operator
+        should not have to guess which layer fired from the tuple shape alone.
+
+        ACCEPTED RESIDUAL, stated rather than hidden -- the same posture this codebase takes
+        with the CAS micro-window and `reconcile_layout`'s own post-sweep race: layer 2 above
+        refuses BOTH notes whenever two stale notes would mint the identical candidate-1 target,
+        with no attempt at a candidate-2/3 fallback. "Always candidate 1" is the deliberate
+        simplifying rule stated above, not an oversight to unwind casually. Two genuinely
+        DISTINCT leads that happen to share company and title (different city, say) and both
+        backfill to the identical BARE target are therefore reported as colliding on every run,
+        forever, with nothing here telling the operator they are not actually a duplicate pair.
+        The remedy is manual: a human renames one of the two notes by hand to a name this pass
+        will leave alone (see `_frontmatter_name`'s exact-re-derivation qualification -- any
+        name outside its minted set is invisible to this pass by construction), or files the two
+        leads under details that make candidate 1 diverge (e.g. a `location`, once populated).
+        Whether this pass should ever try alternate candidates for an ambiguous target is a
+        genuine, separate design question, deliberately left open here rather than answered as a
+        side effect of this fix.
+
         The SYMLINK guard is repositioned from `reconcile_layout`'s, which guards the
         DESTINATION DIRECTORY -- unreachable here, since source dir and destination dir are the
-        same directory for a rename. The reachable hazard here is a symlinked NOTE ITSELF:
-        `_reserve_and_move`'s `os.replace` on a symlink moves the LINK, not the file it points
-        to, silently detaching the note from wherever the link pointed. Checked via
-        `os.path.islink(note.ref)`, before any move -- and before either collision layer, so a
-        note that will never move cannot occupy a target and falsely flag some OTHER note's
-        rename as a within-run collision.
+        same directory for a rename. `reconcile_layout`'s OWN justification for its guard
+        (`os.replace` silently detaches the note by moving the link rather than the file it
+        points to) does NOT carry over to this pass, and an earlier draft of this docstring
+        claimed it did: reproducing `_reserve_and_move`'s exact sequence (O_EXCL reserve, then
+        `os.replace`) against a real relative symlink where dest_dir == source dir -- exactly
+        this pass's geometry -- measured, the destination stays a correctly-resolving symlink.
+        `os.replace` renames the link's directory ENTRY in place; a relative link's target is
+        resolved relative to that same directory, which never moved, so nothing is detached.
+        Contrast `reconcile_layout`'s own symlink comment (above, near its guard site), where
+        the destination directory genuinely DOES differ and the detachment is real and
+        measured. The guard is kept here anyway, for the honest reason instead of the false one:
+        a symlinked note is a structure the user deliberately built (one physical note filed
+        under two names, say), and this pass does not reorganise it -- routing it to `skipped`
+        is conservative, not protective. Checked via `os.path.islink(note.ref)`, before any move
+        -- and before either collision layer, so a note that will never move cannot occupy a
+        target and falsely flag some OTHER note's rename as a within-run collision.
 
         The POST-SWEEP RACE PROBE is genuinely different from `reconcile_layout`'s, and copying
         that one verbatim here would be a bug, not a saving. A raced RECONCILE move (folder
@@ -1827,11 +1868,14 @@ class Vault:
         because the two residuals need different human fixes (merge two notes sharing one name,
         versus investigate why an old name came back at all).
 
-        `_rescan_dirs()` -- which `reconcile_layout` calls after an applied sweep -- is
-        deliberately NOT called here. That call exists because a folder move can create a NEW
-        directory the cached scan-set list does not yet know about; a rename creates no
-        directories at all (source dir == dest dir), so the scan-set cache cannot go stale the
-        way a folder move's can, and re-deriving it here would pay a full walk for nothing.
+        `_rescan_dirs()` IS called once, immediately before layer 1's precheck loop begins (see
+        there for why). `reconcile_layout`'s OWN `_rescan_dirs()` call, by contrast, runs AFTER
+        an applied sweep: that call exists because a folder MOVE can create a NEW directory the
+        cached scan-set list does not yet know about, so re-deriving afterward keeps the store's
+        view current for whatever runs next on the same instance. A rename creates no
+        directories at all (source dir == dest dir), so there is no new directory for a
+        post-sweep re-derive to discover here -- paying a second full walk after the move loop
+        would be waste, which is why this pass does not also call it a second time there.
         """
         # deepcopy, never `dict(EMPTY_RENAME_REPORT, ...)`: see EMPTY_RECONCILE_REPORT's own
         # comment -- a shallow copy shares every mutable bucket (the `unresolved`/`renames`/
@@ -1868,18 +1912,37 @@ class Vault:
                 summary["unresolved"].append((n.slug, n.fm.get("company", "")))
                 continue
             if os.path.islink(n.ref):
+                # A symlinked note is a structure the user deliberately built, not a
+                # detachment hazard here: source dir == dest dir for a rename, so
+                # os.replace renames the link's directory entry in place and a relative
+                # link keeps resolving correctly afterward -- see the docstring, where
+                # `reconcile_layout`'s own symlink guard is the contrasting case whose
+                # destination directory genuinely differs and whose detachment is real.
+                # This pass simply does not reorganise a structure the user built.
                 summary["skipped"].append(
-                    (n.slug, "note is a symlink; renaming would move the link, not the file"))
+                    (n.slug, "note is a symlink; this pass does not reorganise a "
+                             "structure the user deliberately built"))
                 continue
             candidates.append((n, target))
 
         # Layer 1: the vault-wide precheck. Runs against the PRE-sweep vault -- nothing in this
         # sweep has moved yet -- so `self._locate` cannot see any of this sweep's own renames
         # landing early and cannot be confused by them.
+        #
+        # The scan-set cache is re-derived immediately before this loop, mirroring
+        # `_resolve_path`'s own re-derive before trusting an absent verdict for the identical
+        # kind of decision (see there). Without it, a `Sluice` instance reused across an
+        # `upsert` that creates a NEW folder (`os.makedirs`, which runs AFTER `_resolve_path`'s
+        # own re-derive) and a later `reconcile_names` call on that SAME instance would miss a
+        # correctly-named note sitting in that new folder, letting this precheck miss the exact
+        # collision it exists to catch.
+        self._rescan_dirs()
         survivors = []
         for n, target in candidates:
             if self._locate(target):
-                summary["collisions"].append((n.slug, target))
+                summary["collisions"].append(
+                    (n.slug, target,
+                     "a note is already seated at this name elsewhere in the vault"))
                 continue
             survivors.append((n, target))
 
@@ -1893,7 +1956,9 @@ class Vault:
         for target, group in by_target.items():
             if len(group) > 1:
                 for n in group:
-                    summary["collisions"].append((n.slug, target))
+                    summary["collisions"].append(
+                        (n.slug, target,
+                         "two notes in this sweep both resolve to this target"))
                 continue
             to_move.append((group[0], target))
 
@@ -1913,7 +1978,8 @@ class Vault:
                 # `target` between layer 1's precheck and this attempt.
                 _reserve_and_move(n.ref, dest_dir, f"{target}.md", suffix_on_collision=False)
             except FileExistsError:
-                summary["collisions"].append((n.slug, target))
+                summary["collisions"].append(
+                    (n.slug, target, "target claimed by a writer outside this sweep"))
                 _log.warning("rename: %s -> %s refused: destination is taken (merge or rename "
                              "by hand; a numeric suffix would change the slug)", n.slug, target)
                 continue
