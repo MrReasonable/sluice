@@ -159,7 +159,7 @@ exists). Auto-advances status only on a proof-grade, authenticated, non-multi-te
 above the configured confidence floor; every weaker signal becomes a dead-letter proposal that
 resurfaces on every run until a human acts. Prints a summary plus the open-proposal list to
 **stderr** (the whole block, including the digest line):
-```
+```text
 track: msgs=N classified=N auto=N proposed=N calendar_added=N failures=N open=N
   FAILED <message_id>: <cause>
   WARNING: N calendar entries booked from a DTSTART with no usable timezone ...
