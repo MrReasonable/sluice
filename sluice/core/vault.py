@@ -1829,8 +1829,7 @@ class Vault:
         forever, with nothing here telling the operator they are not actually a duplicate pair.
         The remedy is manual: a human renames one of the two notes by hand to a name this pass
         will leave alone (see `_frontmatter_name`'s exact-re-derivation qualification -- any
-        name outside its minted set is invisible to this pass by construction), or files the two
-        leads under details that make candidate 1 diverge (e.g. a `location`, once populated).
+        name outside its minted set is invisible to this pass by construction).
         Whether this pass should ever try alternate candidates for an ambiguous target is a
         genuine, separate design question, deliberately left open here rather than answered as a
         side effect of this fix.
