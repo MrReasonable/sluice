@@ -267,19 +267,40 @@ def cmd_leads_rename(args, config) -> int:
         # StoreHasNoLayout arm.
         print(f"job-sluice: {exc}", file=sys.stderr)
         return 2
-    except (RuntimeError, sqlite3.DatabaseError) as exc:
+    except (RuntimeError, OSError, sqlite3.DatabaseError) as exc:
         # `Sluice.rename(apply=True)`'s preflight -- `load_track_config(refuse_relocated_seen_db=
-        # True)` then `dl.check_reachable()`, both BEFORE any note is renamed -- can raise either
-        # of these, and the plan asks for "refuse the whole operation with a clear message" for
-        # exactly this failure, not a stack trace. `RuntimeError` is `resolve(..., fatal=True)`
-        # (core/paths.py) firing when track.seen_db has relocated since #80;
-        # `sqlite3.DatabaseError` is `check_reachable()`'s probe DELETE hitting a corrupt or
-        # unreadable dead-letter store (`sqlite3.OperationalError` is a subclass, so it's covered
-        # too). `main()` only catches ValueError around this dispatch, so without this either one
+        # True)` then `dl.check_reachable()`, both BEFORE any note is renamed -- can raise any of
+        # these three, and the plan asks for "refuse the whole operation with a clear message" for
+        # exactly this failure, not a stack trace.
+        #   - `RuntimeError`: `resolve(..., fatal=True)` (core/paths.py) firing when
+        #     track.seen_db has relocated since #80.
+        #   - `OSError`: `check_reachable()` -> `core/paths.py`'s `absent()`, which `lstat`s the
+        #     dead-letter path rather than using `os.path.exists` so it can tell "genuinely
+        #     absent" apart from "unreachable". Two subtypes reach here: `FileNotFoundError` for
+        #     a dangling symlink AT the store path or at a dangling ANCESTOR directory (listed
+        #     first in `check_reachable`'s own docstring as the primary thing it exists to catch
+        #     -- and the shape a user hits by following this codebase's OWN printed "mv"
+        #     relocation remedy elsewhere, leaving a relative symlink dangling), and
+        #     `PermissionError` for a parent directory the process cannot traverse.
+        #   - `sqlite3.DatabaseError`: `check_reachable()`'s probe DELETE hitting a corrupt or
+        #     unreadable dead-letter store (`sqlite3.OperationalError` is a subclass, so it's
+        #     covered too).
+        # `main()` only catches ValueError around this dispatch, so without this any of the three
         # would reach the user as a raw traceback -- exactly what the preflight check exists to
         # avoid, making its own justification pure prose. Same sentence-and-rc-2 shape as
         # StoreCannotRename above (which is itself a RuntimeError subclass, but is caught by the
         # more specific clause first since except clauses try in order).
+        #
+        # Catching bare OSError this widely is safe ONLY because of two facts together, both
+        # verified against the real code rather than assumed: `dl.check_reachable()` runs BEFORE
+        # `fn(apply=True)` -- the call that actually renames notes -- inside `Sluice.rename`, so a
+        # preflight OSError always fires with zero notes touched; and `Vault.reconcile_names`'s
+        # own move loop wraps every `_reserve_and_move` call in `except FileExistsError` then
+        # `except OSError`, isolating a per-note failure into its `collisions`/`skipped` buckets
+        # and `continue`-ing rather than raising -- so `reconcile_names` itself can never propagate
+        # an uncaught OSError once notes have started moving. There is therefore no window in
+        # which this clause could catch a genuine mid-sweep failure (some notes already renamed on
+        # disk) and misreport it as "nothing renamed, refused cleanly".
         #
         # `cmd_track_confirm` has this identical gap for an unrelated, pre-existing command --
         # deliberately left alone here; see #151 Task 10's review.
