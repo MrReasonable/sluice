@@ -50,12 +50,20 @@ _SELF = Path(__file__).name
 # this repo ships, and it does NOT extend to using one as a lead or employer identity, which is
 # what this roster governs. `indeed` is here only because a fixture already sits in an identity
 # position; a new one should still be `Example <Word>`.
+#
+# `Unknown` is on the SAME different ground as `indeed`, reviewed 2026-08-17 (#151): it is a
+# shipped SENTINEL, one of `core/leads.py`'s `NON_ANSWER_COMPANIES` (the board's own honest
+# non-answer, not a name anyone typed hoping it was real). It had already appeared as a bare
+# frontmatter value in several other test files without tripping this sweep -- what changed is
+# `tests/test_leads_rename.py` (#151's rename pass) being the first to put it in one of the
+# FOUR positions this sweep actually watches (a quoted `"Unknown - <role>.md"` filename), so it
+# is reviewed here rather than silently matching the roster by accident.
 _REVIEWED_FIXTURE_IDENTITIES = frozenset({
     "A", "A-B", "Acme", "Alpha", "Aye", "B", "Beavni", "Bee", "Beta", "C", "Conflicted",
     "D", "Delta", "Epsilon", "Example", "Example Analytics", "Example Co", "Example Foundry",
     "Example Ltd", "Example Meridian", "Example MeridianRemote", "Example Northgate",
     "Example Systems", "Example Telemetry", "Example Tidal", "Foo", "Gamma",
-    "Human Typed Co", "Widget", "X",
+    "Human Typed Co", "Unknown", "Widget", "X",
     "a", "a1", "a2", "b", "b1", "b2", "blank", "c", "d", "example-lead",
     # Escaping/injection fixtures — the backslashes are the point of the test.
     "Foo\\Bar Ltd", "Foo\\\\Bar Ltd", "Foo\\\\g<0>Bar", "Foo\\\\nBar",

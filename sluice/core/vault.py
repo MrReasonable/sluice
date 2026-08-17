@@ -32,6 +32,7 @@ from sluice.core.leads import (
     EMPTY_RECONCILE_REPORT,
     fold_company_answer,
     index_by_slug,
+    is_placeholder_company,
     layout_subfolder,
     same_opportunity,
 )
@@ -80,6 +81,15 @@ _ARCHIVED_UNPROVEN = "merged_away_unproven"
 # in Obsidian ("archived from note <name>"). Written only as a note is archived -- a note
 # restored out of `_merged/` by hand keeps the key, and nothing reads it there.
 _ARCHIVED_FROM = "archived_from_note"
+# #151: reconcile_names' empty report, matching EMPTY_RECONCILE_REPORT's shape and its own
+# deep-copy discipline (see reconcile_names). Kept HERE rather than in core/leads.py, unlike
+# EMPTY_RECONCILE_REPORT: that constant lives there specifically so `cmd_leads_reconcile`'s
+# knob-unset arm can emit an empty document without importing the concrete vault store (see its
+# own comment) -- and reconcile_names has no knob-unset arm to serve, since it runs unconditionally
+# regardless of `lead_layout`. Consumers deep-copy it for the same reason: a shallow `dict(...)`
+# shares every mutable bucket, which is safe only while each one happens to be overridden.
+EMPTY_RENAME_REPORT = {"examined": 0, "renames": [], "unresolved": [], "collisions": [],
+                       "ambiguous": {}, "resurrected": [], "skipped": []}
 
 _log = get_logger("core.vault")
 
@@ -733,6 +743,42 @@ class Vault:
         if capped:
             names.append(self._note_name(stem, _title_digest(title)))
         return names, capped
+
+    def _frontmatter_name(self, note) -> tuple[str | None, str | None]:
+        """(the name this note's FRONTMATTER would mint, the placeholder the CURRENT name was
+        minted from). (None, None) means the current name is not one THIS STORE minted from a
+        placeholder company -- leave the note alone entirely. (None, head) means it is, but the
+        frontmatter still offers nothing better than the same placeholder.
+
+        The qualification is an exact RE-DERIVATION, never a " - " prefix heuristic: the current
+        stem must be byte-identical to one of _candidate_names' own outputs when called with the
+        PLACEHOLDER head. That is what makes a human-renamed note invisible to this pass by
+        construction, and makes a company that merely CONTAINS " - " impossible to mis-split.
+
+        _candidate_names itself is never touched here and never learns about frontmatter -- it
+        keeps deriving names from the scraped Lead, which is what protects every legacy
+        archived_from_note stamp in _merged/ (see _archived_match). Re-deriving names from
+        frontmatter was tried and abandoned there for exactly this reason (see _archived_match's
+        docstring) -- and the FAILURE DIRECTION differs on purpose: there, a failed re-derivation
+        resurrects a merged-away lead (fail-open, on the one arm that must never fail open); here,
+        a failed re-derivation just leaves the note unrenamed (fail-closed, to the status quo).
+        """
+        stem = note.slug
+        head, sep, _ = stem.partition(_SEP)
+        if not sep or not is_placeholder_company(head):
+            return None, None
+        role = note.fm.get("role", "")
+        location = note.fm.get("location", "")
+        if not role:
+            return None, None
+        minted, _capped = self._candidate_names(head, role, location)
+        if stem not in minted:
+            return None, None
+        company = note.fm.get("company", "")
+        if is_placeholder_company(company):
+            return None, head
+        fresh, _capped = self._candidate_names(company, role, location)
+        return fresh[0], head
 
     def _resolve_path(self, lead: Lead) -> tuple[str | None, str]:
         """The candidate walk (see _resolve_candidates), with the scan set re-derived from
@@ -1683,6 +1729,210 @@ class Vault:
             for slug, twins in raced.items():
                 summary["ambiguous"].setdefault(slug, sorted(
                     os.path.relpath(t.ref, self.leads_dir) for t in twins))
+        return summary
+
+    def reconcile_names(self, *, apply: bool = False) -> dict:
+        """File-NAME analogue of reconcile_layout (#1, #151): rename a lead note's BASENAME to
+        match its frontmatter once triage has backfilled a real company over a placeholder one.
+        A note created with a blank/sentinel company is seated at `" - <role>.md"` or
+        `"Unknown - <role>.md"` (issue #151); once the company field is filled in, the
+        frontmatter and the filename disagree, and `_resolve_path`'s candidate walk is keyed on
+        the FILENAME, never the frontmatter -- so a re-scrape of the same posting mints a SECOND
+        note at the fresh company's candidate name instead of finding the existing one. This
+        pass closes that gap by renaming the note in place.
+
+        REPORTS by default, exactly like `reconcile_layout`, `leads dedupe` and `leads expire` --
+        the default IS the dry run, so there is no `dry_run` parameter to be inert.
+
+        Two deliberate divergences from `reconcile_layout`, both because the two axes this store
+        tracks -- WHICH FOLDER a note sits in, and WHAT BASENAME it carries -- are orthogonal:
+
+        - No `lead_layout` gate. A note's basename can be wrong whether or not a layout is
+          configured at all; nothing here depends on the status->folder map, so there is nothing
+          to abstain over the way `reconcile_layout` abstains under the flat default.
+        - No `_managed_dirs()` gate. A note the user filed into their own folder KEEPS that
+          folder here -- only its basename changes -- so there is no folder set to restrict the
+          scan to.
+
+        It never writes a note's BYTES -- only its directory entry (same directory, new
+        basename), via `_reserve_and_move`. No status is read-modify-written, no frontmatter key
+        is set, no body is re-rendered: this is a pure rename, same as `reconcile_layout` is a
+        pure move.
+
+        `_frontmatter_name` (see there) does the real qualification work: an exact
+        RE-DERIVATION of the note's current stem from `_candidate_names`, called with the
+        PLACEHOLDER head rather than the fresh company. That is what makes a human-renamed note
+        -- or one whose role has drifted since it was seated, without the file being renamed --
+        invisible to this pass by construction. `_candidate_names` itself is never touched or
+        taught to read frontmatter: doing that was tried and abandoned for `_archived_match` (see
+        there) for the mirror-image reason stated in `_frontmatter_name`'s own docstring -- a
+        failed re-derivation there resurrects a merged-away lead (fail-open, on the one arm that
+        must never fail open), while a failed re-derivation here just leaves a note unrenamed
+        (fail-closed, to the status quo).
+
+        The rename target is ALWAYS `_frontmatter_name`'s candidate 1 -- even when the note's
+        CURRENT name was seated at a location- or digest-suffixed candidate. Renaming to anything
+        but candidate 1 would mint a duplicate on the very next scrape: `_resolve_path` always
+        tries candidate 1 first, and a note not sitting there is invisible to that first probe.
+
+        COLLISION HANDLING has THREE layers, because `_reserve_and_move`'s directory-scoped
+        `O_EXCL` alone cannot see a note carrying the SAME target name in a DIFFERENT folder --
+        exactly the cross-folder duplicate-pair shape issue #151 itself reports, and the one a
+        recursive, layout-aware vault makes possible that a flat store never could.
+
+        1. A VAULT-WIDE precheck, `self._locate(target)` -- the store's own existing
+           cross-folder lookup primitive. Non-empty -> refuse into `collisions`, move nothing.
+           `_reserve_and_move`'s O_EXCL reservation is scoped to ONE directory (the note's own,
+           since source dir and destination dir are the SAME directory for a rename), so it
+           cannot by itself see a note with the same target basename sitting elsewhere in the
+           vault -- this layer is what can.
+        2. A WITHIN-RUN precheck: two different stale notes in the SAME sweep that would both
+           mint the identical target. Both refuse -- neither is picked arbitrarily. This is
+           computed as a separate pass over every note's ALREADY-decided target (see below),
+           specifically so the outcome cannot depend on which of the two notes a dict/list
+           happened to visit first.
+        3. `_reserve_and_move(..., suffix_on_collision=False)`, as the LAST word -- reused
+           exactly as `reconcile_layout` uses it. A collision surviving to this point is a race
+           against a writer OUTSIDE this sweep's own read (the two prechecks above only see the
+           vault as it was when this sweep started), and it is refused rather than suffixed: a
+           suffix changes the filename, which is the slug, which is the identity a later scrape
+           must find again -- auto-suffixing here would silently orphan the note it "protected".
+
+        Every note's target is decided BEFORE any note is actually moved, and both collision
+        layers run to completion over the whole batch before the move loop starts. Interleaving
+        decide-then-move-then-decide-the-next-one would make layer 2 order-dependent: the first
+        of two colliding notes visited would win by accident of iteration order, which is
+        exactly the "picked arbitrarily" outcome layer 2 exists to rule out.
+
+        The SYMLINK guard is repositioned from `reconcile_layout`'s, which guards the
+        DESTINATION DIRECTORY -- unreachable here, since source dir and destination dir are the
+        same directory for a rename. The reachable hazard here is a symlinked NOTE ITSELF:
+        `_reserve_and_move`'s `os.replace` on a symlink moves the LINK, not the file it points
+        to, silently detaching the note from wherever the link pointed. Checked via
+        `os.path.islink(note.ref)`, before any move -- and before either collision layer, so a
+        note that will never move cannot occupy a target and falsely flag some OTHER note's
+        rename as a within-run collision.
+
+        The POST-SWEEP RACE PROBE is genuinely different from `reconcile_layout`'s, and copying
+        that one verbatim here would be a bug, not a saving. A raced RECONCILE move (folder
+        change, SAME basename) re-creates the source at the SAME basename in a DIFFERENT folder
+        -- one slug now claimed by two refs, exactly what `index_by_slug`'s `ambiguous` bucket
+        already detects on a fresh read. A raced RENAME (same folder, DIFFERENT basename)
+        instead re-creates the source at the OLD basename -- a DIFFERENT slug from the new one,
+        so `index_by_slug` sees two entirely distinct, individually-UNIQUE slugs and reports
+        nothing: the race is invisible to that probe. So this pass runs a narrower probe of its
+        own instead: for each note that WAS renamed this sweep, re-check whether its OLD path
+        still exists (`os.path.exists`); if so, both halves of the raced pair are now real
+        notes, filed under `resurrected` -- deliberately a DIFFERENT bucket from `ambiguous`,
+        because the two residuals need different human fixes (merge two notes sharing one name,
+        versus investigate why an old name came back at all).
+
+        `_rescan_dirs()` -- which `reconcile_layout` calls after an applied sweep -- is
+        deliberately NOT called here. That call exists because a folder move can create a NEW
+        directory the cached scan-set list does not yet know about; a rename creates no
+        directories at all (source dir == dest dir), so the scan-set cache cannot go stale the
+        way a folder move's can, and re-deriving it here would pay a full walk for nothing.
+        """
+        # deepcopy, never `dict(EMPTY_RENAME_REPORT, ...)`: see EMPTY_RECONCILE_REPORT's own
+        # comment -- a shallow copy shares every mutable bucket (the `unresolved`/`renames`/
+        # `collisions`/`resurrected`/`skipped` lists and the `ambiguous` dict), which is safe
+        # only while each one happens to be overridden, and this docstring's own shape invites
+        # adding a bucket that would then be aliased across every call in the process.
+        summary = copy.deepcopy(EMPTY_RENAME_REPORT)
+        notes = self.read_leads()      # prunes _merged/ (#81) and skips non-lead files
+        summary["examined"] = len(notes)
+        # Same discipline as reconcile_layout: two or more notes ALREADY claiming one slug
+        # (before this pass renames anything) cannot be repaired here -- the slug IS the
+        # filename, and renaming one twin without knowing which is the real one would just trade
+        # one ambiguity for another. `index_by_slug` is the one sanctioned way to detect and
+        # report it, and only the DEDUPLICATED index is processed below.
+        index, dropped = index_by_slug(notes)
+        for slug, twins in dropped.items():
+            summary["ambiguous"][slug] = sorted(
+                os.path.relpath(t.ref, self.leads_dir) for t in twins)
+
+        # Phase 1: classify every note and decide its target, WITHOUT moving anything yet (see
+        # the docstring for why the whole batch is decided before any move runs). Symlinked
+        # notes are pulled out here, before either collision layer, so a note that will never
+        # move cannot occupy a target and falsely flag some other note's rename as colliding.
+        candidates = []   # [(note, target)] -- notes with a real, computed rename target
+        for n in index.values():
+            target, head = self._frontmatter_name(n)
+            if target is None and head is None:
+                continue  # not a name THIS STORE minted from a placeholder -- leave it alone
+            if target is None:
+                # head is not None: the current name IS one this store minted from a
+                # placeholder, but the frontmatter offers nothing better yet (still blank, or
+                # still a sentinel like "Unknown"). Report and leave untouched -- there is
+                # nothing safe to rename TO.
+                summary["unresolved"].append((n.slug, n.fm.get("company", "")))
+                continue
+            if os.path.islink(n.ref):
+                summary["skipped"].append(
+                    (n.slug, "note is a symlink; renaming would move the link, not the file"))
+                continue
+            candidates.append((n, target))
+
+        # Layer 1: the vault-wide precheck. Runs against the PRE-sweep vault -- nothing in this
+        # sweep has moved yet -- so `self._locate` cannot see any of this sweep's own renames
+        # landing early and cannot be confused by them.
+        survivors = []
+        for n, target in candidates:
+            if self._locate(target):
+                summary["collisions"].append((n.slug, target))
+                continue
+            survivors.append((n, target))
+
+        # Layer 2: the within-run precheck. Grouped AFTER layer 1 and BEFORE any move executes,
+        # so two notes racing to the same target are compared against EACH OTHER, never against
+        # whichever one happened to move first.
+        by_target: dict = {}
+        for n, target in survivors:
+            by_target.setdefault(target, []).append(n)
+        to_move = []
+        for target, group in by_target.items():
+            if len(group) > 1:
+                for n in group:
+                    summary["collisions"].append((n.slug, target))
+                continue
+            to_move.append((group[0], target))
+
+        # Phase 2: execute. Layer 3 (_reserve_and_move's own O_EXCL) is the LAST word -- a
+        # collision surviving to here is a genuine race against a writer OUTSIDE this sweep's
+        # own read, and it is refused, never suffixed (see the docstring).
+        renamed = []   # [(note, target)] actually renamed this sweep, for the race probe below
+        for n, target in to_move:
+            dest_dir = os.path.dirname(n.ref)
+            folder = os.path.relpath(dest_dir, self.leads_dir)
+            if not apply:
+                summary["renames"].append((n.slug, target, folder))
+                continue
+            try:
+                # suffix_on_collision=False: see _reserve_and_move and the docstring above. A
+                # FileExistsError here means a writer OUTSIDE this sweep's own read claimed
+                # `target` between layer 1's precheck and this attempt.
+                _reserve_and_move(n.ref, dest_dir, f"{target}.md", suffix_on_collision=False)
+            except FileExistsError:
+                summary["collisions"].append((n.slug, target))
+                _log.warning("rename: %s -> %s refused: destination is taken (merge or rename "
+                             "by hand; a numeric suffix would change the slug)", n.slug, target)
+                continue
+            except OSError as e:
+                summary["skipped"].append((n.slug, str(e)))
+                _log.warning("rename: could not rename %s -> %s: %s", n.slug, target, e)
+                continue
+            summary["renames"].append((n.slug, target, folder))
+            renamed.append((n, target))
+
+        # The post-sweep race probe -- see the docstring for why this is NOT reconcile_layout's
+        # index_by_slug re-read. A raced rename re-creates the SOURCE at the OLD basename, a
+        # slug of its own that index_by_slug cannot see as a collision; check the old path
+        # directly instead. `n.ref` is the note's PRE-sweep path (this LeadNote was never
+        # re-read after the move), which is exactly the old path this probe needs.
+        if apply:
+            for n, target in renamed:
+                if os.path.exists(n.ref):
+                    summary["resurrected"].append((n.slug, target))
         return summary
 
     # ── upsert ───────────────────────────────────────────────────────────────
