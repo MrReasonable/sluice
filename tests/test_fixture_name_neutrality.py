@@ -58,12 +58,19 @@ _SELF = Path(__file__).name
 # `tests/test_leads_rename.py` (#151's rename pass) being the first to put it in one of the
 # FOUR positions this sweep actually watches (a quoted `"Unknown - <role>.md"` filename), so it
 # is reviewed here rather than silently matching the roster by accident.
+#
+# `N-A` is the SAME ground as `Unknown`, reviewed 2026-08-17 (#151, CodeRabbit finding 3): it
+# is `_sanitize`'s length-preserving rendering of the sentinel "N/A" (`/` maps to `-` because
+# `/` is a filename-illegal path separator), not a name anyone typed hoping it was real --
+# `NON_ANSWER_COMPANIES` in core/leads.py lists "n/a" itself as one of its members.
+# `tests/test_leads_rename.py`'s sanitize-aware placeholder-head test is what put it in the
+# filename position this sweep watches.
 _REVIEWED_FIXTURE_IDENTITIES = frozenset({
     "A", "A-B", "Acme", "Alpha", "Aye", "B", "Beavni", "Bee", "Beta", "C", "Conflicted",
     "D", "Delta", "Epsilon", "Example", "Example Analytics", "Example Co", "Example Foundry",
     "Example Ltd", "Example Meridian", "Example MeridianRemote", "Example Northgate",
     "Example Systems", "Example Telemetry", "Example Tidal", "Foo", "Gamma",
-    "Human Typed Co", "Unknown", "Widget", "X",
+    "Human Typed Co", "N-A", "Unknown", "Widget", "X",
     "a", "a1", "a2", "b", "b1", "b2", "blank", "c", "d", "example-lead",
     # Escaping/injection fixtures — the backslashes are the point of the test.
     "Foo\\Bar Ltd", "Foo\\\\Bar Ltd", "Foo\\\\g<0>Bar", "Foo\\\\nBar",

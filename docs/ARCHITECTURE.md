@@ -805,10 +805,13 @@ distinguishes which of three collision layers refused); `ambiguous` (the same
 slug cannot be repaired by either pass); `resurrected` (a note whose OLD basename re-appeared
 after an applied rename, on a probe narrower than `reconcile_layout`'s own post-sweep
 `ambiguous` re-read: a raced RENAME re-creates the source at a DIFFERENT slug from the new
-one, invisible to `index_by_slug`, so this pass instead re-checks `os.path.exists` on each
+one, invisible to `index_by_slug`, so this pass instead re-checks `_is_note_file` -- never
+`os.path.exists`, which swallows every `OSError` and would read an unstatable old path as
+"gone" instead of reporting the genuine resurrection that call exists to catch -- on each
 renamed note's pre-sweep path); and `skipped` (a symlinked note -- left alone as a structure
 the user deliberately built, not a detachment hazard, since source dir == dest dir for a
-rename -- or an `OSError`).
+rename -- an `OSError` from the move itself, or an `OSError` the resurrection probe raised on
+an already-renamed note, isolated per-note so it cannot escape the sweep).
 
 COLLISION HANDLING has three layers, because `_reserve_and_move`'s own `O_EXCL` reservation is
 scoped to ONE directory, and source dir == dest dir for a rename -- so it alone cannot see a

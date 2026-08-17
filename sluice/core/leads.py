@@ -73,8 +73,21 @@ NON_ANSWER_COMPANIES = frozenset({
 def fold_company_answer(value: str) -> str:
     """Normalise a company-field candidate the same way for every reader that needs to
     recognise a placeholder, so the write guard, the resolution gate, and the rename pass
-    cannot drift on what counts as blank."""
-    return (value or "").rstrip(".!").strip().casefold()
+    cannot drift on what counts as blank.
+
+    STRIP, then rstrip the trailing `.`/`!`, then strip again -- never rstrip-then-strip
+    (CodeRabbit finding 4, #151). Stripping whitespace FIRST is what lets the punctuation
+    strip see trailing punctuation that sits inside surrounding whitespace: "Unknown. "
+    rstrip(".!")-first sees a trailing SPACE, not a ".", strips nothing, and folds to
+    "unknown." -- not a NON_ANSWER_COMPANIES member, so a model's or a human's most natural
+    way to type the sentinel (trailing space after the period) would silently fail to
+    register as a placeholder. The second strip is needed too: removing ".!" can itself
+    expose a trailing space that was hiding behind it (" Unknown . " -> "Unknown " after the
+    rstrip, still not "unknown" until stripped again). Every real production caller already
+    pre-strips before calling this (per an earlier review of this exact branch), which is
+    why the bug was unreachable in practice -- but the function's own CONTRACT should not
+    depend on every caller happening to compensate for it."""
+    return (value or "").strip().rstrip(".!").strip().casefold()
 
 
 def is_placeholder_company(value: str) -> bool:

@@ -14,7 +14,12 @@ class TestNonAnswerCompanies:
 
     def test_set_has_expected_count(self):
         """The set has the expected number of members."""
-        # Copied verbatim from triage/resolve.py's current _NON_ANSWERS
+        # NOT copied from triage/resolve.py -- core/leads.py is the SOURCE OF TRUTH.
+        # triage/resolve.py's `_is_non_answer` is a thin wrapper around
+        # `is_placeholder_company`, which itself folds and compares against this exact set;
+        # `_is_non_answer` defines no membership list of its own. (An earlier version of this
+        # comment had the direction backwards, describing this set as copied FROM
+        # resolve.py's own `_NON_ANSWERS` -- that name does not exist post-refactor.)
         assert len(NON_ANSWER_COMPANIES) == 19
 
     def test_every_member_is_already_folded(self):
@@ -38,14 +43,20 @@ class TestFoldCompanyAnswer:
         ("Example Company.", "example company"),
         ("Example Company!", "example company"),
         (" Example Company ", "example company"),
-        ("  Example Company.!  ", "example company.!"),  # Trailing spaces after .! mean they stay
+        # Strip runs BEFORE the punctuation rstrip (and again after), so trailing punctuation
+        # sitting inside surrounding whitespace is now stripped too -- see CodeRabbit finding 4
+        # (#151) and fold_company_answer's own docstring. The old pin here asserted the
+        # OPPOSITE ordering's bug (punctuation survives behind trailing whitespace); that pin
+        # was wrong to keep as "intentional", not a real contract worth preserving.
+        ("  Example Company.!  ", "example company"),
         ("EXAMPLE COMPANY", "example company"),
         ("unknown", "unknown"),
         ("Unknown", "unknown"),
         ("UNKNOWN", "unknown"),
-        (" Unknown . ", "unknown ."),  # Space after . means . stays
+        (" Unknown . ", "unknown"),
         ("unknown.", "unknown"),
         ("Unknown!", "unknown"),
+        ("Unknown. ", "unknown"),  # the exact shape CodeRabbit's finding 4 named
         ("", ""),
         (None, ""),
     ])
@@ -74,6 +85,7 @@ class TestIsPlaceholderCompany:
     @pytest.mark.parametrize("value", [
         "unknown", "Unknown", "UNKNOWN", " unknown ", "unknown.",
         "confidential", "Confidential", "CONFIDENTIAL", " confidential ", "confidential!",
+        "undisclosed", "Undisclosed", "UNDISCLOSED",
         "n/a", "N/A", " n/a ", "n/a.",
         "na", "NA", " na ", "na!",
         "not disclosed", "Not Disclosed", "NOT DISCLOSED",
