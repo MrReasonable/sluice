@@ -7,6 +7,8 @@ unconfigured gate abstains rather than applying somebody else's idea of a good r
 """
 import re
 
+from sluice.core.leads import is_placeholder_company
+
 # Boards advertise pay in wildly inconsistent shapes: "£60k", "£30,000-£40,000",
 # "up to £75k", "£500/day", "£50,000 + 10% bonus". The old parser stripped every
 # non-digit and concatenated whatever was left, which broke the floors in BOTH
@@ -178,7 +180,12 @@ def classify(lead: dict, cfg) -> tuple[str, str]:
                 and amount < cfg.perm_floor_gbp):
             return "reject", f"Salary below floor: {amount} < {cfg.perm_floor_gbp}"
 
-    if not company or company.lower() == "unknown":
+    # `is_placeholder_company` catches blank AND every honest non-answer a board or
+    # a legacy/foreign note carries ("Unknown", "Confidential", "N/A", ...) --
+    # not just the bare "unknown" sentinel this used to check by itself. Kept LAST,
+    # after every reject check above: a placeholder company must not short-circuit
+    # a role/location/pay reject the lead would otherwise earn.
+    if is_placeholder_company(company):
         return "needs_review", "No company name; visit URL to identify"
 
     return "keep", ""
