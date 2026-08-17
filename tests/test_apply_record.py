@@ -95,23 +95,23 @@ def test_record_drops_a_structural_ats_but_still_applies():
     already reachable from scraped data today, not only a human-typed --ats."""
     v = _lead(_SHORTLIST)
     note = v.read_leads({"shortlist"})[0]
-    out = rec.record(v, note, ApplyConfig(), ats='greenhouse"; status: applied',
+    out = rec.record(v, note, ApplyConfig(), ats='example-ats"; status: applied',
                      url="https://x/apply")
     assert out["ok"] is True
     assert "ats" not in out["fields"]
     assert out["ats_dropped"] is True
     text = pathlib.Path(note.ref).read_text()
     assert "status: applied" in text
-    assert 'greenhouse"; status: applied' not in text
+    assert 'example-ats"; status: applied' not in text
 
 
 def test_record_does_not_flag_ats_dropped_when_ats_is_safe():
     v = _lead(_SHORTLIST)
     note = v.read_leads({"shortlist"})[0]
-    out = rec.record(v, note, ApplyConfig(), ats="greenhouse")
+    out = rec.record(v, note, ApplyConfig(), ats="example-ats")
     assert out["ok"] is True
     assert "ats_dropped" not in out
-    assert out["fields"]["ats"] == "greenhouse"
+    assert out["fields"]["ats"] == "example-ats"
 
 
 def test_record_require_status_refuses_when_the_note_left_shortlist_between_read_and_write():
@@ -123,7 +123,7 @@ def test_record_require_status_refuses_when_the_note_left_shortlist_between_read
     v = _lead(_SHORTLIST)
     note = v.read_leads({"shortlist"})[0]   # STALE snapshot: still thinks it's shortlist
     v.update_fields(note.ref, {"status": "applied"})   # a "concurrent" writer wins first
-    out = rec.record(v, note, ApplyConfig(), ats="greenhouse")
+    out = rec.record(v, note, ApplyConfig(), ats="example-ats")
     assert out == {"ok": False, "reason": "raced"}
     text = pathlib.Path(note.ref).read_text()
     assert "applied_date" not in text   # the stale write never landed
