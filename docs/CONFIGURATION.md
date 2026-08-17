@@ -139,9 +139,9 @@ block is commented out in `sluice.yaml.example`.
 | `cheap_model` | `"deepseek-v4-flash"` | |
 | `auto_status_min` | `0.75` | min confidence to auto-advance a scheduling/offer signal |
 | `auto_reject_min` | `0.9` | stricter bar to auto-reject |
-| `auto_apply_min` | `0.75` | min receipt confidence to auto-advance `shortlist`→`applied`, and **only** on a domain-proof match: the sender host must be the lead's own host, on a message whose `Authentication-Results` records a PASS aligned with that sender, with neither host multi-tenant |
-| `ats_relay_domains` | 8 shipped entries (greenhouse, ashby, lever, workable, icims, teamtailor, workday, smartrecruiters) | **safety denylist, not a preference gate.** Anything you set is *merged over* the shipped defaults, never replacing them — a shipped entry cannot be removed, only relabelled by reusing its key. A value that isn't a mapping of host → label raises rather than silently emptying the list. Emptying this makes the proof tier **more** permissive |
-| `job_board_domains` | 22 shipped board domains | same merge semantics, for the boards this project itself scrapes |
+| `auto_apply_min` | `0.75` | min receipt confidence to auto-advance `shortlist`→`applied`, and **only** on a domain-proof match: the sender host must match one of the lead's known hosts (`applied_url` then `url`), on a message whose `Authentication-Results` records a PASS aligned with that sender, with neither host multi-tenant |
+| `ats_relay_domains` | shipped, multi-tenant recruiting-platform vendors | **safety denylist, not a preference gate.** Membership follows a stated selection rule (see `sluice/track/config.py`'s module comment) rather than a fixed roster meant to be enumerated here — a count printed in prose goes stale the moment the shipped list grows. Anything you set is *merged over* the shipped defaults, never replacing them — a shipped entry cannot be removed, only relabelled by reusing its key. A value that isn't a mapping of host → label raises rather than silently emptying the list. Emptying this makes the proof tier **more** permissive |
+| `job_board_domains` | shipped, the boards `sluice/ingest/sources/` scrapes | same merge semantics, for the boards this project itself scrapes |
 
 ## Environment variables
 

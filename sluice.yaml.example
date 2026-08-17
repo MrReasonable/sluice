@@ -271,10 +271,12 @@ track:
   # EMPLOYERS: ATS relays, and the job boards sluice scrapes. Both are SAFETY
   # DENYLISTS, not preference gates. A receipt sent from one of these hosts is never
   # treated as domain-PROOF of a specific company (the host serves many), only as
-  # corroboration when the company is also named in the body -- and a lead whose own
-  # `url` is such a host can never be proof-matched either, since a board-sourced
-  # lead's url identifies the BOARD, not the employer. Both defaults are non-empty by
-  # design; emptying one makes the proof tier MORE permissive, not less.
+  # corroboration when the company is also named in the body -- and a lead's own
+  # `applied_url` (the URL actually submitted to) or `url` (where it was scraped
+  # from) being such a host can never be proof-matched either, each checked
+  # independently, since a board-sourced lead's url identifies the BOARD, not the
+  # employer. Both defaults are non-empty by design; emptying one makes the proof
+  # tier MORE permissive, not less.
   #
   # Anything you set here is MERGED OVER the shipped defaults, never replacing them:
   # add your own in-house ATS or board and the shipped entries all survive. (The
