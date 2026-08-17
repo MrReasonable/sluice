@@ -13,6 +13,9 @@ def _note(slug, status, company="Example Ltd", role="Example Role"):
 
 def test_none_when_no_note_falls_outside_accepted_and_matches():
     notes = [_note("Example Ltd - Example Role", "shortlist")]
+    # Non-vacuity: this must be the IN-SCOPE arm, not the zero-match arm -- both
+    # return None. The matcher DOES match; `accepted` is what excludes the note.
+    assert slug_matches(notes[0], "Example Ltd - Example Role")
     assert out_of_scope_verdict(notes, "Example Ltd - Example Role", matcher=slug_matches,
                                 accepted=frozenset({"shortlist"})) is None
 
