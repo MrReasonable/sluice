@@ -77,27 +77,43 @@ def floating_start(ics) -> bool:
     return ics.start is not None and ics.start.tzinfo is None
 
 
-def _warn_if_floating(cfg, ics, outcome):
+def _warn_if_floating(cfg, ics, outcome, event_id=None):
     """Say out loud that an instant was assumed, at the only place that knows a write
     happened. Before `_window_bounds` coerced the list bounds, this population could not
     reach a write at all -- the list call raised first -- so the fix traded a loud HTTP 400
     for a quiet wrong hour. This is what keeps it loud.
 
     The warning stays even when `calendar_assumed_timezone` is set: a configured zone makes
-    the guess BETTER, never certain. The invite still stated no instant."""
+    the guess BETTER, never certain. The invite still stated no instant.
+
+    Identifies the entry by its Google EVENT ID, not by the inbound ics UID it used to name.
+    Same reasoning as the duplicate-entry warning below, and this is the sweep of that fix
+    rather than a second opinion: a UID is counterparty-supplied text that sometimes encodes
+    the sender's domain, and a log line travels further than the mailbox does -- the rule
+    `search_messages` already keeps its query out of the log for. Closing that gap for one
+    warning and leaving two identical ones would be closing a class for a single instance.
+
+    It is also the more useful handle. This message asks the operator to go and VERIFY an
+    hour; an event id is what finds that entry in the calendar UI or the API, whereas the UID
+    identifies the invite and cannot be searched for by hand.
+
+    `event_id` is None only on a dry run, where nothing was written and there is therefore no
+    entry to name or to check -- the warning still fires, because the counter beside it reports
+    what the run WOULD do."""
     if outcome not in ("created", "updated") or not floating_start(ics):
         return
     zone = assumed_zone(cfg)[1]
+    where = f"calendar entry {event_id}" if event_id else "calendar entry that WOULD be written"
     if ics.tzid_unresolved:
         _log.warning(
-            "track: uid %s states TZID %r, which this host cannot resolve; %s the calendar "
-            "entry at %s ASSUMING %s -- verify the time before relying on it",
-            ics.uid, ics.tzid_unresolved, outcome, ics.start.isoformat(), zone)
+            "track: an invite states TZID %r, which this host cannot resolve; %s the %s at "
+            "%s ASSUMING %s -- verify the time before relying on it",
+            ics.tzid_unresolved, outcome, where, ics.start.isoformat(), zone)
     else:
         _log.warning(
-            "track: uid %s has a floating (zone-less) DTSTART; %s the calendar entry at %s "
+            "track: an invite has a floating (zone-less) DTSTART; %s the %s at %s "
             "ASSUMING %s -- verify the time before relying on it",
-            ics.uid, outcome, ics.start.isoformat(), zone)
+            outcome, where, ics.start.isoformat(), zone)
 
 
 def _aware(dt, tz=timezone.utc):
@@ -517,7 +533,9 @@ def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
         if _trunc(_event_start(ours), tz) != _trunc(ics.start, tz):
             if not dry_run:
                 client.update_event(ours["id"], _event_body(cfg, lead_slug, ics))
-            _warn_if_floating(cfg, ics, "updated")
+            # The id is known here whether or not we wrote -- it is the entry we FOUND -- so a
+            # dry run can still name what it would have touched.
+            _warn_if_floating(cfg, ics, "updated", ours.get("id"))
             return "updated"
         return "present"
     if _foreign_at_start(events, cfg, ics):
@@ -531,7 +549,9 @@ def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
         # Our own entry may be off-page, so inserting would DUPLICATE it. Refusing and
         # surfacing beats silently double-booking an interview.
         return "unresolved"
-    if not dry_run:
-        client.insert_event(_event_body(cfg, lead_slug, ics))
-    _warn_if_floating(cfg, ics, "created")
+    # `insert_event` returns the new id, which until now was discarded. It is the only handle
+    # that exists for an entry we just created, and the warning below needs one to be
+    # actionable. None on a dry run, where nothing was written and there is nothing to verify.
+    new_id = client.insert_event(_event_body(cfg, lead_slug, ics)) if not dry_run else None
+    _warn_if_floating(cfg, ics, "created", new_id)
     return "created"
