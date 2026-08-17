@@ -164,15 +164,22 @@ def test_a_filter_that_MATCHES_NOTHING_leaves_every_pre_existing_outcome_untouch
     assert alien.tag_queries
 
     # -- controls: answered by the window, must be unaffected ----------------------------
+    # Asserted in BOTH directions, or the classification is only half pinned: these rows claim
+    # NOT to reach the filter, so they say so.
     moved = _FilterMatchesNothing(events=[_ours(start_iso=inside)])
     assert sync_event(moved, cfg, lead_slug="example-lead", ics=_ics()) == "updated"
+    assert moved.tag_queries == [], "a control row that reaches the filter is not a control"
 
     same = _FilterMatchesNothing(events=[_ours(start_iso="2026-10-01T10:00:00+00:00")])
     assert sync_event(same, cfg, lead_slug="example-lead", ics=_ics()) == "present"
+    assert same.tag_queries == []
 
+    # NOT a control, despite the calendar holding an entry of ours: a cancel asks by tag
+    # ALWAYS, so this row goes through the broken filter too and has to survive it.
     cancel = _FilterMatchesNothing(events=[_ours(start_iso=inside)])
     assert sync_event(cancel, cfg, lead_slug="example-lead",
                       ics=_ics(cancelled=True)) == "cancelled"
+    assert cancel.tag_queries, "a cancel must consult the tag query even on a window hit"
 
 
 class _FilterMatchesTooMuch(FakeGoogleClient):
@@ -233,6 +240,18 @@ def test_a_TRUNCATED_tag_query_that_DID_find_something_still_refuses_to_claim_a_
                       ics=_ics(cancelled=True)) == "unresolved"
     assert c.deleted == ["ev1"], "the entry we COULD see must still be removed"
 
+    # CONVERGENCE, which matters because `unresolved` is not a retry: `engine.run` files a
+    # dead-letter row and then runs `seen.add`, so the message is consumed and the row is the
+    # whole channel back to a human. A second pass -- a re-sent CANCEL, or the operator acting
+    # on the row -- runs against the post-delete calendar. It must NOT re-issue a delete for an
+    # id already gone (a 404 escapes into the per-message handler and turns a resolved
+    # situation into a failure row), and must not regress to `cancelled` just because the
+    # calendar now looks clean, since the tag query is still short and still cannot prove it.
+    again = FakeGoogleClient(events=[], tag_truncated=True)
+    assert sync_event(again, TrackConfig(), lead_slug="example-lead",
+                      ics=_ics(cancelled=True)) == "unresolved"
+    assert again.deleted == [], "re-deleted an entry the first pass had already removed"
+
 
 def test_the_row_for_a_PARTIAL_cancel_does_not_claim_nothing_was_deleted():
     """The operator-facing half of the case above, and it was a real defect.
@@ -286,10 +305,21 @@ def test_the_row_for_a_PARTIAL_cancel_does_not_claim_nothing_was_deleted():
     assert c.deleted == ["ev1"], "the entry we could see must still have been removed"
     rows = [e for e in dl.open_entries() if e.message_id == "m1"]
     assert rows, "an unconfirmed cancel must still leave a durable row"
-    hint = rows[0].hint
-    assert "nothing was deleted" not in hint, (
-        f"the row tells the operator to remove something sluice already removed: {hint}")
-    assert "dismiss" in hint, f"the row must still offer a way to close it: {hint}"
+    hint, low = rows[0].hint, rows[0].hint.lower()
+    assert rows[0].proposal == "cancel-unresolved", rows[0].proposal
+    # POSITIVE first. The negative list below can only catch a re-introduction of wording we
+    # already thought of, and an earlier version of this test asserted ONLY that -- while its
+    # docstring claimed to pin the fact. A reword to "no entry was deleted" would have restored
+    # the false claim with the test green, which is exactly how this hint went false the first
+    # time. Requiring the removal to be acknowledged is the property that cannot be reworded
+    # around.
+    assert "remove" in low and ("may remain" in low or "still there" in low), (
+        f"the row must acknowledge that sluice removed something and more may remain: {hint}")
+    for lie in ("nothing was deleted", "no entry was deleted", "nothing was removed",
+                "left in place", "was not deleted"):
+        assert lie not in low, (
+            f"the row tells the operator to remove something sluice already removed: {hint}")
+    assert "dismiss" in low, f"the row must still offer a way to close it: {hint}"
 
 
 def test_a_CLEAN_tag_query_does_not_clear_a_SHORT_window():
@@ -501,6 +531,24 @@ def test_a_uid_too_long_for_google_still_round_trips():
     assert again.tag_queries == [(_UID_KEY, stored)], (
         "the query must ask for the value Google actually stored, not the full UID -- "
         f"asked for {again.tag_queries}")
+
+
+def test_the_tag_VALUE_cap_matches_googles_own_limit():
+    """Pinned against the LITERAL, because the round-trip test cannot pin it.
+
+    `test_a_uid_too_long_for_google_still_round_trips` derives its fixture length AND its
+    expectation from `_UID_VALUE_MAX`, so both sides move together: set the constant to 2048
+    and every assertion there still passes while Google keeps 1024 and we search for 2048 --
+    our own event unfindable by window or tag, a fresh duplicate every run, which is the exact
+    failure that test's docstring describes. Same shape as the `singleEvents` equality that
+    both reads could satisfy by drifting together.
+
+    Its sibling below already pins the KEY limit against a literal; this is the other half."""
+    from sluice.track.calendar_sync import _UID_VALUE_MAX
+
+    assert _UID_VALUE_MAX == 1024, (
+        "Google keeps 1024 characters of a private-property VALUE and silently truncates the "
+        "rest; searching for more than it stored makes our own event unfindable")
 
 
 def test_the_tag_KEY_fits_inside_googles_own_limit():

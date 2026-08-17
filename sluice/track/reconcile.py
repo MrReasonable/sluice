@@ -198,7 +198,13 @@ def reconcile(event, note_by_slug, vault, cfg, client, dry_run=False, *, shortli
         r.calendar_assumed_tz = _assumed_tz(r.calendar, event.ics)
         r.note = "cancellation"
         if r.calendar in ("unresolved", "foreign"):
-            # A cancel we could not ACT ON must reach a human. Both outcomes, not just
+            # A cancel we could not FINISH must reach a human -- which since #146 includes one
+            # we partly acted on: `sync_event` may delete every entry it could identify and
+            # still answer `unresolved`, because a truncated tag query cannot rule out another
+            # copy off-page. "Could not act on" was the older, narrower reading and is why the
+            # hint this routes to once claimed nothing had been deleted.
+            #
+            # Both outcomes, not just
             # `unresolved`: `foreign` means something we did not create sits at that slot --
             # routinely the recruiter's own invite, auto-added by Google from the mail. We
             # must never delete it, but the operator's calendar still shows a cancelled

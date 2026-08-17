@@ -140,6 +140,12 @@ def test_floating_start_is_booked_as_utc_but_says_so_loudly(caplog):
     uid = "uid-4b2a@mail.example-tidal.invalid"
     ics = parse_ics(f"BEGIN:VEVENT\r\nUID:{uid}\r\n"
                     "DTSTART;TZID=Nowhere/Notreal:20260715T110000\r\nEND:VEVENT")
+    # The premise the absence-assertion below rests on. `uid` is what was fed to `parse_ics`,
+    # not what came out (it does `value.strip()`, and RFC 5545 line-unfolding sits upstream);
+    # if the value were ever normalised, the substring search would stop matching and the
+    # assertion would pass while the UID was being logged -- green for a reason unrelated to
+    # the property it claims.
+    assert ics.uid == uid, "fixture premise: the UID must survive parse_ics byte-for-byte"
     c = FakeGoogleClient(events=[])
     with caplog.at_level("WARNING", logger="sluice.track.calendar_sync"):
         assert sync_event(c, TrackConfig(), lead_slug="example-lead", ics=ics) == "created"
@@ -159,6 +165,43 @@ def test_floating_start_is_booked_as_utc_but_says_so_loudly(caplog):
 
 def _floating(uid="u1"):
     return IcsEvent(uid=uid, summary="Screen", start=datetime(2026, 7, 15, 11, 0))
+
+
+def test_a_floating_RESCHEDULE_names_the_entry_it_moved(caplog):
+    """The UPDATE arm of the warning, which nothing reached.
+
+    Measured: eight tests execute the `updated` call site and in NONE of them does the guard
+    let the warning through, because none has a floating start. So the entry id threaded into
+    that call was inert -- deleting it, or the whole call, left the suite green. Every existing
+    warning test goes through the CREATE arm.
+
+    A reschedule is where this matters most: the entry already exists, the operator has
+    probably already looked at it once, and it has just been moved to an hour sluice guessed.
+    """
+    c = FakeGoogleClient(events=[_tagged_event("u1", "2026-07-15T09:00:00+00:00")])
+    with caplog.at_level("WARNING", logger="sluice.track.calendar_sync"):
+        assert sync_event(c, TrackConfig(), lead_slug="example-lead", ics=_floating()) == "updated"
+    said = [r.getMessage() for r in caplog.records if r.name == "sluice.track.calendar_sync"]
+    assert said, "a moved entry booked at a GUESSED hour must not be silent"
+    assert any("ev1" in m for m in said), f"the entry that moved is not named: {said}"
+    assert any("ASSUMING UTC" in m for m in said), f"the assumption is not stated: {said}"
+
+
+def test_a_DRY_RUN_reschedule_does_not_say_it_updated_anything(caplog):
+    """The create arm hedged for dry runs and the update arm did not, so one preview could
+    print "would have created ... a calendar entry" and "updated the calendar entry ev1" in the
+    same breath. Nothing was updated -- and the message asks the operator to go and verify an
+    hour on an entry sluice never touched."""
+    c = FakeGoogleClient(events=[_tagged_event("u1", "2026-07-15T09:00:00+00:00")])
+    with caplog.at_level("WARNING", logger="sluice.track.calendar_sync"):
+        assert sync_event(c, TrackConfig(), lead_slug="example-lead", ics=_floating(),
+                          dry_run=True) == "updated"
+    assert not c.updated, "a dry run must not write"
+    said = " ".join(r.getMessage() for r in caplog.records
+                    if r.name == "sluice.track.calendar_sync")
+    assert said, "the guessed instant must still be reported in a preview"
+    assert "would have updated" in said, (
+        f"a preview claims an accomplished write: {said}")
 
 
 def test_configured_zone_is_what_a_floating_start_is_booked_in():

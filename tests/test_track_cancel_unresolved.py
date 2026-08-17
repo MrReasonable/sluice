@@ -64,6 +64,28 @@ def test_a_cancel_with_no_DTSTART_now_FINDS_our_event_and_cancels_it():
     assert not c.listed, "no window can be built here, so none should have been requested"
 
 
+def test_a_startless_cancel_over_a_TRUNCATED_tag_query_cannot_claim_cancelled():
+    """The sibling of `test_a_TRUNCATED_tag_query_that_DID_find_something...`, and this arm
+    needs the rule MORE than the windowed one does.
+
+    There the tag query supplements a window scan. Here it is the ONLY evidence -- no start
+    means no window -- so a truncated one leaves nothing independent to say we saw every copy.
+    Reporting `cancelled` sets no `needs_review`, writes no dead-letter row, and lets
+    `seen.add` consume the message: a second entry for a cancelled interview, in the calendar,
+    with nothing anywhere pointing at it.
+
+    This is the arm that got the rule LAST rather than first, which is why it has its own test:
+    fixing one instance of a class and leaving the identical one is the failure mode this
+    repository keeps meeting."""
+    ics = parse_ics("BEGIN:VCALENDAR\r\nMETHOD:CANCEL\r\nBEGIN:VEVENT\r\nUID:u1\r\n"
+                    "END:VEVENT\r\nEND:VCALENDAR\r\n")
+    assert ics.start is None, "fixture must have no DTSTART, or the window arm answers instead"
+    c = FakeGoogleClient(events=[_tagged("u1", "2026-07-15T10:00:00+00:00")],
+                         tag_truncated=True)
+    assert sync_event(c, TrackConfig(), lead_slug="example-lead", ics=ics) == "unresolved"
+    assert c.deleted == ["ev1"], "the entry we COULD see must still be removed"
+
+
 def test_a_startless_cancel_that_finds_NOTHING_is_still_unresolved_never_present():
     """#138's actual lesson, kept intact while the case above improved.
 

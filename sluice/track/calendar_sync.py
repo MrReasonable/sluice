@@ -77,7 +77,7 @@ def floating_start(ics) -> bool:
     return ics.start is not None and ics.start.tzinfo is None
 
 
-def _warn_if_floating(cfg, ics, outcome, event_id=None):
+def _warn_if_floating(cfg, ics, outcome, lead_slug, event_id=None, dry_run=False):
     """Say out loud that an instant was assumed, at the only place that knows a write
     happened. Before `_window_bounds` coerced the list bounds, this population could not
     reach a write at all -- the list call raised first -- so the fix traded a loud HTTP 400
@@ -86,34 +86,45 @@ def _warn_if_floating(cfg, ics, outcome, event_id=None):
     The warning stays even when `calendar_assumed_timezone` is set: a configured zone makes
     the guess BETTER, never certain. The invite still stated no instant.
 
-    Identifies the entry by its Google EVENT ID, not by the inbound ics UID it used to name.
-    Same reasoning as the duplicate-entry warning below, and this is the sweep of that fix
-    rather than a second opinion: a UID is counterparty-supplied text that sometimes encodes
-    the sender's domain, and a log line travels further than the mailbox does -- the rule
-    `search_messages` already keeps its query out of the log for. Closing that gap for one
-    warning and leaving two identical ones would be closing a class for a single instance.
+    Identifies the entry by its Google EVENT ID and the lead, not by the inbound ics UID it
+    used to name. A UID is counterparty-supplied text that sometimes encodes the sender's
+    domain, and a log line travels further than the mailbox does -- the rule `search_messages`
+    already keeps its query out of the log for. `lead_slug` is sluice's OWN identifier rather
+    than anything the sender chose, so it carries that hazard not at all, and it is what keeps
+    the message identifiable on a dry run where no event id exists yet.
 
-    It is also the more useful handle. This message asks the operator to go and VERIFY an
-    hour; an event id is what finds that entry in the calendar UI or the API, whereas the UID
+    An event id is also the more useful handle. This message asks the operator to go and VERIFY
+    an hour; an event id finds that entry in the calendar UI or the API, whereas a UID
     identifies the invite and cannot be searched for by hand.
 
-    `event_id` is None only on a dry run, where nothing was written and there is therefore no
-    entry to name or to check -- the warning still fires, because the counter beside it reports
-    what the run WOULD do."""
+    SCOPE of that swap, stated exactly rather than as "the class is closed": the three WARNINGS
+    that named a UID -- these two and the duplicate-entry one in `sync_event` -- no longer do.
+    `engine.py`'s `_NEEDS_REVIEW_HINT` table still renders the UID into all four dead-letter
+    hints, deliberately and not by oversight. Those rows report that sluice could NOT find or
+    act on an entry, so there is no event id to offer in the first place, and the UID is the
+    operator's only handle back to the invite. The exposure differs too: a hint is written to a
+    local dead-letter row the operator reads, where a warning goes to a log stream that gets
+    captured and pasted. If that judgement is ever revisited, it is one change across four
+    templates and their tests, not a gap someone has to rediscover.
+
+    `event_id` is None on a dry run of a CREATE, where nothing was written and no id exists. A
+    dry-run UPDATE does pass one -- the entry being described already exists -- so the tense of
+    the verb, not the presence of an id, is what marks a preview."""
     if outcome not in ("created", "updated") or not floating_start(ics):
         return
     zone = assumed_zone(cfg)[1]
-    where = f"calendar entry {event_id}" if event_id else "calendar entry that WOULD be written"
+    did = f"would have {outcome}" if dry_run else outcome
+    where = f"the calendar entry {event_id}" if event_id else "a calendar entry"
     if ics.tzid_unresolved:
         _log.warning(
-            "track: an invite states TZID %r, which this host cannot resolve; %s the %s at "
+            "track: an invite for %s states TZID %r, which this host cannot resolve; %s %s at "
             "%s ASSUMING %s -- verify the time before relying on it",
-            ics.tzid_unresolved, outcome, where, ics.start.isoformat(), zone)
+            lead_slug, ics.tzid_unresolved, did, where, ics.start.isoformat(), zone)
     else:
         _log.warning(
-            "track: an invite has a floating (zone-less) DTSTART; %s the %s at %s "
+            "track: an invite for %s has a floating (zone-less) DTSTART; %s %s at %s "
             "ASSUMING %s -- verify the time before relying on it",
-            outcome, where, ics.start.isoformat(), zone)
+            lead_slug, did, where, ics.start.isoformat(), zone)
 
 
 def _aware(dt, tz=timezone.utc):
@@ -367,8 +378,17 @@ def _event_body(cfg, lead_slug, ics):
 def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
     """One of: created | updated | cancelled | present | unresolved | foreign.
 
-    `unresolved` is the answer to a question we could not ASK, or asked over a window we know
-    was incomplete. `foreign` means we looked, found an event at that slot that sluice did NOT
+    `unresolved` is the answer to a question we could not ASK, asked over a window we know was
+    incomplete, or -- since #146 -- asked and ACTED ON without being able to confirm the action
+    was complete. That third producer is new and is the one to hold in mind: a cancel deletes
+    every entry it can identify and still answers `unresolved` when the tag query was
+    truncated, because another copy may sit off-page.
+
+    It is spelled out because leaving it out already cost something. `_NEEDS_REVIEW_HINT`
+    branched on the old two-clause definition and told the operator "nothing was deleted" for
+    an outcome that had just deleted things -- a false statement in the one place a human
+    reads. The hint was fixed; a contract that still licensed it would only produce the next
+    one. `foreign` means we looked, found an event at that slot that sluice did NOT
     create -- routinely the sender's own invite, auto-added by Google -- and deliberately left
     it alone; the calendar work is therefore unfinished and a human has to look. Both are
     distinct from `present`, which means we searched a complete window and there was nothing
@@ -418,12 +438,20 @@ def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
         # `unresolved` to a question we had just acquired the means to answer, sending the
         # operator to delete by hand.
         if ics.cancelled:
-            mine, _unsettled = _find_ours_by_tag(client, ics)
+            mine, unsettled = _find_ours_by_tag(client, ics)
             if mine:
                 if not dry_run:
                     for ev in mine:
                         client.delete_event(ev["id"])
-                return "cancelled"
+                # Same rule as the windowed cancel below, and this arm needs it MORE. There the
+                # tag query supplements a window scan; here it is the ONLY evidence there is,
+                # so a truncated one leaves us with no independent reason to believe we saw
+                # every copy. Claiming `cancelled` would set no `needs_review`, write no
+                # dead-letter row, and let `seen.add` consume the message -- a second entry for
+                # a cancelled interview left in the calendar with nothing anywhere pointing at
+                # it. That is #138's harm, and an earlier version of this arm had it, because
+                # the rule was applied next door and not here.
+                return "unresolved" if unsettled else "cancelled"
             # NOT `present` when the tag query comes back empty, even though it searched
             # without a window and "nothing of ours" is what `present` means. That would be
             # #138 rebuilt on an assumption: `present` is a positive claim, and the only
@@ -433,9 +461,7 @@ def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
             # consumed the message -- which is precisely the failure this arm was given
             # `unresolved` for.
             #
-            # So the lookup can only IMPROVE this branch, never weaken it: a hit cancels, and
-            # anything else falls back to the answer that was already here. That also makes
-            # `unsettled` moot, hence the discard -- both of its values lead here.
+            # So the lookup can only IMPROVE this branch, never weaken it.
             return "unresolved"
         # The non-cancel arm still cannot proceed -- `_event_body` has no instant to write.
         # It used to answer `present`, a positive claim about a search that never happened.
@@ -519,8 +545,12 @@ def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
         # which is precisely the leak `search_messages` keeps its query out of the log for:
         # a log line travels further than the mailbox does. A Google event id is opaque and
         # says nothing about who the interview is with.
+        # The ids attach to "entries", not to "invite id" -- word order is load-bearing here.
+        # Written the other way round the parenthetical sat immediately after "the same invite
+        # id" and read as NAMING that invite id, which is the exact reading this warning was
+        # rewritten to remove, and no assertion on the ids being present could have caught it.
         _log.warning(
-            "track: %d calendar entries of ours carry the same invite id (%s) -- refusing to "
+            "track: %d calendar entries of ours (%s) carry the same invite id -- refusing to "
             "guess which one the reschedule applies to. Delete the stale entries and the next "
             "run will reconcile it.", len(mine), ", ".join(sorted(
                 str(ev.get("id")) for ev in mine)))
@@ -535,7 +565,7 @@ def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
                 client.update_event(ours["id"], _event_body(cfg, lead_slug, ics))
             # The id is known here whether or not we wrote -- it is the entry we FOUND -- so a
             # dry run can still name what it would have touched.
-            _warn_if_floating(cfg, ics, "updated", ours.get("id"))
+            _warn_if_floating(cfg, ics, "updated", lead_slug, ours.get("id"), dry_run)
             return "updated"
         return "present"
     if _foreign_at_start(events, cfg, ics):
@@ -553,5 +583,5 @@ def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
     # that exists for an entry we just created, and the warning below needs one to be
     # actionable. None on a dry run, where nothing was written and there is nothing to verify.
     new_id = client.insert_event(_event_body(cfg, lead_slug, ics)) if not dry_run else None
-    _warn_if_floating(cfg, ics, "created", new_id)
+    _warn_if_floating(cfg, ics, "created", lead_slug, new_id, dry_run)
     return "created"
