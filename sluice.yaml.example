@@ -242,7 +242,8 @@ track:
   # row. It bounds each calendar read separately, and sluice makes two of them per
   # invite it cannot immediately place: the window around the invite's start, and a
   # lookup by sluice's own tag that carries no window at all (the second is what
-  # finds your event after a reschedule longer than calendar_lookahead_days). Only
+  # finds your event after a reschedule longer than calendar_lookahead_days, for
+  # any invite carrying a UID -- one without cannot be recognised at all). Only
   # the first grows with calendar_lookahead_days -- that window is twice that many
   # days with recurring events expanded -- so a bigger lookahead still wants a
   # bigger ceiling.

@@ -216,6 +216,24 @@ def test_a_TRUNCATED_tag_query_that_found_nothing_refuses_to_insert():
     assert not d.deleted
 
 
+def test_a_TRUNCATED_tag_query_that_DID_find_something_still_refuses_to_claim_a_cancel():
+    """Deleting what you can see is not the same as removing everything.
+
+    The other truncation tests set an empty calendar, so `mine` is empty and the guard fires
+    for a different reason entirely. This is the shape none of them reach: the tag query was
+    short AND returned a match. We delete what we found -- that work is real and worth doing --
+    but another entry under this UID may be off-page, so `cancelled` would be exactly the
+    positive claim of complete removal that this branch refuses to make on partial evidence.
+
+    Note the flag that cannot express this: `truncated` is computed as
+    `not mine and tag_unsettled`, deliberately False here BECAUSE something was found, and the
+    `if mine:` branch returns before it is read at all."""
+    c = FakeGoogleClient(events=[_ours()], tag_truncated=True)
+    assert sync_event(c, TrackConfig(), lead_slug="example-lead",
+                      ics=_ics(cancelled=True)) == "unresolved"
+    assert c.deleted == ["ev1"], "the entry we COULD see must still be removed"
+
+
 def test_a_CLEAN_tag_query_does_not_clear_a_SHORT_window():
     """`truncated` is a one-way ratchet, and this is the test that keeps it one.
 
@@ -387,12 +405,20 @@ def test_a_uid_too_long_for_google_still_round_trips():
     stored = first.inserted[0]["extendedProperties"]["private"][_UID_KEY]
     assert len(stored) == _UID_VALUE_MAX, "we must not hand Google more than it will keep"
 
-    echoed = {"id": "ev1", "start": {"dateTime": "2026-10-01T10:00:00+00:00"},
+    # The echo goes OUT OF WINDOW, at the old time. Placed at the new start it would be found
+    # by the window scan and the tag query would never run -- so the test would prove the write
+    # side agrees with the window read and say nothing about the query, which is the half that
+    # matters here. Measured: with the echo in-window, dropping `_uid_tag` from the QUERY alone
+    # left the entire suite green.
+    echoed = {"id": "ev1", "start": {"dateTime": _OLD},
               "extendedProperties": {"private": {_UID_KEY: stored}}}
     again = FakeGoogleClient(events=[echoed])
     assert sync_event(again, TrackConfig(), lead_slug="example-lead",
-                      ics=_ics(uid=long_uid)) == "present"
+                      ics=_ics(uid=long_uid)) == "updated"
     assert not again.inserted, "a second run duplicated the entry it had just booked"
+    assert again.tag_queries == [(_UID_KEY, stored)], (
+        "the query must ask for the value Google actually stored, not the full UID -- "
+        f"asked for {again.tag_queries}")
 
 
 def test_the_tag_KEY_fits_inside_googles_own_limit():

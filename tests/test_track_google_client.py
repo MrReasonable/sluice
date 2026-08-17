@@ -113,20 +113,28 @@ def test_fake_satisfies_interface():
     f.insert_event({"summary": "x"}); assert f.inserted
 
 
-def _full_surface_fakes():
-    """The fakes that claim to mirror the WHOLE client, by their own docstrings.
+# The fakes that claim to mirror the WHOLE client, by their own docstrings, as
+# (module, attribute) rather than as imported classes.
+#
+# Deliberately not every fake in the suite: several are honestly partial (the calendar-only
+# ones in `test_track_truncated_window.py` implement no Gmail half and say so). Pinning those
+# would force stubs nobody calls, which is how a conformance test gets weakened instead of
+# obeyed.
+#
+# Strings, resolved inside the test, because a decorator argument is evaluated at COLLECTION
+# time: importing two sibling test modules there turns any error in either into a collection
+# error for this whole file rather than one failing test, and it creates an import edge that a
+# future import back this way would close into a cycle.
+_FULL_SURFACE_FAKES = [
+    (__name__, "FakeGoogleClient"),
+    ("tests.harness.google", "FakeGoogleClient"),
+    ("tests.test_app_operations", "_FakeGoogle"),
+]
 
-    Deliberately not every fake in the suite: several are honestly partial (the calendar-only
-    ones in `test_track_truncated_window.py` implement no Gmail half and say so). Pinning
-    those would force stubs nobody calls, which is how a conformance test starts being
-    weakened instead of obeyed."""
-    from tests.harness.google import FakeGoogleClient as HarnessFake
-    from tests.test_app_operations import _FakeGoogle
-    return [FakeGoogleClient, HarnessFake, _FakeGoogle]
 
-
-@pytest.mark.parametrize("fake", _full_surface_fakes(), ids=lambda f: f.__module__)
-def test_a_full_surface_fake_implements_every_client_method(fake):
+@pytest.mark.parametrize("module_name,class_name", _FULL_SURFACE_FAKES,
+                         ids=[m for m, _ in _FULL_SURFACE_FAKES])
+def test_a_full_surface_fake_implements_every_client_method(module_name, class_name):
     """Derived from `RealGoogleClient`, never re-listed.
 
     #146 added one method and FOUR fakes had to be hand-edited. That is the argument for this
@@ -137,11 +145,14 @@ def test_a_full_surface_fake_implements_every_client_method(fake):
     A subset check, not equality: a fake carrying extra recording helpers (`inserted`,
     `tag_queries`) is doing its job, and `RealGoogleClient` gaining a method it does not
     implement is the only direction that is a defect."""
+    import importlib
+
+    fake = getattr(importlib.import_module(module_name), class_name)
     required = {n for n in vars(gc.RealGoogleClient)
                 if not n.startswith("_") and callable(getattr(gc.RealGoogleClient, n))}
     assert required, "derived nothing from RealGoogleClient -- the sweep would certify anything"
     missing = sorted(n for n in required if not callable(getattr(fake, n, None)))
-    assert not missing, f"{fake.__module__}.{fake.__name__} is missing {missing}"
+    assert not missing, f"{module_name}.{class_name} is missing {missing}"
 
 
 class _Exec:
