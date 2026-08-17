@@ -494,6 +494,7 @@ _DEADLETTER_READERS = {
     "clear_lead": lambda db: db.clear_lead("x"),
     "clear_id": lambda db: db.clear_id("x"),
     "check_reachable": lambda db: db.check_reachable(),
+    "rename_lead": lambda db: db.rename_lead("x", "y"),
 }
 
 
@@ -589,6 +590,7 @@ _MISSING_STORE_RESULT = {
     "clear_lead": 0,
     "clear_id": 0,
     "check_reachable": None,
+    "rename_lead": 0,
 }
 
 

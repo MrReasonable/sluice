@@ -285,6 +285,29 @@ class DeadLetterDb:
         finally:
             db.close()
 
+    def rename_lead(self, old_slug: str, new_slug: str) -> int:
+        """Re-file every open row from `old_slug` to `new_slug`. Returns the number of rows moved.
+
+        Unlike clear_lead's status-only split, this migrates EVERY row kind -- a rename changes
+        the lead's IDENTITY, it does not resolve anything a dead-letter row is proposing. A
+        `calendar` row saying "remove this from your calendar by hand" is still just as much this
+        lead's row after the rename as before it, and dropping it here would be the #49 silent-loss
+        class arriving through a new door.
+
+        A MISSING store is a no-op returning 0 and creates no file (mirrors clear_lead's rule for
+        a missing store). A corrupt/unreadable/unwritable store RAISES (fail-loud, matching every
+        other writer of this table)."""
+        if _absent(self.path):
+            return 0
+        db = self._open()
+        try:
+            cur = db.execute(
+                "UPDATE track_deadletter SET lead = ? WHERE lead = ?", (new_slug, old_slug))
+            db.commit()
+            return cur.rowcount
+        finally:
+            db.close()
+
     def clear_id(self, message_id: str) -> int:
         if _absent(self.path):
             return 0
