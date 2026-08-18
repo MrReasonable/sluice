@@ -671,12 +671,14 @@ def test_reeds_dominance_ratio_is_measured_on_the_RETURNED_rows_not_every_matche
     text = (_SOURCES_DIR / "reed.py").read_text(encoding="utf-8")
     slice_index = text.find(".slice(0,20)")
     assert slice_index != -1, "reed.py no longer slices its rows -- sweep is stale"
-    # Every domain check against `.length / 2` must appear AFTER a `.slice(0,20)` in the
-    # source -- computing it before means it ran against the pre-slice population.
+    # EVERY domain check against `.length / 2` must appear AFTER a `.slice(0,20)` in the
+    # source -- computing one before means it ran against the pre-slice population. Checked
+    # over every match, not just the first, so a future SECOND comparison introduced ahead
+    # of the slice can't hide behind an already-correct later one.
     dominance_gate = re.compile(r"\w+\s*>\s*\w+\.length\s*/\s*2")
-    match = dominance_gate.search(text)
-    assert match, "no dominance comparison found"
-    assert match.start() > slice_index, (
+    matches = list(dominance_gate.finditer(text))
+    assert matches, "no dominance comparison found"
+    assert all(m.start() > slice_index for m in matches), (
         "the dominance ratio is computed BEFORE the rows are sliced to the returned "
         "20 -- it is measuring a population the caller never actually sees"
     )
