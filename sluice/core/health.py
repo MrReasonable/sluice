@@ -247,6 +247,12 @@ def detect_drift(source_id: str, count: int, signals: dict | None, baseline: flo
     # 200-row run report drift and fire a notification off one search's stale signal.
     if reason in ("redirect", "blocked"):
         return reason
+    # Direct producer evidence outranks an inferred rate collapse (#156): a row the
+    # extractor's own fallback stamped IS the explanation, not a hint toward one -- see
+    # `_first_degraded` in `ingest/base.py`. Checked ABOVE `drop` for that reason: when a
+    # count collapse and a stamped fallback coincide, the fallback names the actionable cause.
+    if signals.get("degraded"):
+        return "fallback"
     if baseline and count < 0.4 * baseline:
         return "drop"
     return None

@@ -99,6 +99,29 @@ def test_health_hint_reports_count_and_hosts():
     assert hint["count"] == 1
     assert hint["landed_host"] == "x.com"
     assert hint["requested_host"] == "x.com"
+    assert "degraded" not in hint, "nothing stamped a row -- there is nothing to promote"
+
+
+def test_health_hint_promotes_a_degraded_row_marker_from_a_browserlist_source():
+    # #156: a row the extractor's own fallback stamped is direct evidence of degradation,
+    # promoted so `detect_drift` can report `fallback` instead of a silently healthy count.
+    src = _demo_browser()
+    raw = {"result": [{"title": "A", "link": "u", "degraded": "anchor-fallback"}]}
+    assert src.health_hint(raw)["degraded"] == "anchor-fallback"
+
+
+def test_health_hint_promotes_the_FIRST_degraded_marker_only():
+    src = _demo_browser()
+    raw = {"result": [{"title": "A", "link": "u1", "degraded": "anchor-fallback"},
+                      {"title": "B", "link": "u2", "degraded": "link-fallback"}]}
+    assert src.health_hint(raw)["degraded"] == "anchor-fallback"
+
+
+def test_health_hint_promotes_a_degraded_row_marker_from_a_carousel_source():
+    src = CarouselSource(id="wttj", read_js="R", advance_selector="[n]",
+                         searches_spec=[("Otta", "http://o")])
+    raw = {"jobs": [{"title": "A", "link": "u", "degraded": "anchor-fallback"}]}
+    assert src.health_hint(raw)["degraded"] == "anchor-fallback"
 
 
 def test_browserlist_fetch_drives_camofox_with_fake():
