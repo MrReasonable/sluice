@@ -117,7 +117,7 @@ def test_health_hint_paths_carry_no_query_string():
     # false positives were measured against it (an ordinary `?q=account+manager` search;
     # a healthy redirect merely gaining `session_id=`). This is the producer half of that
     # decision: `urlparse(...).path` already excludes the query, so a query token can never
-    # reach `_login_wall` in the real pipeline, not merely "chosen not to match".
+    # reach `login_wall` in the real pipeline, not merely "chosen not to match".
     src = _demo_browser()
     raw = {"result": [],
            "landed": "https://example.invalid/jobs?q=account+manager&session_id=abc123",
@@ -143,14 +143,14 @@ def test_health_hint_promotes_the_FIRST_degraded_marker_only():
 
 def test_health_hint_promotes_a_degraded_row_marker_from_a_carousel_source():
     src = CarouselSource(id="wttj", read_js="R", advance_selector="[n]",
-                         searches_spec=[("Otta", "http://o")])
+                         searches_spec=[("Example Search", "http://o")])
     raw = {"jobs": [{"title": "A", "link": "u", "degraded": "anchor-fallback"}]}
     assert src.health_hint(raw)["degraded"] == "anchor-fallback"
 
 
 def test_carousel_health_hint_reports_paths_too():
     src = CarouselSource(id="wttj", read_js="R", advance_selector="[n]",
-                         searches_spec=[("Otta", "http://o")])
+                         searches_spec=[("Example Search", "http://o")])
     raw = {"jobs": [], "landed": "https://example.invalid/login",
            "requested": "https://example.invalid/jobs"}
     hint = src.health_hint(raw)
