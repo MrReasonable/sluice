@@ -226,9 +226,10 @@ content-inspecting reasons beyond the original `zero`/`drop`/`redirect`/`blocked
 `ingest/base.py`'s `_first_degraded`, checked on raw rows so it survives even a row `parse` later
 drops), `login` (a landed URL path segment matching a small vocabulary the requested path did not
 ask for — segment-**prefix** matching with a non-alphanumeric boundary, never exact-segment or
-substring: measured false positives on both), and `blank` (a company/link completeness collapse on
-a search's **parsed** leads, never the raw payload — naukrigulf's `parse` recovers a company `raw`
-never had, so measuring `raw` reports on an intermediate nobody sees). `blank` needs THREE gates,
+substring: measured false positives on both), and `blank` (a company/link completeness collapse
+aggregated over EVERY search's **parsed** leads this run, not any one search's snapshot, and never
+the raw payload — naukrigulf's `parse` recovers a company `raw` never had, so measuring `raw`
+reports on an intermediate nobody sees). `blank` needs THREE gates,
 each measured against the real fleet rather than assumed: a row floor of 8 (below it a small
 carousel's rate is noise, not signal), a source's own STICKY high-water floored at 0.8 (a separate
 persisted field, not derived from the 30-run rolling window — deriving it would make a permanently
@@ -240,8 +241,14 @@ grant a permanently-paywalled board the same unlimited life `_explained`'s docst
 `_RECOVERABLE` membership grants any reason that fires benignly. `fallback`/`login`/`blank` also
 join a small `BREAKER_REASONS` set in `ingest/engine.py`: a run classified as one of them has its
 leads WITHHELD from the sink for that run (never written to `seen.db`, so the next run retries from
-scratch) rather than merely reported — `drop` and every other reason stay report-only, since a false
-positive there costs a late report, while suppressing a healthy day's leads is the worse failure.
+scratch) rather than merely reported — every other reason stays report-only, EACH for its own
+reason rather than one blanket claim: `auth`/`unreachable`/`zero` are structurally count==0-only
+(nothing to withhold); `blocked`'s one shipped producer always yields zero rows when it fires,
+though the classifier itself permits a future source's `blocked` at count>0; `redirect`
+structurally CAN carry a positive count and is left out anyway because withholding on it is a
+separate scope decision, not a side effect of this feature; `drop` is the lowest-confidence
+signal here, so a false positive there costs a late report, while suppressing a healthy day's
+leads is the worse failure.
 
 **`cli.py` imports the heavy modules inside command functions, not at module scope.** That is
 deliberate: it keeps offline commands (and their tests) from ever touching Camofox, the vault, or a

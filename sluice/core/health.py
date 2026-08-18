@@ -237,19 +237,30 @@ def _login_segment(path: str) -> str | None:
     return None
 
 
-def _login_wall(requested_path: str, landed_path: str) -> bool:
-    """True iff the LANDED path carries a login-vocabulary segment the REQUESTED path did
-    not ask for. No query-string matching: measured false positives on an ordinary
+def login_wall(requested_path: str, landed_path: str) -> bool:
+    """True iff the LANDED path carries a login-vocabulary segment and the REQUESTED path
+    carries NONE at all. No query-string matching: measured false positives on an ordinary
     `?q=account+manager` search and on a landed URL merely gaining a `session_id=` param
     on a healthy redirect -- incident 3's evidence (`/login?redirect=%2F`) is fully caught
     by the path alone, so the query string buys nothing and costs those two.
 
-    The "did not ask for" half is the empty-config-abstain case: a source whose configured
-    `sources.<id>.searches` legitimately points at a login-shaped path (the same word
-    matched on both sides) must not report a permanent false positive against its own
-    request."""
-    word = _login_segment(landed_path or "")
-    return word is not None and word != _login_segment(requested_path or "")
+    Compares PRESENCE, not word identity -- `word != _login_segment(requested_path)` was
+    the first version and it was wrong: `_LOGIN_SEGMENTS` has genuinely overlapping
+    entries (`session`/`sessions`), and `_login_segment` returns whichever ONE matches
+    first for each path independently. A requested `/sessions/search` (resolves to the
+    word `"sessions"`) redirecting to a landed `/session/new` (resolves to `"session"`) is
+    two DIFFERENT words for what is plausibly the same login-adjacent area of one site --
+    word-identity comparison would have reported that as a fresh wall. The "did not ask
+    for" half is the empty-config-abstain case: a source whose configured
+    `sources.<id>.searches` legitimately points at ANY login-shaped path must not report a
+    permanent false positive against its own request, regardless of which specific word
+    matched on either side.
+
+    Public (no leading underscore): `ingest/engine.py`'s `_run_source` calls this directly
+    to derive a STICKY per-search conclusion, for the identical reason `EXPLAINING_SIGNALS`
+    exists -- see the call site there."""
+    return (_login_segment(landed_path or "") is not None
+            and _login_segment(requested_path or "") is None)
 
 
 def _explained(signals: dict) -> str | None:
@@ -287,7 +298,7 @@ def _explained(signals: dict) -> str | None:
     # does not defer retirement either, see `_RECOVERABLE` below -- gets first say. A
     # same-host auth wall (incident 3/4: `/jobs?query=...` -> `/login?redirect=%2F`, host
     # unchanged) never reaches the redirect branch above, so ordering costs it nothing.
-    if _login_wall(signals.get("requested_path", ""), signals.get("landed_path", "")):
+    if login_wall(signals.get("requested_path", ""), signals.get("landed_path", "")):
         return "login"
     if signals.get("blocked"):
         return "blocked"
@@ -374,7 +385,20 @@ def _blank_reason(signals: dict, rate_highs: dict | None, rate_priors: dict | No
 
     `rate_highs`/`rate_priors` are read by the CALLER before `record()` -- see
     `HealthStore.rate_highs`/`prior_rate` -- so this function stays pure, matching
-    `baseline`'s existing calling convention."""
+    `baseline`'s existing calling convention.
+
+    Both the current run's rate AND the prior run's are compared against `rate_highs`,
+    which is THIS run's pre-record high-water, not the prior run's own (equal or lower)
+    high-water at the time IT was recorded. Deliberate, not an oversight: the two-run
+    streak needs ONE shared reference point, and re-using the single most-informed,
+    most-current high-water for both halves is more consistent than mixing threshold
+    vintages within one streak check. Since a high-water only ever climbs, re-judging the
+    prior run against today's (equal-or-higher) bar can only make the streak MORE likely
+    to be recognised, never less -- a prior run that looked borderline-healthy against its
+    own smaller high-water at the time can retroactively read as "collapsed" once the
+    source has since proven it can do better. That is the intended shape, not a leniency
+    bug: the comparison is against the source's OWN best-ever performance, and a run that
+    falls short of it twice in a row is exactly what this gate exists to catch."""
     for key in RATE_SIGNALS:
         hw = (rate_highs or {}).get(key)
         rate = signals.get(key)

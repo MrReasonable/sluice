@@ -441,3 +441,39 @@ def test_rates_are_aggregated_over_every_search_not_the_last_one(tmp_path):
     assert signals["company_rate"] == 0.0, (
         "the aggregate rate over all 10 parsed leads should have been computed"
     )
+
+
+def test_a_login_wall_on_an_earlier_search_survives_a_clean_later_one(tmp_path):
+    # Found by review (the same multi-search stickiness gap as `degraded`/rates above,
+    # but for `login`, which had never been given the same treatment): `requested_path`/
+    # `landed_path` were last-search-wins in `signals`, so a source whose FIRST search
+    # landed on a login wall and whose LAST search came back clean reported no `login` at
+    # all -- the run's real drift silently overwritten by an unrelated later search.
+    class _TwoSearchSource(FakeSource):
+        def searches(self):
+            return [Search("first", "http://x/jobs"), Search("second", "http://x/jobs")]
+
+        def fetch(self, ctx, search):
+            landed = "http://x/login" if search.label == "first" else "http://x/jobs"
+            return {"result": [{"title": f"T-{search.label}", "link": f"http://x/{search.label}"}],
+                   "landed": landed, "requested": search.url}
+
+        def health_hint(self, raw):
+            # Mirrors the real `_path()` helper in `ingest/base.py` -- the base
+            # `FakeSource.health_hint` this class inherits from reports only hosts, never
+            # paths, so a test relying on it alone would prove nothing about the real
+            # producer's behaviour.
+            from urllib.parse import urlparse
+
+            hint = super().health_hint(raw)
+            hint["landed_path"] = urlparse(raw.get("landed", "")).path
+            hint["requested_path"] = urlparse(raw.get("requested", "")).path
+            return hint
+
+    src = _TwoSearchSource("demo", [])
+    report = run([src], _ctx(), _FakeSink(), _FakeSeen(), _health(tmp_path), retries=1)
+    result = report.sources[0]
+    assert result.drift == "login"
+    # The breaker follows the (now-correct) classification: both searches' leads were
+    # withheld, not just the one that actually landed on the wall.
+    assert result.withheld == 2

@@ -179,31 +179,46 @@ whichever neighbour it was written next to:
    a row count alone cannot tell that apart from a genuinely quiet search
    (#156). `HealthStore.record` appends `{count, signals}` per run (a
    30-run rolling window, `_KEEP`), and `detect_drift` classifies the
-   CURRENT run against that history. The vocabulary, in the precedence
-   `detect_drift` applies (checked in this order; the first match wins):
-   `unreachable` (the browser never gave us a tab or an evaluate failed --
-   checked FIRST because it explains every other signal's absence, e.g. a
-   Camofox outage), `redirect` (the landed HOST differs from the requested
-   one, apex-`www` exempted via `_dewww`), `login` (the landed URL's PATH
-   carries a segment from a small vocabulary -- `login`, `authwall`,
-   `session`, `challenge`, ... -- that the requested path did not itself
-   ask for; segment-**prefix** matching with a non-alphanumeric boundary,
-   not exact-segment (misses `/authwall`) or substring (matches
-   `/author/...`)), `blocked` (a source-specific rate-limit signal, e.g.
-   `workinstartups`'s HEAD-precheck), `auth` (an opt-in `auth_probe_js`
-   found the page's LOGGED-OUT markup -- only `linkedin` ships one today),
-   `fallback` (a row the extractor's own degraded path stamped --
-   `ingest/base.py`'s `_first_degraded` promotes the marker from RAW rows,
-   so it survives even a row `parse` later drops on a blank title),
-   `blank` (a company/link completeness collapse measured on a search's
-   **parsed** leads -- never the raw payload, since a source's `parse` can
-   repair a field the raw row lacks, e.g. `naukrigulf` recovering a
-   company mashed into the title via the listing URL's own seam), `drop`
-   (the bare count falls below 40% of the 7-run median baseline), `zero`
-   (no explanation and no rows). `redirect`/`login`/`blocked` survive
-   alongside a positive count (a login wall or a rate-limit page can still
-   return rows); `auth`/`unreachable` do not, to avoid firing drift off
-   one search's stale signal in a multi-search source.
+   CURRENT run against that history in TWO regimes, not one flat ladder --
+   which reasons are even reachable depends on whether the run's count is
+   zero or positive, and getting this flattened into a single ordered list
+   would wrongly suggest `auth` outranks `fallback`, when in fact `auth`
+   never competes with it at all.
+
+   First, `_explained` computes at most ONE candidate reason, in this
+   precedence (first match wins): `unreachable` (the browser never gave us
+   a tab or a `cam.evaluate()` call failed -- checked FIRST because it
+   explains every other signal's absence, e.g. a Camofox outage),
+   `redirect` (the landed HOST differs from the requested one, apex-`www`
+   exempted via `_dewww`),
+   `login` (the landed URL's PATH carries a segment from a small
+   vocabulary -- `login`, `authwall`, `session`, `challenge`, ... -- that
+   the requested path did not itself ask for; segment-**prefix** matching
+   with a non-alphanumeric boundary, not exact-segment (misses
+   `/authwall`) or substring (matches `/author/...`)), `blocked` (a
+   source-specific rate-limit signal, e.g. `workinstartups`'s
+   HEAD-precheck), `auth` (an opt-in `auth_probe_js` found the page's
+   LOGGED-OUT markup -- only `linkedin` ships one today), or `None`.
+
+   `detect_drift` then branches on count. At `count == 0`, `_explained`'s
+   candidate is returned as-is (any of the five above), or `zero` if it
+   found none -- this is the ONLY regime `auth`/`unreachable` can ever
+   surface in. At `count > 0`, only `redirect`/`login`/`blocked` survive
+   from `_explained` (a login wall or a rate-limit page can still return
+   rows); `auth`/`unreachable` are discarded even if `_explained` computed
+   them, to avoid firing drift off one search's stale signal in a
+   multi-search source. Past that point sit two count>0-only, content-
+   inspecting reasons NO count==0 run can ever reach: `fallback` (a row
+   the extractor's own degraded path stamped -- `ingest/base.py`'s
+   `_first_degraded` promotes the marker from RAW rows, so it survives
+   even a row `parse` later drops on a blank title) then `blank` (a
+   company/link completeness collapse measured over EVERY search's
+   **parsed** leads this run, aggregated rather than taken from any one
+   search's snapshot -- never the raw payload, since a source's `parse`
+   can repair a field the raw row lacks, e.g. `naukrigulf` recovering a
+   company mashed into the title via the listing URL's own seam). Last, `drop` (the bare
+   count falls below 40% of the 7-run median baseline), then a healthy
+   `None`.
 
    `blank` needs history a bare `{count, signals}` record cannot supply on
    its own: `HealthStore` also persists a STICKY per-signal high-water

@@ -12,6 +12,7 @@ from sluice.core.health import (
     EXPLAINING_SIGNALS as _EXPLAINING_SIGNALS,
     RATE_SIGNALS as _RATE_SIGNALS,
     detect_drift,
+    login_wall,
 )
 from sluice.core.log import get_logger
 from sluice.core.relevance import is_relevant
@@ -28,12 +29,18 @@ _RATE_ROW_FLOOR = 8
 
 
 def _lead_rates(leads) -> dict:
-    """company_rate/link_rate over a search's PARSED leads, not raw extractor rows -- what
-    actually reaches the vault, which is what incident 1's harm was actually made of.
-    Measured (#156): naukrigulf's raw company_rate is 0.385 (a URL-seam repair inside
-    `parse` recovers most of it), which alone gives healthy sources a 62% chance of a false
-    `blank` alarm per 30-run window; the same source measured on its PARSED leads is 0.962,
-    giving 0%.
+    """company_rate/link_rate over PARSED leads, not raw extractor rows -- what actually
+    reaches the vault, which is what incident 1's harm was actually made of. Measured
+    (#156): naukrigulf's raw company_rate is 0.385 (a URL-seam repair inside `parse`
+    recovers most of it), which alone gives healthy sources a 62% chance of a false `blank`
+    alarm per 30-run window; the same source measured on its PARSED leads is 0.962, giving
+    0%.
+
+    `_run_source` calls this ONCE per run, over every search's leads combined -- never
+    per search. A per-search call would reintroduce the identical "last search wins" hole
+    `EXPLAINING_SIGNALS`'s stickiness already exists to close for `fetch_error`/`blocked`/
+    `auth`: a source whose first search fell back or measured low and whose last search
+    came back clean would silently lose the signal for the whole run.
 
     Returns {} below `_RATE_ROW_FLOOR` -- the row-floor gate, applied here rather than in
     `detect_drift`, because "no rate was computed" and "a rate of exactly 0.0" must stay
@@ -150,6 +157,8 @@ def _run_source(source, ctx, seen_keys, fresh, result, fetch_timeout, retries):
     explained = {}    # explanation keys seen on ANY search; see the loop below
     degraded = None   # the first `degraded` marker seen on ANY search; sticky, like `explained`
     run_leads = []    # every PARSED lead from every search this run; see _lead_rates below
+    login_paths = None  # the first search's OWN (requested_path, landed_path) pair that
+                        # `login_wall` confirmed; sticky, frozen as ONE atomic pair -- see below
     for search in searches:
         try:
             raw = run_with_timeout(
@@ -177,12 +186,25 @@ def _run_source(source, ctx, seen_keys, fresh, result, fetch_timeout, retries):
         # `explained.setdefault` below; a search that never degrades never touches it.
         if degraded is None and hint.get("degraded"):
             degraded = hint["degraded"]
-        # An EXPLANATION is sticky across searches; counts, hosts and paths are not. Hosts and
-        # paths are excluded deliberately rather than overlooked: each is a matched pair, and
-        # with the `{**explained, **signals}` merge below, persisting either independently
-        # could pair one search's requested half with another's landed half and invent a
-        # redirect or a login wall that never happened. See `EXPLAINING_SIGNALS` in
-        # `core/health.py` for the full asymmetry.
+        # A login wall is sticky too (#156 review follow-up), for the identical reason
+        # `degraded` is: without it, a source whose FIRST search lands on a login wall and
+        # whose LAST search is clean reports no `login` at all for the run. Unlike hosts
+        # (still last-search-wins, see the comment below), this freezes the WHOLE pair from
+        # the search that actually confirmed it -- `login_wall` is called here, once, on
+        # that search's OWN atomic (requested_path, landed_path), so the frozen pair can
+        # never mix halves from two different searches the way persisting the raw fields
+        # independently would.
+        if login_paths is None and login_wall(hint.get("requested_path", ""),
+                                              hint.get("landed_path", "")):
+            login_paths = (hint.get("requested_path", ""), hint.get("landed_path", ""))
+        # An EXPLANATION is sticky across searches; counts and hosts are not. Hosts stay
+        # last-search-wins deliberately rather than by oversight: they are a matched pair,
+        # and with the `{**explained, **signals}` merge below, persisting either host
+        # independently could pair one search's requested half with another's landed half
+        # and invent a redirect that never happened. See `EXPLAINING_SIGNALS` in
+        # `core/health.py` for the full asymmetry. `redirect` therefore keeps the same
+        # multi-search blind spot `login` had until this fix -- accepted for `redirect`
+        # since it predates #156 and widening it is a separate scope decision.
         #
         # `signals` is reassigned per search, so without this a source whose first search came
         # back logged-out and whose last returned an honest zero reports a bare `zero` -- the
@@ -211,6 +233,13 @@ def _run_source(source, ctx, seen_keys, fresh, result, fetch_timeout, retries):
     final = {**explained, **signals, **_lead_rates(run_leads)}
     if degraded:
         final["degraded"] = degraded
+    # Overwrites whatever the FINAL search's own (possibly clean) path pair left in
+    # `signals` -- the frozen pair from the search that actually confirmed a login wall
+    # wins, matching `degraded`'s override just above. `_explained` re-derives `login`
+    # from these two keys unchanged, so nothing downstream needs to know this pair may
+    # not be the last search's own.
+    if login_paths is not None:
+        final["requested_path"], final["landed_path"] = login_paths
     return total, final
 
 

@@ -117,7 +117,11 @@ zero-row check cannot see. This is usually one of:
   disable ID`).
 
 `drift=login` also withholds that run's leads, for the same reason and with the same
-automatic recovery as `blank`/`fallback` above.
+automatic recovery as `blank`/`fallback` above — **provided the source is still enabled**.
+That recovery is about `seen.db` only (a withheld lead is never recorded as seen, so any
+future run re-fetches it), not about the source running at all: a source you disabled by
+hand (`ingest disable ID`, above) stays disabled until you `ingest enable` it again, and
+re-authenticating alone will not bring it back.
 
 ## A backend is `dead` or `degraded` in `doctor`'s output
 
