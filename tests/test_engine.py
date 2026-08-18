@@ -239,7 +239,7 @@ def test_blank_measures_leads_parse_repairs_not_the_raw_row():
         def parse(self, raw, search):
             return [
                 Lead(source=self.id, search=search.label, title=r["title"],
-                    company="Recovered Co", url=r.get("link", ""))
+                    company="Acme", url=r.get("link", ""))
                 for r in raw["result"]
             ]
 
@@ -344,7 +344,12 @@ def test_a_withheld_leads_key_never_enters_seen_db(tmp_path):
     vault = Vault(str(tmp_path / "vault"))
     seen = SeenDb(str(tmp_path / "seen.db"))
     sink = VaultSink(vault, seen, today=lambda: "2026-07-07")
-    run([src], _ctx(), sink, seen, _health(tmp_path), retries=1)
+    report = run([src], _ctx(), sink, seen, _health(tmp_path), retries=1)
+
+    # Non-vacuity: prove a lead was actually FOUND and withheld, not that nothing ever
+    # existed to write in the first place -- the latter would satisfy every assertion
+    # below even with the breaker deleted outright.
+    assert report.sources[0].fresh == 1 and report.sources[0].withheld == 1
 
     leads_dir = tmp_path / "vault" / "Job Applications" / "Job Leads"
     # `not leads_dir.exists()` is itself the strongest possible witness here: nothing --
@@ -354,3 +359,85 @@ def test_a_withheld_leads_key_never_enters_seen_db(tmp_path):
         "the withheld lead was written to the vault anyway"
     )
     assert seen.load() == set(), "the withheld lead's key reached seen.db anyway"
+
+
+def test_a_withheld_lead_does_not_suppress_a_healthy_siblings_identical_lead(tmp_path):
+    # A real cross-source silent-loss shape: the SAME job posted on two boards. Source A is
+    # broken (fallback) and would have withheld its own copy anyway -- but before this fix,
+    # A's copy still claimed the shared dedup key in the RUN-LOCAL seen_keys set while being
+    # parsed (before A's own drift was even known), so B's identical, perfectly healthy
+    # lead was silently dropped as "already seen this run" and reached nowhere -- exactly
+    # the silent-lead-loss failure #156 exists to close, reintroduced one layer over.
+    a = _SignalingSource("a", [{"title": "Same Job", "link": "http://shared/1", "company": ""}],
+                        {"degraded": "anchor-fallback"})
+    b = FakeSource("b", [{"title": "Same Job", "link": "http://shared/1", "company": "Acme"}])
+    sink = _FakeSink()
+    report = run([a, b], _ctx(), sink, _FakeSeen(), _health(tmp_path), retries=1)
+    assert report.sources[0].drift == "fallback" and report.sources[0].withheld == 1
+    assert report.sources[1].drift is None and report.sources[1].withheld == 0
+    assert [lead.source for lead in sink.leads] == ["b"], (
+        "source b's healthy, identical-url lead was suppressed by a's withheld copy"
+    )
+
+
+def test_a_degraded_marker_on_an_earlier_search_survives_a_clean_later_one(tmp_path):
+    # The multi-search stickiness gap: `signals` is reassigned per search, so without
+    # persisting `degraded` the same way `explained` already is, a source whose FIRST
+    # search fell back and whose LAST search came back clean would report no `fallback` at
+    # all for the run -- the marker silently overwritten. Shipped sources use one search
+    # each today, but `sources.<id>.searches` is the documented way to configure a real
+    # list, so this is the exact setup the docs steer an operator toward.
+    class _TwoSearchSource(FakeSource):
+        def searches(self):
+            return [Search("first", "http://x/1"), Search("second", "http://x/2")]
+
+        def fetch(self, ctx, search):
+            if search.label == "first":
+                return {"result": [{"title": "T1", "link": "http://x/1a", "degraded": "anchor-fallback"}],
+                       "landed": "http://x", "requested": "http://x"}
+            return {"result": [{"title": "T2", "link": "http://x/2a"}],
+                   "landed": "http://x", "requested": "http://x"}
+
+        def health_hint(self, raw):
+            # Mirrors `BrowserListSource.health_hint`'s real `_first_degraded` promotion --
+            # the base `FakeSource.health_hint` this class inherits from doesn't look at
+            # rows at all, so a test relying on it alone would prove nothing about the real
+            # producer's behaviour.
+            hint = super().health_hint(raw)
+            for row in raw.get("result", []):
+                if row.get("degraded"):
+                    hint["degraded"] = row["degraded"]
+                    break
+            return hint
+
+    src = _TwoSearchSource("demo", [])
+    report = run([src], _ctx(), _FakeSink(), _FakeSeen(), _health(tmp_path), retries=1)
+    assert report.sources[0].drift == "fallback"
+
+
+def test_rates_are_aggregated_over_every_search_not_the_last_one(tmp_path):
+    # The row-floor's OTHER multi-search hole: a 2-search source returning 5 leads per
+    # search never clears `_RATE_ROW_FLOOR` (8) on EITHER search alone, even though the
+    # run's real total (10) comfortably clears it in aggregate. Per-search computation
+    # would silently under-cover exactly the multi-search setup the docs steer people
+    # toward; this proves the aggregate, not the last search's snapshot, is what feeds
+    # `blank`.
+    class _TwoSearchSource(FakeSource):
+        def searches(self):
+            return [Search("first", "http://x/1"), Search("second", "http://x/2")]
+
+        def fetch(self, ctx, search):
+            n = 0 if search.label == "first" else 5
+            rows = [{"title": f"T{n + i}", "link": f"http://x/{n + i}", "company": ""}
+                    for i in range(5)]
+            return {"result": rows, "landed": "http://x", "requested": "http://x"}
+
+    src = _TwoSearchSource("demo", [])
+    ctx = _ctx()
+    from sluice.ingest.engine import _run_source
+
+    fresh, result = [], type("R", (), {"fetched": 0, "status": "ok", "error": None})()
+    _, signals = _run_source(src, ctx, set(), fresh, result, fetch_timeout=5, retries=1)
+    assert signals["company_rate"] == 0.0, (
+        "the aggregate rate over all 10 parsed leads should have been computed"
+    )

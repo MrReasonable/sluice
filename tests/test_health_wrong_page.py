@@ -220,9 +220,16 @@ def test_the_paths_are_NOT_persisted_across_searches():
 def test_no_shipped_source_search_url_already_matches_the_vocabulary():
     # If this ever fails, the guard below ("absent from requested") is finally load-bearing
     # for a real source rather than pure forward-insurance -- worth knowing, not a bug.
+    #
+    # Filtered to `sluice.` classes, same as `_every_registered_source()` in
+    # test_source_auth_probe.py and for the identical reason: the registry is a global
+    # tests register into without cleanup, and `tests/test_registry.py` leaves a `_Dummy`
+    # behind with no `searches()` method at all -- an unfiltered sweep here raises
+    # AttributeError whenever that test happens to run first in the same process.
     from urllib.parse import urlparse
 
     hits = [s.id for s in registry.all_sources()
+            if type(s).__module__.startswith("sluice.")
             for search in s.searches()
             if search.url and _login_segment(urlparse(search.url).path)]
     assert hits == [], f"a shipped source's own search URL already reads as a login path: {hits}"
@@ -475,4 +482,45 @@ def test_reeds_link_only_fallback_also_stamps_a_marker():
     # field rather than the whole row, so it doesn't match the whole-row pattern above and
     # needs its own named witness.
     text = (_SOURCES_DIR / "reed.py").read_text(encoding="utf-8")
-    assert "link-fallback" in text, "reed's unscoped final anchor tier lost its marker"
+    # The STAMP, not a bare substring -- same reasoning as `_DEGRADED_STAMP` above, whose
+    # own bare-substring first version was defeated by an explanatory COMMENT containing
+    # the same word. "link-fallback" is less likely to appear in prose, but there is no
+    # reason to hold this test to a weaker standard than its sibling.
+    assert re.search(r"degraded\s*=\s*['\"]link-fallback['\"]", text), (
+        "reed's unscoped final anchor tier lost its marker"
+    )
+
+
+def test_reeds_link_fallback_marker_requires_the_tier_to_DOMINATE_not_one_row():
+    """A single-field marker on ANY one row promotes to a SOURCE-level `fallback` drift
+    reason (`_first_degraded` in `ingest/base.py`), which `BREAKER_REASONS` withholds
+    every lead from the run for -- so an unconditional per-row stamp meant one odd card
+    (a sponsored listing, an ad slot, genuinely different markup from its neighbours)
+    could silence up to 20 otherwise-healthy reed leads every run, indefinitely, the
+    identical silent-lead-loss shape #156 exists to close, just moved one layer over.
+    Real, found by review, not hypothetical.
+
+    Static, not behavioural (this repo's JS extractors have no offline execution harness
+    -- `job-sluice ingest test-source reed --raw` against a live board is the real
+    verification), but a static shape check still catches the specific regression this
+    fix closes: a stamp that fires per-row rather than only when the fallback tier
+    carried MOST of the page.
+    """
+    text = (_SOURCES_DIR / "reed.py").read_text(encoding="utf-8")
+    # The OLD, buggy shape: stamped unconditionally inside the per-card loop, the moment
+    # the unscoped tier produced a link for THAT card alone.
+    unconditional_per_row = re.compile(
+        r"if\s*\(\s*ln\s*\)\s*degraded\s*=\s*['\"]link-fallback['\"]"
+    )
+    assert not unconditional_per_row.search(text), (
+        "reed regressed to stamping link-fallback on a single row -- "
+        "the dominance gate this test guards was removed"
+    )
+    # The NEW shape: a source-level stamp gated on the fallback tier exceeding half of
+    # the pushed rows. Not pinned to the exact variable name (`fellBack`) or exact
+    # divisor -- pinned to the SHAPE (a count compared against a fraction of r.length),
+    # which is the property that actually matters.
+    dominance_gate = re.compile(r"\w+\s*>\s*r\.length\s*/\s*2")
+    assert dominance_gate.search(text), (
+        "no dominance comparison found -- link-fallback may be stamping unconditionally again"
+    )

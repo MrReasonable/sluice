@@ -16,6 +16,7 @@ import pytest
 
 from sluice import cli
 from sluice.core.config import Config
+from sluice.ingest.engine import SourceResult
 
 
 class _Args:
@@ -45,10 +46,12 @@ class _Report:
 
 
 def _drive_ingest(monkeypatch):
+    # A real SourceResult, not a hand-listed field stub -- the fix-one-instance trap _Args/
+    # _Report's own docstrings warn about: a stub with its own field list goes stale the
+    # moment SourceResult gains one, and did exactly that when `withheld` was added.
     class _Rep(_Report):
         degraded = True
-        sources = [type("S", (), {"source_id": "example-source", "drift": "zero",
-                                  "retired": False, "status": "ok", "withheld": 0})()]
+        sources = [SourceResult(source_id="example-source", drift="zero")]
 
     monkeypatch.setattr("sluice.core.app.Sluice.ingest", lambda self, *a, **k: _Rep())
     monkeypatch.setattr(cli, "_print_report", lambda r: None)

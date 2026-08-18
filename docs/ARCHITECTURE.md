@@ -249,11 +249,18 @@ whichever neighbour it was written next to:
    self-healing discipline `sink.py`'s own `refused`/`skipped`/
    `merged_away_unproven` outcomes already follow, needing no special-case
    recovery path. `redirect`/`blocked`/`auth`/`unreachable`/`zero`/`drop`
-   stay report-only: the first five already gate at `count == 0` in every
-   shipped case (nothing to withhold), and `drop` is the lowest-confidence
-   signal here -- a bare row-count comparison with no content inspection
-   behind it, so suppressing a real day's leads on a false `drop` would be
-   a worse failure than a late report.
+   stay report-only, each for its own reason: `auth`/`unreachable`/`zero`
+   are structurally count==0-only, so there is nothing to withhold;
+   `blocked`'s one shipped producer (`workinstartups.py`'s HEAD-precheck)
+   always returns zero rows when it fires, though the classifier itself
+   permits a future source's `blocked` to carry a positive count;
+   `redirect` genuinely CAN carry a positive count (a cross-host redirect
+   landing on a page that still parses rows) and is left out anyway
+   because it predates this change and withholding on it is a separate
+   scope decision; and `drop` is the lowest-confidence signal here -- a
+   bare row-count comparison with no content inspection behind it, so
+   suppressing a real day's leads on a false `drop` would be a worse
+   failure than a late report.
 2. **triage** (`sluice/triage/`): `classify.py` resolves obvious cases
    deterministically, for free; only kept, ambiguous leads are enriched
    and sent to an LLM judge (`judge.py`, `prompt.py`, over `core.backends`).
