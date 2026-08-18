@@ -41,7 +41,7 @@ Drives a live Camofox session and writes results.
 
 The run report is printed to **stderr**, not stdout — pipe accordingly:
 ```
-  <source_id>      status=<ok|error> fetched=<N> fresh=<N> drift=<drift|->[ withheld=<N>] [ RETIRED]
+  <source_id>      status=<ok|error> fetched=<N> fresh=<N> drift=<drift|->[ withheld=<N>][ health_error=<msg>] [ RETIRED]
 written: N created, N updated[, N merged][, N refused][, N merged-away][, N merged-away (unproven)], N skipped
 ```
 `withheld` appears only when non-zero: `drift` of `fallback`/`blank`/`login` withholds that
@@ -49,6 +49,8 @@ source's leads from the selected sink (`--sink vault` or `--sink json`) for the 
 than writing them (see `docs/ARCHITECTURE.md`'s `BREAKER_REASONS` note) — the leads are
 never recorded as seen, so the next run retries them automatically once the source
 recovers.
+`health_error` appears only when the health pipeline itself failed. `drift` then prints `-`
+because the run could not be classified, and the leads are withheld for that reason too.
 Refuses (exit 1) if the disabled-sources overlay is unreadable, or if the selection resolves
 to zero enabled sources. Otherwise exits 0 even when individual sources errored — check the
 per-source `status=` field for that. Telegram-notifies (if configured) when any source
