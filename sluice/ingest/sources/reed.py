@@ -45,7 +45,7 @@ _JS = r"""
     // -- that is the shape a real selector rot takes (title/company/location keep working;
     // only the LINK cascade's scoped tiers stop matching), distinct from an isolated outlier.
     // Row floor of 8, matching `blank`'s own small-sample discipline in `_lead_rates`
-    // (CodeRabbit, PR #155): without it, a narrow search returning 1-3 rows can trip
+    // (review follow-up): without it, a narrow search returning 1-3 rows can trip
     // `1 > 0.5` on a single odd card and withhold real leads over noise, not a rot.
     if(returned.length >= 8 && returnedFallbacks > returned.length / 2) {
         returned[0].degraded = 'link-fallback';

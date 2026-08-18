@@ -123,8 +123,8 @@ class HealthStore:
         runs = self._data.get(source_id, {}).get("runs", [])
         if not runs:
             return None
-        # Same count>0 discipline `record`'s high-water update applies (CodeRabbit,
-        # PR #155): a zero-yield run carries no rate to have been high OR low, so it
+        # Same count>0 discipline `record`'s high-water update applies (review
+        # follow-up): a zero-yield run carries no rate to have been high OR low, so it
         # cannot supply half of a streak. `_lead_rates`'s own row floor makes a stray
         # rate on a zero-count run unreachable today, but this accessor should not rely
         # on ITS caller's floor to stay correct.

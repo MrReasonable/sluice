@@ -135,7 +135,7 @@ def test_prior_rate_is_none_when_the_prior_run_carried_no_such_signal(tmp_path):
 
 
 def test_prior_rate_ignores_a_zero_count_run_even_with_a_stray_signal(tmp_path):
-    # CodeRabbit, PR #155: `rate_highs`/`record` already apply this count>0 discipline
+    # Review follow-up: `rate_highs`/`record` already apply this count>0 discipline
     # (see `test_rate_high_water_ignores_a_zero_count_run` above), but `prior_rate` read
     # `runs[-1]` unconditionally -- a stray rate key on a zero-count run (should never
     # happen, but health is best-effort) would supply the "prior run was also low" half
