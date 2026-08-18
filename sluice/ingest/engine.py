@@ -23,9 +23,10 @@ class SourceResult:
     status: str = "ok"          # "ok" | "error"
     fetched: int = 0            # rows parsed, before dedup/relevance
     fresh: int = 0              # leads handed to the sink
-    # "zero" | "drop" | "fallback" | "redirect" | "blocked" | "auth" | "unreachable" | None.
-    # Keep in step with core/health.py's `_explained`/`detect_drift` -- this comment is the
-    # only place the vocabulary is enumerated, so a new reason that misses it is invisible.
+    # "zero" | "drop" | "fallback" | "login" | "redirect" | "blocked" | "auth" |
+    # "unreachable" | None. Keep in step with core/health.py's `_explained`/`detect_drift` --
+    # this comment is the only place the vocabulary is enumerated, so a new reason that
+    # misses it is invisible.
     drift: str | None = None
     retired: bool = False
     error: str | None = None
@@ -92,11 +93,12 @@ def _run_source(source, ctx, seen_keys, fresh, result, fetch_timeout, retries):
         hint = source.health_hint(raw)
         total += hint.get("count", 0)
         signals = {k: v for k, v in hint.items() if k != "markers"}
-        # An EXPLANATION is sticky across searches; counts and hosts are not. Hosts are
-        # excluded deliberately rather than overlooked: they are a matched pair, and with the
-        # `{**explained, **signals}` merge below, persisting them independently could pair one
-        # search's requested host with another's landed host and invent a redirect. See
-        # `EXPLAINING_SIGNALS` in `core/health.py` for the full asymmetry.
+        # An EXPLANATION is sticky across searches; counts, hosts and paths are not. Hosts and
+        # paths are excluded deliberately rather than overlooked: each is a matched pair, and
+        # with the `{**explained, **signals}` merge below, persisting either independently
+        # could pair one search's requested half with another's landed half and invent a
+        # redirect or a login wall that never happened. See `EXPLAINING_SIGNALS` in
+        # `core/health.py` for the full asymmetry.
         #
         # `signals` is reassigned per search, so without this a source whose first search came
         # back logged-out and whose last returned an honest zero reports a bare `zero` -- the

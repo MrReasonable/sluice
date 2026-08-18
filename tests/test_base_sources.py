@@ -99,7 +99,31 @@ def test_health_hint_reports_count_and_hosts():
     assert hint["count"] == 1
     assert hint["landed_host"] == "x.com"
     assert hint["requested_host"] == "x.com"
+    assert hint["landed_path"] == "/a"
+    assert hint["requested_path"] == "/s"
     assert "degraded" not in hint, "nothing stamped a row -- there is nothing to promote"
+
+
+def test_health_hint_reports_empty_paths_on_an_empty_url():
+    # Unconditional "", mirroring landed_host/requested_host -- a path is a measurement
+    # that always exists, not an event that "fired".
+    src = _demo_browser()
+    hint = src.health_hint({"result": [], "landed": "", "requested": ""})
+    assert hint["landed_path"] == "" and hint["requested_path"] == ""
+
+
+def test_health_hint_paths_carry_no_query_string():
+    # #156's `login` drift reason deliberately does not match on query tokens -- two real
+    # false positives were measured against it (an ordinary `?q=account+manager` search;
+    # a healthy redirect merely gaining `session_id=`). This is the producer half of that
+    # decision: `urlparse(...).path` already excludes the query, so a query token can never
+    # reach `_login_wall` in the real pipeline, not merely "chosen not to match".
+    src = _demo_browser()
+    raw = {"result": [],
+           "landed": "https://x.com/jobs?q=account+manager&session_id=abc123",
+           "requested": "https://x.com/jobs?q=account+manager"}
+    hint = src.health_hint(raw)
+    assert hint["landed_path"] == "/jobs" and hint["requested_path"] == "/jobs"
 
 
 def test_health_hint_promotes_a_degraded_row_marker_from_a_browserlist_source():
@@ -122,6 +146,14 @@ def test_health_hint_promotes_a_degraded_row_marker_from_a_carousel_source():
                          searches_spec=[("Otta", "http://o")])
     raw = {"jobs": [{"title": "A", "link": "u", "degraded": "anchor-fallback"}]}
     assert src.health_hint(raw)["degraded"] == "anchor-fallback"
+
+
+def test_carousel_health_hint_reports_paths_too():
+    src = CarouselSource(id="wttj", read_js="R", advance_selector="[n]",
+                         searches_spec=[("Otta", "http://o")])
+    raw = {"jobs": [], "landed": "https://x.com/login", "requested": "https://x.com/jobs"}
+    hint = src.health_hint(raw)
+    assert hint["landed_path"] == "/login" and hint["requested_path"] == "/jobs"
 
 
 def test_browserlist_fetch_drives_camofox_with_fake():

@@ -127,12 +127,13 @@ class HealthStore:
 #     visible (otherwise the guard silently disables itself) without deferring retirement,
 #     which would keep a genuinely dead source alive. The reason lives with the producer, in
 #     `ingest/base.py`'s `health_hint`.
-#   - NARROWER: `_explained` derives `redirect` from `requested_host`/`landed_host`, which are
-#     absent here on purpose. They are a MATCHED PAIR describing one search, and the merge is
-#     `{**explained, **signals}` -- so persisting them independently could pair search 1's
-#     requested host with search 3's landed host and report a redirect that never happened.
-#     The cost is that a redirect on an early search does not survive a later clean one; a
-#     phantom redirect on every multi-search source would be worse.
+#   - NARROWER: `_explained` derives `redirect` from `requested_host`/`landed_host`, and (#156)
+#     `login` from `requested_path`/`landed_path` -- both pairs absent here on purpose. Each is
+#     a MATCHED PAIR describing one search, and the merge is `{**explained, **signals}` -- so
+#     persisting either pair independently could pair search 1's requested half with search 3's
+#     landed half and report a redirect or a login wall that never happened. The cost is that a
+#     redirect/login wall on an early search does not survive a later clean one; a phantom one
+#     on every multi-search source would be worse.
 EXPLAINING_SIGNALS = ("fetch_error", "blocked", "auth", "auth_probe_error")
 
 
@@ -146,6 +147,68 @@ def _dewww(host: str) -> str:
     that hop as a "redirect" would report drift on every single run for nine sources that are
     working perfectly."""
     return host[4:] if host.startswith("www.") else host
+
+
+# The vocabulary a landed-URL SEGMENT must match for `_login_segment` to call it a login
+# wall (#156). A pinned module constant, not a config knob (see docs/ARCHITECTURE.md): a
+# test asserts this exact set, since widening it weakens auto-retire and must be a
+# deliberate change, not a drive-by edit.
+#
+# Measured against all 22 shipped sources' own search URLs (none contains any of these
+# words in its own path) and 16 plausible healthy/incident landings before settling on
+# this set. `account` is DELIBERATELY excluded: it was the one word that produced a
+# plausible-healthy false positive under every matching strategy tried (`/account/jobs`
+# is a legitimate results page on more than one board), and it costs nothing -- incident
+# 3 landed on `/login`, never `/account`. `authwall`/`sessions`/`oauth`/`sso` are
+# explicit entries rather than left to the prefix rule below to reach from `auth`/
+# `session`, because the boundary check in `_login_segment` deliberately refuses to
+# reach them from those shorter words (that refusal is what keeps `/author/...` and a
+# coding-challenge platform's `/challenges/search` safe).
+_LOGIN_SEGMENTS = frozenset({
+    "login", "signin", "sign-in", "signon", "logon",
+    "auth", "authwall", "authenticate", "oauth", "sso",
+    "session", "sessions",
+    "challenge", "captcha", "verify", "register", "onboarding", "2fa", "mfa",
+})
+
+
+def _login_segment(path: str) -> str | None:
+    """The first `_LOGIN_SEGMENTS` word matched by a `/`-separated segment of `path`, or
+    `None`. `_` is normalised to `-` first, so Devise's `/users/sign_in` reaches
+    `sign-in`.
+
+    PREFIX matching with a non-alphanumeric BOUNDARY, not exact-segment and not
+    substring -- both were measured and rejected. Exact-segment misses real
+    interstitials: LinkedIn's actual logged-out target is `/authwall`, and Cloudflare's
+    challenge page is `/cdn-cgi/challenge-platform/...`. Naive substring matches
+    `/author/...` (contains `auth`) and a coding-challenge platform's own
+    `/challenges/search` (contains `challenge`) -- both real, both false positives.
+    A prefix match with a boundary catches the first pair and excludes the second:
+    `authwall` starts with `auth` at a boundary (end of string), `challenge-platform`
+    starts with `challenge` at a boundary (`-`), but `author` and `challenges` do not
+    (the next character, `o`/`s`, is alphanumeric)."""
+    for segment in path.lower().replace("_", "-").split("/"):
+        for word in _LOGIN_SEGMENTS:
+            if segment == word or (
+                segment.startswith(word) and not segment[len(word):len(word) + 1].isalnum()
+            ):
+                return word
+    return None
+
+
+def _login_wall(requested_path: str, landed_path: str) -> bool:
+    """True iff the LANDED path carries a login-vocabulary segment the REQUESTED path did
+    not ask for. No query-string matching: measured false positives on an ordinary
+    `?q=account+manager` search and on a landed URL merely gaining a `session_id=` param
+    on a healthy redirect -- incident 3's evidence (`/login?redirect=%2F`) is fully caught
+    by the path alone, so the query string buys nothing and costs those two.
+
+    The "did not ask for" half is the empty-config-abstain case: a source whose configured
+    `sources.<id>.searches` legitimately points at a login-shaped path (the same word
+    matched on both sides) must not report a permanent false positive against its own
+    request."""
+    word = _login_segment(landed_path or "")
+    return word is not None and word != _login_segment(requested_path or "")
 
 
 def _explained(signals: dict) -> str | None:
@@ -178,6 +241,13 @@ def _explained(signals: dict) -> str | None:
     requested, landed = signals.get("requested_host"), signals.get("landed_host")
     if requested and landed and _dewww(requested) != _dewww(landed):
         return "redirect"
+    # AFTER redirect, BEFORE blocked (#156): a board that redirects cross-host to a login
+    # page is more likely a genuine relocation than a login wall, so `redirect` -- which
+    # does not defer retirement either, see `_RECOVERABLE` below -- gets first say. A
+    # same-host auth wall (incident 3/4: `/jobs?query=...` -> `/login?redirect=%2F`, host
+    # unchanged) never reaches the redirect branch above, so ordering costs it nothing.
+    if _login_wall(signals.get("requested_path", ""), signals.get("landed_path", "")):
+        return "login"
     if signals.get("blocked"):
         return "blocked"
     if signals.get("auth"):
@@ -196,6 +266,19 @@ def _explained(signals: dict) -> str | None:
 # a 404 page). Both were retired BY HAND. Treating redirect as recoverable would mean the
 # automatic rule could never reach that conclusion again, and a relocated board would burn a
 # browser slot on every run forever -- which is the exact waste `should_retire` exists to stop.
+#
+# `login` (#156) belongs beside `redirect`, NOT beside `auth`, and it is easy to get this
+# backwards -- an expired login sounds like the recoverable case. It is not membership here
+# that matters for the incident it was built for: `_is_dead` short-circuits on `count == 0`,
+# and incident 4's login-walled run returned rows (count 5), so `_RECOVERABLE` membership was
+# never consulted for it either way. Membership only matters for a ZERO-count run landing on
+# a login path, and there the evidence is identical to `redirect`'s: the board never comes
+# back on its own, an operator has to notice and act, and this repo's real auto-retire
+# history is exactly that shape (hired.com, hackajob.co). Including `login` here would grant
+# a PERMANENTLY paywalled board unlimited life -- the specific hazard `_explained`'s own
+# docstring warns about ("a reason that fires benignly buys a dead source unlimited time").
+# The genuinely-recoverable case (an expired session) is already served by `auth`, backed by
+# a probe that CONFIRMS the logged-out state rather than inferring it from a URL.
 _RECOVERABLE = ("auth", "blocked", "unreachable")
 
 
@@ -226,11 +309,11 @@ def _is_dead(run: dict) -> bool:
 def detect_drift(source_id: str, count: int, signals: dict | None, baseline: float) -> str | None:
     """Classify this run against the source's baseline. Returns the reason, or None if healthy.
 
-    Precedence: an EXPLAINED failure (redirect > blocked > auth) outranks a bare `zero`, and
-    `zero` outranks `drop`. The explanation is checked FIRST on purpose. Testing `count == 0`
-    first -- as this did until 2026-08-15 -- discards the redirect/blocked signals the caller
-    already gathered and collapses every distinct failure into the one word that cannot be
-    acted on.
+    Precedence: an EXPLAINED failure (redirect > login > blocked > auth) outranks a bare
+    `zero`, and `zero` outranks `drop`. The explanation is checked FIRST on purpose. Testing
+    `count == 0` first -- as this did until 2026-08-15 -- discards the redirect/blocked
+    signals the caller already gathered and collapses every distinct failure into the one
+    word that cannot be acted on.
 
     Two separate justifications, kept separate on purpose: the precedence reversal is right on
     general principle, but it is NOT what would have rescued the 2026-08-15 LinkedIn case.
@@ -241,11 +324,13 @@ def detect_drift(source_id: str, count: int, signals: dict | None, baseline: flo
     if count == 0:
         # The explanation replaces "zero", which is the one classification nobody can act on.
         return reason or "zero"
-    # The run PRODUCED rows, so it is not a failure to explain. Only the two reasons that stay
-    # interesting alongside a successful fetch survive here -- both pre-existing behaviour.
-    # `auth`/`unreachable` deliberately do not: gating them on count would otherwise let a
-    # 200-row run report drift and fire a notification off one search's stale signal.
-    if reason in ("redirect", "blocked"):
+    # The run PRODUCED rows, so it is not a failure to explain. Only the reasons that stay
+    # interesting alongside a successful fetch survive here -- `redirect`/`blocked` were here
+    # before. `login` joins them (#156): a login wall that still returns rows (a five-row page
+    # of chrome, incidents 3/4) is exactly the shape a bare count check cannot see. `auth`/
+    # `unreachable` deliberately do NOT join: gating them on count would let a 200-row run
+    # report drift and fire a notification off one search's stale signal.
+    if reason in ("redirect", "login", "blocked"):
         return reason
     # Direct producer evidence outranks an inferred rate collapse (#156): a row the
     # extractor's own fallback stamped IS the explanation, not a hint toward one -- see
