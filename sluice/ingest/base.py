@@ -137,6 +137,20 @@ def _sized(value):
     return value if isinstance(value, (list, tuple)) else []
 
 
+def _first_degraded(rows) -> str | None:
+    """The first truthy `degraded` marker among `rows`, or `None`.
+
+    A row-level marker (`_stepstone.py`'s anchor fallback, `reed.py`'s unscoped link
+    tier) is DIRECT evidence that the good path did not run this search, which is why
+    `detect_drift` ranks it above the inferred `blank` reason. `_sized` already
+    guarantees `rows` is a list here -- this is the row-content half, not the payload
+    normalisation half."""
+    for row in _sized(rows):
+        if isinstance(row, dict) and row.get("degraded"):
+            return row["degraded"]
+    return None
+
+
 def _row_to_lead(source: str, search: Search, row: dict, extra: dict | None) -> Lead:
     """Map an extractor row {title, company?, location?, link, salary?} to a Lead.
     Source-level `extra` sets defaults; the search's own params override them (so
@@ -313,6 +327,13 @@ class BrowserListSource:
         # silently disables itself.
         if raw.get("auth_probe_error"):
             hint["auth_probe_error"] = raw["auth_probe_error"]
+        # A row the extractor's own fallback stamped is direct evidence of degradation --
+        # see `_first_degraded`. Checked on the RAW rows, not the parsed leads: a row-level
+        # marker survives even a row `parse` later drops (a blank title), which a signal
+        # computed post-parse would miss.
+        degraded = _first_degraded(raw.get("result"))
+        if degraded:
+            hint["degraded"] = degraded
         return hint
 
 
@@ -415,6 +436,9 @@ class CarouselSource:
         # parameterised over both classes so a third implementation cannot repeat it.
         if raw.get("error"):
             hint["fetch_error"] = raw["error"]
+        degraded = _first_degraded(raw.get("jobs"))
+        if degraded:
+            hint["degraded"] = degraded
         return hint
 
 

@@ -12,12 +12,20 @@ _JS = r"""
         const co=c.querySelector('[class*="company"], [class*="employer"], .brand, [class*="brand"]')?.textContent?.trim()||'';
         const lo=c.querySelector('[class*="location"], [class*="locality"]')?.textContent?.trim()||'';
         const sa=c.querySelector('[class*="salary"], [class*="rate"], [class*="price"]')?.textContent?.trim()||'';
-        let ln = '';
+        let ln = '', degraded = '';
         if(titleEl && titleEl.tagName === 'A') ln = titleEl.href;
         if(!ln) ln = c.querySelector('a[href*="/job/"]')?.href||'';
         if(!ln) ln = c.querySelector('a[href*="job"]')?.href||'';
-        if(!ln) ln = c.querySelector('a')?.href||'';
-        if(t&&t.length>5) r.push({title:t, company:co, location:lo, link:ln, salary:sa});
+        // The last tier has no scoping at all -- it accepts ANY anchor in the card, which
+        // is a real fallback, not a normal cascade step. Stamped `degraded` (#156) so a
+        // future selector rot that pushes every row through this tier reports a `fallback`
+        // drift reason instead of a silently healthy count.
+        if(!ln){ ln = c.querySelector('a')?.href||''; if(ln) degraded = 'link-fallback'; }
+        if(t&&t.length>5){
+            const row = {title:t, company:co, location:lo, link:ln, salary:sa};
+            if(degraded) row.degraded = degraded;
+            r.push(row);
+        }
     });
     return r.slice(0,20);
 })()

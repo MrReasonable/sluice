@@ -63,13 +63,16 @@ def extractor_js(limit: int = 25) -> str:
     if(r.length===0){
         // Degraded fallback for a future card-markup change: anchors alone cannot yield a
         // company, so leads arrive blank-companied. Nav links are excluded so the fallback
-        // cannot reintroduce "Related Jobs" as a vacancy.
+        // cannot reintroduce "Related Jobs" as a vacancy. `degraded` is the machine-readable
+        // form of this comment (#156): `health_hint` promotes it to a `fallback` drift
+        // reason, so a rot that trips this branch says so on the run it happens rather than
+        // reading as a healthy count.
         document.querySelectorAll('a[href*="/job/"]').forEach(a=>{
             const t=(a.textContent||'').replace(/\s+/g,' ').trim();
             const link=(a.href||'').split('?')[0];
             if(t.length>8&&!NAV.test(t)&&!seen.has(link)){
                 seen.add(link);
-                r.push({title:t, company:'', location:'', link, salary:''});
+                r.push({title:t, company:'', location:'', link, salary:'', degraded:'anchor-fallback'});
             }
         });
     }

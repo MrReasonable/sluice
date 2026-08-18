@@ -23,7 +23,7 @@ class SourceResult:
     status: str = "ok"          # "ok" | "error"
     fetched: int = 0            # rows parsed, before dedup/relevance
     fresh: int = 0              # leads handed to the sink
-    # "zero" | "drop" | "redirect" | "blocked" | "auth" | "unreachable" | None.
+    # "zero" | "drop" | "fallback" | "redirect" | "blocked" | "auth" | "unreachable" | None.
     # Keep in step with core/health.py's `_explained`/`detect_drift` -- this comment is the
     # only place the vocabulary is enumerated, so a new reason that misses it is invisible.
     drift: str | None = None
