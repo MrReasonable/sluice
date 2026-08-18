@@ -218,6 +218,31 @@ from pure `parse` (raw dict -> `list[Lead]`), which is the whole reason parsers 
 against golden fixtures. Each source ships exactly one neutral example search; a user's real search
 list belongs in `sources.<id>.searches` in config.
 
+**Health classifies the SHAPE of a run, not only its count and host (#156).** A scraper's dominant
+failure mode is succeeding at reading the wrong page, not crashing — a rotted selector still returns
+a plausible row count from the right host. `detect_drift` (`core/health.py`) has three
+content-inspecting reasons beyond the original `zero`/`drop`/`redirect`/`blocked`/`auth`/
+`unreachable`: `fallback` (a row an extractor's own degraded path stamped —
+`ingest/base.py`'s `_first_degraded`, checked on raw rows so it survives even a row `parse` later
+drops), `login` (a landed URL path segment matching a small vocabulary the requested path did not
+ask for — segment-**prefix** matching with a non-alphanumeric boundary, never exact-segment or
+substring: measured false positives on both), and `blank` (a company/link completeness collapse on
+a search's **parsed** leads, never the raw payload — naukrigulf's `parse` recovers a company `raw`
+never had, so measuring `raw` reports on an intermediate nobody sees). `blank` needs THREE gates,
+each measured against the real fleet rather than assumed: a row floor of 8 (below it a small
+carousel's rate is noise, not signal), a source's own STICKY high-water floored at 0.8 (a separate
+persisted field, not derived from the 30-run rolling window — deriving it would make a permanently
+rotted source fire for exactly 30 runs and then go silent forever once its one healthy run ages out
+of that window), and two consecutive low runs before firing. `login` is deliberately **excluded**
+from `_RECOVERABLE` despite sounding like an expired-session case: `_is_dead` short-circuits on
+`count > 0`, so membership never mattered for the incident it was built for, and including it would
+grant a permanently-paywalled board the same unlimited life `_explained`'s docstring warns
+`_RECOVERABLE` membership grants any reason that fires benignly. `fallback`/`login`/`blank` also
+join a small `BREAKER_REASONS` set in `ingest/engine.py`: a run classified as one of them has its
+leads WITHHELD from the sink for that run (never written to `seen.db`, so the next run retries from
+scratch) rather than merely reported — `drop` and every other reason stay report-only, since a false
+positive there costs a late report, while suppressing a healthy day's leads is the worse failure.
+
 **`cli.py` imports the heavy modules inside command functions, not at module scope.** That is
 deliberate: it keeps offline commands (and their tests) from ever touching Camofox, the vault, or a
 backend. Keep new commands lazy the same way.

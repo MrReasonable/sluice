@@ -72,6 +72,45 @@ store is what you run `doctor` to hear about, not a live round-trip on every sea
 other command — `triage run --no-llm`, `leads`, `health`, `init`, `doctor --offline` — is fully
 offline and unaffected.
 
+## A source reports `drift=blank` or `drift=fallback` (leads withheld)
+
+The board is returning rows, but the content itself has degraded — a rotted card selector
+that no longer finds a company, or an extractor's own fallback path filling in blanks (see
+`docs/ARCHITECTURE.md`'s ingest section for the full classifier). Both reasons **withhold**
+that source's leads from the vault for the run rather than writing them — the digest and any
+Telegram notify show a non-zero `withheld` count.
+
+- **`drift=fallback`**: an extractor's own degraded code path fired (e.g. an anchor-only
+  fallback when the card markup it targets matched nothing). Fix the extractor's selectors;
+  `job-sluice ingest test-source ID --raw` prints the raw fetch payload so you can see what
+  the page actually rendered.
+- **`drift=blank`**: the source's own company/link completeness rate collapsed relative to
+  its historical high-water. This needs the source to have had at least one healthy run on
+  record — a brand-new source, or one already broken when you started, cannot trip this (see
+  ARCHITECTURE.md's note on it being a regression detector, not a retroactive one). Two
+  consecutive low runs are required before it fires, so a single bad fetch will not withhold
+  anything.
+
+**Recovery is automatic once the extractor is fixed**: a withheld lead is never recorded in
+`seen.db`, so the very next run re-fetches and re-evaluates it from scratch. There is nothing
+to manually re-queue.
+
+## A source reports `drift=login`
+
+The board redirected the search to (or otherwise landed on) a login/auth-wall page — visible
+even when the wall still renders a handful of chrome rows, which is exactly the shape a bare
+zero-row check cannot see. This is usually one of:
+
+- **An expired or logged-out Camofox profile.** Check `job-sluice doctor`'s `camofox` row for
+  which profile the run used, and re-authenticate it if needed.
+- **The board genuinely requires a login it did not before.** If it stays wedged on `login`
+  across runs, `job-sluice health` shows a `BROKEN reason=login xN` streak so it stays visible
+  — but note `login` does **not** auto-retire the way an unexplained zero does; if the board
+  has permanently moved behind a login wall, disable it by hand (`ingest disable ID`).
+
+`drift=login` also withholds that run's leads, for the same reason and with the same
+automatic recovery as `blank`/`fallback` above.
+
 ## A backend is `dead` or `degraded` in `doctor`'s output
 
 - **`dead`, `<KEY_VAR> unset`** on a role used as *primary* anywhere: set the key

@@ -172,6 +172,88 @@ whichever neighbour it was written next to:
    into an impure `fetch` and a pure `parse`) driven by `engine.run()`,
    which dedups via `core.seendb`, gates via `core.relevance`, and writes
    through a sink (vault or JSON) to the lead store.
+
+   Per-source **health** (`core/health.py`) is a run history + drift
+   classifier, not merely a row counter: a rotted extractor's dominant
+   failure mode is succeeding at reading the wrong page, not crashing, and
+   a row count alone cannot tell that apart from a genuinely quiet search
+   (#156). `HealthStore.record` appends `{count, signals}` per run (a
+   30-run rolling window, `_KEEP`), and `detect_drift` classifies the
+   CURRENT run against that history. The vocabulary, in the precedence
+   `detect_drift` applies (checked in this order; the first match wins):
+   `unreachable` (the browser never gave us a tab or an evaluate failed --
+   checked FIRST because it explains every other signal's absence, e.g. a
+   Camofox outage), `redirect` (the landed HOST differs from the requested
+   one, apex-`www` exempted via `_dewww`), `login` (the landed URL's PATH
+   carries a segment from a small vocabulary -- `login`, `authwall`,
+   `session`, `challenge`, ... -- that the requested path did not itself
+   ask for; segment-**prefix** matching with a non-alphanumeric boundary,
+   not exact-segment (misses `/authwall`) or substring (matches
+   `/author/...`)), `blocked` (a source-specific rate-limit signal, e.g.
+   `workinstartups`'s HEAD-precheck), `auth` (an opt-in `auth_probe_js`
+   found the page's LOGGED-OUT markup -- only `linkedin` ships one today),
+   `fallback` (a row the extractor's own degraded path stamped --
+   `ingest/base.py`'s `_first_degraded` promotes the marker from RAW rows,
+   so it survives even a row `parse` later drops on a blank title),
+   `blank` (a company/link completeness collapse measured on a search's
+   **parsed** leads -- never the raw payload, since a source's `parse` can
+   repair a field the raw row lacks, e.g. `naukrigulf` recovering a
+   company mashed into the title via the listing URL's own seam), `drop`
+   (the bare count falls below 40% of the 7-run median baseline), `zero`
+   (no explanation and no rows). `redirect`/`login`/`blocked` survive
+   alongside a positive count (a login wall or a rate-limit page can still
+   return rows); `auth`/`unreachable` do not, to avoid firing drift off
+   one search's stale signal in a multi-search source.
+
+   `blank` needs history a bare `{count, signals}` record cannot supply on
+   its own: `HealthStore` also persists a STICKY per-signal high-water
+   (`rate_high_water`), updated as `max(stored, this_run)` on every
+   `count > 0` run and deliberately kept SEPARATE from the 30-run rolling
+   window -- deriving it from that window instead would make a source that
+   rots and stays rotted fire for exactly 30 runs and then go permanently
+   silent once its one healthy run ages out of the retained history, which
+   measured shorter than any of #156's real incidents lasted. `blank`
+   fires only when: the source's own high-water is at least 0.8 (a source
+   that never carried a high completeness rate cannot have "collapsed"
+   from one -- 0.5 was tried and several real sources' ordinary variance
+   crossed it), the current run's rate is below 40% of that high-water,
+   AND the run immediately before it was ALSO below that threshold (one
+   bad run alone is noise, not a streak -- costs one run of detection
+   latency, measured to remove nearly all false positives on small or
+   partial-completeness sources). Below 8 parsed leads, no rate is
+   computed at all -- "no rate measured" and "a rate of exactly 0.0" stay
+   distinguishable, and a tiny sample (a comma-less title on a 1-2-row
+   carousel read) is noise a floor exists to exclude.
+
+   `should_retire` (three consecutive `_is_dead` runs) and `_RECOVERABLE`
+   (`auth`, `blocked`, `unreachable` -- reasons an OPERATOR ACTION brings
+   back, so they defer retirement indefinitely) predate #156 and are
+   UNCHANGED by it: `fallback`/`blank` are count>0-only phenomena and were
+   never candidates for either. `login` is deliberately NOT
+   `_RECOVERABLE`, even though it sounds like the `auth` case -- `_is_dead`
+   already short-circuits on `count > 0`, so membership never mattered for
+   the incident that motivated it (a login-walled board that still
+   returned a constant, low row count), and including it would grant a
+   PERMANENTLY paywalled board the same unlimited life this repo's real
+   auto-retire history (`sources/hired.py`, `sources/hackajob.py`, both
+   retired by hand after the board moved) exists to catch.
+
+   `fallback`/`login`/`blank` also gate the WRITE, not merely the report:
+   `engine.run()`'s `BREAKER_REASONS` withholds a source's leads from the
+   sink entirely for a run classified as one of the three, rather than
+   writing them and merely flagging the drift. Health is still recorded
+   unconditionally first, so the next run's baseline/high-water reflect
+   what was actually fetched. A withheld lead is simply never passed to
+   `sink.write()`, so it never enters `seen.db` and the next run re-fetches
+   and re-evaluates it from scratch once the rot clears -- the identical
+   self-healing discipline `sink.py`'s own `refused`/`skipped`/
+   `merged_away_unproven` outcomes already follow, needing no special-case
+   recovery path. `redirect`/`blocked`/`auth`/`unreachable`/`zero`/`drop`
+   stay report-only: the first five already gate at `count == 0` in every
+   shipped case (nothing to withhold), and `drop` is the lowest-confidence
+   signal here -- a bare row-count comparison with no content inspection
+   behind it, so suppressing a real day's leads on a false `drop` would be
+   a worse failure than a late report.
 2. **triage** (`sluice/triage/`): `classify.py` resolves obvious cases
    deterministically, for free; only kept, ambiguous leads are enriched
    and sent to an LLM judge (`judge.py`, `prompt.py`, over `core.backends`).
