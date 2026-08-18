@@ -117,11 +117,18 @@ class HealthStore:
 
     def prior_rate(self, source_id: str, key: str) -> float | None:
         """The most recently RECORDED run's value for `key`, or `None` if there is no
-        prior run or it carried no such signal. Read before `record()`, same as
-        `rate_highs`/`baseline` -- this is the "was the run BEFORE this one also low"
-        half of `blank`'s 2-consecutive-run streak requirement."""
+        prior run, it carried no such signal, or it produced no rows. Read before
+        `record()`, same as `rate_highs`/`baseline` -- this is the "was the run BEFORE
+        this one also low" half of `blank`'s 2-consecutive-run streak requirement."""
         runs = self._data.get(source_id, {}).get("runs", [])
         if not runs:
+            return None
+        # Same count>0 discipline `record`'s high-water update applies (CodeRabbit,
+        # PR #155): a zero-yield run carries no rate to have been high OR low, so it
+        # cannot supply half of a streak. `_lead_rates`'s own row floor makes a stray
+        # rate on a zero-count run unreachable today, but this accessor should not rely
+        # on ITS caller's floor to stay correct.
+        if runs[-1].get("count", 0) <= 0:
             return None
         return runs[-1].get("signals", {}).get(key)
 
