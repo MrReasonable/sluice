@@ -368,6 +368,7 @@ def test_health_hint_tolerates_a_non_dict_raw_for_EVERY_registered_source(src, r
     hint = src.health_hint(raw)
     assert hint["count"] == 0
     assert hint["landed_host"] == "" and hint["requested_host"] == ""
+    assert hint["landed_path"] == "" and hint["requested_path"] == ""
     assert "fetch_error" not in hint, "a non-dict carries no error to report"
     assert "degraded" not in hint, "a non-dict carries no rows to have stamped a marker"
 
