@@ -76,6 +76,6 @@ def extractor_js(limit: int = 25) -> str:
             }
         });
     }
-    return r.slice(0, LIMIT);
+    return r.slice(0, __LIMIT__);
 })()
-""".replace("LIMIT", str(int(limit)))
+""".replace("__LIMIT__", str(int(limit)))
