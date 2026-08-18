@@ -91,6 +91,14 @@ class SourceResult:
     drift: str | None = None
     retired: bool = False
     error: str | None = None
+    # Set only when `_update_health` itself raised (a HealthStore read/write failure, not a
+    # fetch failure) -- distinct from `drift`, because `drift` staying None here means
+    # "could not classify," not "classified as healthy." Consumed by `run()`'s withhold
+    # check below: BREAKER_REASONS exists to stop a rotted run's leads reaching the vault,
+    # and a health-pipeline failure is the one case that can't even say whether the leads
+    # ARE rotted -- writing them through on "couldn't tell" would defeat the breaker via
+    # its own failure mode rather than its absence.
+    health_error: str | None = None
 
 
 @dataclass
@@ -123,8 +131,14 @@ def run(sources, ctx, sink, seen, health, *, fetch_timeout=60, retries=3):
 
         # `_update_health` records health FIRST regardless -- run history must reflect what
         # was actually fetched, or the next run's baseline/high-water desync from reality.
-        # Only the WRITE is suppressed here, never the measurement.
-        if fresh and result.drift in BREAKER_REASONS:
+        # Only the WRITE is suppressed here, never the measurement -- EXCEPT when the
+        # measurement itself failed (`health_error`, review-found): `result.drift` then
+        # stays None, which is indistinguishable from "classified healthy" to the check
+        # below unless `health_error` is also consulted. Failing OPEN there would write a
+        # run through un-vetted specifically because the vetting broke -- the exact silent-
+        # write-of-unclassified-rot shape BREAKER_REASONS exists to close, reached through
+        # its own blind spot instead of around it.
+        if fresh and (result.drift in BREAKER_REASONS or result.health_error):
             result.withheld = len(fresh)
             # Un-claim these keys from the RUN-LOCAL dedup set too, not only from the
             # persisted seen.db counterpart. `_run_source` added them to `seen_keys` while
@@ -257,5 +271,12 @@ def _update_health(source, result, health, count, signals):
         if health.should_retire(source.id):
             result.retired = True
             source.enabled = False
-    except Exception as e:  # health is best-effort; never fail a run over it
+    except Exception as e:
+        # Best-effort -- never RAISE and abort the run over this -- but no longer silent:
+        # `health_error` lets the caller in `run()` withhold this source's leads rather
+        # than write them through unclassified (review-found; see the field's own comment
+        # on `SourceResult`). `result.drift` is deliberately left at its None default here
+        # rather than set to a synthetic reason: `drift`'s vocabulary is the enumerated set
+        # `detect_drift` can actually return, and this failure never reached that function.
+        result.health_error = str(e)
         _log.warning("health update failed for %s: %s", source.id, e)

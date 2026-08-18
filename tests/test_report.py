@@ -44,3 +44,14 @@ def test_format_degraded_omits_withheld_when_zero():
     text = _format_degraded(report)
     assert "- cord: drop" in text
     assert "withheld" not in text
+
+
+def test_format_degraded_surfaces_a_health_pipeline_failure(tmp_path):
+    # Review-found on PR #155: `drift` stays None when `_update_health` itself raised, so
+    # without also checking `health_error` this source would be silently OMITTED from the
+    # notify body -- indistinguishable from a genuinely healthy run that just happened to
+    # withhold nothing.
+    report = RunReport()
+    report.sources = [SourceResult("cwjobs", withheld=2, health_error="disk full")]
+    text = _format_degraded(report)
+    assert "- cwjobs: health_error [2 withheld]" in text
