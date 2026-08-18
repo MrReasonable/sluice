@@ -251,3 +251,106 @@ def test_blank_measures_leads_parse_repairs_not_the_raw_row():
     fresh, result = [], type("R", (), {"fetched": 0, "status": "ok", "error": None})()
     _, signals = _run_source(src, ctx, set(), fresh, result, fetch_timeout=5, retries=1)
     assert signals["company_rate"] == 1.0, "measured the raw row (blank), not the repaired lead"
+
+
+# ---- the circuit breaker: a degraded run must not write its leads (#156) ----------------
+
+class _SignalingSource(FakeSource):
+    """A `FakeSource` whose `health_hint` reports whatever signals a test hands it,
+    rather than the real hosts/degraded-marker plumbing -- isolates the BREAKER (does
+    `result.drift` in `BREAKER_REASONS` actually withhold the write?) from the DETECTOR
+    wiring already covered elsewhere in this file and in `test_health_wrong_page.py`."""
+
+    def __init__(self, id, rows, signals):
+        super().__init__(id, rows)
+        self._signals = signals
+
+    def health_hint(self, raw):
+        hint = super().health_hint(raw)
+        hint.update(self._signals)
+        return hint
+
+
+def test_a_fallback_run_withholds_its_leads_from_the_sink(tmp_path):
+    rows = [{"title": "T1", "link": "http://x/1"}, {"title": "T2", "link": "http://x/2"}]
+    src = _SignalingSource("demo", rows, {"degraded": "anchor-fallback"})
+    sink = _FakeSink()
+    report = run([src], _ctx(), sink, _FakeSeen(), _health(tmp_path), retries=1)
+    result = report.sources[0]
+    assert result.drift == "fallback"
+    assert sink.leads == [], "a fallback run's leads reached the sink anyway"
+    assert report.written == {"created": 0, "updated": 0, "skipped": 0}
+    assert result.withheld == 2 and result.fresh == 2
+
+
+def test_a_login_run_withholds_its_leads_from_the_sink(tmp_path):
+    rows = [{"title": f"T{i}", "link": f"http://x/{i}"} for i in range(5)]
+    src = _SignalingSource("demo", rows,
+                          {"requested_path": "/jobs", "landed_path": "/login"})
+    sink = _FakeSink()
+    report = run([src], _ctx(), sink, _FakeSeen(), _health(tmp_path), retries=1)
+    result = report.sources[0]
+    assert result.drift == "login"
+    assert sink.leads == []
+    assert result.withheld == 5
+
+
+def test_a_blank_run_withholds_its_leads_from_the_sink(tmp_path):
+    h = _health(tmp_path)
+    h.record("blanked", 10, {"company_rate": 0.9})
+    h.record("blanked", 10, {"company_rate": 0.0})
+    rows = [{"title": f"Nav {i}", "company": "", "link": f"http://x/{i}"} for i in range(10)]
+    src = FakeSource("blanked", rows)
+    sink = _FakeSink()
+    report = run([src], _ctx(), sink, _FakeSeen(), h, retries=1)
+    result = report.sources[0]
+    assert result.drift == "blank"
+    assert sink.leads == []
+    assert result.withheld == 10
+
+
+def test_a_drop_run_STILL_writes_its_leads(tmp_path):
+    # `drop` is a bare row-count comparison, the LOWEST-confidence signal -- deliberately
+    # NOT in BREAKER_REASONS. Suppressing a real day's leads on a false `drop` would be
+    # worse than the late report, per the plan's residual note.
+    h = _health(tmp_path)
+    for _ in range(7):
+        h.record("dropped", 100, {})
+    rows = [{"title": "T1", "link": "http://x/1"}]
+    src = FakeSource("dropped", rows)
+    sink = _FakeSink()
+    report = run([src], _ctx(), sink, _FakeSeen(), h, retries=1)
+    result = report.sources[0]
+    assert result.drift == "drop"
+    assert sink.leads != [], "drop must not withhold -- it is the lowest-confidence signal"
+    assert result.withheld == 0
+
+
+def test_a_healthy_run_reports_zero_withheld(tmp_path):
+    rows = [{"title": "T1", "link": "http://x/1"}]
+    src = FakeSource("demo", rows)
+    report = run([src], _ctx(), _FakeSink(), _FakeSeen(), _health(tmp_path), retries=1)
+    assert report.sources[0].withheld == 0
+
+
+def test_a_withheld_leads_key_never_enters_seen_db(tmp_path):
+    # THE self-healing property: a withheld lead is never passed to sink.write(), so
+    # seendb.save() never runs for it, so it never enters seen.db, so the NEXT run
+    # re-fetches and re-evaluates it from scratch the moment the rot clears -- no
+    # special-case recovery path needed. Proven against the REAL SeenDb, not a fake, so
+    # the claim is about the actual persisted store, not this test's own bookkeeping.
+    rows = [{"title": "T1", "link": "http://x/1", "company": "Acme"}]
+    src = _SignalingSource("demo", rows, {"degraded": "anchor-fallback"})
+    vault = Vault(str(tmp_path / "vault"))
+    seen = SeenDb(str(tmp_path / "seen.db"))
+    sink = VaultSink(vault, seen, today=lambda: "2026-07-07")
+    run([src], _ctx(), sink, seen, _health(tmp_path), retries=1)
+
+    leads_dir = tmp_path / "vault" / "Job Applications" / "Job Leads"
+    # `not leads_dir.exists()` is itself the strongest possible witness here: nothing --
+    # not even the DIRECTORY -- was ever written, because the withheld lead never reached
+    # `sink.write()` at all.
+    assert not leads_dir.exists() or not any(leads_dir.iterdir()), (
+        "the withheld lead was written to the vault anyway"
+    )
+    assert seen.load() == set(), "the withheld lead's key reached seen.db anyway"
