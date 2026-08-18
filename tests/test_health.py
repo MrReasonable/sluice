@@ -134,6 +134,18 @@ def test_prior_rate_is_none_when_the_prior_run_carried_no_such_signal(tmp_path):
     assert h.prior_rate("s", "company_rate") is None
 
 
+def test_prior_rate_ignores_a_zero_count_run_even_with_a_stray_signal(tmp_path):
+    # CodeRabbit, PR #155: `rate_highs`/`record` already apply this count>0 discipline
+    # (see `test_rate_high_water_ignores_a_zero_count_run` above), but `prior_rate` read
+    # `runs[-1]` unconditionally -- a stray rate key on a zero-count run (should never
+    # happen, but health is best-effort) would supply the "prior run was also low" half
+    # of `blank`'s 2-consecutive-run streak, and `blank` is in BREAKER_REASONS.
+    h = HealthStore(str(tmp_path / "h.json"))
+    h.record("s", 25, {"company_rate": 0.9})
+    h.record("s", 0, {"company_rate": 0.0})
+    assert h.prior_rate("s", "company_rate") is None
+
+
 def test_the_existing_median_baseline_DOES_decay_unlike_the_sticky_high_water(tmp_path):
     # Contrast test, pinning the CLAIM that motivated the sticky design in the first
     # place: `baseline`'s median-of-7 follows a sustained rot down, so a fifty-to-ten
