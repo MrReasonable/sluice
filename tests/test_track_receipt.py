@@ -568,15 +568,21 @@ def test_board_url_does_not_ride_in_on_a_clean_applied_url():
                    applied_url="https://employer.example.invalid/apply")]
     m = match_receipt(_msg(frm="noreply@board.invalid", auth=_dkim_pass("board.invalid")),
                       leads, ATS, boards)
-    assert m.tier != "proof"
+    # Exact equality, not just `!= "proof"`: the sender (board.invalid) is neither an ATS
+    # relay nor named in `boards` itself (only its child `jobs.board.invalid` is), so
+    # `from_ats` is False too -- there is no evidence route to a corroborated match
+    # either. Pinning "none" catches a regression that wrongly degrades this to
+    # "corroborated" instead of correctly finding nothing, which `!= "proof"` alone would
+    # miss.
+    assert m == ReceiptMatch(None, "none", [])
 
 
 def test_no_applied_url_still_reaches_proof_via_url_alone():
     # Pre-existing contract, unchanged by the applied_url widening: a lead with no
-    # applied_url at all (never had `apply record --url` run against it -- roughly half
-    # of in-flight leads, per #136) must still reach proof via `url` exactly as it did
-    # before this change. `_lead_hosts` falls back to `url` whenever `applied_url` is
-    # absent, and this must stay green with zero change in behaviour.
+    # applied_url at all (`apply record --url` is optional, so a lead applied to without
+    # it never gets one) must still reach proof via `url` exactly as it did before this
+    # change. `_lead_hosts` falls back to `url` whenever `applied_url` is absent, and
+    # this must stay green with zero change in behaviour.
     leads = [_lead("Example - Analyst", "https://example.com/careers/1")]
     m = match_receipt(_msg(frm="jobs@example.com", subject="Thanks for applying",
                            auth=_dkim_pass("example.com")), leads, ATS)
