@@ -369,6 +369,7 @@ def test_health_hint_tolerates_a_non_dict_raw_for_EVERY_registered_source(src, r
     assert hint["count"] == 0
     assert hint["landed_host"] == "" and hint["requested_host"] == ""
     assert "fetch_error" not in hint, "a non-dict carries no error to report"
+    assert "degraded" not in hint, "a non-dict carries no rows to have stamped a marker"
 
 
 def test_the_conformance_sweep_actually_sees_the_overriding_sources():
@@ -551,3 +552,4 @@ def test_health_hint_tolerates_a_NON_SIZED_value_under_the_count_key(src, payloa
     for key in ("result", "jobs"):
         hint = src.health_hint({key: payload, "landed": "", "requested": "http://x"})
         assert hint["count"] == 0
+        assert "degraded" not in hint, "a non-sized payload has no rows to scan for a marker"
