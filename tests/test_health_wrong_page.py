@@ -682,3 +682,22 @@ def test_reeds_dominance_ratio_is_measured_on_the_RETURNED_rows_not_every_matche
         "the dominance ratio is computed BEFORE the rows are sliced to the returned "
         "20 -- it is measuring a population the caller never actually sees"
     )
+
+
+def test_reeds_dominance_gate_has_a_row_floor_matching_blanks_own_small_sample_discipline():
+    """A FOURTH regression the three gates above cannot see (CodeRabbit, PR #155): the
+    dominance ratio has no row floor, so a single returned row that used the unscoped
+    fallback tier trips `1 > 0.5` and withholds the whole run via `fallback` in
+    BREAKER_REASONS. `_lead_rates` guards the identical small-sample-noise shape for
+    `blank` with a row floor of 8 (`_RATE_ROW_FLOOR` in `ingest/engine.py`); reed's own
+    gate had no equivalent, so a narrow search returning 1-3 rows could withhold real
+    leads over noise, not an actual rot.
+
+    Static, pinned on the SHAPE (a length comparison against the same literal `8` this
+    codebase already uses for the identical purpose), not on exact variable names."""
+    text = (_SOURCES_DIR / "reed.py").read_text(encoding="utf-8")
+    row_floor_gate = re.compile(r"\w+\.length\s*>=\s*8\s*&&")
+    assert row_floor_gate.search(text), (
+        "the dominance gate has no row floor -- a tiny returned set can trip it on a "
+        "single odd card and withhold real leads"
+    )
