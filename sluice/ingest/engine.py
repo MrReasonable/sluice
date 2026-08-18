@@ -47,12 +47,25 @@ def _lead_rates(leads) -> dict:
     }
 
 
+# Drift reasons that WITHHOLD a source's leads from the sink for this run, rather than
+# merely reporting them (#156). Incident 1's real cost was ~185 blank-companied notes
+# burned into `seen.db`, which has no removal path -- reporting alone leaves that hole
+# open for however long it takes a human to read the digest. Deliberately narrower than
+# the full drift vocabulary: `redirect`/`blocked`/`auth`/`unreachable`/`zero` already gate
+# at count==0 in every shipped case (nothing to withhold), and `drop` is a bare row-count
+# comparison, the LOWEST-confidence signal here -- suppressing a real day's leads on a
+# false `drop` is a worse failure than a late report. `fallback`/`login`/`blank` are the
+# three that can carry real, content-inspected rows through to `fresh`.
+BREAKER_REASONS = frozenset({"fallback", "login", "blank"})
+
+
 @dataclass
 class SourceResult:
     source_id: str
     status: str = "ok"          # "ok" | "error"
     fetched: int = 0            # rows parsed, before dedup/relevance
-    fresh: int = 0              # leads handed to the sink
+    fresh: int = 0              # leads FOUND this run (found, not necessarily written)
+    withheld: int = 0           # of `fresh`, how many were withheld -- see BREAKER_REASONS
     # "zero" | "drop" | "blank" | "fallback" | "login" | "redirect" | "blocked" | "auth" |
     # "unreachable" | None. Keep in step with core/health.py's `_explained`/`detect_drift` --
     # this comment is the only place the vocabulary is enumerated, so a new reason that
@@ -90,7 +103,18 @@ def run(sources, ctx, sink, seen, health, *, fetch_timeout=60, retries=3):
 
         _update_health(source, result, health, count, signals)
 
-        if fresh:
+        # `_update_health` records health FIRST regardless -- run history must reflect what
+        # was actually fetched, or the next run's baseline/high-water desync from reality.
+        # Only the WRITE is suppressed here, never the measurement.
+        if fresh and result.drift in BREAKER_REASONS:
+            result.withheld = len(fresh)
+            # Never added to `seen_keys`' persisted counterpart: `seen.load()` was read at
+            # the top of this run, and a withheld lead is simply never passed to
+            # `sink.write()`, so `seendb.save()` never runs for it and it never enters
+            # seen.db. The next run re-fetches and re-evaluates it from scratch -- no
+            # special-case recovery path needed, the same discipline `sink.py`'s own
+            # `refused`/`skipped`/`merged_away_unproven` outcomes already follow.
+        elif fresh:
             written = sink.write(fresh)
             for key, value in written.items():
                 report.written[key] = report.written.get(key, 0) + value

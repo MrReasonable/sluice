@@ -4,6 +4,7 @@ Re-homed from tests/test_cli.py. It prints to STDERR, and prints the merged/refu
 (#5) counts only when non-zero -- both behaviours are pinned here.
 """
 from sluice.cli import _print_report
+from sluice.ingest.engine import SourceResult
 
 
 def test_print_report_surfaces_skipped(capsys):
@@ -42,3 +43,28 @@ def test_print_report_surfaces_merged_away(capsys):
     _print_report(_R())
     err = capsys.readouterr().err
     assert "2 merged-away" in err and "1 merged-away (unproven)" in err
+
+
+def test_print_report_names_a_withheld_count_on_the_per_source_line(capsys):
+    # #156's circuit breaker: a withheld run must be distinguishable from an ordinary
+    # `fresh` count on the digest an operator actually reads.
+    class _R:
+        sources = [SourceResult("cwjobs", status="ok", fetched=25, fresh=25,
+                                drift="fallback", withheld=25)]
+        written = {"created": 0, "updated": 0, "skipped": 0}
+
+    _print_report(_R())
+    err = capsys.readouterr().err
+    assert "withheld=25" in err
+
+
+def test_print_report_omits_withheld_when_zero(capsys):
+    # Sparse, matching the `written:` line's own discipline -- an ordinary healthy source
+    # must not print a stray "withheld=0" on every line.
+    class _R:
+        sources = [SourceResult("cord", status="ok", fetched=10, fresh=10)]
+        written = {"created": 10, "updated": 0, "skipped": 0}
+
+    _print_report(_R())
+    err = capsys.readouterr().err
+    assert "withheld" not in err

@@ -48,7 +48,7 @@ def _drive_ingest(monkeypatch):
     class _Rep(_Report):
         degraded = True
         sources = [type("S", (), {"source_id": "example-source", "drift": "zero",
-                                  "retired": False, "status": "ok"})()]
+                                  "retired": False, "status": "ok", "withheld": 0})()]
 
     monkeypatch.setattr("sluice.core.app.Sluice.ingest", lambda self, *a, **k: _Rep())
     monkeypatch.setattr(cli, "_print_report", lambda r: None)

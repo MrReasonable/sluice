@@ -440,6 +440,9 @@ def _print_report(report) -> None:
     for r in report.sources:
         print(f"  {r.source_id:16} status={r.status} fetched={r.fetched} "
               f"fresh={r.fresh} drift={r.drift or '-'}"
+              # Sparse, matching the `written:` line below: a clean run's `withheld` is
+              # always 0 and printing it there would be noise on every ordinary line.
+              f"{f' withheld={r.withheld}' if r.withheld else ''}"
               f"{' RETIRED' if r.retired else ''}", file=sys.stderr)
     w = report.written
     # Sparse: merged/refused (#5) and merged_away/merged_away_unproven (#81) are printed
@@ -492,7 +495,11 @@ def _format_degraded(report) -> str:
         if not (r.drift or r.retired or r.status == "error"):
             continue
         reason = r.drift or ("error" if r.status == "error" else "ok")
-        lines.append(f"- {r.source_id}: {reason}{' [RETIRED]' if r.retired else ''}")
+        # `withheld` (#156): the operator's real leads for this source did not reach the
+        # vault this run -- the notification is the whole point of the breaker, since a
+        # human is now the only path to recovery for a source stuck this way.
+        withheld = f" [{r.withheld} withheld]" if r.withheld else ""
+        lines.append(f"- {r.source_id}: {reason}{withheld}{' [RETIRED]' if r.retired else ''}")
     return "job-sluice: degraded sources this run:\n" + "\n".join(lines)
 
 
