@@ -75,6 +75,77 @@ def test_error_run_counts_as_dead(tmp_path):
     assert h.should_retire("s", threshold=3)
 
 
+def test_rate_high_water_is_a_sticky_max_not_derived_from_the_capped_window(tmp_path):
+    # THE choice that makes #156's `blank` detector durable rather than self-silencing.
+    # Seed one good run then six blank ones -- if the high-water were derived from the
+    # capped `runs` window (as `baseline` is), it would decay toward 0 once the good run
+    # scrolled out; a SEPARATE sticky field must not.
+    h = HealthStore(str(tmp_path / "h.json"))
+    h.record("s", 25, {"company_rate": 0.96})
+    for _ in range(6):
+        h.record("s", 25, {"company_rate": 0.0})
+    assert h.rate_highs("s")["company_rate"] == 0.96
+
+
+def test_rate_high_water_survives_past_the_30_run_retention_cap(tmp_path):
+    # The regression test for the self-silencing bug the sticky design exists to avoid:
+    # derived-from-window would go permanently silent once the single healthy run ages
+    # out of the last 30. 40 runs total -- one good, then 39 more than the window keeps.
+    h = HealthStore(str(tmp_path / "h.json"))
+    h.record("s", 25, {"company_rate": 0.96})
+    for _ in range(39):
+        h.record("s", 25, {"company_rate": 0.0})
+    assert len(h.counts("s", n=100)) == HealthStore._KEEP, "the rolling window IS capped"
+    assert h.rate_highs("s")["company_rate"] == 0.96, (
+        "the high-water decayed once the healthy run left the retained window"
+    )
+
+
+def test_rate_high_water_ignores_a_zero_count_run(tmp_path):
+    # A zero-yield run carries no rate to have been high OR low -- see `_lead_rates`'s
+    # count>0 discipline in ingest/engine.py. Confirmed at the STORE layer too: a stray
+    # `company_rate` key on a count==0 record (should never happen, but health is
+    # best-effort) must not corrupt the high-water.
+    h = HealthStore(str(tmp_path / "h.json"))
+    h.record("s", 0, {"company_rate": 0.99})
+    assert h.rate_highs("s") == {}
+
+
+def test_rate_highs_is_empty_with_no_history(tmp_path):
+    # The abstain case: a source with no recorded runs at all has nothing to compare
+    # against, and MUST read as "cannot evaluate", never as a high-water of 0.0.
+    assert HealthStore(str(tmp_path / "h.json")).rate_highs("s") == {}
+
+
+def test_prior_rate_reads_the_most_recently_recorded_run(tmp_path):
+    h = HealthStore(str(tmp_path / "h.json"))
+    h.record("s", 25, {"company_rate": 0.9})
+    h.record("s", 25, {"company_rate": 0.1})
+    assert h.prior_rate("s", "company_rate") == 0.1
+
+
+def test_prior_rate_is_none_with_no_history(tmp_path):
+    assert HealthStore(str(tmp_path / "h.json")).prior_rate("s", "company_rate") is None
+
+
+def test_prior_rate_is_none_when_the_prior_run_carried_no_such_signal(tmp_path):
+    h = HealthStore(str(tmp_path / "h.json"))
+    h.record("s", 3, {})   # under the row floor upstream -- no rate key at all
+    assert h.prior_rate("s", "company_rate") is None
+
+
+def test_the_existing_median_baseline_DOES_decay_unlike_the_sticky_high_water(tmp_path):
+    # Contrast test, pinning the CLAIM that motivated the sticky design in the first
+    # place: `baseline`'s median-of-7 follows a sustained rot down, so a fifty-to-ten
+    # decline never trips `drop` on any single step once seven runs have banked at the
+    # lower level. If this weren't true there would be no reason for `rate_highs` to be
+    # anything other than another `baseline`-shaped median.
+    h = HealthStore(str(tmp_path / "h.json"))
+    for c in [50, 50, 50, 50, 50, 50, 50, 30, 20, 15, 10, 10, 10, 10]:
+        h.record("s", c, {})
+    assert h.baseline("s") == 10.0, "the median has fully followed the decline"
+
+
 def test_health_report_reflects_the_real_registry_sorted_by_id(tmp_path):
     """AT LEAST TWO real sources, so the sort claim is falsifiable -- with one element,
     a sorted list and an unsorted list are byte-identical and this would pass vacuously

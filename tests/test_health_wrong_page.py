@@ -228,6 +228,193 @@ def test_no_shipped_source_search_url_already_matches_the_vocabulary():
     assert hits == [], f"a shipped source's own search URL already reads as a login path: {hits}"
 
 
+# ---- blank: a completeness collapse relative to the source's own sticky high-water --------
+
+
+def test_a_completeness_collapse_reports_blank():
+    # FIRES: high-water armed (>=0.8), this run low (<0.4*hw), the run before it ALSO low.
+    assert detect_drift(
+        "s", 25, {"company_rate": 0.0}, 25,
+        rate_highs={"company_rate": 0.9}, rate_priors={"company_rate": 0.0},
+    ) == "blank"
+
+
+def test_a_healthy_rate_reports_nothing():
+    assert detect_drift(
+        "s", 25, {"company_rate": 0.85}, 25,
+        rate_highs={"company_rate": 0.9}, rate_priors={"company_rate": 0.8},
+    ) is None
+
+
+def test_a_high_water_below_08_never_arms_the_detector():
+    # THE floor raised from 0.5 to 0.8 (naukrigulf's measured raw company_rate, 0.385,
+    # sat close enough to a 0.5 gate that random draws routinely crossed it -- a false
+    # alarm on ~62% of healthy 30-run windows). A source that has never carried a HIGH
+    # completeness rate cannot have "collapsed" from one.
+    assert detect_drift(
+        "s", 25, {"company_rate": 0.0}, 25,
+        rate_highs={"company_rate": 0.5}, rate_priors={"company_rate": 0.0},
+    ) is None
+
+
+def test_a_single_low_run_does_not_fire_the_streak_gate():
+    # DOES NOT FIRE without a prior low run -- costs exactly one run of detection latency
+    # and is what took wttj's measured false-positive rate from 40-74% to ~0-2%.
+    assert detect_drift(
+        "s", 25, {"company_rate": 0.0}, 25,
+        rate_highs={"company_rate": 0.9}, rate_priors={"company_rate": None},
+    ) is None
+
+
+def test_recovering_from_a_single_bad_run_never_fires():
+    # The run BEFORE this one was healthy -- one bad run is noise, not a streak.
+    assert detect_drift(
+        "s", 25, {"company_rate": 0.0}, 25,
+        rate_highs={"company_rate": 0.9}, rate_priors={"company_rate": 0.85},
+    ) is None
+
+
+def test_no_history_cannot_fire_blank():
+    # The abstain case: `rate_highs`/`rate_priors` default to `None`, and every existing
+    # positional call site (this file's `fallback` tests, `test_health.py`,
+    # `test_health_explained_zero.py`) omits them entirely -- must stay `None`-safe.
+    assert detect_drift("s", 25, {"company_rate": 0.0}, 25) is None
+
+
+def test_link_rate_is_evaluated_independently_of_company_rate():
+    assert detect_drift(
+        "s", 25, {"company_rate": 0.9, "link_rate": 0.0}, 25,
+        rate_highs={"company_rate": 0.9, "link_rate": 0.9},
+        rate_priors={"company_rate": 0.9, "link_rate": 0.0},
+    ) == "blank"
+
+
+def test_a_zero_yield_run_never_reports_blank():
+    # count>0 phenomenon only, same discipline as `fallback`: a rate over zero rows is
+    # 0/0, not a collapse. Signals carry a collapsed `company_rate` anyway (unrealistic
+    # in the real pipeline -- `_lead_rates` returns {} for an empty leads list -- but the
+    # STRUCTURAL guarantee this pins is that `detect_drift`'s `count == 0` branch returns
+    # before ever consulting `_blank_reason`, not merely that no rate happened to be
+    # present to trip it).
+    assert detect_drift(
+        "s", 0, {"company_rate": 0.0}, 25,
+        rate_highs={"company_rate": 0.9}, rate_priors={"company_rate": 0.0},
+    ) == "zero"
+
+
+def test_blank_outranks_drop():
+    # A count collapse and a completeness collapse coinciding: the content-shape signal
+    # names the actionable cause, matching `fallback`'s reasoning above it.
+    assert detect_drift(
+        "s", 3, {"company_rate": 0.0}, 100,
+        rate_highs={"company_rate": 0.9}, rate_priors={"company_rate": 0.0},
+    ) == "blank"
+
+
+def test_fallback_outranks_blank():
+    # Direct producer evidence (a stamped row) outranks an inferred rate collapse, even
+    # when both fire on the same run.
+    assert detect_drift(
+        "s", 25, {"degraded": "anchor-fallback", "company_rate": 0.0}, 25,
+        rate_highs={"company_rate": 0.9}, rate_priors={"company_rate": 0.0},
+    ) == "fallback"
+
+
+def test_login_and_redirect_still_outrank_blank():
+    assert detect_drift(
+        "s", 25, {"requested_path": "/jobs", "landed_path": "/login", "company_rate": 0.0},
+        25, rate_highs={"company_rate": 0.9}, rate_priors={"company_rate": 0.0},
+    ) == "login"
+    assert detect_drift(
+        "s", 25, {"requested_host": "a.invalid", "landed_host": "b.invalid",
+                 "company_rate": 0.0}, 25,
+        rate_highs={"company_rate": 0.9}, rate_priors={"company_rate": 0.0},
+    ) == "redirect"
+
+
+def test_blank_is_neither_explained_nor_recoverable():
+    assert _explained({"company_rate": 0.0}) is None
+    from sluice.core.health import _RECOVERABLE as recoverable
+    assert "blank" not in recoverable
+
+
+def test_the_blank_thresholds_are_pinned():
+    # SCOPE + deliberate-change gate, mirroring the login vocabulary pin: both numbers
+    # were measured against real sources, and a drive-by tweak should redden this rather
+    # than silently changing detection sensitivity.
+    from sluice.core.health import _BLANK_COLLAPSE, _BLANK_HW_MIN
+
+    assert _BLANK_HW_MIN == 0.8
+    assert _BLANK_COLLAPSE == 0.4
+
+
+def test_the_count_above_zero_precedence_is_PINNED_through_fallback_and_blank():
+    """The sibling of `test_health_explained_zero.py`'s
+    `test_the_reason_precedence_is_PINNED_not_merely_documented`, which pins only the
+    count==0 arm. The count>0 arm now has five ranks; moving any of them left the whole
+    suite green until this existed, exactly the failure mode that test's own docstring
+    warns about."""
+    everything = {
+        "requested_host": "a.invalid", "landed_host": "b.invalid",
+        "requested_path": "/jobs", "landed_path": "/login",
+        "blocked": True, "degraded": "anchor-fallback", "company_rate": 0.0,
+    }
+    highs, priors = {"company_rate": 0.9}, {"company_rate": 0.0}
+
+    def _strip(*keys):
+        return {k: v for k, v in everything.items() if k not in keys}
+
+    assert detect_drift("s", 25, everything, 100, rate_highs=highs, rate_priors=priors) == "redirect"
+    step = _strip("requested_host", "landed_host")
+    assert detect_drift("s", 25, step, 100, rate_highs=highs, rate_priors=priors) == "login"
+    step = _strip("requested_host", "landed_host", "requested_path", "landed_path")
+    assert detect_drift("s", 25, step, 100, rate_highs=highs, rate_priors=priors) == "blocked"
+    step = {"degraded": "anchor-fallback", "company_rate": 0.0}
+    assert detect_drift("s", 25, step, 100, rate_highs=highs, rate_priors=priors) == "fallback"
+    step = {"company_rate": 0.0}
+    assert detect_drift("s", 25, step, 100, rate_highs=highs, rate_priors=priors) == "blank"
+    assert detect_drift("s", 3, {}, 100, rate_highs=highs, rate_priors=priors) == "drop"
+    assert detect_drift("s", 45, {}, 100, rate_highs=highs, rate_priors=priors) is None
+
+
+# ---- the two captured incident-1 fixtures as REAL blank witnesses -------------------------
+
+
+@pytest.mark.parametrize("sid", ["cwjobs", "totaljobs"])
+def test_the_captured_incident_1_fixtures_measure_zero_company_rate_on_parsed_leads(sid):
+    """`tests/fixtures/cwjobs/raw.json` and `.../totaljobs/raw.json` were CAPTURED from a
+    real, rotted board (this is the incident-1 shape), then sanitized -- hostnames
+    replaced with `example.com` -- before being committed to this public repo, the same
+    treatment every golden fixture here gets. Not hand-built: proof `_lead_rates` reaches
+    the real payload shape a genuine capture produces, not just a two-row synthetic case.
+
+    PRECONDITION asserted first, not decoration: if either fixture is ever recaptured
+    from a working extractor it stops being a witness, and the rate assertion below
+    would pass VACUOUSLY -- exactly the `all([])` trap CONTRIBUTING warns about, one
+    level up (a fixture that no longer witnesses anything rather than a sweep that
+    matches nothing)."""
+    import json
+    from pathlib import Path
+
+    from sluice.ingest import sources as registry
+    from sluice.ingest.engine import _lead_rates
+
+    fix = Path(__file__).parent / "fixtures" / sid / "raw.json"
+    raw = json.loads(fix.read_text())
+    src = registry.get(sid)
+    leads = src.parse(raw, src.searches()[0])
+    assert len(leads) >= 8, f"{sid}'s fixture has too few parsed leads to be a witness"
+    rates = _lead_rates(leads)
+    assert rates["company_rate"] == 0.0, (
+        f"{sid}'s fixture no longer shows the 100%-blank-company rot this test witnesses "
+        f"(company_rate={rates['company_rate']}) -- recapture it or delete this test"
+    )
+    assert detect_drift(
+        sid, len(leads), rates, len(leads),
+        rate_highs={"company_rate": 0.96}, rate_priors={"company_rate": 0.0},
+    ) == "blank"
+
+
 # ---- scope guard: every whole-row fallback in a shipped extractor must self-declare ----
 
 _SOURCES_DIR = pathlib.Path(__file__).resolve().parent.parent / "sluice" / "ingest" / "sources"
