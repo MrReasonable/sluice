@@ -83,6 +83,19 @@ def _host(url: str) -> str:
         return ""
 
 
+def _path(url: str) -> str:
+    # Mirrors `_host`: unconditional `""` on failure, never omitted. A path is a
+    # measurement that always exists (possibly empty), not an event that "fired" -- the
+    # same reasoning `landed_host`/`requested_host` already follow. #156's `login` drift
+    # reason (`core/health.py`) needs this pair: a redirect to a login wall on the SAME
+    # host is invisible to a host-only comparison, and that is exactly the incident that
+    # motivated it -- `/jobs?query=...` -> `/login?redirect=%2F`, host unchanged.
+    try:
+        return urlparse(url).path or ""
+    except Exception:
+        return ""
+
+
 def _mk_search(spec) -> Search:
     """A searches_spec entry is (label, url) or (label, url, params) - the optional
     params carry per-search metadata (e.g. {"job_type": "perm"}) so the one engine
@@ -309,6 +322,8 @@ class BrowserListSource:
             "count": len(_sized(raw.get("result"))),
             "landed_host": _host(raw.get("landed", "")),
             "requested_host": _host(raw.get("requested", "")),
+            "landed_path": _path(raw.get("landed", "")),
+            "requested_path": _path(raw.get("requested", "")),
             "markers": {},
         }
         # Present only when they actually fired, so `detect_drift` sees keys it can classify
@@ -426,6 +441,8 @@ class CarouselSource:
             "count": len(_sized(raw.get("jobs"))),
             "landed_host": _host(raw.get("landed", "")),
             "requested_host": _host(raw.get("requested", "")),
+            "landed_path": _path(raw.get("landed", "")),
+            "requested_path": _path(raw.get("requested", "")),
             "markers": {},
         }
         # The same propagation as BrowserListSource, for the same reason. `health_hint` is a
