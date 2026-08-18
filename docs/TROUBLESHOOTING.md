@@ -103,10 +103,18 @@ zero-row check cannot see. This is usually one of:
 
 - **An expired or logged-out Camofox profile.** Check `job-sluice doctor`'s `camofox` row for
   which profile the run used, and re-authenticate it if needed.
-- **The board genuinely requires a login it did not before.** If it stays wedged on `login`
-  across runs, `job-sluice health` shows a `BROKEN reason=login xN` streak so it stays visible
-  — but note `login` does **not** auto-retire the way an unexplained zero does; if the board
-  has permanently moved behind a login wall, disable it by hand (`ingest disable ID`).
+- **The board genuinely requires a login it did not before.** Whether this auto-retires
+  depends on the SHAPE of the login wall. A wall returning **zero** rows is `login`'s only
+  route to retirement: `login` is deliberately excluded from `_RECOVERABLE`, so three
+  consecutive zero-row login runs retire the source exactly like an unexplained zero
+  would, and `job-sluice health`'s cumulative `BROKEN reason=login xN` streak is the
+  signal for it. A wall that still renders a handful of chrome rows (the shape incidents
+  3/4 actually were) never retires — `_is_dead` requires a zero count before it even
+  looks at the reason — and there is no cumulative counter for that case either; the
+  per-run digest and any Telegram notify are the signal instead, since `drift=login`
+  fires and withholds on every affected run. Either way, if the board has permanently
+  moved behind a login wall and it is NOT auto-retiring, disable it by hand (`ingest
+  disable ID`).
 
 `drift=login` also withholds that run's leads, for the same reason and with the same
 automatic recovery as `blank`/`fallback` above.

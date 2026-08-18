@@ -310,9 +310,10 @@ def _explained(signals: dict) -> str | None:
 #
 # `login` (#156) belongs beside `redirect`, NOT beside `auth`, and it is easy to get this
 # backwards -- an expired login sounds like the recoverable case. It is not membership here
-# that matters for the incident it was built for: `_is_dead` short-circuits on `count == 0`,
-# and incident 4's login-walled run returned rows (count 5), so `_RECOVERABLE` membership was
-# never consulted for it either way. Membership only matters for a ZERO-count run landing on
+# that matters for the incident it was built for: `_is_dead` short-circuits (on the `and`'s
+# LEFT operand) whenever `count > 0`, before `_RECOVERABLE` is even consulted, and incident
+# 4's login-walled run returned rows (count 5) -- so `_RECOVERABLE` membership was never
+# consulted for it either way. Membership only matters for a ZERO-count run landing on
 # a login path, and there the evidence is identical to `redirect`'s: the board never comes
 # back on its own, an operator has to notice and act, and this repo's real auto-retire
 # history is exactly that shape (hired.com, hackajob.co). Including `login` here would grant
