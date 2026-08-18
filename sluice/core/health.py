@@ -416,11 +416,11 @@ def detect_drift(
 ) -> str | None:
     """Classify this run against the source's baseline. Returns the reason, or None if healthy.
 
-    Precedence: an EXPLAINED failure (redirect > login > blocked > auth) outranks a bare
-    `zero`, and `zero` outranks `drop`. The explanation is checked FIRST on purpose. Testing
-    `count == 0` first -- as this did until 2026-08-15 -- discards the redirect/blocked
-    signals the caller already gathered and collapses every distinct failure into the one
-    word that cannot be acted on. Within the count>0 arm the full order is
+    Precedence: an EXPLAINED failure (unreachable > redirect > login > blocked > auth)
+    outranks a bare `zero`, and `zero` outranks `drop`. The explanation is checked FIRST on
+    purpose. Testing `count == 0` first -- as this did until 2026-08-15 -- discards the
+    redirect/blocked signals the caller already gathered and collapses every distinct
+    failure into the one word that cannot be acted on. Within the count>0 arm the full order is
     login/redirect/blocked > fallback > blank > drop -- direct producer evidence
     (`fallback`) outranks an inferred one (`blank`), and both outrank the bare row-count
     comparison (`drop`), because a shape-level signal names the actionable cause.
