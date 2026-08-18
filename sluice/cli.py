@@ -443,6 +443,10 @@ def _print_report(report) -> None:
               # Sparse, matching the `written:` line below: a clean run's `withheld` is
               # always 0 and printing it there would be noise on every ordinary line.
               f"{f' withheld={r.withheld}' if r.withheld else ''}"
+              # health_error (review-found): the ONE case where withheld>0 while drift
+              # stays '-' -- printed by name so that combination doesn't read as a bug in
+              # this line rather than what it is, a health-pipeline failure.
+              f"{f' health_error={r.health_error!r}' if r.health_error else ''}"
               f"{' RETIRED' if r.retired else ''}", file=sys.stderr)
     w = report.written
     # Sparse: merged/refused (#5) and merged_away/merged_away_unproven (#81) are printed
@@ -488,13 +492,14 @@ def _notify_reporting(body, *, config, label, unconfigured_note=None) -> str:
 
 
 def _format_degraded(report) -> str:
-    """One line per unhealthy source (drifted, errored, or auto-retired);
-    healthy sources are omitted. Used as the Telegram notify body."""
+    """One line per unhealthy source (drifted, errored, auto-retired, or a health-pipeline
+    failure); healthy sources are omitted. Used as the Telegram notify body."""
     lines = []
     for r in report.sources:
-        if not (r.drift or r.retired or r.status == "error"):
+        if not (r.drift or r.retired or r.status == "error" or r.health_error):
             continue
-        reason = r.drift or ("error" if r.status == "error" else "ok")
+        reason = r.drift or ("error" if r.status == "error"
+                              else "health_error" if r.health_error else "ok")
         # `withheld` (#156): the operator's real leads for this source did not reach the
         # vault this run -- the notification is the whole point of the breaker, since a
         # human is now the only path to recovery for a source stuck this way.

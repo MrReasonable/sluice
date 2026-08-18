@@ -68,3 +68,18 @@ def test_print_report_omits_withheld_when_zero(capsys):
     _print_report(_R())
     err = capsys.readouterr().err
     assert "withheld" not in err
+
+
+def test_print_report_names_a_health_pipeline_failure_on_the_per_source_line(capsys):
+    # Review-found on PR #155: `drift` stays None (prints as `-`) when `_update_health`
+    # itself raised, so `withheld=2` alone would read as an unexplained bug in this line
+    # rather than the health-pipeline failure it actually is.
+    class _R:
+        sources = [SourceResult("cwjobs", status="ok", fetched=2, fresh=2,
+                                withheld=2, health_error="disk full")]
+        written = {"created": 0, "updated": 0, "skipped": 0}
+
+    _print_report(_R())
+    err = capsys.readouterr().err
+    assert "drift=-" in err
+    assert "health_error='disk full'" in err

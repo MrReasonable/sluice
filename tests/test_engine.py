@@ -326,6 +326,43 @@ def test_a_drop_run_STILL_writes_its_leads(tmp_path):
     assert result.withheld == 0
 
 
+class _RaisingHealth:
+    """A health store whose `record()` always raises -- exercises `_update_health`'s except
+    arm (review-found on PR #155): a health-pipeline failure must not let BREAKER_REASONS'
+    own detector fail OPEN and write the run through unclassified. `baseline`/`rate_highs`/
+    `prior_rate`/`should_retire` are never reached once `record` raises first, but are
+    implemented anyway so a future reordering inside `_update_health` doesn't AttributeError
+    this fake instead of exercising the path under test."""
+
+    def baseline(self, source_id):
+        return 0.0
+
+    def rate_highs(self, source_id):
+        return {}
+
+    def prior_rate(self, source_id, key):
+        return None
+
+    def record(self, source_id, count, signals):
+        raise RuntimeError("disk full")
+
+    def should_retire(self, source_id):
+        return False
+
+
+def test_a_health_pipeline_failure_withholds_rather_than_writes_unclassified(tmp_path):
+    rows = [{"title": "T1", "link": "http://x/1"}, {"title": "T2", "link": "http://x/2"}]
+    src = FakeSource("demo", rows)
+    sink = _FakeSink()
+    report = run([src], _ctx(), sink, _FakeSeen(), _RaisingHealth(), retries=1)
+    result = report.sources[0]
+    assert result.drift is None, "drift must stay unclassified, not synthesized"
+    assert result.health_error == "disk full"
+    assert sink.leads == [], "a run whose own health check failed reached the sink anyway"
+    assert report.written == {"created": 0, "updated": 0, "skipped": 0}
+    assert result.withheld == 2 and result.fresh == 2
+
+
 def test_a_healthy_run_reports_zero_withheld(tmp_path):
     rows = [{"title": "T1", "link": "http://x/1"}]
     src = FakeSource("demo", rows)
