@@ -4,7 +4,7 @@ from sluice.core.config import Config
 from sluice.core.seendb import SeenDb
 from sluice.core.vault import Vault
 from sluice.ingest.base import Ctx, Search
-from sluice.ingest.engine import run
+from sluice.ingest.engine import _lead_rates, run
 from sluice.ingest.sink import VaultSink
 
 
@@ -180,3 +180,74 @@ def test_one_unwriteable_lead_does_not_stop_a_later_source(tmp_path, monkeypatch
     assert (leads_dir / "Bee - Banker.md").exists()      # later source still written
     assert not (leads_dir / "Aye - Banker.md").exists()  # failed lead not written
     assert report.written["skipped"] == 1
+
+
+# ---- _lead_rates: #156's `blank` producer -----------------------------------------------
+
+def _leads(n, *, company=True, link=True):
+    return [Lead(source="s", search="s", title=f"T{i}",
+                company="Acme" if company else "",
+                url=f"http://x/{i}" if link else "")
+            for i in range(n)]
+
+
+def test_lead_rates_below_the_row_floor_reports_nothing():
+    # The row floor gate: below it, a rate is NOISE (a single comma-less title on a
+    # small carousel swings a 1-2 row source's rate from 0 to 1), so no key is emitted
+    # at all -- "no rate computed" and "a rate of 0.0" must stay distinguishable.
+    assert _lead_rates(_leads(7, company=False)) == {}
+
+
+def test_lead_rates_at_and_above_the_row_floor_computes():
+    assert _lead_rates(_leads(8, company=False))["company_rate"] == 0.0
+    assert _lead_rates(_leads(8))["company_rate"] == 1.0
+
+
+def test_lead_rates_measures_company_and_link_independently():
+    leads = _leads(8, company=True, link=False)
+    rates = _lead_rates(leads)
+    assert rates["company_rate"] == 1.0
+    assert rates["link_rate"] == 0.0
+
+
+def test_lead_rates_on_a_partial_fixture():
+    leads = _leads(6, company=True) + _leads(4, company=False)
+    assert _lead_rates(leads)["company_rate"] == 0.6
+
+
+# ---- the signal flows end-to-end through run(), on PARSED leads, not raw rows -----------
+
+def test_blank_flows_end_to_end_through_a_real_run(tmp_path):
+    # A source whose extractor STILL returns titled rows -- so parse() does not filter
+    # them out -- but has lost every company. Seeded history gives it a high-water high
+    # enough, and low enough streak, to arm the detector; then the run under test IS the
+    # second low run.
+    h = _health(tmp_path)
+    h.record("blanked", 10, {"company_rate": 0.9})   # healthy history: sets the high-water
+    h.record("blanked", 10, {"company_rate": 0.0})   # first low run: the streak's start
+
+    rows = [{"title": f"Nav {i}", "company": "", "link": f"http://x/{i}"} for i in range(10)]
+    src = FakeSource("blanked", rows)
+    report = run([src], _ctx(), _FakeSink(), _FakeSeen(), h, retries=1)
+    assert report.sources[0].drift == "blank"
+
+
+def test_blank_measures_leads_parse_repairs_not_the_raw_row():
+    # A source whose `parse` override RECOVERS the company from something the raw row
+    # lacks (naukrigulf's real shape, #156) must be measured on the repaired value.
+    class _RepairingSource(FakeSource):
+        def parse(self, raw, search):
+            return [
+                Lead(source=self.id, search=search.label, title=r["title"],
+                    company="Recovered Co", url=r.get("link", ""))
+                for r in raw["result"]
+            ]
+
+    rows = [{"title": f"T{i}", "company": "", "link": f"http://x/{i}"} for i in range(8)]
+    src = _RepairingSource("demo", rows)
+    ctx = _ctx()
+    from sluice.ingest.engine import _run_source
+
+    fresh, result = [], type("R", (), {"fetched": 0, "status": "ok", "error": None})()
+    _, signals = _run_source(src, ctx, set(), fresh, result, fetch_timeout=5, retries=1)
+    assert signals["company_rate"] == 1.0, "measured the raw row (blank), not the repaired lead"

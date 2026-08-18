@@ -29,6 +29,12 @@ from statistics import median
 
 from sluice.core.paths import resolve
 
+# The content-completeness signals a producer may compute over a search's PARSED leads
+# (#156) -- `ingest/engine.py`'s `_lead_rates`. Named here, not there, so `record`'s sticky
+# high-water update and `detect_drift`'s `blank` check both consume the SAME roster rather
+# than each hand-listing the two keys and drifting apart.
+RATE_SIGNALS = ("company_rate", "link_rate")
+
 
 class HealthStore:
     """JSON-backed per-source run history. One file, whole-object rewrite -
@@ -70,9 +76,26 @@ class HealthStore:
             json.dump(self._data, f, indent=2)
 
     def record(self, source_id: str, count: int, signals: dict | None = None) -> None:
-        runs = self._data.setdefault(source_id, {"runs": []})["runs"]
-        runs.append({"count": count, "signals": signals or {}})
-        self._data[source_id]["runs"] = runs[-self._KEEP:]
+        signals = signals or {}
+        entry = self._data.setdefault(source_id, {"runs": []})
+        runs = entry["runs"]
+        runs.append({"count": count, "signals": signals})
+        entry["runs"] = runs[-self._KEEP:]
+        # The STICKY high-water (#156), updated here rather than derived from `runs` --
+        # deliberately a SEPARATE field, not folded into the capped rolling window. A
+        # source that rots and stays rotted would otherwise fire `blank` for exactly
+        # `_KEEP` consecutive runs and then go PERMANENTLY silent once its last healthy
+        # run scrolls out of the window (measured: ~10 days at 3 runs/day, shorter than
+        # any of #156's four incidents lasted). `max(stored, this_run)` never decreases,
+        # so no reset is needed: once a board is genuinely fixed, its next good run simply
+        # stops being "low" relative to the (unchanged or now-higher) high-water, and
+        # `blank` stops firing on its own. Gated on `count > 0`: a zero run carries no
+        # rate to have been high OR low.
+        if count > 0:
+            hw = entry.setdefault("rate_high_water", {})
+            for key in RATE_SIGNALS:
+                if key in signals:
+                    hw[key] = max(hw.get(key, 0.0), signals[key])
         self._save()
 
     def counts(self, source_id: str, n: int = 7) -> list:
@@ -83,6 +106,24 @@ class HealthStore:
         """Median of the last 7 run counts - robust to the odd bumper/empty run."""
         counts = self.counts(source_id, 7)
         return float(median(counts)) if counts else 0.0
+
+    def rate_highs(self, source_id: str) -> dict:
+        """{signal: sticky high-water}, read BEFORE this run's `record()` call -- the same
+        timing discipline as `baseline`. Absent when there is no history for that signal at
+        all: an accessor that read a missing key as `0.0` would make a source's own FIRST
+        rotted run look like a collapse relative to nothing, which is the health-store
+        analogue of empty-config-abstains."""
+        return dict(self._data.get(source_id, {}).get("rate_high_water", {}))
+
+    def prior_rate(self, source_id: str, key: str) -> float | None:
+        """The most recently RECORDED run's value for `key`, or `None` if there is no
+        prior run or it carried no such signal. Read before `record()`, same as
+        `rate_highs`/`baseline` -- this is the "was the run BEFORE this one also low"
+        half of `blank`'s 2-consecutive-run streak requirement."""
+        runs = self._data.get(source_id, {}).get("runs", [])
+        if not runs:
+            return None
+        return runs[-1].get("signals", {}).get(key)
 
     def should_retire(self, source_id: str, threshold: int = 3) -> bool:
         """True once the last `threshold` runs are all dead -- produced nothing for a reason
@@ -306,19 +347,68 @@ def _is_dead(run: dict) -> bool:
     return run.get("count", 0) == 0 and _explained(signals) not in _RECOVERABLE
 
 
-def detect_drift(source_id: str, count: int, signals: dict | None, baseline: float) -> str | None:
+# `blank`'s two gates (#156), each measured against the real 22 sources + 16 golden fixtures
+# before settling here -- neither is the naive first guess:
+#   - HIGH-WATER FLOOR 0.8, not 0.5: at 0.5, naukrigulf's raw company_rate (0.385, before
+#     `_lead_rates` moved this to PARSED leads) sat close enough that the max of 30 draws
+#     routinely crossed it, producing a false alarm on ~62% of healthy 30-run windows. 0.8
+#     costs zero detection latency on the incident-1 shape.
+#   - COLLAPSE RATIO 0.4, reused from `drop` rather than invented fresh -- tightening it
+#     (e.g. to 0.25) was measured and made naukrigulf/wttj's false-positive rates WORSE, not
+#     better, because the real fix is the floor and the streak below, not a tighter ratio.
+_BLANK_HW_MIN = 0.8
+_BLANK_COLLAPSE = 0.4
+
+
+def _blank_reason(signals: dict, rate_highs: dict | None, rate_priors: dict | None) -> bool:
+    """True iff this run shows a company/link completeness COLLAPSE relative to the
+    source's own sticky high-water, sustained across the last TWO recorded runs.
+
+    The 2-consecutive-run requirement is the third gate, alongside the row floor
+    (`ingest/engine.py`'s `_lead_rates`, which withholds the rate keys entirely below 8
+    parsed leads) and the 0.8 high-water floor above. It costs exactly one run of
+    detection latency and was what took every measured false-positive case (naukrigulf,
+    wttj) to approximately zero -- a single low run is noise on a small sample; two in a
+    row is a source that stopped recovering.
+
+    `rate_highs`/`rate_priors` are read by the CALLER before `record()` -- see
+    `HealthStore.rate_highs`/`prior_rate` -- so this function stays pure, matching
+    `baseline`'s existing calling convention."""
+    for key in RATE_SIGNALS:
+        hw = (rate_highs or {}).get(key)
+        rate = signals.get(key)
+        if hw is None or rate is None or hw < _BLANK_HW_MIN or rate >= _BLANK_COLLAPSE * hw:
+            continue
+        prior = (rate_priors or {}).get(key)
+        if prior is not None and prior < _BLANK_COLLAPSE * hw:
+            return True
+    return False
+
+
+def detect_drift(
+    source_id: str, count: int, signals: dict | None, baseline: float,
+    *, rate_highs: dict | None = None, rate_priors: dict | None = None,
+) -> str | None:
     """Classify this run against the source's baseline. Returns the reason, or None if healthy.
 
     Precedence: an EXPLAINED failure (redirect > login > blocked > auth) outranks a bare
     `zero`, and `zero` outranks `drop`. The explanation is checked FIRST on purpose. Testing
     `count == 0` first -- as this did until 2026-08-15 -- discards the redirect/blocked
     signals the caller already gathered and collapses every distinct failure into the one
-    word that cannot be acted on.
+    word that cannot be acted on. Within the count>0 arm the full order is
+    login/redirect/blocked > fallback > blank > drop -- direct producer evidence
+    (`fallback`) outranks an inferred one (`blank`), and both outrank the bare row-count
+    comparison (`drop`), because a shape-level signal names the actionable cause.
 
     Two separate justifications, kept separate on purpose: the precedence reversal is right on
     general principle, but it is NOT what would have rescued the 2026-08-15 LinkedIn case.
     Logged-out LinkedIn serves guest markup at the SAME url, so there was no redirect signal
-    to discard -- only the new `auth` probe surfaces that one."""
+    to discard -- only the new `auth` probe surfaces that one.
+
+    `rate_highs`/`rate_priors` are keyword-only and default to `None` (treated as "no
+    history") rather than being folded into `signals`: they describe HISTORY the caller
+    already holds (`HealthStore.rate_highs`/`prior_rate`), not this run's own measurement,
+    and every existing positional call site in the suite stays valid unchanged."""
     signals = signals or {}
     reason = _explained(signals)
     if count == 0:
@@ -338,6 +428,12 @@ def detect_drift(source_id: str, count: int, signals: dict | None, baseline: flo
     # count collapse and a stamped fallback coincide, the fallback names the actionable cause.
     if signals.get("degraded"):
         return "fallback"
+    # An INFERRED completeness collapse (#156), checked above `drop` for the identical
+    # reason: incident 1's actual harm was ~185 blank-companied leads at a count that looked
+    # perfectly healthy, so a content-shape signal must outrank a bare row-count comparison
+    # whenever both are available.
+    if _blank_reason(signals, rate_highs, rate_priors):
+        return "blank"
     if baseline and count < 0.4 * baseline:
         return "drop"
     return None
