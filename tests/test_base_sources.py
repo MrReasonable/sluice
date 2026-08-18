@@ -120,8 +120,8 @@ def test_health_hint_paths_carry_no_query_string():
     # reach `_login_wall` in the real pipeline, not merely "chosen not to match".
     src = _demo_browser()
     raw = {"result": [],
-           "landed": "https://x.com/jobs?q=account+manager&session_id=abc123",
-           "requested": "https://x.com/jobs?q=account+manager"}
+           "landed": "https://example.invalid/jobs?q=account+manager&session_id=abc123",
+           "requested": "https://example.invalid/jobs?q=account+manager"}
     hint = src.health_hint(raw)
     assert hint["landed_path"] == "/jobs" and hint["requested_path"] == "/jobs"
 
@@ -151,7 +151,8 @@ def test_health_hint_promotes_a_degraded_row_marker_from_a_carousel_source():
 def test_carousel_health_hint_reports_paths_too():
     src = CarouselSource(id="wttj", read_js="R", advance_selector="[n]",
                          searches_spec=[("Otta", "http://o")])
-    raw = {"jobs": [], "landed": "https://x.com/login", "requested": "https://x.com/jobs"}
+    raw = {"jobs": [], "landed": "https://example.invalid/login",
+           "requested": "https://example.invalid/jobs"}
     hint = src.health_hint(raw)
     assert hint["landed_path"] == "/login" and hint["requested_path"] == "/jobs"
 

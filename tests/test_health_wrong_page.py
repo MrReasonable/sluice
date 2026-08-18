@@ -19,6 +19,7 @@ that docstring lie about what the file covers.
 """
 import pathlib
 import re
+import sys
 
 import pytest
 
@@ -426,10 +427,20 @@ def test_the_captured_incident_1_fixtures_measure_zero_company_rate_on_parsed_le
 
 _SOURCES_DIR = pathlib.Path(__file__).resolve().parent.parent / "sluice" / "ingest" / "sources"
 # The shape of a whole-row fallback branch: "if row count is zero, generate rows some other
-# way". Reed's weaker single-field fallback (a link-only cascade) doesn't match this pattern
-# and is swept by name below instead -- the two are different degradation classes with
-# different detection, not an oversight.
-_WHOLE_ROW_FALLBACK = re.compile(r"if\s*\(\s*r\.length\s*===\s*0\s*\)\s*\{")
+# way" -- over any local variable name, matching either an explicit zero comparison
+# (===0/==0) or a bare falsy check (!VAR.length). Reed's weaker single-field fallback (a
+# link-only cascade) doesn't match this pattern and is swept by name below instead -- the
+# two are different degradation classes with different detection, not an oversight.
+#
+# Deliberately not exhaustive (`<1`, `.length < 1`, a helper function wrapping the check,
+# ...) -- widening further chases a shape that does not exist in this codebase today at
+# the cost of a regex nobody can read the coverage of. `test_the_whole_row_fallback_sweep_
+# finds_something` is the anti-vacuity guard that would catch a real fallback the sweep
+# stops seeing; `test_a_loose_equality_or_falsy_check_variant_is_still_swept` pins the two
+# variants this pattern DOES cover.
+_WHOLE_ROW_FALLBACK = re.compile(
+    r"if\s*\(\s*(?:!\s*\w+\.length|\w+\.length\s*={2,3}\s*0)\s*\)\s*\{"
+)
 
 
 def _whole_row_fallback_branches():
@@ -438,17 +449,20 @@ def _whole_row_fallback_branches():
     Swept over every .py file in the directory, not the registry: `_stepstone.py` is
     underscore-prefixed (a shared helper, not a registered source) and invisible to
     `sources.all_sources()`, but its fallback is exactly the one #156 is about.
+
+    Each branch's body is bounded at the START OF THE NEXT MATCH in the same file (or end
+    of file for the last one) -- NOT a fixed-size window. A fixed window let a SECOND
+    fallback's own `degraded` stamp bleed backward and satisfy an EARLIER, genuinely
+    unmarked branch's check, which would have made the guard vacuous the moment a second
+    whole-row fallback landed anywhere near the first.
     """
     branches = []
     for path in sorted(_SOURCES_DIR.glob("*.py")):
         text = path.read_text(encoding="utf-8")
-        for m in _WHOLE_ROW_FALLBACK.finditer(text):
-            # Take a generous slice after the match -- these branches are a few lines of
-            # minified-ish JS, not deeply nested, so a fixed window comfortably covers one
-            # branch body without needing a real brace-matcher. 1500 chars, not 800: a
-            # branch preceded by a long explanatory comment (as `_stepstone.py`'s is) can
-            # push the actual `degraded:` stamp past a tighter window and false-negative.
-            branches.append((path.name, text[m.end():m.end() + 1500]))
+        matches = list(_WHOLE_ROW_FALLBACK.finditer(text))
+        for i, m in enumerate(matches):
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+            branches.append((path.name, text[m.end():end]))
     return branches
 
 
@@ -457,6 +471,40 @@ def test_the_whole_row_fallback_sweep_finds_something():
     # sweep matches nothing. Pin that it actually looked at a real fallback branch.
     branches = _whole_row_fallback_branches()
     assert branches, "no whole-row fallback found in sluice/ingest/sources/ -- sweep is vacuous"
+
+
+@pytest.mark.parametrize("snippet", [
+    "if(rows.length===0){",       # the shipped shape, alternate variable name
+    "if (out.length == 0) {",     # loose equality, spaced
+    "if(!r.length){",             # bare falsy check
+    "if(!results.length){",       # bare falsy check, alternate variable name
+])
+def test_a_loose_equality_or_falsy_check_variant_is_still_swept(snippet):
+    assert _WHOLE_ROW_FALLBACK.search(snippet), (
+        f"the sweep no longer recognises this whole-row fallback shape: {snippet!r}"
+    )
+
+
+def test_a_later_branchs_marker_cannot_satisfy_an_earlier_unmarked_one(tmp_path, monkeypatch):
+    # The window-boundary regression this fix closes: a fixed-size slice after each match
+    # let a SECOND fallback's own `degraded` stamp bleed backward into an EARLIER,
+    # genuinely unmarked branch's captured body, making the guard vacuously pass. Bounding
+    # each branch at the next match's start (or end of file) is what prevents that.
+    fixture = tmp_path / "two_branches.py"
+    fixture.write_text(
+        "if(r.length===0){\n"
+        "    r.push({title:t, link, salary:''});\n"  # unmarked -- must be flagged
+        "}\n"
+        "if(r.length===0){\n"
+        "    r.push({title:t, link, salary:'', degraded:'anchor-fallback'});\n"  # marked
+        "}\n"
+    )
+    monkeypatch.setattr(sys.modules[__name__], "_SOURCES_DIR", tmp_path)
+    unmarked = [name for name, body in _whole_row_fallback_branches()
+                if not _DEGRADED_STAMP.search(body)]
+    assert unmarked == ["two_branches.py"], (
+        "the second branch's marker satisfied the first, genuinely unmarked branch"
+    )
 
 
 _DEGRADED_STAMP = re.compile(r"degraded\s*:\s*['\"]")  # the JS object-key STAMP, not prose
