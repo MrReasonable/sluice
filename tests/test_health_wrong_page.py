@@ -29,6 +29,7 @@ from sluice.core.health import (
     _explained,
     _login_segment,
     detect_drift,
+    login_wall,
 )
 from sluice.ingest import sources as registry
 
@@ -206,6 +207,21 @@ def test_account_is_deliberately_excluded_from_the_vocabulary():
     # than silently passing the frozenset-equality check above by accident.
     assert "account" not in _LOGIN_SEGMENTS
     assert _login_segment("/account/jobs") is None
+
+
+def test_login_wall_compares_PRESENCE_not_which_word_matched():
+    # Found by review: `_LOGIN_SEGMENTS` has genuinely overlapping entries (`session`/
+    # `sessions`), and `_login_segment` returns whichever ONE matches a given path
+    # independently -- so a requested `/sessions/search` (resolves to "sessions")
+    # redirecting to a landed `/session/new` (resolves to "session") is two DIFFERENT
+    # words for what is plausibly the same login-adjacent area of one site. The first
+    # version compared word IDENTITY (`word != _login_segment(requested)`) and would have
+    # reported that as a fresh wall -- exactly the false positive the "absent from
+    # requested" guard exists to prevent, just missed by comparing the wrong thing.
+    assert login_wall("/sessions/search", "/session/new") is False
+    # The real incident is unaffected: the requested path carries NO login word at all,
+    # so presence-comparison still fires correctly.
+    assert login_wall("/jobs", "/login") is True
 
 
 def test_the_paths_are_NOT_persisted_across_searches():
@@ -485,6 +501,39 @@ def test_a_loose_equality_or_falsy_check_variant_is_still_swept(snippet):
     )
 
 
+@pytest.mark.parametrize("snippet", [
+    "if(t.length>5)r.push(...)",       # remoteok/reed-shaped: a length THRESHOLD, not a
+                                        # zero/falsy check -- title.length>5 gates a single
+                                        # row, it says nothing about the row COUNT.
+    "if(t&&t.length>5){",              # the compound form several shipped extractors use
+    "if(title.length<5)return;",       # naukrigulf-shaped early return, also a threshold
+    "if(t.length<8){",                 # a different threshold, same shape
+])
+def test_ordinary_length_threshold_guards_are_NOT_mistaken_for_a_fallback(snippet):
+    # The widened regex's own false-positive guard: `\w+\.length` alone is not enough to
+    # be a whole-row fallback -- `title.length>5` and `t.length<8` are per-ROW validity
+    # checks that exist throughout the real shipped extractors (confirmed against every
+    # file in sluice/ingest/sources/ below), and matching them here would make this sweep
+    # report on ordinary code as if it were a degradation path.
+    assert not _WHOLE_ROW_FALLBACK.search(snippet), (
+        f"an ordinary length-threshold guard was mistaken for a whole-row fallback: {snippet!r}"
+    )
+
+
+def test_the_widened_regex_still_matches_exactly_the_one_real_fallback():
+    # Pins the CURRENT count against the real shipped sources, not just synthetic
+    # snippets -- a regex that passes the parametrized cases above in isolation could
+    # still over-match real extractor code the tests never construct by hand.
+    branches = _whole_row_fallback_branches()
+    assert [name for name, _ in branches] == ["_stepstone.py"], (
+        f"the widened sweep now matches something other than the one known real "
+        f"fallback: {[name for name, _ in branches]}"
+    )
+
+
+_DEGRADED_STAMP = re.compile(r"degraded\s*:\s*['\"]")  # the JS object-key STAMP, not prose
+
+
 def test_a_later_branchs_marker_cannot_satisfy_an_earlier_unmarked_one(tmp_path, monkeypatch):
     # The window-boundary regression this fix closes: a fixed-size slice after each match
     # let a SECOND fallback's own `degraded` stamp bleed backward into an EARLIER,
@@ -505,9 +554,6 @@ def test_a_later_branchs_marker_cannot_satisfy_an_earlier_unmarked_one(tmp_path,
     assert unmarked == ["two_branches.py"], (
         "the second branch's marker satisfied the first, genuinely unmarked branch"
     )
-
-
-_DEGRADED_STAMP = re.compile(r"degraded\s*:\s*['\"]")  # the JS object-key STAMP, not prose
 
 
 def test_every_whole_row_fallback_stamps_a_degraded_marker():
@@ -565,10 +611,72 @@ def test_reeds_link_fallback_marker_requires_the_tier_to_DOMINATE_not_one_row():
         "the dominance gate this test guards was removed"
     )
     # The NEW shape: a source-level stamp gated on the fallback tier exceeding half of
-    # the pushed rows. Not pinned to the exact variable name (`fellBack`) or exact
-    # divisor -- pinned to the SHAPE (a count compared against a fraction of r.length),
-    # which is the property that actually matters.
-    dominance_gate = re.compile(r"\w+\s*>\s*r\.length\s*/\s*2")
+    # the RETURNED rows. Not pinned to the exact variable names or exact divisor --
+    # pinned to the SHAPE (a count compared against half the length of whatever variable
+    # holds the population), which is the property that actually matters.
+    dominance_gate = re.compile(r"\w+\s*>\s*\w+\.length\s*/\s*2")
     assert dominance_gate.search(text), (
         "no dominance comparison found -- link-fallback may be stamping unconditionally again"
+    )
+
+
+def test_reeds_fallback_count_is_scoped_to_PUSHED_rows_not_every_card():
+    """A second, narrower regression the dominance gate above cannot see: the fallback
+    tally must only count cards that actually became a pushed lead, not every card the
+    unscoped tier touched. Counting a card that FAILS the title check (an ad slot, a
+    promo banner with short or missing text) would inflate the fallback ratio against a
+    denominator those cards never joined -- a page full of such clutter could then
+    dominance-trip and withhold real, clean leads that never used the fallback tier at
+    all. Found by review, not hypothetical.
+
+    Static (no JS execution harness in this repo -- see the sibling tests above), pinned
+    on the per-row tally happening strictly inside the same title-checked block as the
+    `r.push`, not on the card-iteration level above it."""
+    text = (_SOURCES_DIR / "reed.py").read_text(encoding="utf-8")
+    # The OLD, buggy shape: tallied at card-iteration scope, before -- and regardless
+    # of -- the title check that decides whether the row is ever pushed.
+    counted_before_push_check = re.compile(
+        r"if\(ln\)\s*fellBack\+\+;\s*\}\s*\n\s*if\(t&&t\.length"
+    )
+    assert not counted_before_push_check.search(text), (
+        "reed regressed to counting a fallback hit before the title/push check -- "
+        "the denominator/numerator mismatch this test guards was reintroduced"
+    )
+    # The NEW shape: the per-row tally lives INSIDE the `if(t&&t.length>5){...}` block,
+    # immediately after the row is pushed -- so it only ever tallies rows that are
+    # actually delivered.
+    counted_inside_push_block = re.compile(
+        r"r\.push\(\{[^}]*\}\);\s*\w+\.push\(usedFallback\);"
+    )
+    assert counted_inside_push_block.search(text), (
+        "the fallback tally is no longer recorded inside the pushed-row block -- "
+        "it may be counting cards that were never delivered as leads"
+    )
+
+
+def test_reeds_dominance_ratio_is_measured_on_the_RETURNED_rows_not_every_matched_card():
+    """A THIRD regression the two gates above cannot see: the page can match far more
+    cards than the 20 this function ever returns (`.slice(0,20)`), and the dominance
+    ratio must be computed over exactly the RETURNED rows -- not the full, unsliced set
+    every matched card joined. Getting this backwards fails in both directions: fallback
+    hits concentrated in the returned prefix but diluted by clean cards further down the
+    page could under-count and let degraded leads reach the sink; fallback hits
+    concentrated further down the page, with a genuinely clean returned prefix, could
+    over-count and withhold healthy leads that never used the fallback tier at all.
+    Found by review, not hypothetical -- the identical shape as the two gates above,
+    one layer further out.
+
+    Static, pinned on the slice happening BEFORE the ratio is computed (a variable
+    assigned from `.slice(0,20)`, then measured), not on exact variable names."""
+    text = (_SOURCES_DIR / "reed.py").read_text(encoding="utf-8")
+    slice_index = text.find(".slice(0,20)")
+    assert slice_index != -1, "reed.py no longer slices its rows -- sweep is stale"
+    # Every domain check against `.length / 2` must appear AFTER a `.slice(0,20)` in the
+    # source -- computing it before means it ran against the pre-slice population.
+    dominance_gate = re.compile(r"\w+\s*>\s*\w+\.length\s*/\s*2")
+    match = dominance_gate.search(text)
+    assert match, "no dominance comparison found"
+    assert match.start() > slice_index, (
+        "the dominance ratio is computed BEFORE the rows are sliced to the returned "
+        "20 -- it is measuring a population the caller never actually sees"
     )
