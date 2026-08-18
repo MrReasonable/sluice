@@ -26,3 +26,21 @@ def test_degraded_property_lists_drift_pairs():
     report.sources = [SourceResult("cord", drift="zero"),
                       SourceResult("ok", status="ok")]
     assert report.degraded == [("cord", "zero")]
+
+
+def test_format_degraded_names_a_withheld_count():
+    # #156's circuit breaker: the notification is the whole point once a source's real
+    # leads did not reach the vault, so the withheld count must be visible in the body.
+    report = RunReport()
+    report.sources = [SourceResult("cwjobs", drift="fallback", withheld=25)]
+    assert "- cwjobs: fallback [25 withheld]" in _format_degraded(report)
+
+
+def test_format_degraded_omits_withheld_when_zero():
+    # Sparse, matching the `written:` line's discipline: an ordinary drifted-but-not-
+    # withheld source (e.g. `drop`) must not print a stray "[0 withheld]".
+    report = RunReport()
+    report.sources = [SourceResult("cord", drift="drop", withheld=0)]
+    text = _format_degraded(report)
+    assert "- cord: drop" in text
+    assert "withheld" not in text
