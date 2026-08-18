@@ -51,11 +51,22 @@ def _lead_rates(leads) -> dict:
 # merely reporting them (#156). Incident 1's real cost was ~185 blank-companied notes
 # burned into `seen.db`, which has no removal path -- reporting alone leaves that hole
 # open for however long it takes a human to read the digest. Deliberately narrower than
-# the full drift vocabulary: `redirect`/`blocked`/`auth`/`unreachable`/`zero` already gate
-# at count==0 in every shipped case (nothing to withhold), and `drop` is a bare row-count
-# comparison, the LOWEST-confidence signal here -- suppressing a real day's leads on a
-# false `drop` is a worse failure than a late report. `fallback`/`login`/`blank` are the
-# three that can carry real, content-inspected rows through to `fresh`.
+# the full drift vocabulary, and each exclusion for its OWN reason, not one blanket claim:
+#   - `auth`/`unreachable`/`zero` are structurally count==0-only -- `detect_drift`'s
+#     count>0 allowlist does not include them, so there is nothing to withhold.
+#   - `blocked`'s one shipped producer (`workinstartups.py`'s HEAD-precheck) always
+#     returns zero rows when it fires, so it is count==0 in practice today -- but NOT
+#     structurally: `detect_drift` permits `blocked` to survive a positive count for a
+#     future source, and this set would need revisiting if one ships.
+#   - `redirect` genuinely CAN carry a positive count (a cross-host redirect landing on a
+#     page that still parses rows -- `test_offdomain_redirect_flags` proves this at
+#     count=5), and is deliberately left OUT anyway: it predates this PR, and withholding
+#     on it is a real, separate scope decision for a follow-up, not a side effect of
+#     shipping fallback/login/blank.
+#   - `drop` is a bare row-count comparison, the LOWEST-confidence signal here --
+#     suppressing a real day's leads on a false `drop` is a worse failure than a late
+#     report.
+# `fallback`/`login`/`blank` are the three NEW, content-inspected reasons this PR adds.
 BREAKER_REASONS = frozenset({"fallback", "login", "blank"})
 
 
@@ -108,12 +119,19 @@ def run(sources, ctx, sink, seen, health, *, fetch_timeout=60, retries=3):
         # Only the WRITE is suppressed here, never the measurement.
         if fresh and result.drift in BREAKER_REASONS:
             result.withheld = len(fresh)
-            # Never added to `seen_keys`' persisted counterpart: `seen.load()` was read at
-            # the top of this run, and a withheld lead is simply never passed to
-            # `sink.write()`, so `seendb.save()` never runs for it and it never enters
-            # seen.db. The next run re-fetches and re-evaluates it from scratch -- no
-            # special-case recovery path needed, the same discipline `sink.py`'s own
-            # `refused`/`skipped`/`merged_away_unproven` outcomes already follow.
+            # Un-claim these keys from the RUN-LOCAL dedup set too, not only from the
+            # persisted seen.db counterpart. `_run_source` added them to `seen_keys` while
+            # parsing, before this source's drift was known -- so leaving them claimed would
+            # make a withheld source silently suppress a HEALTHY sibling source's identical
+            # lead later in this same run (the same job posted on two boards), which is
+            # exactly the silent-lead-loss failure #156 exists to close, just moved one layer
+            # over. Never touches the persisted `seen.db`: `seen.load()` was read once at the
+            # top of this run, and a withheld lead is simply never passed to `sink.write()`,
+            # so `seendb.save()` never runs for it and it never enters seen.db -- the next
+            # run re-fetches and re-evaluates it from scratch, no special-case recovery path
+            # needed, the same discipline `sink.py`'s own `refused`/`skipped`/
+            # `merged_away_unproven` outcomes already follow.
+            seen_keys.difference_update(lead.dedup_key for lead in fresh)
         elif fresh:
             written = sink.write(fresh)
             for key, value in written.items():
@@ -129,7 +147,9 @@ def _run_source(source, ctx, seen_keys, fresh, result, fetch_timeout, retries):
     only if EVERY search failed to fetch."""
     searches = list(searches_for(source, getattr(ctx, "config", None)))
     total, signals, ok, last_error = 0, {}, 0, None
-    explained = {}   # explanation keys seen on ANY search; see the loop below
+    explained = {}    # explanation keys seen on ANY search; see the loop below
+    degraded = None   # the first `degraded` marker seen on ANY search; sticky, like `explained`
+    run_leads = []    # every PARSED lead from every search this run; see _lead_rates below
     for search in searches:
         try:
             raw = run_with_timeout(
@@ -148,12 +168,15 @@ def _run_source(source, ctx, seen_keys, fresh, result, fetch_timeout, retries):
         total += hint.get("count", 0)
         signals = {k: v for k, v in hint.items() if k != "markers"}
         leads = source.parse(raw, search)
-        # `company_rate`/`link_rate` (#156), computed here rather than in `health_hint`: the
-        # rate must be measured on what `parse` actually recovers (naukrigulf's `parse`
-        # repairs a company mashed into the title via the listing URL's own seam), not on
-        # the raw payload `health_hint` sees, or the signal reports on an intermediate the
-        # operator never sees rather than on what reaches the vault.
-        signals.update(_lead_rates(leads))
+        run_leads.extend(leads)
+        # `degraded` (#156) is sticky across searches, for the identical reason
+        # `_EXPLAINING_SIGNALS` is below: `signals` is reassigned per search, so without
+        # this a source whose FIRST search fell back to a degraded extractor path and whose
+        # LAST search came back clean would report no `fallback` at all -- the marker
+        # silently overwritten by a later, unrelated search. First-found wins, matching
+        # `explained.setdefault` below; a search that never degrades never touches it.
+        if degraded is None and hint.get("degraded"):
+            degraded = hint["degraded"]
         # An EXPLANATION is sticky across searches; counts, hosts and paths are not. Hosts and
         # paths are excluded deliberately rather than overlooked: each is a matched pair, and
         # with the `{**explained, **signals}` merge below, persisting either independently
@@ -180,8 +203,15 @@ def _run_source(source, ctx, seen_keys, fresh, result, fetch_timeout, retries):
     if searches and ok == 0:
         result.status, result.error = "error", last_error
     # `signals` last so the final search's count/hosts still win; `explained` only supplies
-    # keys a later search dropped.
-    return total, {**explained, **signals}
+    # keys a later search dropped. `company_rate`/`link_rate` are computed ONCE here, over
+    # every PARSED lead from every search this run -- not per search and reassigned, which
+    # would have the identical "last search wins" hole `explained` exists to close, and
+    # would also apply `_RATE_ROW_FLOOR` per search rather than to the run's real total (a
+    # 2-search source returning 5 leads each clears the floor in aggregate but not alone).
+    final = {**explained, **signals, **_lead_rates(run_leads)}
+    if degraded:
+        final["degraded"] = degraded
+    return total, final
 
 
 def _update_health(source, result, health, count, signals):

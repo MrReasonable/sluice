@@ -45,9 +45,10 @@ The run report is printed to **stderr**, not stdout — pipe accordingly:
 written: N created, N updated[, N merged][, N refused][, N merged-away][, N merged-away (unproven)], N skipped
 ```
 `withheld` appears only when non-zero: `drift` of `fallback`/`blank`/`login` withholds that
-source's leads from the vault for the run rather than writing them (see
-`docs/ARCHITECTURE.md`'s `BREAKER_REASONS` note) — the leads are never recorded as seen, so
-the next run retries them automatically once the source recovers.
+source's leads from the selected sink (`--sink vault` or `--sink json`) for the run rather
+than writing them (see `docs/ARCHITECTURE.md`'s `BREAKER_REASONS` note) — the leads are
+never recorded as seen, so the next run retries them automatically once the source
+recovers.
 Refuses (exit 1) if the disabled-sources overlay is unreadable, or if the selection resolves
 to zero enabled sources. Otherwise exits 0 even when individual sources errored — check the
 per-source `status=` field for that. Telegram-notifies (if configured) when any source
