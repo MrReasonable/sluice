@@ -685,7 +685,7 @@ def test_reeds_dominance_ratio_is_measured_on_the_RETURNED_rows_not_every_matche
 
 
 def test_reeds_dominance_gate_has_a_row_floor_matching_blanks_own_small_sample_discipline():
-    """A FOURTH regression the three gates above cannot see (CodeRabbit, PR #155): the
+    """A FOURTH regression the three gates above cannot see: the
     dominance ratio has no row floor, so a single returned row that used the unscoped
     fallback tier trips `1 > 0.5` and withholds the whole run via `fallback` in
     BREAKER_REASONS. `_lead_rates` guards the identical small-sample-noise shape for
