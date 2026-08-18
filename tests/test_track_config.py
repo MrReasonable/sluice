@@ -211,10 +211,11 @@ def test_every_shipped_relay_key_is_a_real_multi_label_host():
         assert denylist, "a shipped safety denylist must be non-empty"
         for key in denylist:
             labels = key.split(".")
-            assert len(labels) >= 2, (
-                f"{key!r} has fewer than two dot-separated labels -- a bare TLD or "
-                "single label as a suffix-match key would swallow every host under it")
+            assert len(labels) >= 2 and all(labels), (
+                f"{key!r} has fewer than two dot-separated labels, or an empty one (a "
+                "stray leading/trailing/doubled dot) -- either shape is a suffix-match "
+                "key that would swallow every host under it")
             others = [other for other in denylist if other != key]
-            assert not any(key == other or key.endswith("." + other) for other in others), (
+            assert not any(key.endswith("." + other) for other in others), (
                 f"{key!r} is a dot-separated suffix of another key in the same denylist, "
                 "making the longer entry redundant")

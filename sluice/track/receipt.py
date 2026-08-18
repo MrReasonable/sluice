@@ -199,8 +199,8 @@ def _lead_hosts(lead) -> list[str]:
     tenant subdomain) rather than wherever sluice happened to scrape the lead from.
     `url` is the ingest source (see `_is_multi_tenant`'s docstring on why that is
     usually a multi-tenant board, not the employer) and stays a fallback because
-    `applied_url` is OPTIONAL: roughly half of in-flight leads never had `--url` passed
-    at apply time and so carry only `url`.
+    `applied_url` is OPTIONAL: `apply record --url` is not a required flag
+    (`sluice/apply/record.py`), so a lead applied to without it carries only `url`.
 
     Deduplicated -- a lead with no `applied_url` would otherwise test the same `url`
     host twice -- and empty hosts are dropped, so `match_receipt`'s per-lead loop can
