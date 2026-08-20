@@ -222,7 +222,16 @@ whichever neighbour it was written next to:
    inspecting reasons NO count==0 run can ever reach: `fallback` (a row
    the extractor's own degraded path stamped -- `ingest/base.py`'s
    `_first_degraded` promotes the marker from RAW rows, so it survives
-   even a row `parse` later drops on a blank title) then `blank` (a
+   even a row `parse` later drops on a blank title), then `paths` (#153 --
+   EVERY raw row was rejected by the source's own `posting_paths`
+   allowlist, i.e. the board renamed the path its postings live at; the
+   gate is EQUALITY with `count` rather than a ratio, and both terms are
+   accumulated off the same hint on the same line of `_run_source`, so
+   numerator and denominator cannot straddle two populations or two
+   pipeline stages. A PARTIAL rename is deliberately not caught here and
+   is not claimed to be -- `count` is RAW rows and stays healthy -- which
+   is why `SourceResult.rejected_paths` is printed by `_print_report`
+   whether or not this gate fires), then `blank` (a
    company/link completeness collapse measured over EVERY search's
    **parsed** leads this run, aggregated rather than taken from any one
    search's snapshot -- never the raw payload, since a source's `parse`
@@ -1250,7 +1259,19 @@ Four points in the config are the seams for pluggable adapters.
   `_row_to_lead` and the base class's title-non-empty filter still run:
   `naukrigulf` overrides it to recover a company mashed into the title via the
   listing URL's own seam (#151), `wellfound` to drop company-profile-card rows
-  its extractor selector lets through (#151).
+  its extractor selector lets through (#151). Row filtering also has a
+  DECLARATIVE form that needs no override: `posting_paths` (#153), a tuple of
+  URL path prefixes a posting's link must start with, honoured by both base
+  classes' `parse`. It is a plugin declaration beside `extractor_js`/`wait`,
+  NOT a user config key -- `sources.<id>` accepts only `{enabled, tuning,
+  searches}`. Empty is the shipped default and ABSTAINS, so the sources that
+  declare nothing are byte-identical to before it existed; a misdeclaration
+  (a bare string, or a prefix without a leading `/`) raises at construction
+  via `validate_posting_paths`, because both directions are otherwise silent
+  and they fail OPPOSITE ways -- one admits everything, the other rejects
+  everything. Prefer it to a `parse` override for a pure destination check:
+  an override that forgets to delegate to `super().parse(...)` loses the
+  guard silently.
 
 `job-sluice doctor` is a read-only preflight over the whole pipeline, not only the backend
 seam: it enumerates every configured backend (primary and fallback, per sub-app) and

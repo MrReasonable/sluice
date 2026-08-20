@@ -428,9 +428,9 @@ def detect_drift(
     purpose. Testing `count == 0` first -- as this did until 2026-08-15 -- discards the
     redirect/blocked signals the caller already gathered and collapses every distinct
     failure into the one word that cannot be acted on. Within the count>0 arm the full order is
-    login/redirect/blocked > fallback > blank > drop -- direct producer evidence
-    (`fallback`) outranks an inferred one (`blank`), and both outrank the bare row-count
-    comparison (`drop`), because a shape-level signal names the actionable cause.
+    login/redirect/blocked > fallback > paths > blank > drop -- direct producer evidence
+    (`fallback`, `paths`) outranks an inferred one (`blank`), and all outrank the bare
+    row-count comparison (`drop`), because a shape-level signal names the actionable cause.
 
     Two separate justifications, kept separate on purpose: the precedence reversal is right on
     general principle, but it is NOT what would have rescued the 2026-08-15 LinkedIn case.
@@ -460,6 +460,29 @@ def detect_drift(
     # count collapse and a stamped fallback coincide, the fallback names the actionable cause.
     if signals.get("degraded"):
         return "fallback"
+    # Every row rejected on its posting path (#153). DIRECT producer evidence, like
+    # `fallback` just above and checked immediately after it: the guard did not infer that
+    # rows were missing, it dropped them itself and says how many. Placed BELOW `fallback`
+    # because a degraded extractor is the more upstream cause -- a fallback selector that
+    # scrapes the wrong anchors produces wrong links too, so `fallback` names the root and
+    # this would name its symptom.
+    #
+    # The gate is EQUALITY, not a ratio, and that is deliberate. `rejected` and `count` are
+    # accumulated off the SAME hint on the SAME line of `_run_source`, so they are one
+    # population at one pipeline stage -- the alignment a ratio gate got wrong three times
+    # in #156. Equality means this fires only on the unambiguous case, every row rejected,
+    # which is what a board renaming `/jobs/` to `/job/` actually looks like; it cannot
+    # false-positive on reed's steady state, where a handful of course cards are rejected
+    # out of a healthy page every single run.
+    #
+    # A PARTIAL rename -- a board serving both spellings -- is deliberately NOT caught here
+    # and is not claimed to be: `count` is raw rows and stays healthy, so there is no
+    # count-based signal to catch it with. `SourceResult.rejected_paths` is printed
+    # unconditionally for exactly that case; this gate is the loud half, that number is the
+    # visible half.
+    rejected = signals.get("rejected_paths", 0)
+    if rejected and rejected == count:
+        return "paths"
     # An INFERRED completeness collapse (#156), checked above `drop` for the identical
     # reason: incident 1's actual harm was ~185 blank-companied leads at a count that looked
     # perfectly healthy, so a content-shape signal must outrank a bare row-count comparison
