@@ -26,6 +26,7 @@ import pytest
 from sluice.core import plugins
 from sluice.core.app import Sluice
 from sluice.core.leads import Lead
+from sluice.core.protocols import CandidateProfile
 from tests.conformance.seeds import seed
 from tests.conftest import LOCATIONS
 
@@ -393,6 +394,25 @@ def test_read_criteria_abstains_when_unset(store_name, tmp_path, monkeypatch):
     # ignoring everything the user wrote about what they want.
     seed(store_name, store, criteria="I want roles that do X. I refuse roles that do Y.")
     assert "I refuse roles that do Y" in store.read_criteria()
+
+
+def test_read_candidate_profile_abstains_when_unset(store_name, tmp_path, monkeypatch):
+    """The abstain direction: no document, all-blank profile, no raise -- the same
+    "unconfigured means empty, never invented" shape read_criteria already has."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    assert store.read_candidate_profile() == CandidateProfile()
+
+
+def test_read_candidate_profile_round_trips_a_declared_value(store_name, tmp_path, monkeypatch):
+    # The round-trip direction is NOT optional. Asserting only the abstain half above
+    # passes an amnesiac store that never reads the user's profile at all -- cv would then
+    # compose under a blank identity on every lead, silently, forever.
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    seed(store_name, store, candidate={"forenames": "Ada", "email": "ada@example.invalid"})
+    p = store.read_candidate_profile()
+    assert p.forenames == "Ada"
+    assert p.email == "ada@example.invalid"
+    assert p.surname == ""
 
 
 def test_write_document_round_trips(store_name, tmp_path, monkeypatch):

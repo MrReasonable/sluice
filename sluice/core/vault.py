@@ -14,6 +14,7 @@ The engine's Lead model is source-agnostic (title, job_type); the vault schema's
 `role`/`role_type` naming is a translation that lives here at the sink boundary.
 """
 import copy
+import dataclasses
 import hashlib
 import json
 import os
@@ -24,6 +25,7 @@ import threading
 from datetime import date
 
 from sluice.core import status as _status
+from sluice.core.candidate import contact_block, full_name
 from sluice.core.leads import (
     SAME,
     UNKNOWN,
@@ -39,7 +41,9 @@ from sluice.core.leads import (
 )
 from sluice.core.log import get_logger
 from sluice.core.protocols import (
+    CANDIDATE_PROFILE_RELPATH,
     CRITERIA_RELPATH,
+    CandidateProfile,
     LeadNote,
     MalformedNoteField,
     UpsertResult,
@@ -1267,6 +1271,34 @@ class Vault:
         except OSError:
             return ""
 
+    def read_candidate_profile(self) -> CandidateProfile:
+        """See Store.read_candidate_profile. Reads the note's frontmatter once via
+        `_fm_dict` and builds a CandidateProfile from the known keys, ignoring
+        anything else present.
+
+        `_fm_dict`, not `_parse_fm_spaced` (which read_experience_entries uses):
+        this note is machine-written and machine-read, and its keys are all
+        lowercase-with-underscores by construction. That is a CHOICE, and it has a
+        cost -- `_fm_dict`'s key regex is [A-Za-z0-9_]+, so a key it cannot match
+        is silently dropped rather than raising. tests/test_vault_candidate_profile.py
+        pins that as a tested fact.
+
+        A missing note is an all-blank profile, not a raise. Only the three
+        "genuinely absent" errors below are folded into that -- a real
+        PermissionError must NOT be caught here: this module's standing rule is
+        that an unreadable file is loud, never read as empty (see #81's warning
+        at core/paths.py). `_read` (not a raw `open()`) is reused for the same
+        reason `read_criteria` reuses it: one file-reading primitive, so a future
+        change to how notes are opened cannot silently diverge between readers.
+        """
+        try:
+            text = _read(self._doc_path(CANDIDATE_PROFILE_RELPATH))
+        except (FileNotFoundError, IsADirectoryError, NotADirectoryError):
+            return CandidateProfile()
+        # `parse_candidate_profile` (module level, beside `parse_frontmatter`) holds the actual
+        # parse; this method's own job is only the file read and the missing-note abstain above.
+        return parse_candidate_profile(text)
+
     def write_document(self, rel: str, text: str, *, only_if_absent: bool = False) -> str:
         """Write a store-managed document (the rejected-leads digest). Returns an opaque
         handle, or `""` when `only_if_absent` found the document already there. Also
@@ -1333,7 +1365,18 @@ class Vault:
         that needs it. `read_experience_entries` is the one exception -- the
         Experience Library is two orders of magnitude smaller and its entries are
         the fabrication gate's only citable evidence, so a zero-verified count is
-        exactly the kind of thing worth surfacing before a compose is attempted."""
+        exactly the kind of thing worth surfacing before a compose is attempted.
+
+        `candidate_name_present`/`candidate_contact_present` (#133/#107) are the
+        two DERIVED facts `read_candidate_profile()` reduces to via `full_name`/
+        `contact_block` -- the identical pair `cv/engine.py`'s `skipped-config`
+        refusal already gates a real compose on. Reported here rather than left
+        for doctor to read the raw 36-field CandidateProfile itself, for the same
+        reason `criteria_present` is a bool rather than the raw criteria text:
+        this method answers FACTS about whether a run can proceed, not the
+        content a run would use. Computed the same way the other reads above
+        are -- `read_candidate_profile()` never raises on a missing note (an
+        all-blank CandidateProfile), so no extra try/except is needed here."""
         if not _is_dir(self.dir):
             return {"vault_exists": False}
         try:
@@ -1343,12 +1386,15 @@ class Vault:
         else:
             baseline_exists = True
         entries = self.read_experience_entries(verified_only=False)
+        profile = self.read_candidate_profile()
         return {
             "vault_exists": True,
             "baseline_exists": baseline_exists,
             "criteria_present": bool(self.read_criteria().strip()),
             "experience_total": len(entries),
             "experience_verified": sum(1 for e in entries if e.get("verified")),
+            "candidate_name_present": bool(full_name(profile).strip()),
+            "candidate_contact_present": bool(contact_block(profile).strip()),
         }
 
     def set_tailored_cv(self, ref, value: str, *, only_if_absent: bool = False) -> bool:
@@ -2963,6 +3009,38 @@ def _fm_dict(inner: str | None) -> dict:
         if m:
             out[m.group(1)] = m.group(2).strip().strip('"').strip("'")
     return out
+
+
+def parse_frontmatter(text: str) -> dict:
+    """Public wrapper over `_fm_dict` for callers OUTSIDE this module.
+
+    Called by `onboard/plan.py`'s `_render_candidate` (Task 6): it renders a Candidate Profile
+    note and verifies its own output round-trips through the REAL reader before returning it, via
+    `FrontmatterRoundTripError`. Exposing the reader here is strictly better than a second
+    frontmatter parser in `onboard/`, which would drift from this one -- and drift is exactly what
+    that verification exists to catch.
+
+    Takes a WHOLE note (with its `---` fences), not the inner block, so a caller
+    verifies the same bytes it is about to write.
+    """
+    return _fm_dict(_split_frontmatter(text)[0])
+
+
+def parse_candidate_profile(text: str) -> CandidateProfile:
+    """Text (a whole Candidate Profile note, fences and all) -> a CandidateProfile, filtered to
+    known fields. The pure half of `Vault.read_candidate_profile`, which is this function plus a
+    file read -- factored out so a caller with TEXT that never touched a file (`cmd_init`'s
+    freshly-rendered `plan.candidate_text`) can run it through the exact same parse the note will
+    be read back through, rather than a second predicate over a different domain that could
+    silently drift the moment a candidate question's answer key is not mapped into
+    `onboard/plan.py`'s `_CANDIDATE_KEY_BY_ANSWER` -- see `cli.py::cmd_init`'s write-block comment
+    for the deadlock that drift once caused end to end. Do not add a THIRD frontmatter parser
+    anywhere for this -- `_fm_dict` plus `parse_frontmatter` are the only two, and this is a thin
+    CandidateProfile-shaped wrapper over the first, not a new one.
+    """
+    fm = parse_frontmatter(text)
+    known = {f.name for f in dataclasses.fields(CandidateProfile)}
+    return CandidateProfile(**{k: v for k, v in fm.items() if k in known})
 
 
 def _title_key(t: str) -> str:
