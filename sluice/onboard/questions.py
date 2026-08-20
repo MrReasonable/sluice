@@ -47,10 +47,6 @@ def expresses_a_preference(text: str) -> list:
     return [w for w in NO_TAXONOMY_WORDS if re.search(rf"\b{re.escape(w)}\b", low)]
 
 
-def parse_text(raw: str) -> str:
-    return raw.strip()
-
-
 def parse_csv(raw: str) -> list:
     return [s.strip() for s in raw.split(",") if s.strip()]
 
@@ -139,10 +135,13 @@ def catalogue(*, default_vault: str = "") -> tuple:
                  hint="Where sluice reads your judging criteria and writes lead notes.",
                  consequence="vault: {value}"),
 
-        Question("cv_name", "What name should appear on a tailored CV?", parse_text,
-                 ("cv.name",), "You"),
-        Question("cv_contact", "Contact block for the CV (email, phone, links)?", parse_text,
-                 ("cv.contact",), "You", hint="One line; edit the config for a multi-line block."),
+        # #107: no cv_name/cv_contact question here any more -- identity now comes from
+        # the vault's Candidate Profile note, collected by its own five-question
+        # interview (`collect_candidate`, cli.py's cmd_init), not from a catalogue entry
+        # that writes into sluice.yaml. This catalogue keeps only cv_employers below,
+        # which stays config-shaped because it is the fabrication gate's completeness
+        # roster, not identity.
+        #
         # The hint states the mechanism the code ACTUALLY implements. It previously said this
         # checked that a CV "only cites places you worked" -- a soundness check -- while
         # `cv/validate.py` runs the opposite: a case-sensitive COMPLETENESS check that every name

@@ -1,13 +1,14 @@
 """sluice doctor: the pure enumeration/classification core, the Sluice.doctor
 wiring (with an injected probe so it stays offline), and the cmd_doctor exit
 codes. Everything here is hermetic -- no network, no browser, no real LLM."""
+import os
 from dataclasses import dataclass
 
 import pytest
 
 from sluice.core.doctor import (
     DEAD, DEGRADED, NOTICE, OK, BackendCheck, BackendTarget, ComponentCheck,
-    DoctorReport, RoleUse, classify, classify_cv_identity, classify_gate,
+    DoctorReport, RoleUse, classify, classify_gate,
     classify_renderer, classify_store, classify_track_google, enumerate_targets,
     format_roles, list_typed_fields,
 )
@@ -25,44 +26,42 @@ def _no_ambient_sluice_config(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _harmless_components(monkeypatch):
-    """`Sluice.doctor` now also classifies the renderer, cv identity, the
-    store's on-disk artefacts and track's Google adapter (`ComponentCheck`,
-    core/doctor.py) -- and every test below PREDATES that, written when doctor
-    classified backends alone. On a bare, unconfigured `Sluice()` those four
-    are genuinely broken (no vault at `./vault`, no WeasyPrint native libs in
-    the test environment, `cv.name` still the shipped placeholder), which
-    would fail every `exit_code() == 0` assertion below for reasons that have
-    nothing to do with what each test is actually checking. Measured: without
-    this fixture, 5 pre-existing tests in this file go red the moment
-    Sluice.doctor grows components, none of them about a backend.
+    """`Sluice.doctor` now also classifies the renderer, the store's on-disk
+    artefacts and track's Google adapter (`ComponentCheck`, core/doctor.py) --
+    and every test below PREDATES that, written when doctor classified
+    backends alone. On a bare, unconfigured `Sluice()` two of those are
+    genuinely broken (no vault at `./vault`, no WeasyPrint native libs in the
+    test environment), which would fail every `exit_code() == 0` assertion
+    below for reasons that have nothing to do with what each test is actually
+    checking. Measured: without this fixture, 5 pre-existing tests in this
+    file go red the moment Sluice.doctor grows components, none of them about
+    a backend.
 
     `Sluice.store`/`Sluice.renderer` are patched to return a bare sentinel --
     `getattr(sentinel, "preflight", None)` is None (nothing to report, the
     documented optional-seam shape) and a sentinel is not RenderError, so
     construction "succeeds" trivially. `cv.config.load_cv_config` is patched
-    to a name/contact-filled CvConfig so cv-identity classifies OK rather than
-    DEAD on the placeholder.
+    to a bare `CvConfig()` too -- #133/#107 removed CvConfig's `name`/
+    `contact` fields entirely, so there is no longer a cv_cfg-shaped identity
+    check for this fixture to keep healthy (identity now lives in the vault's
+    Candidate Profile note, and the `store` sentinel above already makes that
+    check report nothing rather than DEAD).
 
     Composes correctly with the file's existing "read `load_cv_config()`, then
     `dataclasses.replace` a couple of fields, then monkeypatch it back"
     pattern (`test_doctor_probe_does_not_inherit_the_compose_timeout` and
     others): because fixtures apply before a test body runs, those tests'
-    OWN call to `load_cv_config()` already observes this fixture's healthy
-    default and carries `name`/`contact` through the `replace`. A test that
-    wants the REAL renderer/store/cv-identity behaviour (below, in the
-    component-check section) re-patches the same three targets locally --
-    monkeypatch applies a test body's own patch after fixture setup, so the
-    local one wins."""
-    import dataclasses
-
+    OWN call to `load_cv_config()` already observes this fixture's patched
+    default and carries it through the `replace`. A test that wants the REAL
+    renderer/store behaviour (below, in the component-check section)
+    re-patches the same three targets locally -- monkeypatch applies a test
+    body's own patch after fixture setup, so the local one wins."""
     from sluice.core.app import Sluice
     from sluice.cv.config import CvConfig
 
     monkeypatch.setattr(Sluice, "store", lambda self: object())
     monkeypatch.setattr(Sluice, "renderer", lambda self, cvcfg: object())
-    healthy_cv = dataclasses.replace(CvConfig(), name="Test Person",
-                                     contact="test@example.invalid")
-    monkeypatch.setattr("sluice.cv.config.load_cv_config", lambda *a, **k: healthy_cv)
+    monkeypatch.setattr("sluice.cv.config.load_cv_config", lambda *a, **k: CvConfig())
 
 
 # ── fakes: minimal config objects with just the fields enumerate reads ────────
@@ -101,6 +100,16 @@ def _target(provider="deepseek", model="deepseek-v4-flash", host="",
     return BackendTarget(provider=provider, model=model, host=host,
                          claude_path=claude_path,
                          uses=[RoleUse(s, r) for s, r in roles])
+
+
+def _one(checks, subject):
+    """The single ComponentCheck matching `subject`, or a loud failure naming
+    what was actually there -- never a silent `None`/IndexError that would let
+    a test pass on a check that never ran (CLAUDE.md's own recurring lesson:
+    a sweep matching nothing must not read as success)."""
+    matches = [c for c in checks if c.subject == subject]
+    assert len(matches) == 1, f"expected exactly one {subject!r} check, got {matches}"
+    return matches[0]
 
 
 # ── enumerate_targets ─────────────────────────────────────────────────────────
@@ -260,6 +269,7 @@ from sluice.core.app import Sluice           # noqa: E402
 from sluice.core.backends import (           # noqa: E402
     BackendError, OpenAiCompatibleBackend,
 )
+from sluice.cv.config import load_cv_config  # noqa: E402
 
 # Captured at IMPORT time, before any test's autouse fixture ever patches
 # Sluice.renderer/Sluice.store -- the two typo'd-adapter-name tests below need
@@ -270,6 +280,12 @@ from sluice.core.backends import (           # noqa: E402
 # at collection time.
 _REAL_RENDERER = Sluice.renderer
 _REAL_STORE = Sluice.store
+# Same shape, for `load_cv_config` (a module-level function, not a Sluice method,
+# so there is no unbound-method form to capture -- the function object itself).
+# `test_a_real_legacy_cv_config_is_caught_end_to_end_by_doctor` restores this one
+# so it exercises the REAL migration guard in cv/config.py, not the autouse
+# fixture's bare-CvConfig stand-in.
+_REAL_LOAD_CV_CONFIG = load_cv_config
 
 
 def _ok_probe(backend):
@@ -671,20 +687,6 @@ def test_classify_renderer_dead_blocks_cv_and_names_the_fix():
     assert "render" in c.detail and "cairo" in c.detail
 
 
-def test_classify_cv_identity_placeholder_is_dead_blank_contact_is_degraded():
-    checks = classify_cv_identity("Your Name", "", placeholder="Your Name")
-    by_subject = {c.subject: c for c in checks}
-    assert by_subject["cv.name"].state == DEAD
-    assert by_subject["cv.name"].blocks == ("cv",)
-    assert by_subject["cv.contact"].state == DEGRADED
-
-
-def test_classify_cv_identity_configured_is_ok():
-    checks = classify_cv_identity("Real Name", "real@example.invalid",
-                                  placeholder="Your Name")
-    assert all(c.state == OK for c in checks)
-
-
 def test_classify_store_missing_vault_short_circuits_to_one_dead_row():
     # Four DEAD rows for one cause (a vault that does not exist) would bury the
     # actual problem -- classify_store must short-circuit rather than also
@@ -707,21 +709,78 @@ def test_classify_store_missing_baseline_is_dead_missing_profile_is_degraded():
 
 
 def test_classify_store_healthy_facts_are_ok():
+    # The two candidate keys are included here (Task 8 added them): a "healthy"
+    # facts dict that omits them still passed this test before, only because it
+    # never looked at the Candidate Profile row -- but `classify_store` itself
+    # would have quietly returned a DEAD row from a facts dict this test's own
+    # name calls healthy, which is precisely the drift this file's fix-round
+    # review caught.
     checks = classify_store({
         "vault_exists": True, "baseline_exists": True, "criteria_present": True,
         "experience_total": 10, "experience_verified": 8,
+        "candidate_name_present": True, "candidate_contact_present": True,
     })
     by_subject = {c.subject: c for c in checks}
     assert by_subject["baseline_rel"].state == OK
     assert by_subject["Judging Profile"].state == OK
     assert "8" in by_subject["Experience Library"].detail
     assert "10" in by_subject["Experience Library"].detail
+    assert by_subject["Candidate Profile"].state == OK
 
 
 def test_classify_store_none_facts_reports_nothing():
     # None means the store has no preflight() at all -- "cannot say" must not
     # be reported the same as "said something is wrong".
     assert classify_store(None) == []
+
+
+# ── classify_store: the Candidate Profile row (#133/#107) ────────────────────
+_HEALTHY_STORE_FACTS = {
+    "vault_exists": True, "baseline_exists": True, "criteria_present": True,
+    "experience_verified": 3,
+}
+
+
+def test_a_blank_candidate_profile_is_dead_and_blocks_cv():
+    checks = classify_store({**_HEALTHY_STORE_FACTS, "candidate_name_present": False,
+                             "candidate_contact_present": False})
+    c = _one(checks, "Candidate Profile")
+    assert c.state == DEAD
+    assert c.blocks == ("cv",)
+
+
+def test_a_declared_name_with_blank_contact_is_still_dead():
+    # The half-declared shape cv/engine.py's skipped-config gate itself refuses on
+    # (#107's real report: a name alone reached compose, paying a dossier fetch and
+    # an LLM call, before failing the header STRUCTURAL guard on every attempt).
+    checks = classify_store({**_HEALTHY_STORE_FACTS, "candidate_name_present": True,
+                             "candidate_contact_present": False})
+    assert _one(checks, "Candidate Profile").state == DEAD
+
+
+def test_a_declared_contact_with_blank_name_is_still_dead():
+    # The mirror-image half-declared shape -- distinct from the name-only case
+    # above so a fix that only checks one of the two facts cannot pass both.
+    checks = classify_store({**_HEALTHY_STORE_FACTS, "candidate_name_present": False,
+                             "candidate_contact_present": True})
+    assert _one(checks, "Candidate Profile").state == DEAD
+
+
+def test_a_fully_declared_identity_is_ok():
+    checks = classify_store({**_HEALTHY_STORE_FACTS, "candidate_name_present": True,
+                             "candidate_contact_present": True})
+    assert _one(checks, "Candidate Profile").state == OK
+
+
+def test_the_dead_message_does_not_nudge_disclosure_of_the_other_fields():
+    """doctor reports what blocks a command. "Fill in the rest for better apply
+    automation" reads as a prompt to supply ethnicity, religion, sexual orientation
+    and disability to a tool telling you something is wrong."""
+    c = _one(classify_store({**_HEALTHY_STORE_FACTS, "candidate_name_present": False,
+                             "candidate_contact_present": False}), "Candidate Profile")
+    lowered = c.detail.lower()
+    for word in ("ethnicity", "monitoring", "equal-opportunit", "the rest", "apply"):
+        assert word not in lowered
 
 
 def test_classify_track_google_unavailable_is_degraded():
@@ -798,8 +857,7 @@ def test_a_typo_d_renderer_name_is_reported_dead_not_crashed(monkeypatch):
 
     from sluice.cv.config import CvConfig
 
-    cvc = dataclasses.replace(CvConfig(), renderer="bogus-typo",
-                              name="Test Person", contact="test@example.invalid")
+    cvc = dataclasses.replace(CvConfig(), renderer="bogus-typo")
     monkeypatch.setattr("sluice.cv.config.load_cv_config", lambda *a, **k: cvc)
     # Restore the REAL renderer resolution -- the autouse fixture's sentinel
     # would swallow the typo silently, since it never calls plugins.get at all.
@@ -849,30 +907,185 @@ def test_an_invalid_lead_layout_is_reported_dead_not_crashed(monkeypatch):
     assert rep.exit_code() == 1
 
 
-def test_sluice_doctor_wires_the_loaded_cv_config_into_cv_identity(monkeypatch):
-    # Closes a real gap: every OTHER test in this file runs under the autouse
-    # _harmless_components fixture's FIXED healthy CvConfig, so none of them
-    # prove Sluice.doctor actually reads cv_cfg.name/cv_cfg.contact rather
-    # than a hardcoded stand-in. Witnessed: hardcoding classify_cv_identity's
-    # inputs in core/app.py to constants left the whole suite green.
-    import dataclasses
+def test_doctor_reports_a_broken_cv_config_rather_than_tracebacking(monkeypatch):
+    """core/app.py's doctor calls load_cv_config() ahead of the deliberately
+    guarded constructions below it (self.renderer(), self.store()) -- unlike
+    those two, its own call was unguarded before this fix. `load_cv_config`
+    already raises ValueError today for several config mistakes unrelated to
+    #133/#107 -- cv.baseline_rel, cv.render_script without cv.renderer, a
+    non-positive cv.compose_timeout, a retired cv.dossier_dir -- so this is
+    witnessed against a REAL raise, not only the cv.name/cv.contact one
+    (#133/#107) that originally motivated adding the guard.
 
-    from sluice.cv.config import CvConfig
+    Fix-round finding: the row must reflect the REAL failure, not a hardcoded
+    guess. Before this fix a bad compose_timeout was reported as
+    component="cv-identity", subject="cv.name" -- literally telling a user
+    their candidate's NAME was the problem when their actual mistake was an
+    unrelated integer. A message that never mentions "name" pins this: an
+    assertion that only checked "some DEAD row exists somewhere" would pass a
+    hardcoded-subject implementation exactly as well as a correct one, so this
+    checks component/subject/detail directly instead."""
+    def _raise(*a, **k):
+        raise ValueError("cv.compose_timeout must be a positive integer (seconds), got 0")
+    monkeypatch.setattr("sluice.cv.config.load_cv_config", _raise)
+    rep = Sluice().doctor(offline=True)          # must not raise
+    row = _one([c for c in rep.components if c.component == "cv-config"], "cv:")
+    assert row.state == DEAD
+    assert "compose_timeout" in row.detail
+    assert "name" not in row.detail.lower(), (
+        "an unrelated cv: error must not be mislabelled as a name problem")
+    assert row.blocks == ("cv",)
+    assert rep.exit_code() == 1
 
-    custom = dataclasses.replace(CvConfig(), name="Distinctive Custom Name",
-                                 contact="distinctive@example.invalid")
-    monkeypatch.setattr("sluice.cv.config.load_cv_config", lambda *a, **k: custom)
-    rep = Sluice().doctor(offline=True)
-    by_subject = {c.subject: c for c in rep.components if c.component == "cv-identity"}
-    assert by_subject["cv.name"].state == OK
-    assert by_subject["cv.contact"].state == OK
 
-    placeholder = CvConfig()   # name still "Your Name", contact still ""
-    monkeypatch.setattr("sluice.cv.config.load_cv_config", lambda *a, **k: placeholder)
-    rep = Sluice().doctor(offline=True)
-    by_subject = {c.subject: c for c in rep.components if c.component == "cv-identity"}
-    assert by_subject["cv.name"].state == DEAD
-    assert by_subject["cv.contact"].state == DEGRADED
+def test_a_legacy_cv_name_config_error_gets_the_same_treatment(monkeypatch):
+    """The scenario that originally motivated this guard -- #133/#107's
+    migration raising on a legacy cv.name/cv.contact -- goes through the SAME
+    guard as any other load_cv_config ValueError; there is no name-specific
+    special case to drift out of sync with the general one above. The message
+    below is what `cv/config.py`'s real migration guard actually raises
+    (verbatim), not a stand-in -- see test_cv_config.py for that guard's own
+    unit tests; this one is only about doctor's generic handling of whatever
+    load_cv_config raises."""
+    def _raise(*a, **k):
+        raise ValueError(
+            "cv.name has moved to the vault. sluice now reads your identity "
+            "from 'Job Applications/Candidate Profile.md' (frontmatter keys: "
+            "forenames, surname, email, mobile, linkedin). Remove cv.name "
+            "from the `cv:` block and put the value in that note.")
+    monkeypatch.setattr("sluice.cv.config.load_cv_config", _raise)
+    rep = Sluice().doctor(offline=True)          # must not raise
+    row = _one([c for c in rep.components if c.component == "cv-config"], "cv:")
+    assert row.state == DEAD
+    assert "cv.name has moved to the vault" in row.detail
+    assert rep.exit_code() == 1
+
+
+def test_a_broken_cv_config_does_not_swallow_unrelated_checks(monkeypatch, tmp_path):
+    """I2 (fix round 1): the guard must skip only what actually reads cv_cfg --
+    cv's own backend targets, the renderer, and cv's row in the gate-posture
+    sweep -- not the whole report. The canonical user this matters for is
+    exactly who doctor exists to help: someone mid #133/#107 migration whose
+    cv: block is broken AND whose Candidate Profile note is the one thing
+    they most need doctor to check. An early return (the design this fix
+    replaces) hid that row -- and every store/track/camofox/other-sub-app-gate
+    row -- behind the unrelated cv: error."""
+    from sluice.core.vault import Vault
+
+    (tmp_path / "My CV").mkdir()
+    (tmp_path / "My CV" / "CV.md").write_text("# Baseline\n", encoding="utf-8")
+    (tmp_path / "Job Applications").mkdir()
+    (tmp_path / "Job Applications" / "Judging Profile.md").write_text(
+        "criteria\n", encoding="utf-8")
+    _seed_candidate_note(tmp_path, {"forenames": "Ada", "email": "ada@example.invalid"})
+    vault = Vault(str(tmp_path))
+    monkeypatch.setattr(Sluice, "store", lambda self: vault)
+
+    def _raise(*a, **k):
+        raise ValueError("cv.compose_timeout must be a positive integer (seconds), got 0")
+    monkeypatch.setattr("sluice.cv.config.load_cv_config", _raise)
+
+    rep = Sluice().doctor(offline=True)          # must not raise
+    store_checks = {c.subject: c for c in rep.components if c.component == "store"}
+    assert store_checks["baseline_rel"].state == OK
+    assert store_checks["Judging Profile"].state == OK
+    assert store_checks["Candidate Profile"].state == OK
+
+    assert [c for c in rep.components if c.component == "track"]
+    assert [c for c in rep.components if c.component == "camofox"]
+    gate_subjects = [c.subject for c in rep.components if c.component == "gates"]
+    assert any(s.startswith("TriageConfig.") for s in gate_subjects), (
+        "a sub-app unrelated to cv_cfg must still get its gate row")
+    assert not any(s.startswith("CvConfig.") for s in gate_subjects), (
+        "there is no cv_cfg to read a CvConfig gate row off"
+    )
+
+    # Renderer is one of the three things genuinely skipped when cv_cfg is
+    # None -- absent entirely, not present-and-broken.
+    assert not [c for c in rep.components if c.component == "renderer"]
+
+    # Triage's and track's backends were still enumerated and checked; only
+    # cv's own two specs were omitted from enumerate_targets.
+    assert rep.checks
+    assert not any("cv" in {u.subapp for u in c.target.uses} for c in rep.checks)
+
+
+def test_a_real_legacy_cv_config_is_caught_end_to_end_by_doctor(monkeypatch, tmp_path):
+    """Every test above this one exercises the cv-config guard through a MOCKED
+    `load_cv_config` that raises a synthetic ValueError -- proving doctor's generic
+    handling, never that the REAL migration guard in cv/config.py actually reaches
+    it. This is the one test that writes a genuine `sluice.yaml` carrying a legacy
+    `cv.name`, points `SLUICE_CONFIG` at it, and lets the REAL loader raise -- the
+    exact user journey CLAUDE.md documents: `job-sluice doctor` against a legacy
+    config must still produce a full report, not one row or a traceback."""
+    config_path = tmp_path / "sluice.yaml"
+    config_path.write_text('cv:\n  name: "Ada Example"\n', encoding="utf-8")
+    monkeypatch.setenv("SLUICE_CONFIG", str(config_path))
+    # Undo the autouse fixture's bare-CvConfig stand-in for THIS test only -- it exists
+    # so every OTHER test in this file need not care about cv-config health, but here
+    # the real loader reading the real file above is the entire point.
+    monkeypatch.setattr("sluice.cv.config.load_cv_config", _REAL_LOAD_CV_CONFIG)
+    monkeypatch.setattr(Sluice, "store", _REAL_STORE)
+
+    rep = Sluice().doctor(offline=True)          # must not raise
+    row = _one([c for c in rep.components if c.component == "cv-config"], "cv:")
+    assert row.state == DEAD
+    assert "cv.name has moved to the vault" in row.detail
+    assert row.blocks == ("cv",)
+
+    # A FULL report, not one row: the guard must not have swallowed everything else.
+    # (No real vault at `./vault` here, so the store row is DEAD too -- that is a
+    # SEPARATE, expected fact about this bare Sluice(), not evidence the cv: error
+    # leaked into it; test_a_broken_cv_config_does_not_swallow_unrelated_checks above
+    # already proves the store rows stay healthy when the vault itself is healthy.)
+    assert rep.checks, "triage's and track's backends must still be enumerated"
+    assert [c for c in rep.components if c.component == "store"]
+    assert [c for c in rep.components if c.component == "track"]
+    assert [c for c in rep.components if c.component == "camofox"]
+    assert rep.exit_code() == 1
+
+
+def _seed_candidate_note(tmp_path, fields):
+    """Write `Job Applications/Candidate Profile.md` directly under `tmp_path`,
+    one `key: value` frontmatter line per given field -- the flat shape
+    `Vault.read_candidate_profile()`'s `_fm_dict` parses. `fields={}` writes a
+    note that EXISTS on disk but declares nothing (a real file, zero fields --
+    callers that need this "present but blank" shape assert the file's
+    presence themselves, since this helper cannot make that claim on their
+    behalf without knowing which of its callers rely on it).
+
+    Its own copy rather than a Vault.write_document call or an import of
+    tests/conformance/seeds.py's `_seed_vault(candidate=...)`: that helper
+    writes through a Store instance, and some tests below (e.g.
+    `test_preflight_reports_the_two_identity_facts`) want to seed the note
+    before constructing one."""
+    from sluice.core.protocols import CANDIDATE_PROFILE_RELPATH
+
+    dest = os.path.join(str(tmp_path), CANDIDATE_PROFILE_RELPATH)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    lines = "\n".join(f"{k}: {v}" for k, v in fields.items())
+    with open(dest, "w", encoding="utf-8") as fh:
+        fh.write(f"---\n{lines}\n---\n")
+
+
+def test_preflight_reports_the_two_identity_facts(tmp_path):
+    from sluice.core.vault import Vault
+
+    _seed_candidate_note(tmp_path, {"forenames": "Ada", "email": "ada@example.invalid"})
+    facts = Vault(str(tmp_path)).preflight()
+    assert facts["candidate_name_present"] is True
+    assert facts["candidate_contact_present"] is True
+
+
+def test_preflight_reports_absence_for_an_unseeded_vault(tmp_path):
+    # The other half of the pair above -- without it, a preflight() that always
+    # reported True (e.g. a stray `not not` or a dropped `.strip()`) would pass
+    # the declared-facts test just as well as a correct one.
+    from sluice.core.vault import Vault
+
+    facts = Vault(str(tmp_path)).preflight()
+    assert facts["candidate_name_present"] is False
+    assert facts["candidate_contact_present"] is False
 
 
 def test_sluice_doctor_wires_a_real_vaults_preflight_into_store_components(monkeypatch, tmp_path):
@@ -896,6 +1109,34 @@ def test_sluice_doctor_wires_a_real_vaults_preflight_into_store_components(monke
     by_subject = {c.subject: c for c in rep.components if c.component == "store"}
     assert by_subject["baseline_rel"].state == OK
     assert by_subject["Judging Profile"].state == OK
+
+
+def test_sluice_doctor_feeds_a_real_preflight_result_into_the_candidate_check(
+        monkeypatch, tmp_path):
+    """Successor to test_sluice_doctor_wires_the_loaded_cv_config_into_cv_identity,
+    whose docstring cites a real prior bug: hardcoding the classifier's inputs left
+    the whole suite green while the wiring was broken."""
+    from sluice.core.protocols import CANDIDATE_PROFILE_RELPATH
+    from sluice.core.vault import Vault
+
+    _seed_candidate_note(tmp_path, {})           # present but all blank
+    # Both this shape and no note at all classify identically as DEAD (an
+    # undeclared field abstains rather than being inferred, so a blank
+    # candidate note and a missing one carry the same facts) -- the assertion
+    # below is what actually distinguishes "present but blank" from "absent"
+    # for THIS test, since the DEAD verdict alone cannot tell them apart.
+    assert os.path.exists(os.path.join(str(tmp_path), CANDIDATE_PROFILE_RELPATH))
+    vault = Vault(str(tmp_path))
+    monkeypatch.setattr(Sluice, "store", lambda self: vault)
+
+    rep = Sluice().doctor(offline=True)
+    store_checks = [c for c in rep.components if c.component == "store"]
+    assert _one(store_checks, "Candidate Profile").state == DEAD
+
+    _seed_candidate_note(tmp_path, {"forenames": "Ada", "email": "ada@example.invalid"})
+    rep = Sluice().doctor(offline=True)
+    store_checks = [c for c in rep.components if c.component == "store"]
+    assert _one(store_checks, "Candidate Profile").state == OK
 
 
 def test_sluice_doctor_wires_the_real_token_path_into_track_google(monkeypatch, tmp_path):

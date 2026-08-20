@@ -1,4 +1,6 @@
 # tests/test_cv_engine.py
+import os
+
 import pytest
 
 from sluice.cv.bundle import build_bundle, render_bundle
@@ -6,6 +8,22 @@ from sluice.cv.engine import run_one, run_batch
 from sluice.cv.validate import validate
 from sluice.core.backends import BackendError, FallbackBackend, OpenAiCompatibleBackend
 from sluice.core.leads import StalenessPolicy
+from sluice.core.protocols import CandidateProfile
+
+# #107: the identity every test in this file gets unless it asks for something
+# else. full_name() -> "Jane Roe" -- the literal name CLEAN_CV's header line
+# already used before this task moved identity out of CvConfig, so no fixture
+# text below needed to change to keep matching it. ONE contact field (mobile)
+# is enough to clear the new "blank contact refuses" gate (see
+# test_a_declared_name_with_blank_contact_also_refuses_before_spend) without
+# picking a shape that collides with the two isolation fixtures
+# (REVERSED_HEADER_CV, PREAMBLE_REPLACING_CONTACT_CV) that configure their own,
+# different one-line contact below. CLEAN_CV's header carries this exact line
+# first -- see its own comment -- which is what keeps the #99/#100 STRUCTURAL
+# guard's header-vs-derived-identity comparison clean for every test that
+# does not override it.
+DEFAULT_CANDIDATE = CandidateProfile(forenames="Jane", surname="Roe", mobile="+1 555 0100")
+
 
 class Note:
     def __init__(self, fm, path="Job Applications/Job Leads/Acme - Analyst.md"):
@@ -14,9 +32,17 @@ class Note:
         self.fm = fm; self.ref = path; self.slug = path.split("/")[-1][:-3]
 
 class FakeVault:
-    def __init__(self, entries, notes=None):
+    def __init__(self, entries, notes=None, candidate=DEFAULT_CANDIDATE):
         self._entries = entries; self._notes = notes or []; self.written = {}; self.fields = {}
+        self._candidate = candidate
     def read_experience_entries(self, verified_only=True): return self._entries
+    # #107: cv/engine.py's identity gate is MUST-support (Store.read_candidate_profile),
+    # not reached through getattr -- so every test that expects run_one to proceed past
+    # it needs this to answer, not raise. `candidate` is a constructor param (not a
+    # hardcoded DEFAULT_CANDIDATE return) so the two #99/#100 isolation tests
+    # (REVERSED_HEADER_CV, PREAMBLE_REPLACING_CONTACT_CV) can seed a DIFFERENT declared
+    # identity without a second fake class.
+    def read_candidate_profile(self): return self._candidate
     # Tracks the SUBSET of protocols.Store that cv actually exercises, and each
     # method it does carry must match that method's real signature exactly -- this
     # fake carrying the old read_baseline(rel=...) is what let a real TypeError ship
@@ -123,18 +149,21 @@ def _cfg():
     # so the single ENTRIES company must still code to "EF1" (the 2-letter
     # fallback for "Example Foundry" would yield "EX1").
     c.prefix_map = {"Example Foundry": "EF"}
-    # #99: name must match CLEAN_CV's own "JANE ROE" heading and be off the shipped
-    # placeholder default -- both the new pre-spend config refusal and the new
-    # header-anchor STRUCTURAL guard read cvcfg.name, so every test in this file
-    # that expects to reach compose (which is most of them) needs a real value here,
-    # the same way it already needs output_dir/served_dir off their cwd-relative
-    # defaults.
-    c.name = "Jane Roe"
+    # #107: cv/engine.py no longer reads cvcfg.name/cvcfg.contact -- identity comes
+    # from the vault's Candidate Profile note (FakeVault's `candidate`, DEFAULT_CANDIDATE
+    # unless a test overrides it). No override of c.name/c.contact belongs here any
+    # more; CvConfig no longer HAS either field (#133/#107, Task 9), so there is
+    # nothing left on this dataclass for such an override to even set.
     return c
 
 # Synthetic throughout; only the descending start years are load-bearing.
+# "+1 555 0100" is the ONE header line DEFAULT_CANDIDATE's mobile field produces
+# (#107): the #99/#100 STRUCTURAL guard now compares this header block against
+# the vault-derived identity, not cvcfg.name/cvcfg.contact, so this fixture's
+# contact line must match DEFAULT_CANDIDATE exactly or every "rendered" test
+# below would fail that guard instead of testing what it claims to.
 CLEAN_CV = "\n".join([
-    "JANE ROE", "", "PROFILE", "I build reliable systems.", "", "WORK EXPERIENCE", "",
+    "+1 555 0100", "JANE ROE", "", "PROFILE", "I build reliable systems.", "", "WORK EXPERIENCE", "",
     "Example Systems", "02/2023–present | Example Location A | Staff Engineer", "- Shipped [EF1]", "",
     "Example Analytics", "06/2020–01/2023 | Example Location B | Senior Engineer",
     "- Grew team from 3 to 8 [EF1]", "",
@@ -228,12 +257,13 @@ PUBLICATIONS_CV = CLEAN_CV.replace(
 
 
 # ── #99: a composer preamble desyncs cv/parse.py's header-line assignment ──────
-# `parse.py:381-389` takes whatever non-blank lines precede PROFILE, calls the LAST
-# one the name and everything before it the contact block -- zero shape check on
-# either. All three fixtures below insert extra text ahead of "JANE ROE" (the one
-# line CLEAN_CV already has there), reproducing the two variants captured on the
-# real production path (#99): a composer routinely opens with a one-sentence
-# acknowledgement before the CV proper.
+# `parse_cv` (cv/parse.py) takes whatever non-blank lines precede PROFILE, calls
+# the LAST one the name (its `header_lines[-1]` assignment) and everything before
+# it the contact block -- zero shape check on either. All three fixtures
+# below insert extra text ahead of "JANE ROE" (the one line CLEAN_CV already has
+# there), reproducing the two variants captured on the real production path (#99):
+# a composer routinely opens with a one-sentence acknowledgement before the CV
+# proper.
 #
 # PREAMBLE_BEFORE_NAME_CV keeps the name line intact and correct -- only an EXTRA
 # line appears before PROFILE. Isolates the count guard: the anchor guard would
@@ -248,7 +278,9 @@ PREAMBLE_BEFORE_NAME_CV = CLEAN_CV.replace(
 
 # PREAMBLE_WITH_CONTACT_BLOCK_CV is the fuller, realistic Variant B captured live:
 # preamble, THEN the name, THEN a multi-line contact block the model volunteered
-# from the bundle even though cvcfg.contact is unset. The real name ends up
+# from the bundle even though the derived contact block it was given is the bare
+# single mobile line DEFAULT_CANDIDATE produces ("+1 555 0100", no label, no
+# email/LinkedIn -- see contact_block()'s docstring). The real name ends up
 # buried mid-block and the LAST line before PROFILE -- what parse.py takes as the
 # name -- is a contact line. Both the count guard (5 lines where 1 was expected)
 # and the anchor guard (the last line isn't the name) fire on this fixture; it is
@@ -264,29 +296,64 @@ PREAMBLE_WITH_CONTACT_BLOCK_CV = CLEAN_CV.replace(
     1)
 
 # REVERSED_HEADER_CV isolates the anchor guard from the count guard: the LINE COUNT
-# is exactly what a configured one-line `cv.contact` would produce, but the model
-# emitted name-then-contact instead of the contact-then-name order compose.py's
-# _RULES specify (`{contact}\n\n{name_heading}`) -- parse.py:381-389's own accepted
-# trade-off, now closed once cvcfg carries ground truth to compare against. The
-# count guard must NOT fire on this fixture (that is what proves the anchor guard
-# is independently load-bearing, not merely a second copy of the count check).
-REVERSED_HEADER_CV = CLEAN_CV.replace(
+# is exactly what a configured one-line contact would produce, but the model emitted
+# name-then-contact instead of the contact-then-name order compose.py's _RULES specify
+# (`{contact}\n\n{name_heading}`) -- the accepted trade-off the comment beside
+# `parse_cv`'s `header_lines[-1]` assignment (cv/parse.py) names, now closed once
+# the derived identity carries ground truth to compare against. The count guard
+# must NOT fire on this fixture (that is what proves the anchor guard is
+# independently load-bearing, not merely a second copy of the count check).
+#
+# Strips CLEAN_CV's own default "+1 555 0100" line first (#107): this fixture and
+# PREAMBLE_REPLACING_CONTACT_CV below each need a candidate profile whose contact is
+# EXACTLY the one line they isolate ("Phone: +1 555 0100", the value the two tests
+# below now seed onto FakeVault instead of the old cfg.contact), not
+# DEFAULT_CANDIDATE's -- carrying both would make the header three lines against an
+# expected two, tripping the COUNT guard these two fixtures exist to isolate FROM.
+REVERSED_HEADER_CV = CLEAN_CV.replace("+1 555 0100\n", "", 1).replace(
     "JANE ROE", "JANE ROE\n\nPhone: +1 555 0100", 1)
 
 # PREAMBLE_REPLACING_CONTACT_CV isolates the CONTENT guard (added on CodeRabbit review
 # of #100's fix) from both the count guard and the anchor guard: with a one-line
-# `cv.contact` configured, a preamble sentence occupies the contact slot exactly -- the
+# contact configured, a preamble sentence occupies the contact slot exactly -- the
 # header is the expected two lines and the last one still IS the configured name, so
 # neither the count check nor the anchor check fires. Only comparing header[:-1]
-# against cvcfg.contact's own lines catches that the "contact" line is prose, not the
-# real contact information, which is gone. Unlike the two fixtures above, this one does
-# NOT corrupt the parsed NAME -- parse_cv's last-line rule still lands on "JANE ROE" --
-# which is exactly why the anchor check alone cannot see anything wrong with it.
-PREAMBLE_REPLACING_CONTACT_CV = CLEAN_CV.replace(
+# against the derived contact's own lines catches that the "contact" line is prose,
+# not the real contact information, which is gone. Unlike the two fixtures above,
+# this one does NOT corrupt the parsed NAME -- parse_cv's last-line rule still lands
+# on "JANE ROE" -- which is exactly why the anchor check alone cannot see anything
+# wrong with it. Strips the default contact line first, for the same reason as
+# REVERSED_HEADER_CV above.
+PREAMBLE_REPLACING_CONTACT_CV = CLEAN_CV.replace("+1 555 0100\n", "", 1).replace(
     "JANE ROE",
     "Here is the tailored CV for the Analyst role, prepared from the verified "
     "source bundle only.\n\nJANE ROE",
     1)
+
+
+# The REWORDED-CONTACT fixtures isolate the CONTENT guard's rendering arm (CodeRabbit,
+# PR #161, twice -- case first, internal spacing on the following round). Each header is
+# the expected two lines and the last one still IS the configured name, so neither the
+# count check nor the anchor check fires -- exactly like PREAMBLE_REPLACING_CONTACT_CV
+# above -- but the contact line is the DECLARED one, re-rendered.
+#
+# All three must still REFUSE (the contact block is emitted verbatim into the rendered
+# CV, so accepting a re-rendered one prints text the candidate did not write), and all
+# three must refuse with a message naming the rendering rather than a preamble: the
+# retry gets one attempt, and "drop the preamble" is not something it can act on when
+# there is no preamble.
+#
+# The declared contact these are compared against is "Phone: +1 555  0100" -- note the
+# DOUBLE space, which the spacing fixture collapses. `contact_block` does not collapse
+# whitespace runs (`full_name` does), so a declared double space is a real shape a user
+# can have and a composer can normalise away.
+_DECLARED_CONTACT = "Phone: +1 555  0100"
+RECASED_CONTACT_CV = CLEAN_CV.replace("+1 555 0100\n", "", 1).replace(
+    "JANE ROE", "phone: +1 555  0100\n\nJANE ROE", 1)
+RESPACED_CONTACT_CV = CLEAN_CV.replace("+1 555 0100\n", "", 1).replace(
+    "JANE ROE", "Phone: +1 555 0100\n\nJANE ROE", 1)
+REWORDED_CONTACT_CV = CLEAN_CV.replace("+1 555 0100\n", "", 1).replace(
+    "JANE ROE", "phone: +1 555 0100\n\nJANE ROE", 1)
 
 
 def test_the_preamble_fixtures_are_gate_clean_and_misparse():
@@ -322,6 +389,17 @@ def test_the_preamble_fixtures_are_gate_clean_and_misparse():
          "name-then-contact instead of contact-then-name"),
         (PREAMBLE_REPLACING_CONTACT_CV, "Here is the tailored CV",
          "a preamble occupying the contact slot with the name still anchored"),
+        # The three rewording fixtures need this premise as much as the four above:
+        # their tests assert `skipped-gate` plus a message, both of which a fixture that
+        # had stopped being gate-clean would still produce -- so they would stay green
+        # while no longer isolating the STRUCTURAL guard from the fabrication gate,
+        # which is the whole thing this sweep exists to catch (CodeRabbit, PR #161).
+        (RECASED_CONTACT_CV, "phone: +1 555  0100",
+         "a contact line differing from the declared one only in case"),
+        (RESPACED_CONTACT_CV, "Phone: +1 555 0100",
+         "a contact line differing from the declared one only in internal spacing"),
+        (REWORDED_CONTACT_CV, "phone: +1 555 0100",
+         "a contact line differing from the declared one in both case and spacing"),
     ]:
         assert marker in fixture, f"the replace no-opped ({why})"
         assert validate(fixture, bundle_text) == [], (
@@ -681,16 +759,17 @@ def test_a_preamble_with_a_real_contact_block_fails_closed():
 
 
 def test_a_reversed_header_block_fails_closed():
-    # Isolates the ANCHOR guard from the count guard: cfg.contact is set to exactly
-    # the one line REVERSED_HEADER_CV supplies, so the line COUNT is correct and only
-    # the ORDER is wrong. If the count guard alone were doing the work, this fixture
-    # -- which the count guard cannot see anything wrong with -- would sail through.
-    cfg = _cfg()
-    cfg.contact = "Phone: +1 555 0100"
-    v = FakeVault(ENTRIES)
+    # Isolates the ANCHOR guard from the count guard: the candidate profile's contact
+    # (mobile="Phone: +1 555 0100", #107 -- seeded on FakeVault, not cfg.contact, since
+    # the engine no longer reads that field) is exactly the one line REVERSED_HEADER_CV
+    # supplies, so the line COUNT is correct and only the ORDER is wrong. If the count
+    # guard alone were doing the work, this fixture -- which the count guard cannot see
+    # anything wrong with -- would sail through.
+    v = FakeVault(ENTRIES, candidate=CandidateProfile(
+        forenames="Jane", surname="Roe", mobile="Phone: +1 555 0100"))
     rend = FakeRenderer()
     r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
-                v, cfg, FakeBackend(REVERSED_HEADER_CV), FakeCache(), renderer=rend)
+                v, _cfg(), FakeBackend(REVERSED_HEADER_CV), FakeCache(), renderer=rend)
     assert r.status == "skipped-gate"
     assert any("STRUCTURAL" in x and "not the name heading" in x for x in r.violations), (
         r.violations)
@@ -699,23 +778,70 @@ def test_a_reversed_header_block_fails_closed():
 
 def test_a_preamble_replacing_the_contact_line_fails_closed():
     # Isolates the CONTENT guard from both the count guard and the anchor guard: with
-    # `cv.contact` configured to one line, PREAMBLE_REPLACING_CONTACT_CV's header is
-    # exactly the expected two lines and the last one still IS the configured name --
-    # neither the count check nor the anchor check sees anything wrong with it. Only
-    # comparing the actual line against cvcfg.contact catches that a preamble sentence,
-    # not the real contact information, occupies that slot. (CodeRabbit, PR #100
-    # review: the original #99 guards checked the header's line COUNT and its final
-    # line but never the CONTENT of the lines in between.)
-    cfg = _cfg()
-    cfg.contact = "Phone: +1 555 0100"
-    v = FakeVault(ENTRIES)
+    # the candidate profile's contact (#107) declared as one line, PREAMBLE_REPLACING_
+    # CONTACT_CV's header is exactly the expected two lines and the last one still IS
+    # the configured name -- neither the count check nor the anchor check sees anything
+    # wrong with it. Only comparing the actual line against the derived contact catches
+    # that a preamble sentence, not the real contact information, occupies that slot.
+    # (CodeRabbit, PR #100 review: the original #99 guards checked the header's line
+    # COUNT and its final line but never the CONTENT of the lines in between.)
+    v = FakeVault(ENTRIES, candidate=CandidateProfile(
+        forenames="Jane", surname="Roe", mobile="Phone: +1 555 0100"))
     rend = FakeRenderer()
     r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
-                v, cfg, FakeBackend(PREAMBLE_REPLACING_CONTACT_CV), FakeCache(), renderer=rend)
+                v, _cfg(), FakeBackend(PREAMBLE_REPLACING_CONTACT_CV), FakeCache(), renderer=rend)
     assert r.status == "skipped-gate"
     assert any("STRUCTURAL" in x and "do not match" in x for x in r.violations), r.violations
     assert v.written == {}
     assert rend.rendered == [], "a CV was RENDERED despite an open fabrication gate"
+
+
+@pytest.mark.parametrize("fixture,axis", [
+    (RECASED_CONTACT_CV, "CASE"),
+    (RESPACED_CONTACT_CV, "SPACING"),
+    (REWORDED_CONTACT_CV, "CASE and SPACING"),
+], ids=["case-only", "spacing-only", "both"])
+def test_a_reworded_contact_block_refuses_but_says_so_accurately(fixture, axis):
+    """The CONTENT guard's rendering arm, asserted in both directions per axis.
+
+    Parametrised over all three because the axes were found ONE REVIEW ROUND APART
+    (case, then internal spacing) -- which is the signal that enumerating shapes was the
+    wrong shape of fix. The engine keys on a normalisation instead, and this table is
+    what stops a later axis being added to `_CONTACT_REWORDINGS` without a row proving
+    the message names it. The `both` row is the one a hand-written branch would most
+    likely get wrong.
+
+    Internal spacing needs its own row rather than being assumed equivalent to case:
+    `header` and `expected_contact` are already per-line stripped, so only an INTERNAL
+    run survives to reach the comparison, and `contact_block` deliberately does not
+    collapse runs the way `full_name` does.
+
+    Each fixture must still REFUSE. `cv/parse.py` takes the contact from the composed
+    TEXT (`header_lines[:-1]`) and the engine never substitutes `cv_contact` back in, so
+    whatever clears this check is what renders -- normalising the comparison, the fix
+    originally suggested, would print a re-rendered LinkedIn URL or postcode on a PDF
+    sent under the candidate's identity. That is why this guard does not normalise while
+    the name anchor above it case-folds: a CV name heading is conventionally uppercase,
+    so case drift there is what `compose.py`'s prompt asked for; the contact block is
+    required verbatim.
+
+    And each must say WHY accurately. The retry gets exactly one attempt off this
+    message, and "a preamble or other text has replaced a real contact line" is a wrong
+    diagnosis here -- acting on it, by dropping a preamble that is not there, cannot fix
+    anything, so a gate-clean CV gets binned on a misdescription.
+    """
+    v = FakeVault(ENTRIES, candidate=CandidateProfile(
+        forenames="Jane", surname="Roe", mobile=_DECLARED_CONTACT))
+    rend = FakeRenderer()
+    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
+                v, _cfg(), FakeBackend(fixture), FakeCache(), renderer=rend)
+    assert r.status == "skipped-gate"
+    assert rend.rendered == [], "a re-rendered contact block must not reach the renderer"
+    assert any("STRUCTURAL" in x and f"{axis} was changed" in x for x in r.violations), (
+        f"expected the message to name {axis!r}: {r.violations}")
+    assert not any("preamble or other text" in x for x in r.violations), (
+        "a rendering-only difference must not be diagnosed as a preamble -- the retry "
+        f"cannot act on that: {r.violations}")
 
 
 def test_a_preamble_reaches_the_retry_not_the_bin(monkeypatch):
@@ -809,25 +935,249 @@ def test_a_header_stripped_between_name_and_profile_still_fails_closed():
     assert rend.rendered == [], "a CV missing its own name was RENDERED"
 
 
-def test_the_shipped_default_name_is_refused_before_any_spend():
-    # #99 3b: the "YOUR NAME" headline needs NO preamble at all to occur -- a CV
-    # composed under the unconfigured default is complying exactly with what the
-    # prompt requested, so no STRUCTURAL guard can distinguish it from a genuine
-    # name. Refuse before any spend, mirroring the #9 staleness guard immediately
+def test_a_blank_candidate_profile_is_refused_before_any_spend():
+    # #107 superseded #99 3b's old mechanism (cvcfg.name still "Your Name"): identity
+    # now comes from the vault, so an all-blank Candidate Profile note -- the state an
+    # install that never ran `sluice init`'s interview leaves behind -- is what a
+    # blank-default install actually looks like, not a specific placeholder string
+    # comparison. Refuse before any spend, mirroring the #9 staleness guard immediately
     # above it in cv/engine.py. The zero-calls assertion is the load-bearing one:
-    # "refuses" alone would also be satisfied by a refusal AFTER an LLM call.
-    from sluice.cv.config import CvConfig
-    cfg = _cfg()
-    cfg.name = CvConfig().name  # explicitly revert this file's override back to default
-    v = FakeVault(ENTRIES)
+    # "refuses" alone would also be satisfied by a refusal AFTER an LLM call. See also
+    # test_a_blank_derived_name_refuses_before_any_backend_spend below, which pins the
+    # identical claim through a REAL Vault reading a REAL (missing) note rather than
+    # this file's fake -- the two are deliberately redundant across the Store boundary.
+    v = FakeVault(ENTRIES, candidate=CandidateProfile())
     rend = FakeRenderer()
     be = FakeBackend(CLEAN_CV)
     r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
-                v, cfg, be, FakeCache(), renderer=rend)
+                v, _cfg(), be, FakeCache(), renderer=rend)
     assert r.status == "skipped-config"
-    assert be.calls == 0, "the shipped default was refused AFTER an LLM call, not before"
+    assert be.calls == 0, "the blank profile was refused AFTER an LLM call, not before"
     assert v.written == {}
     assert rend.rendered == []
+
+
+# ── #107: the identity gate proven through the REAL Store, not FakeVault ──────────
+# Every test above seeds identity through FakeVault.candidate, a hand-maintained fake.
+# These three drive run_one through a REAL Vault(tmp_path) reading a REAL Candidate
+# Profile note (Task 2's read_candidate_profile, the same code path `sluice cv run`
+# hits in production) -- proof the wiring holds across the Store boundary, not merely
+# that this file's fake was told to answer a certain way.
+def _note():
+    return Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
+
+
+class _CountingBackend:
+    """Wraps FakeBackend, counting every complete() call. The load-bearing witness for
+    #107: the refusal must fire BEFORE any backend spend, and asserting the RESULT
+    alone is satisfied even by a composer that ran first and only failed the gate
+    afterward (e.g. on the STRUCTURAL header guard, since a blank identity's header
+    line is blank too) -- only a zero-call count proves nothing was spent.
+    """
+    def __init__(self, cv_out=CLEAN_CV):
+        self._inner = FakeBackend(cv_out)
+        self.last_backend = self._inner.last_backend
+        self.calls = 0
+    def complete(self, prompt):
+        self.calls += 1
+        return self._inner.complete(prompt)
+
+
+def _vault_with_candidate(tmp_path, overrides):
+    """A REAL Vault, not FakeVault: the #107 refusal must be proven through
+    Store.read_candidate_profile itself (Task 2's real reader over a real note),
+    not a fake that could silently diverge from it. `overrides` is written as the
+    note's frontmatter verbatim (bare `key: value` lines); an empty dict writes no
+    note at all, exercising read_candidate_profile's OWN missing-note abstain path
+    (see tests/test_vault_candidate_profile.py) rather than an empty-but-present one.
+
+    Also seeds a baseline CV: unlike read_candidate_profile/read_criteria,
+    Vault.read_baseline has no missing-file abstain -- it raises FileNotFoundError --
+    so without this, run_one's `vault.read_baseline()` call would raise before ever
+    reaching compose, which would break test_a_fully_declared_identity_reaches_the_
+    backend (the one case here that DOES need to reach it). No Experience Library
+    entry is written: read_experience_entries abstains to [] on a missing library
+    (the ordinary "no entries yet" case, tests/harness/config.py's own comment on
+    _seed_vault makes the same choice), and this helper only needs the backend to be
+    CALLED, never a CV that clears the fabrication gate.
+    """
+    from sluice.core.protocols import CANDIDATE_PROFILE_RELPATH
+    from sluice.core.vault import Vault
+
+    if overrides:
+        dest = os.path.join(str(tmp_path), CANDIDATE_PROFILE_RELPATH)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        fm = "\n".join(f"{k}: {v}" for k, v in overrides.items())
+        with open(dest, "w", encoding="utf-8") as fh:
+            fh.write(f"---\n{fm}\n---\n")
+    baseline_dir = os.path.join(str(tmp_path), "My CV")
+    os.makedirs(baseline_dir, exist_ok=True)
+    with open(os.path.join(baseline_dir, "CV.md"), "w", encoding="utf-8") as fh:
+        fh.write("Synthetic baseline CV for the test.\n")
+    return Vault(str(tmp_path))
+
+
+def test_a_blank_derived_name_refuses_before_any_backend_spend(tmp_path):
+    """#107: the refusal must happen BEFORE the backend call AND before the dossier
+    fetch, not after either. Asserting the result alone would pass even if the
+    engine composed first and refused after -- the whole point is no spend.
+
+    RecordingCache, not FakeCache (round-1 review finding): FakeCache.get_or_build
+    records nothing it was asked, so a mutant that moved this refusal to sit AFTER
+    `dossier_cache.get_or_build(fm)` -- reachable, since #9's staleness guard right
+    above this one already fetches nothing, so nothing else in this function's
+    control flow forces the ordering -- left `backend.calls == 0` green while a real
+    browser fetch had already happened. RecordingCache's own docstring calls itself
+    "the ONLY witness for the gate's PLACEMENT" for the identical reason on the #9
+    guard immediately above; the same argument applies here.
+    """
+    vault = _vault_with_candidate(tmp_path, {})       # all-blank profile
+    backend = _CountingBackend()
+    cache = RecordingCache()
+    res = run_one(_note(), vault, _cfg(), backend, cache, renderer=FakeRenderer())
+    assert res.status == "skipped-config"
+    assert backend.calls == 0, "a blank identity must cost no backend call"
+    assert cache.calls == 0, "a blank identity must cost no dossier fetch"
+
+
+def test_a_declared_name_with_blank_contact_also_refuses_before_spend(tmp_path):
+    # #107's actual reported shape: the name was fine, the CONTACT was blank. Same
+    # RecordingCache reasoning as the test above -- see its comment.
+    vault = _vault_with_candidate(tmp_path, {"forenames": "Ada", "surname": "Example"})
+    backend = _CountingBackend()
+    cache = RecordingCache()
+    res = run_one(_note(), vault, _cfg(), backend, cache, renderer=FakeRenderer())
+    assert res.status == "skipped-config"
+    assert backend.calls == 0
+    assert cache.calls == 0, "a blank identity must cost no dossier fetch"
+
+
+def test_a_name_with_blank_contact_declared_the_other_way_also_refuses(tmp_path):
+    # I2 (round-1 review): the refusal condition is `not cv_name.strip() or not
+    # cv_contact.strip()` -- an OR of two independently-blank operands. The two
+    # tests above cover "both blank" and "name declared, contact blank"; neither
+    # covers the mirror shape, a user who fills `mobile` and leaves forenames/
+    # surname empty. Reachable in practice (a real vault note filled in top to
+    # bottom, contact fields first) and exactly the #107 harm if missed: the CV
+    # composes with a blank headline, burns the spend, and fails the STRUCTURAL
+    # guard on every attempt. Without this test, deleting the `not cv_name.strip()`
+    # term outright is a pure delete-mutation that survives the whole suite, since
+    # the two tests above still refuse through the surviving `not cv_contact.strip()`
+    # operand alone.
+    vault = _vault_with_candidate(tmp_path, {"mobile": "+1 555 0100"})
+    backend = _CountingBackend()
+    cache = RecordingCache()
+    res = run_one(_note(), vault, _cfg(), backend, cache, renderer=FakeRenderer())
+    assert res.status == "skipped-config"
+    assert backend.calls == 0
+    assert cache.calls == 0
+
+
+def test_a_fully_declared_identity_reaches_the_backend(tmp_path):
+    vault = _vault_with_candidate(tmp_path, {"forenames": "Ada", "surname": "Example",
+                                             "email": "ada@example.invalid"})
+    backend = _CountingBackend()
+    run_one(_note(), vault, _cfg(), backend, FakeCache(), renderer=FakeRenderer())
+    assert backend.calls >= 1
+
+
+def test_run_ones_skipped_config_status_and_doctors_candidate_profile_row_agree(tmp_path):
+    """M3 (doctor task-8 fix round 1): run_one's `skipped-config` refusal
+    (`not cv_name.strip() or not cv_contact.strip()`, sluice/cv/engine.py) and
+    classify_store's Candidate Profile row (`not (name_present and
+    contact_present)`, sluice/core/doctor.py) are De Morgan-identical over the
+    same two pure derivations (full_name/contact_block) applied to the same
+    store read -- but they are two SEPARATE lines of code, not one shared
+    implementation, so nothing before this test could catch a third
+    requirement added to one side and not the other: doctor would keep
+    reporting OK for an identity a real compose still refuses on (or the
+    reverse -- doctor DEAD-blocking a compose that would actually proceed).
+
+    Round-trips all four (name, contact) shapes the file's other tests above
+    already cover individually -- both-blank, name-only, contact-only,
+    both-declared -- through BOTH `run_one` and `classify_store` off the SAME
+    seeded vault, and asserts the two never disagree on any of them."""
+    from sluice.core.doctor import DEAD, classify_store
+
+    # Each shape gets its OWN vault directory. `_vault_with_candidate` writes NO note at
+    # all for `{}` (that is how the missing-note abstain path is exercised), so on a
+    # SHARED tmp_path the both-blank row only tests what it claims to because it happens
+    # to run first: move it after a populated row and it reads the previous row's note
+    # instead, asserting on a foreign identity while staying green. `str(tmp_path /
+    # label)` is the isolation `tests/test_onboard_questions.py`'s `status()` helper
+    # already uses for the same reason.
+    shapes = [
+        ("both-blank", {}),
+        ("name-only", {"forenames": "Ada", "surname": "Example"}),
+        ("contact-only", {"mobile": "+1 555 0100"}),
+        ("both-declared", {"forenames": "Ada", "surname": "Example",
+                           "email": "ada@example.invalid"}),
+    ]
+    for label, overrides in shapes:
+        vault = _vault_with_candidate(str(tmp_path / label), overrides)
+        engine_refused = run_one(_note(), vault, _cfg(), _CountingBackend(), FakeCache(),
+                                 renderer=FakeRenderer()).status == "skipped-config"
+        rows = [c for c in classify_store(vault.preflight()) if c.subject == "Candidate Profile"]
+        assert len(rows) == 1, f"{label}: expected exactly one Candidate Profile row"
+        doctor_dead = rows[0].state == DEAD
+        assert engine_refused == doctor_dead, (
+            f"{label}: run_one refused={engine_refused} but doctor DEAD={doctor_dead}")
+        # ...and the EXPECTED verdict for this shape, not merely that the two agree.
+        # Agreement alone is order-blind: both sides read the same vault, so a note left
+        # behind by a previous iteration moves them together and the assertion above
+        # stays green while the row silently stops testing the shape it names. Only
+        # `both-declared` clears the gate; the other three are each missing at least one
+        # half of the identity. This is what gives the per-label vault directory above a
+        # hostile witness -- without the isolation, running `both-declared` before
+        # `both-blank` leaves a full identity in place and reddens this line.
+        assert engine_refused == (label != "both-declared"), (
+            f"{label}: expected refused={label != 'both-declared'}, got {engine_refused} "
+            "-- this row is not exercising the identity shape it names")
+
+
+def test_the_compose_prompt_carries_the_derived_identity_not_cvcfg(tmp_path):
+    """#107: compose() must be called with the VAULT-derived cv_name/cv_contact, read
+    fresh from `vault.read_candidate_profile()`, not any identity value diverted
+    from that read. Every FakeBackend in this file returns a fixed canned CV
+    regardless of what the prompt asked for, which is exactly why every OTHER
+    "rendered" test here would stay green even if compose() were fed the wrong
+    identity: the STRUCTURAL guard only re-derives cv_name/cv_contact and compares
+    them against the (unconditionally correct) FIXED response, never against what
+    was actually SENT. Only inspecting the recorded prompt itself proves the
+    argument at the call site, not merely the guard reading it back.
+
+    Originally witnessed a mutation of `name=cv_name, contact=cv_contact` to
+    `name=cvcfg.name, contact=cvcfg.contact` at that call site surviving the
+    entire rest of this suite (verified while writing this test). #133/#107
+    (Task 9) has since removed `name`/`contact` from `CvConfig` entirely, so that
+    EXACT mutation can no longer even be expressed -- it would raise
+    AttributeError immediately rather than silently substituting the wrong
+    value. The property this test proves is broader than that one retired
+    mutation shape, though, and stays load-bearing against any future diversion
+    of the identity argument (a stale cache, a hardcoded placeholder, a
+    different vault read), so the test is kept rather than retired with it.
+    """
+    class RecordingBackend:
+        def __init__(self):
+            self.last_backend = "primary"; self.prompts = []
+        def complete(self, prompt):
+            self.prompts.append(prompt)
+            return CLEAN_CV if "SOURCE BUNDLE" in prompt and "auditing" not in prompt \
+                else "supported\tx\tSF1"
+
+    vault = _vault_with_candidate(
+        tmp_path, {"forenames": "Distinctive", "surname": "Candidate",
+                   "email": "distinctive@example.invalid"})
+    be = RecordingBackend()
+    run_one(_note(), vault, _cfg(), be, FakeCache(), renderer=FakeRenderer())
+    compose_prompts = [p for p in be.prompts if "SOURCE BUNDLE" in p and "auditing" not in p]
+    assert compose_prompts, "compose was never reached"
+    assert "Distinctive Candidate" in compose_prompts[0], (
+        "the compose prompt did not carry the vault-derived name -- compose() may "
+        "be reading a diverted identity instead of the derived cv_name")
+    assert "distinctive@example.invalid" in compose_prompts[0], (
+        "the compose prompt did not carry the vault-derived contact -- compose() "
+        "may be reading a diverted identity instead of the derived cv_contact")
 
 
 def test_happy_path_renders_and_records(monkeypatch):
@@ -1209,7 +1559,8 @@ def test_the_fake_vault_conforms_to_the_real_store_signature():
     from sluice.core.vault import Vault
 
     fake = FakeVault([])
-    for name in ("read_experience_entries", "read_baseline", "read_leads", "set_tailored_cv"):
+    for name in ("read_experience_entries", "read_baseline", "read_leads", "set_tailored_cv",
+                 "read_candidate_profile"):
         real_sig = inspect.signature(getattr(Vault, name))
         fake_sig = inspect.signature(getattr(FakeVault, name))
         assert list(fake_sig.parameters) == list(real_sig.parameters), (

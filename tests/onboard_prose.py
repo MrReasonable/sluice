@@ -37,6 +37,17 @@ _NOT_PROSE = {
     # widening this set: an exemption that would otherwise fire is a suppressed finding.
     ("sluice.onboard.plan", "DEFAULT_CRITERIA"),
     ("sluice.onboard.plan", "PROFILE_HEADINGS"),   # derived FROM the above
+    # The 36 CandidateProfile field names, in declaration order -- identifiers used as frontmatter
+    # KEYS (and, transitively, already covered as literal text wherever `rendered:candidate_text`
+    # is swept below), never prose a user reads as guidance. Same shape as `_ESCAPES` above: a
+    # vocabulary table, not shipped wording.
+    ("sluice.onboard.plan", "_CANDIDATE_FIELD_ORDER"),
+    # answer key -> CandidateProfile field name. A lookup table, not prose -- same `_ESCAPES` shape
+    # as the entry above, but NOT for the same reason: this table's KEYS (`cv_forenames` etc.) are
+    # `collect_candidate`'s internal answer-dict keys, never written into `candidate_text` or any
+    # other rendered artefact, so there is no transitive-coverage argument here, only the
+    # vocabulary-table one.
+    ("sluice.onboard.plan", "_CANDIDATE_KEY_BY_ANSWER"),
 }
 
 # The one place the sweep's own fixture values live, so the rendered arm exercises the WALKED
@@ -46,7 +57,8 @@ _SOURCES_FIXTURE = {"example_source": {
 
 
 def rendered_artefacts():
-    """[(label, text), ...] for the two files `sluice init` writes.
+    """[(label, text), ...] for the THREE files `sluice init` writes (Task 6 added the third: the
+    Candidate Profile note).
 
     NOTHING IS STRIPPED, and BOTH arms of every branch are rendered. Two holes lived here:
 
@@ -59,6 +71,10 @@ def rendered_artefacts():
     - `sources` used to be rendered only non-empty, so `_render_sources`' commented-example arm --
       the DEFAULT path, taken by every `--no-input` run and every user who skips the board
       question -- was never swept at all.
+
+    `candidate_text` has no such second arm to miss: every one of its 36 fields is ALWAYS present
+    (answered or present-but-empty), so unlike `_render_sources` there is only one structural shape
+    to render, and the unanswered `walked` call already exercises it.
     """
     from sluice.onboard.plan import build_plan
 
@@ -66,7 +82,8 @@ def rendered_artefacts():
     default = build_plan({})
     return [("rendered:config_text(sources walked)", walked.config_text),
             ("rendered:config_text(sources skipped -- the DEFAULT path)", default.config_text),
-            ("rendered:profile_text", walked.profile_text)]
+            ("rendered:profile_text", walked.profile_text),
+            ("rendered:candidate_text", walked.candidate_text)]
 
 
 def terminal_transcript():
@@ -273,6 +290,8 @@ def shipped_prose(tmp_path=None):
         out.append((f"plan._PROFILE_PROMPTS[{heading}]", prompt))
     for key, prompt in ask_mod._PROFILE_QUESTIONS:
         out.append((f"ask._PROFILE_QUESTIONS[{key}]", prompt))
+    for key, prompt in ask_mod._CANDIDATE_PROMPTS:
+        out.append((f"ask._CANDIDATE_PROMPTS[{key}]", prompt))
     return out
 
 

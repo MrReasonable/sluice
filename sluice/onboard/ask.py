@@ -275,6 +275,39 @@ def collect_sources(asker, source_ids) -> dict:
     return out
 
 
+# Keyed to `plan._CANDIDATE_KEY_BY_ANSWER`, in ask order. Only the five identity fields -- the
+# ones `full_name`/`contact_block` (core/candidate.py) compose from -- are interview questions; the
+# other 31 CandidateProfile fields are vault-note-only for now, filled in directly in Obsidian.
+_CANDIDATE_PROMPTS = (
+    ("cv_forenames", "What forename(s) should appear on a tailored CV?"),
+    ("cv_surname",   "And the surname?"),
+    ("cv_email",     "Email address for the CV header?"),
+    ("cv_mobile",    "Phone number for the CV header?"),
+    ("cv_linkedin",  "LinkedIn or personal site URL (blank to skip)?"),
+)
+
+
+def collect_candidate(asker):
+    """The five identity fields `cv/` composes with, keyed for `build_plan(candidate_answers=...)`.
+
+    A SEPARATE interview from `collect_profile`, returning its OWN dict rather than a slice of a
+    shared one -- that separateness means a bug filling one cannot corrupt the other: the two
+    answer dicts feed two independent `_render_*` functions in `plan.py`, each producing one
+    artefact. `cmd_init` (cli.py) additionally gates each interview on the artefact it writes: the
+    Judging Profile's on whether it already EXISTS, the Candidate Profile's on whether it already
+    DECLARES anything (`core/candidate.py`'s `has_any_declared` -- an existing-but-blank note does
+    not close that gate). A shared answer dict would have coupled those two differently-shaped
+    gates together -- so the separate-dict shape earns its keep on its own, independent of that
+    later gating.
+
+    Unlike `collect`/`collect_profile`, an unanswered question is kept as `""` rather than dropped
+    -- `_render_candidate` already treats every key uniformly as "answered or blank", so there is no
+    downstream distinction between "asked and left blank" and "never asked" for these five keys to
+    preserve.
+    """
+    return {key: asker.ask_text_plain(prompt) for key, prompt in _CANDIDATE_PROMPTS}
+
+
 def collect_profile(asker):
     """Prose answers per judging-profile heading, keyed for `build_plan(profile_answers=...)`.
 

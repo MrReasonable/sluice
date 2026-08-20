@@ -73,17 +73,32 @@ def test_no_input_refuses_a_default_on_a_question_it_was_not_given():
 
 
 def test_answers_are_parsed_not_stored_raw(tmp_path):
-    script = "\n".join([str(tmp_path), "", "", "", "example role, other role", "", "", "", "450"]
-                       + [""] * len(_cat()))
-    got = collect(_tty(script), _cat())
+    # Positional, by catalogue index (#133/#107 shifted every index below vault_dir by -2
+    # when cv_name/cv_contact left the catalogue -- accept_titles is now index 2, not 4;
+    # contract_floor is now index 6, not 8). Re-derive from the real catalogue rather than
+    # re-guessing fixed indices a THIRD time: `catalogue()` itself starts with vault_dir, so
+    # `order.index(key)` is already the right line -- no separate offset for it.
+    order = [q.key for q in _cat()]
+    parts = [""] * len(order)
+    parts[order.index("vault_dir")] = str(tmp_path)
+    parts[order.index("accept_titles")] = "example role, other role"
+    parts[order.index("contract_floor")] = "450"
+    got = collect(_tty("\n".join(parts)), _cat())
     assert got["accept_titles"] == ["example role", "other role"]
     assert got["contract_floor"] == 450 and isinstance(got["contract_floor"], int)
 
 
 def test_a_bad_answer_is_re_asked_on_a_tty(tmp_path):
-    script = "\n".join([str(tmp_path), "", "", "", "", "", "", "", "yes", "450"]
-                       + [""] * len(_cat()))
-    asker = _tty(script)
+    # Same positional derivation as the test above -- contract_floor's BAD answer ("yes",
+    # which parse_int rejects) sits at its live catalogue index; the TTY's re-ask then
+    # consumes the NEXT line ("450") as the retry.
+    order = [q.key for q in _cat()]
+    parts = [""] * len(order)
+    parts[order.index("vault_dir")] = str(tmp_path)
+    bad_idx = order.index("contract_floor")
+    parts[bad_idx] = "yes"
+    parts.insert(bad_idx + 1, "450")
+    asker = _tty("\n".join(parts))
     assert collect(asker, _cat())["contract_floor"] == 450
     assert "number" in asker.stdout.getvalue()
 

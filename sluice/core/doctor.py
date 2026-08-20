@@ -86,13 +86,14 @@ class BackendCheck:
 
 @dataclass(frozen=True)
 class ComponentCheck:
-    """One non-backend fact `sluice doctor` reports on: the renderer, the CV
-    identity fields, the store's on-disk artefacts, track's Google adapter, or
-    one preference gate's posture.
+    """One non-backend fact `sluice doctor` reports on: the renderer, the
+    store's on-disk artefacts (which include the Candidate Profile note's own
+    identity check, #133/#107), track's Google adapter, or one preference
+    gate's posture.
 
-    `component` groups rows in the printed report ("renderer", "cv-identity",
-    "store", "track", "camofox", "gates"); `subject` names the specific thing
-    checked within that group ("cv.renderer", "cv.contact",
+    `component` groups rows in the printed report ("renderer", "store",
+    "track", "camofox", "gates"); `subject` names the specific thing
+    checked within that group ("cv.renderer", "Candidate Profile",
     "TriageConfig.accept_titles", ...). `blocks` names the sub-apps this
     specific failure stops -- the ComponentCheck analogue of BackendTarget.uses
     -- so the printed detail can say what a DEAD/DEGRADED row actually costs
@@ -158,6 +159,15 @@ def enumerate_targets(triage_cfg, cv_cfg, track_cfg) -> list:
     claude-max probe. A per-sub-app MODEL override does split, preserving the
     per-sub-app "is this a live model id" check. `claude_path` IS in the key so
     two claude-max backends pointing at different binaries never collapse.
+
+    `cv_cfg` may be `None` -- `Sluice.doctor` passes that when `load_cv_config()`
+    itself raised (#133/#107). cv's two specs are simply OMITTED from the
+    enumeration then, rather than substituted with a placeholder: triage's and
+    track's backends are unrelated to cv's config and must still be checked, and
+    the alternative -- building a bare `CvConfig()` here to read fields off --
+    is exactly what tests/test_config_paths.py's
+    test_no_production_code_builds_a_sub_app_config_directly forbids anywhere
+    outside a sub-app's own loader.
     """
     specs = [
         # (subapp, role, provider, model, host, claude_path)
@@ -166,11 +176,20 @@ def enumerate_targets(triage_cfg, cv_cfg, track_cfg) -> list:
         ("triage", "fallback", triage_cfg.fallback_backend, triage_cfg.cheap_model,
          *_fallback_host_path(triage_cfg.fallback_backend, triage_cfg.claude_max_host,
                               triage_cfg.claude_max_path)),
-        ("cv", "primary", cv_cfg.primary_backend, cv_cfg.compose_model,
-         cv_cfg.compose_host, cv_cfg.compose_claude_path),
-        ("cv", "fallback", cv_cfg.fallback_backend, cv_cfg.cheap_model,
-         *_fallback_host_path(cv_cfg.fallback_backend, cv_cfg.compose_host,
-                              cv_cfg.compose_claude_path)),
+    ]
+    if cv_cfg is not None:
+        # Kept in its ORIGINAL triage/cv/track position rather than appended at the
+        # end: a shared target's `uses` list is built in spec-iteration order, and
+        # `format_roles` prints subapps in that same order -- moving cv to the tail
+        # would silently reorder "primary: triage, cv, track" to "..., track, cv"
+        # for every install that shares one backend across all three, with no
+        # behavioural reason tied to the None case this branch exists for.
+        specs.append(("cv", "primary", cv_cfg.primary_backend, cv_cfg.compose_model,
+                      cv_cfg.compose_host, cv_cfg.compose_claude_path))
+        specs.append(("cv", "fallback", cv_cfg.fallback_backend, cv_cfg.cheap_model,
+                      *_fallback_host_path(cv_cfg.fallback_backend, cv_cfg.compose_host,
+                                           cv_cfg.compose_claude_path)))
+    specs += [
         ("track", "primary", track_cfg.primary_backend, track_cfg.claude_max_model,
          track_cfg.claude_max_host, track_cfg.claude_max_path),
         ("track", "fallback", track_cfg.fallback_backend, track_cfg.cheap_model,
@@ -281,36 +300,6 @@ def classify_renderer(error: str | None) -> ComponentCheck:
     return ComponentCheck("renderer", "cv.renderer", OK, "constructs ok")
 
 
-def classify_cv_identity(name: str, contact: str, *, placeholder: str) -> list:
-    """The two header-block fields `cv/engine.py`'s STRUCTURAL guards (#99) and
-    `skipped-config` refusal already gate a real compose on. Doctor states the
-    same two facts BEFORE any spend rather than after: `cv.name` still at the
-    shipped placeholder is DEAD (mirrors `skipped-config` -- no STRUCTURAL
-    check can tell a placeholder from a genuine name that happens to match
-    it, so this is the earliest point the two can be told apart, and only
-    because doctor knows the shipped default). `cv.contact` blank is DEGRADED,
-    not dead: the packaged template renders it verbatim into the PDF, but a
-    user's OWN `cv.template` may hardcode contact details instead, so doctor
-    cannot assert this is universally wrong -- only that it usually is."""
-    out = []
-    if name.strip() == placeholder:
-        out.append(ComponentCheck(
-            "cv-identity", "cv.name", DEAD,
-            f"still the shipped placeholder {placeholder!r} -- a compose would "
-            f"refuse before any spend (skipped-config)", blocks=("cv",)))
-    else:
-        out.append(ComponentCheck("cv-identity", "cv.name", OK, "configured"))
-    if not contact.strip():
-        out.append(ComponentCheck(
-            "cv-identity", "cv.contact", DEGRADED,
-            "blank -- the packaged template renders this verbatim; a rendered CV "
-            "would carry no way to reach you unless your own cv.template supplies "
-            "contact details another way"))
-    else:
-        out.append(ComponentCheck("cv-identity", "cv.contact", OK, "configured"))
-    return out
-
-
 def classify_store(facts: dict | None) -> list:
     """`facts` is the store's own `preflight()` result (see core/protocols.py),
     or None when the configured store does not implement the optional method --
@@ -327,7 +316,16 @@ def classify_store(facts: dict | None) -> list:
     runs; it just judges nothing preferentially until the profile exists. The
     experience library count is a NOTICE: zero verified entries means every CV
     bullet would fail the fabrication gate's citation check, which is worth
-    knowing before a compose, not a defect in the store."""
+    knowing before a compose, not a defect in the store.
+
+    Candidate Profile (#133/#107) is DEAD, not degraded, on either half-declared
+    shape -- a name with no contact, a contact with no name, or neither -- because
+    that is exactly the condition `cv/engine.py`'s `skipped-config` refusal already
+    gates a real compose on, before any dossier fetch or backend spend. The message
+    names only what blocks `cv`: it must not read as a prompt to fill in the other
+    31 fields on the note, several of which (ethnicity, disability, religion, sexual
+    orientation) are equal-opportunities-monitoring data nobody should feel nudged
+    to supply to a tool reporting that something is wrong."""
     if facts is None:
         return []
     out = []
@@ -357,6 +355,13 @@ def classify_store(facts: dict | None) -> list:
         "store", "Experience Library", NOTICE,
         f"{verified} verified / {total} total entries -- only verified entries "
         f"are citable by the CV fabrication gate"))
+    if not (facts.get("candidate_name_present") and facts.get("candidate_contact_present")):
+        out.append(ComponentCheck(
+            "store", "Candidate Profile", DEAD,
+            "no name or no contact details -- cv run refuses to compose "
+            "(skipped-config) before any backend call", blocks=("cv",)))
+    else:
+        out.append(ComponentCheck("store", "Candidate Profile", OK, "found"))
     return out
 
 

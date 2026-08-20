@@ -3,15 +3,17 @@
 `build_harness` writes a `sluice.yaml` under `tmp_path`, points `SLUICE_CONFIG`
 at it, and pins every cwd-relative path INTO `tmp_path` so a run writes nothing
 into the repo (the run then asserts the repo root is untouched). It also seeds a
-synthetic vault -- a baseline CV and verified Experience Library entries -- so the
-CV hop composes against real store reads.
+synthetic vault -- a baseline CV, verified Experience Library entries, and (#107)
+a Candidate Profile note -- so the CV hop composes against real store reads.
 
 Neutrality: every identity-shaped value is synthetic and reuses conventions
 already vetted in this repo. Companies are the `Example ...` family (the set
 `test_cv_engine.py`'s CLEAN_CV already uses); the CV author is the `Jane Roe`
-placeholder CLEAN_CV also uses; URLs and emails use the reserved `example.invalid`
-/ `*.example` domains. Locations use the neutral `Remote` work-arrangement token
-(as `test_triage_engine.py` does), and job titles are generic role names -- both
+placeholder CLEAN_CV also uses, with the same synthetic "+1 555 0100" contact
+line CLEAN_CV's own header carries; URLs and emails use the reserved
+`example.invalid` / `*.example` domains. Locations use the neutral `Remote`
+work-arrangement token (as `test_triage_engine.py` does), and job titles are
+generic role names -- both
 are job-posting CONTENT, not preference lists: the harness ships `accept_titles`
 and `reject_titles` empty, so it carries no title taste of its own (conftest's
 seeded-faker title fixtures exist for THOSE preference lists, which these
@@ -25,6 +27,7 @@ import os
 from dataclasses import dataclass, field
 
 from sluice.core.config import load_config
+from sluice.core.protocols import CANDIDATE_PROFILE_RELPATH
 from sluice.core.vault import Vault
 
 from tests.harness.browser import ScriptedBrowserClient, install_scripted_fetcher
@@ -40,7 +43,22 @@ from tests.harness.renderer import Recorder, install_recording_renderer
 # functional test built on it, including the numeric-violation witness in
 # test_a_cv_citing_an_unbacked_figure_never_ships, whose own precision depends on
 # exactly one violation.
+#
+# DEFAULT_CANDIDATE_MOBILE is the ONE header line `_seed_vault`'s Candidate Profile
+# note produces (#107, mirrors test_cv_engine.py's CLEAN_CV): cv/engine.py's
+# #99/#100 STRUCTURAL guard now compares this header block against the vault-
+# derived identity, not cv.name/cv.contact, so this line must match the seeded
+# profile's `mobile` field exactly or every e2e/functional test built on this
+# fixture would fail that guard (a SECOND violation) instead of testing what it
+# claims to -- test_a_cv_citing_an_unbacked_figure_never_ships's exact
+# `len(violations) == 1` assertion would be the first to catch a drift here. A
+# SINGLE constant, not two string literals kept in sync by comment (round-1
+# review, M2): the class of drift this comment used to merely document is now
+# structurally impossible.
+DEFAULT_CANDIDATE_MOBILE = "+1 555 0100"
+
 PASSING_CV = "\n".join([
+    DEFAULT_CANDIDATE_MOBILE,
     "JANE ROE",
     "",
     "PROFILE",
@@ -122,7 +140,7 @@ class Harness:
                       sleep=sleep if sleep is not None else (lambda *a, **k: None))
 
 
-def _seed_vault(vault_dir, *, baseline, experience):
+def _seed_vault(vault_dir, *, baseline, experience, cv_name):
     os.makedirs(os.path.join(vault_dir, "My CV"), exist_ok=True)
     with open(os.path.join(vault_dir, "My CV", "CV.md"), "w", encoding="utf-8") as f:
         f.write(baseline)
@@ -138,6 +156,23 @@ def _seed_vault(vault_dir, *, baseline, experience):
         ])
         with open(os.path.join(exp_dir, f"{e['title']}.md"), "w", encoding="utf-8") as f:
             f.write(f"---\n{fm}\n---\n{e.get('body', '')}\n")
+    # #107: cv/engine.py's identity gate reads the vault's Candidate Profile note, not
+    # cv.name/cv.contact -- write one so every harness-driven CV composition reaches
+    # compose rather than refusing skipped-config before it. PASSING_CV's header
+    # carries this SAME DEFAULT_CANDIDATE_MOBILE contact line -- a shared constant
+    # (round-1 review, M2), not two literals kept in sync by comment.
+    #
+    # cv_name="" (test_cv_run_blank_candidate_profile_returns_1's shape) writes NO
+    # note at all, exercising the same blank-profile refusal end to end through the
+    # real CLI that this vault's default identity exists to let every OTHER test past.
+    if cv_name:
+        forenames, _, surname = cv_name.partition(" ")
+        cp_fm = "\n".join([f"forenames: {forenames}", f"surname: {surname}",
+                           f"mobile: {DEFAULT_CANDIDATE_MOBILE}"])
+        cp_dest = os.path.join(vault_dir, CANDIDATE_PROFILE_RELPATH)
+        os.makedirs(os.path.dirname(cp_dest), exist_ok=True)
+        with open(cp_dest, "w", encoding="utf-8") as f:
+            f.write(f"---\n{cp_fm}\n---\n")
 
 
 def build_harness(tmp_path, monkeypatch, *, board_url, rows,
@@ -192,7 +227,11 @@ def build_harness(tmp_path, monkeypatch, *, board_url, rows,
         },
         "cv": {
             "renderer": "recording",
-            "name": cv_name,
+            # No "name" key here (#133/#107): cv.name is retired -- load_cv_config now
+            # RAISES on it. Identity comes from the vault's Candidate Profile note
+            # instead, which _seed_vault below already writes from this same `cv_name`
+            # parameter, so the harness's synthetic identity is unchanged, only its
+            # DELIVERY mechanism moved.
             "prefix_map": prefix_map,
             "output_dir": p["cv_output"],
             "served_dir": p["cv_served"],
@@ -221,7 +260,7 @@ def build_harness(tmp_path, monkeypatch, *, board_url, rows,
     # the functional enable/disable handlers WRITE it, so pin it into tmp_path too.
     monkeypatch.setenv("SLUICE_DISABLED", p["disabled"])
 
-    _seed_vault(p["vault"], baseline=baseline, experience=experience)
+    _seed_vault(p["vault"], baseline=baseline, experience=experience, cv_name=cv_name)
 
     browser = install_scripted_fetcher(
         ScriptedBrowserClient({board_url: rows}, jd_text=jd_text))

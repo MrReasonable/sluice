@@ -13,7 +13,7 @@ from sluice.core import plugins
 from sluice.core.app import Sluice
 from sluice.core.backends import BackendError
 from sluice.core.config import Config
-from sluice.core.protocols import UpsertResult
+from sluice.core.protocols import CandidateProfile, UpsertResult
 from sluice.ingest.base import Search
 
 
@@ -31,6 +31,14 @@ class _FakeStore:
 
     def ensure_stfolder(self):
         pass
+
+    def read_candidate_profile(self):
+        # MUST-support (#107), not optional -- Sluice.prep now calls this
+        # unconditionally, so every _FakeStore subclass needs an answer even when
+        # the test using it has nothing to say about candidate data. A blank
+        # profile is the documented abstain, the same shape a store with no
+        # Candidate Profile note returns for real.
+        return CandidateProfile()
 
 
 class _SleepySource:
@@ -291,6 +299,17 @@ class _StaleNoteStore(_FakeStore):
     def read_leads(self, statuses=None):
         return [self._note]
 
+    def read_candidate_profile(self):
+        # #107: MUST-support -- test_compose_cv_include_stale_reaches_the_engine
+        # bypasses the staleness gate via include_stale, so run_one reaches the
+        # identity gate immediately after; a blank/missing answer here would
+        # refuse skipped-config before the dossier fetch that test exists to prove
+        # is reached, an unrelated config concern that test should not be blocked
+        # by. test_compose_cv_threads_the_policy_into_the_engine never reaches this
+        # far (it stops at skipped-stale), so this is inert for it either way.
+        from tests.test_cv_engine import DEFAULT_CANDIDATE
+        return DEFAULT_CANDIDATE
+
 
 def test_compose_cv_threads_the_policy_into_the_engine(tmp_path, monkeypatch):
     monkeypatch.setenv("SLUICE_CONFIG", "")
@@ -306,15 +325,13 @@ def test_compose_cv_include_stale_reaches_the_engine(tmp_path, monkeypatch):
     # --include-stale was threaded. DnsUsedInTests subclasses BaseException exactly so
     # it cannot be swallowed by an `except Exception` on the way out.
     #
-    # #99: off the shipped default, or the new pre-spend config refusal (which sits
-    # AFTER the staleness gate this test bypasses via include_stale) would return
-    # skipped-config before the dossier fetch this test exists to prove is reached
-    # -- an unrelated config concern this test should not be blocked by.
-    from sluice.cv.config import CvConfig
+    # #107: _StaleNoteStore.read_candidate_profile answers with a fully declared
+    # identity (see its own comment), so the pre-spend identity gate (which sits
+    # AFTER the staleness gate this test bypasses via include_stale) does not
+    # return skipped-config before the dossier fetch this test exists to prove is
+    # reached -- an unrelated config concern this test should not be blocked by.
     from tests.conftest import DnsUsedInTests
     monkeypatch.setenv("SLUICE_CONFIG", "")
-    monkeypatch.setattr("sluice.cv.config.load_cv_config",
-                        lambda: CvConfig(name="Jane Roe"))
     s = Sluice(Config(lead_ttl_days=30), store=_StaleNoteStore(),
                backend=_Recorder(), renderer=object(), today=lambda: "2026-07-27")
     with pytest.raises(DnsUsedInTests):
@@ -374,3 +391,153 @@ def test_prep_include_stale_reaches_all_three_branches(monkeypatch):
                {"all_shortlist": True}):
         r = s.prep(include_stale=True, **kw)[0]
         assert r.reason != "stale", f"--include-stale was not threaded into {kw}"
+
+
+# ── #107/#133: the candidate profile and the clock are each resolved ONCE per
+# prep() call, not once per lead ────────────────────────────────────────────
+
+def _app(store, **kw):
+    return Sluice(Config(), store=store, **kw)
+
+
+class _CountingStore:
+    """Wraps a real Vault and counts `read_candidate_profile` calls. A contents-only
+    assertion on the resulting packets looks identical whether the profile was read
+    once for the whole prep() call or once per eligible lead -- counting is the only
+    way to tell the two apart, and `--all-shortlist` is exactly where the difference
+    is real: a per-lead re-fetch is N vault reads, and could let two leads in one
+    batch disagree if the note changes mid-run. Every other method is proxied
+    straight through via __getattr__, so this store is otherwise indistinguishable
+    from the Vault it wraps."""
+    def __init__(self, inner):
+        self._inner = inner
+        self.candidate_reads = 0
+
+    def read_candidate_profile(self):
+        self.candidate_reads += 1
+        return self._inner.read_candidate_profile()
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def _vault_with_shortlist(tmp_path, n, candidate_profile_fm=None):
+    """A real Vault with `n` shortlisted, apply-eligible leads: a resolvable
+    tailored_cv, an http(s) url, and (with Config()'s default lead_ttl_days=0,
+    staleness OFF) never stale. Eligible, not merely present, is what matters here
+    -- an ineligible lead is skipped before build_packet is ever called, which
+    would make a per-lead profile re-fetch invisible to these tests.
+
+    `served_dir`/`camofox_upload_dir` are two of the deliberate cwd-relative
+    exceptions (core/paths.py) -- callers must `monkeypatch.chdir(tmp_path)` before
+    calling `.prep()` so `./cv-served` resolves under the sandboxed tmp_path rather
+    than wherever pytest happened to be invoked from.
+
+    Slugs: the first lead is always "example-lead" (a fixed single-lead target for
+    these tests' `lead=` cases); the rest are "example-extra-N", chosen so
+    slug_matches' substring rule never pairs "example-lead" against one of them --
+    "example-lead" is not a substring of "example-extra-1", so a single-lead
+    `prep(lead="example-lead")` call stays unambiguous regardless of `n`.
+
+    `candidate_profile_fm`, when given, is written verbatim as the frontmatter
+    body of Job Applications/Candidate Profile.md (CANDIDATE_PROFILE_RELPATH).
+    Only the test that checks the packet's CONTENT (not just the read count)
+    supplies one -- every other caller leaves it None, so
+    Vault.read_candidate_profile() abstains with the same all-blank
+    CandidateProfile it always has."""
+    from sluice.core.protocols import CANDIDATE_PROFILE_RELPATH
+    from sluice.core.vault import Vault
+    root = tmp_path / "vault"
+    leads_dir = root / "Job Applications" / "Job Leads"
+    leads_dir.mkdir(parents=True)
+    served = tmp_path / "cv-served"
+    served.mkdir()
+    (served / "CV_deadbeef.pdf").write_bytes(b"%PDF-1.4\nx")
+    for i in range(n):
+        slug = "example-lead" if i == 0 else f"example-extra-{i}"
+        fm = (
+            'company: "Example Co"\nrole: "Example Role"\nstatus: shortlist\n'
+            f'url: "https://example.invalid/{i}"\n'
+            'tailored_cv: CV_deadbeef.pdf (2026-07-09)\n'
+        )
+        (leads_dir / f"{slug}.md").write_text("---\n" + fm + "---\n\nBODY\n")
+    if candidate_profile_fm is not None:
+        profile_path = root / CANDIDATE_PROFILE_RELPATH
+        profile_path.parent.mkdir(parents=True, exist_ok=True)
+        profile_path.write_text("---\n" + candidate_profile_fm + "---\n\nbody\n")
+    return Vault(str(root))
+
+
+def test_the_candidate_profile_is_read_exactly_once_per_prep_call(tmp_path, monkeypatch):
+    """--all-shortlist is the discriminating case: preview_all loops N eligible
+    leads, so if profile/today were (wrongly) re-read inside that loop rather than
+    resolved once by Sluice.prep and passed in, this count would read 4, not 1 --
+    1 from Sluice.prep's own read plus one per eligible lead re-fetched.
+
+    Also asserts the SCOPE: the count alone is satisfied just as well by a fixture
+    that (through a served_dir/tailored_cv/slug drift) yields zero eligible leads,
+    which would make the loop this test exists to guard never run at all. Pinning
+    all three leads as "previewed" is what proves the loop actually executed."""
+    monkeypatch.chdir(tmp_path)
+    store = _CountingStore(_vault_with_shortlist(tmp_path, n=3))
+    app = _app(store)
+    results = app.prep(all_shortlist=True)
+    assert [r.status for r in results] == ["previewed"] * 3
+    assert store.candidate_reads == 1
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"lead": "example-lead"},
+    {"lead": "example-lead", "dry_run": True},
+    {"all_shortlist": True},
+])
+def test_every_prep_call_path_reads_the_profile_once(tmp_path, monkeypatch, kwargs):
+    monkeypatch.chdir(tmp_path)
+    store = _CountingStore(_vault_with_shortlist(tmp_path, n=2))
+    results = _app(store).prep(**kwargs)
+    # SCOPE, not just the count: a fixture that silently yields zero eligible
+    # leads (e.g. slug_matches unexpectedly pairing "example-lead" with
+    # "example-extra-1", or the tailored_cv/served_dir wiring drifting) would
+    # satisfy candidate_reads == 1 just as well by never reaching a lead at all.
+    assert results[0].status in {"staged", "previewed"}
+    assert store.candidate_reads == 1
+
+
+def test_the_clock_callable_is_invoked_once_not_twice(tmp_path, monkeypatch):
+    """prep() already resolves the clock inside self.staleness() to build the
+    frozen StalenessPolicy. Resolving it a SECOND time beside that call -- rather
+    than reading policy.today back -- could straddle midnight and give one
+    prep() call two different dates."""
+    monkeypatch.chdir(tmp_path)
+    calls = []
+    def clock():
+        calls.append(1)
+        return "2026-08-19"
+    app = _app(_vault_with_shortlist(tmp_path, n=1), today=clock)
+    app.prep(all_shortlist=True)
+    assert len(calls) == 1
+
+
+def test_the_real_profile_and_clock_reach_the_packet(tmp_path, monkeypatch):
+    """The three tests above pin how many times the profile is read and the
+    clock is called; two of them (since I1's fix) also pin that the fixture
+    genuinely produces eligible leads -- but none of the three checks WHICH
+    value reached the packet.
+    A mutation that quietly restores Task 4's placeholder behaviour (a blank
+    CandidateProfile() at all three of Sluice.prep's branch sites, or the
+    epoch date in place of policy.today) would leave every one of them green:
+    the store is still read exactly once, and the clock is still called
+    exactly once -- just with the answer thrown away downstream. This is the
+    one test that reads the packet's CONTENT, closing both halves at once: a
+    declared passthrough field pins the profile, and `age` pins the clock
+    (only `age_from_dob` consumes `today`, so it is the one value that can
+    witness which date actually reached build_packet)."""
+    monkeypatch.chdir(tmp_path)
+    profile_fm = 'town: "Example Town"\ndate_of_birth: 1990-06-15\n'
+    store = _vault_with_shortlist(tmp_path, n=1, candidate_profile_fm=profile_fm)
+    app = _app(store, today=lambda: "2026-08-19")
+    results = app.prep(lead="example-lead")
+    assert results[0].status == "staged"
+    pkt = results[0].packet
+    assert pkt["town"] == "Example Town"
+    assert pkt["age"] == 36

@@ -48,7 +48,22 @@ def _employer_line(employers):
     return "Include every employer present in the SOURCE BUNDLE, reverse chronological."
 
 
-def build_prompt(bundle_text, jd, company, role, name="Your Name", contact="",
+# `name` is KEYWORD-ONLY and REQUIRED, not defaulted to a placeholder. It used to default to
+# "Your Name" purely for callers (this module's own unit tests) that did not care about
+# identity for what they were testing -- but with the #99/#100 sentinel check that once
+# compared a composed header against that exact literal now GONE (#133/#107 -- identity ground
+# truth moved to the vault, and cv/engine.py compares against the derived cv_name/cv_contact
+# instead), nothing anywhere compared against "Your Name" any more: a shipped identity
+# placeholder with no guard behind it, the shape this codebase engineers out elsewhere.
+# Required-with-no-default makes the unreachable path unconstructible rather than merely
+# unreached -- this module's own tests now pass a fixture identity explicitly (see
+# tests/test_cv_compose.py's `_NAME`). `contact` keeps its `""` default: an EMPTY contact block
+# is the neutral, already-abstain-shaped value this codebase uses throughout (an unset field
+# renders nothing), not a placeholder that could misrepresent anyone -- there is no equivalent
+# risk to close for it. The one production caller, cv/engine.py's run_one, always passes both
+# explicitly anyway, already non-blank (guaranteed by the skipped-config refusal that runs
+# before compose is ever reached).
+def build_prompt(bundle_text, jd, company, role, *, name, contact="",
                   employers=None, prior_violations=None):
     parts = [
         f"Compose a tailored CV for {name} applying for {role} at {company}.",
@@ -181,8 +196,13 @@ def _unwrap_agent_envelope(text):
     return "\n".join(lines[start:end]).strip()
 
 
-def compose(backend, bundle_text, jd, company, role, name="Your Name", contact="",
+# `name`/`contact` match `build_prompt`'s signature exactly, for the identical reason -- see
+# that function's comment. Worth restating here specifically because THIS is the function
+# cv/engine.py's run_one actually calls (build_prompt is an internal helper compose() forwards
+# to), so a reader arriving at the real call site is exactly who that comment exists to reach.
+def compose(backend, bundle_text, jd, company, role, *, name, contact="",
             employers=None, prior_violations=None):
-    raw = backend.complete(build_prompt(bundle_text, jd, company, role, name,
-                                        contact, employers, prior_violations))
+    raw = backend.complete(build_prompt(bundle_text, jd, company, role, name=name,
+                                        contact=contact, employers=employers,
+                                        prior_violations=prior_violations))
     return _unwrap_agent_envelope(raw)
