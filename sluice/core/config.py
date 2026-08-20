@@ -121,6 +121,52 @@ def _str_list(value, name: str) -> list:
     return list(value)
 
 
+def sub_app_block(block: str, loaded: object) -> dict:
+    """Normalise a sub-app's top-level block to a mapping, raising `ValueError` when it
+    is anything else.
+
+    Every sub-app loader reads its block as `(yaml.safe_load(f) or {}).get("<block>") or
+    {}`, which is only a mapping when the user wrote one. Measured against a real config
+    file, the four non-mapping spellings fail in three different, all-wrong ways:
+
+      cv: "hello"        -> AttributeError: 'str' object has no attribute 'get'
+      cv: [a, b]         -> AttributeError: 'list' object has no attribute 'get'
+      cv: 5 / cv: true   -> TypeError: argument of type 'int' is not a container
+      cv: my name is here -> ValueError, but the WRONG one -- `"name" in data` is a
+                             SUBSTRING test on a str, so the #133/#107 migration guard
+                             fires and tells the user to move a `cv.name` key they
+                             never set.
+
+    Two harms, and the third spelling is the worse of them. `doctor` is the command a
+    user runs BECAUSE their config is wrong; it guards `load_cv_config()` with `except
+    ValueError` precisely so a bad `cv:` block becomes a DEAD row rather than a
+    traceback, and `AttributeError`/`TypeError` walk straight through that handler. And
+    a wrong diagnosis is worse than a raw traceback: it sends the user to edit a key
+    that is not there.
+
+    Normalising HERE rather than widening `doctor`'s `except` clause is what fixes both
+    at once -- with `data` guaranteed a mapping, every `"<key>" in data` membership test
+    in every loader is a key lookup again rather than a substring match. It is applied
+    to all four loaders, not just `cv`: they share the identical read, so guarding one
+    would leave the same trap armed in three places (and `doctor` calls
+    `load_triage_config`/`load_track_config` unguarded, where a clean `ValueError` is
+    still a better failure than an `AttributeError` from deep inside a setattr loop).
+
+    The message names the block and the TYPE found, never the value: a malformed `cv:`
+    block usually contains whatever the user was mid-way through typing, and an
+    exception travels further than the file it came from -- the same ruling
+    `refuse_retired_dossier_dir` and `dossier_allow_hosts` already make.
+    """
+    if loaded is None or loaded == {}:
+        return {}
+    if not isinstance(loaded, dict):
+        raise ValueError(
+            f"the `{block}:` block of sluice.yaml must be a mapping of settings, but it "
+            f"holds a {type(loaded).__name__}. Check the indentation under `{block}:` -- "
+            f"each setting belongs on its own indented line, as `  key: value`.")
+    return loaded
+
+
 def refuse_retired_dossier_dir(block: str, data: dict) -> None:
     """Raise if a sub-app block still carries the retired `dossier_dir` key (#80).
 

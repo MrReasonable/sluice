@@ -3,6 +3,7 @@ Every field has a sane default so track runs with no config file."""
 import os
 from dataclasses import dataclass, field
 
+from sluice.core.config import sub_app_block
 from sluice.core.paths import config_file, resolve
 
 try:
@@ -243,7 +244,7 @@ def load_track_config(path: str | None = None, *,
     # `deadletter_path("")`.
     if path and os.path.exists(path) and yaml is not None:
         with open(path, encoding="utf-8") as f:
-            data = (yaml.safe_load(f) or {}).get("track") or {}
+            data = sub_app_block("track", (yaml.safe_load(f) or {}).get("track"))
         for k, v in data.items():
             if not (hasattr(cfg, k) and v is not None):
                 continue

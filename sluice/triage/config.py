@@ -5,7 +5,7 @@ with no config file at all."""
 import os
 from dataclasses import dataclass, field
 
-from sluice.core.config import refuse_retired_dossier_dir
+from sluice.core.config import refuse_retired_dossier_dir, sub_app_block
 from sluice.core.paths import config_file, resolve
 
 try:
@@ -85,7 +85,7 @@ def load_triage_config(path: str | None = None) -> TriageConfig:
     # no-config-file case is exactly what a fresh install gets.
     if path and os.path.exists(path) and yaml is not None:
         with open(path, encoding="utf-8") as f:
-            data = (yaml.safe_load(f) or {}).get("triage") or {}
+            data = sub_app_block("triage", (yaml.safe_load(f) or {}).get("triage"))
         refuse_retired_dossier_dir("triage", data)
         for k, v in data.items():
             if not hasattr(cfg, k) or v is None:

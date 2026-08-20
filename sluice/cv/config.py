@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass, field
 
 from sluice.core.backends import DEFAULT_TIMEOUT
-from sluice.core.config import refuse_retired_dossier_dir
+from sluice.core.config import refuse_retired_dossier_dir, sub_app_block
 from sluice.core.paths import config_file
 
 try:
@@ -113,7 +113,7 @@ def load_cv_config(path: str | None = None) -> CvConfig:
     if not (path and os.path.exists(path) and yaml is not None):
         return cfg
     with open(path, encoding="utf-8") as f:
-        data = (yaml.safe_load(f) or {}).get("cv") or {}
+        data = sub_app_block("cv", (yaml.safe_load(f) or {}).get("cv"))
 
     # baseline_rel MOVED to the root config (only the store can honour it). This loader
     # filters unknown keys with `hasattr`, so an existing `cv.baseline_rel` would be
@@ -157,10 +157,20 @@ def load_cv_config(path: str | None = None) -> CvConfig:
     moved_present = [k for k in ("name", "contact") if k in data]
     if moved_present:
         keys = ", ".join(f"cv.{k}" for k in moved_present)
+        # The path comes from the constant, not a literal: this message is the entire
+        # migration instruction a user gets, so a hardcoded copy left behind by a move
+        # would send them to a file that does not exist, with nothing red. Imported
+        # here rather than at module scope to keep the config loader's import surface
+        # as it is -- `protocols` is pure, but this is the only site in the file that
+        # needs it. (Same fix as `cli.py`'s `skipped-config` message; CodeRabbit found
+        # this sibling after that one, which is the reminder that closing a class for
+        # one instance does not close it for the others.)
+        from sluice.core.protocols import CANDIDATE_PROFILE_RELPATH
+
         raise ValueError(
             f"{keys} {'has' if len(moved_present) == 1 else 'have'} moved to the "
-            f"vault. sluice now reads your identity from 'Job Applications/"
-            f"Candidate Profile.md' (frontmatter keys: forenames, surname, email, "
+            f"vault. sluice now reads your identity from '{CANDIDATE_PROFILE_RELPATH}' "
+            f"(frontmatter keys: forenames, surname, email, "
             f"mobile, linkedin). Remove {keys} from the `cv:` block and put the "
             f"value{'s' if len(moved_present) > 1 else ''} in that note."
         )
