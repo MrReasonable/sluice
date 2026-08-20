@@ -1,9 +1,10 @@
 # Troubleshooting
 
 `job-sluice doctor` (offline, then live) is the first move for almost everything below — it
-preflights backends, the renderer, `cv.name`/`cv.contact` identity, the store's artefacts, and
-track's Google adapter, and names which commands each dead/degraded result blocks. This page
-is what to do once it has told you what's wrong.
+preflights backends, the renderer, the store's artefacts (including the Candidate Profile
+note's own declared name/contact — #133/#107), and track's Google adapter, and names which
+commands each dead/degraded result blocks. This page is what to do once it has told you what's
+wrong.
 
 ## Rendering fails at construction (`cv.renderer: template`)
 
@@ -38,9 +39,39 @@ system libraries — it shells out to a render script you supply. See `sluice.ya
 
 ## `cv run` refuses with `skipped-config`
 
-`cv.name` is still the shipped placeholder `Your Name`. This name becomes the composed CV's
-`<h1>`, so a compose is refused *before any LLM spend* rather than producing a PDF headlined
-with a literal placeholder — set `cv.name` in your config.
+The candidate's identity — read from `Job Applications/Candidate Profile.md` in your vault,
+not `sluice.yaml` — has no declared name or no declared contact channel (mobile, email or
+LinkedIn). **This is a behaviour change from before #133/#107**: a config that left
+`cv.contact` blank on purpose (because your own `cv.template` hardcodes contact details)
+used to compose fine, name-only. That case now also refuses — a blank contact block is no
+longer distinguished from a blank name, so declare at least one contact channel even if your
+template never renders it. The derived name becomes the composed CV's `<h1>`, so a compose is
+refused *before any LLM spend* rather than producing a PDF headlined with a blank line. Fill
+in `forenames`/
+`surname` and at least one of `mobile`/`email`/`linkedin` directly in the note's frontmatter, in
+Obsidian. `job-sluice init` only helps here when the note is wholly undeclared — its interview
+gate is *anything* declared (`has_any_declared`, `core/candidate.py`), not "every identity field
+is filled in", so a user who already declared, say, only `email` satisfies that gate and `init`
+skips the interview on every future run, leaving this refusal unresolved until you edit the note
+by hand. If the note exists but is entirely blank, `init` *does* re-ask — but its write refuses
+(never-clobber: the note already exists) and your answers land in `Candidate
+Profile.init-scaffold.md` beside it instead; merge that file's frontmatter into the real note and
+delete the scaffold. If you're seeing this after upgrading from an older config that set
+`cv.name`/`cv.contact` instead, `cv run` and `job-sluice doctor` — the two commands that load the
+`cv:` block — will have already raised a louder error naming the same fix; see the next section.
+
+## `cv.name`/`cv.contact` in `sluice.yaml` (a config from before #133/#107)
+
+These two config keys are **removed** — every sub-app that loads `cv:` (via `load_cv_config`)
+now raises at load if either is still present, naming `Job Applications/Candidate
+Profile.md` and its five identity frontmatter keys (`forenames`, `surname`, `email`, `mobile`,
+`linkedin`). Move the values into that note (as plain frontmatter, `key: value`) and delete
+both keys from the `cv:` block. This is the one config change every existing installation must
+make: a composed CV also loses its contact **labels** as a result (`contact_block` emits the
+bare declared values — mobile, then email, then LinkedIn — one per line, undeclared lines
+omitted; the old `cv.contact` catalogue's labels, e.g. "Phone number: ...", were a formatting
+choice living in a value you could edit, and there is nowhere left in config to put one — write
+the label into the field's own value if you want it back).
 
 ## A gate-clean CV is still refused (a renderer `precheck` violation)
 

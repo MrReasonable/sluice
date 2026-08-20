@@ -185,16 +185,22 @@ triage:
 #   # send-ready pointer until you `job-sluice cv signoff` the lead, rather than auto-serving.
 #   # Ships on (a safety valve, not a preference); set false to restore auto-serve.
 #   require_signoff: true
-#   # Required before composing works (#99): a CV composed while this is still the
-#   # shipped placeholder "Your Name" is refused before any spend, because this value
-#   # becomes the PDF's <h1> -- a composer complying with the prompt exactly as
-#   # configured would otherwise headline the document with the literal placeholder,
-#   # a wrong artefact no format guard can distinguish from a genuine name.
-#   name: <your full name>
-#   contact: |
-#     Phone number: +1 555 0100
-#     Email address: you@example.com
-#     Web: https://www.linkedin.com/in/you/
+#   # Your name and contact details no longer live here (#133/#107): they moved to a
+#   # vault note, `Job Applications/Candidate Profile.md`, so they can be edited
+#   # without a config change and so cv and apply can share one source for 36
+#   # identity/application-form fields instead of two separate places. `job-sluice
+#   # init` asks the five CV-header fields (forenames, surname, email, mobile,
+#   # linkedin) and writes the note; the rest are vault-note-only, filled in
+#   # directly in Obsidian -- see docs/CONFIGURATION.md. A `cv.name` or
+#   # `cv.contact` key left here (from an older config) raises at load, naming the
+#   # note and its frontmatter keys, rather than silently doing nothing.
+#   # BEHAVIOUR CHANGE: on `main` before #133/#107, a blank `cv.contact` was
+#   # tolerated -- some users' own `cv.template` hardcodes contact details, so the
+#   # header rendered name-only. `cv run` now refuses (`skipped-config`) unless the
+#   # note declares BOTH a name (forenames or surname) AND at least one contact
+#   # channel (mobile, email or linkedin), even if your template never uses them.
+#   # If your template supplies its own contact block, declare a throwaway value in
+#   # one contact field to clear the gate.
 #   employers: [Employer A, Employer B]   # empty skips the per-employer gate
 #   fabrication_decoys: [Some Other Company]
 #   served_prefix: CV

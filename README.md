@@ -188,6 +188,7 @@ no user-visible benefit. Only the thing you type at a shell prompt changed.
 
 ```bash
 job-sluice init                 # asks a few questions, writes a config and a Judging Profile
+                                 # (and a Candidate Profile, if you answer any of its questions)
 job-sluice doctor --offline     # sanity-check config, renderer and store artefacts, no network
 job-sluice ingest run --help
 job-sluice triage run --help
@@ -252,8 +253,10 @@ for what a `dead`/`degraded` line means and how to fix it. In outline:
 
 - **A baseline CV** at `My CV/CV.md` in your vault (`baseline_rel`), and at
   least one **verified** entry in `Job Applications/Experience Library/` — the
-  fabrication gate's only citable evidence. `cv.name` must be changed from the
-  shipped placeholder `Your Name` before `cv run` will compose anything.
+  fabrication gate's only citable evidence. **A Candidate Profile** at `Job
+  Applications/Candidate Profile.md` in your vault, with at least a name and a
+  contact channel declared (`job-sluice init` asks for both and writes the
+  note) — `cv run` refuses to compose before any spend while either is blank.
 - **A backend** for triage's judge and cv's composer: either the `claude`
   CLI on `$PATH` (or reachable over SSH — `triage.claude_max_host`), or an
   API key for one of the direct backends (`ANTHROPIC_API_KEY`,
@@ -278,7 +281,7 @@ stream each command writes to: [`docs/USAGE.md`](https://github.com/MrReasonable
 
 | Command | Purpose |
 |---|---|
-| `job-sluice init` | scaffold a config and a Judging Profile |
+| `job-sluice init` | scaffold a config, a Judging Profile and a Candidate Profile |
 | `job-sluice doctor` | preflight backends, the renderer, cv identity, store artefacts, gate posture |
 | `job-sluice ingest` | scrape configured job boards into the lead store (`list-sources`, `run`, `test-source`, `enable`, `disable`) |
 | `job-sluice triage` | classify leads: deterministic rules, then an LLM judge (`run`, `normalize-status`) |

@@ -83,10 +83,12 @@ that ever open a browser tab or spend a backend call.
 Entirely personal — every field defaults empty or to a neutral placeholder, and the whole
 block is commented out in `sluice.yaml.example`.
 
+**No `name`/`contact` keys here any more (#133/#107)** — a config still setting either
+**raises at load**, naming the vault note below and its five identity frontmatter keys. See
+the Candidate Profile section that follows this table.
+
 | Key | Default | Meaning |
 |---|---|---|
-| `name` | `"Your Name"` | **must be changed** — a compose refuses before any spend while this is still the placeholder, since it becomes the PDF's `<h1>` |
-| `contact` | `""` | rendered verbatim; blank makes `doctor` report DEGRADED |
 | `employers` | `[]` | every name must appear verbatim (case-sensitive) in each tailored CV; empty skips the per-employer completeness check |
 | `fabrication_decoys` | `[]` | known-hallucination strings — a hard fail if any appear in the composed CV |
 | `served_prefix` | `"CV"` | must match `apply.served_prefix` |
@@ -110,6 +112,46 @@ block is commented out in `sluice.yaml.example`.
 | `audit_model` | `"claude-sonnet-4-5"` | |
 | `compose_host` / `compose_claude_path` | `""` / `"claude"` | same shape as `triage.claude_max_host` |
 | `compose_timeout` | `300` | **seconds per invocation per leg.** The engine composes up to twice then audits (3 invocations), and under `auto` each may try primary then fallback — worst case per lead is **6×** this value. Must be a positive integer; there is no "off", and `yes` is refused rather than read as 1 second |
+
+## Candidate Profile (vault note)
+
+Not a `sluice.yaml` block — your identity and application-form data live in a note,
+`Job Applications/Candidate Profile.md`, read through the Store contract
+(`Store.read_candidate_profile`, `core/protocols.py`'s `CandidateProfile`). Moving it out of
+config means it can be edited without touching `sluice.yaml`, and cv/apply share one source for
+36 fields instead of two separate places. `job-sluice init` writes the note with all 36 keys
+present (blank, except the five CV-header fields below if you answered them); the remaining 31
+are vault-note-only — fill in a value directly in Obsidian whenever you want a form field
+supplied for you. **That write is conditional**: `init` writes the note only if you answered at
+least one of its candidate questions, so `--no-input` (and an interactive run where you skipped
+them all) leaves no Candidate Profile behind at all. `cv run` then refuses to compose until one
+exists with a name and a contact channel in it — run `job-sluice doctor` to see which. A note
+you create by hand instead has no such scaffold, so add each key
+yourself (plain frontmatter, `key: value`). Every field
+defaults to `""`, meaning **undeclared** — an undeclared field is never inferred, defaulted or
+guessed, and is simply omitted from `apply prep`'s packet rather than sent as an empty string.
+
+| Group | Fields | Asked by `init`? |
+|---|---|---|
+| Identity & contact — feeds `cv`'s composed header, never the `apply` packet | `forenames`, `surname`, `email`, `mobile`, `linkedin` | yes |
+| Address | `address_line1`, `address_line2`, `town`, `county`, `postcode`, `country` | no |
+| Right to work & employment history | `requires_uk_work_permit`, `right_to_work_uk`, `currently_employed_by_them`, `previously_employed_by_them`, `referred_by_current_employee` | no |
+| How you heard about the role | `how_heard_default`, `how_heard_detail_from_lead_source` | no |
+| Equal-opportunities monitoring (Equality Act 2010 protected characteristics) | `gender_identity`, `identifies_as_trans`, `ethnicity`, `religion`, `sexual_orientation`, `preferred_pronouns`, `disability`, `neurodivergent`, `open_about_orientation_at_work` | no |
+| Other | `date_of_birth`, `honorific`, `marital_status`, `nationality`, `dual_nationality`, `first_language`, `served_armed_forces`, `caring_responsibility`, `worked_in_construction` | no |
+
+The identity group never reaches the `apply` packet directly — `cv/engine.py` derives the
+composed CV's name line and contact block from it (`full_name`/`contact_block`,
+`core/candidate.py`) and refuses to compose (`skipped-config`) while either is blank, before
+any dossier fetch or backend spend. Of the other 31 fields, 28 pass through into `apply
+prep`'s packet as declared; the remaining 3 feed a DERIVED key instead of appearing raw:
+`date_of_birth` becomes `age` (computed against the run date), and the two `how_heard_*` fields
+resolve to one `how_heard` key (the computed lead source wins only when
+`how_heard_detail_from_lead_source` is `"true"` and the listing's host is identifiable;
+`how_heard_default` otherwise). Neither derived key is emitted when nothing is available to
+compute it. See `apply prep` in `docs/USAGE.md` for how the packet renders them, and `job-sluice doctor`
+(same doc) for how a blank name/contact — or a legacy `cv.name`/`cv.contact` left in
+`sluice.yaml` from before this note existed — is reported.
 
 ## `apply:`
 
