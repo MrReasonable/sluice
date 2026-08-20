@@ -1,4 +1,7 @@
+import importlib
 import textwrap
+
+import pytest
 
 from sluice.core.config import load_config
 
@@ -112,3 +115,88 @@ def test_path_keys_round_trip_through_load_config(tmp_path, monkeypatch):
     cfg = load_config(str(p))
     assert cfg.vault_dir == str(vault)
     assert cfg.dossier_dir == str(dossiers)
+
+
+# ── a malformed sub-app block is a ValueError, in every loader ────────────────
+
+_SUB_APP_LOADERS = {
+    "cv": "sluice.cv.config:load_cv_config",
+    "triage": "sluice.triage.config:load_triage_config",
+    "apply": "sluice.apply.config:load_apply_config",
+    "track": "sluice.track.config:load_track_config",
+}
+
+# Every spelling of "the user did not write a mapping under this key". Measured before
+# the fix, the four failed in THREE different ways, none of them ValueError -- a str or
+# a list gave `AttributeError: 'str' object has no attribute 'get'`, a scalar gave
+# `TypeError: argument of type 'int' is not a container`, and the last row gave a
+# ValueError that was WORSE than either: `"name" in data` is a SUBSTRING test on a str,
+# so `cv:`'s #133/#107 migration guard fired and told the user to migrate a `cv.name`
+# key they never set.
+_MALFORMED = ['"hello"', "5", "true", "\n  - a\n  - b", "my name is here"]
+
+
+@pytest.mark.parametrize("block", sorted(_SUB_APP_LOADERS))
+@pytest.mark.parametrize("body", _MALFORMED)
+def test_a_non_mapping_sub_app_block_raises_value_error(block, body, tmp_path):
+    """Enumerated over the loader REGISTRY above rather than hand-listed per loader:
+    all four share the identical `(yaml.safe_load(f) or {}).get("<block>") or {}` read,
+    so a guard applied to one leaves the same trap armed in the other three -- and a
+    half-applied defensive pattern is the shape this repo treats as worse than none.
+
+    ValueError specifically, not merely "raises": `doctor` guards `load_cv_config()`
+    with `except ValueError` precisely so a bad `cv:` block becomes a DEAD row instead
+    of a traceback, and the two exception types this used to raise walked straight
+    through that handler. The type IS the contract here, so `pytest.raises(ValueError)`
+    is the assertion and a bare `Exception` would certify nothing.
+    """
+    mod, fn = _SUB_APP_LOADERS[block].split(":")
+    loader = getattr(importlib.import_module(mod), fn)
+    p = tmp_path / "s.yaml"
+    p.write_text(f"{block}: {body}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=rf"`{block}:` block"):
+        loader(str(p))
+
+
+@pytest.mark.parametrize("block", sorted(_SUB_APP_LOADERS))
+def test_an_absent_or_empty_sub_app_block_still_loads_defaults(block, tmp_path):
+    """The anti-vacuity half. A guard that rejected the ABSENT and EMPTY spellings too
+    would pass the test above while breaking every install that simply does not
+    configure that sub-app -- and `sluice.yaml.example` ships `cv:` entirely commented,
+    so "the key is not there" is the COMMON case, not an edge one.
+
+    Asserts EQUALITY with the no-config baseline, not merely that the call returned
+    something (CodeRabbit, PR #161): `is not None` proves only that the loader did not
+    raise, and a normaliser that quietly dropped or altered defaults on its way through
+    would satisfy it. What must hold is that these three spellings are all
+    indistinguishable from having no config file at all -- which is the actual promise,
+    and the thing the guard above could break.
+    """
+    mod, fn = _SUB_APP_LOADERS[block].split(":")
+    loader = getattr(importlib.import_module(mod), fn)
+    baseline = loader(str(tmp_path / "no-such-config.yaml"))
+    for body in ("", f"{block}:\n", f"{block}: {{}}\n"):
+        p = tmp_path / "s.yaml"
+        p.write_text(body, encoding="utf-8")
+        assert loader(str(p)) == baseline, (
+            f"{block}: {body!r} must be indistinguishable from no config file at all")
+
+
+def test_the_migration_guard_no_longer_misreads_a_prose_cv_block(tmp_path):
+    """The specific wrong-diagnosis regression, pinned on its own rather than left to
+    the parametrised sweep above -- that sweep only asserts the message names the
+    block, which a substring-matched `cv.name has moved to the vault` would ALSO have
+    to fail, but only by accident of wording. This asserts the wrong message is gone.
+
+    A user who typed prose under `cv:` was told to move a `cv.name` key that is not in
+    their file. Sending someone to edit a key that does not exist is worse than a raw
+    traceback: the traceback at least does not lie about the cause.
+    """
+    from sluice.cv.config import load_cv_config
+
+    p = tmp_path / "s.yaml"
+    p.write_text("cv: my name is here\n", encoding="utf-8")
+    with pytest.raises(ValueError) as exc:
+        load_cv_config(str(p))
+    assert "has moved to the vault" not in str(exc.value), (
+        "a prose `cv:` block must not be diagnosed as a legacy cv.name key")

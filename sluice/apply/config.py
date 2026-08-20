@@ -3,6 +3,7 @@ sluice.yaml. Every field has a sane default so apply runs with no config file.""
 import os
 from dataclasses import dataclass
 
+from sluice.core.config import sub_app_block
 from sluice.core.paths import config_file
 
 try:
@@ -28,7 +29,7 @@ def load_apply_config(path: str | None = None) -> ApplyConfig:
     if not (path and os.path.exists(path) and yaml is not None):
         return cfg
     with open(path, encoding="utf-8") as f:
-        data = (yaml.safe_load(f) or {}).get("apply") or {}
+        data = sub_app_block("apply", (yaml.safe_load(f) or {}).get("apply"))
     for k, v in data.items():
         if hasattr(cfg, k) and v is not None:
             setattr(cfg, k, v)

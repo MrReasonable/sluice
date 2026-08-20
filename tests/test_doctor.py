@@ -1045,6 +1045,42 @@ def test_a_real_legacy_cv_config_is_caught_end_to_end_by_doctor(monkeypatch, tmp
     assert rep.exit_code() == 1
 
 
+def test_a_malformed_cv_block_is_caught_end_to_end_by_doctor(monkeypatch, tmp_path):
+    """Sibling to the legacy-key test above, for the OTHER way a `cv:` block goes bad.
+
+    The test above proves doctor survives a `cv:` mapping carrying a retired KEY. This
+    one proves it survives a `cv:` that is not a mapping at all -- the shape a wrong
+    indent produces, and the one doctor exists to diagnose. Measured before the fix,
+    `load_cv_config` raised `AttributeError`/`TypeError` here rather than `ValueError`,
+    so doctor's `except ValueError` did not catch it and the command tracebacked on the
+    very thing a user runs it to hear about. The guard's own comment in `core/app.py`
+    asserted this handler covered a malformed `cv:`; nothing tested that arm, so the
+    claim was false and silent -- exactly the "a comment that states a mechanism needs a
+    row that falsifies it" class CLAUDE.md names.
+
+    Parametrised over the two ORIGINAL exception classes, not one representative: they
+    came from two different lines of the loader (`.items()` versus an `in` membership
+    test), so one row cannot witness the other.
+    """
+    for body in ('cv: "not a mapping"\n', "cv: 5\n"):
+        config_path = tmp_path / "sluice.yaml"
+        config_path.write_text(body, encoding="utf-8")
+        monkeypatch.setenv("SLUICE_CONFIG", str(config_path))
+        monkeypatch.setattr("sluice.cv.config.load_cv_config", _REAL_LOAD_CV_CONFIG)
+        monkeypatch.setattr(Sluice, "store", _REAL_STORE)
+
+        rep = Sluice().doctor(offline=True)          # must not raise
+        row = _one([c for c in rep.components if c.component == "cv-config"], "cv:")
+        assert row.state == DEAD, f"{body!r}: expected a DEAD cv-config row"
+        assert "must be a mapping" in row.detail, f"{body!r}: {row.detail!r}"
+        assert row.blocks == ("cv",)
+        # A FULL report, not one row -- the same claim the legacy-key test makes, which
+        # is what distinguishes "doctor handled it" from "doctor died politely".
+        assert rep.checks, f"{body!r}: triage's and track's backends must still be enumerated"
+        assert [c for c in rep.components if c.component == "store"]
+        assert [c for c in rep.components if c.component == "camofox"]
+
+
 def _seed_candidate_note(tmp_path, fields):
     """Write `Job Applications/Candidate Profile.md` directly under `tmp_path`,
     one `key: value` frontmatter line per given field -- the flat shape
