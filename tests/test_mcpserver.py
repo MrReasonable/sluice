@@ -1098,12 +1098,13 @@ _ISOLATION_ALLOWED_MODULES = frozenset({
 # previous version's comment already claimed this and the literal set happened to
 # agree, but a future write method added to Store would silently miss this sweep
 # with no test failure to say so. Its read-only members (read_leads,
-# read_experience_entries, read_baseline, read_criteria; the optional preflight
-# hook, which is never declared in the class body at all) are excluded by name,
-# since a read reaching this deep is exactly what the module-allow-list above
-# already permits via Sluice's own store() access.
+# read_experience_entries, read_baseline, read_criteria, read_candidate_profile;
+# the optional preflight hook, which is never declared in the class body at all)
+# are excluded by name, since a read reaching this deep is exactly what the
+# module-allow-list above already permits via Sluice's own store() access.
 _STORE_READ_METHODS = frozenset({
     "read_leads", "read_experience_entries", "read_baseline", "read_criteria",
+    "read_candidate_profile",
 })
 _STORE_WRITE_METHODS = frozenset(
     name for name, member in vars(Store).items()

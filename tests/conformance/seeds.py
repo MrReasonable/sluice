@@ -16,9 +16,10 @@ So each store ships a SEEDER instead. A store with no seeder cannot be conforman
 and that is a hard failure rather than a silent skip -- the whole lesson of this suite is
 that a green tick over an untested store is worse than no tick at all.
 """
+from sluice.core.protocols import CANDIDATE_PROFILE_RELPATH
 
 
-def _seed_vault(store, *, experience=(), criteria="", conflicted_status=None):
+def _seed_vault(store, *, experience=(), criteria="", conflicted_status=None, candidate=None):
     """Seed the markdown vault by writing the files it reads.
 
     This knows the vault's layout, which is fine: it is the VAULT's seeder. The contract
@@ -48,6 +49,14 @@ def _seed_vault(store, *, experience=(), criteria="", conflicted_status=None):
             f"---\ncompany: Conflicted\nrole: Analyst\nstatus: {a}\nstatus: {b}\n"
             f"url: https://example.invalid/jobs/9\n---\nbody\n",
         )
+
+    if candidate:
+        # Flat frontmatter, one `key: value` line per given field -- the exact shape
+        # `Vault.read_candidate_profile`'s `_fm_dict` parses. Writing through
+        # `write_document` rather than the filesystem directly keeps this seeder honest
+        # to the Store contract: it only ever does what a real Store write can do.
+        lines = "\n".join(f"{k}: {v}" for k, v in candidate.items())
+        store.write_document(CANDIDATE_PROFILE_RELPATH, f"---\n{lines}\n---\n")
 
 
 SEEDERS = {

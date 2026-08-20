@@ -26,6 +26,10 @@ from typing import Protocol
 # FILESYSTEM store's job (see Vault._doc_path), not the contract's.
 CRITERIA_RELPATH = "Job Applications/Judging Profile.md"
 
+CANDIDATE_PROFILE_RELPATH = "Job Applications/Candidate Profile.md"
+"""The candidate's own identity and application-form data. Like CRITERIA_RELPATH
+this is an opaque DOCUMENT KEY, not a path -- nothing here may assume a filesystem."""
+
 
 class VaultConflict(RuntimeError):
     """A modify-write refused because the stored note changed since it was read.
@@ -166,6 +170,88 @@ class UpsertResult:
     slug: str = ""
 
 
+@dataclass
+class CandidateProfile:
+    """Every field is a plain `str` defaulting to "" -- no bool fields, deliberately.
+
+    `core/vault.py`'s `_fm_dict` is a regex line-scanner, not a YAML loader, so
+    `right_to_work_uk: true` and `disability: No` both arrive as the literal
+    strings "true" and "No". Forcing a Python bool would buy nothing (nothing
+    downstream needs boolean logic beyond the one
+    `how_heard_detail_from_lead_source` check, which is an explicit string
+    comparison) and would risk the bool-subclasses-int / PyYAML-coerces-`yes`
+    trap this codebase is already careful about for fields that DO go through a
+    real YAML loader.
+
+    "" means UNDECLARED, and an undeclared field is never inferred, defaulted or
+    guessed -- see the spec's "Presence semantics". The all-blank default is what
+    makes an unconfigured install abstain rather than assert.
+
+    No `__post_init__` type guard: adding one would change the dataclass
+    contract the reader below and nine further tasks build on. `full_name`,
+    `contact_block` and `has_any_declared` (core/candidate.py) all call `.strip()`
+    or `.split()` and so raise `AttributeError` at a distance on a non-`str`
+    field -- accepted, because the only producer is
+    `Vault.read_candidate_profile()` (core/vault.py). It is built on
+    `core/vault.py`'s `_fm_dict`, a regex line-scanner that already yields `str`
+    or nothing for every other note field it reads today; a direct
+    `CandidateProfile(**d)` from any other source is that caller's obligation to
+    type.
+    `age_from_dob`'s explicit guard on its `today` argument is not a
+    counterexample: `today` is not a dataclass field here, it is a
+    caller-supplied argument with no producer to trust, which is why it gets a
+    harder check than anything on this class.
+    """
+    # Identity & contact -- feeds cv, via full_name()/contact_block()
+    forenames: str = ""
+    surname: str = ""
+    email: str = ""
+    mobile: str = ""
+    linkedin: str = ""
+    # Address -- feeds apply, one packet key per field
+    address_line1: str = ""
+    address_line2: str = ""
+    town: str = ""
+    county: str = ""
+    postcode: str = ""
+    country: str = ""
+    # Right to work & employment history -- feeds apply
+    requires_uk_work_permit: str = ""
+    right_to_work_uk: str = ""
+    currently_employed_by_them: str = ""
+    previously_employed_by_them: str = ""
+    referred_by_current_employee: str = ""
+    # How you heard about the role -- feeds apply
+    how_heard_default: str = ""
+    how_heard_detail_from_lead_source: str = ""
+    # Equal-opportunities monitoring -- feeds apply, special-category data
+    gender_identity: str = ""
+    identifies_as_trans: str = ""
+    ethnicity: str = ""
+    religion: str = ""
+    sexual_orientation: str = ""
+    preferred_pronouns: str = ""
+    disability: str = ""
+    neurodivergent: str = ""
+    open_about_orientation_at_work: str = ""
+    # Other -- feeds apply
+    date_of_birth: str = ""
+    honorific: str = ""  # Mr/Ms/Dr -- NOT a job title, which is what `title` means
+    # everywhere else in this codebase (Lead.title, dedup_key, accept_titles,
+    # core/vault.py's own module docstring). Named `honorific` rather than a `title`-
+    # bearing compound (`name_title`) deliberately: a compound still contains the
+    # colliding token, so a reader skimming the field list -- or an ATS-filling agent
+    # matching packet keys to form fields by name, per the packet's own RULES block --
+    # still has to disambiguate. `honorific` removes the token outright.
+    marital_status: str = ""
+    nationality: str = ""
+    dual_nationality: str = ""
+    first_language: str = ""
+    served_armed_forces: str = ""
+    caring_responsibility: str = ""
+    worked_in_construction: str = ""
+
+
 class Store(Protocol):
     """The lead/experience store. See tests/conformance/test_store_contract.py -- an
     implementation that does not pass that suite is not a Store, whatever it claims.
@@ -181,9 +267,12 @@ class Store(Protocol):
     A store implements `preflight` to answer "can a run actually use me right now?"
     with facts doctor cannot get any other way -- for the vault: does the configured
     directory exist, is the baseline CV readable, is a Judging Profile present, how
-    many Experience Library entries are verified. It returns FACTS, not verdicts:
-    classification is `core/doctor.py`'s job, kept pure there the same way backend
-    classification is kept separate from `Sluice.doctor`'s credential resolution.
+    many Experience Library entries are verified, and (#133/#107) is a candidate name
+    declared and is a contact block declared -- the two facts `cv/engine.py`'s
+    `skipped-config` refusal already gates a real compose on. It returns FACTS, not
+    verdicts: classification is `core/doctor.py`'s job, kept pure there the same way
+    backend classification is kept separate from `Sluice.doctor`'s credential
+    resolution.
 
     MUST NOT create or open anything that does not already exist, and MUST NOT read a
     store file that could disarm a later relocation notice -- see #81's warning at
@@ -192,10 +281,10 @@ class Store(Protocol):
     so a "harmless" preflight probe would silently disable it for every later run this
     process makes. `Vault.preflight` therefore only `stat`s paths and reads documents
     through the store's own existing read methods (`read_baseline`, `read_criteria`,
-    `read_experience_entries`), never opens a store's OWN internal state file (a
-    SQLite-backed store's preflight must not connect to its database), and never walks
-    the full lead scan set -- doctor is a preflight users run often and cheaply, not a
-    second `leads` pass."""
+    `read_experience_entries`, `read_candidate_profile`), never opens a store's OWN
+    internal state file (a SQLite-backed store's preflight must not connect to its
+    database), and never walks the full lead scan set -- doctor is a preflight users
+    run often and cheaply, not a second `leads` pass."""
 
     def read_leads(self, statuses: set | None = None) -> list:
         """Every stored lead as a LeadNote, filtered to `statuses` when given.
@@ -404,6 +493,21 @@ class Store(Protocol):
 
         On the judge's critical path, so a store that gets this wrong changes which jobs
         the user is shown."""
+        ...
+
+    def read_candidate_profile(self) -> CandidateProfile:
+        """The candidate's own identity and application-form data.
+
+        MUST-support, like read_baseline/read_criteria -- NOT optional like
+        preflight/precheck. An optional member would push a `getattr` None-branch
+        into four callers and hand cv a "the store cannot say" case with no safe
+        answer: composing without a name is the fabrication risk #99 exists to
+        stop, and refusing on a store that merely did not implement the hook
+        would be a silent feature-off.
+
+        A store with no such document returns an all-blank CandidateProfile --
+        abstain, not raise, the same shape read_criteria already has.
+        """
         ...
 
     def write_document(self, rel: str, text: str, *, only_if_absent: bool = False) -> str:
