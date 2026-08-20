@@ -370,27 +370,40 @@ the CV proper desyncs that assignment silently -- a LinkedIn-URL contact line be
 the real name landed in contact, `validate()` reported zero violations, and the CV would have rendered.
 `cv/engine.py`'s retry loop closes this with three inline STRUCTURAL guards, in the same shape as the
 `WORK EXPERIENCE`/`PROFILE` header checks beside them: the header block's LINE COUNT must match
-`cvcfg.contact`'s lines plus one (the name), its LAST line must case-fold-match `cvcfg.name`, and the
-lines BEFORE that last one must equal `cvcfg.contact`'s own non-empty lines verbatim. The third guard
-was added on CodeRabbit's review of the first two (PR #100): a same-count preamble occupying exactly
-the contact slot, with the name still correctly anchored, passed both of the first two checks while
-silently dropping the real contact information. It runs LAST, after the name-anchor check, because a
-same-count REORDERING also fails the content comparison and the anchor check's message is the more
-specific diagnosis for that shape. All three compare against `cvcfg` -- ground truth `cv/parse.py`
-never has, since it is pure and takes only `text` -- and all three live in the engine rather than
-reaching them through `cv.parse` or a renderer's `precheck`, for the same reason as each other:
-`precheck` only reaches the `template` renderer (`script`
+`contact_block(profile)`'s lines plus one (the name), its LAST line must case-fold-match
+`full_name(profile)`, and the lines BEFORE that last one must equal `contact_block(profile)`'s own
+non-empty lines verbatim. The third guard was added on CodeRabbit's review of the first two (PR #100):
+a same-count preamble occupying exactly the contact slot, with the name still correctly anchored,
+passed both of the first two checks while silently dropping the real contact information. It runs LAST,
+after the name-anchor check, because a same-count REORDERING also fails the content comparison and the
+anchor check's message is the more specific diagnosis for that shape. All three compare against
+`cv_name`/`cv_contact` (#133/#107: `cv/engine.py` derives both once per lead, before any spend, as
+`full_name(profile)`/`contact_block(profile)` off the vault's Candidate Profile note --
+`core/candidate.py`) -- ground truth `cv/parse.py` never has, since it is pure and takes only `text` --
+and all three live in the engine rather than reaching them through `cv.parse` or a renderer's
+`precheck`, for the same reason as each other: `precheck` only reaches the `template` renderer (`script`
 implements none at all, `test_a_renderer_without_precheck_is_not_gated_by_another_renderers_grammar`),
 while these guards must bind every renderer alike, because the shape they enforce is what `compose.py`'s
 own prompt REQUESTED, not what any one renderer's LAYOUT needs. **The engine may guard what the prompt
-required; only a renderer may guard what its own layout needs.** A composed CV that leaves `cv.name` at
-the shipped placeholder `"Your Name"` needs no preamble at all to fail the same way -- it is the model
-complying exactly with what was configured, and no STRUCTURAL check can distinguish a placeholder from
-a real name that happens to read `"Your Name"`. `cv/engine.py` therefore also refuses to compose at all
-while `cv.name` is still that default, before any dossier fetch or LLM spend (`skipped-config`),
-mirroring the `#9` staleness guard beside it -- the same "quiet wrong default" posture
-`cv/config.py`'s `load_cv_config` already takes for other fields, applied here to the single most
-visible line of an artefact sent under the user's identity.
+required; only a renderer may guard what its own layout needs.** A composed CV whose derived
+`full_name(profile)`/`contact_block(profile)` are blank needs no preamble at all to fail the same way --
+it is the model complying exactly with what the vault declared, and no STRUCTURAL check can distinguish
+a blank derived name from a genuine one. There is no placeholder sentinel this GATE compares
+against any more: identity moved out of `cv.name`/`cv.contact` config keys and into the vault
+note (#133/#107), so a derived value that is blank just IS blank -- "" cannot collide with a real
+name the way the old `"Your Name"` default theoretically could. (The literal string no longer
+ships at all: `cv/compose.py`'s `build_prompt`/`compose` made `name` a required KEYWORD-ONLY
+argument with no default, closing even the unreachable path rather than leaving an inert
+placeholder behind it -- the one production caller, `cv/engine.py`'s `run_one`, already passed
+`name=cv_name` explicitly, so nothing there changed; `compose.py`'s own unit tests now pass a
+fixture identity instead of relying on a shipped default. `contact` keeps its `""` default,
+deliberately: an empty contact block is the neutral, already-abstain-shaped value this codebase
+uses throughout, not a placeholder that could misrepresent anyone.) `cv/engine.py` therefore also refuses to compose at all
+while either derived value is blank, before any dossier fetch or LLM spend (`skipped-config`), mirroring
+the `#9` staleness guard beside it -- the same "quiet wrong default" posture this codebase takes
+elsewhere (e.g. `cv/config.py`'s `load_cv_config`, which raises loudly rather than silently drop a
+legacy `cv.name`/`cv.contact` left in a config file), applied here to the single most visible line of an
+artefact sent under the user's identity.
 
 **`compose.py` recovers the artefact from an agentic backend's conversational envelope (#28).**
 `claude --print` is Claude Code, an agent, not a completion endpoint: given a "compose X" prompt it
@@ -457,7 +470,8 @@ The name/contact misassignment (#99, above) is a THIRD gate-clean, un-swept case
 deliberately NOT a third exception to the implication: `parse_cv` still does not raise on it, on
 purpose, because the parser has no ground truth to refuse against and tightening it would only
 protect the `template` renderer for zero added coverage on the path that actually ships. Protection
-lives at `cv/engine.py` instead, comparing the same header block against `cvcfg`.
+lives at `cv/engine.py` instead, comparing the same header block against the vault-derived
+`cv_name`/`cv_contact` (`core/candidate.py`) -- `cvcfg` carries neither field as of #133/#107.
 `test_a_preamble_line_is_gate_clean_and_parsed_without_refusal_on_purpose`
 (`tests/test_cv_parse.py`) pins this as intentional, the same way the two exceptions below are
 pinned — read it before "fixing" this by widening the parser after all.
@@ -589,7 +603,8 @@ consistently engineers out; see `_select_backend`'s guard in `cli.py`.
   `camofox`); the STORE seam has since grown the same OPTIONAL shape, `preflight() -> dict`, reached
   via `getattr` exactly like `precheck` and for the same reason (an implementation that cannot say is
   not one that is broken) — `job-sluice doctor` (see below) is the one caller, and `Vault.preflight`
-  answers with FACTS (vault dir, baseline CV, Judging Profile, Experience Library counts), never
+  answers with FACTS (vault dir, baseline CV, Judging Profile, Experience Library counts, and --
+  #133/#107 -- whether a candidate name and a contact block are declared), never
   verdicts, keeping classification in `core/doctor.py` where the backend rules already live. The
   selection is also exercised in tests — `tests/harness/` registers a fake fetcher
   (`browser.py`) and renderer (`renderer.py`) and resolves them through the same seam. The backend seam

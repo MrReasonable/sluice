@@ -134,6 +134,17 @@ Shared by every sub-app:
   unreachable, so expect one full re-fetch on the first triage or cv run after
   upgrading -- bounded, not data loss, since the default `ttl_days: 7` would
   have expired them inside a week anyway.
+- `candidate.py` (#133/#107): derivations over `CandidateProfile` (the
+  dataclass itself lives in `protocols.py`, mirroring `criteria.py`'s
+  type/logic split). `full_name`/`contact_block` build the CV header from the
+  five identity fields; `has_any_declared` is the "does this note say
+  anything at all" probe `cmd_init`'s write gate and re-interview gate both
+  share; `age_from_dob` derives the `apply` packet's `age` key. Read through
+  the Store contract's `read_candidate_profile()` (`CANDIDATE_PROFILE_RELPATH
+  = "Job Applications/Candidate Profile.md"`, a MUST-support member alongside
+  `CRITERIA_RELPATH`, with a defined abstain: an all-blank `CandidateProfile`
+  for a missing document, never `None`). Consumed by `cv/engine.py`,
+  `apply/packet.py`, `Vault.preflight` and `cli.py::cmd_init`.
 
 **How a state file behaves when it cannot be read** is one convention, keyed on
 what a wrong answer COSTS, not on which module happens to own the file. A
@@ -294,26 +305,42 @@ Split pure-from-impure, which is the whole reason its guarantees are unit-testab
   each carrying its `parse`, the dotted config keys it `writes_to`, a hint and a
   consequence line. Every preference question has `default=None`, which means a
   blank answer SKIPS it. The vault is the sole exception, and its default arrives
-  as a `catalogue(default_vault=...)` PARAMETER so a pure catalogue never imports
+  as a `catalogue(default_vault=...)` PARAMETER so this module never imports
   the concrete store. Backend and renderer choices are derived from the live
   registries, never hand-listed.
 - **`emit.py`** (pure): hand-rolled YAML scalars. `safe_dump` would destroy the
   comments that are most of the template's value and a round-tripping loader is
   barred by the standard-library-only rule, so strings are always double-quoted —
   the one form with a total escape grammar.
-- **`plan.py`** (pure): `build_plan(answers, ...) -> InitPlan`, producing the two
-  artefact texts plus the notes the report prints. The config is RENDERED FROM THE
+- **`plan.py`** (pure, with one deliberate exception -- see below): `build_plan(answers, ...) ->
+  InitPlan`, producing THREE artefact texts (`config_text`, `profile_text`, `candidate_text`)
+  plus the notes the report prints. The config is RENDERED FROM THE
   CATALOGUE, which makes "every key the wizard can write appears in the file it
   writes" true by construction. An unanswered key is emitted COMMENTED; the block
   HEADER stays ACTIVE, because a commented header made the file's own
   `# <- uncomment and set YOUR OWN` marker produce an unparseable config for every
   nested key (16 of 19), and all four loaders have always read a null block as
-  empty.
+  empty. `candidate_text` (#133/#107) is the one artefact whose own construction can fail:
+  `_render_candidate` writes every one of the 36 `CandidateProfile` fields through
+  `emit.scalar()` and then re-reads the WHOLE note back through `core/vault.py`'s
+  `parse_frontmatter` -- the real reader `Vault.read_candidate_profile` also uses -- comparing
+  per-field against what was asked for. A value that does not survive that round trip (an
+  interior quote, a control character) raises `FrontmatterRoundTripError` rather than ever
+  returning text that would silently corrupt on the way back in. That is the one place this
+  module imports the concrete store (`from sluice.core.vault import parse_frontmatter`,
+  module scope) rather than staying import-free like `questions.py` above: the check is only
+  meaningful against the SAME reader production uses, and rolling a second frontmatter parser
+  here to avoid the import would defeat the very thing the check exists to prove.
 - **`ask.py`** (impure): the only half that touches a terminal. `TtyAsker` prompts
   and re-asks on a bad answer; `NoInputAsker` answers only from flags and REFUSES
   rather than reading stdin, because a wizard blocking on a pipe is a hung CI job
   with no diagnosis. Both satisfy one small interface, so `--no-input` is the same
-  wizard with the prompting removed rather than a second code path.
+  wizard with the prompting removed rather than a second code path. `collect_candidate`
+  is the third interview (#133/#107), gated differently from the other two: `collect_profile`
+  and the board walk are gated on whether their artefact EXISTS yet; `collect_candidate` is
+  gated on whether the note DECLARES anything (`has_any_declared`), because an unconditional
+  existence gate would close the moment `cmd_init` writes an all-blank scaffold -- see the
+  conditional-write paragraph below.
 
 Two properties are load-bearing and each has its own guard:
 
@@ -334,11 +361,35 @@ heading set is DERIVED by splitting `DEFAULT_CRITERIA` on its own headings, so
 there is no second list to drift out of step.
 
 `cli.cmd_init` is the impure shell: it preflights the CONFIG destination before asking
-anything, writes the config with an exclusive `open(dest, "x")` and the profile
-through the STORE SEAM via `write_document(..., only_if_absent=True)`, and rolls
-nothing back on a partial failure. It REFUSES when `--vault` and `$VAULT_DIR`
-disagree, because `stores/vault.py:_make` is env-first and a precedence rule would
-write to one path while the report named the other.
+anything, writes the config with an exclusive `open(dest, "x")`, and writes the Judging
+Profile AND the Candidate Profile through the STORE SEAM via
+`write_document(..., only_if_absent=True)`, rolling nothing back on a partial failure. It
+REFUSES when `--vault` and `$VAULT_DIR` disagree, because `stores/vault.py:_make` is
+env-first and a precedence rule would write to one path while the report named the other.
+
+Before any write, `cmd_init` loops on `build_plan`, catching `FrontmatterRoundTripError`: a
+hostile candidate answer re-asks the five candidate questions (or, with no terminal to retry
+on, blanks the answers and loops once more, since a blank value always round-trips) rather
+than losing the whole interview -- every preference question, the board walk, the five
+Judging Profile prompts -- to one bad answer in the last of three independent interviews.
+
+Of the three artefacts, the Candidate Profile is the only one written CONDITIONALLY, on
+`has_any_declared(parse_candidate_profile(plan.candidate_text))` -- the rendered ARTEFACT,
+not the raw answer dict. That conditionality is load-bearing, not cosmetic: the Judging
+Profile always emits `DEFAULT_CRITERIA`'s own headings and prose, so its existence probe
+(`bool(store.read_criteria())`) is True on the very next run whether or not the user answered
+anything, and its write gate closes for free. An all-blank Candidate Profile has no such
+fallback content, so writing one unconditionally would leave `has_any_declared` False
+forever even with the note on disk: the write refuses on every later run (never-clobber), the
+interview re-asks on every later run, the re-asked answers park in the
+`.init-scaffold.md` rescue, and the run after that reports `failed` because the scaffold slot
+is occupied too -- a permanent deadlock. Gating on the rendered text rather than the answer
+dict closes a narrower version of the same trap: an earlier shape gated on
+`any(candidate_answers.values())`, which agreed with the artefact-based probe only by the
+accident that every question `collect_candidate` asks happens to have a mapped
+`CandidateProfile` field; a future question added with no matching entry would satisfy the
+answer-dict gate while `_render_candidate` wrote an all-blank note regardless, reaching the
+same deadlock on the very first run. See `cli.py`'s write block for the full account.
 
 ## The plugin core
 
@@ -1033,11 +1084,13 @@ Four points in the config are the seams for pluggable adapters.
   an implementation that omits it reports nothing for that component rather
   than being treated as broken. `Vault.preflight` returns FACTS only (does the
   vault directory exist, is the baseline CV readable, is a Judging Profile
-  present, how many Experience Library entries are verified) -- never
-  verdicts, which stay in `core/doctor.py` alongside the backend classification
-  rules. It is read-only by contract: stats paths and reuses this store's own
-  read methods, never opens anything that does not already exist, so it
-  cannot disarm the #81 relocation notice above.
+  present, how many Experience Library entries are verified, and -- #133/#107
+  -- is a candidate name declared and is a contact block declared, read via
+  `full_name(profile)`/`contact_block(profile)` off `read_candidate_profile()`)
+  -- never verdicts, which stay in `core/doctor.py` alongside the backend
+  classification rules. It is read-only by contract: stats paths and reuses
+  this store's own read methods, never opens anything that does not already
+  exist, so it cannot disarm the #81 relocation notice above.
 - **renderer**: `sluice/renderers/`, selected by `cv.renderer:` (default
   `template`). Implementations: `template` (fills a user's own Jinja2 template --
   or the packaged default at `sluice/templates/cv_plain.html.j2` when
@@ -1067,9 +1120,11 @@ Four points in the config are the seams for pluggable adapters.
   (`template`'s meta-line format); the pre-`PROFILE` name/contact header block
   is enforced separately, by three inline STRUCTURAL guards in `cv/engine.py`
   itself (#99: header line count, name anchor; a third added on review,
-  comparing the contact lines' actual content against `cvcfg.contact`), because
-  that shape is what `cv/compose.py`'s prompt requested of every renderer
-  alike, not a layout requirement any one renderer owns.
+  comparing the contact lines' actual content against `contact_block(profile)`
+  -- #133/#107: the candidate's identity now comes from the vault's Candidate
+  Profile note, not a `cv.name`/`cv.contact` config key), because that shape is
+  what `cv/compose.py`'s prompt requested of every renderer alike, not a layout
+  requirement any one renderer owns.
 - **fetcher**: `sluice/fetchers/`, selected by `fetcher:` (default `camofox`).
   Implementations: `camofox` (the headless-browser HTTP server). The dossier
   fetch closure built from it (`Sluice.dossier_cache`) reads
@@ -1098,12 +1153,22 @@ seam: it enumerates every configured backend (primary and fallback, per sub-app)
 classifies each as `ok`/`degraded`/`dead`, then does the same for a second table of
 component checks -- the renderer (does `cv.renderer` actually construct, catching a
 missing `render` extra or WeasyPrint's native libraries before the dossier fetch and
-LLM spend rather than after), the CV identity fields (`cv.name` still the shipped
-placeholder, `cv.contact` blank), the store's on-disk artefacts (the vault directory,
-the baseline CV, the Judging Profile, Experience Library entry counts, via the
-Store seam's OPTIONAL `preflight()` hook), track's Google adapter, the Camofox profile an
-ingest run will drive, and the current
-posture (abstaining or active) of every list-typed preference gate. Backend
+LLM spend rather than after), the store's on-disk artefacts (the vault directory,
+the baseline CV, the Judging Profile, Experience Library entry counts, and -- #133/#107
+-- the Candidate Profile note's own declared name/contact, checked here rather than as
+a separate identity-fields row, via the Store seam's OPTIONAL `preflight()` hook),
+track's Google adapter, the Camofox profile an ingest run will drive, and the current
+posture (abstaining or active) of every list-typed preference gate. A legacy
+`cv.name`/`cv.contact` still set in `sluice.yaml` is a THIRD, separate failure mode: it
+makes `load_cv_config()` raise, which `Sluice.doctor` catches ahead of the
+deliberately-guarded `self.renderer()`/`self.store()` constructions below it (triage's config
+loads first, unguarded -- it has no cv-shaped legacy-key hazard of its own) and turns into one
+DEAD `cv-config` row naming the real error, rather than a traceback out of the one command a
+user runs because something -- possibly that very config -- is wrong; only the three checks
+that actually read `cv_cfg` (cv's own backend targets, the renderer, and cv's row in the
+gate-posture sweep) are skipped, and the report is otherwise full -- the store's Candidate
+Profile row, track/Google, camofox and every other sub-app's gate rows are unrelated to
+`cv_cfg` and still run. Backend
 classification is role-aware -- a keyless fallback degrades (the sanctioned
 primary-only path, exit 0), while a keyed-but-broken backend is `dead` regardless of
 role, the silently-non-functional fallback the tool exists to catch. Component
@@ -1162,4 +1227,25 @@ defer: the raise now carries a hint naming the collaborators and the seams
 test. The scope is `__init__` keywords only — `client`/`now_iso` are
 `Sluice.track()` parameters, never reach `**overrides`, and a typo there is
 already a plain `TypeError`.
+
+**The Candidate Profile read cadence is the same kind of deliberate divergence as the
+clock shapes above, decided once here rather than left as an inconsistency between two
+sub-apps' comments.** `apply` reads `store.read_candidate_profile()` exactly ONCE per
+`prep()` call (`core/app.py`) and threads the result into `prep_one`/`preview_all` as a
+required keyword — never re-read inside the batch loop. That makes two packets produced
+in the same run agreeing with each other impossible to violate BY CONSTRUCTION: a
+mid-run edit to the note cannot make lead A and lead B disagree, because both were built
+from the one snapshot `prep()` resolved. `cv`, by contrast, reads the profile once PER
+LEAD, inside `run_one` (`cv/engine.py`) — an ordinary-case simplification, not a
+structural guarantee: a note edited mid-batch could in principle make two CVs in one
+`cv run` disagree. Both are correct for what each artefact needs. `apply` must pin
+`today` anyway (the same clock-freezing reasoning as above), and the profile rides
+along on that same resolved snapshot. `cv` is self-consistent WITHIN a lead regardless —
+`cv_name`/`cv_contact` are derived once at the top of `run_one` and feed both the
+compose prompt and the `#99`/`#100` STRUCTURAL guards for that SAME lead, so no composed
+CV is ever validated against an identity other than the one it was built under; the
+per-lead read costs nothing beside a dossier fetch and up to two LLM calls. Do not
+thread `profile` through `cv/engine.py::run_one` to match apply's shape unless a real
+correctness bug turns up — that ripple was weighed against this PR's cost and rejected
+as not worth it for zero measured gain.
 

@@ -115,10 +115,10 @@ Compose, gate, render and sign off a tailored CV.
 Per-result line to stderr: `cv: <status> <lead> served=<path> violations=<N> audit_flags=<N> dossier_failed=<bool>`,
 plus a summary line when any dossier fetch failed and composition proceeded blind. **Exit 1**
 if: `--lead` matched no shortlist lead; `--lead` was ambiguous; or any result is
-`skipped-config` (`cv.name` is still the shipped placeholder `Your Name` — the compose refuses
-before any LLM spend). Otherwise exit 0, including when a result is `needs-signoff` (the
-advisory audit withheld the send-ready pointer — see `cv signoff` below and #60 in
-`docs/ARCHITECTURE.md`).
+`skipped-config` (the candidate's derived name or contact block — from `Job Applications/
+Candidate Profile.md` in your vault — is blank; the compose refuses before any LLM spend).
+Otherwise exit 0, including when a result is `needs-signoff` (the advisory audit withheld
+the send-ready pointer — see `cv signoff` below and #60 in `docs/ARCHITECTURE.md`).
 
 ### `job-sluice cv signoff --lead SLUG [--discard] [--yes]`
 
@@ -141,6 +141,20 @@ offline by contract — no backend call, no browser. `--all-shortlist` previews 
 the CV into the Camofox upload directory under a neutral filename and emits a prep packet
 (text, or `--json`). `--dry-run` with `--lead` previews without staging. Exit 0 on `staged` (or
 a dry-run preview); exit 1 on `skipped`, printing the reason.
+
+The prep packet (#133) also carries whatever the vault's `Job Applications/Candidate
+Profile.md` note declares beyond the CV header (address, right-to-work, "how did you hear",
+and similar application-form fields — the note holds 36 fields in total, of which up to 30
+reach this packet; see `docs/CONFIGURATION.md`), so a declared field never has to be retyped
+into the same ATS form twice. The text form groups them
+under two headings: `DETAILS:` for the fields reviewed as safe to print plainly, and `  EQUAL
+OPPORTUNITIES MONITORING (optional on most forms):` for the ones covering an Equality Act 2010
+protected characteristic (ethnicity, religion, disability, sexual orientation, gender identity,
+marital status, nationality, and similar) plus the derived `age`, printed by default rather than
+withheld behind a flag — the heading is the mitigation, not a refusal to show what was declared.
+Only DECLARED fields appear; an undeclared one is omitted entirely, never printed blank.
+`--json` emits the identical key/value pairs with no heading of its own, so it is not itself a
+mitigation for retention — piping the packet somewhere just moves where that same data is read.
 
 ### `job-sluice apply record --lead SLUG [--ats NAME] [--url URL] [--dry-run]`
 
@@ -356,8 +370,10 @@ genuinely omits the five write tools, not merely refusing them at call time.
 
 ## `job-sluice init`
 
-Scaffold a config and a Judging Profile. See the Quickstart section of the [README](../README.md)
-and `docs/CONFIGURATION.md` for what each question controls.
+Scaffold a config, a Judging Profile, and a Candidate Profile. See the Quickstart section of
+the [README](../README.md) and `docs/CONFIGURATION.md` for what each question controls. Identity
+lives in the Candidate Profile note (`Job Applications/Candidate Profile.md`) from here on,
+created by `job-sluice init` or by hand.
 
 | Flag | Notes |
 |---|---|
@@ -365,16 +381,25 @@ and `docs/CONFIGURATION.md` for what each question controls.
 | `--no-input` | never prompt; answer only from `--vault`/`$VAULT_DIR`/an existing config's `vault_dir` |
 
 Never overwrites an existing config or Judging Profile — re-running is safe and reports what
-it left alone. Exit 2 if `--vault` and `$VAULT_DIR` name different directories, if
-`--no-input` is given with no vault answer available anywhere, or if the resolved
-`vault_dir` exists and is not a directory. Exit 1 if any individual write failed. Otherwise 0.
+it left alone. The Candidate Profile note differs: its gate is whether *anything* is declared
+yet (`has_any_declared`), not whether the note merely exists, so a note with some identity
+already declared is left alone and its interview is skipped on every future run — fill in
+anything still blank directly in Obsidian. If the note exists but is entirely blank, `init`
+re-asks, but the write still refuses (never-clobber) because the note is already there; your
+answers land in `Candidate Profile.init-scaffold.md` beside it instead, and re-running again with
+that scaffold ALSO occupied is reported as a failed write rather than silently discarding what
+you typed. Exit 2 if `--vault` and `$VAULT_DIR` name different directories, if `--no-input` is
+given with no vault answer available anywhere, or if the resolved `vault_dir` exists and is not
+a directory. Exit 1 if any individual write failed. Otherwise 0.
 
 ## `job-sluice doctor [--offline] [--strict]`
 
-Preflights backends, the renderer, `cv.name`/`cv.contact` identity, the store's on-disk
-artefacts (vault, baseline CV, Judging Profile, Experience Library), track's Google adapter,
-and every list-typed preference gate's abstain/active posture. Never opens a browser and never
-writes through the store or renderer.
+Preflights backends, the renderer, the store's on-disk artefacts (vault, baseline CV, Judging
+Profile, Experience Library, and the Candidate Profile note's own declared name/contact —
+#133/#107), track's Google adapter, and every list-typed preference gate's abstain/active
+posture. A `cv.name`/`cv.contact` key still set in `sluice.yaml` from an older config is its own
+DEAD `cv-config` row rather than a traceback — see `docs/TROUBLESHOOTING.md`. Never opens a
+browser and never writes through the store or renderer.
 
 | Flag | Notes |
 |---|---|
