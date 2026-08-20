@@ -56,6 +56,17 @@ _JS = r"""
 
 register(BrowserListSource(
     id="reed",
+    # #153: reed interleaves sponsored COURSE cards into the jobsearch results page, and
+    # the extractor's link cascade ends in "any anchor in the card", so it took them. A
+    # course is /courses/<slug>/<id>; a job is /jobs/<slug>/<id>. Such notes reached a
+    # production vault and parked in `needs_review` forever -- a course card has no
+    # company, so the note scores 0, never resolves, and burns an LLM call on every triage
+    # pass while diluting the one queue a human is meant to scan.
+    #
+    # An ALLOWLIST, not a `/courses/` denylist: the denylist closes only the card type
+    # already observed, and a results page can carry sponsored content, profile prompts or
+    # anything else reed decides to interleave next.
+    posting_paths=("/jobs/",),
     extractor_js=_JS,
     wait=4, scrolls=2, scroll_amount=600,
     extra={"job_type": "contract"},

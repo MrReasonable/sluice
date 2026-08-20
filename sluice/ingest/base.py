@@ -96,6 +96,107 @@ def _path(url: str) -> str:
         return ""
 
 
+def admits_path(posting_paths, url: str) -> bool:
+    """Does `url` point at a POSTING, per the source's own declared path prefixes?
+
+    ABSTAINS when `posting_paths` is empty, and that default is the whole safety story
+    (#153). A board that declares nothing admits every row exactly as it did before this
+    existed, so 21 of the 22 sources are byte-identical and only a source that opts in
+    filters at all. The inverse -- a shipped default list, or "reject what we do not
+    recognise" -- is the `672ad2a` shape this codebase most consistently engineers out: a
+    gate that rejects when unconfigured silently bins a real job hunt, and the person it
+    happens to cannot see why their board went quiet.
+
+    An ALLOWLIST of prefixes rather than a `/courses/` denylist, per #153's own reasoning:
+    a denylist closes only the case already observed, and reed interleaves whatever it
+    likes into a results page. The cost is that a board changing its posting path breaks
+    ingestion for that source -- which is why rejections are COUNTED and reported (see
+    `rejected_paths` in `health_hint`) rather than dropped in silence. A source returning
+    20 rows and 0 leads must say why.
+
+    A row whose url is blank abstains rather than being rejected: a missing link is a
+    DIFFERENT defect, already measured by the engine's own `link_rate`, and swallowing it
+    here would hide it behind a path verdict it never earned.
+    """
+    if not posting_paths:
+        return True
+    if not url or not str(url).strip():
+        return True
+    path = _path(str(url))
+    return any(path.startswith(prefix) for prefix in posting_paths)
+
+
+def _rejected_path_count(posting_paths, rows) -> int:
+    """How many of `rows` `admits_path` would reject. Computed on the RAW rows and from
+    the same predicate `parse` filters with, so the report cannot disagree with the
+    behaviour -- the identical reasoning `_first_degraded` states for reading row markers
+    pre-parse rather than post."""
+    if not posting_paths:
+        return 0
+    return sum(
+        1 for row in _sized(rows)
+        if isinstance(row, dict)
+        and not admits_path(posting_paths, row.get("link") or row.get("url") or "")
+    )
+
+
+def validate_posting_paths(owner: str, posting_paths) -> tuple:
+    """Return `posting_paths` NORMALISED to a tuple, or raise if it cannot be one.
+
+    It RETURNS rather than merely checking, and the caller stores what it returns, because
+    validating a copy while the field keeps the original is its own bug: a one-shot iterable
+    (`posting_paths=(p for p in (...))`) validated fine against the materialised copy and was
+    then EXHAUSTED on the field. `admits_path` reads a spent generator as truthy, so the
+    abstain arm never fires and `any(...)` over nothing rejects EVERY row -- measured, a real
+    posting dropped and zero leads. That is the `672ad2a` harm reached through the validator
+    written to prevent it. Normalising is preferred to refusing a non-tuple: it accepts the
+    list a plugin author may reasonably write, and makes the stored value re-iterable by
+    construction rather than by convention.
+
+    FAIL LOUDLY AT CONSTRUCTION, the same posture `lead_layout` takes in `Vault.__init__`
+    and for the same reason: every way of getting this field wrong is otherwise SILENT, and
+    the two directions fail opposite ways, so neither is self-announcing. Measured, all
+    three on the real predicate:
+
+      posting_paths=("/jobs/")   -- a missing comma, so this is a `str`, not a tuple. The
+                                    membership loop iterates CHARACTERS, `startswith("/")`
+                                    matches every url, and the guard is INERT: #153's
+                                    course cards come straight back with nothing red.
+      posting_paths=("jobs/",)   -- a missing leading slash. `urlsplit().path` always
+                                    begins with "/", so NOTHING matches and 100% of that
+                                    board's postings are binned -- the `672ad2a` harm,
+                                    aimed by a typo.
+      posting_paths=("/jobs",)   -- admits `/jobsearch/...` too. Accepted deliberately (a
+                                    prefix is what this field means, and a board may well
+                                    file postings at both), but reed's trailing slash IS
+                                    load-bearing, so it is called out here rather than left
+                                    for someone to rediscover.
+
+    A string is checked BEFORE the iterable check, for the reason `lead_ttl_days` checks
+    `bool` before `int`: `str` IS iterable, so an isinstance-iterable test passes it and the
+    character-loop bug survives the very guard written to stop it.
+    """
+    if isinstance(posting_paths, str):
+        raise ValueError(
+            f"{owner}: posting_paths must be a tuple of path prefixes, not a string -- "
+            f"got {posting_paths!r}. A bare string iterates one CHARACTER at a time and "
+            f'silently admits every url; write ("{posting_paths}",) with the comma.')
+    try:
+        prefixes = tuple(posting_paths)
+    except TypeError:
+        raise ValueError(
+            f"{owner}: posting_paths must be a tuple of path prefixes, "
+            f"got {type(posting_paths).__name__}") from None
+    for prefix in prefixes:
+        if not isinstance(prefix, str) or not prefix.startswith("/"):
+            raise ValueError(
+                f"{owner}: every posting_paths prefix must be a string starting with '/' "
+                f"-- got {prefix!r}. Paths are matched against `urlsplit().path`, which "
+                f"always begins with '/', so a prefix that does not would reject every "
+                f"posting this source returns.")
+    return prefixes
+
+
 def _mk_search(spec) -> Search:
     """A searches_spec entry is (label, url) or (label, url, params) - the optional
     params carry per-search metadata (e.g. {"job_type": "perm"}) so the one engine
@@ -203,6 +304,15 @@ class BrowserListSource:
     # markup need it -- for them, "0 rows" and "logged out" are otherwise indistinguishable,
     # which is what retired linkedin/jobserve/indeed on 2026-08-15.
     auth_probe_js: str | None = None
+    # Path prefixes a POSTING url starts with, e.g. ("/jobs/",). Empty = ABSTAIN, which is
+    # the shipped default for every source that does not opt in -- see `admits_path`.
+    # Declared per source because path shapes are board-specific and a shared default
+    # would be one board's convention imposed on twenty-one others.
+    posting_paths: tuple = ()
+
+    def __post_init__(self) -> None:
+        # ASSIGNED back, not merely checked -- see `validate_posting_paths`.
+        self.posting_paths = validate_posting_paths(f"source {self.id}", self.posting_paths)
 
     def searches(self) -> list:
         return [_mk_search(spec) for spec in self.searches_spec]
@@ -307,6 +417,7 @@ class BrowserListSource:
             _row_to_lead(self.id, search, row, self.extra)
             for row in raw.get("result", [])
             if isinstance(row, dict) and (row.get("title") or "").strip()
+            and admits_path(self.posting_paths, row.get("link") or row.get("url") or "")
         ]
 
     def health_hint(self, raw: dict) -> dict:
@@ -349,6 +460,23 @@ class BrowserListSource:
         degraded = _first_degraded(raw.get("result"))
         if degraded:
             hint["degraded"] = degraded
+        # How many rows the path guard dropped (#153). Present only when it actually
+        # rejected something, so a source that declares no `posting_paths` -- every source
+        # but one today -- emits a byte-identical hint and `detect_drift` sees exactly the
+        # keys it saw before.
+        #
+        # This is the half of the guard that keeps it from being a SILENT filter, and it is
+        # only half a guard until something READS it: `engine.py` sums it across searches,
+        # `detect_drift` classifies `rejected == count` as `paths`, and `_print_report`
+        # prints it even below that gate. An earlier revision of this comment claimed the
+        # drop would otherwise show up as `count` and the engine's `fetched` diverging --
+        # that was FALSE and worth recording rather than quietly deleting: `_run_source`
+        # accumulates `fetched` FROM this very `count` (`total += hint["count"]`), so the
+        # two are one number and cannot diverge. Without a reader the rejection appeared in
+        # neither, which is precisely the silent filter this key exists to prevent.
+        rejected = _rejected_path_count(self.posting_paths, raw.get("result"))
+        if rejected:
+            hint["rejected_paths"] = rejected
         return hint
 
 
@@ -366,6 +494,17 @@ class CarouselSource:
     wait: float = 3
     max_jobs: int = 40
     extra: dict | None = None
+    # Same opt-in as BrowserListSource, same abstaining default -- see `admits_path`.
+    # `parse` below reads it, so declaring it here is not decoration: without the field
+    # the attribute lookup raises and every carousel source dies at parse time. That is
+    # exactly what happened when the guard was first added to only one of the two
+    # classes, and it is why the guard's tests enumerate the source CLASSES rather than
+    # naming the one that had the bug -- both for this field and for `rejected_paths`.
+    posting_paths: tuple = ()
+
+    def __post_init__(self) -> None:
+        # ASSIGNED back, not merely checked -- see `validate_posting_paths`.
+        self.posting_paths = validate_posting_paths(f"source {self.id}", self.posting_paths)
 
     def searches(self) -> list:
         return [_mk_search(spec) for spec in self.searches_spec]
@@ -426,10 +565,16 @@ class CarouselSource:
         return out
 
     def parse(self, raw: dict, search: Search) -> list:
+        # Same guard as BrowserListSource.parse, deliberately: a defensive pattern applied
+        # to one of two parse paths is the half-applied shape this repo treats as worse
+        # than none. No carousel source declares `posting_paths` today, so this abstains
+        # and changes nothing -- it is here so the 24th source cannot pick the wrong class
+        # and quietly lose the guard.
         return [
             _row_to_lead(self.id, search, job, self.extra)
             for job in raw.get("jobs", [])
             if isinstance(job, dict) and (job.get("title") or "").strip()
+            and admits_path(self.posting_paths, job.get("link") or job.get("url") or "")
         ]
 
     def health_hint(self, raw: dict) -> dict:
@@ -456,6 +601,15 @@ class CarouselSource:
         degraded = _first_degraded(raw.get("jobs"))
         if degraded:
             hint["degraded"] = degraded
+        # And the path guard's rejections (#153), for the same reason as everything above
+        # it. `parse` filters on BOTH classes; reporting on only one would leave the
+        # carousel path the SILENT filter this key exists to prevent -- which is the
+        # instance-not-class shape the paragraph above narrates, repeated inside the very
+        # fix for it. No carousel source declares `posting_paths` today, so this is absent
+        # on every one of them and their hints stay byte-identical.
+        rejected = _rejected_path_count(self.posting_paths, raw.get("jobs"))
+        if rejected:
+            hint["rejected_paths"] = rejected
         return hint
 
 

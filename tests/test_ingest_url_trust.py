@@ -5,10 +5,10 @@ sweep that finds them is shared:
 
   #160 CONTENT.   A field built from a URL segment reaches the vault without being
                   percent-decoded. cord derived `company` from the path slug and decoded
-                  only `title`, so `Which?` -- which cord serves as `which%3F` -- landed in
-                  two production notes as `which%3F`. Not cosmetic: `track` matches mail
-                  against the stored company name, so three already-resolved interview
-                  emails re-surfaced as unmatched on every pass.
+                  only `title`, so a company named `Example?` -- served as the slug
+                  `example%3F` -- was stored under its encoded spelling. Not cosmetic:
+                  `track` matches mail against the stored company name, so already-resolved
+                  threads re-surfaced as unmatched on every pass.
 
   #153 ADMISSION. A row is taken without checking where its link points. reed interleaves
                   sponsored COURSE cards into the jobsearch results page and the
@@ -19,11 +19,355 @@ The asymmetry between them is why the fixes differ. #160 corrupts a field and ca
 nothing; #153's fix is a FILTER, and a filter is what silently bins real leads -- so its
 default abstains and its rejections are counted rather than dropped.
 """
+import dataclasses
 import re
 
 import pytest
 
 from sluice.ingest import sources as S
+from sluice.ingest.base import BrowserListSource, Search, admits_path
+
+_SEARCH = Search(label="s", url="https://example.invalid/s", params=None)
+
+
+# ── #153: the path guard ──────────────────────────────────────────────────────
+
+def test_an_undeclared_source_admits_everything():
+    """The abstain default, and the single most important row in this file.
+
+    Every source but `reed` declares no `posting_paths` today, so the guard must be
+    invisible to them -- a shipped default, or "reject what we do not recognise", is the
+    `672ad2a` shape: a gate that rejects when unconfigured bins a real job hunt and the
+    person it happens to cannot see why their board went quiet.
+    """
+    for url in ("https://example.invalid/courses/x/1",
+                "https://example.invalid/anything",
+                "https://example.invalid/",
+                ""):
+        assert admits_path((), url) is True, f"an undeclared source must admit {url!r}"
+
+
+def test_a_declared_source_admits_its_own_paths_and_rejects_others():
+    admits = ("/jobs/",)
+    assert admits_path(admits, "https://example.invalid/jobs/rust-developer/123")
+    assert not admits_path(admits, "https://example.invalid/courses/rust/1")
+    # A query string is not part of the path, so the `itm_source=js_search_results` marker
+    # the observed course URLs carried must not rescue them.
+    assert not admits_path(
+        admits, "https://example.invalid/courses/php-developer-training/2"
+                "?itm_source=js_search_results&jobs=1")
+
+
+def test_a_blank_url_abstains_rather_than_being_rejected():
+    """A missing link is a DIFFERENT defect, already measured by the engine's `link_rate`.
+
+    Rejecting it here would hide a link-extraction failure behind a path verdict it never
+    earned -- the guard would report "wrong path" for a row that has no path at all.
+    """
+    for url in ("", "   ", None):
+        assert admits_path(("/jobs/",), url or "") is True
+
+
+def _parse_path_classes():
+    """Every source CLASS in the LIVE REGISTRY that parses rows and reports health.
+
+    Derived from the registry, NOT from `vars(sluice.ingest.base)`. That first version
+    reproduced the very failure this file is about: four registered sources subclass
+    `BrowserListSource` from their own modules, and three of them override `parse` or
+    `health_hint`. A module-scoped sweep cannot see any of them, so it certified the guard
+    over 2 of 6 classes while reading exactly as if it covered them all -- the same "a
+    sweep that finds nothing for something it never looked at" shape that made the first
+    decode sweep skip `wttj`.
+
+    Those three overrides all delegate to `super()` today, so the guard does reach them --
+    but by good manners, not by enforcement. Sweeping the real classes is what turns that
+    into something a future non-delegating override cannot quietly undo.
+    """
+    return sorted({type(src) for src in S.all_sources()}, key=lambda c: c.__name__)
+
+
+_PARSE_PATH_CLASSES = _parse_path_classes()
+
+
+def _minimal(cls, **kw):
+    """`cls` with every REQUIRED field filled by a placeholder, so these tests carry no
+    per-class constructor recipe to go stale as fields move."""
+    args = {f.name: ([] if f.name.endswith("_spec") else "x")
+            for f in dataclasses.fields(cls)
+            if f.default is dataclasses.MISSING
+            and f.default_factory is dataclasses.MISSING}
+    return cls(**{**args, **kw})
+
+
+def _payload_key(cls):
+    """Which raw key this class's `health_hint` counts rows under -- PROBED, not assumed.
+
+    The first version of the report sweep fed BOTH keys at once (`{"result": rows, "jobs":
+    rows}`) so it would not need to know. That hid the bug it existed to catch: a class
+    counting rejections off the WRONG key passed every assertion, because both keys held
+    the same rows -- the copy-paste failure that put this sweep here in the first place.
+    The candidate list is small and the assertion pins that exactly one matches, so a class
+    with a third key fails loudly here instead of being silently swept as if it had none.
+    """
+    src = _minimal(cls, id="s")
+    keys = [k for k in ("result", "jobs")
+            if src.health_hint({k: [{"title": "a"}]}).get("count") == 1]
+    assert len(keys) == 1, (
+        f"{cls.__name__}.health_hint counts {keys or 'NO'} known payload key(s); this sweep "
+        "would test it against a payload it never reads")
+    return keys[0]
+
+
+def test_the_class_sweep_is_not_looking_at_an_empty_set():
+    """SCOPE, asserted before any verdict derived from it. Every sweep below is
+    parameterised over `_PARSE_PATH_CLASSES`, and a discovery filter that matches nothing
+    makes all of them pass vacuously -- `all([])` is `True`. Pinning the names is a RATCHET,
+    not a roster: a new parse path fails this row and forces someone to read it, which is
+    the opposite of a list that silently stays short.
+    """
+    names = {c.__name__ for c in _PARSE_PATH_CLASSES}
+    assert {"BrowserListSource", "CarouselSource"} <= names, (
+        f"the registry's parse-path classes are now {sorted(names)} and no longer include "
+        "both base classes -- the sweeps below would silently stop covering one")
+    assert names == {"BrowserListSource", "CarouselSource", "WellfoundSource",
+                     "_LinkedInSource", "_NaukrigulfSource", "_WorkInStartupsSource"}, (
+        f"the registry's parse-path classes are now {sorted(names)}; every sweep "
+        "parameterised over them covers a different set than when it was written, so "
+        "re-read the new one before updating this row")
+
+
+@pytest.mark.parametrize("cls", _PARSE_PATH_CLASSES, ids=lambda c: c.__name__)
+def test_every_parse_path_declares_the_guard_field(cls):
+    """Enumerated over the source CLASSES, not written once for the one that had the bug.
+
+    `parse` reads `self.posting_paths`, so a class carrying the filter without the field
+    raises `AttributeError` on every row -- measured, not assumed. That is precisely the
+    state the code was in between adding the guard to `parse` and adding the field to the
+    second class, which is why this asserts over both rather than naming one.
+    """
+    names = {f.name for f in dataclasses.fields(cls)}
+    assert "posting_paths" in names, (
+        f"{cls.__name__}.parse filters on self.posting_paths but the dataclass does not "
+        "declare it -- every row will raise AttributeError")
+    assert cls.__dataclass_fields__["posting_paths"].default == (), (
+        f"{cls.__name__}.posting_paths must default to the ABSTAINING empty tuple")
+
+
+def test_reed_rejects_a_course_card_and_keeps_the_job():
+    """The #153 reproduction, through the REAL registered source rather than a stand-in.
+
+    Both course URLs are the shapes named in the issue, `itm_source=js_search_results` and
+    all -- they are served by the jobsearch results page, which is why the extractor saw
+    them in the first place.
+    """
+    reed = S.get("reed")
+    # The board HOST is kept -- it names whose path grammar `reed.posting_paths` declares,
+    # and `tests/test_health.py` already uses registered board domains the same way. The
+    # slugs and ids are SYNTHETIC: they came from an observed scrape and carry nothing the
+    # assertion needs, since `admits_path` reads `urlsplit().path` and never the slug.
+    raw = {"result": [
+        {"title": "Example course A",
+         "link": "https://www.reed.co.uk/courses/example-course-a/1"
+                 "?itm_source=js_search_results"},
+        {"title": "Example course B",
+         "link": "https://www.reed.co.uk/courses/example-course-b/2"
+                 "?itm_source=js_search_results"},
+        {"title": "Example Role", "company": "Example Ltd",
+         "link": "https://www.reed.co.uk/jobs/example-role/3"},
+    ]}
+    titles = [lead.title for lead in reed.parse(raw, _SEARCH)]
+    assert titles == ["Example Role"], f"courses should not become leads: {titles}"
+
+
+def test_a_rejection_is_reported_rather_than_silent():
+    """The half that keeps the filter from being invisible.
+
+    Producing the key is only half the guard; `test_a_rejection_reaches_a_reader` below is
+    the other half. A board renaming `/jobs/` to `/job/` must read as "reed rejected 20 of
+    20 on their path", not as "reed has gone quiet".
+    """
+    reed = S.get("reed")
+    raw = {"result": [
+        {"title": "A course", "link": "https://www.reed.co.uk/courses/x/1"},
+        {"title": "A job", "link": "https://www.reed.co.uk/jobs/y/2"},
+    ]}
+    hint = reed.health_hint(raw)
+    assert hint["count"] == 2, "count stays RAW rows -- it is the denominator"
+    assert hint["rejected_paths"] == 1
+
+
+@pytest.mark.parametrize("cls", _PARSE_PATH_CLASSES, ids=lambda c: c.__name__)
+def test_every_parse_path_reports_what_it_rejected(cls):
+    """The REPORT half, enumerated over the classes exactly as the filter half is.
+
+    This is the gap that actually shipped on this branch: `parse` filtered on both classes
+    and `health_hint` reported on one, so a mis-declared prefix on a carousel source would
+    have dropped rows with nothing anywhere saying so -- the silent filter `rejected_paths`
+    exists to prevent, reproduced inside the fix for it.
+    """
+    rows = [{"title": "A course", "link": "https://example.invalid/courses/x/1"},
+            {"title": "A job", "link": "https://example.invalid/jobs/y/2"}]
+    # Under this class's OWN key only. Populating both (the first version) meant a class
+    # counting rejections off the other class's key still passed -- see `_payload_key`.
+    raw = {_payload_key(cls): rows}
+
+    hint = _minimal(cls, id="s", posting_paths=("/jobs/",)).health_hint(raw)
+    assert hint["count"] == 2, "count stays RAW rows -- it is the denominator"
+    assert hint.get("rejected_paths") == 1, (
+        f"{cls.__name__}.parse filters on posting_paths but health_hint does not report it "
+        "-- the filter is SILENT on this class")
+
+    # And the abstaining default stays byte-identical here too: ABSENT, not zero, because
+    # `detect_drift` classifies on the keys a hint carries.
+    assert "rejected_paths" not in _minimal(cls, id="s").health_hint(raw), (
+        f"{cls.__name__} emits the key without declaring posting_paths -- every source that "
+        "never opted in would report a new key to `detect_drift`")
+
+
+@pytest.mark.parametrize("cls", _PARSE_PATH_CLASSES, ids=lambda c: c.__name__)
+@pytest.mark.parametrize("bad,expected", [
+    # The message is asserted, not just the TYPE. Both arms of the validator raise
+    # `ValueError` mentioning `posting_paths`, so a type-only assertion cannot tell which
+    # one fired -- witnessed: deleting the string arm left this test GREEN, because
+    # `"/jobs/"` then falls through and trips the prefix loop on the character `'j'`.
+    ("/jobs/", "not a string"),
+    # And this row is why the string arm is load-bearing rather than merely a nicer
+    # message: `"/"` is a bare string whose CHARACTERS are all valid prefixes, so the
+    # prefix loop accepts it outright and the guard becomes inert -- `urlsplit().path`
+    # always starts with `/`, so every url is admitted and #153 is fully back.
+    ("/", "not a string"),
+    (("jobs/",), "starting with '/'"),
+    (("/jobs/", 7), "starting with '/'"),
+], ids=["bare-string", "bare-string-all-valid-chars", "no-leading-slash",
+        "non-string-prefix"])
+def test_a_misdeclared_posting_paths_raises_at_construction(cls, bad, expected):
+    """FAIL LOUDLY AT CONSTRUCTION -- and note the two directions fail OPPOSITE ways, which
+    is why neither announces itself. Measured on the real predicate before this guard:
+
+      `posting_paths=("/jobs/")`  admits every url, so the guard is INERT and #153's course
+                                  cards come straight back -- nothing red anywhere.
+      `posting_paths=("jobs/",)`  matches nothing, so 100% of that board's postings are
+                                  binned -- the `672ad2a` harm, delivered by one typo.
+
+    Swept over the source CLASSES rather than written for one, for the same reason as its
+    siblings: the field lives on both base classes and is inherited by four more.
+    """
+    with pytest.raises(ValueError) as exc:
+        _minimal(cls, id="s", posting_paths=bad)
+    msg = str(exc.value)
+    assert expected in msg, (
+        f"raised, but not from the arm this row is about -- got {msg!r}. Asserting only "
+        "the exception TYPE would pass here while the arm under test was gone.")
+    # The message must NAME the offending source, or an operator with 22 registered sources
+    # is told only that one of them is wrong.
+    assert "source s" in msg
+
+
+@pytest.mark.parametrize("cls", _PARSE_PATH_CLASSES, ids=lambda c: c.__name__)
+def test_a_one_shot_iterable_is_normalised_rather_than_stored_and_exhausted(cls):
+    """Validating a COPY while the field keeps the original is its own bug.
+
+    `validate_posting_paths` materialises `tuple(posting_paths)` to inspect it. When that
+    copy was discarded, a generator passed validation and was then EXHAUSTED on the field:
+    `admits_path` reads a spent generator as TRUTHY, so the abstain arm never fires and
+    `any(...)` over nothing rejects every row. Measured before the fix -- a genuine posting
+    dropped, zero leads -- which is the `672ad2a` harm arriving through the validator
+    written to prevent it.
+
+    A list is included because normalising is what makes it safe to accept one at all.
+    """
+    for declared in ((p for p in ("/jobs/",)), ["/jobs/"], ("/jobs/",)):
+        src = _minimal(cls, id="s", posting_paths=declared)
+        assert isinstance(src.posting_paths, tuple), (
+            f"{cls.__name__} stored {type(src.posting_paths).__name__}, which may be "
+            "single-use; a second read would reject every posting")
+        # Re-read it TWICE: the whole failure mode is that the first read consumes it.
+        url = "https://example.invalid/jobs/y/2"
+        assert admits_path(src.posting_paths, url)
+        assert admits_path(src.posting_paths, url), "second read saw an exhausted iterable"
+
+
+def test_the_registry_itself_declares_only_usable_posting_paths():
+    """The sweep over what actually SHIPS, not over what a test constructs.
+
+    `__post_init__` already raises at import time, so a bad declaration cannot reach here --
+    which is exactly why this asserts its own SCOPE first. A registry that failed to import
+    would otherwise leave an empty loop that passes, reporting "every declaration is fine"
+    about a set it never examined.
+    """
+    srcs = S.all_sources()
+    assert srcs, "registry empty -- this sweep would certify nothing"
+    declaring = {s.id: s.posting_paths for s in srcs if s.posting_paths}
+    assert declaring, (
+        "no registered source declares posting_paths, so this sweep is vacuous -- if the "
+        "last declaration was removed deliberately, remove this test with it")
+    for sid, paths in declaring.items():
+        assert not isinstance(paths, str), f"{sid}: posting_paths is a bare string"
+        for prefix in paths:
+            assert prefix.startswith("/"), f"{sid}: {prefix!r} does not start with '/'"
+
+
+def test_a_rejection_reaches_a_reader():
+    """The half that was MISSING, and without which everything above is decoration.
+
+    Producing `rejected_paths` is not the same as reporting it. Shipped in review, the key
+    was written into the health hint and read by NOTHING -- not `detect_drift`, not
+    `_print_report`, not `cmd_health` -- so a board renaming `/jobs/` gave zero leads, a
+    healthy-looking `count`, `drift=None`, and no way at all to find out why. That is the
+    silent filter the whole design claims to avoid, so the claim needs this row.
+    """
+    from sluice.core.health import detect_drift
+    # Every row rejected: an unambiguous grammar change, and the one case the gate fires on.
+    assert detect_drift("s", 20, {"rejected_paths": 20}, 20.0) == "paths"
+    # reed's STEADY STATE -- a few sponsored course cards on an otherwise healthy page.
+    # This must not fire, or the guard cries wolf on every single run and gets turned off.
+    assert detect_drift("s", 20, {"rejected_paths": 2}, 20.0) is None
+    # And a source that never opted in is classified exactly as it was before this existed.
+    assert detect_drift("s", 20, {}, 20.0) is None
+
+
+def test_a_rejection_is_summed_across_searches_rather_than_last_search_wins():
+    """`signals` is REASSIGNED per search, so a per-search key is silently overwritten.
+
+    Measured before the fix: a two-search source whose FIRST search had every row rejected
+    and whose SECOND came back clean reported no rejection at all. `degraded` and
+    `login_paths` are sticky for this exact reason; a COUNT has to be summed rather than
+    frozen first-found, because it is the numerator whose denominator is `count` -- and both
+    are accumulated off the same hint on the same line so the ratio `detect_drift` takes
+    cannot straddle two populations.
+    """
+    from sluice.ingest.engine import _run_source
+
+    class _TwoSearch(BrowserListSource):
+        def fetch(self, ctx, search):
+            rows = ([{"title": "A course", "link": "https://example.invalid/courses/x/1"}]
+                    if search.label == "first"
+                    else [{"title": "A job", "link": "https://example.invalid/jobs/y/2"}])
+            return {"result": rows, "landed": search.url, "requested": search.url}
+
+    src = _TwoSearch(
+        id="two", extractor_js="x", posting_paths=("/jobs/",),
+        searches_spec=[("first", "https://example.invalid/a"),
+                       ("second", "https://example.invalid/b")])
+    result = type("R", (), {"fetched": 0, "status": "ok", "error": None,
+                            "rejected_paths": 0})()
+    from sluice.ingest.base import Ctx
+    ctx = Ctx(camofox=None, config=None, sleep=lambda *_: None)
+    count, signals = _run_source(src, ctx, set(), [], result,
+                                 fetch_timeout=5, retries=1)
+    assert count == 2, "count sums RAW rows across searches -- it is the denominator"
+    assert signals.get("rejected_paths") == 1, (
+        "the first search's rejection was overwritten by the second search's clean signals")
+
+
+def test_an_undeclared_source_emits_no_rejection_key_at_all():
+    """Absent, not zero. `detect_drift` classifies on the keys a hint carries, so a new
+    key present on every source would change what every source reports -- the guard must
+    be byte-identical for the 21 sources that never opted in."""
+    cord = S.get("cord")
+    raw = {"result": [{"title": "x", "link": "https://cord.com/anything/at/all"}]}
+    assert "rejected_paths" not in cord.health_hint(raw)
+
 
 # ── #160: the decode-symmetry sweep ───────────────────────────────────────────
 
@@ -132,8 +476,9 @@ def test_every_url_derived_field_is_percent_decoded():
         "eighty_k both do, so the extraction has drifted and this sweep is now vacuous")
     assert not offenders, (
         "a field built from a URL segment reaches the vault without percent-decoding. "
-        "cord shipped this for months (`company` undecoded beside a decoded `title`) and "
-        "it corrupted a real company name in a production vault:\n  " + "\n  ".join(offenders))
+        "cord shipped this for months -- `company` undecoded beside a decoded `title` on "
+        "adjacent lines -- and stored company names in their encoded spelling:\n  "
+        + "\n  ".join(offenders))
 
 
 def test_the_decode_sweep_catches_the_bug_it_was_written_for():

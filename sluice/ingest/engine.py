@@ -75,6 +75,10 @@ def _lead_rates(leads) -> dict:
 #     report.
 # `fallback`/`login`/`blank` are the three NEW, content-inspected reasons this PR adds.
 BREAKER_REASONS = frozenset({"fallback", "login", "blank"})
+# `paths` (#153) is deliberately NOT a breaker, and the reason is arithmetic rather than a
+# judgement call: it fires only when `rejected == count`, i.e. every raw row was dropped, so
+# `parse` yielded nothing and there are no leads left to withhold. Adding it would be a gate
+# over an always-empty set -- the inert kind of guard this repo treats as worse than none.
 
 
 @dataclass
@@ -84,10 +88,16 @@ class SourceResult:
     fetched: int = 0            # rows parsed, before dedup/relevance
     fresh: int = 0              # leads FOUND this run (found, not necessarily written)
     withheld: int = 0           # of `fresh`, how many were withheld -- see BREAKER_REASONS
-    # "zero" | "drop" | "blank" | "fallback" | "login" | "redirect" | "blocked" | "auth" |
-    # "unreachable" | None. Keep in step with core/health.py's `_explained`/`detect_drift` --
-    # this comment is the only place the vocabulary is enumerated, so a new reason that
-    # misses it is invisible.
+    # Of `fetched`, how many the #153 path guard dropped. REPORTED even when it does not
+    # cross `detect_drift`'s gate, which is the point: the gate fires only when EVERY row
+    # was rejected (an unambiguous grammar change), so a board serving a MIX of old and new
+    # posting paths would otherwise be invisible -- `fetched` counts raw rows and stays
+    # healthy either way. This number is the only place a partial rename shows up.
+    rejected_paths: int = 0
+    # "zero" | "drop" | "blank" | "fallback" | "paths" | "login" | "redirect" | "blocked" |
+    # "auth" | "unreachable" | None. Keep in step with core/health.py's
+    # `_explained`/`detect_drift` -- this comment is the only place the vocabulary is
+    # enumerated, so a new reason that misses it is invisible.
     drift: str | None = None
     retired: bool = False
     error: str | None = None
@@ -126,6 +136,8 @@ def run(sources, ctx, sink, seen, health, *, fetch_timeout=60, retries=3):
             result.status, result.error = "error", str(e)
             _log.warning("source %s failed hard: %s", source.id, e)
             count, signals = 0, {"error": str(e)}
+
+        result.rejected_paths = signals.get("rejected_paths", 0)
 
         _update_health(source, result, health, count, signals)
 
@@ -168,6 +180,8 @@ def _run_source(source, ctx, seen_keys, fresh, result, fetch_timeout, retries):
     only if EVERY search failed to fetch."""
     searches = list(searches_for(source, getattr(ctx, "config", None)))
     total, signals, ok, last_error = 0, {}, 0, None
+    rejected = 0      # rows the #153 path guard dropped, SUMMED across searches like `total`
+                      # -- see the accumulation below for why a sum and not first-found-wins
     explained = {}    # explanation keys seen on ANY search; see the loop below
     degraded = None   # the first `degraded` marker seen on ANY search; sticky, like `explained`
     run_leads = []    # every PARSED lead from every search this run; see _lead_rates below
@@ -189,6 +203,14 @@ def _run_source(source, ctx, seen_keys, fresh, result, fetch_timeout, retries):
         ok += 1
         hint = source.health_hint(raw)
         total += hint.get("count", 0)
+        # SUMMED here, not left to `signals` below (#153 review). `signals` is reassigned
+        # per search, so a source whose FIRST search had every row rejected on its path and
+        # whose LAST came back clean reported no rejection at all -- the same last-search-wins
+        # hole `degraded` and `login_paths` are sticky to close. A SUM rather than their
+        # first-found-wins because this is a COUNT, and it is the numerator whose denominator
+        # is `total`: both are accumulated off the SAME hint on the SAME line, so the ratio
+        # `detect_drift` takes cannot compare two different populations or pipeline stages.
+        rejected += hint.get("rejected_paths", 0)
         signals = {k: v for k, v in hint.items() if k != "markers"}
         leads = source.parse(raw, search)
         run_leads.extend(leads)
@@ -254,6 +276,13 @@ def _run_source(source, ctx, seen_keys, fresh, result, fetch_timeout, retries):
     # not be the last search's own.
     if login_paths is not None:
         final["requested_path"], final["landed_path"] = login_paths
+    # The run's TOTAL rejections, overriding the final search's own per-search figure that
+    # `signals` left here -- the same override `degraded` and the login pair take above, and
+    # for the same reason. Absent rather than zero when nothing was rejected, so the ~21
+    # sources that declare no `posting_paths` emit a hint byte-identical to before and
+    # `detect_drift` sees exactly the keys it saw before this existed.
+    if rejected:
+        final["rejected_paths"] = rejected
     return total, final
 
 

@@ -443,6 +443,11 @@ def _print_report(report) -> None:
               # Sparse, matching the `written:` line below: a clean run's `withheld` is
               # always 0 and printing it there would be noise on every ordinary line.
               f"{f' withheld={r.withheld}' if r.withheld else ''}"
+              # Sparse for the same reason as `withheld`. Printed even when `drift` stays
+              # '-': the drift gate fires only when EVERY row was rejected, so a board
+              # serving a MIX of old and new posting paths shows up here and nowhere else
+              # -- `fetched` counts RAW rows, so it stays healthy while leads vanish.
+              f"{f' rejected_paths={r.rejected_paths}' if r.rejected_paths else ''}"
               # health_error (review-found): the ONE case where withheld>0 while drift
               # stays '-' -- printed by name so that combination doesn't read as a bug in
               # this line rather than what it is, a health-pipeline failure.
