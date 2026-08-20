@@ -1,4 +1,4 @@
-"""Pure planning: answers in, two artefact texts out. No I/O, no prompts, no clock.
+"""Pure planning: answers in, three artefact texts out. No I/O, no prompts, no clock.
 
 That purity is the point. The property this feature lives or dies by -- a run that answers nothing
 produces a config that expresses nothing -- is then a table test over a dict rather than something
@@ -8,16 +8,23 @@ The config is RENDERED FROM THE CATALOGUE rather than being a static template wi
 holes, which makes "every key the wizard can write appears in the file it writes" true by
 construction instead of by review.
 """
+import dataclasses
 import re
 from dataclasses import dataclass
 
 from sluice.core.criteria import DEFAULT_CRITERIA
+from sluice.core.protocols import CandidateProfile
+from sluice.core.vault import parse_frontmatter
 from sluice.onboard.emit import flow_list, scalar
 from sluice.onboard.questions import catalogue
 
 _SECTION_BLURB = {
     "Vault": "Where your notes live.",
-    "You": "Identity used when composing a tailored CV.",
+    # #107: no longer identity -- your name and contact details live in the vault's
+    # Candidate Profile note, collected by its own interview, not by a question that
+    # writes into this file. What is left under "You" is the employer roster the CV
+    # fabrication gate checks a tailored CV against verbatim.
+    "You": "Employer names the CV composer must cite verbatim.",
     "Want": "What you are looking for. EVERY key here is optional, and an unset gate passes every\n"
             "lead through rather than filtering on a value you did not choose.",
     "Cost": "Cheap filters applied at scrape time, before anything expensive runs.",
@@ -42,15 +49,20 @@ _HEADER = """\
 
 @dataclass(frozen=True)
 class InitPlan:
-    """The two artefact TEXTS, plus what the report should say about them.
+    """The artefact TEXTS, plus what the report should say about them.
 
     No destinations. They were carried here and read by nobody -- measured, two calls with wildly
     different `config_dest`/`profile_dest` produced byte-identical text and notes. `cmd_init` knows
     where it is writing; it does not need this object to tell it. Dropping them also keeps a
     filesystem path out of a module whose first line claims no I/O.
+
+    `candidate_text` is the THIRD artefact (Task 6): unlike the other two, its own construction can
+    fail -- `_render_candidate` raises `FrontmatterRoundTripError` rather than ever returning a value
+    that would corrupt on the way back in.
     """
     config_text: str
     profile_text: str
+    candidate_text: str = ""
     notes: tuple = ()
 
 
@@ -190,6 +202,126 @@ def _render_profile(profile_answers):
     return "\n".join(out).rstrip() + "\n"
 
 
+class FrontmatterRoundTripError(ValueError):
+    """A candidate answer does not survive the `emit.scalar()` + `core/vault.py`'s `_fm_dict`
+    PAIRING `_render_candidate` writes and re-reads through -- see that function's docstring for
+    the mechanism. Not `_fm_dict` alone: an interior `"` or `\\` round-trips fine through `_fm_dict`
+    on its own (nothing about it collides with a strip of surrounding quotes), and only fails
+    because `scalar()` had to escape it first.
+
+    Raised by `_render_candidate` rather than by the caller: the corruption is a property of the
+    VALUE and that pairing, not of anything the caller did, so there is nothing a caller could
+    check first that this function is not already checking.
+    """
+
+
+# The 36 CandidateProfile field names, in declaration order. DERIVED, never hand-listed -- a
+# hand-listed copy would drift the moment Task 1's dataclass gains or reorders a field, and the
+# drift would be silent: `_render_candidate` would keep emitting the STALE set forever.
+_CANDIDATE_FIELD_ORDER = tuple(f.name for f in dataclasses.fields(CandidateProfile))
+
+# answer key (what `collect_candidate` asks for) -> CandidateProfile field name (what the note's
+# frontmatter key is). Only the five identity fields have a question -- every other one of the 36
+# fields is a vault-note-only field: present in the rendered note (per
+# `test_all_thirty_six_keys_are_present_even_when_unanswered`) but with no interview question, so
+# a user fills it in directly in Obsidian. `cmd_init` (cli.py) also gates the write on whatever
+# this mapping actually put into the rendered text, not on the raw answer dict -- so a future
+# question added here with no matching entry below is silently inert rather than corrupting
+# anything; see `test_every_candidate_prompt_key_is_mapped_to_a_profile_field`
+# (tests/functional/test_init.py) for the standing guard against that drift regardless.
+_CANDIDATE_KEY_BY_ANSWER = {
+    "cv_forenames": "forenames", "cv_surname": "surname", "cv_email": "email",
+    "cv_mobile": "mobile", "cv_linkedin": "linkedin",
+}
+
+
+def _render_candidate(candidate_answers):
+    """The Candidate Profile note: every one of the 36 `CandidateProfile` fields present in the
+    frontmatter, answered ones carrying their value and the rest present-but-empty -- the spec's
+    "undeclared" shape, and why this is `values = {field: "" for field in ...}` rather than only
+    emitting the five keys `collect_candidate` actually asks about.
+
+    Every value is rendered through `emit.scalar()` -- the SAME double-quoted, escape-table scalar
+    emitter `_render_config` already uses for the main config file -- and the WHOLE note is then
+    re-read through `parse_frontmatter`, the real reader `Vault.read_candidate_profile` also uses.
+    That PAIRING, not a bespoke check, is the guard. `core/vault.py`'s `_fm_dict` ends in
+    `.strip().strip('"').strip("'")`: it strips EVERY leading and trailing quote character, not
+    merely one -- `'""Ada""'.strip('"')` is `'Ada'`, executed -- and unescapes NOTHING, so it has no
+    idea `scalar()` ever escaped anything. An ordinary value needs none of `scalar()`'s escapes, so
+    quoting-then-unstripping is a no-op round trip. A value that DOES need one comes back a
+    DIFFERENT string, and the inequality is what gets refused -- three distinct shapes, all caught
+    by the same comparison: a value with its OWN leading or trailing quote character collides with
+    `_fm_dict`'s strip regardless of `scalar()`; an interior character from `scalar()`'s named
+    escape table (`emit._ESCAPES` -- `"` and `\\` are two of its five members, not the whole set) is
+    escaped into two literal characters that `_fm_dict` then reads back literally instead of
+    restoring; and a control character `scalar()` hex-escapes (`emit._needs_hex`) comes back as the
+    literal multi-character escape sequence instead of itself. No separate "reject control
+    characters" (or "reject interior quotes") check is needed or added: reusing `scalar()`'s
+    existing, already-tested escape table is what makes every one of those three diverge from
+    itself on the way back in, for free. Inventing a second escaping scheme here, tuned to make
+    hostile values survive, would be the wrong fix -- see `FrontmatterRoundTripError`'s docstring
+    and this task's tests.
+    """
+    answers = candidate_answers or {}
+    values = {field: "" for field in _CANDIDATE_FIELD_ORDER}
+    for answer_key, field in _CANDIDATE_KEY_BY_ANSWER.items():
+        values[field] = (answers.get(answer_key) or "").strip()
+    lines = ["---"] + [f"{k}: {scalar(v)}" for k, v in values.items()] + ["---", ""]
+    lines += [
+        "# Candidate Profile",
+        "",
+        "The identity and application-form data sluice fills forms with. Edit it in",
+        "Obsidian whenever something changes; the next run picks it up with no code",
+        "change. Every field above is optional: an empty one is simply never offered",
+        "to a form, and sluice never guesses a value it was not given.",
+        "",
+        "`cv run` needs at least one name part and at least one contact channel",
+        "before it will compose. Everything else feeds `apply prep`.",
+        "",
+        "See also: [[Judging Profile]].",
+        "",
+    ]
+    text = "\n".join(lines)
+    # THE round trip: re-read the bytes about to be written through the real reader, and compare
+    # per-field against what was asked for, before this function ever returns them. A value that
+    # fails here would otherwise compare its OWN corrupted self against itself in cv/engine.py's
+    # #99 STRUCTURAL guard -- passing every gate while shipping a wrong name as the PDF's headline.
+    parsed = parse_frontmatter(text)
+    for field, wanted in values.items():
+        got = parsed.get(field, "")
+        if got != wanted:
+            # Named, not merely described: `scalar()` widens WHAT can fail this check beyond
+            # "leading/trailing quotes and control characters" (an interior character from
+            # scalar()'s escape table fails too -- see this function's own docstring above), so a
+            # fixed sentence naming a character class would go stale the next time that set
+            # changes. Showing what was WRITTEN next to what was READ BACK is what stays true
+            # regardless -- the user does not have to guess.
+            #
+            # This echoes the raw answer TWICE (`wanted`, `got`), which is a
+            # deliberate departure from `core/candidate.py`'s `age_from_dob` -- it never logs a raw
+            # field value, on the stated grounds that a log is a plausible leak site for a
+            # sensitive one. The two sites differ on the axis that rule turns on: `age_from_dob`
+            # runs per LEAD, unattended, writing into a log file that accumulates quietly over
+            # every run; this raises ONCE, synchronously, into a terminal the user is looking at
+            # right now, on the value they just typed themselves -- interactive and foreground, not
+            # accumulating and unattended. The departure does not close every risk, though: an
+            # uncaught traceback is, if anything, MORE likely than a routine log line to end up
+            # pasted whole into a public "why does `init` crash" bug report, which is permanent and
+            # public where a log file is neither. That residual risk is what the message's own
+            # closing sentence names, rather than leaving it undrawn.
+            raise FrontmatterRoundTripError(
+                f"the answer for {field!r} does not survive sluice's frontmatter reader: wrote "
+                f"{wanted!r}, read back {got!r}. Leave it blank here and add it directly to the "
+                f"Candidate Profile note in Obsidian afterwards instead -- typed there with no "
+                f"surrounding quotes, most values (an interior \" or \\ among them) read back "
+                f"exactly as written, because the note's reader only strips a value's OWN "
+                f"leading and trailing quote characters. One that begins or ends with a quote "
+                f"character cannot be stored in this frontmatter format at all; retype it "
+                f"without that one. (This message repeats your answer above -- avoid pasting it "
+                f"verbatim into a public bug report.)")
+    return text
+
+
 def _render_config(answers, sources):
     lines = [_HEADER]
     grouped = _grouped(answers)
@@ -262,13 +394,22 @@ def _notes(answers):
     return tuple(out)
 
 
-def build_plan(answers, *, profile_answers=None, sources=None) -> InitPlan:
-    """The two artefacts `sluice init` writes, as text.
+def build_plan(answers, *, profile_answers=None, candidate_answers=None, sources=None) -> InitPlan:
+    """The artefacts `sluice init` writes, as text.
 
     `answers` holds only the questions the user actually answered -- a skipped question is ABSENT,
     never present-and-empty, so a blank cannot be mistaken downstream for a deliberate empty list.
+
+    `candidate_answers` feeds `_render_candidate` alone, exactly like `profile_answers` feeds only
+    `_render_profile` -- three independent interviews, three independent renders, so a bug in one
+    cannot corrupt what another writes. `_render_candidate` can raise `FrontmatterRoundTripError`;
+    that is deliberately not caught here, so no artefact is written from a value that would
+    corrupt on the way back in. What to do about it belongs to the command that owns the
+    terminal, not to this function -- `cmd_init` (cli.py) re-asks the five candidate questions
+    rather than giving up; see its own comment for why a retry loop, not a catch-and-continue.
     """
     sources = sources or {}
     return InitPlan(config_text=_render_config(answers, sources),
                     profile_text=_render_profile(profile_answers),
+                    candidate_text=_render_candidate(candidate_answers),
                     notes=_notes(answers))

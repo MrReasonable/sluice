@@ -7,27 +7,60 @@ import pytest
 
 from sluice.apply.config import ApplyConfig
 from sluice.core.config import Config, SourceConfig, load_config
+from sluice.core.protocols import CandidateProfile
 from sluice.cv.config import CvConfig, load_cv_config
 from sluice.track.config import TrackConfig
 from sluice.triage.config import TriageConfig, load_triage_config
 
 
 def test_cv_defaults_carry_no_pii():
-    # CvConfig ships with entirely neutral defaults: no owner name, no contact
-    # info, no employer roster, no fabrication decoys, no personal filename or
-    # prefix map baked into source. A blocklist of real names would defeat the
-    # point of this test in a public repo (it would just relist the PII it's
-    # guarding against), so this asserts structural neutrality instead:
-    # personal values only ever arrive via the `cv:` block of sluice.yaml
-    # (see sluice.yaml.example), never hardcoded here.
+    # CvConfig ships with entirely neutral defaults: no employer roster, no
+    # fabrication decoys, no personal filename or prefix map baked into source.
+    # A blocklist of real names would defeat the point of this test in a
+    # public repo (it would just relist the PII it's guarding against), so
+    # this asserts structural neutrality instead: personal values only ever
+    # arrive via the `cv:` block of sluice.yaml (see sluice.yaml.example),
+    # never hardcoded here.
+    #
+    # No name/contact assertions here any more (#133/#107): CvConfig no
+    # longer HAS those fields -- the owner's name and contact details moved
+    # to the vault's Candidate Profile note, whose own dataclass
+    # (core/protocols.py's CandidateProfile) ships with no defaults at all --
+    # every one of its 36 fields is "" until a human declares one. There is
+    # nothing left in THIS dataclass for a neutral-defaults assertion to make
+    # about identity; see test_a_declared_candidate_profile_restores_
+    # neutralized_defaults below for the vault note's own round-trip proof.
     c = CvConfig()
-    assert c.name == "Your Name"
-    assert c.contact == ""
     assert c.employers == []
     assert c.fabrication_decoys == []
     assert c.negatives == []
     assert c.prefix_map == {}
     assert c.neutral_filename == "CV.pdf"
+
+
+def test_candidate_profile_defaults_carry_no_pii():
+    # CandidateProfile (core/protocols.py) is the vault-side half of the same
+    # neutrality claim test_cv_defaults_carry_no_pii states above, but it CANNOT
+    # simply join _SWEPT_CONFIGS below: test_swept_configs_covers_every_config_
+    # dataclass asserts `discovered == set(_SWEPT_CONFIGS)` as a set EQUALITY
+    # against _discover_config_dataclasses(), which globs sluice/**/config.py for
+    # *Config classes -- CandidateProfile lives in core/protocols.py and is not
+    # named *Config, so appending it there reddens THAT guard instead of this one.
+    # This is its own derived sweep, beside the others in this file.
+    #
+    # DERIVED, not hand-listed: hand-listing 36 field names is the enumeration
+    # failure this file's own comments already record twice (the #26 sweep's
+    # docstring, and _discover_config_dataclasses' docstring) -- field 37 must be
+    # covered the day it is added, without anyone remembering to extend a list.
+    fields = dataclasses.fields(CandidateProfile())
+    # Scope assertion FIRST, same discipline as every other sweep in this file:
+    # a broken dataclasses.fields() call returning [] would make the per-field
+    # loop below vacuously true. This is a NEGATIVE guard (finding nothing is
+    # the success case), so the completeness of what it examined must be pinned
+    # independently of whether it found an offender.
+    assert len(fields) == 36
+    for f in fields:
+        assert f.default == "", f"{f.name} ships a non-empty default"
 
 
 def test_triage_defaults_carry_no_pii():
@@ -103,7 +136,13 @@ def test_config_overlay_restores_neutralized_defaults(tmp_path, monkeypatch):
     sluice.yaml with triage: and cv: blocks should still fully round-trip
     through load_triage_config()/load_cv_config(), proving the owner (or
     anyone else) can restore their own real values via a git-ignored local
-    config file."""
+    config file.
+
+    No `cv.name` here any more (#133/#107: load_cv_config now RAISES on it,
+    since identity moved to the vault) -- `negatives`/`prefix_map` are what is
+    left to prove this file's still-live keys round-trip; the vault side of
+    the same property (a declared identity field surviving neutralization) is
+    test_a_declared_candidate_profile_restores_neutralized_defaults below."""
     p = tmp_path / "sluice.local.yaml"
     p.write_text(
         "triage:\n"
@@ -111,7 +150,6 @@ def test_config_overlay_restores_neutralized_defaults(tmp_path, monkeypatch):
         "  target_locations: [jenningsfort, baldwinberg]\n"
         "  reject_locations: [india]\n"
         "cv:\n"
-        "  name: \"Someone\"\n"
         "  negatives: [\"X\"]\n"
         "  prefix_map: {Foo: FO}\n"
     )
@@ -123,9 +161,29 @@ def test_config_overlay_restores_neutralized_defaults(tmp_path, monkeypatch):
     assert tcfg.reject_locations == ["india"]
 
     ccfg = load_cv_config()
-    assert ccfg.name == "Someone"
     assert ccfg.negatives == ["X"]
     assert ccfg.prefix_map == {"Foo": "FO"}
+
+
+def test_a_declared_candidate_profile_restores_neutralized_defaults(tmp_path):
+    """The vault-side half of the property the test above proves for sluice.yaml:
+    CandidateProfile ships entirely blank (see test_cv_defaults_carry_no_pii's
+    comment), but a human who DOES declare identity in the Candidate Profile note
+    gets it back verbatim through the real reader -- neutralizing the shipped
+    default costs no override capability here either, the same claim #133/#107
+    moved out of CvConfig and into the vault."""
+    import os
+
+    from sluice.core.protocols import CANDIDATE_PROFILE_RELPATH
+    from sluice.core.vault import Vault
+
+    dest = tmp_path / CANDIDATE_PROFILE_RELPATH
+    os.makedirs(dest.parent, exist_ok=True)
+    dest.write_text("---\nforenames: Ada\nsurname: Example\n---\n", encoding="utf-8")
+
+    profile = Vault(str(tmp_path)).read_candidate_profile()
+    assert profile.forenames == "Ada"
+    assert profile.surname == "Example"
 
 
 def test_dedupe_title_noise_words_round_trips_through_load_config(tmp_path):

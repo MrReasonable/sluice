@@ -7,7 +7,6 @@ from sluice.cv.config import CvConfig, load_cv_config
 
 def test_defaults_run_without_a_file():
     cfg = load_cv_config(path=None)
-    assert cfg.name == "Your Name"
     assert cfg.neutral_filename == "CV.pdf"
     assert cfg.prefix_map == {}    # no employer codes ship by default; supply your own
     assert cfg.negatives == []     # no fact-check negatives ship by default
@@ -52,6 +51,83 @@ def test_legacy_cv_baseline_rel_raises_rather_than_dropping_silently(tmp_path):
     msg = str(e.value)
     assert "baseline_rel" in msg
     assert "top level" in msg, "the error must tell the operator where to move the key"
+
+
+# ── #133/#107: cv.name/cv.contact moved to the vault ──────────────────────────────
+
+
+@pytest.mark.parametrize("moved,value", [
+    ("name", "Ada Example"), ("name", ""),
+    ("contact", "ada@example.invalid"), ("contact", ""),
+], ids=["name-populated", "name-empty", "contact-populated", "contact-empty"])
+def test_legacy_cv_name_or_contact_raises_rather_than_dropping_silently(tmp_path, moved, value):
+    # Same fail-at-construction shape as baseline_rel above, and the same reason: the
+    # loader's setattr loop is hasattr-filtered, so a still-present cv.name/cv.contact
+    # would otherwise vanish in silence and every later compose would ship a blank
+    # header with nobody told why.
+    #
+    # Keyed on PRESENCE, not on the value being truthy -- the empty-string rows are the
+    # load-bearing half of this parametrization. A half-finished migration that leaves
+    # `cv.name: ""` behind (someone deleted the value but not the key) must be exactly
+    # as loud as a populated one: a truthy-only check would let it slide past as
+    # "already blank, nothing to warn about" while still silently discarding the key.
+    p = tmp_path / "config.yaml"
+    p.write_text(f'cv:\n  {moved}: {value!r}\n', encoding="utf-8")
+    with pytest.raises(ValueError) as e:
+        load_cv_config(path=str(p))
+    msg = str(e.value)
+    assert f"cv.{moved}" in msg
+    # The WHOLE relpath, read from the same constant the store uses -- not just the
+    # words "Candidate Profile", which a hardcoded literal satisfies identically. This
+    # message is the entire migration instruction a user gets, so a stale copy of the
+    # path sends them to a file that does not exist and nothing goes red.
+    from sluice.core.protocols import CANDIDATE_PROFILE_RELPATH
+    assert CANDIDATE_PROFILE_RELPATH in msg, (
+        f"the error must name {CANDIDATE_PROFILE_RELPATH!r}, where the value goes now; got: {msg!r}")
+
+
+def test_an_unrelated_cv_key_alongside_a_legacy_one_still_raises(tmp_path):
+    # The guard must not be short-circuited by an otherwise-valid `cv:` block --
+    # a legacy key sitting beside live ones is the realistic half-migrated shape.
+    p = tmp_path / "config.yaml"
+    p.write_text('cv:\n  name: "Ada"\n  neutral_filename: "CV.pdf"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="cv.name"):
+        load_cv_config(path=str(p))
+
+
+def test_a_valueless_legacy_cv_name_still_raises(tmp_path):
+    # The one shape the parametrized test above cannot express: `cv.name`/`.value!r`
+    # formatting can render an EMPTY STRING (`""`) but not a truly VALUELESS key
+    # (`name:` with nothing after the colon, which PyYAML resolves to `None`, not
+    # the string `"None"`). Worth its own test because this guard is deliberately
+    # the OPPOSITE spelling of the render_script/renderer pair's guard just below --
+    # that one checks `.get(...) is not None`, precisely so a valueless key reads as
+    # ABSENT (an ordinary half-edited config line, per its own comment). This guard
+    # checks `in data` instead, precisely so a valueless key reads as PRESENT: `cv.
+    # name:` is a human who deleted the VALUE but not the KEY mid-migration, and
+    # that must be exactly as loud as `cv.name: "Ada"`, not silently waved through
+    # as though nothing were there. Getting this one "consistent" with the other
+    # guard's spelling would silently reopen the drop this whole guard exists to
+    # close, which is why the divergence is deliberate rather than an oversight.
+    p = tmp_path / "config.yaml"
+    p.write_text("cv:\n  name:\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="cv.name"):
+        load_cv_config(path=str(p))
+
+
+def test_both_legacy_keys_together_are_named_in_one_message(tmp_path):
+    # A config carrying BOTH cv.name and cv.contact must name both in the ONE raise --
+    # not just the first hit. Without this, an operator migrating a real config fixes
+    # cv.name, reruns, and only THEN discovers cv.contact is broken too: two loud
+    # raises, one avoidable round trip, when the loader already had both facts on its
+    # first pass over `data`.
+    p = tmp_path / "config.yaml"
+    p.write_text('cv:\n  name: "Ada"\n  contact: "ada@example.invalid"\n', encoding="utf-8")
+    with pytest.raises(ValueError) as e:
+        load_cv_config(path=str(p))
+    msg = str(e.value)
+    assert "cv.name" in msg
+    assert "cv.contact" in msg
 
 
 # ── #28: the compose timeout is a config knob, not a buried literal ──────────────

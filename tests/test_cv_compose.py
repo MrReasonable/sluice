@@ -1,11 +1,19 @@
 from sluice.cv import compose as C
 
+# `name` is now a required keyword-only argument on build_prompt/compose (#133/#107 removed
+# the "Your Name" signature default -- a shipped identity placeholder with nothing left to
+# guard against it, once the #99 sentinel comparison that was its only consumer was deleted).
+# One fixture identity for every call in this file that does not care what the name actually
+# is, so the placeholder risk is closed by construction rather than merely unreached.
+_NAME = "Example Candidate"
+
+
 class FakeBackend:
     def __init__(self, outputs): self.outputs = list(outputs); self.prompts = []
     def complete(self, prompt): self.prompts.append(prompt); return self.outputs.pop(0)
 
 def test_prompt_contains_bundle_jd_and_forbids_em_dashes():
-    p = C.build_prompt("BUNDLE-TEXT", "JD-TEXT", "Acme", "Analyst")
+    p = C.build_prompt("BUNDLE-TEXT", "JD-TEXT", "Acme", "Analyst", name=_NAME)
     assert "BUNDLE-TEXT" in p and "JD-TEXT" in p
     assert "Acme" in p and "Analyst" in p
     assert "NO em dashes" in p or "No em dashes" in p
@@ -13,17 +21,17 @@ def test_prompt_contains_bundle_jd_and_forbids_em_dashes():
     assert "\u2014" not in p                  # the prompt itself models no em dashes
 
 def test_prompt_excludes_material_not_given():
-    p = C.build_prompt("BUNDLE", "", "Acme", "Analyst")
+    p = C.build_prompt("BUNDLE", "", "Acme", "Analyst", name=_NAME)
     assert "Notion" not in p and "training data" not in p.lower()
 
 def test_retry_prompt_appends_prior_violations():
-    p = C.build_prompt("B", "J", "Acme", "Analyst", prior_violations=["UNCITED BULLET: x", "MISSING EMPLOYER: Driftwave"])
+    p = C.build_prompt("B", "J", "Acme", "Analyst", name=_NAME, prior_violations=["UNCITED BULLET: x", "MISSING EMPLOYER: Driftwave"])
     assert "UNCITED BULLET: x" in p and "MISSING EMPLOYER: Driftwave" in p
     assert "FAILED THE GATE" in p
 
 def test_compose_calls_backend_and_returns_text():
     be = FakeBackend(["CV TEXT"])
-    out = C.compose(be, "B", "J", "Acme", "Analyst")
+    out = C.compose(be, "B", "J", "Acme", "Analyst", name=_NAME)
     assert out == "CV TEXT"
     assert "B" in be.prompts[0]
 
@@ -32,7 +40,7 @@ def test_prompt_is_a_tailoring_task_and_forbids_invention():
     # {company} values", which points the profile at the JD (not a permitted source).
     # These are WORDING assertions: they pin that the anti-fabrication instructions
     # are present, not that fabrication cannot occur.
-    p = C.build_prompt("BUNDLE-TEXT", "JD-TEXT", "Acme", "Analyst")
+    p = C.build_prompt("BUNDLE-TEXT", "JD-TEXT", "Acme", "Analyst", name=_NAME)
     assert "lead with what" not in p                    # the JD-pull is gone
     assert "TAILOR, NOT TO WRITE" in p                  # the task frame
     assert "an invented match is a failure" in p        # the JD-gap omit rule
@@ -48,7 +56,7 @@ def test_prompt_forbids_a_preamble_before_the_cv():
     # catch one that slips through. Wording assertion, matching this file's
     # existing convention: pins that the instruction is present, not that a
     # preamble cannot occur.
-    p = C.build_prompt("BUNDLE-TEXT", "JD-TEXT", "Acme", "Analyst")
+    p = C.build_prompt("BUNDLE-TEXT", "JD-TEXT", "Acme", "Analyst", name=_NAME)
     assert "no preamble" in p.lower()
     assert "first line of the CV" in p
 
@@ -249,7 +257,7 @@ def test_compose_strips_an_agent_envelope_before_returning():
         "Here's the tailored CV:", "", "---", "", CV_BODY, "", "---", "", "Done.",
     ])
     be = FakeBackend([wrapped])
-    out = C.compose(be, "B", "J", "Acme", "Analyst")
+    out = C.compose(be, "B", "J", "Acme", "Analyst", name=_NAME)
     assert out == CV_BODY
 
 

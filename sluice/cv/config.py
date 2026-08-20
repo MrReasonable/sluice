@@ -21,12 +21,9 @@ _NEGATIVES: list = []
 
 @dataclass
 class CvConfig:
-    name: str = "Your Name"
-    # Contact block inserted verbatim into the composed CV (phone/email/web lines,
-    # whatever format you want the renderer to see). Entirely personal, so the
-    # code ships with no contact info; supply your own via the `cv:` block of
-    # sluice.yaml (see sluice.yaml.example).
-    contact: str = ""
+    # NB no `name`/`contact` here (#107): both moved to the vault's Candidate
+    # Profile note. load_cv_config RAISES on either rather than letting `hasattr`
+    # drop it in silence -- see the guard below, same shape as baseline_rel's.
     # Employers the composer must cite and the validate() gate must see present.
     # Empty by default: with no list configured, compose.py asks the model to
     # include every employer present in the source bundle instead of a fixed
@@ -133,6 +130,39 @@ def load_cv_config(path: str | None = None) -> CvConfig:
             "cv.baseline_rel has moved to the top level of sluice.yaml (it is a STORE "
             "location, and only the store can honour it). Move it out of the `cv:` block:\n"
             "    baseline_rel: " + str(data["baseline_rel"])
+        )
+
+    # cv.name/cv.contact MOVED to the vault (#107): the candidate's identity is now
+    # read from Job Applications/Candidate Profile.md, once per lead, so it can be
+    # edited without a config change. Keyed on `in data`, NOT on the value being
+    # truthy -- a `cv.name: ""` left behind by a half-finished migration must be as
+    # loud as a populated one, and a truthy check would silently accept the empty
+    # spelling while still dropping it (the setattr loop below is hasattr-filtered
+    # and has no field left to catch it on).
+    #
+    # DELIBERATELY the opposite spelling of the render_script/renderer guard just
+    # below, which checks `.get(...) is not None` rather than `in data` -- do not
+    # "fix" the two into matching each other. That guard wants a VALUELESS key to
+    # read as ABSENT (an ordinary half-edited line the guard exists to wave
+    # through); this one wants a valueless `cv.name:` (PyYAML resolves it to None)
+    # to read as PRESENT, because it is exactly the shape a half-finished migration
+    # leaves behind -- the value deleted, the key not. `in data` is True on `{"name":
+    # None}` the same as on `{"name": "Ada"}`, which is what makes this raise on
+    # both; see test_a_valueless_legacy_cv_name_still_raises.
+    #
+    # Both keys collected before raising, not "raise on the first hit": a config
+    # carrying BOTH cv.name and cv.contact would otherwise name only cv.name, the
+    # operator fixes that one, reruns, and hits cv.contact next -- two loud raises
+    # instead of one. See test_both_legacy_keys_together_are_named_in_one_message.
+    moved_present = [k for k in ("name", "contact") if k in data]
+    if moved_present:
+        keys = ", ".join(f"cv.{k}" for k in moved_present)
+        raise ValueError(
+            f"{keys} {'has' if len(moved_present) == 1 else 'have'} moved to the "
+            f"vault. sluice now reads your identity from 'Job Applications/"
+            f"Candidate Profile.md' (frontmatter keys: forenames, surname, email, "
+            f"mobile, linkedin). Remove {keys} from the `cv:` block and put the "
+            f"value{'s' if len(moved_present) > 1 else ''} in that note."
         )
 
     # A user who set render_script and NOTHING else was relying on the `script` default,

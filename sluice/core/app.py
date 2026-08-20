@@ -1571,15 +1571,30 @@ class Sluice:
         # previews a lead the real run refuses, so the preview lies about what will
         # happen -- and --include-stale is dead on that path (#9).
         policy = self.staleness(include_stale=include_stale)
+        # ONE read per prep() call, not one per lead: all_shortlist loops the whole
+        # shortlist inside engine.preview_all, and a per-lead re-fetch would re-read
+        # the same candidate note N times and let two leads in one batch disagree if
+        # the note changed mid-run. Reading it here, once, and passing it into every
+        # branch below is what keeps that impossible by construction rather than by
+        # convention.
+        profile = store.read_candidate_profile()
+        # The clock is ALREADY resolved inside staleness() above (self._today or
+        # _today, called exactly once). Reading the date back off the frozen policy
+        # -- rather than resolving self._today a second time here -- is what keeps
+        # this whole prep() call pinned to one date; two independent resolutions
+        # could straddle midnight and hand one invocation two different answers.
+        today = policy.today
         if all_shortlist:
-            return engine.preview_all(store, cfg, limit=limit, policy=policy)
+            return engine.preview_all(store, cfg, limit=limit, policy=policy,
+                                      profile=profile, today=today)
         if dry_run:
             note, reason = select.select_one(store, lead, cfg, policy)
             if note is None:
                 return [engine.PrepResult(lead=lead, status="skipped", reason=reason)]
-            pkt = packet.build_packet(note, cfg, cv_staged=False)
+            pkt = packet.build_packet(note, cfg, profile=profile, today=today,
+                                      cv_staged=False)
             return [engine.PrepResult(lead=lead, status="previewed", packet=pkt)]
-        return [engine.prep_one(store, cfg, lead, policy)]
+        return [engine.prep_one(store, cfg, lead, policy, profile=profile, today=today)]
 
     def record(self, *, lead, ats=None, url=None, dry_run=False):
         """Run the apply sub-app's record step: the never-clobber shortlist ->
@@ -1705,8 +1720,9 @@ class Sluice:
         in THIS process, and -- unless `offline` -- does a one-token round-trip
         succeed? Also preflights everything else a run depends on that a green
         backend table said nothing about: the renderer actually constructs, the
-        CV identity fields are filled in, the store's baseline CV and Judging
-        Profile are where they should be, track's Google adapter is usable, and
+        store's baseline CV, Judging Profile and Candidate Profile (#133/#107 --
+        the candidate's identity, checked here rather than as its own separate
+        item) are where they should be, track's Google adapter is usable, and
         every preference gate's current posture (abstaining or active).
         Returns a DoctorReport whose `checks` (backends) and `components`
         (everything else) both feed `exit_code`, non-zero when anything
@@ -1724,7 +1740,26 @@ class Sluice:
         nothing for that component rather than being treated as broken, and a
         store whose `preflight()` itself raises is reported as the one DEAD row
         that failure is, rather than crashing the one tool that diagnoses a
-        broken install.
+        broken install. `load_cv_config()` is guarded too, ahead of all of the
+        above: a ValueError from it -- today that means `cv.baseline_rel`,
+        `cv.render_script` without `cv.renderer`, `cv.compose_timeout`, a
+        retired `cv.dossier_dir`, or a legacy `cv.name`/`cv.contact` (#133/#107:
+        both moved to the vault's Candidate Profile note) -- becomes one DEAD
+        `cv-config` row naming the real error, rather than a traceback out of
+        the one command a user runs BECAUSE something -- possibly that very
+        config -- is wrong. `cv_cfg` is then `None` for the rest of the run: it
+        cannot recover the way store/renderer do, by substituting a bare
+        `CvConfig()` and pressing on, because building a sub-app config
+        anywhere but its own loader is independently forbidden (see the
+        guard's own comment at the call site) -- a table computed off an
+        invented default would be the "quiet wrong default" bug class this
+        codebase engineers out, aimed at its own diagnostic tool. Only the
+        three checks that actually read `cv_cfg` -- cv's own backend targets,
+        the renderer, and cv's row in the gate-posture sweep -- are skipped;
+        the store (including the Candidate Profile row that replaced the old
+        cv_cfg-based identity check, #133/#107), track/Google, camofox and
+        every other sub-app's gate rows are unrelated to `cv_cfg` and still
+        run.
 
         `probe` is the test seam -- a `callable(backend) -> None` that
         raises `BackendError` on failure; it defaults to the real round-trip.
@@ -1740,13 +1775,36 @@ class Sluice:
         from sluice.core import doctor as _doctor
         from sluice.core.backends import DEFAULT_MODELS, BackendError, make_backend
         from sluice.core.protocols import RenderError
-        from sluice.cv.config import CvConfig, load_cv_config
+        from sluice.cv.config import load_cv_config
         from sluice.track.config import load_track_config
         from sluice.triage.config import load_triage_config
 
         triage_cfg = load_triage_config()
-        cv_cfg = load_cv_config()
+        # `load_cv_config()` already raises ValueError today for several
+        # unrelated config mistakes -- `cv.baseline_rel` (moved to the config
+        # root), `cv.render_script` set without `cv.renderer`, a non-positive
+        # `cv.compose_timeout`, a retired `cv.dossier_dir`, and a legacy
+        # `cv.name`/`cv.contact` (#133/#107: both moved to the vault's
+        # Candidate Profile note). `doctor` is precisely the command a user
+        # runs BECAUSE something about their config is wrong, so an unguarded
+        # call here would traceback on the very thing it exists to diagnose;
+        # caught here, ahead of the deliberately-guarded
+        # self.renderer()/self.store() constructions below. `cv_config_error`
+        # is carried as a STRING, not re-raised or
+        # re-read from `e`, because the row that reports it is built further
+        # down (see the `if cv_config_error is not None:` below) -- keeping
+        # the except block narrow to just "catch and remember" avoids two
+        # copies of the ComponentCheck construction.
+        try:
+            cv_cfg = load_cv_config()
+            cv_config_error = None
+        except ValueError as e:
+            cv_cfg = None
+            cv_config_error = str(e)
         track_cfg = load_track_config()
+        # `cv_cfg` may be None here -- enumerate_targets omits cv's two specs
+        # in that case rather than substituting a placeholder (see its own
+        # docstring), so triage's and track's backends are still checked.
         targets = _doctor.enumerate_targets(triage_cfg, cv_cfg, track_cfg)
         if probe is None:
             probe = lambda b: b.complete(_doctor.PROBE_PROMPT)  # noqa: E731
@@ -1798,25 +1856,40 @@ class Sluice:
             checks.append(check)
 
         components = []
+        if cv_config_error is not None:
+            # Names the REAL failure (`cv_config_error`, whatever field it names)
+            # rather than a guessed field -- this row used to hardcode subject
+            # "cv.name" unconditionally, which reported a bad `cv.compose_timeout`
+            # as if the candidate's NAME were the problem. `blocks=("cv",)` alone,
+            # not "apply": apply's packet excludes every cv-only key, so a broken
+            # `cv:` block does not stop it. The detail lists exactly the three
+            # checks skipped below (see the `if cv_cfg is not None:` guard and
+            # the gate-posture sweep further down) -- not "every other check",
+            # which would be false: the store (including the Candidate Profile
+            # row, #133/#107), track/Google, camofox and every other sub-app's
+            # gate rows read nothing off cv_cfg and still run further down.
+            components.append(_doctor.ComponentCheck(
+                "cv-config", "cv:", _doctor.DEAD,
+                f"{cv_config_error} -- cv's backend targets, the renderer, "
+                f"and cv's gate-posture row are skipped this run "
+                f"until this is fixed", blocks=("cv",)))
 
-        # Renderer: construction IS the probe (see classify_renderer). No PDF is
-        # written and no backend is called, so this is cheap and safe under
-        # --offline too. `plugins.UnknownAdapter` (a misconfigured `cv.renderer`
-        # naming no registered renderer) is caught alongside `RenderError` --
-        # both are "this seam member could not be built" for doctor's purposes.
-        # Measured: a typo'd `cv.renderer` previously crashed the WHOLE command
-        # with an uncaught UnknownAdapter, losing the backend checks already
-        # computed above -- the opposite of what a diagnostic tool run BECAUSE
-        # something is wrong should do.
-        try:
-            self.renderer(cv_cfg)
-        except (RenderError, plugins.UnknownAdapter) as e:
-            components.append(_doctor.classify_renderer(str(e)))
-        else:
-            components.append(_doctor.classify_renderer(None))
-
-        components.extend(
-            _doctor.classify_cv_identity(cv_cfg.name, cv_cfg.contact, placeholder=CvConfig.name))
+        if cv_cfg is not None:
+            # Renderer: construction IS the probe (see classify_renderer). No PDF is
+            # written and no backend is called, so this is cheap and safe under
+            # --offline too. `plugins.UnknownAdapter` (a misconfigured `cv.renderer`
+            # naming no registered renderer) is caught alongside `RenderError` --
+            # both are "this seam member could not be built" for doctor's purposes.
+            # Measured: a typo'd `cv.renderer` previously crashed the WHOLE command
+            # with an uncaught UnknownAdapter, losing the backend checks already
+            # computed above -- the opposite of what a diagnostic tool run BECAUSE
+            # something is wrong should do.
+            try:
+                self.renderer(cv_cfg)
+            except (RenderError, plugins.UnknownAdapter) as e:
+                components.append(_doctor.classify_renderer(str(e)))
+            else:
+                components.append(_doctor.classify_renderer(None))
 
         # Store: the optional preflight() hook, reached the same way
         # cv/engine.py reaches the renderer seam's optional precheck. A store
@@ -1900,7 +1973,21 @@ class Sluice:
         # enabled/disabled + health, not whether a source still runs its
         # built-in example search. That gap is real and open, not closed by
         # this comment.
-        for cfg in (self.config, triage_cfg, cv_cfg, track_cfg, load_apply_config()):
+        # `cv_cfg` may be None (see above) -- `list_typed_fields` calls
+        # `dataclasses.fields(cfg)`, which raises TypeError on None, so it is
+        # left OUT of the tuple rather than skipped inside the loop. Inserted
+        # at its ORIGINAL triage/cv/track index when present, not appended at
+        # the tail: the printed `gates` rows follow this tuple's order, and
+        # appending would silently move every `CvConfig.*` row from between
+        # `TriageConfig.*` and `TrackConfig.*` to after `ApplyConfig.*` for
+        # every install with a perfectly valid `cv:` block -- the identical
+        # reasoning `enumerate_targets` states for keeping cv's backend specs
+        # in their original position rather than at the tail of ITS list.
+        gate_cfgs = (self.config, triage_cfg)
+        if cv_cfg is not None:
+            gate_cfgs = (*gate_cfgs, cv_cfg)
+        gate_cfgs = (*gate_cfgs, track_cfg, load_apply_config())
+        for cfg in gate_cfgs:
             owner = type(cfg).__name__
             components.extend(
                 _doctor.classify_gate(owner, name, value)

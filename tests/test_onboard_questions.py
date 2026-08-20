@@ -185,7 +185,7 @@ def test_the_rendered_sweep_covers_BOTH_arms_and_strips_nothing():
     from sluice.core.criteria import DEFAULT_CRITERIA
     from tests.onboard_prose import rendered_artefacts
     surfaces = dict(rendered_artefacts())
-    assert len(surfaces) == 3
+    assert len(surfaces) == 4                              # Task 6 added candidate_text
     for label, text in surfaces.items():
         assert text.strip(), f"{label} swept nothing"
 
@@ -198,6 +198,10 @@ def test_the_rendered_sweep_covers_BOTH_arms_and_strips_nothing():
     # The shipped default prose is swept, not stripped: it is written into the user's vault.
     first = DEFAULT_CRITERIA.split("\n\n")[1].strip()
     assert first and first in surfaces["rendered:profile_text"]
+
+    # candidate_text has only one structural shape (every field always present), so there is no
+    # second arm to miss the way `_render_sources` had one -- just confirm it is actually reached.
+    assert "Candidate Profile" in surfaces["rendered:candidate_text"]
 
 
 def test_no_shipped_prose_names_an_exemplar(tmp_path):
@@ -235,10 +239,12 @@ def test_every_value_bearing_question_states_its_consequence():
     lower-case answer makes every `cv run` skip every lead. Silent, permanent, and the report never
     mentioned the key at all. Exempted keys are named, not pattern-matched, so a new question
     cannot join them by accident."""
-    # These three configure the tool rather than gating leads: the vault is a location, and the
-    # provider names are reported by `sluice doctor`, not by a lead-level consequence.
-    exempt = {"vault_dir", "primary_backend", "fallback_backend", "renderer", "cv_name",
-              "cv_contact"}
+    # These four configure the tool rather than gating leads: the vault is a location, and the
+    # provider names are reported by `sluice doctor`, not by a lead-level consequence. cv_name/
+    # cv_contact used to be exempted here too -- #133/#107 removed both from the catalogue
+    # entirely (identity moved to the vault's Candidate Profile note), so there is no longer a
+    # key for this set to name.
+    exempt = {"vault_dir", "primary_backend", "fallback_backend", "renderer"}
     missing = [q.key for q in catalogue(default_vault=VAULT)
                if q.key not in exempt and not q.consequence]
     assert not missing, f"these answers change behaviour but the report never says so: {missing}"
@@ -253,6 +259,46 @@ def test_the_employers_hint_describes_the_check_that_actually_runs():
     assert not any("MISSING EMPLOYER" in v for v in validate(cv, "", employers=["Example Alpha Ltd"]))
     hint = {q.key: q for q in catalogue(default_vault=VAULT)}["cv_employers"].hint
     assert "VERBATIM" in hint and "case" in hint.lower()
+
+
+def test_the_candidate_note_prose_describes_the_check_that_actually_runs(tmp_path):
+    """Sibling to the employers-hint probe above: `plan._render_candidate`'s
+    shipped sentence -- "`cv run` needs at least one name part and at least one contact channel
+    before it will compose" -- is prose in a stranger's vault with nothing pinning it to
+    `cv/engine.py`'s actual `skipped-config` check (`run_one`'s
+    `if not cv_name.strip() or not cv_contact.strip()`). Probed by driving `run_one` itself over a
+    REAL `Vault` and a REAL Candidate Profile note (the fixtures `tests/test_cv_engine.py` already
+    built for the #107 gate this prose describes), not merely asserted from the source line."""
+    from sluice.cv.engine import run_one
+    from tests.test_cv_engine import (
+        _CountingBackend, _cfg, _note, _vault_with_candidate, FakeRenderer, RecordingCache)
+
+    def status(label, overrides):
+        vault = _vault_with_candidate(str(tmp_path / label), overrides)
+        res = run_one(_note(), vault, _cfg(), _CountingBackend(), RecordingCache(),
+                      renderer=FakeRenderer())
+        return res.status
+
+    assert status("neither", {}) == "skipped-config"
+    assert status("name-only", {"forenames": "Ada"}) == "skipped-config"
+    assert status("contact-only", {"mobile": "+1 555 0100"}) == "skipped-config"
+    # "at least one of each": declaring BOTH must clear this specific gate. It may still stop for
+    # an unrelated reason further down the pipeline (it does, here, with the bare FakeRenderer/
+    # RecordingCache fixtures) -- this probe only pins that identity is no longer why.
+    assert status("both", {"forenames": "Ada", "mobile": "+1 555 0100"}) != "skipped-config"
+
+    # ...and the SENTENCE itself, which this test claimed to pin but never read. Without
+    # this, rewording or deleting it from `_render_candidate` leaves everything above
+    # green -- which is precisely the drift the test was written to catch, so the
+    # docstring's claim was false. The sibling employers-hint probe above reads `q.hint`
+    # for the same reason. Asserted on the RENDERED note, not on the source line, so the
+    # sentence has to survive into the artefact a stranger's vault actually receives.
+    from sluice.onboard.plan import build_plan
+    note = build_plan({}, candidate_answers={}).candidate_text
+    for phrase in ("at least one name part", "at least one contact channel"):
+        assert phrase in note, (
+            f"the shipped Candidate Profile note no longer says {phrase!r} -- the four "
+            "probes above pin what `cv run` DOES; this pins that the note still says it")
 
 
 def test_catalogue_keys_are_unique():

@@ -207,10 +207,11 @@ _CITE_ONLY_RE = re.compile(r"^(?:\[[A-Za-z]{2}[0-9]+\]\s*)+$")
 
 def _is_section(line: str, name: str) -> bool:
     """True if `line` is exactly the section header `name`, compared the way the gate
-    compares it: validate.py:99-108 upper-cases before comparing, and engine.py's own two
-    structural guards (~140, ~147) deliberately mirror that so they fire in exactly the
-    cases validate() silently skips. `casefold()` rather than `.upper()` is the more
-    correct general tool for case-insensitive comparison (it folds more of Unicode than
+    compares it: validate.py:99-108 upper-cases before comparing, and `run_one`'s own
+    "WORK EXPERIENCE"/"PROFILE" structural guards (cv/engine.py) deliberately mirror
+    that so they fire in exactly the cases validate() silently skips. `casefold()`
+    rather than `.upper()` is the more correct general tool for case-insensitive
+    comparison (it folds more of Unicode than
     `.upper()` does) and is behaviourally identical to `.upper()` for the fixed ASCII
     header set this grammar defines (PROFILE, WORK EXPERIENCE, CERTIFICATES, EDUCATION).
 
@@ -365,9 +366,10 @@ def parse_cv(text: str) -> CvDocument:
     idx = 0
 
     # ---- <contact line(s)> then <NAME>, both before PROFILE ----
-    # Contact is OPTIONAL (CLEAN_CV, this repo's own gate-clean fixture, has none -- its
-    # first line is the name heading with nothing above it): whatever non-blank lines
-    # precede PROFILE, the LAST one is the name and everything before that is contact.
+    # Contact is OPTIONAL: zero non-blank lines before the name heading (a composed CV
+    # that emits no contact block at all) is a valid, gate-clean shape this parser
+    # accepts -- whatever non-blank lines precede PROFILE, the LAST one is the name and
+    # everything before that is contact.
     header_lines = []
     while idx < len(lines) and not _is_section(lines[idx], "PROFILE"):
         if lines[idx].strip():
@@ -392,8 +394,9 @@ def parse_cv(text: str) -> CvDocument:
     # sentence ahead of the name -- one MORE non-blank line than either order above,
     # silently absorbed the same way. That case IS covered now, deliberately NOT
     # here: `cv/engine.py`'s retry loop compares this same header block against
-    # `cvcfg.name`/`cvcfg.contact`, ground truth this pure parser never has access
-    # to (it takes only `text`). Tightening THIS function to refuse the shape
+    # `cv_name`/`cv_contact` (#107: derived from the vault's Candidate Profile note),
+    # ground truth this pure parser never has access to (it takes only `text`).
+    # Tightening THIS function to refuse the shape
     # instead would only protect the `template` renderer (the `script` renderer
     # implements no `precheck` to reach it through) and would force a THIRD
     # documented exception to `validate(cv, bundle) == [] ⇒ parse_cv(cv) does not

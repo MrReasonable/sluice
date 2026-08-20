@@ -10,12 +10,12 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from sluice.core import status as _status
+from sluice.core.candidate import contact_block, full_name
 from sluice.core.leads import StalenessPolicy, ambiguous_slug_warnings, index_by_slug
 from sluice.core.log import get_logger
 from sluice.cv import bundle as _bundle
 from sluice.cv import compose as _compose
 from sluice.cv.audit import run_audit, unsupported_claims
-from sluice.cv.config import CvConfig
 from sluice.cv.slop import check_text as _slop
 from sluice.cv.validate import validate as _validate
 
@@ -36,10 +36,11 @@ class CvResult:
     for neither twin),
     needs-signoff (an unsupported profile audit flag withheld the send-ready pointer,
     #60), skipped-needs-signoff (a re-run over a lead already held for sign-off),
-    skipped-config (#99: cv.name is still the shipped placeholder default, refused
-    before any dossier fetch or compose -- see run_one; the value becomes the PDF's
-    <h1>, and a composer complying with the prompt as configured produces a headline
-    no STRUCTURAL guard can distinguish from a genuine name),
+    skipped-config (#107: the derived candidate name or contact block is blank --
+    the vault's Candidate Profile note is unset or incomplete -- refused before any
+    dossier fetch or compose -- see run_one; the name becomes the PDF's <h1> and the
+    contact block is emitted verbatim, and a composer complying with the prompt as
+    given produces a header no STRUCTURAL guard can distinguish from a genuine one),
     dry-run, error (a single lead's exception caught by run_batch -- see run_batch --
     so one bad lead never aborts the rest of the batch)."""
     lead: str
@@ -63,6 +64,65 @@ def _slug(company: str, role: str) -> str:
 
 def _jd_keywords(role: str, jd: str) -> list:
     return sorted({w for w in re.findall(r"[a-z]{4,}", f"{role} {jd or ''}".lower())})
+
+
+# The two axes along which a composer can RE-RENDER the declared contact block without
+# replacing it. Ordered most-specific-first purely so the message below reads naturally;
+# the membership test itself is order-independent.
+_CONTACT_REWORDINGS = (
+    ("CASE", lambda ln: ln.casefold()),
+    ("SPACING", lambda ln: " ".join(ln.split())),
+)
+
+
+def _contact_key(lines, axes):
+    """`lines` with every named axis normalised away."""
+    out = []
+    for ln in lines:
+        for name, fn in _CONTACT_REWORDINGS:
+            if name in axes:
+                ln = fn(ln)
+        out.append(ln)
+    return out
+
+
+def _same_contact_reworded(found, expected) -> bool:
+    """Is `found` the declared contact block, differing only in how it was RENDERED?
+
+    True means the composer kept every contact line's content and changed only its case,
+    its internal spacing, or both. That is a different failure from a preamble having
+    REPLACED a line, and it needs a different instruction back to the model -- the retry
+    gets exactly one attempt, and "drop the preamble" is unactionable when there is none.
+
+    It does NOT make the engine accept the difference. The refusal is identical either
+    way, because `cv/parse.py` reads the contact from the composed TEXT and the engine
+    never substitutes `cv_contact` back in, so whatever clears the caller's check is what
+    renders. Only the diagnosis changes.
+    """
+    all_axes = {name for name, _ in _CONTACT_REWORDINGS}
+    return _contact_key(found, all_axes) == _contact_key(expected, all_axes)
+
+
+def _contact_rewording(found, expected) -> str:
+    """Which axis (or axes) `found` differs from `expected` on, for the message.
+
+    Derived by testing each axis alone rather than hand-branched, so the combined case
+    ("CASE and SPACING") cannot be the one spelling somebody forgets to write.
+
+    The `"RENDERING"` fallback is UNREACHABLE from the sole caller, and is here only so a
+    future caller that skips the `_same_contact_reworded` precondition gets a sane word
+    rather than the malformed sentence an empty join would produce ("the contact block's
+    was changed"). Unreachable because the axes are independent normalisations: if two
+    lists are equal under both but differ raw, then dropping one axis must expose the
+    other, so `differs` cannot come back empty. Brute-forced over a small alphabet
+    (whitespace runs, tabs, case variants, blanks; 528 qualifying pairs) rather than
+    argued -- zero reached it. Stated because an unexplained unreachable branch reads as
+    either dead code or an unproven claim, and it is neither.
+    """
+    all_axes = {name for name, _ in _CONTACT_REWORDINGS}
+    differs = [name for name, _ in _CONTACT_REWORDINGS
+               if _contact_key(found, all_axes - {name}) != _contact_key(expected, all_axes - {name})]
+    return " and ".join(differs) if differs else "RENDERING"
 
 
 def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=False,
@@ -100,29 +160,36 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
     if policy.blocks(fm.get("last_seen", "")):
         return CvResult(note.ref, "skipped-stale")
 
-    # #99: refuse to compose while cv.name is still the shipped placeholder. Every
-    # composed CV's header block is required to end with cvcfg.name as the exact
-    # candidate name line (see the STRUCTURAL guard below), and compose.py's prompt
-    # literally shows the model `{name_heading}` = "YOUR NAME" when this is unset --
-    # textually indistinguishable, to the model, from a template placeholder token
-    # it should resolve rather than a real value it must reproduce. A CV composed
-    # under the default therefore has nothing wrong to catch: "YOUR NAME" is
-    # perfectly name-shaped, it is just wrong, and `document.name` renders as the
-    # PDF's <h1> (sluice/templates/cv_plain.html.j2) with no length cap and no
-    # fallback. This is the "quiet wrong default" bug class cv/config.py's
-    # load_cv_config already refuses elsewhere in this sub-app, applied to the most
-    # visible line of an artefact sent under the user's identity. Refused BEFORE any
-    # spend -- a dossier fetch drives a real browser and compose is an LLM call --
-    # mirroring the #9 staleness guard immediately above, which this sits after so
-    # a stale lead still reports skipped-stale rather than a config complaint that
-    # would not have mattered for it anyway.
-    # `CvConfig.name`, NOT `CvConfig().name`: a bare construction outside the
-    # loader is exactly what test_no_production_code_builds_a_sub_app_config_directly
-    # forbids (blank path defaults are only safe filled in by load_cv_config). A
-    # dataclass with a plain (non-factory) default leaves it readable as a CLASS
-    # attribute without instantiating -- an ast.Attribute access, not an ast.Call,
-    # so the sweep does not see it, and no throwaway instance is built either.
-    if cvcfg.name.strip() == CvConfig.name:
+    # #107: identity now comes from the vault's Candidate Profile note, not
+    # cv.name/cv.contact -- read once, here, before any spend. This SUPERSEDES the
+    # old #99 sentinel comparison (cvcfg.name.strip() == "Your Name") and is
+    # strictly simpler: a blank derived name or contact block just IS blank, so no
+    # placeholder trick is needed to tell a configured value from an unconfigured
+    # one -- "" cannot collide with a real name the way "Your Name" theoretically
+    # could. It is also the direct fix for #107's real report: a NAME could be
+    # fully declared while the CONTACT stayed blank, and the old check -- keyed
+    # only on cvcfg.name -- let that lead all the way to compose, paying a dossier
+    # fetch and an LLM call, only to fail the STRUCTURAL header guard below on
+    # every attempt, forever. Checking both derived values here catches that shape
+    # before either spend, not after.
+    #
+    # Every composed CV's header block is required to end with cv_name as the
+    # exact candidate name line and begin with cv_contact's lines (see the
+    # STRUCTURAL guard below), and compose.py's prompt shows the model whatever
+    # these resolve to -- a composer complying with the prompt as given produces a
+    # header no STRUCTURAL guard can distinguish from a genuine one. `cv_name`
+    # becomes the PDF's <h1> (sluice/templates/cv_plain.html.j2) with no length cap
+    # and no fallback, so a blank one is the "quiet wrong default" bug class this
+    # codebase most consistently engineers out, applied to the most visible line of
+    # an artefact sent under the user's identity. Refused BEFORE any spend -- a
+    # dossier fetch drives a real browser and compose is an LLM call -- mirroring
+    # the #9 staleness guard immediately above, which this sits after so a stale
+    # lead still reports skipped-stale rather than a config complaint that would
+    # not have mattered for it anyway.
+    profile = vault.read_candidate_profile()
+    cv_name = full_name(profile)
+    cv_contact = contact_block(profile)
+    if not cv_name.strip() or not cv_contact.strip():
         return CvResult(note.ref, "skipped-config")
 
     company, role = fm.get("company", ""), fm.get("role", "")
@@ -156,7 +223,7 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
         gate_msgs, cv_text, violations, slop_err = None, "", [], []
         for _ in range(2):
             cv_text = _compose.compose(backend, bundle_text, jd, company, role,
-                                       name=cvcfg.name, contact=cvcfg.contact,
+                                       name=cv_name, contact=cv_contact,
                                        employers=cvcfg.employers, prior_violations=gate_msgs)
             violations = _validate(cv_text, bundle_text, employers=cvcfg.employers,
                                    fabrication_decoys=cvcfg.fabrication_decoys)
@@ -177,14 +244,16 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
                 violations = ["STRUCTURAL: composed CV lacks the exact 'PROFILE' header, "
                               "so the profile fabrication check did not run"] + violations
             # STRUCTURAL guards #3/#4 (#99): the header block before PROFILE must have
-            # exactly the shape compose.py's own prompt requested -- cvcfg.contact's
-            # lines, then the name heading, and nothing else. cv/parse.py:381-389
-            # already explains why no SHAPE test can tell a genuine name/contact line
-            # from a composer's stray preamble sentence in isolation ("a name can look
+            # exactly the shape compose.py's own prompt requested -- cv_contact's
+            # lines, then the name heading, and nothing else. The comment beside
+            # `parse_cv`'s `header_lines[-1]` assignment (cv/parse.py) already
+            # explains why no SHAPE test can tell a genuine name/contact line from a
+            # composer's stray preamble sentence in isolation ("a name can look
             # like anything, contact details are not universally regex-shaped"); these
-            # guards do not try to. They compare against `cvcfg`, ground truth the
-            # parser never has (parse.py is pure and takes only `text`). Recomputed
-            # here rather than reached through cv.parse
+            # guards do not try to. They compare against `cv_name`/`cv_contact` (#107:
+            # derived from the vault's Candidate Profile note, once at the top of this
+            # function), ground truth the parser never has (parse.py is pure and takes
+            # only `text`). Recomputed here rather than reached through cv.parse
             # (test_the_engine_no_longer_imports_the_template_grammar forbids the
             # import): the engine may guard what the PROMPT required of every
             # renderer alike; only a renderer may guard what its own LAYOUT needs,
@@ -207,7 +276,7 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
             # with the real name still correctly anchored as the last line. That
             # passes both of the checks above while silently dropping the real contact
             # information (CodeRabbit, PR #100 review, on this same #99 guard) -- so the
-            # third check compares header[:-1] against cvcfg.contact's own non-empty
+            # third check compares header[:-1] against cv_contact's own non-empty
             # lines, not merely their count. It runs LAST, after the anchor check,
             # because a same-count REORDERING (REVERSED_HEADER_CV) also fails this
             # comparison and the anchor check's message ("not the name heading") is the
@@ -218,24 +287,64 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
                                 if ln.strip().upper() == "PROFILE"), None)
             if profile_idx is not None:
                 header = [ln.strip() for ln in header_lines[:profile_idx] if ln.strip()]
-                expected_contact = [ln.strip() for ln in cvcfg.contact.splitlines() if ln.strip()]
+                expected_contact = [ln.strip() for ln in cv_contact.splitlines() if ln.strip()]
                 expected_n = len(expected_contact) + 1
                 if len(header) != expected_n:
                     violations = [f"STRUCTURAL: expected {expected_n} line(s) before "
-                                  f"PROFILE (the configured contact block, then the "
+                                  f"PROFILE (the declared contact block, then the "
                                   f"name heading) but found {len(header)} -- drop any "
                                   f"extra text (a preamble, acknowledgement, or "
                                   f"separator) before the contact block"] + violations
-                elif header and header[-1].casefold() != cvcfg.name.strip().casefold():
+                elif header and header[-1].casefold() != cv_name.strip().casefold():
                     violations = [f"STRUCTURAL: the line immediately before PROFILE is "
                                   f"{header[-1]!r}, not the name heading "
-                                  f"{cvcfg.name.upper()!r} -- the parser takes the LAST "
+                                  f"{cv_name.upper()!r} -- the parser takes the LAST "
                                   f"line before PROFILE as the candidate's "
                                   f"name"] + violations
                 elif header[:-1] != expected_contact:
-                    violations = ["STRUCTURAL: the lines before the name heading do not "
-                                  "match the configured contact block -- a preamble or "
-                                  "other text has replaced a real contact line"] + violations
+                    # Two different inputs reach here, and they need different remedies.
+                    # A CASE-ONLY difference is a composer re-casing a contact line, not
+                    # a preamble displacing one, and the retry gets exactly one attempt
+                    # off this message -- telling it to "drop the preamble" when there is
+                    # no preamble bins a gate-clean CV on a wrong diagnosis (CodeRabbit,
+                    # PR #161).
+                    #
+                    # The REFUSAL is the same either way, deliberately: unlike the name
+                    # anchor above -- which case-folds because a CV name heading is
+                    # conventionally uppercase, so case drift there is what compose.py's
+                    # prompt ASKED for, and the message prints `cv_name.upper()` saying
+                    # so -- the prompt asks for the contact block VERBATIM. And the
+                    # engine never substitutes `cv_contact` back in: `cv/parse.py` takes
+                    # the contact from `header_lines[:-1]`, the composed TEXT, so
+                    # whatever clears this check is what renders. Case-folding the
+                    # comparison would therefore let a re-cased LinkedIn URL, postcode or
+                    # name print on the PDF under the candidate's own identity. The
+                    # engine may guard what the prompt required; it required this exactly.
+                    # Keyed on a NORMALISATION rather than on an enumerated list of
+                    # shapes: case was the first one found, internal whitespace the
+                    # second (CodeRabbit, PR #161, twice), and enumerating arms one
+                    # review round at a time is how the `template` parser's refusal list
+                    # grew. `_same_contact_reworded` answers "is this the declared
+                    # contact, rendered differently?" once, so a third rendering variant
+                    # lands in the right arm without another arm being added.
+                    #
+                    # Whitespace has to be in that normalisation even though `header` and
+                    # `expected_contact` are already per-line stripped: an INTERNAL run
+                    # survives the strip, and `full_name` collapses runs on the name side
+                    # while `contact_block` deliberately does not -- so a composer that
+                    # renders `+1 555  0100` as `+1 555 0100` is neither equal nor
+                    # case-equal, and without this lands on the preamble message.
+                    if _same_contact_reworded(header[:-1], expected_contact):
+                        violations = [f"STRUCTURAL: the contact block's "
+                                      f"{_contact_rewording(header[:-1], expected_contact)} "
+                                      f"was changed -- reproduce the declared contact "
+                                      f"lines exactly as given, character for character "
+                                      f"(they are emitted verbatim into the rendered "
+                                      f"CV)"] + violations
+                    else:
+                        violations = ["STRUCTURAL: the lines before the name heading do not "
+                                      "match the declared contact block -- a preamble or "
+                                      "other text has replaced a real contact line"] + violations
             # Ask the RENDERER, inside the retry loop, in the same shape a gate violation
             # takes. cv/validate.py never checks the `template` renderer's meta-line
             # grammar (`MM/YYYY-MM/YYYY | LOCATION | Role`) -- only the citation gate does

@@ -498,11 +498,13 @@ def test_a_preamble_line_is_gate_clean_and_parsed_without_refusal_on_purpose():
     (the four-field line, the repeated trailing header). This is the third kind:
     gate-clean, parseable without raising, and left that way -- because the fix for
     #99 lives at cv/engine.py instead, comparing this same header block against
-    cvcfg.name/cvcfg.contact, ground truth this pure parser (it takes only `text`)
-    never has. Tightening THIS function would only bind the `template` renderer
+    cv_name/cv_contact (#107: derived from the vault's Candidate Profile note),
+    ground truth this pure parser (it takes only `text`) never has. Tightening THIS
+    function would only bind the `template` renderer
     (`script` implements no `precheck` to reach it through) and would mint a THIRD
     exception to the `validate == [] ⇒ no raise` implication for zero added coverage
-    on the path that actually ships -- see cv/parse.py:381-402's own comment.
+    on the path that actually ships -- see `parse_cv`'s own `#99` comment in
+    cv/parse.py.
 
     If someone later "fixes" this by making parse_cv raise here, this test reds and
     names why that would be the wrong fix, not merely an incomplete one.

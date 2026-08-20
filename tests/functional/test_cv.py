@@ -53,22 +53,32 @@ def test_cv_run_no_matching_lead_returns_1(cli):
     assert "no shortlist lead matching" in err
 
 
-def test_cv_run_shipped_default_name_returns_1(cli):
-    """#99: the harness pins `cv.name: "Jane Roe"` by default (see harness/config.py's
-    own neutrality note) precisely so every OTHER functional test in this file composes
-    for real -- this is the one test that deliberately reverts that override back to the
-    shipped placeholder, through the real CLI, to prove cmd_cv_run's own exit-code
-    handling for it (compose_cv's refusal is covered at the engine level already;
+def test_cv_run_blank_candidate_profile_returns_1(cli):
+    """#107: the harness seeds a Candidate Profile note (`cv_name="Jane Roe"` by
+    default, see harness/config.py's own neutrality note) precisely so every OTHER
+    functional test in this file composes for real -- this is the one test that
+    deliberately passes `cv_name=""`, which `_seed_vault` reads as "write no note at
+    all", through the real CLI, to prove cmd_cv_run's own exit-code handling for a
+    blank identity (compose_cv's refusal is covered at the engine level already;
     this covers the handler wiring on top of it, the same split test_cv_run_ambiguous_
-    lead_composes_for_neither_and_returns_1 draws for the ambiguous case).
+    lead_composes_for_neither_and_returns_1 draws for the ambiguous case). Supersedes
+    the old #99 shipped-placeholder version of this test: identity moved out of
+    cv.name/cv.contact entirely, so reverting cv.name to its default no longer has
+    anything to do with what this handler refuses on.
     """
-    from sluice.cv.config import CvConfig
     backend = ScriptedBackend(cv_by_company={"Example Foundry": PASSING_CV})
-    h, run = cli(backend=backend, cv_name=CvConfig().name)
+    h, run = cli(backend=backend, cv_name="")
     _seed_shortlist_lead(h.paths["vault"], "Example Foundry", "Staff Engineer")
     rc, _out, err = run(["cv", "run", "--lead", "example-foundry"])
     assert rc == 1
-    assert "cv.name" in err and "Your Name" in err
+    # The message must name the note's REAL path, read from the same constant the store
+    # and `cmd_init` use -- not a copy of it typed into the print. A hardcoded literal
+    # here reads identically today and sends the user to a file that does not exist the
+    # moment the constant moves, with nothing red. `"Candidate Profile" in err` alone
+    # could not tell the two apart, which is why this asserts the whole relpath.
+    from sluice.core.protocols import CANDIDATE_PROFILE_RELPATH
+    assert CANDIDATE_PROFILE_RELPATH in err, (
+        f"the refusal must name {CANDIDATE_PROFILE_RELPATH!r}; got: {err!r}")
     assert h.recorder.rendered == []           # nothing composed, nothing rendered
     assert backend.prompts == []               # and the refusal cost no LLM call
 

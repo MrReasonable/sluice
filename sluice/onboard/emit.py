@@ -30,9 +30,10 @@ def _needs_hex(ch: str) -> bool:
     command (`ReaderError`), and `\x85` silently round-trips to a space -- a value corruption with
     nothing raising.
 
-    The reachable path is ordinary rather than adversarial: `cv_contact` is prompted as "Contact
-    block for the CV (email, phone, links)?", i.e. text pasted out of a CV or a PDF, where `\x0b`
-    and `\x0c` are routine extraction artefacts.
+    The reachable path is ordinary rather than adversarial: `cv_employers` is prompted as "Places
+    you have worked, comma-separated?" -- one of the catalogue's free-text `parse_csv` questions
+    -- i.e. names pasted out of a CV or a PDF, where `\x0b` and `\x0c` are routine extraction
+    artefacts.
     """
     # Written as escapes, never as literals: U+2028/U+2029 are invisible in an editor, and a
     # literal one here actually SPLIT this source line -- Python treats it as a line break.

@@ -292,6 +292,14 @@ class _PrecheckStore:
     def read_baseline(self):
         return "BASELINE"
 
+    def read_candidate_profile(self):
+        # #107: MUST-support on the real Store contract, so run_one calls this
+        # unconditionally before the gate this fake exists to exercise -- a fake
+        # missing it would AttributeError before either test under it ever reaches
+        # the precheck/render-construction behaviour they actually assert on.
+        from tests.test_cv_engine import DEFAULT_CANDIDATE
+        return DEFAULT_CANDIDATE
+
 
 def test_a_dry_run_applies_the_renderers_precheck_exactly_as_a_real_run_does(
         tmp_path, monkeypatch):
@@ -335,18 +343,21 @@ def test_a_dry_run_applies_the_renderers_precheck_exactly_as_a_real_run_does(
 
 def _precheck_cvcfg(tmp_path):
     """CvConfig with the ENTRIES prefix_map the UNPARSEABLE_CV fixture's [EF1] citations
-    need, and output/served dirs under tmp_path so nothing can reach a real one."""
+    need, and output/served dirs under tmp_path so nothing can reach a real one.
+
+    No identity override here (#133/#107: CvConfig no longer HAS name/contact fields
+    to override) -- both tests below construct `Sluice(..., store=_PrecheckStore(note),
+    ...)`, and `_PrecheckStore.read_candidate_profile()` already returns
+    `test_cv_engine.DEFAULT_CANDIDATE` ("Jane Roe" / "+1 555 0100"), matching
+    UNPARSEABLE_CV's own "JANE ROE" heading. That is what keeps the pre-spend
+    skipped-config refusal and the #99/#100 header-anchor STRUCTURAL guard both
+    quiet, so either test below actually reaches the precheck/render-construction
+    behaviour it exists to check."""
     from sluice.cv.config import CvConfig
     c = CvConfig()
     c.output_dir = str(tmp_path / "cvout")
     c.served_dir = str(tmp_path / "cvserved")
     c.prefix_map = {"Example Foundry": "EF"}
-    # #99: off the shipped default (else the new pre-spend config refusal fires
-    # before either test below ever reaches the precheck this helper exists to
-    # test), and matching UNPARSEABLE_CV's own "JANE ROE" heading so the new
-    # header-anchor STRUCTURAL guard does not ALSO fire and mask which check the
-    # test is actually about.
-    c.name = "Jane Roe"
     return c
 
 

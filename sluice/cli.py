@@ -684,17 +684,29 @@ def cmd_cv_run(args, config) -> int:
     if not results and not args.all_shortlist:
         print(f"cv: no shortlist lead matching '{args.lead}'", file=sys.stderr)
         return 1
-    # #99: cv.name is one root-config value, not per-lead, so a run that reaches
-    # ANY skipped-config result reached ALL of them the same way -- checking
-    # presence is equivalent to checking every result, and simpler. Scoped to
-    # BOTH --lead and --all-shortlist (unlike the ambiguous branch below, which is
-    # genuinely per-lead): nothing composed at all here, for a reason the user can
-    # fix in one place, so both call shapes exit non-zero with the same actionable
-    # line rather than a batch silently reporting zero rendered CVs.
+    # #107: the candidate identity lives in one vault-wide document (Job
+    # Applications/Candidate Profile.md), but `read_candidate_profile()` is called
+    # once PER LEAD inside run_one, not once for the whole run -- so this is an
+    # ordinary-case simplification, not a structural guarantee: a note edited
+    # mid-batch could in principle make leads disagree (nothing here re-reads that
+    # far). This is a deliberate divergence from apply's once-per-run read, not an
+    # oversight -- see docs/ARCHITECTURE.md's "Injected collaborators" section for
+    # why the two sub-apps chose different cadences. In the ordinary case (one document, one CLI
+    # invocation) every lead sees the same content, so checking presence is
+    # equivalent to checking every result, and simpler. Scoped to BOTH --lead and
+    # --all-shortlist (unlike the ambiguous branch below, which is genuinely
+    # per-lead): nothing composed at all here, for a reason the user can fix in
+    # one place, so both call shapes exit non-zero with the same actionable line
+    # rather than a batch silently reporting zero rendered CVs.
     if any(r.status == "skipped-config" for r in results):
-        print("cv: cv.name is still the shipped placeholder 'Your Name' -- set "
-              "it in the cv: block of sluice.yaml before composing (it becomes "
-              "the PDF's headline)", file=sys.stderr)
+        # The path comes from the constant, never a literal: `cmd_init` below already
+        # imports the same name, so a hardcoded copy here would keep sending users to a
+        # file that had moved, silently and with nothing red.
+        from sluice.core.protocols import CANDIDATE_PROFILE_RELPATH
+        print(f"cv: the vault's Candidate Profile note ({CANDIDATE_PROFILE_RELPATH}) has "
+              "no declared name or contact details -- fill it in before composing (the "
+              "name becomes the PDF's headline, and the contact block is emitted "
+              "verbatim)", file=sys.stderr)
         return 1
     # A named --lead that resolved to two notes composed for NEITHER, so it exits non-zero
     # for the same reason the no-match branch above does: the user asked for a CV and did
@@ -758,7 +770,7 @@ def cmd_cv_signoff(args, config) -> int:
         # match, so "retype a longer fragment" genuinely helps when candidates are
         # DISTINCT slugs -- but when every candidate is the SAME slug (a collision from
         # the recursive scan, #1), no fragment can ever distinguish them; only renaming
-        # or merging can (round-2 review finding).
+        # or merging can.
         remedy = ("rename or merge them first (job-sluice leads dedupe)"
                  if len(set(result.candidates)) == 1
                  else f"retype a longer fragment than '{args.lead}'")
@@ -987,7 +999,7 @@ def cmd_track_dismiss(args, config) -> int:
 
 # ── init ──────────────────────────────────────────────────────────────────────
 def cmd_init(args, config, *, asker=None) -> int:
-    """Scaffold a config and a Judging Profile (#8).
+    """Scaffold a config, a Judging Profile and a Candidate Profile (#8, #133/#107).
 
     The CONFIG destination is resolved before any question is asked, and when it already exists the
     questions that write only to it are skipped -- a wizard that interviews someone for five
@@ -997,16 +1009,25 @@ def cmd_init(args, config, *, asker=None) -> int:
     The PROFILE destination cannot be preflighted the same way: it lives inside the vault, so it is
     not known until the vault question is answered. The profile interview is gated on it as soon as
     it IS known, which is the earliest honest point.
+
+    A third artefact, the CANDIDATE PROFILE, is gated the same way but written CONDITIONALLY: unlike
+    the config and the Judging Profile, nothing is written when the RENDERED note declares nothing
+    -- `has_any_declared` on the same text that would be written, not on the interview's raw answer
+    dict, because an unconditional blank write would make the note exist while the gate that
+    decides whether to ask again stays permanently open -- see the write block's own comment for the
+    deadlock that shape would create, and for why reading the answer dict instead is exactly the
+    weaker version of this gate that once made that deadlock reachable.
     """
     import dataclasses
 
     from sluice.core.app import Sluice
+    from sluice.core.candidate import has_any_declared
     from sluice.core.paths import config_file
-    from sluice.core.protocols import CRITERIA_RELPATH
-    from sluice.core.vault import DEFAULT_VAULT
-    from sluice.onboard.ask import (MissingAnswer, NoInputAsker, TtyAsker, collect,
+    from sluice.core.protocols import CANDIDATE_PROFILE_RELPATH, CRITERIA_RELPATH
+    from sluice.core.vault import DEFAULT_VAULT, parse_candidate_profile
+    from sluice.onboard.ask import (MissingAnswer, NoInputAsker, TtyAsker, collect, collect_candidate,
                                     collect_profile, collect_sources)
-    from sluice.onboard.plan import build_plan
+    from sluice.onboard.plan import FrontmatterRoundTripError, build_plan
     from sluice.onboard.questions import catalogue
 
     # `stores/vault.py:_make` is ENV-FIRST, so routing a --vault through the seam while $VAULT_DIR
@@ -1084,6 +1105,35 @@ def cmd_init(args, config, *, asker=None) -> int:
     # than raised uncaught -- and an abandoned interview leaves no empty vault behind.
     store = Sluice(dataclasses.replace(config, vault_dir=vault_dir)).store()
     profile_exists = bool(store.read_criteria())
+
+    # Computed INDEPENDENTLY of profile_exists and of config_exists, and computed HERE because it
+    # needs `store`, which needs vault_dir, which is itself an answer from the collect() above. This
+    # is also why the five identity questions below are NOT catalogue questions: the `if
+    # config_exists:` filter above narrows the catalogue to vault_dir alone once a config exists, so
+    # a migrating user (config present, note absent) would be asked nothing and get a bare note
+    # written -- verbatim the bug the comment at the top of the `if interactive:` block below
+    # ("silently skipped the prose interview and wrote a bare scaffold without ever asking") records
+    # as already fixed once for the Judging Profile.
+    #
+    # has_any_declared, not `bool(store.read_candidate_profile())`: the candidate read returns a
+    # CandidateProfile OBJECT, not a string the way read_criteria does, so a bare `bool(...)` would be
+    # True the instant the FILE exists -- even one with every field blank, e.g. created by hand in
+    # Obsidian -- which answers "does a note exist" rather than "did the user declare anything".
+    # `has_any_declared` (core/candidate.py) is what the write below is ALSO gated on -- literally
+    # the same call, over a CandidateProfile built by the same `parse_candidate_profile` either way
+    # (once through a file read here via the store seam, once directly from `plan.candidate_text`
+    # at the write site) -- and it must be: whatever this run writes has to make the NEXT run's
+    # probe agree, or the interview never stops re-asking. See the write block's own comment, below
+    # the Judging Profile one, for the deadlock this sameness prevents, and for why the write no
+    # longer reads the ANSWER dict at all. This sameness is a property of the ONE store that
+    # exists (`Vault.read_candidate_profile`), not one `core/protocols.py`'s `Store` contract pins
+    # -- it requires only an all-blank profile for a missing document, nothing about how a present
+    # one is parsed -- so a second store implementation could answer the probe differently from
+    # what this run's write approved, the same caveat the "DISPLAY ONLY" comment below makes for
+    # the same seam.
+    candidate_exists = has_any_declared(store.read_candidate_profile())
+    candidate_dest = os.path.join(vault_dir, CANDIDATE_PROFILE_RELPATH)
+    candidate_answers = {}
     # DISPLAY ONLY, and a deliberate compromise. The write and the existence probe both go through
     # the seam; this join exists because the two arms that do NOT get a handle -- an abstain
     # (`write_document` returns "") and an OSError -- still have to name something to the user.
@@ -1114,10 +1164,64 @@ def cmd_init(args, config, *, asker=None) -> int:
             sources = collect_sources(asker, [s.id for s in registry.all_sources()])
         if not profile_exists:
             profile_answers = collect_profile(asker)
-
-    plan = build_plan(answers, profile_answers=profile_answers, sources=sources)
+        # Same shape as the `not profile_exists` interview above, mirrored for the note this one
+        # writes: `collect_candidate` feeds only `plan.candidate_text` and has no stake in the config
+        # or the Judging Profile at all, so nesting it inside either of those would repeat the exact
+        # bug their own gates were added to fix -- a common second run silently skipping an
+        # interview the user still needed because it happened to sit inside a sibling's `if`.
+        if not candidate_exists:
+            candidate_answers = collect_candidate(asker)
 
     written, skipped, failed = [], [], []
+
+    # `_render_candidate` (onboard/plan.py) raises FrontmatterRoundTripError rather than ever
+    # returning a value that would corrupt on the way back in -- deliberately uncaught THERE, so the
+    # decision of what to do about it belongs to the command that owns the terminal, not to a pure
+    # planning function. Losing the whole interview (every preference question, the board walk, the
+    # five judging-profile prompts) to one hostile candidate answer is not acceptable, and silently
+    # writing the corrupted value is worse -- so this is a RETRY loop, not a catch-and-continue: the
+    # error message already names the offending field and echoes both what was typed and what came
+    # back (onboard/plan.py's own FrontmatterRoundTripError docstring explains why that echo is
+    # safe here specifically), and the user is asked all five candidate questions again rather than
+    # the command giving up.
+    #
+    # With no terminal to retry ON, this arm does two things, not one: it RECORDS the failure
+    # (`failed.append`, so the command still exits 1 -- this is not treated as a quiet abstain) and
+    # then blanks `candidate_answers` and loops once more, so the next `build_plan` call is
+    # guaranteed not to raise again (a blank value always round-trips) instead of looping on a
+    # value nobody present can fix. `NoInputAsker.ask_text_plain` always returns "", and a blank
+    # value always round-trips (there is nothing to escape), so `candidate_answers` reaching this
+    # loop non-empty while `asker.interactive` is False cannot happen through NoInputAsker today.
+    # This arm is defensive, not reachable through `--no-input` -- it exists so an asker whose
+    # `.interactive` is False when this runs still hits this command's own FAILED report instead of
+    # an uncaught traceback, the same posture `except OSError` takes throughout this function.
+    # Checked as `asker.interactive`, re-read here rather than reusing the `interactive` local
+    # captured above the board walk: a real asker's own
+    # `.interactive` never changes mid-run (both `TtyAsker.interactive` and `NoInputAsker.
+    # interactive` are fixed class attributes), so this is behaviourally identical to the captured
+    # local for every asker this codebase ships -- but reading it fresh is what makes this branch
+    # reachable at all for a test asker built to prove it, rather than provably dead code no test
+    # could ever exercise.
+    #
+    # This cannot hang forever against a REAL terminal either: TtyAsker's own `_read` treats EOF (a
+    # human hitting Ctrl-D, or a script running out of lines) as a blank rather than re-asking, and a
+    # blank string always round-trips -- so a user who gives up by hitting Ctrl-D five times resolves
+    # the loop with an empty candidate_answers rather than hanging it.
+    while True:
+        try:
+            plan = build_plan(answers, profile_answers=profile_answers,
+                              candidate_answers=candidate_answers, sources=sources)
+            break
+        except FrontmatterRoundTripError as exc:
+            if not asker.interactive:
+                # `candidate_dest`, not a bare `str(exc)`: every other `failed` entry in this
+                # function is `path: message`, and an unqualified message here was the one
+                # exception, printed with no destination for the FAILED line to name.
+                failed.append(f"{candidate_dest}: {exc}")
+                candidate_answers = {}
+                continue
+            print(f"\njob-sluice init: {exc}", file=sys.stderr)
+            candidate_answers = collect_candidate(asker)
 
     if config_exists:
         skipped.append(config_dest)
@@ -1169,6 +1273,89 @@ def cmd_init(args, config, *, asker=None) -> int:
     except OSError as exc:
         failed.append(f"{profile_dest}: {exc}")
 
+    # CONDITIONAL, unlike the Judging Profile block immediately above -- the one deliberate
+    # difference, and load-bearing rather than cosmetic. `_render_profile` always emits its
+    # headings plus DEFAULT_CRITERIA's own prose, so `bool(store.read_criteria())` is True on the
+    # very next run whether or not the user answered anything, and that gate closes for free. An
+    # all-blank Candidate Profile frontmatter block has no such fallback content: writing one
+    # unconditionally would leave `has_any_declared` False FOREVER even though the note now exists,
+    # so this write would refuse on every later run (never-clobber), the interview would re-ask on
+    # every later run (candidate_exists never becomes True), the re-asked answers would park in the
+    # `.init-scaffold.md` rescue below, and the run after THAT would report `failed` because the
+    # spare is occupied too -- with the real note still sitting there empty, forever.
+    #
+    # Gated on `has_any_declared(parse_candidate_profile(plan.candidate_text))` -- the ARTEFACT,
+    # not the answer dict `collect_candidate` returned. An earlier version gated on
+    # `any(candidate_answers.values())` instead, which agreed with the probe above only by the
+    # ACCIDENT that every prompt `collect_candidate` asks happens to have a mapped field in
+    # `onboard/plan.py`'s `_CANDIDATE_KEY_BY_ANSWER`. Reproduced end to end: add a sixth candidate
+    # question with an unmapped key, answer only it, and the answer-dict gate saw
+    # something declared while `_render_candidate` -- which only ever sets the mapped five -- wrote
+    # an all-blank note anyway, reaching the exact deadlock above on the very first run. Reading the
+    # gate off the rendered TEXT instead makes that impossible rather than merely unlikely: whatever
+    # `_render_candidate` did NOT put in the note cannot make this `if` true, because both sides now
+    # call the identical `has_any_declared` over a `CandidateProfile` built by the identical
+    # `parse_candidate_profile` -- one fed a file read through the store seam (the probe, above),
+    # one fed this text directly, calling `parse_candidate_profile` straight from `core/vault`
+    # rather than through `store`. That equivalence holds for the one store that exists today, not
+    # because the Store CONTRACT pins it: `core/protocols.py`'s `read_candidate_profile` requires
+    # only an all-blank profile for a missing document, nothing about how a present one parses, so
+    # a second implementation could read a note differently from how this write's own approval
+    # read it. See `tests/functional/test_init.py`'s guard test pinning that every prompt key IS
+    # mapped, which is what stops this class of drift from being reintroduced beneath the fix.
+    #
+    # Accepted cost: a user who declines every one of the five questions is re-interviewed on
+    # every future `init`, since nothing is ever declared to close the gate. That is the same
+    # trade `lead_ttl_days`'s "0 means off" and every other empty-config-abstains gate in this
+    # codebase already makes -- cheap next to the alternative (a written note nobody can ever fill
+    # in through the interview again) -- and it is why the Candidate Profile is named in the
+    # `Next:` list below even on a run that writes nothing for it.
+    candidate_declared = has_any_declared(parse_candidate_profile(plan.candidate_text))
+    if candidate_declared:
+        try:
+            os.makedirs(vault_dir, exist_ok=True)
+            handle = store.write_document(CANDIDATE_PROFILE_RELPATH, plan.candidate_text,
+                                          only_if_absent=True)
+            if handle:
+                written.append(handle)
+            else:
+                skipped.append(candidate_dest)
+                # Same rescue as CRITERIA_RELPATH's, immediately above: the user typed answers and
+                # the note turned up already there (a human in Obsidian, or a sync client, in the
+                # window between the preflight probe and this write). Do not overwrite it, and do
+                # not silently bin what they typed.
+                spare = CANDIDATE_PROFILE_RELPATH.replace(".md", ".init-scaffold.md")
+                if store.write_document(spare, plan.candidate_text, only_if_absent=True):
+                    written.append(os.path.join(vault_dir, spare))
+                else:
+                    # The spare exists too. `failed`, not `skipped`, for the same reason as the
+                    # profile's identical branch above: something the user typed was genuinely lost
+                    # rather than merely left alone.
+                    failed.append(f"{os.path.join(vault_dir, spare)}: already exists, so the "
+                                  f"answers you just typed were NOT saved -- copy them out of the "
+                                  f"terminal, or move that file aside and re-run")
+                # The note blocking the PRIMARY write may not be a leftover from an earlier sluice
+                # run at all -- it may be one a human started BY HAND (a title, some prose, no
+                # frontmatter fence) to begin filling in themselves. Never-clobber refuses on FILE
+                # EXISTENCE, not on declared content, so that shape refuses identically on EVERY
+                # future run: the probe above correctly says "nothing declared, ask again", the
+                # interview runs again, and the write refuses again -- reachable with nothing more
+                # than an empty file at this path, unlike the Judging Profile's equivalent (which
+                # needs a genuinely 0-byte file, since `read_criteria` treats ANY body text as
+                # declared). The rescue above never touches the blocking note, so without this its
+                # own "move that file aside" reads as "the spare" -- moving the spare aside changes
+                # nothing, since the note actually blocking every future write is `candidate_dest`.
+                # Named here, on EVERY run this refusal happens, not only once the spare is also
+                # occupied -- the two-collision failure below is a real but rarer case, and this is
+                # the ordinary one.
+                if not has_any_declared(store.read_candidate_profile()):
+                    failed.append(f"{candidate_dest}: exists but declares nothing sluice can "
+                                  f"read -- fill in its frontmatter yourself, or move IT aside, "
+                                  f"or every future run will keep parking your answers beside it "
+                                  f"instead of in it")
+        except OSError as exc:
+            failed.append(f"{candidate_dest}: {exc}")
+
     for path in written:
         print(f"  wrote   {path}")
     for path in skipped:
@@ -1197,8 +1384,14 @@ def cmd_init(args, config, *, asker=None) -> int:
 
     print("\nNext:")
     print("  1. fill in the headings in your Judging Profile")
-    print("  2. job-sluice ingest list-sources --health")
-    print("  3. job-sluice triage run --no-llm")
+    # Worded to cover BOTH shapes with one line: a note that landed with some fields still blank
+    # (fill in the REST), and a decline-everything run that wrote no note at all (nothing to fill
+    # in yet -- naming the path tells that reader what to create, and naming `init` tells them the
+    # interview asks again rather than being a one-shot chance they already missed).
+    print(f"  2. fill in {CANDIDATE_PROFILE_RELPATH} yourself, or answer its five questions on a "
+         f"later `job-sluice init` -- cv run and apply prep read it")
+    print("  3. job-sluice ingest list-sources --health")
+    print("  4. job-sluice triage run --no-llm")
 
     # Nothing is rolled back on a partial failure. Deleting a file we just wrote to someone's disk,
     # to tidy up after a failure they can see and retry, is a destructive act -- and a re-run skips
@@ -1510,7 +1703,7 @@ def _build_parser() -> argparse.ArgumentParser:
              "of the install")
     mcp_serve.set_defaults(func=cmd_mcp_serve)
 
-    init = top.add_parser("init", help="scaffold a config and a Judging Profile")
+    init = top.add_parser("init", help="scaffold a config, a Judging Profile and a Candidate Profile")
     init.add_argument("--vault", help="your Obsidian vault directory")
     init.add_argument("--no-input", action="store_true",
                       # NOT "take every default": NoInputAsker deliberately takes NO defaults, and
