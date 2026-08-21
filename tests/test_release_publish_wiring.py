@@ -240,16 +240,23 @@ def test_attest_job_has_the_elevated_permissions_it_needs():
     )
 
 
-def test_build_and_attest_agree_on_the_artifact_name():
-    upload_step = _step_containing("build", "actions/upload-artifact")
-    download_step = _step_containing("attest", "actions/download-artifact")
-    upload_name = re.search(r"name:\s*(\S+)", upload_step)
-    download_name = re.search(r"name:\s*(\S+)", download_step)
-    assert upload_name and download_name, "couldn't find name: in the upload/download steps"
-    assert upload_name.group(1) == download_name.group(1) == "dist", (
-        f"build uploads {upload_name.group(1)!r} but attest downloads "
-        f"{download_name.group(1)!r} -- a rename on one side silently decouples the two jobs"
-    )
+def test_every_job_agrees_on_the_artifact_name():
+    """build uploads it; attest, pypi and release-assets each download it. Read from all
+    four sides rather than hardcoded four times, so a rename on one side is caught instead
+    of silently decoupling the jobs. The `== "dist"` anchor stays: without it, four
+    extractions that all failed would compare equal and pass."""
+    steps = {
+        "build": _step_containing("build", "actions/upload-artifact"),
+        "attest": _step_containing("attest", "actions/download-artifact"),
+        "pypi": _step_containing("pypi", "actions/download-artifact"),
+        "release-assets": _step_containing("release-assets", "actions/download-artifact"),
+    }
+    names = {}
+    for job, step in steps.items():
+        match = re.search(r"name:\s*(\S+)", step)
+        assert match, f"couldn't find name: in {job}'s artifact step"
+        names[job] = match.group(1)
+    assert set(names.values()) == {"dist"}, f"jobs disagree on the artifact name: {names}"
 
 
 def test_attest_covers_the_whole_dist_directory():
@@ -330,3 +337,35 @@ def test_pypi_does_not_skip_existing():
     this design does, and stating `false` explicitly would also be fine."""
     step = _step_containing("pypi", "gh-action-pypi-publish")
     assert "skip-existing: true" not in step
+
+
+def test_release_please_job_exposes_the_tag_name_output():
+    assert (
+        "tag_name: ${{ steps.release.outputs.tag_name }}"
+        in _job_directives("release-please")
+    )
+
+
+def test_release_assets_job_is_gated_on_release_created():
+    assert (
+        "if: success() && needs.release-please.outputs.release_created == 'true'"
+        in _job_directives("release-assets")
+    )
+
+
+def test_release_assets_holds_contents_write_and_no_id_token():
+    block = _permissions_block("release-assets")
+    assert "contents: write" in block
+    assert "id-token:" not in block
+
+
+def test_release_assets_upload_names_both_a_tag_and_a_repository():
+    """`GH_REPO` is not decoration. `gh` resolves its target repository from `--repo`,
+    then `GH_REPO`, then the cwd's git remotes -- it does NOT read `GITHUB_REPOSITORY`.
+    This job deliberately never checks out, so without `GH_REPO` the resolution chain runs
+    out and the step dies before any API call, AFTER release-please has already tagged and
+    published the release. Three reviewers found this independently in the design, where an
+    assertion pinning only the tag was satisfied by the dead step."""
+    step = _step_containing("release-assets", "gh release upload")
+    assert "TAG: ${{ needs.release-please.outputs.tag_name }}" in step
+    assert "GH_REPO: ${{ github.repository }}" in step
