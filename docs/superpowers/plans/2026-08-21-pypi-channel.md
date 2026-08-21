@@ -370,7 +370,7 @@ def _workflow_wide_directives(path: Path) -> str:
 
 Add this to `_workflow_wide_directives`'s docstring, because it is the reason the parameter has no default:
 
-```
+```text
     The `path` parameter is REQUIRED and must never gain a default. `release-please.yml`'s
     workflow-wide block is BYTE-IDENTICAL to `testpypi.yml`'s (`permissions:\n  contents: read`),
     so a forgotten path argument would read the wrong file, compare it to the value expected of
@@ -729,7 +729,7 @@ Expected: FAIL — `FileNotFoundError` on `MANIFEST.in`.
 
 - [ ] **Step 3: Create `MANIFEST.in`**
 
-```
+```text
 # The sdist is public and permanent from the PyPI channel (#104) onward. `tests/` is pruned
 # because the subset distutils would otherwise ship is unusable: its default `tests/test*.py`
 # glob is non-recursive, so conftest.py and the fixture packages beside it stay behind and the

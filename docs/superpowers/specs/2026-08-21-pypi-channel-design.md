@@ -115,7 +115,7 @@ That last one is diff, not context, and was missing from this list in the first 
 list that enumerates only code is how a doc edit gets skipped at implementation time and lands as
 drift.
 
-**`README.md` is NOT in scope, and the second review round is why.** The draft put README's
+**`README.md` was ruled NOT in scope, and the second review round is why -- but see the amendment immediately below, which narrows this to everything EXCEPT the PyPI negations.** The draft put README's
 install claims in this PR on the reasoning that they "become false the moment anything publishes".
 Two reviewers established the opposite: those lines sit inside README's `## Install` section, and
 the sequencing spec's row 7 allocates "`docs/INSTALL.md` **+ README install section**" to PR 7 --
