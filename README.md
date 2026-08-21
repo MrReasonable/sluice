@@ -7,8 +7,9 @@ preps and records applications, and reconciles the funnel from email and
 calendar signals. Every stage is config-first: sane defaults ship in code,
 a single YAML file overrides them, and secrets come from the environment.
 
-Installed as the `job-sluice` command (`pip install -e .` for now — see
-[Install](#install)). The PyPI distribution and the console script are both
+Installed as the `job-sluice` command (`pip install job-sluice` from 1.0.0
+onward, or `pip install -e .` from a checkout — see [Install](#install)). The
+PyPI distribution and the console script are both
 `job-sluice`; the import package stays `sluice`, so nothing under the hood or
 in your config changes because of the name. `job-sluice`, not `sluice`, is
 what a fresh checkout gives you on `$PATH` — see [Naming](#naming) if you are
@@ -110,8 +111,8 @@ most of that work is now done rather than planned:
   versioned releases from Conventional Commits.
 
 What's still genuinely ahead: a second store/fetcher implementation (nobody
-has needed one yet), and packaged installs beyond source — see
-[Install](#install).
+has needed one yet), and the install channels beyond PyPI — there is no Docker
+image and no Homebrew formula — see [Install](#install).
 
 ## Install
 
@@ -131,14 +132,15 @@ pip install -e '.[render]'   # cv.renderer: template (the default) -- see below
 pip install -e '.[google]'   # track's Gmail + Calendar access
 ```
 
-(The path form, not `pip install 'job-sluice[render]'`: there is no PyPI release yet, and once
-there is, extras attach to the *distribution* name, `job-sluice`, not the import package --
-dropping the `job-` prefix resolves to a different, unrelated package. See [Naming](#naming).)
+(The path form because the commands above install a checkout. From a release you name the
+distribution instead — `pip install 'job-sluice[render]'` — because extras attach to the
+*distribution* name, `job-sluice`, not the import package: dropping the `job-` prefix resolves
+to a different, unrelated package. See [Naming](#naming).)
 
-There is no packaged install yet — no PyPI release, no Docker image, no
-Homebrew formula. Source is the only path today; see
-[Naming](#naming) for why the distribution will be `job-sluice` rather than
-`sluice` once one exists.
+`pip install job-sluice` installs from PyPI from 1.0.0 onward — the first release this
+project publishes there, so nothing on the index precedes it. There is still no Docker image
+and no Homebrew formula; source and PyPI are the two paths. See [Naming](#naming) for why the
+distribution is `job-sluice` rather than `sluice`.
 
 ### Shell completion
 
