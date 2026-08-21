@@ -76,6 +76,57 @@ def _step_containing(path: Path, job: str, needle: str) -> str:
     return matches[0]
 
 
+def _job_names(path: Path) -> list[str]:
+    """Every job key in `path`, in file order, comment-stripped.
+
+    Sliced from the literal `\\njobs:\\n` marker -- the same unique anchor
+    `_workflow_wide_directives` bounds ON rather than "the first top-level key", for the
+    reason that helper's docstring gives -- and matched at EXACTLY two-space indent, the depth
+    only a job key sits at. Job-level keys (`permissions:`, `outputs:`, `steps:`) sit at four,
+    steps at six, and a block scalar's body deeper still.
+    """
+    text = _text(path)
+    body = text[text.index("\njobs:\n") + len("\njobs:\n"):]
+    body = "\n".join(ln for ln in body.splitlines() if not ln.lstrip().startswith("#"))
+    return re.findall(r"^  ([a-z][\w-]*):$", body, re.MULTILINE)
+
+
+# The SCOPE half of every permissions guard in this file. Each of those guards is keyed on a
+# job NAME it already knows, and a sweep keyed on names it knows cannot see a name it does
+# not: measured before these two pins existed, a whole extra job carrying `contents: write`
+# and `packages: write` appended to EITHER file left this entire module green. Pinning the
+# roster is what makes the per-job equality pins exhaustive in combination rather than merely
+# individually correct.
+_RELEASE_PLEASE_JOBS = ["release-please", "build", "attest", "pypi", "release-assets"]
+_TESTPYPI_JOBS = ["testpypi"]
+
+_ROSTER_MESSAGE = (
+    "Every other permissions guard in this file is keyed on a job NAME, so a job absent from "
+    "this roster is one nothing in the suite has ever looked at -- its `permissions:` block "
+    "included. Add the job HERE and give it its own equality pin; extending this list alone "
+    "restores the blind spot it exists to close."
+)
+
+
+def _roster_failure(path: Path, expected: list[str], found: list[str]) -> str:
+    return (
+        f"{path.name}'s job roster is {found}, expected {expected}. Unexpected: "
+        f"{sorted(set(found) - set(expected))}; missing: {sorted(set(expected) - set(found))}. "
+        f"{_ROSTER_MESSAGE}"
+    )
+
+
+def test_release_please_declares_exactly_the_jobs_this_file_pins():
+    found = _job_names(RELEASE_PLEASE)
+    assert found == _RELEASE_PLEASE_JOBS, _roster_failure(
+        RELEASE_PLEASE, _RELEASE_PLEASE_JOBS, found)
+
+
+def test_testpypi_declares_exactly_the_jobs_this_file_pins():
+    found = _job_names(TESTPYPI)
+    assert found == _TESTPYPI_JOBS, _roster_failure(TESTPYPI, _TESTPYPI_JOBS, found)
+
+
 def test_release_please_job_exposes_the_release_created_output():
     """Without this, every `needs.release-please.outputs.release_created` reference the build/
     attest jobs use resolves to an empty string, `== 'true'` is always false, and neither job
@@ -334,7 +385,14 @@ def test_pypi_job_needs_release_please_and_build_exactly():
 
 
 def test_pypi_job_declares_the_pypi_environment():
-    assert "environment: pypi" in _job_directives(RELEASE_PLEASE, "pypi")
+    """WHOLE-LINE, not a substring. The environment name is half of the trusted publisher's
+    claim on pypi.org, and a substring probe is satisfied by any name this one PREFIXES --
+    `environment: pypi-staging` passed it -- which is a different environment, a failed OIDC
+    exchange, and an error naming neither."""
+    assert re.search(r"^\s*environment: pypi[ \t]*$",
+                     _job_directives(RELEASE_PLEASE, "pypi"), re.MULTILINE), (
+        "pypi's `environment:` is no longer EXACTLY `pypi`"
+    )
 
 
 def test_pypi_job_holds_id_token_and_no_contents_key_at_all():
@@ -352,9 +410,10 @@ def test_pypi_job_holds_id_token_and_no_contents_key_at_all():
         "pypi's permissions must be EXACTLY `id-token: write` -- one line, because the "
         "absence of every other key is the claim. An `in`/`not in` probe over individual "
         "names is what `_permissions_block`'s own docstring exists to rule out: it lets an "
-        "unnamed THIRD permission (`packages: write` is the named example, and PR 4 adds "
-        "exactly that key to this same file) slip into the narrowest and most dangerous job "
-        "here unnoticed -- measured green before this was tightened"
+        "unnamed THIRD permission slip into the narrowest and most dangerous job here "
+        "unnoticed -- measured green before this was tightened. `packages: write` is the "
+        "named example because it is the shape a later channel PR would plausibly want in "
+        "this file; no job here holds it today"
     )
 
 
@@ -396,9 +455,45 @@ def test_release_assets_holds_contents_write_and_no_id_token():
     ), (
         "release-assets' permissions must be EXACTLY `contents: write` -- one line, because "
         "a job-level block is exhaustive and the absence of every other key is the claim. "
-        "An `in`/`not in` probe over individual names accepts an unnamed THIRD permission "
-        "(e.g. `packages: write`, which PR 4 adds to this same file), which is the gap "
-        "`_permissions_block`'s own docstring was written to close"
+        "An `in`/`not in` probe over individual names accepts an unnamed THIRD permission, "
+        "which is the gap `_permissions_block`'s own docstring was written to close. "
+        "`packages: write` is the named example because it is the shape a later channel PR "
+        "would plausibly want in this file; no job here holds it today"
+    )
+
+
+def test_release_assets_job_needs_release_please_and_build_exactly():
+    """`pypi` and `attest` each pin their `needs:`; this job's went unpinned. It reads
+    `needs.release-please.outputs.tag_name` and downloads `build`'s artifact, so dropping
+    either dependency makes it run before what it consumes exists -- and `release-please` is
+    the easy one to lose, since the `tag_name` reference LOOKS like a workflow-level value
+    rather than a job output."""
+    match = re.search(r"\n    needs: (.+)\n",
+                      _job_directives(RELEASE_PLEASE, "release-assets"))
+    assert match, "the 'release-assets' job declares no `needs:`"
+    assert match.group(1).strip() == "[release-please, build]", (
+        f"release-assets' needs: is no longer exactly [release-please, build], it is "
+        f"{match.group(1).strip()!r}"
+    )
+
+
+def test_release_assets_upload_does_not_clobber_an_existing_asset():
+    """The ABSENCE is the design, and it was stated only in a comment.
+
+    Its reasoning-pair -- `skip-existing` left off `pypi` -- IS pinned, by
+    test_pypi_does_not_skip_existing; this half was not, so the asymmetry could be 'tidied'
+    from one side. An asset already on the release means something already uploaded, which
+    must surface rather than be silently overwritten. Recovery is deliberately manual: delete
+    the attached asset, then re-run the job.
+
+    `_step_containing` strips full-line comments, so the step's own `# No --clobber:` note
+    cannot satisfy this -- the value is what is being read, not the prose about it.
+    """
+    step = _step_containing(RELEASE_PLEASE, "release-assets", "gh release upload")
+    assert "--clobber" not in step, (
+        "`gh release upload` gained --clobber. An asset that already exists means something "
+        "already uploaded to this release; overwriting it silently is exactly what the "
+        "no-skip-existing decision on `pypi` refuses on the other channel"
     )
 
 
@@ -448,16 +543,52 @@ def test_testpypi_workflow_wide_permissions_are_read_only():
     )
 
 
+def test_testpypi_job_holds_id_token_and_contents_read():
+    """The dry run's job-level `permissions:` was pinned by NOTHING.
+
+    All five `_permissions_block` call sites targeted `release-please.yml`, and this is the
+    job that mints an OIDC token for a real publish to a permanent, public index. Measured
+    before this existed: adding `packages: write` to this block left the whole module green,
+    while the identical mutation on `pypi` was killed -- asymmetry, not an accepted gap.
+
+    `contents: read` here is CORRECT and deliberate, unlike on `pypi` and `attest`, where its
+    absence is the claim. Those two only download an already-built artifact; this job runs
+    `actions/checkout` and builds FROM SOURCE, so it genuinely needs read access to the
+    repository. Equality, not a probe, for the usual reason: a job-level block is exhaustive,
+    so an unnamed third permission is invisible to any `in`/`not in` check over the two named
+    here.
+    """
+    assert _permissions_block(TESTPYPI, "testpypi") == (
+        "    permissions:\n      id-token: write\n      contents: read"
+    ), (
+        "the dry run's permissions must be EXACTLY `id-token: write` plus `contents: read` -- "
+        "id-token because it publishes via Trusted Publishing, contents: read because unlike "
+        "`pypi` it checks out and builds from source. Anything more is a widened token in the "
+        "job that uploads to a public index"
+    )
+
+
 def test_testpypi_declares_the_testpypi_environment():
     """Paired with `test_pypi_job_declares_the_pypi_environment`. The environment name is
     half of each trusted publisher's claim, so a swap breaks authentication with an error
     that names neither."""
-    assert "environment: testpypi" in _job_directives(TESTPYPI, "testpypi")
+    assert re.search(r"^\s*environment: testpypi[ \t]*$",
+                     _job_directives(TESTPYPI, "testpypi"), re.MULTILINE), (
+        "the dry run's `environment:` is no longer EXACTLY `testpypi` -- matched whole-line "
+        "for the same reason as its `pypi` twin: a substring probe accepts any name this one "
+        "prefixes, which is a different environment and a failed OIDC exchange"
+    )
 
 
 def test_testpypi_publishes_to_testpypi_not_real_pypi():
+    """WHOLE-LINE for the same reason the environment pins above are: a substring probe is
+    satisfied by anything APPENDED to the value, and the URL this input carries is the one
+    thing standing between a dry run and production PyPI."""
     step = _step_containing(TESTPYPI, "testpypi", "gh-action-pypi-publish")
-    assert "repository-url: https://test.pypi.org/legacy/" in step
+    assert re.search(r"^\s*repository-url: https://test\.pypi\.org/legacy/[ \t]*$",
+                     step, re.MULTILINE), (
+        "the dry run's `repository-url:` is no longer EXACTLY TestPyPI's upload endpoint"
+    )
 
 
 def test_testpypi_skips_existing():
@@ -537,6 +668,40 @@ def test_the_stamp_is_proven_against_the_built_artefacts():
         "the stamp proof no longer fails the job when the marker is absent, so the dispatch "
         "goes green having uploaded an unstamped (and therefore already-present, and "
         "therefore silently skipped) artefact"
+    )
+
+
+def _artifact_retention_days(path: Path, job: str) -> int:
+    """The `retention-days:` value on `job`'s upload-artifact step, as an int."""
+    step = _step_containing(path, job, "actions/upload-artifact")
+    match = re.search(r"^\s*retention-days:\s*(\d+)[ \t]*$", step, re.MULTILINE)
+    assert match, (
+        f"{path.name}'s {job!r} job pins no retention-days on its upload-artifact step, so "
+        f"the window falls back to a repository- or organization-level setting that lives "
+        f"outside this file and nothing here can vouch for"
+    )
+    return int(match.group(1))
+
+
+def test_the_dist_artifact_outlives_a_failed_first_publish():
+    """`build`'s upload carries ten lines of comment saying this retention is the ONLY
+    automated recovery path when `pypi` fails: re-running the whole workflow does not work,
+    because release-please then sees the release already cut, `release_created` comes back
+    `false`, and `build` never runs to produce a new artifact. Reverting the value to `1`
+    reddened nothing -- a comment that states a mechanism needs a row that falsifies it.
+
+    A FLOOR, not an equality. Raising the window is not a regression and must not fail the
+    build; shortening it back past the point where a manual pypi.org configuration fix fits
+    inside it is exactly the change this catches.
+    """
+    days = _artifact_retention_days(RELEASE_PLEASE, "build")
+    assert days >= 7, (
+        f"the dist artifact is retained for {days} day(s). `pypi` and `release-assets` both "
+        f"consume it and a PyPI upload cannot be withdrawn, so if `pypi` fails -- most likely "
+        f"because the trusted-publisher entry does not exist yet or names the wrong workflow "
+        f"filename -- re-running that job while this artifact still exists is the only "
+        f"automated recovery. A day is too tight for a failure whose diagnosis is a manual "
+        f"pypi.org configuration step"
     )
 
 
@@ -681,7 +846,8 @@ def test_the_dry_run_builds_exactly_the_way_the_release_build_does():
 _MODULE_HELPER_NAMES = {
     "_text", "_job_directives", "_step_containing", "_permissions_block",
     "_workflow_wide_directives", "_post_checkout_run_steps", "_run_commands",
-    "_publish_action_ref", "_python_version",
+    "_publish_action_ref", "_python_version", "_job_names", "_artifact_retention_days",
+    "_roster_failure",
 }
 
 
