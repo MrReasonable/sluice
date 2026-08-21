@@ -1,5 +1,17 @@
-"""Wiring pins for PR 2 of #104: the `build`/`attest` publish jobs added to
-`.github/workflows/release-please.yml`, gated on release-please's own `release_created` output.
+"""Wiring pins for #104's PyPI publishing channel, across BOTH release workflow files:
+
+- `.github/workflows/release-please.yml` (PR 2): the `build`/`attest`/`pypi`/`release-assets`
+  jobs, gated on release-please's own `release_created` output, plus the `sha`/`tag_name`
+  outputs those jobs consume.
+- `.github/workflows/testpypi.yml` (PR 3): the dispatch-triggered TestPyPI dry run -- a
+  separate file rather than a job in the first, since it builds from whatever ref it was
+  dispatched from rather than release-please's tagged sha, and publishes to a different index.
+
+All five module-level helpers (`_text`, `_job_directives`, `_step_containing`,
+`_permissions_block`, `_workflow_wide_directives`) take the target file's `Path` as their FIRST,
+REQUIRED argument -- required rather than defaulted to either file, because the two workflows'
+workflow-wide `permissions:` blocks are byte-identical, so a defaulted/forgotten argument would
+silently read the wrong file and still pass.
 
 Text-matching, not a YAML parse -- pyyaml is a guarded optional import in sluice/ (CLAUDE.md's
 stdlib-only rule), so a test needing it could skip itself into uselessness on a bare install.
@@ -7,23 +19,26 @@ Mirrors tests/test_ci_wiring.py's own idiom (_job_directives/_step_containing, c
 rather than importing it -- file-scoped helpers, matching that file's own convention, for two
 small functions that don't warrant cross-file coupling.
 
-See docs/superpowers/specs/2026-08-10-publish-workflow-skeleton-design.md for the full design
-reasoning (why release-please needed a job output added, why the gate is a string comparison
-not bare truthiness, why the top-level-permissions check is position-anchored on `jobs:` rather
-than "the first two-space key").
+See docs/superpowers/specs/2026-08-10-publish-workflow-skeleton-design.md (PR 2: why
+release-please needed a job output added, why the gate is a string comparison not bare
+truthiness, why the top-level-permissions check is position-anchored on `jobs:` rather than
+"the first two-space key") and docs/superpowers/specs/2026-08-21-pypi-channel-design.md (PR 3:
+the TestPyPI dry run's own design -- the branch guard, the version stamp, the drift pin) for the
+full design reasoning.
 """
 import re
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
 RELEASE_PLEASE = ROOT / ".github" / "workflows" / "release-please.yml"
+TESTPYPI = ROOT / ".github" / "workflows" / "testpypi.yml"
 
 
-def _rp_text() -> str:
-    return RELEASE_PLEASE.read_text()
+def _text(path: Path) -> str:
+    return path.read_text()
 
 
-def _job_directives(name: str) -> str:
+def _job_directives(path: Path, name: str) -> str:
     """One job's YAML, sliced out by indentation, comment-stripped.
 
     A job key is the only thing at two-space indent; steps and job-level keys (permissions,
@@ -32,7 +47,7 @@ def _job_directives(name: str) -> str:
     -- tests/test_ci_wiring.py's own `_job_directives` docstring records this bug having fired
     once already in this exact repo's workflow files.
     """
-    text = _rp_text()
+    text = _text(path)
     start = text.index(f"\n  {name}:\n")
     rest = text[start + 1 :]
     end = re.search(r"\n  [a-z][\w-]*:\n", rest)
@@ -40,14 +55,14 @@ def _job_directives(name: str) -> str:
     return "\n".join(ln for ln in block.splitlines() if not ln.lstrip().startswith("#"))
 
 
-def _step_containing(job: str, needle: str) -> str:
+def _step_containing(path: Path, job: str, needle: str) -> str:
     """The ONE step of `job` whose body contains `needle`, comment-stripped.
 
     Requires EXACTLY one match: zero means the sweep found nothing and every assertion over it
     would be vacuous; two makes it ambiguous which step is being pinned -- e.g. a future
     `id: release-summary` step must never be silently accepted as a match for `id: release`.
     """
-    block = _job_directives(job)
+    block = _job_directives(path, job)
     marker = "\n    steps:\n"
     assert marker in block, f"the {job!r} job has no `steps:` key; nothing here can be a step"
     parts = re.split(r"\n(?=      - )", block[block.index(marker) + len(marker) :])
@@ -63,12 +78,12 @@ def test_release_please_job_exposes_the_release_created_output():
     """Without this, every `needs.release-please.outputs.release_created` reference the build/
     attest jobs use resolves to an empty string, `== 'true'` is always false, and neither job
     ever runs on a real release -- silently."""
-    step = _step_containing("release-please", "googleapis/release-please-action")
+    step = _step_containing(RELEASE_PLEASE, "release-please", "googleapis/release-please-action")
     assert re.search(r"^\s*id:\s*release\s*$", step, re.MULTILINE), (
         "the release-please-action step no longer carries `id: release` -- nothing can "
         "reference its output"
     )
-    block = _job_directives("release-please")
+    block = _job_directives(RELEASE_PLEASE, "release-please")
     assert "outputs:" in block, "the release-please job has no job-level `outputs:` key"
     assert "release_created: ${{ steps.release.outputs.release_created }}" in block, (
         "the release-please job's `outputs:` block no longer names `release_created` sourced "
@@ -76,7 +91,7 @@ def test_release_please_job_exposes_the_release_created_output():
     )
 
 
-def _permissions_block(job: str) -> str:
+def _permissions_block(path: Path, job: str) -> str:
     """The exact `permissions:` mapping of `job`, trailing-comment-stripped, bounded by the
     next same-indent key.
 
@@ -91,7 +106,7 @@ def _permissions_block(job: str) -> str:
     `#`, so a blanket `# to end-of-line` strip is safe in this one context without needing to
     touch that shared, locked helper.
     """
-    block = _job_directives(job)
+    block = _job_directives(path, job)
     match = re.search(r"\n( +)permissions:\n", block)
     assert match, f"the {job!r} job has no `permissions:` key"
     indent = match.group(1)
@@ -105,7 +120,9 @@ def _permissions_block(job: str) -> str:
 def test_release_please_job_keeps_its_original_permissions():
     """A future edit accidentally copying attest's elevated permissions onto release-please --
     the job that mints the App token -- would go unnoticed without this."""
-    assert _permissions_block("release-please") == "    permissions:\n      contents: read", (
+    assert _permissions_block(RELEASE_PLEASE, "release-please") == (
+        "    permissions:\n      contents: read"
+    ), (
         "release-please's permissions must be EXACTLY `contents: read` -- an unnamed "
         "elevated permission here would pass a probe over just id-token/attestations "
         "undetected"
@@ -113,7 +130,7 @@ def test_release_please_job_keeps_its_original_permissions():
 
 
 def test_release_please_job_exposes_the_release_sha_output():
-    block = _job_directives("release-please")
+    block = _job_directives(RELEASE_PLEASE, "release-please")
     assert "sha: ${{ steps.release.outputs.sha }}" in block, (
         "the release-please job's outputs no longer expose `sha` -- build would then check "
         "out github.sha (the commit that triggered THIS run) rather than the commit "
@@ -123,7 +140,7 @@ def test_release_please_job_exposes_the_release_sha_output():
 
 
 def test_build_checks_out_the_tagged_sha_not_the_trigger_commit():
-    step = _step_containing("build", "actions/checkout")
+    step = _step_containing(RELEASE_PLEASE, "build", "actions/checkout")
     assert "ref: ${{ needs.release-please.outputs.sha }}" in step, (
         "build's checkout no longer pins ref: to release-please's own sha output -- it would "
         "silently fall back to github.sha, which is the commit that triggered this run and "
@@ -132,14 +149,14 @@ def test_build_checks_out_the_tagged_sha_not_the_trigger_commit():
 
 
 def test_build_job_depends_on_release_please():
-    block = _job_directives("build")
+    block = _job_directives(RELEASE_PLEASE, "build")
     assert re.search(r"^\s*needs:\s*release-please\s*$", block, re.MULTILINE), (
         "build's needs: is no longer exactly release-please"
     )
 
 
 def test_build_job_is_gated_on_release_created():
-    block = _job_directives("build")
+    block = _job_directives(RELEASE_PLEASE, "build")
     assert "if: needs.release-please.outputs.release_created == 'true'" in block, (
         "build no longer gates on release-please's release_created output via an explicit "
         "string comparison -- GitHub Actions treats any non-empty string (including the "
@@ -148,19 +165,21 @@ def test_build_job_is_gated_on_release_created():
 
 
 def test_build_job_has_no_elevated_permissions():
-    assert _permissions_block("build") == "    permissions:\n      contents: read", (
+    assert _permissions_block(RELEASE_PLEASE, "build") == (
+        "    permissions:\n      contents: read"
+    ), (
         "build's permissions must be EXACTLY `contents: read` -- an unnamed elevated "
         "permission here would pass a probe over just id-token/attestations undetected"
     )
 
 
 def test_build_job_runs_twine_check_strict():
-    block = _job_directives("build")
+    block = _job_directives(RELEASE_PLEASE, "build")
     assert "twine check --strict" in block
 
 
 def test_build_job_installs_from_the_hash_locked_requirements_file():
-    block = _job_directives("build")
+    block = _job_directives(RELEASE_PLEASE, "build")
     assert "pip install --require-hashes -r .github/build-requirements.txt" in block, (
         "build no longer installs build/twine from the hash-locked requirements file -- an "
         "unpinned `pip install build twine` would let a compromised release of either package "
@@ -169,7 +188,7 @@ def test_build_job_installs_from_the_hash_locked_requirements_file():
 
 
 def test_build_job_actually_builds():
-    block = _job_directives("build")
+    block = _job_directives(RELEASE_PLEASE, "build")
     assert re.search(r"^\s*-\s*run:\s*python -m build\b", block, re.MULTILINE), (
         "build no longer runs `python -m build` -- twine check --strict would then run "
         "against a stale or missing dist/, with nothing else pinning that the build step exists"
@@ -177,7 +196,7 @@ def test_build_job_actually_builds():
 
 
 def test_build_job_builds_without_isolation():
-    block = _job_directives("build")
+    block = _job_directives(RELEASE_PLEASE, "build")
     assert re.search(r"^\s*-\s*run:\s*python -m build --no-isolation\s*$", block, re.MULTILINE), (
         "build no longer runs `python -m build --no-isolation` -- an isolated build installs "
         "[build-system].requires (setuptools) UNVERIFIED at build time, from a fresh ephemeral "
@@ -187,7 +206,7 @@ def test_build_job_builds_without_isolation():
     )
 
 
-def _workflow_wide_directives() -> str:
+def _workflow_wide_directives(path: Path) -> str:
     """Everything above `jobs:` -- name/on/concurrency/permissions -- comment-stripped.
 
     Anchored on the literal `\\njobs:\\n` marker, not "the first two-space key in the file": the
@@ -202,14 +221,21 @@ def _workflow_wide_directives() -> str:
     unrelated to the workflow-level `permissions:` block) ahead of `jobs:` -- it happens to say
     `write` not `read` today, so it wouldn't collide with an unstripped search, but that's the
     file's current wording, not a property this helper should depend on.
+
+    The `path` parameter is REQUIRED and must never gain a default. `release-please.yml`'s
+    workflow-wide block is BYTE-IDENTICAL to `testpypi.yml`'s (`permissions:\\n  contents: read`),
+    so a forgotten path argument would read the wrong file, compare it to the value expected of
+    the other, and PASS -- pinning nothing. In the worst case the drift pin compares a file to
+    itself and certifies perfect agreement. Required means a forgotten argument is a TypeError
+    at collection time instead.
     """
-    text = _rp_text()
+    text = _text(path)
     block = text[: text.index("\njobs:\n")]
     return "\n".join(ln for ln in block.splitlines() if not ln.lstrip().startswith("#"))
 
 
 def test_attest_job_is_gated_on_release_created():
-    block = _job_directives("attest")
+    block = _job_directives(RELEASE_PLEASE, "attest")
     assert (
         "if: success() && needs.release-please.outputs.release_created == 'true'" in block
     ), (
@@ -223,14 +249,14 @@ def test_attest_job_is_gated_on_release_created():
 
 
 def test_attest_job_needs_release_please_and_build_exactly():
-    block = _job_directives("attest")
+    block = _job_directives(RELEASE_PLEASE, "attest")
     assert re.search(r"^\s*needs:\s*\[release-please,\s*build\]\s*$", block, re.MULTILINE), (
         "attest's needs: is no longer exactly [release-please, build]"
     )
 
 
 def test_attest_job_has_the_elevated_permissions_it_needs():
-    assert _permissions_block("attest") == (
+    assert _permissions_block(RELEASE_PLEASE, "attest") == (
         "    permissions:\n      id-token: write\n      attestations: write"
     ), (
         "attest's permissions must be EXACTLY id-token: write and attestations: write, "
@@ -246,10 +272,12 @@ def test_every_job_agrees_on_the_artifact_name():
     of silently decoupling the jobs. The `== "dist"` anchor stays: without it, four
     extractions that all failed would compare equal and pass."""
     steps = {
-        "build": _step_containing("build", "actions/upload-artifact"),
-        "attest": _step_containing("attest", "actions/download-artifact"),
-        "pypi": _step_containing("pypi", "actions/download-artifact"),
-        "release-assets": _step_containing("release-assets", "actions/download-artifact"),
+        "build": _step_containing(RELEASE_PLEASE, "build", "actions/upload-artifact"),
+        "attest": _step_containing(RELEASE_PLEASE, "attest", "actions/download-artifact"),
+        "pypi": _step_containing(RELEASE_PLEASE, "pypi", "actions/download-artifact"),
+        "release-assets": _step_containing(
+            RELEASE_PLEASE, "release-assets", "actions/download-artifact"
+        ),
     }
     names = {}
     for job, step in steps.items():
@@ -260,7 +288,7 @@ def test_every_job_agrees_on_the_artifact_name():
 
 
 def test_attest_covers_the_whole_dist_directory():
-    step = _step_containing("attest", "actions/attest-build-provenance")
+    step = _step_containing(RELEASE_PLEASE, "attest", "actions/attest-build-provenance")
     assert "subject-path: dist/*" in step, (
         "attest no longer covers the whole dist/ directory in one glob -- two enumerated "
         "extensions (*.whl, *.tar.gz) could miss a third artifact type later"
@@ -268,8 +296,8 @@ def test_attest_covers_the_whole_dist_directory():
 
 
 def test_attest_downloads_to_the_path_it_scans():
-    download_step = _step_containing("attest", "actions/download-artifact")
-    subject_step = _step_containing("attest", "actions/attest-build-provenance")
+    download_step = _step_containing(RELEASE_PLEASE, "attest", "actions/download-artifact")
+    subject_step = _step_containing(RELEASE_PLEASE, "attest", "actions/attest-build-provenance")
     download_path = re.search(r"path:\s*(\S+)", download_step)
     assert download_path, "couldn't find path: in attest's download-artifact step"
     assert f"subject-path: {download_path.group(1)}*" in subject_step, (
@@ -279,7 +307,7 @@ def test_attest_downloads_to_the_path_it_scans():
 
 
 def test_workflow_wide_permissions_stay_read_only():
-    block = _workflow_wide_directives()
+    block = _workflow_wide_directives(RELEASE_PLEASE)
     idx = block.index("\npermissions:\n")
     perm_block = block[idx + 1 :]
     assert perm_block == "permissions:\n  contents: read", (
@@ -293,18 +321,18 @@ def test_workflow_wide_permissions_stay_read_only():
 def test_pypi_job_is_gated_on_release_created():
     assert (
         "if: success() && needs.release-please.outputs.release_created == 'true'"
-        in _job_directives("pypi")
+        in _job_directives(RELEASE_PLEASE, "pypi")
     )
 
 
 def test_pypi_job_needs_release_please_and_build_exactly():
-    match = re.search(r"\n    needs: (.+)\n", _job_directives("pypi"))
+    match = re.search(r"\n    needs: (.+)\n", _job_directives(RELEASE_PLEASE, "pypi"))
     assert match, "the 'pypi' job declares no `needs:`"
     assert match.group(1).strip() == "[release-please, build]"
 
 
 def test_pypi_job_declares_the_pypi_environment():
-    assert "environment: pypi" in _job_directives("pypi")
+    assert "environment: pypi" in _job_directives(RELEASE_PLEASE, "pypi")
 
 
 def test_pypi_job_holds_id_token_and_no_contents_key_at_all():
@@ -316,7 +344,7 @@ def test_pypi_job_holds_id_token_and_no_contents_key_at_all():
     accept it. Resolved through `_permissions_block` rather than an `in` probe over the
     job text, because a probe cannot tell a permission from a mention of one.
     """
-    block = _permissions_block("pypi")
+    block = _permissions_block(RELEASE_PLEASE, "pypi")
     assert "id-token: write" in block
     assert "contents:" not in block
 
@@ -325,7 +353,7 @@ def test_pypi_publishes_to_real_pypi_by_naming_no_repository_url():
     """Paired with the TestPyPI half in Task 3. Together they stop the two mixups with
     real consequences: a dry run reaching production PyPI, or a real release going to
     TestPyPI and never publishing at all."""
-    step = _step_containing("pypi", "gh-action-pypi-publish")
+    step = _step_containing(RELEASE_PLEASE, "pypi", "gh-action-pypi-publish")
     assert "repository-url" not in step
 
 
@@ -335,26 +363,26 @@ def test_pypi_does_not_skip_existing():
     aimed at the one job whose entire purpose is the side effect. The FORBIDDEN VALUE is
     named rather than the permitted one: omitting the input (the `false` default) is what
     this design does, and stating `false` explicitly would also be fine."""
-    step = _step_containing("pypi", "gh-action-pypi-publish")
+    step = _step_containing(RELEASE_PLEASE, "pypi", "gh-action-pypi-publish")
     assert "skip-existing: true" not in step
 
 
 def test_release_please_job_exposes_the_tag_name_output():
     assert (
         "tag_name: ${{ steps.release.outputs.tag_name }}"
-        in _job_directives("release-please")
+        in _job_directives(RELEASE_PLEASE, "release-please")
     )
 
 
 def test_release_assets_job_is_gated_on_release_created():
     assert (
         "if: success() && needs.release-please.outputs.release_created == 'true'"
-        in _job_directives("release-assets")
+        in _job_directives(RELEASE_PLEASE, "release-assets")
     )
 
 
 def test_release_assets_holds_contents_write_and_no_id_token():
-    block = _permissions_block("release-assets")
+    block = _permissions_block(RELEASE_PLEASE, "release-assets")
     assert "contents: write" in block
     assert "id-token:" not in block
 
@@ -366,6 +394,91 @@ def test_release_assets_upload_names_both_a_tag_and_a_repository():
     out and the step dies before any API call, AFTER release-please has already tagged and
     published the release. Three reviewers found this independently in the design, where an
     assertion pinning only the tag was satisfied by the dead step."""
-    step = _step_containing("release-assets", "gh release upload")
+    step = _step_containing(RELEASE_PLEASE, "release-assets", "gh release upload")
     assert "TAG: ${{ needs.release-please.outputs.tag_name }}" in step
     assert "GH_REPO: ${{ github.repository }}" in step
+
+
+def test_testpypi_triggers_only_on_workflow_dispatch():
+    """A dry-run workflow that gained a `push:` trigger would publish to a permanent,
+    public index on every commit. Asserted on the trigger block's own contents, not by
+    absence-of-substring across the whole file.
+
+    The `on:` region is bounded at the NEXT top-level (zero-indent) key rather than left to
+    run to the end of the workflow-wide block. `permissions:` sits at zero indent too, and
+    its OWN `contents:` key sits at the same two-space indent as a trigger -- an unbounded
+    region can't tell "a second trigger under on:" from "a different top-level block's own
+    child key", and would count `contents` as a trigger on this exact file (verified: the
+    unbounded slice yields ['workflow_dispatch', 'contents'] against the real, CORRECT file,
+    which is not a defect in the file).
+    """
+    block = _workflow_wide_directives(TESTPYPI)
+    on_start = block.index("\non:")
+    rest = block[on_start + 1 :]
+    end = re.search(r"\n[a-z]", rest)
+    on_block = rest[: end.start()] if end else rest
+    triggers = re.findall(r"\n  ([a-z_]+):", on_block)
+    assert triggers == ["workflow_dispatch"]
+
+
+def test_testpypi_workflow_wide_permissions_are_read_only():
+    """Exactly the slicing `test_workflow_wide_permissions_stay_read_only` already uses,
+    pointed at the other file -- both workflows put `permissions:` last before `jobs:`."""
+    block = _workflow_wide_directives(TESTPYPI)
+    idx = block.index("\npermissions:\n")
+    perm_block = block[idx + 1 :]
+    assert perm_block == "permissions:\n  contents: read", (
+        f"testpypi.yml's workflow-wide permissions must be EXACTLY `contents: read`. "
+        f"Got: {perm_block!r}"
+    )
+
+
+def test_testpypi_declares_the_testpypi_environment():
+    """Paired with `test_pypi_job_declares_the_pypi_environment`. The environment name is
+    half of each trusted publisher's claim, so a swap breaks authentication with an error
+    that names neither."""
+    assert "environment: testpypi" in _job_directives(TESTPYPI, "testpypi")
+
+
+def test_testpypi_publishes_to_testpypi_not_real_pypi():
+    step = _step_containing(TESTPYPI, "testpypi", "gh-action-pypi-publish")
+    assert "repository-url: https://test.pypi.org/legacy/" in step
+
+
+def test_testpypi_skips_existing():
+    """The asymmetry with `pypi` is deliberate: a dry run must tolerate a re-run of the
+    same run number. It is BELT-AND-BRACES, not the mechanism that makes repeat dispatches
+    work -- the version stamp is. Pinned as a pair with the `pypi` half so the asymmetry
+    cannot be 'tidied' into consistency in either direction."""
+    step = _step_containing(TESTPYPI, "testpypi", "gh-action-pypi-publish")
+    assert "skip-existing: true" in step
+
+
+def test_testpypi_refuses_a_non_default_branch():
+    step = _step_containing(TESTPYPI, "testpypi", "Refuse to publish a non-default branch")
+    assert "if: github.ref_name != github.event.repository.default_branch" in step
+    assert "exit 1" in step
+
+
+def test_the_version_stamp_fails_loudly_when_it_matches_nothing():
+    """Presence is NOT enough, and this is the assertion that says so.
+
+    `re.sub` returns its subject UNCHANGED on no match and raises nothing. A stamp built on
+    it silently no-ops the moment that version line drifts: the build re-emits an
+    already-uploaded filename, `skip-existing: true` swallows the duplicate, and the
+    dispatch goes green having uploaded nothing -- the exact defect the stamp exists to
+    remove, rebuilt inside its own fix. Three reviewers found that in the design. So pin the
+    `subn` and the exit, not the step's existence."""
+    step = _step_containing(TESTPYPI, "testpypi", "Stamp a unique dev version")
+    assert "re.subn(" in step
+    assert "if n != 1:" in step
+    assert "sys.exit(" in step
+
+
+def test_the_stamp_is_proven_against_the_built_artefacts():
+    """A successful substitution says the SOURCE changed, not that the BUILD consumed it.
+    They are coupled today by `dynamic = ["version"]` reading `sluice.__version__`, but that
+    coupling is exactly what a packaging change alters unnoticed. This observes the artefact."""
+    step = _step_containing(TESTPYPI, "testpypi", "Prove the stamp reached the artefacts")
+    assert "dist/" in step
+    assert "exit 1" in step
