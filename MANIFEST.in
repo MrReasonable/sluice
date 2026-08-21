@@ -3,7 +3,11 @@
 # glob is non-recursive, so conftest.py and the fixture packages beside it stay behind and the
 # shipped tests cannot run. `tests/test_packaging.py` pins the resulting member list.
 #
-# Nothing grafts `docs/`. That tree is gated by NEITHER the neutrality rule (which binds
-# `sluice/` and `tests/`) NOR `tests/test_no_leaked_files.py` (which gates paths, not content),
-# so publishing it would put an entire unreviewed tree on an index that never forgets.
+# Nothing grafts `docs/`. The neutrality rule binds `sluice/` and `tests/`, not `docs/`, and
+# while `tests/test_no_leaked_files.py` DOES sweep that tree's content, it reaches only two
+# specific things there: absolute home paths, over every tracked file (its `_GATE_PATHSPEC` is
+# empty, which means exactly that), and static content left in `docs/**/*.j2` after Jinja and
+# HTML are stripped. Neither reads docs/ PROSE for the employer names, locations or contact
+# details the neutrality rule is about. So the tree is partially covered, not reviewed, and
+# publishing it would put the uncovered remainder on an index that never forgets.
 prune tests
