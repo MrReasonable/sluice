@@ -37,6 +37,11 @@
           "hidden": true
         },
         {
+          "type": "build",
+          "section": "Build System",
+          "hidden": true
+        },
+        {
           "type": "ci",
           "section": "CI",
           "hidden": true
