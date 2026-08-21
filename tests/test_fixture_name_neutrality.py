@@ -26,6 +26,15 @@ a leaked employer name could land in either shape, so both are swept and neither
 out. A name written into some other shape — prose in a comment, a docstring, an unusual
 helper — is NOT covered; the email-domain guard below is the broader net.
 
+Those collectors all read `tests/**/*.py`. The file has a SECOND half, at the bottom, that
+reads `tests/fixtures/*/raw.json` instead — the captured golden payloads, which no collector
+here ever walked, which is how real employer names and a real hunt geography shipped publicly
+for the repo's whole life (#27) — in `company`, and also in `title` and in URL slugs, which is
+the part worth carrying forward: the leak was not confined to the key you would think to check. That half is shaped differently on purpose: two
+value rosters for the enumerable keys (`location`, `company`), and a per-source DIGEST for
+everything else, because `title` is free text that the boards append the posting's location
+to and no roster can enumerate it.
+
 A FIFTH collector, added for #133/#107, sweeps a different category entirely: the
 equal-opportunities/protected-characteristic fields (`sluice/apply/packet.py`'s `_WARNED_KEYS`
 -- ethnicity, religion, disability, gender identity and similar special-category personal
@@ -96,6 +105,8 @@ here because a sweep whose filters are invisible is a sweep nobody can judge the
 """
 import dataclasses
 import itertools
+import hashlib
+import json
 import re
 from pathlib import Path
 
@@ -994,3 +1005,281 @@ def test_the_two_equal_opportunities_patterns_find_the_same_values():
     assert single == paired, (
         f"the two equal-opportunities patterns disagree: only in single={sorted(single - paired)}, "
         f"only in paired={sorted(paired - single)}")
+
+
+# ---------------------------------------------------------------------------
+# The JSON golden corpus (#27).
+#
+# Everything above sweeps `tests/**/*.py`. `_test_sources()` says so in as many words, and
+# that is exactly how `tests/fixtures/*/raw.json` -- a corpus of CAPTURED board payloads --
+# carried real employer names and a real hunt geography through a guard written to catch
+# precisely them, for the repo's whole public life. A scrub before the first public commit had
+# already replaced MOST of the company names with a fictional roster, so the corpus read as
+# reviewed while the rest stayed real -- a partial scrub is indistinguishable from a complete
+# one, which is the actual lesson. The values are not named here, deliberately: naming which
+# captured strings were the real ones would make this file a sharper disclosure than the
+# fixtures ever were, and it is the ONE file `_test_sources()` excludes (`p.name != _SELF`),
+# so no sweep in this repo would ever see it.
+#
+# Captured payloads need their own machinery rather than a fifth regex on `.py` text: the
+# values are JSON, and the board's DOM jams company and location into one node with no
+# separator ('Example Telemetry EdgePalmerburgh ZZ9Z'), which is a legitimate fixture and a
+# entry in an IDENTITY roster. So the two halves keep separate rosters and separate reasons.
+# ---------------------------------------------------------------------------
+
+_CORPUS_DIR = _TESTS_DIR / "fixtures"
+
+# Reviewed 2026-08-21 (#27). Every value here is SYNTHETIC by construction, not captured:
+# the corpus was scrubbed through a one-to-one token substitution, so 'Ellery Kestrelburgh'
+# and 'Allied Sundic Reaches' are invented toponyms occupying the exact token STRUCTURE the
+# real values had. `Palmerburgh`, `Clarkefurt` and `Potterburgh` are reused from
+# tests/test_leads_location.py, where they were already reviewed.
+#
+# Same standing rule as `_REVIEWED_FIXTURE_IDENTITIES`: adding an entry is a DECISION that it
+# names no real place, and nothing running locally can establish that. `Remote` is on a
+# different ground -- it is an arrangement, not a location, and `core/leads.py`'s `_REMOTE_ONLY`
+# treats it as evidence of NO fixed location.
+#
+# This is deliberately NOT `conftest.py`'s `LOCATIONS = ("Alfa", "Bravo", "Charlie", "Foxtrot")`,
+# and the difference is structural rather than stylistic. Those are GENERATED single tokens, which
+# is all a generated fixture needs. A captured value carries internal structure the comparator is
+# tested against -- 'X , Y - Country (ABBREV)', a bare city, that city plus an outcode -- and a
+# NATO letter cannot carry any of it, so substituting one would change what `_compare_locations`
+# sees and silently rewrite the evidence. Use `Alfa`/`Bravo` for anything generated; extend this
+# family only for captured values whose SHAPE has to survive.
+_REVIEWED_CORPUS_LOCATIONS = frozenset({
+    'ASR', 'Allied Brennmark (Remote)', 'Allied Sundic Reaches - Allied Sundic Reaches',
+    'Brackenburgh - Bantria', 'Clarkefurt', 'Clarkefurt - Allied Sundic Reaches',
+    'Clarkefurt - Allied Sundic Reaches (ASR)', 'Ellery Kestrelburgh',
+    'Ellery Kestrelburgh , Quillon Denfurt - Allied Sundic Reaches (ASR)',
+    'Ellery Kestrelburgh - Allied Sundic Reaches',
+    'Ellery Kestrelburgh - Allied Sundic Reaches (ASR)', 'Fennimoreburgh', 'Hensleyfurt',
+    'Hensleyfurt - Halvenia', 'Hybrid work in Palmerburgh', 'Karnovia', 'Marshburgh',
+    'Marshburgh - Norvane Thessary', 'Norvane Thessary - Norvane Thessary', 'Palmerburgh',
+    'Palmerburgh Area, Allied Brennmark (Hybrid)', 'Palmerburgh ZZ9Z',
+    'Palmerburgh, Wexmoor, Allied Brennmark (Hybrid)',
+    'Palmerburgh, Wexmoor, Allied Brennmark (Remote)', 'Palmerburgh\xa0∙ Choose area',
+    'Potterburgh', 'Potterburgh - Allied Sundic Reaches (ASR)', 'Remote',
+    'Sedgewickfurt - Sedgewickfurt', 'Tolliverfurt', 'VSA', 'Vesperia', 'Whitlockfurt',
+    'Wrenfieldburgh - Norvane Thessary',
+})
+
+# Reviewed 2026-08-21 (#27). EVERY employer in the captured corpus is `Example <Word>`, and that
+# uniformity is the point rather than a style preference.
+#
+# The corpus arrived carrying a stock fictional-brand roster the pre-release scrub had installed,
+# and real marks it had missed. Removing the ones anybody named did not settle anything: whether a
+# given brand is also a live registered company cannot be decided locally, so each review round
+# reached a different name and re-opened the question -- three separate rounds on this PR alone,
+# the last of which turned up an active UK registration behind a name from the stock roster. That
+# is an unbounded argument, and every round of it costs a review slot.
+#
+# `Example <Word>` ends it: no lookup can match it to a real firm, so the class is closed instead
+# of the instance. This is NOT the general convention (see this module's docstring on why a
+# repo-wide `Example <Word>` rule was rejected -- it would fire on ~40 legitimate `.py` fixtures);
+# it is specific to the CAPTURED corpus, which is the one file class where the values came off a
+# real board and nobody can vouch for them.
+#
+# The `<Company><Location>` entries are the boards' DOM jam captured verbatim;
+# `sluice/ingest/base.py`'s `_demash_company` exists to split them, so they are the fixture the
+# demash path is tested against.
+_REVIEWED_CORPUS_COMPANIES = frozenset({
+    'Example Analytics', 'Example Analytics WestHybrid work in Palmerburgh',
+    'Example Analytics WestPalmerburgh', 'Example Bank', 'Example Brewing', 'Example Chemical',
+    'Example Compression', 'Example Cybernetics', 'Example Dynamics', 'Example Enterprises',
+    'Example Foods', 'Example Foundry', 'Example FoundryHybrid work in Palmerburgh',
+    'Example Genetics', 'Example Grid', 'Example Imports', 'Example Interstellar',
+    'Example Ironworks', 'Example IronworksHybrid work in Palmerburgh', 'Example Manor',
+    'Example Meridian', 'Example MeridianPalmerburgh', 'Example Northgate', 'Example Retail',
+    'Example Robotics', 'Example Systems', 'Example Systems ABMPalmerburgh',
+    'Example Telemetry', 'Example Telemetry EdgePalmerburgh ZZ9Z', 'Example Towers',
+})
+
+
+def _corpus_files():
+    """Every captured-payload fixture. Sorted so the anti-vacuity check below can name them."""
+    return sorted(_CORPUS_DIR.glob("*/raw.json"))
+
+
+def _corpus_values(key):
+    """Every distinct non-blank string under `key`, anywhere in any fixture.
+
+    Recursive rather than keyed on a known envelope shape: the boards do not agree on one
+    (`{"result": [...]}`, a bare list, a `{"jobs": {...}}` wrapper), and a walker keyed on
+    the shapes that exist today silently stops seeing a source that changes its envelope --
+    which for a NEGATIVE guard means it stops reporting rather than starts failing.
+    """
+    found = set()
+
+    def walk(node):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k == key:
+                    # A list-valued key slipped past an `isinstance(v, str)` check entirely, and
+                    # boards do return one. The digest still fired on it; the ROSTER did not,
+                    # which is the half that produces a readable failure.
+                    for item in ([v] if isinstance(v, str) else v if isinstance(v, list) else []):
+                        if isinstance(item, str) and item.strip():
+                            found.add(item)
+                walk(v)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    for path in _corpus_files():
+        walk(json.loads(path.read_text(encoding="utf-8")))
+    return found
+
+
+def test_the_corpus_sweep_actually_reads_the_fixtures():
+    """Anti-vacuity, and the reason this file's other sweeps carry one too.
+
+    `all([])` is True and `set() - roster` is empty, so a walker that matches nothing passes
+    every assertion below it while reporting a clean corpus. Pinning the SCOPE -- that the
+    glob found the sources and the walk reached values in them -- is the only thing that
+    distinguishes "nothing to report" from "not looking".
+    """
+    files = _corpus_files()
+    assert len(files) >= 10, (
+        f"the corpus glob found {len(files)} fixtures under {_CORPUS_DIR} -- it used to find "
+        "16, so either the fixtures moved or the glob no longer matches them, and every "
+        "corpus assertion below is now vacuous")
+    assert _corpus_values("location"), "the walker reached no location values"
+    assert _corpus_values("company"), "the walker reached no company values"
+    # And pin the SCOPE, not merely a floor. `>= 10` cannot tell 16 fixtures from 11, and the
+    # glob is hardcoded to `*/raw.json` -- so a `page2.json`, a nested search directory or a
+    # second capture under any other name would sit in no roster, in no digest, and trip
+    # nothing. That is #27's own shape ("nothing walked it") one level down, which is the last
+    # mistake this file should repeat.
+    every_file = sorted(p for p in _CORPUS_DIR.rglob("*") if p.is_file())
+    assert every_file == files, (
+        "files under tests/fixtures/ that the corpus sweep does not read:\n  "
+        + "\n  ".join(str(p.relative_to(_TESTS_DIR)) for p in every_file if p not in set(files))
+        + "\n\nEither fold them into _corpus_files() or move them out of the fixture tree.")
+
+
+def test_no_unreviewed_location_in_the_json_golden_corpus():
+    unreviewed = _corpus_values("location") - _REVIEWED_CORPUS_LOCATIONS
+    assert not unreviewed, (
+        "the golden corpus carries location values nobody has reviewed:\n  "
+        + "\n  ".join(sorted(map(repr, unreviewed)))
+        + "\n\nThis repo is PUBLIC and these fixtures ship in it. A captured payload records "
+          "where the person running the scrape was looking for work, and the SET of them is a "
+          "sharper disclosure than any one value (#27). Confirm each names no real place, "
+          "then add it to _REVIEWED_CORPUS_LOCATIONS.")
+
+
+def test_no_unreviewed_company_in_the_json_golden_corpus():
+    unreviewed = _corpus_values("company") - _REVIEWED_CORPUS_COMPANIES
+    assert not unreviewed, (
+        "the golden corpus carries company values nobody has reviewed:\n  "
+        + "\n  ".join(sorted(map(repr, unreviewed)))
+        + "\n\nThis repo is PUBLIC and these fixtures ship in it. Confirm each names no real "
+          "firm -- a local check cannot -- then add it to _REVIEWED_CORPUS_COMPANIES.")
+
+
+@pytest.mark.parametrize("key,roster", [
+    ("location", _REVIEWED_CORPUS_LOCATIONS),
+    ("company", _REVIEWED_CORPUS_COMPANIES),
+], ids=["location", "company"])
+def test_the_corpus_rosters_carry_no_value_the_fixtures_stopped_using(key, roster):
+    """The other direction, for the same reason the evidence script asserts both.
+
+    A roster that outlives its fixtures is how a value removed FOR A NEUTRALITY REASON gets
+    quietly re-added later: the entry is still sitting there saying somebody approved it, and
+    nobody remembers that the approval was for a value that has since been scrubbed.
+    """
+    stale = roster - _corpus_values(key)
+    assert not stale, (
+        f"_REVIEWED_CORPUS_{key.upper()}S names values no fixture uses any more:\n  "
+        + "\n  ".join(sorted(map(repr, stale)))
+        + "\n\nDrop them, so the roster stays a list of things that are actually shipping.")
+
+
+# The two rosters above are keyed on `location` and `company`, which are ENUMERABLE: a fixed
+# vocabulary, small enough to list and read. `title` is not. It is free text, 223 distinct
+# values of legitimate role wording -- and it carried geography anyway, in the shape
+# `<role> <employer> <City, Region> ▪ <City, Region>`, because the boards append the posting's
+# location to the role. (Described rather than quoted, for the reason two paragraphs down.)
+# Rostering 223 role strings to catch that
+# would be a wall nobody reads; a gazetteer of real place names would be BOTH a classifier
+# this file's own docstring argues against AND a leak in its own right -- writing the removed
+# values into `tests/` to forbid them puts them right back in the public tree.
+#
+# So: a digest per source over its whole payload -- every value and every key, not a sampled
+# subset. It cannot say WHICH value is new, and that is the accepted trade -- it is a "go and look" gate
+# on a corpus that has changed four times in the repo's life, and "go and look" is exactly the
+# human judgement the rosters exist to force. It hashes canonical JSON of the PARSED payload
+# with sorted keys, not the file's bytes and not a set of its strings: that keeps it blind to
+# formatting and to key ORDER while still seeing record count, key names, numbers, booleans and
+# REPETITION -- a set loses multiplicity, and moving one row between two values already present
+# in the same fixture left the earlier version byte-identical with both rosters green.
+_REVIEWED_CORPUS_DIGESTS = {
+    'bayt':
+        '01abe7de3090b9d8de40434f3d98927f7d2d6ef4cf79ee7a1650b99619046da4',
+    'cord':
+        '1cab7aefb74a83ab4fcb6b17495f69771cecaafd9d6310535ce96d8ef0985c7c',
+    'cwjobs':
+        '470c11b61a5a985d325867555d9f2af164fe94a33665c758963df16bc99e5b99',
+    'eighty_k':
+        '1f80ed92b4206af2c5e43744573ba2b661f5bb85636998021caf0898e82a9151',
+    'google':
+        'f7e8f40abc8dc145d5e964dedcfcad534e1c871f57b7bc04d8f80e9064ae8888',
+    'gulftalent':
+        '850bb0598f1c6f748f8a22ce236de69e5c1d8d7c6ad7460b12dace3e44d789ad',
+    'indeed':
+        'f08cbfc5f056b661e61a31adec649211a61ea4170fc0809fef3fed686ab0e476',
+    'jobserve':
+        '9518fadcc1bbe565f11012ec386eb7a2e751687cf7141af7a2bca5ae7f20e3f3',
+    'linkedin':
+        '839b676605277aba0a407d41c976355e558e5314f6aa4021ee7a1a3a4ae7d416',
+    'naukrigulf':
+        'b46e8ad4b6457dbb42fe4be9a6e91af31c4019a59cc4b4ae87c63f7ea7b789d0',
+    'reed':
+        'e6741736fd37d865a8e5daa7ad0d59aa389d73e174830eea3e43ea49af3cc1b7',
+    'remoteok':
+        '20eae5095dcd77aadc0a28b948f5ed199f3f3fc63ff24a84d83684f90afbe30b',
+    'totaljobs':
+        '43f361f02ede5efc9834fc4cc6661e035ef00c29a3fd197c16e963e28370937c',
+    'wellfound':
+        'c977ff49c8088fa58b774d9a4b2b1c98553bcd42817b1b2d801942149a12d20a',
+    'weworkremotely':
+        '880e0707532ccb3171d729f90b0d9a9997c34090b028d0a44ed398eeda7546c0',
+    'wttj':
+        '17a4c8acdbe46286096686a4a363ed9c0a6f1121aafd817e214339ad0c2dd9a3',
+}
+
+
+def _corpus_digest(path):
+    """A stable fingerprint of one fixture's whole parsed payload.
+
+    Canonical JSON of the PARSED object, not a set of its string values. The set version lost
+    MULTIPLICITY and structure: moving one row's company from one already-present value to
+    another left the digest byte-identical while both rosters stayed green, because neither the
+    value set nor the roster changed -- reproduced against a real fixture before this was
+    rewritten. Sorting keys keeps it independent of key ORDER and of file formatting (re-indent
+    a fixture and nothing moves), while record count, key names, numbers, booleans and
+    repetition all now reach the hash.
+    """
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    canon = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+
+def test_every_captured_fixture_matches_its_reviewed_digest():
+    actual = {p.parent.name: _corpus_digest(p) for p in _corpus_files()}
+    assert actual == _REVIEWED_CORPUS_DIGESTS, (
+        "the captured-payload corpus changed.\n\n"
+        "This gate is not about the change being wrong -- it is about a PUBLIC repo, where a "
+        "fixture recaptured from a live board arrives carrying whatever that board printed: "
+        "employer names, and the posting's location appended to the role title, which is the "
+        "shape #27 was filed for and the one no roster in this file can enumerate.\n\n"
+        "Read the diff for the sources below. Confirm no value names a real firm or a real "
+        "place -- nothing running locally can establish either -- then paste the new digest "
+        "into _REVIEWED_CORPUS_DIGESTS.\n\n"
+        + "\n".join(
+            f"  {src}: {_REVIEWED_CORPUS_DIGESTS.get(src, '(new source)')} -> {dig}"
+            for src, dig in sorted(actual.items())
+            if _REVIEWED_CORPUS_DIGESTS.get(src) != dig)
+        + "".join(f"\n  {src}: (fixture removed, drop the entry)"
+                  for src in sorted(set(_REVIEWED_CORPUS_DIGESTS) - set(actual))))
