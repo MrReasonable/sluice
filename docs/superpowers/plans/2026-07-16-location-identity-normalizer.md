@@ -54,7 +54,7 @@ from sluice.core.leads import _norm_location
 
 def test_norm_location_casefolds_collapses_and_strips():
     assert _norm_location("  Palmerburgh  ") == "palmerburgh"
-    assert _norm_location("PALMERBURGH   EC4Y") == "palmerburgh ec4y"
+    assert _norm_location("PALMERBURGH   ZZ9Z") == "palmerburgh zz9z"
     # bool("   ") is True, so a blank that did not normalize to "" would let whitespace dirt
     # read as evidence of a difference. An empty side must abstain instead.
     assert _norm_location("   ") == ""
@@ -185,7 +185,7 @@ git commit -m "feat(leads): _norm_location — fold, casefold, collapse (#25)"
 - Consumes: `_norm_location(s: str) -> str` from Task 1.
 - Produces: `SAME`, `DIFFERENT`, `UNKNOWN` (module-level `str` constants) and `_compare_locations(a: str, b: str, noise=frozenset()) -> str`. #5's `same_opportunity` calls it and returns its verdict; `core/vault.py` reads the constants.
 
-**Why a tri-state and not a bool:** #5 consumes this in **two** of its four rules, not one. Its rule 2 is keyed on normalized *equality* and fires **0 of 33** real same-city re-post pairs — re-posts overlap but are never equal (`London` vs `London EC4Y`). A bool expressing only rule 3 would leave rule 2 silently dead and route every ordinary re-post into #5's `merged` counter, which #5 calls "its only signal". Returning the trichotomy collapses #5's rules 2–4 into one call and takes rule 2 to 33/33.
+**Why a tri-state and not a bool:** #5 consumes this in **two** of its four rules, not one. Its rule 2 is keyed on normalized *equality* and fires **0 of 33** real same-city re-post pairs — re-posts overlap but are never equal (`Palmerburgh` vs `Palmerburgh ZZ9Z`). A bool expressing only rule 3 would leave rule 2 silently dead and route every ordinary re-post into #5's `merged` counter, which #5 calls "its only signal". Returning the trichotomy collapses #5's rules 2–4 into one call and takes rule 2 to 33/33.
 
 **Why public constants but a private function:** `core/vault.py` reads the verdict, so the constants are public; `_compare_locations`'s only consumer is `same_opportunity` in this same module, so it is private. That matches the file's own precedent — `_norm_url` private and in-module, `slug_matches` public and cross-module.
 
@@ -209,7 +209,7 @@ Then append:
 # token-subset failure exactly: subset splits 15 of these 21 pairs, overlap splits 0.
 _SAME_CITY_SHAPES = [
     "Palmerburgh",
-    "Palmerburgh EC4Y",
+    "Palmerburgh ZZ9Z",
     "Hybrid work in Palmerburgh",
     "Palmerburgh\xa0∙ Choose area",
     "Palmerburgh Area, North Clarke (Hybrid)",
@@ -228,14 +228,14 @@ def test_every_rendering_of_one_city_is_never_a_split():
 
 def test_genuinely_different_cities_are_the_only_split():
     assert _compare_locations("Palmerburgh", "Clarkefurt") == DIFFERENT
-    assert _compare_locations("Palmerburgh EC4Y", "Clarkefurt (Hybrid)") == DIFFERENT
+    assert _compare_locations("Palmerburgh ZZ9Z", "Clarkefurt (Hybrid)") == DIFFERENT
 
 
 def test_compare_locations_is_symmetric():
     assert (_compare_locations("Palmerburgh", "Clarkefurt")
             == _compare_locations("Clarkefurt", "Palmerburgh"))
-    assert (_compare_locations("Palmerburgh EC4Y", "Palmerburgh")
-            == _compare_locations("Palmerburgh", "Palmerburgh EC4Y"))
+    assert (_compare_locations("Palmerburgh ZZ9Z", "Palmerburgh")
+            == _compare_locations("Palmerburgh", "Palmerburgh ZZ9Z"))
 
 
 def test_compare_locations_is_reflexive_for_anything_with_a_surviving_token():
@@ -291,7 +291,7 @@ def test_noise_emptying_both_sides_abstains_rather_than_splitting():
 def test_multi_word_countries_sharing_a_token_merge_at_default():
     # The structural miss: 18 of the 30 real ones. Any two multi-word country names sharing a
     # token merge until that token is configured as noise. Merge direction, so it matches today.
-    a, b = "Palmerburgh - North Clarke Republic", "Clarkefurt, North Clarke Kingdom"
+    a, b = "Palmerburgh - North Clarke Republic", "Clarkefurt, North Clarke Brennmark"
     assert _compare_locations(a, b) == SAME
     assert _compare_locations(a, b, {"North Clarke"}) == DIFFERENT
 ```
@@ -325,14 +325,14 @@ def _compare_locations(a: str, b: str, noise=frozenset()) -> str:
     cross-board re-post, while a wrong SAME merges, which is what today already does.
 
     Overlap, not subset or containment, and that is measured rather than chosen: boards decorate a
-    city differently on every re-post ('London', 'London EC4Y', 'London ∙ Choose area'), so neither
+    city differently on every re-post ('Palmerburgh', 'Palmerburgh ZZ9Z', 'Palmerburgh ∙ Choose area'), so neither
     side is usually a subset of the other and token-subset splits 15 of 21 real same-city pairs.
     Every rendering shares the CITY token; the rest is decoration. Overlap keys on the signal.
     See docs/superpowers/specs/2026-07-16-location-identity-evidence.py to re-derive the numbers.
 
     `noise` is vocabulary that decorates a location without locating it. It is fed through
     _norm_location and TOKENIZED rather than used raw, because raw subtraction gives a knob that
-    silently does nothing: {'UK'} never matches the token 'uk' (case), and {'United Kingdom'} equals
+    silently does nothing: {'UK'} never matches the token 'uk' (case), and {'Allied Brennmark'} equals
     no single token (arity). A bare str raises rather than iterating into characters (shape).
     """
     if isinstance(noise, str):
@@ -404,7 +404,7 @@ git diff --stat main -- sluice/ tests/
 .venv/bin/python - <<'PY'
 import ast, pathlib
 src = pathlib.Path("sluice/core/leads.py").read_text()
-banned = {"london", "dubai", "riyadh", "doha", "uae", "uk", "england", "remote", "hybrid"}
+banned = {"palmerburgh", "clarkefurt", "marshburgh", "hensleyfurt", "asr", "abm", "wexmoor", "remote", "hybrid"}
 tree = ast.parse(src)
 hits = []
 for node in ast.walk(tree):
@@ -452,7 +452,7 @@ git commit -m "feat(leads): _compare_locations — token overlap, tri-state verd
 | 5. corpus shape pairs all `SAME` (kills token-subset) | Task 2 Steps 1, 5 |
 | 6. `Remote`/city both directions; noise-emptied abstains (kills the hoist) | Task 2 Steps 1, 5 |
 | 7. noise case + arity + bare-str raise (kills raw noise) | Task 2 Steps 1, 5 |
-| 8. `united`-collision shape (does **not** witness the hoist — item 6 does) | Task 2 Step 1 |
+| 8. `allied`-collision shape (does **not** witness the hoist — item 6 does) | Task 2 Step 1 |
 | 9. #5's resumption instruction corrected | Done, but **not in this PR** — #5's spec is parked and unmerged on `fix/lead-identity-write-path`; the correction travels with it. A file that is not on `main` cannot be corrected on `main`. |
 | 10. verdict vocabulary + docstring states DIFFERENT is the only actionable verdict | Task 2 Step 3 |
 | 11. no place name/country/region added to `sluice/`; no config key | Task 2 Step 9 |

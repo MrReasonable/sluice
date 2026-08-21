@@ -14,12 +14,12 @@ The parked draft was "BLOCKED on #6 — fix #6 first." That decision bundled two
 resolved:
 
 1. **The comparison mechanism did not exist.** The draft keyed splits on a bare location *equality*, which
-   fired **0 of 33** real same-city re-post pairs (`London` ≠ `London EC4Y`), so every re-post would have
+   fired **0 of 33** real same-city re-post pairs (`Palmerburgh` ≠ `Palmerburgh ZZ9Z`), so every re-post would have
    split — a regression of today's one-note-per-re-post behaviour. **#25 (MERGED) shipped
    `_compare_locations(a, b, noise=frozenset()) -> SAME|DIFFERENT|UNKNOWN`** in `core/leads.py`, keyed on
    token **overlap**, whose docstring states outright *"DIFFERENT is the only verdict #5 acts on."* Verified
-   against real inputs: `London` vs `London, UK`/`London EC4Y`/`London ∙ Choose area` → SAME (no duplicate);
-   `London` vs `Manchester` → DIFFERENT (the two-cities case #5 fixes); either side empty → UNKNOWN (merge,
+   against real inputs: `Palmerburgh` vs `Palmerburgh, UK`/`Palmerburgh ZZ9Z`/`Palmerburgh ∙ Choose area` → SAME (no duplicate);
+   `Palmerburgh` vs `Manchester` → DIFFERENT (the two-cities case #5 fixes); either side empty → UNKNOWN (merge,
    today's behaviour). The equality regression is gone.
 2. **The location field could be dirty (#6's domain).** #6 is **not a blocker**: #5 splits *only* on a
    location `DIFFERENT`, so extraction dirt can only ever push toward a false **split** (visible via two
@@ -230,7 +230,7 @@ root Config, so a sub-app block cannot reach it):
 - **`assert c.location_noise_words == []`** added to `test_ingest_defaults_carry_no_preference` — that guard
   file ships green on keys nobody names, so a new gate needs its own assertion in the same change.
 - A **commented** line in `sluice.yaml.example` (per the `locations:` precedent), so the knob is
-  discoverable and the user can, e.g., make `Remote` vs `London` merge by adding `remote` to the list.
+  discoverable and the user can, e.g., make `Remote` vs `Palmerburgh` merge by adding `remote` to the list.
 - **An end-to-end test asserts config actually reaches a store verdict** — a `Vault` built via `_make` from a
   Config carrying a noise word produces a different `upsert` outcome than one without. Without it the wiring can
   be dead while every default-and-pure-function test passes: the loaded-gun class config-first exists to kill
@@ -304,7 +304,7 @@ reintroduce this loss and pass every `Vault`-only test.
   seeded Faker** and guarantees at least two **token-disjoint** cities (mirror conftest's `_disjoint`), so the
   "differ-in-location → two notes" probes assert the right count deterministically rather than flaking when two
   `fake.city()` values happen to share a token. The `_lead()` helpers in `test_vault.py` and
-  `test_store_contract.py` source their location from that constant; `test_vault.py`'s `location="London"`
+  `test_store_contract.py` source their location from that constant; `test_vault.py`'s `location="Palmerburgh"`
   default is removed. (Scoped to **those two files** — not a grep over `tests/`, which trips over legitimate
   `target_locations`/config-gate placenames elsewhere.)
 - **Idempotence across N≥3 `upsert` runs**, asserting the slug *set*.
@@ -353,7 +353,7 @@ Each item names the surface it is satisfied at (a DoD item that can pass without
   `test_sink.py`'s existing exact-equality assertions still hold.
 - A `locations` fixture exists in `tests/conftest.py` as an importable module-level constant with its own
   seeded Faker, guaranteeing ≥2 **token-disjoint** cities; `_lead()` in `test_vault.py` and
-  `test_store_contract.py` sources its location from it; `test_vault.py`'s `location="London"` default is gone.
+  `test_store_contract.py` sources its location from it; `test_vault.py`'s `location="Palmerburgh"` default is gone.
 - `_resolve_path` is idempotent across N≥3 runs, asserted on the slug set.
 - A note whose own frontmatter lacks a discriminator MERGES at candidate 1 — even when a later candidate is
   free — and is never orphaned.

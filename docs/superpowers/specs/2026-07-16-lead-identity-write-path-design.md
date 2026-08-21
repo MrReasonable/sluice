@@ -38,7 +38,7 @@ split. But `core/leads.py` has exactly one normalizer — `_norm_url` — and no
 this spec never defined one; and its own Non-goals hands "string normalization" to #23. So the
 comparison is a bare string equality, and:
 
-- `London` vs `London, UK` returns DIFFERENT → a **second note for a cross-board re-post**. Today
+- `Palmerburgh` vs `Palmerburgh, UK` returns DIFFERENT → a **second note for a cross-board re-post**. Today
   that collides at `_path_for` and reports `updated`: one note. **The design would regress today's
   behaviour** — and deliver exactly the duplicate-per-re-post the user rejected when choosing the
   evidential rule.
@@ -61,8 +61,8 @@ and normalized enough to key identity on** — that is now a requirement of #6, 
 wrong, and acting on it reintroduces the defect:
 
 **Rule 2 below is keyed on normalized *equality*, and measured against the real fixture corpus it
-fires 0 of 33 same-city re-post pairs.** Real re-posts *overlap* but are never *equal* (`London` vs
-`London EC4Y`). Every one of them falls through to `UNKNOWN` → `merged` — so the counter this design
+fires 0 of 33 same-city re-post pairs.** Real re-posts *overlap* but are never *equal* (`Palmerburgh` vs
+`Palmerburgh ZZ9Z`). Every one of them falls through to `UNKNOWN` → `merged` — so the counter this design
 calls "its only signal" would drown in ordinary re-posts, and rule 2's stated purpose ("what stops
 every employer re-post becoming a duplicate") would be defeated silently. Rule 3 was never the
 problem.
@@ -87,7 +87,7 @@ spec's to do, and a reader who stops at the rule table will miss them:
    `test_ingest_defaults_carry_no_preference`, in the same change** — that file is an enumeration and
    ships green on keys nobody names, which its own comments record happening twice. It also needs a
    **commented-out** line in `sluice.yaml.example`, per the `locations:` precedent at `:11-14`;
-   without it the knob is undiscoverable and the user cannot recover the `Remote`/`London` mis-split.
+   without it the knob is undiscoverable and the user cannot recover the `Remote`/`Palmerburgh` mis-split.
    This makes "Empty-config-abstains — not engaged" (below) **false**: this spec now adds a
    preference gate, and the DoD must carry an item for it.
 2. **The Config-first section's "these constants stay literal" no longer holds** — one tunable now
@@ -444,7 +444,7 @@ So the split is:
   routes tests to build leads via a plain module-level `_lead()` helper** (`tests/test_vault.py:5`,
   `tests/conformance/test_store_contract.py:50`). Neither is a fixture, so a session-scoped
   `locations` cannot be injected — the implementer types a literal because *that is the only thing
-  that compiles*. Worse, `test_vault.py`'s `_lead()` already defaults `location="London"`, which this
+  that compiles*. Worse, `test_vault.py`'s `_lead()` already defaults `location="Palmerburgh"`, which this
   design promotes into asserted filenames. A DoD reading "the new tests use it" is satisfiable while
   that default stands, because `_lead()` is not a new test (`neu-r2-001`). So: `_lead()` must take
   its location from the fixture, and the existing default must go. The fixture is the mechanism;
@@ -502,9 +502,9 @@ a DoD item that can pass without fixing anything is worse than no item, because 
   (`rev-r3-003`).
 - A `locations` fixture exists in `tests/conftest.py`; **`_lead()` in `tests/test_vault.py` and
   `tests/conformance/test_store_contract.py` sources its location from it, and
-  `test_vault.py:5`'s `location="London"` default is gone.** The check is scoped to **those two
+  `test_vault.py:5`'s `location="Palmerburgh"` default is gone.** The check is scoped to **those two
   files** — not a grep over `tests/`, which trips over legitimate uses: `test_classify.py:116-117`'s
-  `London`/`Berlin` is a deliberate `target_locations` keep/reject and case-insensitivity pair, and
+  `Palmerburgh`/`Berlin` is a deliberate `target_locations` keep/reject and case-insensitivity pair, and
   `conftest.py:46`'s `testville` is a config gate. Six further files hold lead-level placenames and
   are out of scope here (`tst-r3-002`). This is the over-correction the neutrality reviewer warned
   against in round 2, made anyway in round 3, and scoped here.
