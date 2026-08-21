@@ -543,8 +543,13 @@ def test_testpypi_triggers_only_on_workflow_dispatch():
     which is not a defect in the file).
     """
     block = _workflow_wide_directives(TESTPYPI)
-    on_start = block.index("\non:")
-    rest = block[on_start + 1 :]
+    # Start-of-LINE anchored, not `index("\non:")`: that spelling needs a preceding newline,
+    # so removing the workflow's `name:` key would make `on:` the first line and raise
+    # ValueError -- a crash reading as a broken test rather than as the trigger regression
+    # this exists to report.
+    on_match = re.search(r"^on:", block, re.MULTILINE)
+    assert on_match, "testpypi.yml has no top-level `on:` key"
+    rest = block[on_match.start() :]
     end = re.search(r"\n[a-z]", rest)
     on_block = rest[: end.start()] if end else rest
     triggers = re.findall(r"\n  ([a-z_]+):", on_block)
