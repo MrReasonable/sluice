@@ -482,3 +482,55 @@ def test_the_stamp_is_proven_against_the_built_artefacts():
     step = _step_containing(TESTPYPI, "testpypi", "Prove the stamp reached the artefacts")
     assert "dist/" in step
     assert "exit 1" in step
+
+
+_BUILD_COMMANDS = (
+    "pip install --require-hashes -r .github/build-requirements.txt",
+    "python -m build --no-isolation",
+    "twine check --strict dist/*",
+)
+
+
+def _post_checkout_run_steps(path: Path, job: str) -> list[str]:
+    """Every `run:` step of `job` at or after its `actions/checkout` step.
+
+    Anchored past checkout so `testpypi.yml`'s branch guard -- which deliberately runs
+    BEFORE checkout, so a wrong branch is refused before any source is fetched -- sits
+    outside the region by construction, letting the two regions describe the same thing.
+    """
+    block = _job_directives(path, job)
+    marker = "actions/checkout@"
+    assert marker in block, f"the {job!r} job in {path.name} has no checkout to anchor on"
+    return re.findall(r"\n      - (?:name:.*\n(?:  )*)?\s*run: .+", block[block.index(marker):])
+
+
+def _python_version(path: Path, job: str) -> str:
+    match = re.search(r"python-version: \"([^\"]+)\"", _job_directives(path, job))
+    assert match, f"no python-version pinned in {path.name}'s {job!r} job"
+    return match.group(1)
+
+
+def test_the_dry_run_builds_exactly_the_way_the_release_build_does():
+    """The cost of a separate dry-run file is that its build steps are a COPY, and a copy
+    can stop matching what it claims to prove without anything going red.
+
+    GUARDED AGAINST ITS OWN VACUITY, because four equality checks between two extractions
+    pass trivially when both extractions fail -- `None == None` is green while the two files
+    build differently, which is the `all([])` shape this repo has a standing rule about. The
+    design's first draft omitted these guards while citing two precedents that both carry
+    them.
+    """
+    release = _job_directives(RELEASE_PLEASE, "build")
+    dry_run = _job_directives(TESTPYPI, "testpypi")
+
+    for command in _BUILD_COMMANDS:          # non-vacuity: each side really contains it
+        assert command in release, f"release build no longer runs: {command}"
+        assert command in dry_run, f"dry run no longer runs: {command}"
+
+    assert _python_version(RELEASE_PLEASE, "build") == _python_version(TESTPYPI, "testpypi")
+
+    # Scope: pin how many run: steps each region has, so an unexplained extra step -- or a
+    # silently dropped one -- cannot read as agreement. They differ because the dry run
+    # legitimately carries the two steps that make a dispatch prove something.
+    assert len(_post_checkout_run_steps(RELEASE_PLEASE, "build")) == 3
+    assert len(_post_checkout_run_steps(TESTPYPI, "testpypi")) == 5
