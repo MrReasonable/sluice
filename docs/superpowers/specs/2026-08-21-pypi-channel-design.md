@@ -31,8 +31,8 @@ changed, recorded because several of these were errors of a KIND rather than of 
   the only pre-release proof.
 - **The sdist -- public and permanent from this PR on -- had no contents guard**, and ships 166
   test modules that cannot run.
-- **Decision 2 had no mechanism** and contradicted decision 1. Now reopened rather than papered
-  over.
+- **Decision 2 had no mechanism** and contradicted decision 1. Reopened rather than papered over,
+  then resolved by dropping it (2026-08-21).
 - Four claims about the existing test file were simply wrong (five helpers, not two; a defaulted
   path parameter would fail open silently).
 
@@ -569,12 +569,15 @@ happens. The dispatch-triggered dry run therefore stops being a nicety and becom
 only pre-release proof -- and PRs 4-6 should each carry an equivalent rather than inheriting this
 one by precedent.
 
-**2. The `job-sluice` name: OPEN. Do not implement either branch until the owner decides.**
+**2. The `job-sluice` name is NOT claimed early. Decided 2026-08-21, reversing the draft.**
 
-The reviewed draft recorded this as settled -- claim the name early with a `0.1.x` publish, left
-installable. Four reviewers independently established that **no mechanism exists to do it**, and
-the draft cited that publish twice as the only proof of the production path, so the contradiction
-propagated into the Risks section:
+Nothing publishes to `pypi.org` until 1.0.0. The name stays unreserved until then, and that is
+accepted rather than mitigated.
+
+This reverses what the reviewed draft recorded as settled -- claim the name early with a `0.1.x`
+publish, left installable. Four reviewers independently established that **no mechanism existed to
+do it**, and the draft cited that publish twice as the only proof of the production path, so the
+contradiction propagated into the Risks section:
 
 - `pypi` is gated on `release_created == 'true'`, so only a release-please release can fire it.
 - `release-please.yml` has no `workflow_dispatch`, and this document rejects adding one.
@@ -596,12 +599,27 @@ which this repo does anyway -- but deliberately, not as cleanup.
 weeks -- while public issue #104 names it. If it is taken, the remedy is another rename, confined
 to `pyproject.toml`, `cli.py`'s `prog=`/`--version`, and the two tests that pin the name.
 
-Route (b) is this document's recommendation, reversing the draft's position: the mechanism in (a)
-costs a corrupted release history to buy protection against a low-probability event whose remedy
-is bounded and mechanical.
+**Route (b) is the decision.** The mechanism in (a) costs a corrupted release history to buy
+protection against a low-probability event whose remedy is bounded and mechanical. Breaking
+changes published under a patch version are a permanent, public misstatement of what that release
+contained; a squatted name costs a rename of three files and two tests.
 
-**Until this is resolved, nothing in this document may cite an early publish as a mitigation.**
-The Risks section below is written accordingly.
+Two consequences follow, and both are stated here rather than left implicit:
+
+- **Nothing in this document may cite an early publish as a mitigation.** The Risks section is
+  written accordingly, and the first risk below -- that `release-please.yml`'s own publisher entry
+  is unexercised until the 1.0.0 merge -- is now genuinely unmitigated rather than covered by a
+  publish that was never going to happen.
+- **The exposure window is a reason to keep PRs 4-7 moving, not a reason to hold them.** The
+  window closes when 1.0.0 ships, so every week the remaining channels take is a week the name is
+  unreserved. That is the honest cost of decision 1, and it belongs beside decision 1 rather than
+  buried in a risk list.
+
+If the name IS taken before 1.0.0, the remedy is a rename confined to `pyproject.toml`'s `name`
+and `[project.scripts]`, `cli.py`'s `prog=`/`--version`, and the two tests that pin it
+(`test_release_version.py`, `tests/test_docs_claims.py`). The import package, the `SLUICE_*` env
+vars and the `~/.config/sluice/` XDG path are unaffected -- they are already independent of the
+distribution name by deliberate decision.
 
 ## Risks
 
@@ -609,8 +627,9 @@ The Risks section below is written accordingly.
   the mechanism, the environment wiring and the action version, but against `testpypi.yml`'s
   publisher entry -- a different workflow filename, and therefore a different entry -- so
   `release-please.yml`'s own entry is genuinely first exercised by whatever publishes first. Under
-  decision 1 that is the 1.0.0 merge. This is the strongest argument for route (a) above, and it
-  is stated here rather than resolved, because the decision is open.
+  decisions 1 and 2 that is the 1.0.0 merge, with no earlier publish to prove it. **This is the
+  single largest residual risk in the design and it is accepted, not mitigated.** The dry run
+  proves everything about the mechanism except the one publisher entry that matters on the day.
 - **No environment protection rule.** Declined by the owner. Once the trusted publishers exist,
   any merge of a release PR publishes with no human step; combined with decision 1, the first such
   merge fires five first-run publish jobs at once.
@@ -625,6 +644,9 @@ The Risks section below is written accordingly.
 - **The sdist's contents are guarded from this PR onward, but everything published before the
   guard lands is unexamined.** Nothing has been published yet, so the exposure is zero today; it
   becomes non-zero the moment anything publishes ahead of the guard.
+- **`job-sluice` is unreserved on `pypi.org` until 1.0.0 ships** (decision 2). A pending publisher
+  does not reserve a name, and public issue #104 names the target. Accepted deliberately; the
+  remedy if it is taken is a bounded rename, and the window shrinks as PRs 4-7 land.
 
 ## Definition of done
 
