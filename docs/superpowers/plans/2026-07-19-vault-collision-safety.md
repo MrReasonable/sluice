@@ -26,7 +26,7 @@ Copied from CLAUDE.md and the spec; every task implicitly includes these:
 - **`sluice/` is standard-library only.** `same_opportunity`/`_resolve_path`/`_note_name` use `re`/`os` only. No `hashlib` (no URL-hash candidate). No new dependency.
 - **Never-clobber.** UPDATE and MERGE bump **only** `last_seen` (via `_bump_last_seen`); REFUSE writes nothing; CREATE is a genuinely new note. **`_path_for` (candidate 1) stays byte-identical to today** — zero migration, pinned by the existing `test_filename_sanitizes_slashes_and_colons` / `test_byte_clamp_is_a_noop_for_a_name_that_fits` staying green.
 - **Empty-config-abstains.** `location_noise_words` defaults `[]` (no subtraction); guarded by an added assertion in `test_ingest_defaults_carry_no_preference`.
-- **No personal data.** **Every test location comes from the synthetic seeded `LOCATIONS` constant** in `tests/conftest.py` (from `fake.city()`, three token-disjoint entries), imported via `from tests.conftest import LOCATIONS` — **never a real place typed inline** (`"London"`/`"Manchester"`/`"Paris"` in the task test blocks below are stand-ins; replace each with `LOCATIONS[0]`/`[1]`/`[2]` when implementing). Because `fake.city()` can be multi-word, assert candidate-2 existence with a **glob** (`"X - Y - *.md"`) or a slug **count/set**, not an exact suffixed filename; seed a specific candidate-2 note via `v._note_name("X - Y", LOCATIONS[i])`. `LOCATIONS[0]`/`[1]`/`[2]` are guaranteed token-disjoint, so they read `DIFFERENT` pairwise.
+- **No personal data.** **Every test location comes from the synthetic seeded `LOCATIONS` constant** in `tests/conftest.py` (from `fake.city()`, three token-disjoint entries), imported via `from tests.conftest import LOCATIONS` — **never a real place typed inline** (`"Palmerburgh"`/`"Manchester"`/`"Paris"` in the task test blocks below are stand-ins; replace each with `LOCATIONS[0]`/`[1]`/`[2]` when implementing). Because `fake.city()` can be multi-word, assert candidate-2 existence with a **glob** (`"X - Y - *.md"`) or a slug **count/set**, not an exact suffixed filename; seed a specific candidate-2 note via `v._note_name("X - Y", LOCATIONS[i])`. `LOCATIONS[0]`/`[1]`/`[2]` are guaranteed token-disjoint, so they read `DIFFERENT` pairwise.
 - **No silent failures.** REFUSE logs, is counted, and is kept out of `seen.db` (retried). The sink guard is a commented per-lead allowlist.
 - **Comments explain *why*.** Match the existing density.
 - **Conventional commits** (`feat(leads):`, `fix(vault):`, `test(vault):`), each ending with the trailer:
@@ -58,7 +58,7 @@ from sluice.core.leads import Lead, same_opportunity, SAME, DIFFERENT, UNKNOWN
 
 def _lead(**kw):
     base = dict(source="b", search="s", title="Analyst", company="Acme",
-                url="https://a/1", location="London")
+                url="https://a/1", location="Palmerburgh")
     base.update(kw)
     return Lead(**base)
 
@@ -71,26 +71,26 @@ def test_matching_nonempty_urls_are_proof_of_same():
 def test_empty_urls_are_never_proof_the_google_trap():
     # Two url-less leads sharing company+title must NOT match on empty urls; defer to location.
     fm = {"url": "", "location": "Manchester"}
-    assert same_opportunity(fm, _lead(url="", location="London"), frozenset()) == DIFFERENT
+    assert same_opportunity(fm, _lead(url="", location="Palmerburgh"), frozenset()) == DIFFERENT
 
 
 def test_defers_to_location_when_urls_do_not_prove():
-    fm = {"url": "https://a/2", "location": "London EC4Y"}         # different url -> not proof
-    assert same_opportunity(fm, _lead(url="https://a/1", location="London"), frozenset()) == SAME  # overlap
+    fm = {"url": "https://a/2", "location": "Palmerburgh ZZ9Z"}         # different url -> not proof
+    assert same_opportunity(fm, _lead(url="https://a/1", location="Palmerburgh"), frozenset()) == SAME  # overlap
     fm2 = {"url": "https://a/2", "location": "Manchester"}
-    assert same_opportunity(fm2, _lead(url="https://a/1", location="London"), frozenset()) == DIFFERENT
+    assert same_opportunity(fm2, _lead(url="https://a/1", location="Palmerburgh"), frozenset()) == DIFFERENT
 
 
 def test_absent_location_is_unknown_never_splits():
     fm = {"url": "https://a/2", "location": ""}
-    assert same_opportunity(fm, _lead(url="https://a/1", location="London"), frozenset()) == UNKNOWN
+    assert same_opportunity(fm, _lead(url="https://a/1", location="Palmerburgh"), frozenset()) == UNKNOWN
 
 
 def test_noise_word_flips_a_verdict():
-    # 'Remote' vs 'London' is DIFFERENT by default; adding 'remote' to noise empties one side -> UNKNOWN.
+    # 'Remote' vs 'Palmerburgh' is DIFFERENT by default; adding 'remote' to noise empties one side -> UNKNOWN.
     fm = {"url": "", "location": "Remote"}
-    assert same_opportunity(fm, _lead(url="", location="London"), frozenset()) == DIFFERENT
-    assert same_opportunity(fm, _lead(url="", location="London"), frozenset({"remote"})) == UNKNOWN
+    assert same_opportunity(fm, _lead(url="", location="Palmerburgh"), frozenset()) == DIFFERENT
+    assert same_opportunity(fm, _lead(url="", location="Palmerburgh"), frozenset({"remote"})) == UNKNOWN
 ```
 
 - [ ] **Step 2: Run — expect fail** (`ImportError: cannot import name 'same_opportunity'`):
@@ -178,7 +178,7 @@ In `sluice.yaml.example`, add near the `locations:` block, commented:
 
 ```yaml
 # Words that decorate a location without locating it, subtracted before comparing two
-# postings for #5's split (e.g. so "Remote" and "London" merge instead of splitting).
+# postings for #5's split (e.g. so "Remote" and "Palmerburgh" merge instead of splitting).
 # Empty by default -> nothing subtracted. Uncomment and edit to taste.
 # location_noise_words:
 #   - remote
@@ -224,7 +224,7 @@ def test_note_name_candidate1_matches_path_for(tmp_path):
 def test_note_name_suffix_appends_sanitized_location(tmp_path):
     v = Vault(str(tmp_path))
     v._name_max_cache = 255
-    assert v._note_name("Acme - Analyst", "London/EC4") == "Acme - Analyst - London-EC4"
+    assert v._note_name("Acme - Analyst", "Palmerburgh/ZZ9") == "Acme - Analyst - Palmerburgh-ZZ9"
 
 
 def test_note_name_bounds_suffix_so_stem_budget_never_negative(tmp_path):
@@ -381,34 +381,34 @@ def _seed_note(tmp_path, name, location="", url=""):
 
 def test_resolve_path_free_candidate1_creates(tmp_path):
     v = Vault(str(tmp_path)); v._name_max_cache = 255
-    path, action = v._resolve_path(_lead(company="X", title="Y", location="London", url="https://a/1"))
+    path, action = v._resolve_path(_lead(company="X", title="Y", location="Palmerburgh", url="https://a/1"))
     assert action == "create" and path.endswith("X - Y.md")
 
 
 def test_resolve_path_same_url_updates(tmp_path):
     v = Vault(str(tmp_path)); v._name_max_cache = 255
     _seed_note(tmp_path, "X - Y", location="Manchester", url="https://a/1")
-    _, action = v._resolve_path(_lead(company="X", title="Y", location="London", url="https://a/1"))
+    _, action = v._resolve_path(_lead(company="X", title="Y", location="Palmerburgh", url="https://a/1"))
     assert action == "update"
 
 
 def test_resolve_path_different_location_advances_to_candidate2_create(tmp_path):
     v = Vault(str(tmp_path)); v._name_max_cache = 255
-    _seed_note(tmp_path, "X - Y", location="London", url="https://a/1")
+    _seed_note(tmp_path, "X - Y", location="Palmerburgh", url="https://a/1")
     path, action = v._resolve_path(_lead(company="X", title="Y", location="Manchester", url="https://a/2"))
     assert action == "create" and path.endswith("X - Y - Manchester.md")
 
 
 def test_resolve_path_absent_location_merges_at_candidate1_never_orphans(tmp_path):
     v = Vault(str(tmp_path)); v._name_max_cache = 255
-    _seed_note(tmp_path, "X - Y", location="London", url="")     # note has a location, lead does not
+    _seed_note(tmp_path, "X - Y", location="Palmerburgh", url="")     # note has a location, lead does not
     _, action = v._resolve_path(_lead(company="X", title="Y", location="", url=""))
     assert action == "merge"
 
 
 def test_resolve_path_refuses_when_frontmatter_contradicts_filename(tmp_path):
     v = Vault(str(tmp_path)); v._name_max_cache = 255
-    _seed_note(tmp_path, "X - Y", location="London", url="")             # candidate 1: DIFFERENT from Manchester
+    _seed_note(tmp_path, "X - Y", location="Palmerburgh", url="")             # candidate 1: DIFFERENT from Manchester
     _seed_note(tmp_path, "X - Y - Manchester", location="Paris", url="") # candidate 2 fm contradicts its filename
     path, action = v._resolve_path(_lead(company="X", title="Y", location="Manchester", url=""))
     assert action == "refuse" and path is None
@@ -482,7 +482,7 @@ MrReasonable <4990954+MrReasonable@users.noreply.github.com>"
 ```python
 def test_upsert_splits_two_cities_into_two_notes(tmp_path):
     v = Vault(str(tmp_path)); v._name_max_cache = 255
-    assert v.upsert(_lead(company="X", title="Y", location="London", url="https://a/1")) == "created"
+    assert v.upsert(_lead(company="X", title="Y", location="Palmerburgh", url="https://a/1")) == "created"
     assert v.upsert(_lead(company="X", title="Y", location="Manchester", url="https://a/2")) == "created"
     names = {p.name for p in _leads_dir(tmp_path).glob("*.md")}
     assert names == {"X - Y.md", "X - Y - Manchester.md"}
@@ -490,7 +490,7 @@ def test_upsert_splits_two_cities_into_two_notes(tmp_path):
 
 def test_upsert_merge_bumps_only_last_seen(tmp_path):
     v = Vault(str(tmp_path)); v._name_max_cache = 255
-    _seed_note(tmp_path, "X - Y", location="London", url="")
+    _seed_note(tmp_path, "X - Y", location="Palmerburgh", url="")
     before = (_leads_dir(tmp_path) / "X - Y.md").read_text()
     assert v.upsert(_lead(company="X", title="Y", location="", url="", last_seen="2026-07-19")) == "merged"
     after = (_leads_dir(tmp_path) / "X - Y.md").read_text()
@@ -504,7 +504,7 @@ def test_upsert_merge_bumps_only_last_seen(tmp_path):
 
 def test_upsert_refuses_and_writes_nothing(tmp_path):
     v = Vault(str(tmp_path)); v._name_max_cache = 255
-    _seed_note(tmp_path, "X - Y", location="London", url="")
+    _seed_note(tmp_path, "X - Y", location="Palmerburgh", url="")
     _seed_note(tmp_path, "X - Y - Manchester", location="Paris", url="")
     before = {p.name for p in _leads_dir(tmp_path).glob("*.md")}
     assert v.upsert(_lead(company="X", title="Y", location="Manchester", url="")) == "refused"
@@ -724,7 +724,7 @@ MrReasonable <4990954+MrReasonable@users.noreply.github.com>"
 **Files:**
 - Modify: `tests/conftest.py` (add `_location_pool`, `LOCATIONS` constant, `locations` fixture)
 - Modify: `tests/conformance/test_store_contract.py` (add probes; source `_lead` location)
-- Modify: `tests/test_vault.py` (source `_lead` location from the constant; drop `location="London"`)
+- Modify: `tests/test_vault.py` (source `_lead` location from the constant; drop `location="Palmerburgh"`)
 - Test: the two files above.
 
 **Interfaces:**
@@ -781,7 +781,7 @@ def test_upsert_return_is_within_the_vocabulary(store_name, tmp_path, monkeypatc
     assert store.upsert(_lead()) in ("created", "updated", "merged", "refused")
 ```
 
-In `tests/test_vault.py`, change the module `_lead` default from `location="London"` to `location=LOCATIONS[0]` (import `from tests.conftest import LOCATIONS`), and update any test that asserted a `London` filename to use `LOCATIONS[0]`.
+In `tests/test_vault.py`, change the module `_lead` default from `location="Palmerburgh"` to `location=LOCATIONS[0]` (import `from tests.conftest import LOCATIONS`), and update any test that asserted a `Palmerburgh` filename to use `LOCATIONS[0]`.
 
 - [ ] **Step 2: Run — expect fail** where the behaviour isn't yet reachable through the store (they should PASS now that Tasks 1–8 landed; if any fail, the failure names a real gap). Run:
 
@@ -827,25 +827,25 @@ def test_noise_word_makes_a_split_merge_end_to_end(tmp_path, monkeypatch):
     plain = store_mod._make(Config()); plain._name_max_cache = 255
     tuned = store_mod._make(Config(location_noise_words=["remote"])); tuned._name_max_cache = 255
     _seed_note(tmp_path, "X - Y", location="Remote", url="")
-    # plain: Remote vs London -> DIFFERENT -> advances -> creates candidate 2
-    assert plain.upsert(_lead(company="X", title="Y", location="London", url="")) == "created"
+    # plain: Remote vs Palmerburgh -> DIFFERENT -> advances -> creates candidate 2
+    assert plain.upsert(_lead(company="X", title="Y", location="Palmerburgh", url="")) == "created"
     # tuned: 'remote' is noise -> the note side empties -> UNKNOWN -> merge at candidate 1
     for f in _leads_dir(tmp_path).glob("X - Y - *.md"):
         f.unlink()
-    assert tuned.upsert(_lead(company="X", title="Y", location="London", url="")) == "merged"
+    assert tuned.upsert(_lead(company="X", title="Y", location="Palmerburgh", url="")) == "merged"
 
 
 def test_accepted_cost_same_location_different_job_reports_updated(tmp_path):
     v = Vault(str(tmp_path)); v._name_max_cache = 255
-    assert v.upsert(_lead(company="X", title="Y", location="London", url="https://a/1")) == "created"
+    assert v.upsert(_lead(company="X", title="Y", location="Palmerburgh", url="https://a/1")) == "created"
     # a genuinely different team, same company+title+location, different url -> SAME -> updated (the documented cost)
-    assert v.upsert(_lead(company="X", title="Y", location="London", url="https://a/2")) == "updated"
+    assert v.upsert(_lead(company="X", title="Y", location="Palmerburgh", url="https://a/2")) == "updated"
     assert len(list(_leads_dir(tmp_path).glob("*.md"))) == 1
 
 
 def test_upsert_is_idempotent_across_three_runs_on_the_slug_set(tmp_path):
     v = Vault(str(tmp_path)); v._name_max_cache = 255
-    lead = _lead(company="X", title="Y", location="London", url="https://a/1")
+    lead = _lead(company="X", title="Y", location="Palmerburgh", url="https://a/1")
     first = None
     for _ in range(3):
         v.upsert(lead)

@@ -16,7 +16,7 @@
 
 - `sluice/` is standard-library only. `jinja2` and `weasyprint` are imported **lazily inside the factory** — the registry must populate without the extras installed.
 - Every renderer is reached **only past the fabrication gate**. No renderer validates. Nothing in this change touches `cv/validate.py`, `cv/compose.py`'s `_RULES`, or the `script` renderer's behaviour (spec §Out of scope).
-- **No personal data** in `sluice/`, `tests/`, or `docs/`. Fixtures use the `Example …` / `example.invalid` family. Do **not** add a bare real place name — use `EXAMPLECITY`. (A bare `LONDON` residual already exists in ~6 test files; do not add to it.)
+- **No personal data** in `sluice/`, `tests/`, or `docs/`. Fixtures use the `Example …` / `example.invalid` family. Do **not** add a bare real place name — use `EXAMPLECITY`. (A bare real-city residual used to exist in several test files; #27 removed the last of it.)
 - **No `pytest.importorskip` in any new test module.** CI installs `[test]`, never `[render]`; an `importorskip` silently skips the test and reads as green. This trap has already cost this repo one live guard.
 - **Run `python -m pytest` before EVERY commit, docs commits included.** A previous session committed a spec alongside tests written under a superseded plan: 3 red.
 - Conventional commits. `feat(cv):`, `fix(cv):`, `docs:`, `chore(deps):` — release-please reads the subjects.

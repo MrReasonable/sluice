@@ -50,7 +50,7 @@ asymmetry.
 place — e.g. `AcmeRemote in <city>` with location `Remote in <city>`". It does not:
 
 ```
-_demash_company('AcmeRemote in London', 'Remote in London')  ->  'Acme'
+_demash_company('AcmeRemote in Palmerburgh', 'Remote in Palmerburgh')  ->  'Acme'
 ```
 
 `endswith` never cared whether the suffix was one word or five, and `tests/test_demash.py:9,13` have
@@ -59,8 +59,8 @@ pinned that exact shape since the initial public release. Location *phrases* are
 What is actually brittle is that the match must be **byte-exact and case-exact**:
 
 ```
-'Acmeremote in london' + 'Remote in London'      -> unchanged   (case differs)
-'AcmeRemote in London' + 'Remote in London, UK'  -> unchanged   (location richer than the jam)
+'Acmeremote in palmerburgh' + 'Remote in Palmerburgh'      -> unchanged   (case differs)
+'AcmeRemote in Palmerburgh' + 'Remote in Palmerburgh, UK'  -> unchanged   (location richer than the jam)
 ```
 
 The second is the plausible real-world bite — the location cell carrying more detail than what got
@@ -95,8 +95,8 @@ otherwise                                     -> UNKNOWN    # never splits
 ```
 
 Rule 2 is keyed on **normalized equality**, and measured against the real corpus it **fires 0 of 33
-same-city re-post pairs** — because real re-posts *overlap* but are never *equal* (`London` vs
-`London EC4Y`). Every one of them falls through to `UNKNOWN`. #5 calls `merged` "the one place the
+same-city re-post pairs** — because real re-posts *overlap* but are never *equal* (`Palmerburgh` vs
+`Palmerburgh ZZ9Z`). Every one of them falls through to `UNKNOWN`. #5 calls `merged` "the one place the
 design knowingly loses data" and says its printed count "is its only signal"; routing 100% of
 ordinary re-posts into that counter destroys the signal. A bool expressing only rule 3 would have
 left rule 2 defeated and the defect invisible.
@@ -176,14 +176,14 @@ Three ways a naive implementation yields a knob that silently does nothing, all 
 
 ```
 noise={'UK'}              -> never matches the token 'uk'                       (case)
-noise={'United Kingdom'}  -> the STRING 'united kingdom' equals no single token  (arity)
+noise={'Allied Brennmark'}  -> the STRING 'allied brennmark' equals no single token  (arity)
 noise='Remote'            -> iterates CHARACTERS: {'r','e','m','o','t'}          (shape)
 ```
 
 The first two fail toward merge — safe, but **silently**, which is the failure class this codebase
 most consistently engineers out. So build the noise token set as
 `{tok for w in noise for tok in _norm_location(w).split()}`; a multi-word entry contributes each of
-its tokens, and `location_noise_words: [United Kingdom, Remote]` works as written.
+its tokens, and `location_noise_words: [Allied Brennmark, Remote]` works as written.
 
 The third is a shape error, not a content error: `location_noise_words: Remote` (a YAML scalar
 instead of a list) is an ordinary user mistake, and iterating it yields single-letter tokens that
@@ -195,7 +195,7 @@ already raises `TypeError`, which is loud, so it needs nothing.)
 
 Produced by `2026-07-16-location-identity-evidence.py`. **Universe**: the 34 distinct non-empty
 `location` values in `tests/fixtures/*/raw.json`; the **25 that name a city** form the pair space.
-Country-only (`UAE`, `India`, `Ukraine`) and arrangement-only (`Remote`) values are excluded — they
+Country-only (`ASR`, `Vesperia`, `Karnovia`) and arrangement-only (`Remote`) values are excluded — they
 denote no city, so "same city" is undefined for them. The city grouping is **assigned by hand** in
 that script: ground truth cannot be derived by the rule under test without begging the question. The
 script raises if a fixture value is missing from its table, so the universe cannot silently drift.
@@ -204,21 +204,21 @@ script raises if a fixture value is missing from its table, so the universe cann
 
 | rule | fails on | outcome |
 |---|---|---|
-| substring containment | `London` / `Londonderry` | merges two genuinely different places |
-| token-disjointness | `London, UK` / `Manchester, UK` | shares the `uk` token → abstains → defeats #5 on any board that suffixes a country |
-| **token-subset** | **15 of 21 same-city London pairs** | **splits real re-posts — rejected** |
-| Jaccard threshold | no threshold exists | `Hybrid work in <city>`/`<city>` scores 0.25, below `London, UK`/`Manchester, UK` at 0.3333 — the orders cross |
+| substring containment | `Palmerburgh` / `Palmerburghton` | merges two genuinely different places |
+| token-disjointness | `Palmerburgh, UK` / `Manchester, UK` | shares the `uk` token → abstains → defeats #5 on any board that suffixes a country |
+| **token-subset** | **15 of 21 same-city Palmerburgh pairs** | **splits real re-posts — rejected** |
+| Jaccard threshold | no threshold exists | `Hybrid work in <city>`/`<city>` scores 0.25, below `Palmerburgh, UK`/`Manchester, UK` at 0.3333 — the orders cross |
 
 **Token-subset was recommended and then retracted.** It survived a hand-built table
-(`London` vs `London, UK`) because those examples are subset-shaped *by construction*. Real board
+(`Palmerburgh` vs `Palmerburgh, UK`) because those examples are subset-shaped *by construction*. Real board
 renderings are not: they are each richly and differently decorated —
 
-```
-'London'                              'London EC4Y'
-'Hybrid work in London'               'London ∙ Choose area'
-'London Area, United Kingdom (Hybrid)'
-'London, England, United Kingdom (Hybrid)'
-'London, England, United Kingdom (Remote)'
+```text
+'Palmerburgh'                              'Palmerburgh ZZ9Z'
+'Hybrid work in Palmerburgh'               'Palmerburgh ∙ Choose area'
+'Palmerburgh Area, Allied Brennmark (Hybrid)'
+'Palmerburgh, Wexmoor, Allied Brennmark (Hybrid)'
+'Palmerburgh, Wexmoor, Allied Brennmark (Remote)'
 ```
 
 — and neither side of most pairs is a subset of the other. Token-subset splits 15 of those 21 pairs.
@@ -236,18 +236,18 @@ varies is decoration. Overlap keys on the signal and ignores what defeated subse
 **0 regressions in every configuration.** The noise list is a pure **precision** knob: on this corpus
 it never converts a `SAME` into a split, it only recovers missed splits.
 
-**The 30 misses are mostly one structural class.** `Abu Dhabi` vs `Dubai` is only 6 of 30. The
-largest is **18 of 30, a Gulf city against London, merging on the single shared token `united`** —
-*United Arab Emirates* against *United Kingdom*:
+**The 30 misses are mostly one structural class.** `Ellery Kestrelburgh` vs `Clarkefurt` is only 6 of 30. The
+largest is **18 of 30, another city against Palmerburgh, merging on the single shared token `allied`** —
+*Allied Sundic Reaches* against *Allied Brennmark*:
 
-```
- 18 merged on ['united']                       <- Gulf city vs London
-  6 merged on ['arab', 'emirates', 'united']   <- the "Abu Dhabi vs Dubai" class
-  5 merged on ['arab', 'emirates', 'uae', 'united']
-  1 merged on ['arabia', 'saudi']
+```text
+ 18 merged on ['allied']                       <- other city vs Palmerburgh
+  6 merged on ['sundic', 'reaches', 'allied']   <- the "Ellery Kestrelburgh vs Clarkefurt" class
+  5 merged on ['sundic', 'reaches', 'asr', 'allied']
+  1 merged on ['thessary', 'norvane']
 ```
 
-This is structural across any two multi-word country names sharing a leading token (UAE / UK / USA),
+This is structural across any two multi-word country names sharing a leading token (ASR / ABM / VSA),
 not a quirk of one pair. It is a **merge**, so nothing is threatened — but it is the cost, and the
 cost table is the one place that must state it.
 
@@ -263,14 +263,14 @@ All verified, none hypothetical. The first four point the safe way; the last thr
 | case | verdict | direction |
 |---|---|---|
 | `York` / `New York` | `SAME` → merge | mis-merge. Acceptable: matches today, needs company *and* title to also match, recoverable. |
-| **`<city> - United Arab Emirates` / `<city>, United Kingdom`** | **`SAME` → merge** | **mis-merge on the bare token `united` — 18 of the 30 misses, the largest class.** Structural for any two multi-word country names sharing a token. Recovered by configuring noise. |
-| `Abu Dhabi` / `Dubai` | `SAME` → merge | mis-merge on the shared country tokens; 6 of 30. Matches today. |
-| `Cambridge, MA` / `Cambridge, UK` | `SAME` → merge | mis-merge. Acceptable. Token-subset got this one *right* — the trade was deliberate; the London corpus is worth more than this case. |
-| `Remote` / `London` | **`DIFFERENT` → split** | **mis-split — regression direction.** Ships as the documented default. Configuring `remote` as noise makes it `UNKNOWN` — an **abstain, not a merge**: subtraction empties one side, and an empty side is `UNKNOWN` by the design table's first row. On the record per the user decision of 2026-07-16. |
+| **`<city A> - Allied Sundic Reaches` / `<city B>, Allied Brennmark`** | **`SAME` → merge** | **mis-merge on the bare token `allied` — 18 of the 30 misses, the largest class.** Structural for any two multi-word country names sharing a token. Recovered by configuring noise. |
+| `Ellery Kestrelburgh` / `Clarkefurt` | `SAME` → merge | mis-merge on the shared country tokens; 6 of 30. Matches today. |
+| `Cambridge, MA` / `Cambridge, UK` | `SAME` → merge | mis-merge. Acceptable. Token-subset got this one *right* — the trade was deliberate; the Palmerburgh corpus is worth more than this case. |
+| `Remote` / `Palmerburgh` | **`DIFFERENT` → split** | **mis-split — regression direction.** Ships as the documented default. Configuring `remote` as noise makes it `UNKNOWN` — an **abstain, not a merge**: subtraction empties one side, and an empty side is `UNKNOWN` by the design table's first row. On the record per the user decision of 2026-07-16. |
 | `København` / `Kobenhavn` | **`DIFFERENT` → split** | **mis-split — regression direction.** `ø` is a distinct letter, not an accented `o`, so NFKD cannot fold it. Rare, unattested in the corpus. Cheap remedy if it ever bites: a ~6-entry transliteration map (`ø→o, æ→ae, ß→ss, ð→d, þ→th, ł→l`). Not built — YAGNI. |
-| `UAE` / `United Arab Emirates - United Arab Emirates` | **`DIFFERENT` → split** | **mis-split — regression direction.** Both strings are attested. An abbreviation and its expansion share no token, so one country splits against itself. **This row is outside the measured pair space**: both values are `NOT_A_CITY` in the evidence script — correct for measuring *city* pairs, but the shipped function has no `NOT_A_CITY` concept and compares whatever a board hands it, so the 30-miss count never saw this class. Recovered like `Remote`: configuring either form as noise empties a side → `UNKNOWN`, an abstain rather than a merge. |
+| `ASR` / `Allied Sundic Reaches - Allied Sundic Reaches` | **`DIFFERENT` → split** | **mis-split — regression direction.** Both strings are attested. An abbreviation and its expansion share no token, so one country splits against itself. **This row is outside the measured pair space**: both values are `NOT_A_CITY` in the evidence script — correct for measuring *city* pairs, but the shipped function has no `NOT_A_CITY` concept and compares whatever a board hands it, so the 30-miss count never saw this class. Recovered like `Remote`: configuring either form as noise empties a side → `UNKNOWN`, an abstain rather than a merge. |
 
-`Remote` / `London` is the one that will be argued in review, so the reasoning is recorded here rather
+`Remote` / `Palmerburgh` is the one that will be argued in review, so the reasoning is recorded here rather
 than left to be re-derived. remoteok and weworkremotely **ship as sources**, so remote-vs-city is a
 shipped configuration, and splitting it by default manufactures a duplicate out of the box.
 
@@ -330,11 +330,13 @@ No place names ship in `sluice/`: no gazetteer, no country list, no transliterat
 is vocabulary-free — it keys on token overlap, not on knowing what a city is. The user's geography
 reaches the code only through `sluice.local.yaml`, exactly like `locations:`.
 
-`tests/fixtures/*/raw.json` already contains real location values (`London EC4Y`, `Abu Dhabi`,
-`Dubai`, `Riyadh`, `Doha`) as captured board payloads, dating to `e94a9f9 Initial public release`.
-This spec adds none, and deliberately refuses to propagate them into `tests/` via a city-grouping
-table — that grouping lives in the evidence script under `docs/`, alongside this prose. Its use of
-the corpus is read-only analysis of already-public data, so marginal disclosure is zero.
+`tests/fixtures/*/raw.json` carries location values in captured board payloads. When this spec was
+written those were REAL captured place names; #27 replaced every one of them with a SYNTHETIC
+stand-in, preserving token structure so the analysis below still holds. The names quoted throughout
+this document (`Palmerburgh ZZ9Z`, `Ellery Kestrelburgh`, `Clarkefurt`, `Marshburgh`,
+`Hensleyfurt`) are those synthetic replacements, not the captured originals. This spec adds none, and deliberately refuses to
+propagate them into `tests/` via a city-grouping table — that grouping lives in the evidence
+script under `docs/`, alongside this prose.
 
 The deferral stands — fixing it means re-capturing every golden fixture and would swamp two pure
 functions — but this spec is the first document to *attribute* that geography to a person ("the
@@ -369,7 +371,8 @@ exactly.
   names. This is the test token-subset fails 15 times, and the reason the rule is what it is.
 - **Genuinely different cities return `DIFFERENT`** — `<city A>` vs `<city B>` sharing no token.
 - **Two multi-word country strings sharing a leading token** — `<city A> - North Clarke Republic` vs
-  `<city B>, North Clarke Kingdom` returns `SAME` at default (the `united`-collision shape, 18 of 30)
+  `<city B>, North Clarke Kingdom` returns `SAME` at default (the same SHAPE as the `allied`
+  collision, 18 of 30 -- here the shared leading tokens are `north clarke`)
   and `DIFFERENT` once the shared tokens are configured as noise.
 - `compare(a, b) == compare(b, a)` — symmetry.
 - `compare(a, a)` is `SAME` **for any `a` with a surviving token** — reflexivity. The qualifier is
@@ -442,7 +445,7 @@ in isolation, because the failure this spec is named after is a mutation list no
    item 8, which cannot see it.
 7. The noise set works with wrong case **and** with a multi-word entry, against a **two-word** region.
    A raw-`noise` implementation turns this red. A bare-`str` noise raises.
-8. The `united`-collision shape returns `SAME` at default and `DIFFERENT` once configured. Dropping
+8. The `allied`-collision shape returns `SAME` at default and `DIFFERENT` once configured. Dropping
    the overlap rule turns this red. *(It does **not** witness the empty-check hoist — both sides keep
    a city token after subtraction, so correct and mutant agree. That claim was in the first draft and
    was false; the witness is item 6.)*
@@ -487,9 +490,10 @@ Contract:
     through `sluice.local.yaml`.
 
     **Illustrative place names in a docstring are permitted — user decision, 2026-07-16.** The
-    `_compare_locations` docstring cites `'London'`/`'London EC4Y'`/`'UK'`/`'United Kingdom'` to show
+    `_compare_locations` docstring cites `'Palmerburgh'`/`'Palmerburgh ZZ9Z'`/`'UK'`/`'Allied Brennmark'` to show
     *why* the rule is overlap and *why* raw noise is inert. The reasoning: `sluice/` already ships
-    `location=London` in neutral example searches (`cord.py:25`, `hackajob.py:16`), so marginal
+    `location=London` in its neutral example searches (each source ships one, and #27 deliberately
+    left them alone: a single ordinary city in an illustrative URL is not the captured SET), so marginal
     disclosure is ~zero; and a comment describing how boards render a city is prose about board
     behaviour, not an expressed preference about which jobs are good — which is the property
     neutrality actually protects.
@@ -516,7 +520,7 @@ Contract:
 - **This ships with no caller.** Two pure functions, three constants, and their tests, consumed by
   #5. Deliberate — it is the point of splitting #6 — and architecturally sound: the functions are
   pure and fully tested, so the tests *are* the caller and nothing defers to integration.
-- **The `united` collision is structural.** Any two multi-word country names sharing a token merge at
+- **The `allied` collision is structural.** Any two multi-word country names sharing a token merge at
   default. Safe direction, recovered by config, but it will recur on any new board that renders
   full country names.
 - **Everything this spec got wrong, it got wrong reaching outside its own two functions.** Round 3

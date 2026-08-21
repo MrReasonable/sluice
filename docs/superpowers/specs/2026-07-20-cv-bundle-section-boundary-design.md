@@ -231,8 +231,8 @@ Two real issues remain, and both are about the *values*, not the shape:
   names against the world; two neutrality review rounds had cleared them as invented precisely
   because they *look* invented. Every fixture company in the touched files moves to the unambiguous
   `Example ...` placeholder family.
-- **A bare location literal.** `LONDON` in `tests/`, which CLAUDE.md forbids regardless of whose city
-  it is. This is the existing #27 class. Locations use `conftest.py`'s `Alfa`/`Bravo`/`Charlie`.
+- **A bare location literal.** A real city name in `tests/`, which CLAUDE.md forbids regardless of
+  whose city it is. This is the existing #27 class. Locations use `conftest.py`'s `Alfa`/`Bravo`/`Charlie`.
 
 The fixture career is rebuilt as one coherent invented developer starting 2015, with contiguous
 non-overlapping tenures — the fixture it replaces had two roles overlapping by five months, which is

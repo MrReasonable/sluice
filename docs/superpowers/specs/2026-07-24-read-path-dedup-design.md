@@ -292,7 +292,7 @@ token relationships `faker` cannot produce (a noise-token pair; `{senior, softwa
 from the faker `titles` pool and mutate it programmatically with a synthetic noise/seniority token, and
 build the company-prefix pair from a faker base plus a synthetic suffix token (`f"{base} Industries"`).
 **Locations, too, are synthetic placeholders** — use conftest's `LOCATIONS` (`Alfa`/`Bravo`/`Charlie`,
-"never a real place"), never `London`/`Paris`, per the no-personal-data rule (DoD-11 permits place words
+"never a real place"), never `Palmerburgh`/`Paris`, per the no-personal-data rule (DoD-11 permits place words
 in a `sluice/` docstring only, not `tests/`). This keeps the seeded-faker mechanism that keeps fixtures
 honest.
 

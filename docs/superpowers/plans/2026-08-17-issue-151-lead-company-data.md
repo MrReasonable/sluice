@@ -322,7 +322,7 @@ Notes an implementer must get right:
   Meridian" must resolve to `"Example Meridian"`, not `"Scale at Example Meridian"`). Do not
   change this to a lazy/non-greedy group — that is a bug, not a simplification.
 - `[^,|/@()\[\]]+?` excludes separator characters from the company segment, so "Engineer at
-  Example Meridian, London" abstains rather than writing a location into `company`.
+  Example Meridian, Palmerburgh" abstains rather than writing a location into `company`.
 - `_is_non_answer` (from Task 1's delegation) must be checked **inside** `_company_from_role`,
   not only at the call site — so "Engineer at Confidential" can never write a deny-listed
   value regardless of where this helper is called from in the future.
