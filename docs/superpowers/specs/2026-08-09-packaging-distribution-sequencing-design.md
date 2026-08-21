@@ -32,7 +32,7 @@ its head at once.
 | 4 | Docker channel | `Dockerfile`, `.dockerignore`, `docker` job — installs the **build job's wheel**, never `pip install job-sluice` from PyPI (that races the `pypi` job) | 2 |
 | 5 | deb/rpm channel | `nfpm.yaml`, `linux-packages` job, release-asset uploads of `.deb`/`.rpm` | 2 |
 | 6 | Homebrew channel | `Formula/job-sluice.rb` template + a bump job that renders it via `brew update-python-resources` and pushes to `MrReasonable/homebrew-tap` (never hand-edited, or the resource tree silently goes stale; the tap repo itself is a manual prerequisite, not part of this PR's diff — see below) | 4 |
-| 7 | Install docs | `docs/INSTALL.md` + README install section | 3, 4, 5, 6 |
+| 7 | Install docs | `docs/INSTALL.md` + README install section | `docs/INSTALL.md`: 3, 4, 5, 6. README install section: 3 alone -- ships before 1.0.0, see Release scope under Manual-prerequisite timing, below. |
 
 PyPI is first among the channels because it's the one mechanism #104 itself calls genuinely
 unproven — Trusted Publishing has never run in this repo — so it gets proven earliest, via a
@@ -58,6 +58,12 @@ asserts the guard rejects it.
 Install docs land **last**, once every channel is real, matching #104's own principle: "written
 alongside the mechanism that makes them true." Documenting a channel before it has shipped a
 real release through it would be asserting something unverified.
+
+**Exception: the README half of PR 7 does not wait for every channel.** The principle above still
+applies -- README's own install-section claims become false the moment 1.0.0 publishes (see
+Release scope under Manual-prerequisite timing, below), so "written alongside the mechanism that
+makes them true" puts that half at PR 3/1.0.0 rather than at PR 7's close. `docs/INSTALL.md`
+still lands last, exactly as stated above.
 
 ## Scope boundary: `claude-cli` Docker Compose service is NOT in #104
 
@@ -115,6 +121,14 @@ publicly visible partially-failed release the moment an ordinary release-please 
 first, which is why both carry an explicit hold instruction above rather than a timing note.
 GHCR visibility is the one genuinely benign case — a late toggle only delays public discovery of
 an already-published image, nothing fails.
+
+**Release scope (decided 2026-08-21).** 1.0.0 ships once the PyPI channel is live -- PR 3
+merged, its manual prerequisites configured, the TestPyPI dry run green. Docker, deb/rpm and
+Homebrew follow afterwards and ship in 1.1.0. The per-channel hold instructions in this
+section apply as written; an earlier draft of PR 3's design proposed holding 1.0.0 until every
+channel was ready, which would have superseded them, and that was withdrawn. One consequence
+for PR 7: README's install claims become false the moment 1.0.0 publishes, so the README half
+of PR 7 is now due BEFORE 1.0.0 rather than after every channel.
 
 ## Testing approach
 
