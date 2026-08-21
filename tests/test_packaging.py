@@ -37,6 +37,12 @@ again, so this states the current order of magnitude rather than a precise figur
 pattern if the exact before/after numbers matter). Every FALSIFY test still builds its
 own MUTATED wheel per test, deliberately UNshared: each mutates a different line and
 must not see another test's mutation.
+
+It has grown once more with #104: the last pair of tests below builds a real SDIST and
+pins its root members, because the PyPI channel makes the sdist public and permanent --
+before it, `build`'s sdist expired with the run artifact in a day and nothing downstream
+read it. So this module no longer gates only "the shipped template reaches a wheel"; it
+gates a second published artefact whose contents nobody can withdraw.
 """
 import dataclasses
 import glob
@@ -747,20 +753,34 @@ def _build_sdist(dest, manifest_text=None):
     so a guard and partner that build from differently-shaped trees prove nothing.
 
     `docs/` is copied too, for the identical reason: MANIFEST.in's own comment asserts that
-    nothing grafts `docs/` and that publishing it would put an unreviewed tree on a permanent
-    index -- a claim this guard cannot falsify unless a `docs/` actually exists in the tree
-    being built. A copy without it would make `graft docs` a no-op (nothing to graft) and
-    leave that assertion in MANIFEST.in's comment untested by anything executable, the same
+    nothing grafts `docs/` and that publishing it would put its partially-covered content on a
+    permanent index -- a claim this guard cannot falsify unless a `docs/` actually exists in
+    the tree being built. A copy without it would make `graft docs` a no-op (nothing to graft)
+    and leave that assertion in MANIFEST.in's comment untested by anything executable, the same
     shape of defect as building without `tests/` above.
+
+    SCOPE, stated because the root-entry equality below reads as though it covered more than
+    it does. This copies exactly `sluice/`, `tests/`, `docs/` and four root files, so the
+    equality CAN falsify a change that ships one of those trees (dropping `prune tests` is the
+    partner test) or that adds/removes a root member. It CANNOT see a tree that is not copied
+    here: a future `graft scripts` or `graft .github` would find nothing to graft and the
+    equality would stay green. That is a note on the boundary, not a live defect -- MANIFEST.in
+    grafts nothing today -- and the fix if either is ever grafted is to copy that tree too.
     """
-    shutil.copytree(f"{ROOT}/sluice", f"{dest}/sluice")
-    shutil.copytree(f"{ROOT}/tests", f"{dest}/tests")
-    shutil.copytree(f"{ROOT}/docs", f"{dest}/docs")
+    for tree in ("sluice", "tests", "docs"):
+        # __pycache__ excluded for parity with `_build_wheel`: without it a developer's warm
+        # caches (~205 files) are copied on every run for a build that never reads them.
+        shutil.copytree(f"{ROOT}/{tree}", f"{dest}/{tree}",
+                        ignore=shutil.ignore_patterns("__pycache__"))
     for named in ("pyproject.toml", "LICENSE", "README.md"):
         shutil.copy(f"{ROOT}/{named}", dest)
     with open(f"{dest}/MANIFEST.in", "w", encoding="utf-8") as f:
         f.write(manifest_text if manifest_text is not None
                 else open(f"{ROOT}/MANIFEST.in", encoding="utf-8").read())
+    # timeout=300: same reasoning as `_build_wheel`'s twin above -- the module docstring
+    # measures a real build at 0.6s, so a five-minute bound costs nothing on a healthy run
+    # and stops a hung build from hanging the whole suite with no output, which is what
+    # `subprocess.run` does by default.
     proc = subprocess.run(
         [sys.executable, "-m", "build", "--sdist", "--no-isolation",
          "--outdir", f"{dest}/out"],
