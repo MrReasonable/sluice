@@ -123,6 +123,15 @@ which this document's own Out list had quoted with the second half dropped, and 
 install docs are now due BEFORE 1.0.0 rather than after every channel (see the sequencing
 revision below), but they are still PR 7's work, not this PR's.
 
+**Amended during this PR's review round: README's PyPI NEGATIONS are in scope after all, and
+only those.** `pyproject.toml` sets `readme = "README.md"`, so README.md IS the distribution's
+`Description` -- verified by building a real sdist and reading `PKG-INFO`, which carried "there
+is no PyPI release yet" and "There is no packaged install yet -- no PyPI release" verbatim. That
+text is permanent in the uploaded metadata of whatever release ships it, and under decision 1
+below that release is 1.0.0, days after this PR. A doc allocated to PR 7 can wait; a false claim
+baked into an artefact nobody can withdraw cannot. The rest of the `## Install` section -- the
+restructuring, `docs/INSTALL.md`, the per-channel instructions -- stays PR 7's, untouched here.
+
 The sdist guard is an addition to what the sequencing spec allocated PR 3, and it is deliberately
 MINIMAL after five reviewers filed seven findings against the draft's more ambitious version. The
 justification for keeping any of it is specific rather than general: PR 3 is what makes the sdist
@@ -568,9 +577,15 @@ Two corrections to the draft fall straight out of that list. It omitted `MANIFES
 one would need a `graft` this design does not specify and does not want. The draft's phrase "ships
 the package, metadata and docs only" is therefore struck: it described an sdist that does not
 exist, and an implementer reading it as a requirement would have added a `graft docs` that
-published 67 files from `docs/superpowers/` -- a tree outside BOTH the neutrality rule (which
-binds `sluice/` and `tests/`) and `tests/test_no_leaked_files.py` (which gates paths, not
-content). A single loose word in a spec is all that separated those two outcomes.
+published `docs/superpowers/` -- a tree outside the neutrality rule (which binds `sluice/` and
+`tests/`), and one `tests/test_no_leaked_files.py` covers only in part. That file DOES sweep
+docs/ content, but reaches exactly two things there: absolute home paths, over every tracked
+file (its `_GATE_PATHSPEC` is empty, which means exactly that), and static content left in
+`docs/**/*.j2` after Jinja and HTML are stripped. Neither reads docs/ PROSE for the employer
+names, locations or contact details the neutrality rule is about, so the tree is partially
+covered rather than reviewed. No count is given here on purpose: a file total in prose goes
+stale silently, and this one already had. A single loose word in a spec is all that separated
+those two outcomes.
 
 **The guard:**
 
