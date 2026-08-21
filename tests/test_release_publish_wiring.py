@@ -29,6 +29,8 @@ full design reasoning.
 """
 import inspect
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
@@ -48,11 +50,20 @@ def _job_directives(path: Path, name: str) -> str:
     a substring test can't be satisfied by prose EXPLAINING a value rather than the value itself
     -- tests/test_ci_wiring.py's own `_job_directives` docstring records this bug having fired
     once already in this exact repo's workflow files.
+
+    The end-boundary class is `[A-Za-z_]`, not `[a-z]`, and that is the same one-character fix
+    `_job_names` carries for the same reason: a job id is a USER-CHOSEN identifier, and GitHub
+    accepts `Sneaky:` and `_sneaky:` as readily as `sneaky:`. Under the narrow class such a job
+    does not TERMINATE the preceding block -- it is absorbed into it, so the block this returns
+    silently spans two jobs and every equality pinned on it reads the wrong text. Contrast
+    `_permissions_block`'s inner boundary, deliberately left `[a-z]`: the keys IT bounds on
+    (`steps:`, `outputs:`, `runs-on:`, ...) are GitHub's own schema names, fixed lowercase and
+    not open to a future author's choice, so widening there would buy nothing.
     """
     text = _text(path)
     start = text.index(f"\n  {name}:\n")
     rest = text[start + 1 :]
-    end = re.search(r"\n  [a-z][\w-]*:\n", rest)
+    end = re.search(r"\n  [A-Za-z_][\w-]*:\n", rest)
     block = rest[: end.start()] if end else rest
     return "\n".join(ln for ln in block.splitlines() if not ln.lstrip().startswith("#"))
 
@@ -84,11 +95,20 @@ def _job_names(path: Path) -> list[str]:
     reason that helper's docstring gives -- and matched at EXACTLY two-space indent, the depth
     only a job key sits at. Job-level keys (`permissions:`, `outputs:`, `steps:`) sit at four,
     steps at six, and a block scalar's body deeper still.
+
+    The leading class is `[A-Za-z_]`, not `[a-z]`, and the one character is the whole point.
+    A GitHub Actions job id may start with a letter of EITHER case or with `_`, so the narrow
+    class this had could not see `Sneaky:` or `_sneaky:` -- and a roster that cannot see a job
+    cannot report it as unexpected. Measured: the round-1 mutant this roster exists to catch (a
+    job carrying `contents: write` plus `packages: write` appended to either file) survived
+    verbatim under those two spellings, one character away from the one it does catch. A
+    roster's failure mode is silence, so its matcher must be at least as permissive as the
+    thing it enumerates.
     """
     text = _text(path)
     body = text[text.index("\njobs:\n") + len("\njobs:\n"):]
     body = "\n".join(ln for ln in body.splitlines() if not ln.lstrip().startswith("#"))
-    return re.findall(r"^  ([a-z][\w-]*):$", body, re.MULTILINE)
+    return re.findall(r"^  ([A-Za-z_][\w-]*):$", body, re.MULTILINE)
 
 
 # The SCOPE half of every permissions guard in this file. Each of those guards is keyed on a
@@ -621,55 +641,165 @@ def test_the_version_stamp_fails_loudly_when_it_matches_nothing():
     assert "sys.exit(" in step
 
 
-def test_the_stamp_is_proven_against_the_built_artefacts():
-    """A successful substitution says the SOURCE changed, not that the BUILD consumed it.
-    They are coupled today by `dynamic = ["version"]` reading `sluice.__version__`, but that
-    coupling is exactly what a packaging change alters unnoticed. This observes the artefact.
+_STAMP_PROOF_STEP = "Prove the stamp reached the artefacts"
 
-    Presence is not enough here either, for exactly the reason the sibling directly above
-    states: a step can be present and INERT, and an assertion that only asks "is it there?"
-    certifies the inert version just as happily. Measured -- rewriting the predicate to
-    `grep -q "."`, which passes for any non-empty dist/ whatever version it holds, left a
-    `"dist/" in step` + `"exit 1" in step` pair fully green.
+# (dist/ filename or None for an empty dist/, must the step pass?, what the case represents).
+# Every FAILING row is a distinct way the stamp can have not taken effect, and each one exists
+# because a specific mutant survives without it -- see the test's docstring for which.
+_STAMP_PROOF_CASES = (
+    ("job_sluice-1.0.0.dev42-py3-none-any.whl", True, "a wheel carrying THIS run's stamp"),
+    ("job_sluice-1.0.0-py3-none-any.whl", False, "an unstamped wheel"),
+    ("job_sluice-1.0.0.dev41-py3-none-any.whl", False, "a wheel stamped for a DIFFERENT run"),
+    (None, False, "an empty dist/"),
+)
 
-    So the assertion is scoped to the ONE line that does the proving, not to the whole step.
-    That scoping is load-bearing rather than tidiness: the diagnostic `echo` beside the
-    matcher repeats `.dev${RUN}` verbatim, so a whole-step `".dev" in step` probe is satisfied
-    by the error MESSAGE while the predicate it describes matches anything at all -- the same
-    "certifies the inert version" defect, one layer further in. The matcher line is identified
-    by `dist/`, which the diagnostic `echo` does NOT contain, so the two cannot be confused.
 
-    `shopt -s nullglob` is pinned as its own assertion because the step matches by SHELL GLOB
-    rather than by `grep`. A bash glob that matches nothing expands to its own literal text
-    unless nullglob is set, so without it `stamped=(dist/*.devN*)` holds ONE element -- the
-    unexpanded pattern -- the count is 1, and the step reports success on an empty dist/.
-    Measured, not reasoned about: run without the `shopt`, the step exits 0 against an empty
-    directory. Losing one line would otherwise turn the proof into precisely the inert step
-    this test's whole docstring is about.
+def _run_block_scalar(path: Path, needle: str) -> str:
+    """The literal body of the `run: |` block scalar on the ONE step whose text holds `needle`.
+
+    Read from the RAW file, NOT through `_step_containing`: that helper strips full-line
+    comments, and a `#` line inside a shell script is CODE, not prose. Executing a body with
+    those lines removed would run something the workflow does not, which is the one thing an
+    executing test may never do -- it would certify a script that exists nowhere.
+
+    Bounded by the file's own step boundary (`\\n      - `, the same idiom `_step_containing`
+    splits on) so a step carrying no `run:` cannot silently borrow the NEXT step's one. The
+    body's own indentation is derived from its first non-blank line rather than assumed to be
+    the key's plus two, and dedented by exactly that -- a block scalar's indentation is
+    whatever its first line sets, and guessing it wrong yields a script bash would reject for
+    reasons that have nothing to do with what is being tested.
     """
-    step = _step_containing(TESTPYPI, "testpypi", "Prove the stamp reached the artefacts")
-    assert "shopt -s nullglob" in step, (
-        "the stamp proof no longer sets nullglob, so a glob matching NOTHING expands to its "
-        "own literal text, the array holds that one element, and the step reports success "
-        "against a dist/ carrying no stamped artefact at all -- present, and inert"
+    text = _text(path)
+    assert text.count(needle) == 1, (
+        f"expected exactly one occurrence of {needle!r} in {path.name}, found "
+        f"{text.count(needle)} -- zero leaves nothing to execute and every assertion over the "
+        f"result vacuous; two makes it ambiguous which step is being run"
     )
-    proof = [ln for ln in step.splitlines() if "dist/" in ln]
-    assert len(proof) == 1, (
-        f"expected exactly one line naming dist/ in the stamp-proof step, found "
-        f"{len(proof)} -- zero means there is nothing left reading the BUILT artefacts, and "
-        f"the assertions below would be vacuous; two makes it ambiguous which line is being "
-        f"pinned. Found: {proof}"
+    region = text[text.index(needle):]
+    boundary = re.search(r"\n      - ", region)
+    if boundary:
+        region = region[: boundary.start()]
+    match = re.search(r"\n( +)run: \|\n", region)
+    assert match, (
+        f"the step containing {needle!r} in {path.name} no longer carries a `run: |` block "
+        f"scalar, so there is no script here to execute"
     )
-    assert re.search(r'\.dev"?\$\{RUN\}"?', proof[0]), (
-        f"the stamp proof no longer matches this run's own `.dev` marker, so it passes for "
-        f"any non-empty dist/ whatever version it holds -- present, and inert: {proof[0]!r}"
+    key_indent = match.group(1)
+    lines = region[match.end():].splitlines()
+    first = next((ln for ln in lines if ln.strip()), None)
+    assert first is not None, f"the `run: |` block scalar for {needle!r} in {path.name} is empty"
+    body_indent = first[: len(first) - len(first.lstrip())]
+    assert len(body_indent) > len(key_indent), (
+        f"the `run: |` body for {needle!r} in {path.name} is not indented past its own key, so "
+        f"nothing here is a block scalar body: {first!r}"
     )
-    assert "exit 1" in step, (
-        "the stamp proof no longer fails the job when the marker is absent, so the dispatch "
-        "goes green having uploaded an unstamped (and therefore already-present, and "
-        "therefore silently skipped) artefact"
-    )
+    body = []
+    for line in lines:
+        if not line.strip():
+            body.append("")
+        elif line.startswith(body_indent):
+            body.append(line[len(body_indent):])
+        else:
+            break
+    return "\n".join(body) + "\n"
 
+
+def test_the_stamp_proof_actually_refuses_a_dist_the_stamp_never_reached(tmp_path):
+    """The stamp proof is EXECUTED here against constructed `dist/` directories, not read.
+
+    A successful substitution says the SOURCE changed, not that the BUILD consumed it. They
+    are coupled today by `dynamic = ["version"]` reading `sluice.__version__`, but that
+    coupling is exactly what a packaging change alters unnoticed, so the workflow observes the
+    artefact -- and this test observes the workflow OBSERVING it.
+
+    WHY EXECUTION RATHER THAN PATTERN-MATCHING, which is what this replaced. A step can be
+    present and INERT, and a token probe certifies the inert version just as happily as the
+    working one. That is not a hypothetical: the token probes here pinned `shopt -s nullglob`,
+    exactly one `dist/` line, that line matching `.dev${RUN}`, and `exit 1` in the step -- and
+    never the comparison those four exist to serve. Measured on the real file, all three of
+    these left the whole module GREEN:
+
+    - `-eq 0` -> `-ne 0`: a perfectly INVERTED gate. Run for real it exits 1 on a correctly
+      stamped `dist/` and 0 on an unstamped one.
+    - `-eq 0` -> `-lt 0` (never true): fully inert. Exits 0 on stamped, unstamped and empty
+      alike, the upload proceeds, `skip-existing: true` swallows TestPyPI's duplicate
+      rejection, and the dispatch is green having proved nothing.
+    - `-eq 0` -> `-gt 99999`: the same, by another spelling.
+
+    No count of token probes closes that class, because the defect is that a token is not a
+    behaviour. Running the script is the only assertion that binds the comparison.
+
+    WHAT EACH ROW WITNESSES. The unstamped and empty rows also kill deleting `shopt -s
+    nullglob`: without it a glob matching nothing expands to its own literal text, the array
+    holds that one element, the count is 1, and the step reports success against a `dist/`
+    carrying no stamped artefact at all. The `.dev41` row is the one that binds `${RUN}`
+    itself -- without it a predicate widened to `dist/*.dev*` passes every remaining row while
+    accepting an artefact stamped for some other run. The stamped row is the only one that can
+    catch an inverted or unconditionally-failing gate.
+
+    HERMETIC BY CONSTRUCTION, not by assertion. `tmp_path`, an explicit `bash` (never the
+    ambient `$SHELL`), and an environment of exactly `RUN` and an EMPTY `PATH`. The empty PATH
+    is the load-bearing half: the repo's session-wide `_forbid_dns` fixture patches
+    `socket.getaddrinfo` IN THIS PROCESS and a subprocess inherits none of it, so hermeticity
+    has to come from somewhere else. With no PATH, bash can execute nothing but its own
+    builtins -- `shopt`, `[`, `echo`, `exit` and globbing, which is the entire body today. A
+    future body reaching for `curl`, `pip` or `python` fails LOUDLY with "No such file or
+    directory" rather than quietly acquiring network access inside the test suite.
+    """
+    body = _run_block_scalar(TESTPYPI, _STAMP_PROOF_STEP)
+    assert body.strip(), "the stamp-proof step's script is empty; there is nothing to execute"
+    bash = shutil.which("bash")
+    assert bash, "bash is required to execute the workflow step this test pins"
+
+    for index, (filename, should_pass, description) in enumerate(_STAMP_PROOF_CASES):
+        workdir = tmp_path / f"case{index}"
+        (workdir / "dist").mkdir(parents=True)
+        if filename is not None:
+            (workdir / "dist" / filename).write_bytes(b"")
+        # `-e` mirrors the shell GitHub Actions runs a `run:` step under (`bash -e {0}`), so
+        # the exit status observed here is the one that would decide the real job.
+        proc = subprocess.run(
+            [bash, "-e", "-c", body],
+            cwd=workdir, env={"RUN": "42", "PATH": ""},
+            capture_output=True, text=True, timeout=60,
+        )
+        output = proc.stdout + proc.stderr
+        if should_pass:
+            assert proc.returncode == 0, (
+                f"the stamp proof rejects {description} (exit {proc.returncode}). A gate that "
+                f"fails on a correctly stamped dist/ blocks every dispatch; an INVERTED one "
+                f"(`-ne 0`) fails exactly here. Output: {output!r}"
+            )
+        else:
+            assert proc.returncode != 0, (
+                f"the stamp proof ACCEPTS {description}, so the dispatch would upload an "
+                f"artefact the stamp never reached -- already present on TestPyPI, silently "
+                f"skipped by `skip-existing: true`, and green having proved nothing. "
+                f"Output: {output!r}"
+            )
+            assert output.strip(), (
+                f"the stamp proof rejects {description} but says NOTHING about why. A bare "
+                f"non-zero exit gives a human staring at a failed dispatch no annotation to "
+                f"read, which is the difference between a diagnosis and a mystery"
+            )
+
+
+def test_the_stamp_proof_is_given_this_run_s_number_by_the_workflow():
+    """The one thing executing the step CANNOT show, kept as a text assertion for that reason.
+
+    The test above supplies `RUN=42` itself, so it proves what the script does with a run
+    number and nothing at all about where a real dispatch gets one. Drop this `env:` and
+    `${RUN}` expands to the empty string: the predicate becomes `dist/*.dev*`, which accepts
+    an artefact stamped for any run whatsoever -- and the stamp step above, reading the same
+    variable, would have died first with a KeyError. Pinned on the value as well as the key,
+    because a `RUN` sourced from anything other than `github.run_number` is not the number the
+    stamp used.
+    """
+    step = _step_containing(TESTPYPI, "testpypi", _STAMP_PROOF_STEP)
+    assert re.search(r"^\s*RUN: \$\{\{ github\.run_number \}\}[ \t]*$", step, re.MULTILINE), (
+        "the stamp-proof step no longer receives RUN from github.run_number, so the marker it "
+        "looks for is not the one the stamp wrote"
+    )
 
 def _artifact_retention_days(path: Path, job: str) -> int:
     """The `retention-days:` value on `job`'s upload-artifact step, as an int."""
@@ -847,7 +977,7 @@ _MODULE_HELPER_NAMES = {
     "_text", "_job_directives", "_step_containing", "_permissions_block",
     "_workflow_wide_directives", "_post_checkout_run_steps", "_run_commands",
     "_publish_action_ref", "_python_version", "_job_names", "_artifact_retention_days",
-    "_roster_failure",
+    "_roster_failure", "_run_block_scalar",
 }
 
 
