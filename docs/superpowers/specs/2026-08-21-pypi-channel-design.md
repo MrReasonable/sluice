@@ -647,8 +647,10 @@ the added key is the violation itself.
 Two standing requirements on every row: confirm the named test reddens **by node id**, and
 confirm no PRE-EXISTING test catches the same mutant -- a mutation killed by an existing test
 witnesses nothing about a new one, and the coarse witness for assertion 1 is already killed by
-three of them. Content-address the caches first (`python -m compileall -q -f
---invalidation-mode checked-hash sluice tests scripts`), since these are size-preserving edits.
+three of them. The stale-bytecode hazard does NOT apply to these witnesses: every mutant here is in a YAML
+workflow or `MANIFEST.in`, neither of which has a `.pyc`. `compileall --invalidation-mode
+checked-hash` is for mutants in `sluice/` or `scripts/`; running it here would be a step that
+cannot help, which teaches a false lesson about when it is needed.
 
 ## Manual prerequisites (repo owner only)
 
