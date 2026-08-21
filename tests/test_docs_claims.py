@@ -234,8 +234,13 @@ _RETIRED_CONFIG = [
 # narrows around (CodeRabbit, #171). The leading `(?:[^\w\s]\s*)*` admits release-please's
 # own decoration (it emits `### \u26a0 BREAKING CHANGES`) while still refusing any WORD before
 # the phrase; the trailing `#*` admits closed-ATX style.
+# `[ \t]`, never `\s`: under re.MULTILINE `^`/`$` bind to line boundaries but `\s` still matches
+# a NEWLINE, so `\s+` let the "heading" span lines -- a bare `###` followed by a `BREAKING
+# CHANGES` paragraph is two ordinary blocks in Markdown, not a heading, and it exempted
+# everything after it (CodeRabbit, #171). Third narrowing of this pattern, each one still a
+# little wider than the failure it was written for.
 _BREAKING_HEADING = re.compile(
-    r"^#{2,6}\s+(?:[^\w\s]\s*)*BREAKING CHANGES\s*#*\s*$", re.MULTILINE)
+    r"^#{2,6}[ \t]+(?:[^\w\s][ \t]*)*BREAKING CHANGES[ \t]*#*[ \t]*$", re.MULTILINE)
 
 
 def _without_breaking_blocks(text):
@@ -323,6 +328,15 @@ def test_only_an_exact_breaking_heading_is_stripped():
         body = f"{heading}\n\nSet cv.name: \"Ada Example\" here.\n"
         assert "Ada Example" in _without_breaking_blocks(body), (
             f"{heading!r} is not an exact BREAKING CHANGES heading and must NOT exempt its body"
+        )
+
+    # A heading marker must live on ONE physical line. `\s` matched newlines, so `###` alone
+    # followed by a `BREAKING CHANGES` paragraph -- two separate blocks in Markdown, no heading
+    # anywhere -- swallowed everything after it.
+    for malformed in ("###\nBREAKING CHANGES", "###\n\nBREAKING CHANGES", "##\n  BREAKING CHANGES"):
+        body = f"{malformed}\n\nSet cv.name: \"Ada Example\" here.\n"
+        assert "Ada Example" in _without_breaking_blocks(body), (
+            f"{malformed!r} spans a newline and is not a heading -- it must NOT exempt its body"
         )
 
 
