@@ -43,15 +43,30 @@ jobs:
       - run: pip install --require-hashes -r .github/build-requirements.txt
       - run: python -m build --no-isolation
       - run: twine check --strict dist/*
+      # `shopt -s nullglob` is load-bearing, not tidiness: WITHOUT it a glob that matches
+      # nothing expands to its own literal text, the array holds that one element, the count
+      # is 1, and the step passes having proven the opposite of what it claims. That is the
+      # same present-and-inert failure the stamp itself exists to remove, so it is pinned by
+      # the test beside the pattern, not left to a reader to notice.
       - name: Prove the stamp reached the artefacts before anything is uploaded
         run: |
-          ls dist/ | grep -q "\.dev${RUN}" || {
+          shopt -s nullglob
+          stamped=(dist/*.dev"${RUN}"*)
+          if [ ${#stamped[@]} -eq 0 ]; then
             echo "::error::no built artefact carries .dev${RUN}; the stamp did not take effect"
             exit 1
-          }
+          fi
         env:
           RUN: ${{ github.run_number }}
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           repository-url: https://test.pypi.org/legacy/
+          # The asymmetry with `release-please.yml`'s `pypi` job -- where a duplicate upload
+          # must FAIL -- is deliberate, and so is its limit. `github.run_number` is STABLE
+          # across re-runs of the same run, so re-running this dispatch rebuilds the SAME
+          # `.devN` version, TestPyPI rejects it as already present, and this input swallows
+          # that rejection so the re-run reports green. A green re-run therefore proves the
+          # build and the stamp, and proves NOTHING about index acceptance -- only a fresh
+          # dispatch (a new run number) does that. Belt-and-braces on a first dispatch; the
+          # version stamp is what actually makes repeat dispatches work.
           skip-existing: true

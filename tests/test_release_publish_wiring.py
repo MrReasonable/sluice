@@ -502,26 +502,36 @@ def test_the_stamp_is_proven_against_the_built_artefacts():
     `"dist/" in step` + `"exit 1" in step` pair fully green.
 
     So the assertion is scoped to the ONE line that does the proving, not to the whole step.
-    That scoping is load-bearing rather than tidiness: the diagnostic `echo` beside the grep
-    repeats `.dev${RUN}` verbatim, so a whole-step `".dev" in step` probe is satisfied by the
-    error MESSAGE while the predicate it describes matches anything at all -- the same
-    "certifies the inert version" defect, one layer further in.
+    That scoping is load-bearing rather than tidiness: the diagnostic `echo` beside the
+    matcher repeats `.dev${RUN}` verbatim, so a whole-step `".dev" in step` probe is satisfied
+    by the error MESSAGE while the predicate it describes matches anything at all -- the same
+    "certifies the inert version" defect, one layer further in. The matcher line is identified
+    by `dist/`, which the diagnostic `echo` does NOT contain, so the two cannot be confused.
+
+    `shopt -s nullglob` is pinned as its own assertion because the step matches by SHELL GLOB
+    rather than by `grep`. A bash glob that matches nothing expands to its own literal text
+    unless nullglob is set, so without it `stamped=(dist/*.devN*)` holds ONE element -- the
+    unexpanded pattern -- the count is 1, and the step reports success on an empty dist/.
+    Measured, not reasoned about: run without the `shopt`, the step exits 0 against an empty
+    directory. Losing one line would otherwise turn the proof into precisely the inert step
+    this test's whole docstring is about.
     """
     step = _step_containing(TESTPYPI, "testpypi", "Prove the stamp reached the artefacts")
-    proof = [ln for ln in step.splitlines() if "grep" in ln]
+    assert "shopt -s nullglob" in step, (
+        "the stamp proof no longer sets nullglob, so a glob matching NOTHING expands to its "
+        "own literal text, the array holds that one element, and the step reports success "
+        "against a dist/ carrying no stamped artefact at all -- present, and inert"
+    )
+    proof = [ln for ln in step.splitlines() if "dist/" in ln]
     assert len(proof) == 1, (
-        f"expected exactly one grep line in the stamp-proof step, found {len(proof)} -- "
-        f"zero means there is nothing left proving anything, and the assertions below would "
-        f"be vacuous; two makes it ambiguous which line is being pinned"
+        f"expected exactly one line naming dist/ in the stamp-proof step, found "
+        f"{len(proof)} -- zero means there is nothing left reading the BUILT artefacts, and "
+        f"the assertions below would be vacuous; two makes it ambiguous which line is being "
+        f"pinned. Found: {proof}"
     )
-    assert "dist/" in proof[0], (
-        f"the stamp proof no longer reads the BUILT artefacts in dist/, so it cannot "
-        f"observe whether the build consumed the stamp: {proof[0]!r}"
-    )
-    assert ".dev${RUN}" in proof[0], (
-        f"the stamp proof no longer greps for this run's own `.dev` marker, so it passes "
-        f"for any non-empty dist/ whatever version it holds -- present, and inert: "
-        f"{proof[0]!r}"
+    assert re.search(r'\.dev"?\$\{RUN\}"?', proof[0]), (
+        f"the stamp proof no longer matches this run's own `.dev` marker, so it passes for "
+        f"any non-empty dist/ whatever version it holds -- present, and inert: {proof[0]!r}"
     )
     assert "exit 1" in step, (
         "the stamp proof no longer fails the job when the marker is absent, so the dispatch "
