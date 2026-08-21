@@ -281,3 +281,52 @@ def test_workflow_wide_permissions_stay_read_only():
         f"job in this file, including release-please's own App-token-minting job. Got: "
         f"{perm_block!r}"
     )
+
+
+def test_pypi_job_is_gated_on_release_created():
+    assert (
+        "if: success() && needs.release-please.outputs.release_created == 'true'"
+        in _job_directives("pypi")
+    )
+
+
+def test_pypi_job_needs_release_please_and_build_exactly():
+    match = re.search(r"\n    needs: (.+)\n", _job_directives("pypi"))
+    assert match, "the 'pypi' job declares no `needs:`"
+    assert match.group(1).strip() == "[release-please, build]"
+
+
+def test_pypi_job_declares_the_pypi_environment():
+    assert "environment: pypi" in _job_directives("pypi")
+
+
+def test_pypi_job_holds_id_token_and_no_contents_key_at_all():
+    """The ABSENCE of `contents:` is what makes the exhaustive-block reasoning bite.
+
+    A job-level `permissions:` block is exhaustive, not additive: every permission not
+    named becomes `none`. So `contents: read` appearing here would SILENTLY widen the
+    publishing job beyond what it needs, and asserting only "no contents: write" would
+    accept it. Resolved through `_permissions_block` rather than an `in` probe over the
+    job text, because a probe cannot tell a permission from a mention of one.
+    """
+    block = _permissions_block("pypi")
+    assert "id-token: write" in block
+    assert "contents:" not in block
+
+
+def test_pypi_publishes_to_real_pypi_by_naming_no_repository_url():
+    """Paired with the TestPyPI half in Task 3. Together they stop the two mixups with
+    real consequences: a dry run reaching production PyPI, or a real release going to
+    TestPyPI and never publishing at all."""
+    step = _step_containing("pypi", "gh-action-pypi-publish")
+    assert "repository-url" not in step
+
+
+def test_pypi_does_not_skip_existing():
+    """A duplicate upload must fail loudly. A release that silently no-ops its own
+    publish reports green while shipping nothing -- the quiet-wrong-default bug class
+    aimed at the one job whose entire purpose is the side effect. The FORBIDDEN VALUE is
+    named rather than the permitted one: omitting the input (the `false` default) is what
+    this design does, and stating `false` explicitly would also be fine."""
+    step = _step_containing("pypi", "gh-action-pypi-publish")
+    assert "skip-existing: true" not in step
