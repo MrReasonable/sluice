@@ -438,15 +438,20 @@ A separate file means the dry run's build steps are a COPY of the release path's
 stop matching the thing it claims to prove without anything going red. That is the standing
 failure shape in this repo -- a guard that certifies a mechanism it no longer touches.
 
-So the wiring test reads the build sequence from BOTH files and asserts they agree on four
-values: the `pip install --require-hashes -r .github/build-requirements.txt` install, `python -m
-build --no-isolation`, `twine check --strict`, and the `setup-python` `python-version`. Both ends
-read from the files, neither hardcoded -- the same "both ends read from the file" idiom
+So the wiring test reads the build sequence from BOTH files and checks five things agree: the
+`pip install --require-hashes -r .github/build-requirements.txt` install, `python -m build
+--no-isolation`, and `twine check --strict` are each checked for EXACT membership in both files'
+extracted run-command sets -- a membership probe, not an equality between two extractions. The
+`setup-python` `python-version` and the `pypa/gh-action-pypi-publish` ref are the two genuine
+equalities: each is extracted once per file and the two extractions compared directly. The
+publish-action ref is the fifth value, added after this section was first drafted, so a version
+bump landing on one file and not the other has something to catch it. Both ends read from the
+files, neither hardcoded -- the same "both ends read from the file" idiom
 `test_release_publish_wiring.py` already uses to compare the artifact name across `build` and
 `attest`, and `test_ci_wiring.py` uses for the `npm ci` flags.
 
-**The comparison must be guarded against its own vacuity, and the reviewed draft was not.** Four
-equality checks between two extractions pass trivially when both extractions fail: `None ==
+**The comparison must be guarded against its own vacuity, and the reviewed draft was not.** An
+equality check between two extractions passes trivially when both extractions fail: `None ==
 None`, or `"" == ""`, is green while the two files build differently -- the precise `all([])`
 shape CLAUDE.md's guard-test section catalogues, reproduced in the one assertion whose whole
 purpose is catching drift. Both precedents cited above are guarded and the draft copied the idiom
@@ -455,18 +460,25 @@ without the guard: `test_the_documented_install_command_is_the_one_ci_runs` carr
 naming this failure mode, and `test_build_and_attest_agree_on_the_artifact_name` carries `assert
 upload_name and download_name` plus a hardcoded `== "dist"` anchor.
 
-So the pin asserts, BEFORE comparing:
+So the pin's non-vacuity guard differs by check, rather than being one shared bullet across all
+five:
 
-- each of the four extracted values is non-empty, with a message naming the file and the key whose
-  match failed -- so "the helper stopped matching" reddens as itself rather than as a pass; and
+- the three build-command checks guard themselves structurally: EXACT membership in an extracted
+  set is `False` when that set is empty, so a broken extraction cannot make the two sides agree by
+  both having found nothing -- the same shape as the hardcoded `"dist"` anchor below;
+- the `python-version` and publish-action-ref extractions each assert their own match before
+  returning, naming the file and the job whose extraction failed, so "the helper stopped matching"
+  reddens as itself rather than as a pass; and
 - the number of `run:` steps in each POST-CHECKOUT region equals a pinned count: **three** in
   `release-please.yml`'s `build` job (install, build, `twine check`), and **five** in
-  `testpypi.yml`'s job (version stamp, install, build, `twine check`, stamp-proof). The counts
-  differ because `testpypi.yml` legitimately carries the two steps that make a dispatch prove
-  something, and pinning them separately is what stops an unexplained extra step -- or a silently
-  dropped one -- reading as agreement. The branch guard sits BEFORE checkout and is outside the
-  region by construction, so the two regions describe the same thing. Both counts were
-  independently recounted against the real `build` job and this document's own proposed YAML.
+  `testpypi.yml`'s job (version stamp, install, build, `twine check`, stamp-proof) -- a SCOPE
+  assertion, not an equality between the two counts: they are deliberately different, because
+  `testpypi.yml` legitimately carries the two extra steps that make a dispatch prove something, and
+  pinning them separately, rather than comparing them to each other, is what stops an unexplained
+  extra step -- or a silently dropped one -- reading as agreement. The branch guard sits BEFORE
+  checkout and is outside the region by construction, so the two regions describe the same thing.
+  Both counts were independently recounted against the real `build` job and this document's own
+  proposed YAML.
 
 `test_build_and_attest_agree_on_the_artifact_name`'s hardcoded `"dist"` anchor is the model for
 the first bullet, and the reviewed draft mischaracterised that anchor as redundant duplication
@@ -686,13 +698,16 @@ diagnose it, fix a manual pypi.org configuration step, and re-run -- which 24 ho
 Raised from 1 day for exactly this reason: PR 2 set it when the artifact fed only `attest`,
 minutes later in the same run, and #104 made it the input to an irreversible publish.
 
-**`gh release upload` is not idempotent, and it uploads assets sequentially.** The wheel and the
-sdist go up one at a time, so a network failure between them leaves the release with ONE asset
-attached. The retry then fails hard on the one already there -- deliberately, since the step
-carries no `--clobber` (see `release-assets` above: an asset that already exists means something
-already uploaded, which should surface rather than be silently overwritten). Recovery is manual:
-delete the attached asset from the release, then re-run the job. Worth knowing before it happens,
-because the error names the existing asset rather than the interrupted upload.
+**`gh release upload` is not idempotent, and it is not atomic across assets.** Verified against
+`gh` v2.97.0's own source, the version installed here (`pkg/cmd/release/upload/upload.go` sets
+`opts.Concurrency = 5` and hands the wheel and the sdist to `shared.ConcurrentUpload`, which runs
+them through an `errgroup` -- CONCURRENTLY, not one at a time). Concurrency is not a rollback,
+though: a failure that hits one asset after the other has already landed leaves the release with
+that ONE asset attached. The retry then fails hard on the one already there -- deliberately, since
+the step carries no `--clobber` (see `release-assets` above: an asset that already exists means
+something already uploaded, which should surface rather than be silently overwritten). Recovery is
+manual: delete the attached asset from the release, then re-run the job. Worth knowing before it
+happens, because the error names the existing asset rather than the interrupted upload.
 
 ## Revises the sequencing spec's release plan, and RESTORES its per-channel holds
 
