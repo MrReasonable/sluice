@@ -7,11 +7,12 @@
   separate file rather than a job in the first, since it builds from whatever ref it was
   dispatched from rather than release-please's tagged sha, and publishes to a different index.
 
-All five module-level helpers (`_text`, `_job_directives`, `_step_containing`,
-`_permissions_block`, `_workflow_wide_directives`) take the target file's `Path` as their FIRST,
-REQUIRED argument -- required rather than defaulted to either file, because the two workflows'
-workflow-wide `permissions:` blocks are byte-identical, so a defaulted/forgotten argument would
-silently read the wrong file and still pass.
+EVERY module-level helper here takes the target file's `Path` as its FIRST, REQUIRED argument
+-- required rather than defaulted to either file, because the two workflows' workflow-wide
+`permissions:` blocks are byte-identical, so a defaulted/forgotten argument would silently read
+the wrong file and still pass. Deliberately no count and no roster: this sentence used to name
+five helpers by hand, and had gone stale two commits later in this same branch (seven, then
+nine) without anything going red -- the standing hazard with a number in prose.
 
 Text-matching, not a YAML parse -- pyyaml is a guarded optional import in sluice/ (CLAUDE.md's
 stdlib-only rule), so a test needing it could skip itself into uselessness on a bare install.
@@ -344,9 +345,16 @@ def test_pypi_job_holds_id_token_and_no_contents_key_at_all():
     accept it. Resolved through `_permissions_block` rather than an `in` probe over the
     job text, because a probe cannot tell a permission from a mention of one.
     """
-    block = _permissions_block(RELEASE_PLEASE, "pypi")
-    assert "id-token: write" in block
-    assert "contents:" not in block
+    assert _permissions_block(RELEASE_PLEASE, "pypi") == (
+        "    permissions:\n      id-token: write"
+    ), (
+        "pypi's permissions must be EXACTLY `id-token: write` -- one line, because the "
+        "absence of every other key is the claim. An `in`/`not in` probe over individual "
+        "names is what `_permissions_block`'s own docstring exists to rule out: it lets an "
+        "unnamed THIRD permission (`packages: write` is the named example, and PR 4 adds "
+        "exactly that key to this same file) slip into the narrowest and most dangerous job "
+        "here unnoticed -- measured green before this was tightened"
+    )
 
 
 def test_pypi_publishes_to_real_pypi_by_naming_no_repository_url():
@@ -382,9 +390,15 @@ def test_release_assets_job_is_gated_on_release_created():
 
 
 def test_release_assets_holds_contents_write_and_no_id_token():
-    block = _permissions_block(RELEASE_PLEASE, "release-assets")
-    assert "contents: write" in block
-    assert "id-token:" not in block
+    assert _permissions_block(RELEASE_PLEASE, "release-assets") == (
+        "    permissions:\n      contents: write"
+    ), (
+        "release-assets' permissions must be EXACTLY `contents: write` -- one line, because "
+        "a job-level block is exhaustive and the absence of every other key is the claim. "
+        "An `in`/`not in` probe over individual names accepts an unnamed THIRD permission "
+        "(e.g. `packages: write`, which PR 4 adds to this same file), which is the gap "
+        "`_permissions_block`'s own docstring was written to close"
+    )
 
 
 def test_release_assets_upload_names_both_a_tag_and_a_repository():
@@ -478,10 +492,41 @@ def test_the_version_stamp_fails_loudly_when_it_matches_nothing():
 def test_the_stamp_is_proven_against_the_built_artefacts():
     """A successful substitution says the SOURCE changed, not that the BUILD consumed it.
     They are coupled today by `dynamic = ["version"]` reading `sluice.__version__`, but that
-    coupling is exactly what a packaging change alters unnoticed. This observes the artefact."""
+    coupling is exactly what a packaging change alters unnoticed. This observes the artefact.
+
+    Presence is not enough here either, for exactly the reason the sibling directly above
+    states: a step can be present and INERT, and an assertion that only asks "is it there?"
+    certifies the inert version just as happily. Measured -- rewriting the predicate to
+    `grep -q "."`, which passes for any non-empty dist/ whatever version it holds, left a
+    `"dist/" in step` + `"exit 1" in step` pair fully green.
+
+    So the assertion is scoped to the ONE line that does the proving, not to the whole step.
+    That scoping is load-bearing rather than tidiness: the diagnostic `echo` beside the grep
+    repeats `.dev${RUN}` verbatim, so a whole-step `".dev" in step` probe is satisfied by the
+    error MESSAGE while the predicate it describes matches anything at all -- the same
+    "certifies the inert version" defect, one layer further in.
+    """
     step = _step_containing(TESTPYPI, "testpypi", "Prove the stamp reached the artefacts")
-    assert "dist/" in step
-    assert "exit 1" in step
+    proof = [ln for ln in step.splitlines() if "grep" in ln]
+    assert len(proof) == 1, (
+        f"expected exactly one grep line in the stamp-proof step, found {len(proof)} -- "
+        f"zero means there is nothing left proving anything, and the assertions below would "
+        f"be vacuous; two makes it ambiguous which line is being pinned"
+    )
+    assert "dist/" in proof[0], (
+        f"the stamp proof no longer reads the BUILT artefacts in dist/, so it cannot "
+        f"observe whether the build consumed the stamp: {proof[0]!r}"
+    )
+    assert ".dev${RUN}" in proof[0], (
+        f"the stamp proof no longer greps for this run's own `.dev` marker, so it passes "
+        f"for any non-empty dist/ whatever version it holds -- present, and inert: "
+        f"{proof[0]!r}"
+    )
+    assert "exit 1" in step, (
+        "the stamp proof no longer fails the job when the marker is absent, so the dispatch "
+        "goes green having uploaded an unstamped (and therefore already-present, and "
+        "therefore silently skipped) artefact"
+    )
 
 
 _BUILD_COMMANDS = (
@@ -492,7 +537,16 @@ _BUILD_COMMANDS = (
 
 
 def _post_checkout_run_steps(path: Path, job: str) -> list[str]:
-    """Every `run:` step of `job` at or after its `actions/checkout` step.
+    """Every step of `job` at or after its `actions/checkout` step that carries a `run:`.
+
+    Split on the file's OWN step boundary -- the same `\n(?=      - )` idiom
+    `_step_containing` uses -- and then ask each resulting PART whether a `run:` appears
+    anywhere in it. The bespoke per-step regex this replaces (`- ` then an optional
+    `name:` line then `run:`) could not bind across an intervening `if:` line, so an
+    `if:`-gated run step was invisible to it whether or not it was named. Measured: adding
+    one such step to EACH job left both counts below reading their expected 3 and 5 while
+    a real extra step sat in each file. Splitting on the boundary has no such blind spot,
+    because it never has to enumerate which job-level keys may precede `run:`.
 
     Anchored past checkout so `testpypi.yml`'s branch guard -- which deliberately runs
     BEFORE checkout, so a wrong branch is refused before any source is fetched -- sits
@@ -501,7 +555,40 @@ def _post_checkout_run_steps(path: Path, job: str) -> list[str]:
     block = _job_directives(path, job)
     marker = "actions/checkout@"
     assert marker in block, f"the {job!r} job in {path.name} has no checkout to anchor on"
-    return re.findall(r"\n      - (?:name:.*\n(?:  )*)?\s*run: .+", block[block.index(marker):])
+    parts = re.split(r"\n(?=      - )", block[block.index(marker):])
+    return [part for part in parts if re.search(r"(^|\n)\s*-?\s*run: ", part)]
+
+
+def _run_commands(path: Path, job: str) -> set[str]:
+    """The EXACT command each post-checkout `run:` step of `job` names, as written.
+
+    Exact, because `_BUILD_COMMANDS` membership was tested with `in` over the whole job
+    block, and a substring survives an APPENDED flag. Measured: appending `--wheel` to
+    `testpypi.yml`'s `python -m build --no-isolation` left the drift pin green while the
+    dry run silently stopped building an sdist at all -- so it stopped proving index
+    acceptance of the newly-permanent artefact this whole PR exists to add.
+    `release-please.yml`'s half was already covered by
+    `test_build_job_builds_without_isolation`'s `$`-anchored regex; nothing covered the copy.
+
+    A block scalar (`run: |`) yields the literal `"|"` here, which is exactly right: the two
+    steps written that way are the dry run's own stamp and stamp-proof, pinned by their own
+    tests above and deliberately not part of the sequence being compared.
+    """
+    commands = set()
+    for step in _post_checkout_run_steps(path, job):
+        for line in step.splitlines():
+            match = re.match(r"\s*-?\s*run: (.+)$", line)
+            if match:
+                commands.add(match.group(1).strip())
+    return commands
+
+
+def _publish_action_ref(path: Path, job: str) -> str:
+    """The `pypa/gh-action-pypi-publish` ref `job` pins, as a bare ref (SHA, no comment)."""
+    step = _step_containing(path, job, "gh-action-pypi-publish")
+    match = re.search(r"pypa/gh-action-pypi-publish@(\S+)", step)
+    assert match, f"no pypa/gh-action-pypi-publish pin found in {path.name}'s {job!r} job"
+    return match.group(1)
 
 
 def _python_version(path: Path, job: str) -> str:
@@ -514,23 +601,64 @@ def test_the_dry_run_builds_exactly_the_way_the_release_build_does():
     """The cost of a separate dry-run file is that its build steps are a COPY, and a copy
     can stop matching what it claims to prove without anything going red.
 
-    GUARDED AGAINST ITS OWN VACUITY, because four equality checks between two extractions
-    pass trivially when both extractions fail -- `None == None` is green while the two files
+    What ships here: three EXACT-command membership probes per side (`_BUILD_COMMANDS`
+    against `_run_commands`), then three equalities between two extractions -- the pinned
+    `python-version`, the pinned `pypa/gh-action-pypi-publish` ref, and, as the scope
+    assertion, the number of post-checkout `run:` steps each side has.
+
+    GUARDED AGAINST ITS OWN VACUITY, because an equality between two extractions passes
+    trivially when both extractions fail -- `None == None` is green while the two files
     build differently, which is the `all([])` shape this repo has a standing rule about. The
     design's first draft omitted these guards while citing two precedents that both carry
-    them.
+    them. Each guard is structural rather than a separate assertion bolted on: an exact
+    membership probe over an EMPTY set is False, and `_python_version`/`_publish_action_ref`
+    each assert their own match before returning, so no extraction here can fail quietly.
     """
-    release = _job_directives(RELEASE_PLEASE, "build")
-    dry_run = _job_directives(TESTPYPI, "testpypi")
+    release = _run_commands(RELEASE_PLEASE, "build")
+    dry_run = _run_commands(TESTPYPI, "testpypi")
 
-    for command in _BUILD_COMMANDS:          # non-vacuity: each side really contains it
-        assert command in release, f"release build no longer runs: {command}"
-        assert command in dry_run, f"dry run no longer runs: {command}"
+    for command in _BUILD_COMMANDS:
+        # EXACT membership, never `in` over the job text: a substring probe survives an
+        # APPENDED flag, and `--wheel` appended to the dry run's build was measured green
+        # while that run stopped producing an sdist at all. It doubles as the non-vacuity
+        # guard -- `command in set()` is False, so a broken extraction cannot make the two
+        # sides agree by both having found nothing.
+        assert command in release, (
+            f"release-please.yml's `build` job no longer runs this as an exact command: "
+            f"{command!r}. It runs: {sorted(release)}")
+        assert command in dry_run, (
+            f"testpypi.yml's `testpypi` job no longer runs this as an exact command: "
+            f"{command!r}. It runs: {sorted(dry_run)}")
 
     assert _python_version(RELEASE_PLEASE, "build") == _python_version(TESTPYPI, "testpypi")
+
+    # ...and on the publish action itself, as a PAIR. A version bump landing on one file and
+    # not the other leaves the dry run proving index acceptance through a DIFFERENT action
+    # version than the release path takes -- precisely what this pin exists to prevent, and
+    # one line outside the scope it originally had.
+    assert _publish_action_ref(RELEASE_PLEASE, "pypi") == _publish_action_ref(
+        TESTPYPI, "testpypi"
+    ), (
+        "the two workflows pin different pypa/gh-action-pypi-publish refs, so the dry run "
+        "exercises a different publish action than the real release does"
+    )
 
     # Scope: pin how many run: steps each region has, so an unexplained extra step -- or a
     # silently dropped one -- cannot read as agreement. They differ because the dry run
     # legitimately carries the two steps that make a dispatch prove something.
-    assert len(_post_checkout_run_steps(RELEASE_PLEASE, "build")) == 3
-    assert len(_post_checkout_run_steps(TESTPYPI, "testpypi")) == 5
+    _NOT_THE_NUMBER = (
+        "FIX THE EXTRACTION OR THE WORKFLOW, NEVER THIS NUMBER. It has been derived from "
+        "the real file three times; a count edited to make a broken extractor go green is "
+        "exactly the defect this assertion exists to catch, installed in the assertion."
+    )
+    release_steps = _post_checkout_run_steps(RELEASE_PLEASE, "build")
+    assert len(release_steps) == 3, (
+        f"release-please.yml's `build` job has {len(release_steps)} post-checkout `run:` "
+        f"steps, expected 3. {_NOT_THE_NUMBER} Found: {release_steps}"
+    )
+    dry_run_steps = _post_checkout_run_steps(TESTPYPI, "testpypi")
+    assert len(dry_run_steps) == 5, (
+        f"testpypi.yml's `testpypi` job has {len(dry_run_steps)} post-checkout `run:` "
+        f"steps, expected 5 (the three shared build commands plus the stamp and its proof). "
+        f"{_NOT_THE_NUMBER} Found: {dry_run_steps}"
+    )
