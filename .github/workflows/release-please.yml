@@ -110,7 +110,17 @@ jobs:
         with:
           name: dist
           path: dist/
-          retention-days: 1
+          # 7 days, not 1, because #104 made this artifact the input to an IRREVERSIBLE
+          # step. `pypi` and `release-assets` both consume it, and a PyPI upload cannot be
+          # withdrawn. If `pypi` fails at its first real execution -- most likely because
+          # the trusted-publisher entry does not exist yet, or names the wrong workflow
+          # filename -- the ONLY automated recovery is re-running that failed job while
+          # this artifact still exists. Re-running the whole workflow does NOT work:
+          # release-please sees the release already cut, `release_created` comes back
+          # `false`, and `build` never runs to produce a new one. A 24-hour window on that
+          # is too tight for a failure whose diagnosis is a manual pypi.org configuration
+          # step.
+          retention-days: 7
 
   attest:
     needs: [release-please, build]
