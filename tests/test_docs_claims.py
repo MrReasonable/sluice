@@ -213,14 +213,87 @@ _RETIRED_CONFIG = [
 ]
 
 
+# A `BREAKING CHANGES` block in CHANGELOG.md is the ONE place a shipped doc must be able to
+# NAME a retired key, because recording the retirement is the block's entire job. release-please
+# generates that block from commit footers, so the wording is not even editable here: the
+# `cv.name`/`cv.contact` removal's own footer says a `cv.name: ""` left by a half-finished
+# migration still raises -- accurate, useful, and matched by `_RETIRED_CONFIG`'s dotted pattern.
+# Left unnarrowed, the guard fired on the release PR and blocked it for two days (#170), and
+# would fire again on every future release whose changelog names a retired key.
+#
+# Scoped as tightly as the failure demands, and no tighter:
+#   * CHANGELOG.md STAYS in `_DOCS`. Removing it would reopen the scope gap this file's own
+#     header comment records -- a `'sluice[render]'` regression shipped there and this sweep
+#     said nothing.
+#   * Only the `_RETIRED_CONFIG` sweep skips the block. Every other check in this file still
+#     reads the whole changelog, breaking block included.
+#   * Only CHANGELOG.md gets the treatment. A BREAKING heading in any other doc is still swept.
+_BREAKING_HEADING = re.compile(r"^#{2,6} .*BREAKING CHANGES.*$", re.MULTILINE)
+
+
+def _without_breaking_blocks(text):
+    """`text` with every `BREAKING CHANGES` section removed, bounded by the next heading.
+
+    Returns `text` UNCHANGED when there is no such heading, which is the case on `main` today --
+    the generated block only exists on a release branch. That is why the non-vacuity of this
+    function is pinned by `test_breaking_block_stripping_is_bounded` against SYNTHETIC input
+    rather than against the live file: an assertion that "stripping removed something" would be
+    vacuous on main and would start failing for the wrong reason the moment a release lands.
+    """
+    out, pos = [], 0
+    for m in _BREAKING_HEADING.finditer(text):
+        nxt = re.compile(r"^#{1,6} ", re.MULTILINE).search(text, m.end())
+        end = nxt.start() if nxt else len(text)
+        out.append(text[pos : m.start()])
+        pos = end
+    out.append(text[pos:])
+    return "".join(out)
+
+
 def test_no_shipped_doc_instructs_a_retired_config_key():
     checked = 0
     for path, text in _read_all():
         checked += 1
+        scanned = _without_breaking_blocks(text) if path == "CHANGELOG.md" else text
         for pattern, why, _sample in _RETIRED_CONFIG:
-            hit = pattern.search(text)
+            hit = pattern.search(scanned)
             assert not hit, f"{path} instructs a retired config key -- {why} ({hit.group(0)!r})"
     assert checked >= 5
+    assert "CHANGELOG.md" in {path for path, _ in _read_all()}, (
+        "CHANGELOG.md dropped out of the sweep's scope -- the narrowing above skips its BREAKING "
+        "block only, and is worthless if the file stops being read at all"
+    )
+
+
+def test_breaking_block_stripping_is_bounded():
+    """The narrowing must remove the BREAKING block and NOTHING else.
+
+    Synthetic input, deliberately: `main`'s CHANGELOG.md carries no BREAKING heading, so a
+    stripper that returned "" -- or that swallowed the rest of the file from the first heading
+    on -- would make the sweep pass vacuously on the very file it was narrowed for, and nothing
+    reading the live tree today would notice.
+    """
+    text = (
+        "## [1.0.0](x) (2026-08-21)\n\n"
+        "### BREAKING CHANGES\n\n"
+        "* **cv:** a `cv.name: \"\"` left by a half-finished migration still raises.\n\n"
+        "### Features\n\n"
+        "* something unrelated\n\n"
+        "## [0.1.0](y) (2026-08-06)\n\n"
+        "Set cv.name: \"Ada Example\" in your config.\n"
+    )
+    stripped = _without_breaking_blocks(text)
+    assert "half-finished migration" not in stripped, "the BREAKING block was not removed"
+    assert "### Features" in stripped, "stripping ran past the block into the next section"
+    assert "something unrelated" in stripped, "stripping swallowed a later section's body"
+    assert "## [0.1.0](y)" in stripped, "stripping swallowed a later release entirely"
+    # The load-bearing half: a retired key OUTSIDE any BREAKING block is still visible, so the
+    # guard keeps catching a changelog that genuinely instructs one.
+    assert 'cv.name: "Ada Example"' in stripped, (
+        "a retired key outside the BREAKING block was stripped too -- the guard would no longer "
+        "catch a changelog that actually instructs setting one"
+    )
+    assert _without_breaking_blocks("no headings here") == "no headings here"
 
 
 # The NESTED-YAML half of the same sweep, closing what the comment above `_RETIRED_CONFIG`
