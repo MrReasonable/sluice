@@ -27,6 +27,7 @@ truthiness, why the top-level-permissions check is position-anchored on `jobs:` 
 the TestPyPI dry run's own design -- the branch guard, the version stamp, the drift pin) for the
 full design reasoning.
 """
+import inspect
 import re
 from pathlib import Path
 
@@ -602,9 +603,11 @@ def test_the_dry_run_builds_exactly_the_way_the_release_build_does():
     can stop matching what it claims to prove without anything going red.
 
     What ships here: three EXACT-command membership probes per side (`_BUILD_COMMANDS`
-    against `_run_commands`), then three equalities between two extractions -- the pinned
-    `python-version`, the pinned `pypa/gh-action-pypi-publish` ref, and, as the scope
-    assertion, the number of post-checkout `run:` steps each side has.
+    against `_run_commands`), then two equalities between two extractions -- the pinned
+    `python-version` and the pinned `pypa/gh-action-pypi-publish` ref. The scope assertion is
+    NOT a third such equality: it is two separate checks, each side's count of post-checkout
+    `run:` steps against its own pinned literal (3 and 5), deliberately different from each
+    other rather than compared to one another.
 
     GUARDED AGAINST ITS OWN VACUITY, because an equality between two extractions passes
     trivially when both extractions fail -- `None == None` is green while the two files
@@ -648,8 +651,9 @@ def test_the_dry_run_builds_exactly_the_way_the_release_build_does():
     # legitimately carries the two steps that make a dispatch prove something.
     _NOT_THE_NUMBER = (
         "FIX THE EXTRACTION OR THE WORKFLOW, NEVER THIS NUMBER. It has been derived from "
-        "the real file three times; a count edited to make a broken extractor go green is "
-        "exactly the defect this assertion exists to catch, installed in the assertion."
+        "the real file independently, more than once; a count edited to make a broken "
+        "extractor go green is exactly the defect this assertion exists to catch, installed "
+        "in the assertion."
     )
     release_steps = _post_checkout_run_steps(RELEASE_PLEASE, "build")
     assert len(release_steps) == 3, (
@@ -662,3 +666,31 @@ def test_the_dry_run_builds_exactly_the_way_the_release_build_does():
         f"steps, expected 5 (the three shared build commands plus the stamp and its proof). "
         f"{_NOT_THE_NUMBER} Found: {dry_run_steps}"
     )
+
+
+_MODULE_HELPER_NAMES = {
+    "_text", "_job_directives", "_step_containing", "_permissions_block",
+    "_workflow_wide_directives", "_post_checkout_run_steps", "_run_commands",
+    "_publish_action_ref", "_python_version",
+}
+
+
+def test_every_module_level_helper_takes_path_first_with_no_default():
+    """Enforces the module docstring's claim -- every `_`-prefixed helper takes `path` as its
+    first, required parameter -- rather than leaving it as prose no test can falsify. A
+    defaulted `path` would let a forgotten argument silently read whichever file the default
+    names; the two workflows' workflow-wide blocks are byte-identical, so that mistake would
+    PASS every other check in this file rather than fail one.
+    """
+    helpers = {
+        name: fn for name, fn in globals().items()
+        if inspect.isfunction(fn) and fn.__module__ == __name__ and name.startswith("_")
+    }
+    # Pin the SCOPE first: a matcher that silently enumerated nothing (or the wrong set)
+    # would make the loop below vacuously true, `all([])`-style.
+    assert helpers.keys() == _MODULE_HELPER_NAMES, sorted(helpers)
+    for name, fn in helpers.items():
+        first = next(iter(inspect.signature(fn).parameters.values()))
+        assert first.name == "path" and first.default is inspect.Parameter.empty, (
+            f"{name}'s first parameter must be a required `path`, got {first!r}"
+        )
