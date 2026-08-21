@@ -1,0 +1,9 @@
+# The sdist is public and permanent from the PyPI channel (#104) onward. `tests/` is pruned
+# because the subset distutils would otherwise ship is unusable: its default `tests/test*.py`
+# glob is non-recursive, so conftest.py and the fixture packages beside it stay behind and the
+# shipped tests cannot run. `tests/test_packaging.py` pins the resulting member list.
+#
+# Nothing grafts `docs/`. That tree is gated by NEITHER the neutrality rule (which binds
+# `sluice/` and `tests/`) NOR `tests/test_no_leaked_files.py` (which gates paths, not content),
+# so publishing it would put 67 unreviewed files on an index that never forgets.
+prune tests

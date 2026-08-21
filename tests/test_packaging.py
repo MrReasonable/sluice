@@ -45,6 +45,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import zipfile
 
 import pytest
@@ -726,3 +727,83 @@ def test_the_console_script_guard_is_falsified_by_a_rename(tmp_path):
     entry_points = _read_entry_points(dest)
     assert CONSOLE_SCRIPT_ENTRY_POINT_LINE not in entry_points
     assert renamed_entry_point_line in entry_points  # the mutation landed, not a no-op
+
+
+SDIST_ROOT_MEMBERS = {
+    "LICENSE", "MANIFEST.in", "PKG-INFO", "README.md",
+    "job_sluice.egg-info", "pyproject.toml", "setup.cfg", "sluice",
+}
+
+
+def _build_sdist(dest, manifest_text=None):
+    """Build a REAL sdist from a COPY of the tree and return its member names.
+
+    A copy, not the real tree, for the same two reasons `_build_wheel`'s docstring gives --
+    the build drops `build/` and `.egg-info` beside pyproject.toml, which must not land in
+    the repo root -- plus a third specific to this guard: the falsify partner below needs to
+    build with a MUTATED MANIFEST.in, and it must not edit the repository's real one to do
+    it. Both tests share this helper for exactly that reason. Measured during design review:
+    a copy WITHOUT `tests/` ships zero test members whether or not `prune tests` is present,
+    so a guard and partner that build from differently-shaped trees prove nothing.
+    """
+    shutil.copytree(f"{ROOT}/sluice", f"{dest}/sluice")
+    shutil.copytree(f"{ROOT}/tests", f"{dest}/tests")
+    for named in ("pyproject.toml", "LICENSE", "README.md"):
+        shutil.copy(f"{ROOT}/{named}", dest)
+    with open(f"{dest}/MANIFEST.in", "w", encoding="utf-8") as f:
+        f.write(manifest_text if manifest_text is not None
+                else open(f"{ROOT}/MANIFEST.in", encoding="utf-8").read())
+    proc = subprocess.run(
+        [sys.executable, "-m", "build", "--sdist", "--no-isolation",
+         "--outdir", f"{dest}/out"],
+        cwd=dest, capture_output=True, text=True, timeout=300)
+    assert proc.returncode == 0, (
+        f"sdist build failed:\n{proc.stdout[-2000:]}\n{proc.stderr[-2000:]}")
+    tarballs = glob.glob(f"{dest}/out/*.tar.gz")
+    assert tarballs, f"the build reported success but produced no sdist in {dest}/out"
+    with tarfile.open(tarballs[0]) as tf:
+        return tf.getnames()
+
+
+def _sdist_root_entries(names):
+    """The entry names one level below the sdist's single root directory.
+
+    Every member of an sdist is `job_sluice-<version>/<path>`, so "the set of top-level
+    entries" is ONE element -- identical whether the tarball is clean or carries 166 test
+    modules. An allowlist over that set is exactly-equal and blind. Derive the prefix from
+    PKG-INFO's parent and assert BELOW it.
+    """
+    prefix = next(n for n in names if n.endswith("/PKG-INFO")).rsplit("/", 1)[0]
+    assert prefix, "could not derive the sdist root prefix from PKG-INFO"
+    return {n[len(prefix) + 1:].split("/", 1)[0] for n in names if n != prefix}
+
+
+def test_the_sdist_ships_the_package_and_metadata_and_no_tests(tmp_path):
+    """The sdist becomes PUBLIC AND PERMANENT with the PyPI channel. Before it, `build`'s
+    sdist expired with the run artifact in a day.
+
+    `tests/` is pruned rather than shipped because the subset that would ship is USELESS:
+    distutils' default `tests/test*.py` glob is non-recursive, so `conftest.py` and the
+    fixture packages beside it stay out and the shipped tests cannot run. Shipping a broken
+    test tree is worse than shipping either a working one or none.
+    """
+    names = _build_sdist(str(tmp_path))
+    assert len(names) > 20, "the sdist is implausibly small; the build produced almost nothing"
+    assert _sdist_root_entries(names) == SDIST_ROOT_MEMBERS
+    assert not [n for n in names if "/tests/" in n], "tests must not ship in the sdist"
+
+
+def test_the_sdist_guard_is_falsified_by_dropping_the_prune(tmp_path):
+    """The guard above must be FALSIFIABLE, not merely green.
+
+    Built from the SAME helper with only MANIFEST.in mutated -- the guard and its partner
+    must observe identically-shaped trees, or the partner proves nothing about the guard.
+    """
+    original = open(f"{ROOT}/MANIFEST.in", encoding="utf-8").read()
+    assert "prune tests" in original, (
+        "MANIFEST.in is not written as this guard expects, so dropping the prune would "
+        "SILENTLY NO-OP and this test would pass for the wrong reason")
+    names = _build_sdist(str(tmp_path), manifest_text=original.replace("prune tests", ""))
+    assert [n for n in names if "/tests/" in n], (
+        "removing `prune tests` did not make tests ship, so the guard above is not "
+        "actually what keeps them out")
