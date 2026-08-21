@@ -278,9 +278,13 @@ pattern would have caught the omission by imitation.
 
 The failure lands in the worst possible place. It runs only after release-please has already
 tagged and published the GitHub Release, so the release exists publicly with no assets attached
--- and under decision 1 below it first executes on the 1.0.0 merge, beside four other first-run
-publish jobs. Passing the repository through `env:` rather than a `--repo` flag also keeps it
-consistent with the `TAG` treatment directly above.
+-- and under decision 1 below it first executes on the 1.0.0 merge, where `build`, `attest`,
+`pypi` and `release-assets` each run for the first time and two of those four publish (`pypi` to
+PyPI, this job to the release itself). The "beside four other first-run publish jobs" reading
+this passage carried belonged to the WITHDRAWN draft, whose five-channels-at-once risk the
+revision to decision 1 removed; Docker, deb/rpm and Homebrew are not in this workflow and land in
+1.1.0. Passing the repository through `env:` rather than a `--repo` flag also keeps it consistent
+with the `TAG` treatment directly above.
 
 The only job in this workflow holding `contents: write`, and it holds it for one API call. The
 release-please App token is not reused here: uploading an asset to a release in this same repo is
@@ -426,8 +430,7 @@ Two independent things are proven, and it is worth keeping them separate:
   RENDERING, not acceptance.
 
 `pypi` keeps the default `false` because a real publish silently no-opping is a categorically
-different event from a dry run tolerating a re-run. A real publish silently
-no-opping is a categorically different event, which is why `pypi` keeps the default.
+different event from a dry run tolerating a re-run.
 
 ## The drift pin
 
@@ -670,6 +673,26 @@ The two workflow filenames differ by design (see "Where the dry run lives"), and
 naming the wrong one fails with `invalid-publisher` rather than falling back -- so step 2 naming
 `release-please.yml`, or step 3 naming `testpypi.yml`, is a real and easy mistake with a
 confusing error.
+
+### Two operational notes for the first real release
+
+**The `dist` artifact's retention is the recovery window, and it is 7 days rather than 1.** If
+`pypi` fails at 1.0.0 -- most likely because the trusted publisher above does not exist yet, or
+names the wrong workflow filename -- the only automated recovery is **re-running that failed job**
+while the artifact `build` uploaded still exists. Re-running the WHOLE workflow does not work:
+release-please sees the release already cut, `release_created` comes back `false`, and `build`
+never runs to produce a new artifact. So the window has to be long enough to notice the failure,
+diagnose it, fix a manual pypi.org configuration step, and re-run -- which 24 hours is not.
+Raised from 1 day for exactly this reason: PR 2 set it when the artifact fed only `attest`,
+minutes later in the same run, and #104 made it the input to an irreversible publish.
+
+**`gh release upload` is not idempotent, and it uploads assets sequentially.** The wheel and the
+sdist go up one at a time, so a network failure between them leaves the release with ONE asset
+attached. The retry then fails hard on the one already there -- deliberately, since the step
+carries no `--clobber` (see `release-assets` above: an asset that already exists means something
+already uploaded, which should surface rather than be silently overwritten). Recovery is manual:
+delete the attached asset from the release, then re-run the job. Worth knowing before it happens,
+because the error names the existing asset rather than the interrupted upload.
 
 ## Revises the sequencing spec's release plan, and RESTORES its per-channel holds
 
