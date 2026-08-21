@@ -1,10 +1,10 @@
 {
   "result": [
     {
-      "title": "Acme Appraisals",
+      "title": "Example Systems Appraisals",
       "company": "",
       "location": "",
-      "link": "https://example.com/company/acme-appraisals",
+      "link": "https://example.com/company/example-systems-appraisals",
       "salary": ""
     },
     {
@@ -15,10 +15,10 @@
       "salary": ""
     },
     {
-      "title": "Globex Logic",
+      "title": "Example Foundry Logic",
       "company": "",
       "location": "",
-      "link": "https://example.com/company/globex-logic",
+      "link": "https://example.com/company/example-foundry-logic",
       "salary": ""
     },
     {
@@ -29,24 +29,24 @@
       "salary": ""
     },
     {
-      "title": "Vertex Voice",
+      "title": "Example Meridian Voice",
       "company": "",
       "location": "",
-      "link": "https://example.com/company/vertex-voice",
+      "link": "https://example.com/company/example-meridian-voice",
       "salary": ""
     },
     {
-      "title": "Sales Operations Manager - Korea",
+      "title": "Sales Operations Manager - Example Region",
       "company": "",
       "location": "",
       "link": "https://example.com/jobs/6",
       "salary": ""
     },
     {
-      "title": "Umbrella Astra",
+      "title": "Example Telemetry Astra",
       "company": "",
       "location": "",
-      "link": "https://example.com/company/umbrella-astra",
+      "link": "https://example.com/company/example-telemetry-astra",
       "salary": ""
     },
     {
@@ -57,17 +57,17 @@
       "salary": ""
     },
     {
-      "title": "Hooli Interactive Software",
+      "title": "Example Analytics Interactive Software",
       "company": "",
       "location": "",
-      "link": "https://example.com/company/hooli-interactive-software",
+      "link": "https://example.com/company/example-analytics-interactive-software",
       "salary": ""
     },
     {
-      "title": "Stark Permit",
+      "title": "Example Ironworks Permit",
       "company": "",
       "location": "",
-      "link": "https://example.com/company/stark-permit",
+      "link": "https://example.com/company/example-ironworks-permit",
       "salary": ""
     },
     {
@@ -85,17 +85,17 @@
       "salary": ""
     },
     {
-      "title": "Wayne Finance",
+      "title": "Example Manor Finance",
       "company": "",
       "location": "",
-      "link": "https://example.com/company/wayne-finance",
+      "link": "https://example.com/company/example-manor-finance",
       "salary": ""
     },
     {
-      "title": "Wonka Rewards",
+      "title": "Example Northgate Rewards",
       "company": "",
       "location": "",
-      "link": "https://example.com/company/wonka-rewards",
+      "link": "https://example.com/company/example-northgate-rewards",
       "salary": ""
     },
     {

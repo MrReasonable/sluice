@@ -49,7 +49,7 @@ def test_geography_reject(titles):
     # abstains (see test_unconfigured_geography_gate_abstains).
     cfg = _cfg(titles)
     cfg.target_locations = ["remote"]
-    assert classify(L(titles, location="Bangalore, India"), cfg)[0] == "reject"
+    assert classify(L(titles, location="Whitlockfurt, Vesperia"), cfg)[0] == "reject"
 
 
 def test_contract_day_rate_floor(titles):
@@ -150,16 +150,16 @@ def test_unconfigured_geography_gate_abstains(titles):
     # that names a location.
     cfg = _cfg(titles)
     cfg.target_locations = []
-    for loc in ("London", "Berlin", "Remote", "Anywhere at all", ""):
+    for loc in ("Palmerburgh", "Osterfurt", "Remote", "Anywhere at all", ""):
         lead = L(titles, location=loc)
         assert classify(lead, cfg)[0] == "keep", f"unconfigured gate rejected {loc!r}"
 
 
 def test_configured_geography_gate_still_filters(titles):
     cfg = _cfg(titles)
-    cfg.target_locations = ["london"]
-    assert classify(L(titles, location="London"), cfg)[0] == "keep"
-    assert classify(L(titles, location="Berlin"), cfg)[0] == "reject"
+    cfg.target_locations = ["palmerburgh"]
+    assert classify(L(titles, location="Palmerburgh"), cfg)[0] == "keep"
+    assert classify(L(titles, location="Osterfurt"), cfg)[0] == "reject"
 
 
 # ── salary parsing ────────────────────────────────────────────────────────────

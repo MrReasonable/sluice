@@ -149,8 +149,12 @@ def _compare_locations(a: str, b: str, noise=frozenset()) -> str:
     cross-board re-post, while a wrong SAME merges, which is what today already does.
 
     Overlap, not subset or containment, and that is measured rather than chosen: boards decorate a
-    city differently on every re-post ('London', 'London EC4Y', 'London ∙ Choose area'), so neither
-    side is usually a subset of the other and token-subset splits 15 of 21 real same-city pairs.
+    city differently on every re-post ('Palmerburgh', 'Palmerburgh ZZ9Z', 'Palmerburgh ∙ Choose
+    area' -- synthetic since #27, but the SHAPES are the captured ones), so neither side is usually
+    a subset of the other and token-subset splits 15 of the 21 pairs ONE city's seven renderings
+    make -- the list pinned in tests/test_leads_location.py. Corpus-wide it is the same 15 splits
+    among 33 same-city pairs, the other 12 being subsets that split 0, so name the population
+    when quoting either figure: two denominators, one number.
     Every rendering shares the CITY token; the rest is decoration. Overlap keys on the signal.
     See docs/superpowers/specs/2026-07-16-location-identity-evidence.py to re-derive the numbers.
 

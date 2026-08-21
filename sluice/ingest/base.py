@@ -224,10 +224,10 @@ def searches_for(source, config=None) -> list:
 
 def _demash_company(company: str, location: str) -> str:
     """Some boards (Indeed) render company and location in one DOM node with no
-    separator, so the extractor captures e.g. 'EniLondon' with location 'London'.
-    Strip the location suffix ONLY when it is jammed on with no separating space
-    (the mashing signature) and something is left; never a legitimate trailing
-    token like 'Capital One UK'."""
+    separator, so the extractor captures e.g. 'Example FoundryPalmerburgh' with location
+    'Palmerburgh'. Strip the location suffix ONLY when it is jammed on with no
+    separating space (the mashing signature) and something is left; never a
+    legitimate trailing token like 'Example Capital ABM'."""
     if location and len(company) > len(location) and company.endswith(location):
         boundary = company[: len(company) - len(location)]
         if boundary and not boundary[-1].isspace():

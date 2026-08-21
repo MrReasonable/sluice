@@ -209,7 +209,7 @@ _RETIRED_CONFIG = [
     # those two live, legitimate keys can be documented on the same page without tripping this.
     (re.compile(r"(?<![\w.])locations:"),
      "a root `locations:` key -- retired, use triage.target_locations",
-     "locations: [London, Manchester]"),
+     "locations: [Alfa, Bravo]"),
 ]
 
 

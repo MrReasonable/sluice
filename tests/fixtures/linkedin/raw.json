@@ -2,50 +2,50 @@
   "result": [
     {
       "title": "Technical Architect (SharePoint)",
-      "company": "Acme",
-      "location": "London, England, United Kingdom (Hybrid)",
+      "company": "Example Systems",
+      "location": "Palmerburgh, Wexmoor, Allied Brennmark (Hybrid)",
       "link": "https://example.com/jobs/1",
       "salary": ""
     },
     {
       "title": "Freelance Project Manager | Digital & Print Campaigns",
-      "company": "Globex",
-      "location": "London Area, United Kingdom (Hybrid)",
+      "company": "Example Foundry",
+      "location": "Palmerburgh Area, Allied Brennmark (Hybrid)",
       "link": "https://example.com/jobs/2",
       "salary": ""
     },
     {
       "title": "Project Manager",
-      "company": "Vertex",
-      "location": "London, England, United Kingdom (Remote)",
+      "company": "Example Meridian",
+      "location": "Palmerburgh, Wexmoor, Allied Brennmark (Remote)",
       "link": "https://example.com/jobs/3",
       "salary": ""
     },
     {
       "title": "Banker, Payments",
-      "company": "Umbrella",
-      "location": "London, England, United Kingdom (Hybrid)",
+      "company": "Example Telemetry",
+      "location": "Palmerburgh, Wexmoor, Allied Brennmark (Hybrid)",
       "link": "https://example.com/jobs/4",
       "salary": ""
     },
     {
       "title": "HVAC Technical Supervisor",
-      "company": "Hooli",
-      "location": "London, England, United Kingdom (Remote)",
+      "company": "Example Analytics",
+      "location": "Palmerburgh, Wexmoor, Allied Brennmark (Remote)",
       "link": "https://example.com/jobs/5",
       "salary": ""
     },
     {
       "title": "Lead Pre-Construction Project Manager",
-      "company": "Stark",
-      "location": "United Kingdom (Remote)",
+      "company": "Example Ironworks",
+      "location": "Allied Brennmark (Remote)",
       "link": "https://example.com/jobs/6",
       "salary": ""
     },
     {
       "title": "Platform Operations Manager",
-      "company": "Wayne",
-      "location": "London Area, United Kingdom (Hybrid)",
+      "company": "Example Manor",
+      "location": "Palmerburgh Area, Allied Brennmark (Hybrid)",
       "link": "https://example.com/jobs/7",
       "salary": ""
     }

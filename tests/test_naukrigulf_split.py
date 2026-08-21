@@ -22,12 +22,12 @@ def _url(role_slug: str, tail: str = "city-in-company-1") -> str:
 # --- _split_mashed_title: positive cases -----------------------------------
 
 def test_splits_a_single_word_role():
-    assert _split_mashed_title("BankerAcme", _url("banker")) == ("Banker", "Acme")
+    assert _split_mashed_title("BankerExample Systems", _url("banker")) == ("Banker", "Example Systems")
 
 
 def test_splits_a_multi_word_role():
-    assert (_split_mashed_title("Cluster BankerMassive Dynamic", _url(_slug("Cluster Banker")))
-            == ("Cluster Banker", "Massive Dynamic"))
+    assert (_split_mashed_title("Cluster BankerExample Dynamics", _url(_slug("Cluster Banker")))
+            == ("Cluster Banker", "Example Dynamics"))
 
 
 def test_splits_a_punctuation_heavy_role():
@@ -51,9 +51,9 @@ def test_splits_a_role_containing_the_literal_words_jobs_in():
     # is a space, not the mashed company's capital letter) -- and the function would
     # wrongly abstain. Scanning ALL occurrences (re.finditer, not re.search) finds the
     # second, correct candidate "banker-jobs-in-finance" too.
-    path = "/banker-jobs-in-finance-jobs-in-city-in-acme-corp-1"
-    assert (_split_mashed_title("Banker Jobs In FinanceAcme Corp", "https://example.com" + path)
-            == ("Banker Jobs In Finance", "Acme Corp"))
+    path = "/banker-jobs-in-finance-jobs-in-city-in-example-systems-corp-1"
+    assert (_split_mashed_title("Banker Jobs In FinanceExample Systems Corp", "https://example.com" + path)
+            == ("Banker Jobs In Finance", "Example Systems Corp"))
 
 
 # --- _split_mashed_title: mirror-harm / no-op cases -------------------------
@@ -66,16 +66,16 @@ def test_clean_title_with_no_mashing_abstains():
 
 
 def test_plural_role_against_a_singular_seam_does_not_mid_word_match():
-    # "BankersAcme" against a seam proving only "banker" (singular): the boundary
+    # "BankersExample Systems" against a seam proving only "banker" (singular): the boundary
     # right after "Banker" lands on the plural "s", which is neither a separator
     # nor an uppercase company-opening letter, so the match is rejected mid-word.
-    assert _split_mashed_title("BankersAcme", _url("banker")) is None
+    assert _split_mashed_title("BankersExample Systems", _url("banker")) is None
 
 
 def test_whitespace_before_the_seam_abstains():
     # A genuine space between role and company is the OPPOSITE of the mashing
     # signature this function targets -- never touch it.
-    assert _split_mashed_title("Banker Acme", _url("banker")) is None
+    assert _split_mashed_title("Banker Example Systems", _url("banker")) is None
 
 
 def test_lowercase_opening_remainder_abstains():
@@ -85,27 +85,27 @@ def test_lowercase_opening_remainder_abstains():
 
 
 def test_a_hyphen_at_the_boundary_abstains():
-    # "Banker-Acme" already carries an explicit separator -- the mashing signature this
+    # "Banker-Example Systems" already carries an explicit separator -- the mashing signature this
     # function recovers is the ABSENCE of one. Without the delimiter check, the boundary
     # at i=7 (title[:7]="Banker-") slips past the whitespace check (a hyphen is not
     # whitespace) and title[7]="A" satisfies the uppercase check, so the old code accepted
-    # ("Banker-", "Acme") -- a role with the delimiter left dangling on it.
-    assert _split_mashed_title("Banker-Acme", _url("banker")) is None
+    # ("Banker-", "Example Systems") -- a role with the delimiter left dangling on it.
+    assert _split_mashed_title("Banker-Example Systems", _url("banker")) is None
 
 
 def test_a_slash_or_dash_at_the_boundary_abstains():
     # Same shape, the other delimiter characters this fix added.
-    assert _split_mashed_title("Banker/Acme", _url("banker")) is None
-    assert _split_mashed_title("Banker–Acme", _url("banker")) is None  # en dash
-    assert _split_mashed_title("Banker—Acme", _url("banker")) is None  # em dash
+    assert _split_mashed_title("Banker/Example Systems", _url("banker")) is None
+    assert _split_mashed_title("Banker–Example Systems", _url("banker")) is None  # en dash
+    assert _split_mashed_title("Banker—Example Systems", _url("banker")) is None  # em dash
 
 
 def test_no_seam_in_url_abstains():
-    assert _split_mashed_title("BankerAcme", "https://example.com/banker-1") is None
+    assert _split_mashed_title("BankerExample Systems", "https://example.com/banker-1") is None
 
 
 def test_empty_url_abstains():
-    assert _split_mashed_title("BankerAcme", "") is None
+    assert _split_mashed_title("BankerExample Systems", "") is None
 
 
 def test_never_produces_an_empty_role_or_company():
@@ -117,15 +117,15 @@ def test_never_produces_an_empty_role_or_company():
 # --- _recover: never touches a populated company, never mutates the input --
 
 def test_recover_never_touches_a_populated_company():
-    row = {"title": "BankerAcme", "company": "Wayne", "link": _url("banker")}
+    row = {"title": "BankerExample Systems", "company": "Example Manor", "link": _url("banker")}
     assert _recover(row) is row  # untouched, same object -- not merely equal
 
 
 def test_recover_rewrites_a_recoverable_row():
-    row = {"title": "BankerAcme", "company": "", "link": _url("banker")}
+    row = {"title": "BankerExample Systems", "company": "", "link": _url("banker")}
     out = _recover(row)
     assert out["title"] == "Banker"
-    assert out["company"] == "Acme"
+    assert out["company"] == "Example Systems"
 
 
 def test_recover_leaves_an_unrecoverable_row_unchanged():
@@ -136,16 +136,16 @@ def test_recover_leaves_an_unrecoverable_row_unchanged():
 
 
 def test_recover_never_mutates_the_input_row_dict():
-    row = {"title": "BankerAcme", "company": "", "link": _url("banker")}
+    row = {"title": "BankerExample Systems", "company": "", "link": _url("banker")}
     original = dict(row)
     _recover(row)
     assert row == original
 
 
 def test_recover_falls_back_to_url_key_when_link_is_absent():
-    row = {"title": "BankerAcme", "company": "", "url": _url("banker")}
+    row = {"title": "BankerExample Systems", "company": "", "url": _url("banker")}
     out = _recover(row)
-    assert (out["title"], out["company"]) == ("Banker", "Acme")
+    assert (out["title"], out["company"]) == ("Banker", "Example Systems")
 
 
 def test_recover_warns_when_the_url_seam_proves_a_split_but_recovery_finds_none(caplog):
@@ -158,7 +158,7 @@ def test_recover_warns_when_the_url_seam_proves_a_split_but_recovery_finds_none(
     row = {
         "title": "Site Banker – Example Ventures",
         "company": "",
-        "link": "https://example.com/site-banker-jobs-in-dubai-in-example-ventures-26",
+        "link": "https://example.com/site-banker-jobs-in-clarkefurt-in-example-ventures-26",
     }
     with caplog.at_level("WARNING", logger="sluice.ingest.naukrigulf"):
         out = _recover(row)
@@ -179,17 +179,17 @@ def _search():
 
 def test_parse_rewrites_a_recoverable_row():
     src = _NaukrigulfSource(id="naukrigulf", extractor_js="", searches_spec=[])
-    raw = {"result": [{"title": "BankerAcme", "company": "", "location": "Dubai",
+    raw = {"result": [{"title": "BankerExample Systems", "company": "", "location": "Clarkefurt",
                         "link": _url("banker")}]}
     leads = src.parse(raw, _search())
     assert len(leads) == 1
     assert leads[0].title == "Banker"
-    assert leads[0].company == "Acme"
+    assert leads[0].company == "Example Systems"
 
 
 def test_parse_passes_an_unrecoverable_row_through_unchanged():
     src = _NaukrigulfSource(id="naukrigulf", extractor_js="", searches_spec=[])
-    raw = {"result": [{"title": "Bankeracme", "company": "", "location": "Dubai",
+    raw = {"result": [{"title": "Bankeracme", "company": "", "location": "Clarkefurt",
                         "link": _url("banker")}]}
     leads = src.parse(raw, _search())
     assert len(leads) == 1
@@ -211,7 +211,7 @@ def test_parse_tolerates_non_dict_raw():
 
 def test_parse_never_mutates_input_rows():
     src = _NaukrigulfSource(id="naukrigulf", extractor_js="", searches_spec=[])
-    row = {"title": "BankerAcme", "company": "", "location": "Dubai",
+    row = {"title": "BankerExample Systems", "company": "", "location": "Clarkefurt",
            "link": _url("banker")}
     raw = {"result": [row]}
     original = dict(row)
@@ -239,26 +239,26 @@ def test_fixture_recovers_previously_mashed_rows():
         return by_title_prefix[link]
 
     # Row 8: "BankerConfidential Company" -- single-word role, unusual company text.
-    l8 = lead_at("https://example.com/banker-jobs-in-abu-dhabi-in-confidential-company-8")
+    l8 = lead_at("https://example.com/banker-jobs-in-ellery-kestrelburgh-in-confidential-company-8")
     assert (l8.title, l8.company) == ("Banker", "Confidential Company")
 
-    # Row 11: "Cluster BankerMassive Dynamic" -- multi-word role.
-    l11 = lead_at("https://example.com/cluster-banker-jobs-in-dubai-in-massive-dynamic-11")
-    assert (l11.title, l11.company) == ("Cluster Banker", "Massive Dynamic")
+    # Row 11: "Cluster BankerExample Dynamics" -- multi-word role.
+    l11 = lead_at("https://example.com/cluster-banker-jobs-in-clarkefurt-in-example-dynamics-11")
+    assert (l11.title, l11.company) == ("Cluster Banker", "Example Dynamics")
 
     # Row 18: "ETIC, AI Engineer - ManagerExample Group" -- punctuation-heavy role.
     l18 = lead_at(
-        "https://example.com/etic-ai-engineer-manager-jobs-in-cairo-in-example-group-18")
+        "https://example.com/etic-ai-engineer-manager-jobs-in-brackenburgh-in-example-group-18")
     assert (l18.title, l18.company) == ("ETIC, AI Engineer - Manager", "Example Group")
 
     # Row 19: parenthesised role.
     l19 = lead_at(
-        "https://example.com/rail-systems-banker-high-speed-rail-jobs-in-abu-dhabi-in-example-holdings-19")
+        "https://example.com/rail-systems-banker-high-speed-rail-jobs-in-ellery-kestrelburgh-in-example-holdings-19")
     assert (l19.title, l19.company) == ("Rail Systems Banker (High Speed Rail)", "Example Holdings")
 
-    # Row 25: "Banker II - Financial ServicesFabrikam".
-    l25 = lead_at("https://example.com/banker-ii-financial-services-jobs-in-cairo-in-fabrikam-25")
-    assert (l25.title, l25.company) == ("Banker II - Financial Services", "Fabrikam")
+    # Row 25: "Banker II - Financial ServicesExample Manufacturing".
+    l25 = lead_at("https://example.com/banker-ii-financial-services-jobs-in-brackenburgh-in-example-manufacturing-25")
+    assert (l25.title, l25.company) == ("Banker II - Financial Services", "Example Manufacturing")
 
 
 def test_fixture_never_touches_already_clean_rows():
@@ -267,12 +267,12 @@ def test_fixture_never_touches_already_clean_rows():
     leads = src.parse(raw, src.searches()[0])
     by_url = {lead.url: lead for lead in leads}
 
-    # Row 10: "Banker" / company "Wayne" already populated -- its link ALSO carries
+    # Row 10: "Banker" / company "Example Manor" already populated -- its link ALSO carries
     # a "-jobs-in-" seam matching "banker" (per the fixture edit rule), which pins
     # abstain-on-populated-company at the fixture level: the seam is present but
     # this row must never be rewritten.
-    l10 = by_url["https://example.com/banker-jobs-in-saudi-arabia-in-wayne-10"]
-    assert (l10.title, l10.company) == ("Banker", "Wayne")
+    l10 = by_url["https://example.com/banker-jobs-in-norvane-thessary-in-example-manor-10"]
+    assert (l10.title, l10.company) == ("Banker", "Example Manor")
 
 
 def test_fixture_row_26_is_the_deliberate_unusual_boundary_abstain_case():
@@ -288,7 +288,7 @@ def test_fixture_row_26_is_the_deliberate_unusual_boundary_abstain_case():
     src = sources.get("naukrigulf")
     leads = src.parse(raw, src.searches()[0])
     by_url = {lead.url: lead for lead in leads}
-    l26 = by_url["https://example.com/site-banker-jobs-in-dubai-in-example-ventures-26"]
+    l26 = by_url["https://example.com/site-banker-jobs-in-clarkefurt-in-example-ventures-26"]
     assert l26.title == "Site Banker – Example Ventures"
     assert l26.company == ""
 
@@ -302,7 +302,7 @@ def test_row_26_abstain_is_genuinely_the_boundary_check_not_an_absent_seam():
     # this exact row incorrectly split -- i.e. the check is load-bearing here, not
     # redundant.
     title = "Site Banker – Example Ventures"
-    url = "https://example.com/site-banker-jobs-in-dubai-in-example-ventures-26"
+    url = "https://example.com/site-banker-jobs-in-clarkefurt-in-example-ventures-26"
     assert _split_mashed_title(title, url) is None
 
     import re

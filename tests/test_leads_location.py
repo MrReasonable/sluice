@@ -16,7 +16,7 @@ from sluice.core.leads import DIFFERENT, SAME, UNKNOWN, _compare_locations, _nor
 
 def test_norm_location_casefolds_collapses_and_strips():
     assert _norm_location("  Palmerburgh  ") == "palmerburgh"
-    assert _norm_location("PALMERBURGH   EC4Y") == "palmerburgh ec4y"
+    assert _norm_location("PALMERBURGH   ZZ9Z") == "palmerburgh zz9z"
     # bool("   ") is True, so a blank that did not normalize to "" would let whitespace dirt
     # read as evidence of a difference. An empty side must abstain instead.
     assert _norm_location("   ") == ""
@@ -64,7 +64,7 @@ def test_norm_location_keeps_non_ascii_letters_whole():
 # token-subset failure exactly: subset splits 15 of these 21 pairs, overlap splits 0.
 _SAME_CITY_SHAPES = [
     "Palmerburgh",
-    "Palmerburgh EC4Y",
+    "Palmerburgh ZZ9Z",
     "Hybrid work in Palmerburgh",
     "Palmerburgh\xa0∙ Choose area",
     "Palmerburgh Area, North Clarke (Hybrid)",
@@ -83,14 +83,14 @@ def test_every_rendering_of_one_city_is_never_a_split():
 
 def test_genuinely_different_cities_are_the_only_split():
     assert _compare_locations("Palmerburgh", "Clarkefurt") == DIFFERENT
-    assert _compare_locations("Palmerburgh EC4Y", "Clarkefurt (Hybrid)") == DIFFERENT
+    assert _compare_locations("Palmerburgh ZZ9Z", "Clarkefurt (Hybrid)") == DIFFERENT
 
 
 def test_compare_locations_is_symmetric():
     assert (_compare_locations("Palmerburgh", "Clarkefurt")
             == _compare_locations("Clarkefurt", "Palmerburgh"))
-    assert (_compare_locations("Palmerburgh EC4Y", "Palmerburgh")
-            == _compare_locations("Palmerburgh", "Palmerburgh EC4Y"))
+    assert (_compare_locations("Palmerburgh ZZ9Z", "Palmerburgh")
+            == _compare_locations("Palmerburgh", "Palmerburgh ZZ9Z"))
 
 
 def test_compare_locations_is_reflexive_for_anything_with_a_surviving_token():
@@ -147,15 +147,15 @@ def test_remote_versus_remote_is_still_same():
 
 def test_remote_with_a_country_is_unaffected_and_still_compares_normally():
     # THE regression the superseded decision's own comment warned a naive fix (a global noise
-    # strip on "remote") would cause: "Remote, US" vs "Remote, UK" share only the "remote" token,
+    # strip on "remote") would cause: "Remote, VS" vs "Remote, ABM" share only the "remote" token,
     # so stripping it unconditionally would turn a SAME pair into a SPLIT. This fix is narrower
     # than that -- it applies only when a side's token set is EXACTLY {"remote"} with nothing
     # else -- so a listing that names "remote" AND a country keeps comparing on ordinary overlap:
     # shared tokens still merge...
-    assert _compare_locations("Remote, US", "Remote, UK") == SAME
-    # ...and a genuine mismatch still splits, exactly as before -- "Remote, US" is more specific
+    assert _compare_locations("Remote, VS", "Remote, ABM") == SAME
+    # ...and a genuine mismatch still splits, exactly as before -- "Remote, VS" is more specific
     # than bare "Remote" and a real conflict there IS evidence of difference.
-    assert _compare_locations("Remote, US", "Palmerburgh") == DIFFERENT
+    assert _compare_locations("Remote, VS", "Palmerburgh") == DIFFERENT
 
 
 def test_noise_emptying_both_sides_abstains_rather_than_splitting():

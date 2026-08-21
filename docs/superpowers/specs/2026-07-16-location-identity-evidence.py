@@ -2,9 +2,11 @@
 
     .venv/bin/python docs/superpowers/specs/2026-07-16-location-identity-evidence.py
 
-This is EVIDENCE, not shipped code. It lives in docs/ because it names real cities: the ground-truth
-grouping cannot be derived by the rule under test without begging the question, so a human assigned
-it, and that table is geography. Nothing here is imported by `sluice/` or `tests/`.
+This is EVIDENCE, not shipped code, and nothing here is imported by `sluice/` or `tests/`.
+The ground-truth grouping still cannot be derived by the rule under test without begging the
+question, so a human assigns it -- but since #27 the values it groups are SYNTHETIC, scrubbed in
+step with the fixtures, so this table is no longer geography and no longer the reason the file
+sits outside `tests/`. It sits here because it is evidence for a spec, not a shipped test.
 
 The first draft of the spec quoted counts (31 / 158 / 21 / 179) that no reader could reproduce,
 because the grouping silently dropped two cities. This file exists so that never recurs: the universe
@@ -15,7 +17,9 @@ Both directions are load-bearing, and the first draft of THIS FILE only asserted
 fixture city therefore passed silently and vanished from the universe: exactly the bug the file was
 added to prevent, with the comment claiming otherwise sitting directly above it. Three reviewers
 caught it independently. `assert found` matters too: the glob below is relative, so a run from the
-wrong cwd finds nothing, and a naive one-direction flip would report a green 0-value universe.
+wrong cwd finds nothing, and a naive one-direction flip would report a green 0-value universe. Its
+message names BOTH causes deliberately -- it used to name only the cwd, which is a cwd diagnosis for
+what #27 made the likelier cause by far: a corpus scrub that moved the values out from under it.
 """
 import glob
 import itertools
@@ -31,34 +35,34 @@ from sluice.core.leads import DIFFERENT, _compare_locations, _norm_location
 # `_compare_locations`'s actual return values, which is why it shows the shipped lowercase strings.
 
 # Ground truth, assigned BY HAND. Every distinct non-empty `location` in tests/fixtures/*/raw.json
-# that names a city. Country-only ('UAE', 'India', 'Ukraine') and arrangement-only ('Remote') values
+# that names a city. Country-only ('ASR', 'Vesperia', 'Karnovia') and arrangement-only ('Remote') values
 # are EXCLUDED from the universe: they denote no city, so "same city" is undefined for them.
 CITY = {
-    'Abu Dhabi': 'abudhabi',
-    'Abu Dhabi - United Arab Emirates': 'abudhabi',
-    'Abu Dhabi - United Arab Emirates (UAE)': 'abudhabi',
-    'Abu Dhabi , Al Ain - United Arab Emirates (UAE)': 'abudhabi',
-    'Beirut': 'beirut',
-    'Bengaluru': 'bengaluru',
-    'Cairo - Egypt': 'cairo',
-    'Dammam': 'dammam',
-    'Doha': 'doha',
-    'Doha - Qatar': 'doha',
-    'Dubai': 'dubai',
-    'Dubai - United Arab Emirates': 'dubai',
-    'Dubai - United Arab Emirates (UAE)': 'dubai',
-    'Jeddah - Saudi Arabia': 'jeddah',
-    'Hybrid work in London': 'london',
-    'London': 'london',
-    'London EC4Y': 'london',
-    'London Area, United Kingdom (Hybrid)': 'london',
-    'London, England, United Kingdom (Hybrid)': 'london',
-    'London, England, United Kingdom (Remote)': 'london',
-    'London\xa0∙ Choose area': 'london',
-    'Riyadh': 'riyadh',
-    'Riyadh - Saudi Arabia': 'riyadh',
-    'Sharjah': 'sharjah',
-    'Sharjah - United Arab Emirates (UAE)': 'sharjah',
+    'Brackenburgh - Bantria': 'brackenburgh',
+    'Clarkefurt - Allied Sundic Reaches (ASR)': 'clarkefurt',
+    'Clarkefurt - Allied Sundic Reaches': 'clarkefurt',
+    'Clarkefurt': 'clarkefurt',
+    'Ellery Kestrelburgh , Quillon Denfurt - Allied Sundic Reaches (ASR)': 'ellerykestrelburgh',
+    'Ellery Kestrelburgh - Allied Sundic Reaches (ASR)': 'ellerykestrelburgh',
+    'Ellery Kestrelburgh - Allied Sundic Reaches': 'ellerykestrelburgh',
+    'Ellery Kestrelburgh': 'ellerykestrelburgh',
+    'Fennimoreburgh': 'fennimoreburgh',
+    'Hensleyfurt - Halvenia': 'hensleyfurt',
+    'Hensleyfurt': 'hensleyfurt',
+    'Hybrid work in Palmerburgh': 'palmerburgh',
+    'Marshburgh - Norvane Thessary': 'marshburgh',
+    'Marshburgh': 'marshburgh',
+    'Palmerburgh Area, Allied Brennmark (Hybrid)': 'palmerburgh',
+    'Palmerburgh ZZ9Z': 'palmerburgh',
+    'Palmerburgh': 'palmerburgh',
+    'Palmerburgh, Wexmoor, Allied Brennmark (Hybrid)': 'palmerburgh',
+    'Palmerburgh, Wexmoor, Allied Brennmark (Remote)': 'palmerburgh',
+    'Palmerburgh\xa0∙ Choose area': 'palmerburgh',
+    'Potterburgh - Allied Sundic Reaches (ASR)': 'potterburgh',
+    'Potterburgh': 'potterburgh',
+    'Tolliverfurt': 'tolliverfurt',
+    'Whitlockfurt': 'whitlockfurt',
+    'Wrenfieldburgh - Norvane Thessary': 'wrenfieldburgh',
 }
 
 # Every distinct non-empty fixture value that names NO city. Deliberately excluded from the pair
@@ -66,17 +70,18 @@ CITY = {
 # distinguish a deliberate exclusion from a forgotten one; without this set the fixtures-to-table
 # direction cannot be asserted at all.
 NOT_A_CITY = {
-    'Bahrain - Bahrain', 'India', 'Remote', 'Saudi Arabia - Saudi Arabia', 'UAE', 'USA', 'Ukraine',
-    'United Arab Emirates - United Arab Emirates', 'United Kingdom (Remote)',
+    'Sedgewickfurt - Sedgewickfurt', 'Vesperia', 'Remote', 'Norvane Thessary - Norvane Thessary', 'ASR', 'VSA', 'Karnovia',
+    'Allied Sundic Reaches - Allied Sundic Reaches', 'Allied Brennmark (Remote)',
 }
 
 # A sample `location_noise_words`. NOT a shipped default -- this is what a user with this geography
 # would configure. It ships nowhere; see the spec's Neutrality section. Every token here is read from
-# a fixture value above EXCEPT 'uk', which is hand-added to cover the abbreviation the boards in this
+# a fixture value above EXCEPT 'abm', which is hand-added to cover the abbreviation the boards in this
 # corpus happen not to use -- so this set is very slightly more than the corpus discloses.
 GEO_NOISE = frozenset({
-    'united', 'kingdom', 'uk', 'england', 'arab', 'emirates', 'uae', 'area', 'choose',
-    'egypt', 'qatar', 'saudi', 'arabia', 'hybrid', 'remote', 'work', 'in', 'al', 'ain',
+    'allied', 'brennmark', 'abm', 'wexmoor', 'sundic', 'reaches', 'asr', 'area', 'choose',
+    'bantria', 'halvenia', 'norvane', 'thessary', 'hybrid', 'remote', 'work', 'in',
+    'quillon', 'denfurt',
 })
 
 
@@ -108,9 +113,13 @@ def check_universe(found):
       1. fixtures -> tables: a NEW fixture value must be classified, not silently dropped.
       2. tables -> fixtures: a value that no longer exists must not pad the universe.
       3. the corpus is non-empty: the glob is relative, so a wrong-cwd run must not report a green
-         zero-value universe.
+         zero-value universe. A SCRUBBED corpus trips this same assertion, which is why the message
+         names that cause too rather than sending the reader to check their working directory.
     """
-    assert found, 'no fixture locations found -- run this from the repo root; the glob is relative'
+    assert found, (
+        'no fixture location values matched. Either the glob found no files (it is relative -- run '
+        'this from the repo root), or the fixtures no longer carry the values this table names '
+        '(they were scrubbed; re-derive the table from the corpus alongside the scrub).')
     both = set(CITY) & NOT_A_CITY
     # Without this, a double-listed value passes BOTH checks below (one subtracts the tables, the
     # other unions them) while still entering the pair space via sorted(CITY).
@@ -134,6 +143,17 @@ def main():
 
     print(f'#5 rule 2 as written (normalized-EQUAL) fires {sum(rule2_as_written(a, b) for a, b in same)}'
           f'/{len(same)} same-city pairs  <- the defect this spec fixes')
+    # Token SUBSET, the rejected alternative to overlap. Derived rather than quoted, because
+    # there are TWO populations and quoting either without naming it invites exactly the
+    # confusion this line replaces. `_compare_locations`'s docstring counts the 21 pairs ONE
+    # city's seven renderings make (pinned in tests/test_leads_location.py); this script counts
+    # all 33 same-city pairs in the corpus. Both split 15 -- the SAME 15, because the other 12
+    # pairs are subsets and split 0 -- so the two figures agree and only the denominators differ.
+    # Neither is stale: the universe has been 25 CITY values since this file's first commit.
+    print(f'token-SUBSET (the rejected alternative) splits '
+          f'{sum(not (set(_norm_location(a).split()) <= set(_norm_location(b).split())
+                      or set(_norm_location(b).split()) <= set(_norm_location(a).split()))
+                 for a, b in same)}/{len(same)} same-city pairs')
     print(f'tri-state _compare_locations  returns '
           f'{dict(Counter(_compare_locations(a, b) for a, b in same))} on the same pairs\n')
 
