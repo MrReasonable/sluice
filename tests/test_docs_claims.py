@@ -228,7 +228,14 @@ _RETIRED_CONFIG = [
 #   * Only the `_RETIRED_CONFIG` sweep skips the block. Every other check in this file still
 #     reads the whole changelog, breaking block included.
 #   * Only CHANGELOG.md gets the treatment. A BREAKING heading in any other doc is still swept.
-_BREAKING_HEADING = re.compile(r"^#{2,6} .*BREAKING CHANGES.*$", re.MULTILINE)
+# EXACT heading text, not a substring. `.*BREAKING CHANGES.*` would also match
+# `### NOT BREAKING CHANGES` and `## Some BREAKING CHANGES notes`, exempting whatever sits
+# under them from the retired-key sweep -- a narrowing wide enough to hide the very thing it
+# narrows around (CodeRabbit, #171). The leading `(?:[^\w\s]\s*)*` admits release-please's
+# own decoration (it emits `### \u26a0 BREAKING CHANGES`) while still refusing any WORD before
+# the phrase; the trailing `#*` admits closed-ATX style.
+_BREAKING_HEADING = re.compile(
+    r"^#{2,6}\s+(?:[^\w\s]\s*)*BREAKING CHANGES\s*#*\s*$", re.MULTILINE)
 
 
 def _without_breaking_blocks(text):
@@ -294,6 +301,29 @@ def test_breaking_block_stripping_is_bounded():
         "catch a changelog that actually instructs setting one"
     )
     assert _without_breaking_blocks("no headings here") == "no headings here"
+
+
+def test_only_an_exact_breaking_heading_is_stripped():
+    """A heading merely CONTAINING the phrase must not exempt its body.
+
+    The first spelling of `_BREAKING_HEADING` was `.*BREAKING CHANGES.*`, which matched
+    `### NOT BREAKING CHANGES` too -- so anything filed under such a heading would have been
+    invisible to the retired-key sweep. A narrowing wide enough to hide what it narrows around
+    is the failure this whole guard exists to avoid, reproduced one layer up.
+    """
+    for heading in ("### \u26a0 BREAKING CHANGES", "### BREAKING CHANGES",
+                    "## BREAKING CHANGES ##", "###   BREAKING CHANGES"):
+        body = f"{heading}\n\nSet cv.name: \"Ada Example\" here.\n\n### Features\n\nkeep me\n"
+        stripped = _without_breaking_blocks(body)
+        assert "Ada Example" not in stripped, f"{heading!r} should exempt its body"
+        assert "keep me" in stripped, f"{heading!r} stripped past its own section"
+
+    for heading in ("### NOT BREAKING CHANGES", "## Some BREAKING CHANGES notes",
+                    "### BREAKING CHANGES policy"):
+        body = f"{heading}\n\nSet cv.name: \"Ada Example\" here.\n"
+        assert "Ada Example" in _without_breaking_blocks(body), (
+            f"{heading!r} is not an exact BREAKING CHANGES heading and must NOT exempt its body"
+        )
 
 
 # The NESTED-YAML half of the same sweep, closing what the comment above `_RETIRED_CONFIG`
