@@ -778,7 +778,7 @@ def test_company_from_role_greedy_role_group_uses_the_last_at_not_the_first():
     # return True), _company_from_role("Engineer at fastgrowth") returns
     # "fastgrowth" instead of None -- this case alone turns red.
     ("Engineer at fastgrowth", "lowercase-opening tail, isolates _looks_like_a_name (not an idiom word)"),
-    ("Engineer at Example Meridian, London", "comma in the tail"),
+    ("Engineer at Example Meridian, Palmerburgh", "comma in the tail"),
     ("Engineer at Example Meridian | Remote", "pipe in the tail"),
     ("Staff Engineer", "no \" at \" at all"),
     ("at Example Meridian", "nothing before \" at \""),

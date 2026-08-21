@@ -15,7 +15,7 @@ def test_miss_then_hit_and_ttl(tmp_path):
 
     now = datetime(2026, 7, 7, 12, 0, 0)
     dc = DossierCache(str(tmp_path), ttl_days=7, fetcher=fetcher, clock=_clock(now))
-    lead = {"company": "Acme", "role": "Analyst", "location": "London",
+    lead = {"company": "Acme", "role": "Analyst", "location": "Palmerburgh",
             "role_type": "permanent"}
 
     d1 = dc.get_or_build(lead)

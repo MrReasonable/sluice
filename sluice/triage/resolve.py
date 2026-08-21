@@ -63,7 +63,7 @@ _MAX_ROLE_COMPANY_WORDS = 6
 # "simplify" this to a lazy group -- that is a bug, not a simplification.
 #
 # `[^,|/@()\[\]]+?` excludes separator characters from the company segment, so "Engineer
-# at Example Meridian, London" abstains (no way to reach `\s*$` without crossing the
+# at Example Meridian, Palmerburgh" abstains (no way to reach `\s*$` without crossing the
 # excluded comma) rather than writing a location into `company`.
 _ROLE_AT_COMPANY = re.compile(
     r"^(?P<role>.*\S)\s+(?i:at)\s+(?P<company>[^,|/@()\[\]]+?)\s*$")
