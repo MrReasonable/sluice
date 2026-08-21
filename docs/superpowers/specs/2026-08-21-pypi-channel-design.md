@@ -568,7 +568,7 @@ holds, with the rest deferred to PR 7 alongside `docs/INSTALL.md`.
 
 **What is actually in the sdist**, measured rather than assumed:
 
-```
+```text
 LICENSE  MANIFEST.in  PKG-INFO  README.md  job_sluice.egg-info  pyproject.toml  setup.cfg  sluice
 ```
 
@@ -596,25 +596,48 @@ those two outcomes.
   equal to itself. Derive the prefix from `PKG-INFO`'s parent and assert the set of entries
   BELOW it equals the list above.
 - **Both the guard and its falsify partner build from ONE shared helper**, `_build_sdist(dest)`,
-  mirroring the existing `_build_wheel`: it copies `sluice/`, `tests/`, `MANIFEST.in`,
-  `pyproject.toml`, `LICENSE` and `README.md` into a tmpdir and builds there. This is not
-  stylistic. The draft said the guard should build "from the real tree" while its partner
-  "rebuilds with `prune tests` removed" -- and those are mutually exclusive, because removing
-  `prune tests` from the real tree means editing the repository's own `MANIFEST.in`. It also
-  inverted the module's docstring, which builds from a copy precisely to keep `build/` and
-  `.egg-info` out of the repo root. Measured: a `_build_wheel`-shaped copy (no `tests/`) ships
-  zero test members with or WITHOUT `prune tests`, so the draft's partner would have been red
-  while the guard stayed green -- a falsify partner that cannot falsify.
+  mirroring the existing `_build_wheel`: it copies the TRACKED TREE -- whatever `git ls-files`
+  reports -- into a tmpdir, overwrites `MANIFEST.in` last (with the real text, or a partner's
+  mutated one), and builds there. This is not stylistic. The draft said the guard should build
+  "from the real tree" while its partner "rebuilds with `prune tests` removed" -- and those are
+  mutually exclusive, because removing `prune tests` from the real tree means editing the
+  repository's own `MANIFEST.in`. It also inverted the module's docstring, which builds from a
+  copy precisely to keep `build/` and `.egg-info` out of the repo root. Measured: a
+  `_build_wheel`-shaped copy (no `tests/`) ships zero test members with or WITHOUT `prune
+  tests`, so the draft's partner would have been red while the guard stayed green -- a falsify
+  partner that cannot falsify.
+- **Why the tracked tree and not a hand-listed subset**, which is what this section's own first
+  form specified -- three trees plus four root files. Measured, the
+  hand-list made three real `MANIFEST.in` changes INVISIBLE: `graft scripts` and `graft .github`
+  each found nothing to graft, and `include sluice.yaml.example` named a file the copy did not
+  contain, so all three left the root-entry equality green while the real tree would have
+  shipped 8, 8 and 1 extra members respectively. Copying what git tracks removes the enumeration,
+  and with it the unanswerable "which tree did we forget?". The root-entry set comes out
+  IDENTICAL either way (135 members, 0.6s per build), so this changed the guard's REACH and not
+  its verdict. `__pycache__` needs no explicit ignore any more: git tracks none of it, so its
+  absence is structural rather than a rule to remember.
 - **Assert scope, not just contents**: the archive's total member count is non-trivial, so a
   build that produced almost nothing is red rather than vacuously compliant.
 
 **What this deliberately does NOT cover**, stated so the gap is known rather than assumed closed:
 
-- `sluice/` membership is a filesystem walk (`packages.find` plus the `templates/*.html.j2`
-  package-data glob), so an UNTRACKED file under `sluice/` still ships, and the guard sees
-  `sluice` as a single entry. `tests/test_no_leaked_files.py` cannot see it either, being
-  `git ls-files`-based. This is bounded rather than closed: the released sdist is built by CI
-  from a clean checkout, where nothing is untracked. It is a real gap on any local build.
+- **Root MEMBERS are not root CONTENTS.** `sluice` is ONE entry in the set the equality pins, so
+  that assertion says nothing whatever about what is inside the package directory, and the
+  archive's total member count is too coarse to notice one more file.
+  `test_the_sdist_ships_every_packaged_template` closes that for the packaged templates
+  specifically -- derived from the tree, so a second template beside the first is swept too --
+  and nothing else inside `sluice/` is swept at all.
+- **The guard observes what a CLEAN CHECKOUT ships, not what a working tree does**, because it
+  copies only what `git ls-files` reports. That is the right side of the trade rather than a
+  gap in the released artefact: `release-please.yml`'s `build` job checks out the tagged sha, so
+  a clean checkout IS what PyPI receives. The residual it leaves is one step further out --
+  `sluice/` membership in a REAL build is a filesystem walk (`packages.find` plus the
+  `templates/*.html.j2` package-data glob), so a `python -m build` run locally in a dirty tree
+  ships an untracked `.py` file under `sluice/` and nothing here or in
+  `tests/test_no_leaked_files.py` (also `git ls-files`-based) would see it. Measured, not
+  reasoned about: an untracked `sluice/untracked_probe.py` lands as a member and takes the
+  archive from 135 to 136, while the root-entry equality and the member-count floor both stay
+  green. Bounded rather than closed, and the bound is that a local build is not the release.
 - `--no-isolation` makes membership depend on the build environment, and the `[test]` venv this
   guard runs in is not the release build's hash-locked set.
 
@@ -689,10 +712,12 @@ In order, after this PR merges:
 1. Create the `testpypi` and `pypi` GitHub environments. **No protection rules** -- the repo
    owner's explicit decision on 2026-08-21, having been offered a required-reviewer rule and
    declined it. The consequence is recorded under Risks.
-2. Add a pending publisher at `test.pypi.org/manage/account/publishing/`: owner `MrReasonable`,
-   repo `sluice`, workflow **`testpypi.yml`**, environment `testpypi`.
-3. Add a pending publisher at `pypi.org/manage/account/publishing/`: owner `MrReasonable`, repo
-   `sluice`, workflow **`release-please.yml`**, environment `pypi`.
+2. Add a pending publisher at `test.pypi.org/manage/account/publishing/`: PyPI Project Name
+   **`job-sluice`**, owner `MrReasonable`, repo `sluice`, workflow **`testpypi.yml`**,
+   environment `testpypi`.
+3. Add a pending publisher at `pypi.org/manage/account/publishing/`: PyPI Project Name
+   **`job-sluice`**, owner `MrReasonable`, repo `sluice`, workflow **`release-please.yml`**,
+   environment `pypi`.
 4. Dispatch the TestPyPI dry run and confirm an upload lands. This is the step that converts
    Trusted Publishing in this repo from assumed to measured; nothing in CI can assert it.
 
@@ -701,7 +726,16 @@ naming the wrong one fails with `invalid-publisher` rather than falling back -- 
 `release-please.yml`, or step 3 naming `testpypi.yml`, is a real and easy mistake with a
 confusing error.
 
-### Two operational notes for the first real release
+**The project name and the repo name deliberately differ, and the form asks for both.** The
+distribution is `job-sluice`; the repository is `sluice`. Typing the repo name into the PyPI
+Project Name field configures cleanly and then fails the dry run with the same
+`invalid-publisher` -- an error that names NEITHER field, so there is nothing in it to point at
+the one that is wrong. (`sluice` on PyPI is also not free: it has been squatted since 2015 by an
+unrelated, dormant zfs-snapshot tool, which is why the distribution is named `job-sluice` at all.
+See CLAUDE.md's conventions, which pin all three of distribution name, import package and
+console script.)
+
+### Operational notes for the first real release
 
 **The `dist` artifact's retention is the recovery window, and it is 7 days rather than 1.** If
 `pypi` fails at 1.0.0 -- most likely because the trusted publisher above does not exist yet, or
@@ -723,6 +757,30 @@ the step carries no `--clobber` (see `release-assets` above: an asset that alrea
 something already uploaded, which should surface rather than be silently overwritten). Recovery is
 manual: delete the attached asset from the release, then re-run the job. Worth knowing before it
 happens, because the error names the existing asset rather than the interrupted upload.
+
+**`pypi` can succeed while `release-assets` fails, and that state is not symmetric.** The two jobs
+both declare `needs: [release-please, build]` and neither needs the other, so they run in
+PARALLEL -- there is no ordering between them and no gate that stops one when the other fails.
+The outcome to plan for is the irreversible half succeeding: the package is on PyPI, public and
+permanent, while the GitHub Release for the same tag carries no assets at all. Nothing is broken
+for an installing user (`pip install job-sluice` works), and the `attest` job is unaffected --
+it is a third parallel job that attaches provenance to this REPO, not to the release page. What
+is missing is the release page's own copy of the wheel and sdist.
+
+The recovery is the same shape as the failed-`pypi` case above, and for the same reason:
+**re-run the failed job only**, while the artifact `build` uploaded still exists. Re-running the
+WHOLE workflow cannot work -- release-please sees the release already cut, `release_created`
+comes back `false`, and BOTH `build` and `release-assets` are gated on that string, so no new
+artifact is produced and the upload job never runs either. So the bound on this recovery is the
+same 7-day artifact retention, and it is the only bound: past it, the assets have to be built
+and attached by hand from the tagged commit.
+
+Two things follow that are easy to get wrong in the moment. Re-running `release-assets` alone
+must NOT be reached for by re-running `pypi` too -- that job's `skip-existing` is deliberately
+left false, so a second upload of an already-published file FAILS, which is correct behaviour
+and a confusing thing to trip over while fixing something else. And if the failure was a PARTIAL
+upload rather than a total one, the note directly above applies first: delete the asset that did
+land before re-running, because the step carries no `--clobber`.
 
 ## Revises the sequencing spec's release plan, and RESTORES its per-channel holds
 

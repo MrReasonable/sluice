@@ -638,11 +638,29 @@ def _build_sdist(dest, manifest_text=None):
     it. Both tests share this helper for exactly that reason. Measured during design review:
     a copy WITHOUT `tests/` ships zero test members whether or not `prune tests` is present,
     so a guard and partner that build from differently-shaped trees prove nothing.
+
+    SCOPE. The copy is the TRACKED TREE -- whatever `git ls-files` reports -- rather than the
+    hand-listed subset this plan first specified. Measured, that hand-list made three real
+    MANIFEST.in changes INVISIBLE: `graft scripts` and `graft .github` each found nothing to
+    graft, and `include sluice.yaml.example` named a file the copy did not contain, so all
+    three left the root-entry equality green while the real tree would have shipped 8, 8 and 1
+    extra members respectively. The root-entry set comes out IDENTICAL either way, so this
+    changed the guard's reach and not its verdict. Updated here to match what shipped rather
+    than left as the plan's superseded first form -- but tests/test_packaging.py carries the
+    authoritative version of both this docstring and this body, and the code wins on any
+    disagreement.
     """
-    shutil.copytree(f"{ROOT}/sluice", f"{dest}/sluice")
-    shutil.copytree(f"{ROOT}/tests", f"{dest}/tests")
-    for named in ("pyproject.toml", "LICENSE", "README.md"):
-        shutil.copy(f"{ROOT}/{named}", dest)
+    # `_tracked_files()` is a sibling helper: `git ls-files -z` for this repo, failing loudly
+    # on a non-zero exit or an empty result rather than returning [] and building from nothing.
+    for rel in _tracked_files():
+        src = os.path.join(ROOT, rel)
+        if not os.path.exists(src):
+            continue   # tracked but deleted in the working tree; nothing to copy
+        dst = os.path.join(dest, rel)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy(src, dst)
+    # LAST, and unconditionally: MANIFEST.in is itself tracked, so the loop above has already
+    # placed the real one. A falsify partner's MUTATED text must overwrite that copy.
     with open(f"{dest}/MANIFEST.in", "w", encoding="utf-8") as f:
         f.write(manifest_text if manifest_text is not None
                 else open(f"{ROOT}/MANIFEST.in", encoding="utf-8").read())
