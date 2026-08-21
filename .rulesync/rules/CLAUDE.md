@@ -128,7 +128,12 @@ the copy.
 
 `ingest run` and `ingest test-source` drive a live Camofox browser server; every other command is
 offline. `job-sluice ingest test-source ID --raw` prints the raw fetch payload, which is how golden
-parser fixtures get captured.
+parser fixtures get captured. **A fresh capture is real board output, so it arrives carrying real
+employer names and the posting's real location -- in `company`, in `title`, and in the URL slug.**
+Scrub it before committing, then update the rosters and that source's digest in
+`tests/test_fixture_name_neutrality.py`; the digest test fails until you do, and its message says
+so. That gate is the whole reason #27 cannot recur silently, so do not paste a new digest without
+reading the diff it is certifying.
 
 ## Architecture
 
@@ -531,6 +536,45 @@ contact details, hostnames, or absolute paths in `sluice/` or `tests/`. The judg
 at runtime from the user's vault (`Job Applications/Judging Profile.md`), never from source. Tests
 generate synthetic job titles with seeded `faker` (`tests/conftest.py`) rather than hardcoding
 anyone's taste. Personal values reach the code only through `sluice.local.yaml` and the vault.
+
+The GOLDEN FIXTURE CORPUS (`tests/fixtures/*/raw.json`) is bound by that rule too, and used not to
+be swept by anything: every collector in `tests/test_fixture_name_neutrality.py` reads
+`tests/**/*.py`, so a corpus of CAPTURED board payloads carried real employer names and a real
+hunt geography through the guard written to catch exactly them (#27) -- in `company`, and also in
+`title` and in URL slugs, so enumerate every key rather than the one you would think to check. A
+pre-release scrub had already replaced MOST of the company names with a fictional roster, which is
+what made the corpus read as reviewed -- **a PARTIAL scrub is indistinguishable from a complete one, and is how this recurred.**
+Since #27 the corpus is scrubbed and ratcheted at the bottom of that same file: value rosters for
+the enumerable keys (`location`, `company`), asserted in BOTH directions, plus a per-source DIGEST
+over the CANONICAL PARSED JSON of the whole payload -- sorted keys, so it is blind to formatting and
+key order, but sees record count, key names, numbers, booleans and REPETITION. Not a set of the
+distinct strings: that loses multiplicity, and one row moving between two values already present in
+the same fixture then leaves the digest byte-identical with both rosters green (measured). The digest
+exists because `title` is free text the boards append the posting's location to, and no roster can
+enumerate it. Two traps to not walk back into: a gazetteer of real
+place names would be both the classifier that file's docstring argues against AND a leak in its own
+right (writing the removed values into `tests/` to forbid them puts them back in the public tree),
+and a scrub must preserve TOKEN STRUCTURE -- `core/leads.py`'s `_norm_location` reduces a value to a
+token SET, so only a substitution that is one-to-one and collision-free ACROSS THE LOCATION
+TOKENS leaves
+`docs/superpowers/specs/2026-07-16-location-identity-evidence.py`'s derivation intact (it is the
+check: every count must be unchanged).
+
+**What #27 is and is not about.** It is the captured SET -- a corpus of scraped payloads whose
+locations, taken together, read as one person's hunt geography. It is NOT a rule that a city name
+is sensitive. A single ordinary city in an illustrative position discloses nothing, so each
+source's one example search keeps its city (owner's ruling, 2026-08-21): a shipped example is a
+real, pasteable URL, a fictional place would make it return nothing and read as a broken source,
+and stripping the filter to avoid naming a city is a cost with no benefit. Do not "finish" #27 by
+sweeping example searches, docstring illustrations, or any other single incidental place name --
+that was proposed during this work and rejected.
+
+IANA timezone identifiers (`Europe/London`, `Asia/Dubai`) are the one standing EXEMPTION. They are
+standards keys rather than preferences, no synthetic substitute exists in the tz database, and in
+`tests/test_track_ics.py` the zone's UTC+0 offset is the property under test. `sluice/track/ics.py`'s
+Windows-to-IANA mapping table is the same exemption. Note also that a lowercase place-name sweep hits
+`cairo/pango` -- the Cairo graphics library, in `renderers/template.py`'s import-error message -- so a
+rule keyed on bare lowercase city names corrupts a real error string.
 
 **`sluice/` is standard-library only.** The sole exceptions: `yaml`, imported under a guarded
 `try/except ImportError` in each config module; the Google client libraries, imported lazily inside
