@@ -745,9 +745,17 @@ def _build_sdist(dest, manifest_text=None):
     it. Both tests share this helper for exactly that reason. Measured during design review:
     a copy WITHOUT `tests/` ships zero test members whether or not `prune tests` is present,
     so a guard and partner that build from differently-shaped trees prove nothing.
+
+    `docs/` is copied too, for the identical reason: MANIFEST.in's own comment asserts that
+    nothing grafts `docs/` and that publishing it would put an unreviewed tree on a permanent
+    index -- a claim this guard cannot falsify unless a `docs/` actually exists in the tree
+    being built. A copy without it would make `graft docs` a no-op (nothing to graft) and
+    leave that assertion in MANIFEST.in's comment untested by anything executable, the same
+    shape of defect as building without `tests/` above.
     """
     shutil.copytree(f"{ROOT}/sluice", f"{dest}/sluice")
     shutil.copytree(f"{ROOT}/tests", f"{dest}/tests")
+    shutil.copytree(f"{ROOT}/docs", f"{dest}/docs")
     for named in ("pyproject.toml", "LICENSE", "README.md"):
         shutil.copy(f"{ROOT}/{named}", dest)
     with open(f"{dest}/MANIFEST.in", "w", encoding="utf-8") as f:
