@@ -38,11 +38,15 @@ pattern if the exact before/after numbers matter). Every FALSIFY test still buil
 own MUTATED wheel per test, deliberately UNshared: each mutates a different line and
 must not see another test's mutation.
 
-It has grown once more with #104: the last pair of tests below builds a real SDIST and
-pins its root members, because the PyPI channel makes the sdist public and permanent --
-before it, `build`'s sdist expired with the run artifact in a day and nothing downstream
-read it. So this module no longer gates only "the shipped template reaches a wheel"; it
-gates a second published artefact whose contents nobody can withdraw.
+It has grown once more with #104: the tests below build a real SDIST and pin both its
+root members and the templates it ships, because the PyPI channel makes the sdist public
+and permanent -- before it, `build`'s sdist expired with the run artifact in a day and
+nothing downstream read it. So this module no longer gates only "the shipped template
+reaches a wheel"; it gates a second published artefact whose contents nobody can withdraw,
+and it gates the TEMPLATE on that one too. The root-member equality alone cannot: measured,
+`exclude sluice/templates/*.html.j2` produced an sdist with ZERO template members while
+every packaging test stayed green, because `sluice` is still a root entry either way. The
+sdist is what the wheel is built FROM, so a template missing there is missing everywhere.
 """
 import dataclasses
 import glob
@@ -741,6 +745,25 @@ SDIST_ROOT_MEMBERS = {
 }
 
 
+def _tracked_files():
+    """Every path `git ls-files` reports for this repo, repo-relative.
+
+    NUL-separated (`-z`), not line-separated: a filename containing a newline would
+    otherwise arrive as two entries and both copies would fail. Fails LOUDLY on a non-zero
+    exit or an empty result rather than returning `[]` -- a copy built from nothing would
+    make every assertion over the resulting tarball vacuous, which is the "a sweep that
+    discovers nothing passes" shape this repo treats as a repeat offender.
+    """
+    proc = subprocess.run(["git", "-C", ROOT, "ls-files", "-z"],
+                          capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, f"git ls-files failed:\n{proc.stderr[-2000:]}"
+    files = [f for f in proc.stdout.split("\0") if f]
+    assert files, (
+        "git ls-files reported no tracked files, so the sdist below would be built from an "
+        "empty tree and every assertion over its members would pass having looked at nothing")
+    return files
+
+
 def _build_sdist(dest, manifest_text=None):
     """Build a REAL sdist from a COPY of the tree and return its member names.
 
@@ -759,21 +782,36 @@ def _build_sdist(dest, manifest_text=None):
     and leave that assertion in MANIFEST.in's comment untested by anything executable, the same
     shape of defect as building without `tests/` above.
 
-    SCOPE, stated because the root-entry equality below reads as though it covered more than
-    it does. This copies exactly `sluice/`, `tests/`, `docs/` and four root files, so the
-    equality CAN falsify a change that ships one of those trees (dropping `prune tests` is the
-    partner test) or that adds/removes a root member. It CANNOT see a tree that is not copied
-    here: a future `graft scripts` or `graft .github` would find nothing to graft and the
-    equality would stay green. That is a note on the boundary, not a live defect -- MANIFEST.in
-    grafts nothing today -- and the fix if either is ever grafted is to copy that tree too.
+    SCOPE. The copy is the TRACKED TREE -- whatever `git ls-files` reports -- rather than a
+    hand-listed subset, so the root-entry equality below has the blast radius its wording
+    implies. It was a hand-list of three trees plus four root files, and measured, that made
+    three real MANIFEST.in changes INVISIBLE: `graft scripts` and `graft .github` each found
+    nothing to graft, and `include sluice.yaml.example` named a file the copy did not contain,
+    so all three left the equality green while the real tree would have shipped 8, 8 and 1
+    extra members respectively. Copying what git tracks removes the enumeration, and with it
+    the unanswerable "which tree did we forget?". Verified when it was widened: the root-entry
+    set comes out IDENTICAL either way (135 members, 0.6s per build), so this changed the
+    guard's reach and not its verdict.
+
+    One property changes with it and is worth naming rather than discovering later: an
+    UNTRACKED file under `sluice/` is no longer copied, so this now observes what a clean
+    checkout ships rather than what one developer's working tree does. That is the right side
+    of the trade -- `release-please.yml`'s `build` job checks out the tagged sha, so a clean
+    checkout IS what PyPI receives -- but it is a change, not a no-op.
+
+    `__pycache__` never appears here: git tracks none of it, so the explicit ignore the
+    hand-listed `copytree` needed is now structural rather than a rule to remember.
     """
-    for tree in ("sluice", "tests", "docs"):
-        # __pycache__ excluded for parity with `_build_wheel`: without it a developer's warm
-        # caches (~205 files) are copied on every run for a build that never reads them.
-        shutil.copytree(f"{ROOT}/{tree}", f"{dest}/{tree}",
-                        ignore=shutil.ignore_patterns("__pycache__"))
-    for named in ("pyproject.toml", "LICENSE", "README.md"):
-        shutil.copy(f"{ROOT}/{named}", dest)
+    for rel in _tracked_files():
+        src = os.path.join(ROOT, rel)
+        if not os.path.exists(src):
+            continue   # tracked but deleted in the working tree; nothing to copy
+        dst = os.path.join(dest, rel)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy(src, dst)
+    # LAST, and unconditionally: MANIFEST.in is itself tracked, so the loop above has already
+    # placed the real one. A falsify partner's MUTATED text must overwrite that copy, not lose
+    # to it.
     with open(f"{dest}/MANIFEST.in", "w", encoding="utf-8") as f:
         f.write(manifest_text if manifest_text is not None
                 else open(f"{ROOT}/MANIFEST.in", encoding="utf-8").read())
@@ -793,6 +831,29 @@ def _build_sdist(dest, manifest_text=None):
         return tf.getnames()
 
 
+def _sdist_root_prefix(names):
+    """The sdist's single root directory, derived from its TOP-LEVEL PKG-INFO member.
+
+    An sdist carries TWO members ending in `/PKG-INFO` -- measured against a real build, not
+    assumed: `<root>/PKG-INFO` and `<root>/job_sluice.egg-info/PKG-INFO`. This took
+    `next(...)` over the member list, i.e. whichever of the two the TAR ORDER happened to
+    yield first -- a build-backend detail, not a guarantee. Had it yielded the egg-info copy,
+    the derived prefix would have been `<root>/job_sluice.egg-info` and every root-entry
+    assertion below would have been reading a different directory than it names.
+
+    So restrict to members at depth ONE and require exactly one: zero means the derivation is
+    broken and everything over it is vacuous, two means the root is genuinely ambiguous.
+    Neither is a case to paper over by taking the first.
+    """
+    candidates = sorted({n[: -len("/PKG-INFO")] for n in names
+                         if n.endswith("/PKG-INFO") and n.count("/") == 1})
+    assert len(candidates) == 1, (
+        f"expected exactly one TOP-LEVEL PKG-INFO member to derive the sdist root from, "
+        f"found {candidates} -- zero leaves every assertion below vacuous, two leaves the "
+        f"root ambiguous")
+    return candidates[0]
+
+
 def _sdist_root_entries(names):
     """The entry names one level below the sdist's single root directory.
 
@@ -801,12 +862,21 @@ def _sdist_root_entries(names):
     modules. An allowlist over that set is exactly-equal and blind. Derive the prefix from
     PKG-INFO's parent and assert BELOW it.
     """
-    prefix = next(n for n in names if n.endswith("/PKG-INFO")).rsplit("/", 1)[0]
-    assert prefix, "could not derive the sdist root prefix from PKG-INFO"
+    prefix = _sdist_root_prefix(names)
     return {n[len(prefix) + 1:].split("/", 1)[0] for n in names if n != prefix}
 
 
-def test_the_sdist_ships_the_package_and_metadata_and_no_tests(tmp_path):
+@pytest.fixture(scope="module")
+def pristine_sdist(tmp_path_factory):
+    """The unmutated sdist's member names, built ONCE and shared by every POSITIVE assertion
+    over it -- the same pattern, and the same reason, as `pristine_wheel` above. Every
+    FALSIFY test still builds its own MUTATED sdist through `_build_sdist` directly, since
+    each mutates a different MANIFEST.in line and must not see another test's mutation.
+    """
+    return _build_sdist(str(tmp_path_factory.mktemp("pristine-sdist")))
+
+
+def test_the_sdist_ships_the_package_and_metadata_and_no_tests(pristine_sdist):
     """The sdist becomes PUBLIC AND PERMANENT with the PyPI channel. Before it, `build`'s
     sdist expired with the run artifact in a day.
 
@@ -815,10 +885,69 @@ def test_the_sdist_ships_the_package_and_metadata_and_no_tests(tmp_path):
     fixture packages beside it stay out and the shipped tests cannot run. Shipping a broken
     test tree is worse than shipping either a working one or none.
     """
-    names = _build_sdist(str(tmp_path))
+    names = pristine_sdist
     assert len(names) > 20, "the sdist is implausibly small; the build produced almost nothing"
     assert _sdist_root_entries(names) == SDIST_ROOT_MEMBERS
     assert not [n for n in names if "/tests/" in n], "tests must not ship in the sdist"
+
+
+def test_the_sdist_ships_every_packaged_template(pristine_sdist):
+    """Root MEMBERS are not root CONTENTS, and the difference is the whole reason this exists.
+
+    `_sdist_root_entries` says `sluice` is present; it says nothing about what is inside it.
+    Measured: appending `exclude sluice/templates/*.html.j2` to MANIFEST.in produced an sdist
+    carrying ZERO template members while all 24 packaging tests stayed green -- `len(names) >
+    20` still held at 134, the root-member equality still matched, and the `/tests/` check
+    still passed. That is precisely the failure this module opens by describing ("the shipped
+    template must reach a WHEEL"), now on the artefact the wheel is BUILT FROM and the one
+    #104 makes public and permanent.
+
+    `sluice/renderers/template.py` is the only runtime read of a non-`.py` file in the
+    package, so a template that does not ship is a default renderer with nothing to render.
+
+    DERIVED from the tree via `_expected_templates`, never a hardcoded filename: the manifest
+    ships `templates/*.html.j2`, so a second template added beside the first must be checked
+    too rather than silently unswept.
+    """
+    expected = _expected_templates()
+    assert expected, "found no templates to check, so this guard would pass vacuously"
+    prefix = _sdist_root_prefix(pristine_sdist)
+    missing = [t for t in expected if f"{prefix}/{t}" not in pristine_sdist]
+    assert not missing, (
+        f"{missing} missing from the built sdist. The sdist is what the wheel is built FROM "
+        f"and what PyPI keeps permanently, so a template absent here is absent everywhere "
+        f"downstream of it.")
+
+
+def test_the_sdist_template_guard_is_falsified_by_excluding_them(tmp_path):
+    """The guard above must be FALSIFIABLE, not merely green.
+
+    Built through the SAME helper with only MANIFEST.in mutated, for the reason
+    `_build_sdist`'s docstring gives: a guard and a partner observing differently-shaped
+    trees prove nothing about each other.
+
+    The last assertion is the point of the whole pair rather than a bonus: with every
+    template excluded, the root-member equality is STILL exactly satisfied. That is the blind
+    spot in writing, inside the test that closes it -- so a future reader cannot conclude the
+    root-member check already covered this.
+    """
+    original = open(f"{ROOT}/MANIFEST.in", encoding="utf-8").read()
+    expected = _expected_templates()
+    assert expected, "found no templates to check, so this guard would pass vacuously"
+    names = _build_sdist(str(tmp_path),
+                         manifest_text=original + "\nexclude sluice/templates/*.html.j2\n")
+    prefix = _sdist_root_prefix(names)
+    assert f"{prefix}/sluice/renderers/template.py" in names, (
+        "the mutation removed more than the templates -- the renderer that reads them is "
+        "gone too, so this proves nothing about template packaging specifically")
+    assert not [t for t in expected if f"{prefix}/{t}" in names], (
+        "excluding the templates did not stop them shipping, so the guard above is not "
+        "actually what keeps them in")
+    assert _sdist_root_entries(names) == SDIST_ROOT_MEMBERS, (
+        "the root-member equality was expected to stay SATISFIED here -- it is blind to a "
+        "tree's contents, which is exactly why test_the_sdist_ships_every_packaged_template "
+        "exists as a separate assertion. If this now fails, that reasoning has changed and "
+        "the sibling's docstring needs revisiting rather than this line relaxing.")
 
 
 def test_the_sdist_guard_is_falsified_by_dropping_the_prune(tmp_path):
