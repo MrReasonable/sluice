@@ -11,9 +11,9 @@ PR-3-specific decisions those two leave open: where the dry run lives (the seque
 semantics are, and what pins the dry run to the release path it claims to prove.
 
 It also records two decisions the repo owner made on 2026-08-21 that change documents upstream of
-this one -- see "Supersedes the sequencing spec's timing section" below.
+this one -- see "Revises the sequencing spec's release plan" below.
 
-## Revised after plan review, 2026-08-21
+## Revised after two plan-review rounds, 2026-08-21
 
 Reviewed by the five-agent roster before implementation: 27 findings, 0 Critical, 14 High. What
 changed, recorded because several of these were errors of a KIND rather than of detail:
@@ -40,6 +40,34 @@ What held: every locally-checkable claim in "Verified before designing" was inde
 confirmed by all five reviewers, and no hard invariant, dependency rule or neutrality property is
 touched. The verification discipline worked; what it could not catch is that a document can be
 factually accurate about the codebase and still describe a job that cannot run.
+
+**Round 2 (24 findings, 0 Critical, 13 High) reviewed the REPAIRS**, and found the defect rate had
+not dropped -- it had MOVED. Almost every finding was in text written to fix round 1:
+
+- **The version stamp could not fail.** `re.sub` returns its input unchanged on no match, so the
+  stamp could silently no-op and hand a green dispatch that uploaded nothing -- round 1's exact
+  defect, rebuilt inside its own fix. Three reviewers found it independently.
+- **The sdist guard was broken four ways** (vacuous allowlist over a one-element set; a falsify
+  partner that could not falsify, measured; two mutually exclusive halves; a docstring cited as
+  supporting its own opposite). Five reviewers, seven findings, against scope this document added
+  by its own argument -- so it was cut down rather than repaired in place.
+- **The witness table watched the wrong half** of the paired assertions it had just introduced,
+  and left the drift pin's equality -- its whole purpose -- with no mutant at all.
+- **The supersession table** miscited one passage, missed another, and prescribed a rewrite that
+  turned a passage into itself while contradicting this document's own Risks section.
+- **The rename cost was understated by an order of magnitude** (52 files, not three), and that
+  figure was the entire basis for a decision.
+- **The README edits were scope creep concealed by a misquote** of the sequencing spec cell that
+  allocates them to PR 7.
+
+Two of round 2's findings were resolved by DELETION rather than repair: revising decision 1
+restored the sequencing spec's model, which withdrew the supersession table and everything wrong
+with it. That is the cheaper kind of fix and it only became visible once the cost basis was
+corrected.
+
+The lesson to carry into PR 4: **a repair is the least-reviewed text in a document, and this
+codebase's failure mode is a fix that reproduces its own bug one layer up.** Both rounds found
+that shape; the second found it in the first's output.
 
 ## Verified before designing, not assumed
 
@@ -78,19 +106,28 @@ invalidate a section below rather than merely a sentence:
 
 In: two new jobs in `.github/workflows/release-please.yml` (`pypi`, `release-assets`); one new
 output on the existing `release-please` job (`tag_name`); a new
-`.github/workflows/testpypi.yml`; extensions to `tests/test_release_publish_wiring.py`; a new
-sdist-contents guard in `tests/test_packaging.py` with a `MANIFEST.in` to make it hold; and edits
-to two documents this PR's decisions falsify -- `docs/superpowers/specs/2026-08-09-packaging-distribution-sequencing-design.md` and `README.md`.
+`.github/workflows/testpypi.yml`; extensions to `tests/test_release_publish_wiring.py`; a
+minimal sdist-contents guard in `tests/test_packaging.py` with a `MANIFEST.in` to make it hold;
+and an edit to `docs/superpowers/specs/2026-08-09-packaging-distribution-sequencing-design.md`,
+whose sequencing this PR revises.
 
-Those last two are diff, not context, and were missing from this list in the reviewed draft. A
-scope list that enumerates only code is how a doc edit gets skipped at implementation time and
-lands as drift.
+That last one is diff, not context, and was missing from this list in the first draft. A scope
+list that enumerates only code is how a doc edit gets skipped at implementation time and lands as
+drift.
 
-The sdist guard is an addition to what the sequencing spec allocated PR 3, and the justification
-is specific rather than general: PR 3 is the PR that makes the sdist PUBLIC AND PERMANENT. Before
-it, `build`'s sdist expired with the run artifact in a day; after it, it is on an index that
-never forgets. A guard whose absence only becomes load-bearing because of this PR belongs to this
-PR.
+**`README.md` is NOT in scope, and the second review round is why.** The draft put README's
+install claims in this PR on the reasoning that they "become false the moment anything publishes".
+Two reviewers established the opposite: those lines sit inside README's `## Install` section, and
+the sequencing spec's row 7 allocates "`docs/INSTALL.md` **+ README install section**" to PR 7 --
+which this document's own Out list had quoted with the second half dropped, and then taken. The
+install docs are now due BEFORE 1.0.0 rather than after every channel (see the sequencing
+revision below), but they are still PR 7's work, not this PR's.
+
+The sdist guard is an addition to what the sequencing spec allocated PR 3, and it is deliberately
+MINIMAL after five reviewers filed seven findings against the draft's more ambitious version. The
+justification for keeping any of it is specific rather than general: PR 3 is what makes the sdist
+PUBLIC AND PERMANENT. Before it, `build`'s sdist expired with the run artifact in a day; after it,
+it is on an index that never forgets.
 
 Out: the `docker`, `linux-packages` and `homebrew` jobs (PRs 4-6) and `docs/INSTALL.md` (PR 7),
 per the sequencing table. The manual prerequisites are repo-owner-only and listed below rather
@@ -127,16 +164,20 @@ runs INLINE in the calling job, leaves `job_workflow_ref` untouched, and would t
 build steps with no bearing on the publisher claim at all. It was never considered, and the
 "Verified" bullet was doing rhetorical work it had not earned.
 
-It is still not adopted here, for a different and narrower reason: two copies is not yet
-duplication worth an abstraction, and extracting a composite action for two call sites is the
-premature abstraction this repo's review roster would flag on the next pass. **PR 4 is the
-extraction point, and this document names it so the decision is inherited rather than
-rediscovered.** The trigger is concrete: PR 4 adds a third consumer of the same build sequence
-(the `docker` channel's own dry run), and a third copy plus a second pairwise pin is where the
-drift pin stops being cheaper than the abstraction. Extracting then also requires widening
-`ci.yml`'s zizmor invocation from `.github/workflows/` to cover `.github/actions/` -- worth
-knowing in advance, since a composite action that no linter audits would silently drop this
-repo's SHA-pinning discipline at exactly the point the build sequence became shared.
+It is still not adopted, and the second review round corrected the reason. The draft deferred
+extraction to PR 4 on the grounds that PR 4 would add a third consumer of the build sequence.
+**That trigger does not fire.** Checked against the sequencing spec: PRs 4, 5 and 6 all CONSUME
+the `build` job's wheel -- Docker installs it, `nfpm` packages it, the Homebrew bump job reuses
+it -- and none of them re-runs the build sequence. The only basis for the claimed third copy was
+this document's own suggestion that PRs 4-6 each carry their own dry run, which is a "should" it
+never adopted. The trigger was circular, and both halves were written here.
+
+So the honest position is simpler: **two copies is the steady state, and the drift pin is the
+right answer to it indefinitely.** No extraction is scheduled. If a future PR ever does add a
+third copy of the build sequence, that is the moment to reconsider -- and it would also require
+widening `ci.yml`'s zizmor invocation from `.github/workflows/` to `.github/actions/`, since a
+composite action no linter audits would silently drop this repo's SHA-pinning discipline at
+exactly the point the build sequence became shared.
 
 ## Job definitions
 
@@ -281,8 +322,7 @@ jobs:
       - name: Refuse to publish a non-default branch to a permanent public index
         if: github.ref_name != github.event.repository.default_branch
         run: |
-          echo "::error::Dispatch this workflow from the default branch. A TestPyPI upload is
-          permanent and public; an unmerged branch must not become the tree of record."
+          echo "::error::Dispatch this workflow from the default branch -- a TestPyPI upload is permanent and public, so an unmerged branch must not become the tree of record."
           exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -293,17 +333,29 @@ jobs:
       - name: Stamp a unique dev version so each dispatch exercises index ACCEPTANCE
         run: |
           python -c "
-          import os, pathlib, re
+          import os, pathlib, re, sys
           f = pathlib.Path('sluice/__init__.py')
-          f.write_text(re.sub(r'(__version__ = \")([^\"]+)(\")',
-                              rf'\g<1>\g<2>.dev{os.environ[\"RUN\"]}\g<3>',
-                              f.read_text()))
+          text, n = re.subn(r'(__version__ = \")([^\"]+)(\")',
+                            rf'\g<1>\g<2>.dev{os.environ[\"RUN\"]}\g<3>',
+                            f.read_text())
+          if n != 1:
+              sys.exit(f'::error::version stamp matched {n} times, expected exactly 1 -- '
+                       'sluice/__init__.py no longer has the shape this step assumes')
+          f.write_text(text)
           "
         env:
           RUN: ${{ github.run_number }}
       - run: pip install --require-hashes -r .github/build-requirements.txt
       - run: python -m build --no-isolation
       - run: twine check --strict dist/*
+      - name: Prove the stamp reached the artefacts before anything is uploaded
+        run: |
+          ls dist/ | grep -q "\.dev${RUN}" || {
+            echo "::error::no built artefact carries .dev${RUN}; the stamp did not take effect"
+            exit 1
+          }
+        env:
+          RUN: ${{ github.run_number }}
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           repository-url: https://test.pypi.org/legacy/
@@ -317,14 +369,32 @@ the result is permanently public. It fails loudly rather than skipping, because 
 silently does nothing is the failure mode this whole document is trying to avoid.
 
 The **version stamp** exists because `skip-existing: true` alone would let the upload leg go green
-while doing nothing. TestPyPI filenames are immutable and `sluice/__init__.py` declares a static
-`0.1.0` that decision 1 parks, so without this, index ACCEPTANCE is exercised exactly once, ever
--- and `twine check --strict` does not substitute for it: it validates metadata rendering, not
-whether the index accepts the upload. This repo has already been bitten by an index-side
-`InvalidConfigError` on a license/classifier pairing that rendered fine locally. `.devN` is valid
-PEP 440, sorts below any real release, and the regex rewrites only the quoted value, preserving
-the `# x-release-please-version` marker on that line that `tests/test_release_version.py` pins. It
-mutates only the ephemeral CI checkout; nothing is committed.
+while doing nothing. TestPyPI filenames are immutable, so with a fixed declared version index
+ACCEPTANCE is exercised exactly once, ever -- and `twine check --strict` does not substitute for
+it: it validates metadata rendering, not whether the index accepts the upload. This repo has
+already been bitten by an index-side `InvalidConfigError` on a license/classifier pairing that
+rendered fine locally. `.devN` is valid PEP 440, sorts below any real release, and the pattern
+rewrites only the quoted value, preserving the `# x-release-please-version` marker that
+`tests/test_release_version.py` pins. It mutates only the ephemeral CI checkout; nothing is
+committed.
+
+**`re.subn` and the explicit exit are the load-bearing part, and the first draft of this step had
+neither.** Three reviewers independently found the same defect: `re.sub` returns its subject
+UNCHANGED when the pattern does not match, raises nothing, and the step would have written the
+unchanged text back and exited 0. Any drift in that version line -- a quote style, a type
+annotation, a move to another module -- would silently disarm the stamp, the build would re-emit
+the already-uploaded version, `skip-existing: true` would swallow the duplicate, and the dispatch
+would go green having uploaded nothing. That is precisely the failure this step was added to
+remove, reproduced one layer up inside its own fix, against what this document calls the channel's
+only pre-release proof. `n != 1` therefore exits non-zero and says why.
+
+The separate **"prove the stamp reached the artefacts"** step is the second line of defence, and
+it is not redundant with the first: the substitution succeeding says the SOURCE changed, not that
+the BUILD consumed it. `pyproject.toml` declares `dynamic = ["version"]` reading
+`sluice.__version__`, so the two are coupled today -- but that coupling is exactly the kind of
+thing a packaging change alters without anyone noticing, and this check observes the artefact
+rather than the intent. It runs after `twine check` and before the publish, so a stamp that did
+not take stops the run rather than reaching the index.
 
 It builds rather than downloading an artifact, because there is no `build` job on this trigger to
 download from. `contents: read` IS declared here, unlike on `pypi`, because this job does check
@@ -342,8 +412,7 @@ reviewed draft claimed.** Stated here so a future reader neither "fixes" it nor 
 With the version stamp above, each dispatch uploads a filename no dispatch has used, so the
 upload genuinely happens and `skip-existing` is BELT-AND-BRACES for a re-run of the same run
 number -- not the mechanism that makes repeat dispatches work. The draft had it the other way
-round, and that inversion mattered: it left the upload leg permanently skipped after run 1 while
-the document called the dry run "the only pre-release proof this channel gets".
+round, and the inversion is what left the upload leg permanently skipped after run 1.
 
 Two independent things are proven, and it is worth keeping them separate:
 
@@ -387,12 +456,14 @@ So the pin asserts, BEFORE comparing:
 
 - each of the four extracted values is non-empty, with a message naming the file and the key whose
   match failed -- so "the helper stopped matching" reddens as itself rather than as a pass; and
-- the number of `run:` steps enumerated in each build region equals a pinned count: **three** in
-  `release-please.yml`'s `build` job, **four** in `testpypi.yml`'s job. The counts differ because
-  `testpypi.yml` legitimately carries the version-stamp step, and pinning them separately is what
-  stops an unexplained extra step (or a silently dropped one) reading as agreement. The branch
-  guard is excluded from the count by being scoped to the region after checkout, so the two
-  regions describe the same thing.
+- the number of `run:` steps in each POST-CHECKOUT region equals a pinned count: **three** in
+  `release-please.yml`'s `build` job (install, build, `twine check`), and **five** in
+  `testpypi.yml`'s job (version stamp, install, build, `twine check`, stamp-proof). The counts
+  differ because `testpypi.yml` legitimately carries the two steps that make a dispatch prove
+  something, and pinning them separately is what stops an unexplained extra step -- or a silently
+  dropped one -- reading as agreement. The branch guard sits BEFORE checkout and is outside the
+  region by construction, so the two regions describe the same thing. Both counts were
+  independently recounted against the real `build` job and this document's own proposed YAML.
 
 `test_build_and_attest_agree_on_the_artifact_name`'s hardcoded `"dist"` anchor is the model for
 the first bullet, and the reviewed draft mischaracterised that anchor as redundant duplication
@@ -456,34 +527,66 @@ to this same file.
 10. `testpypi.yml`'s `on:` block contains `workflow_dispatch` and NO other trigger. A dry-run
     workflow that gained a `push:` trigger would publish to a permanent public index on every
     commit.
-11. `testpypi.yml` carries both the default-branch guard step and the version-stamp step. Each
-    exists to stop a specific silent failure (a permanent publish of an unmerged tree; an upload
-    leg that no-ops forever), so each needs a pin or it can be deleted as apparent clutter.
+11. `testpypi.yml` carries the default-branch guard, the version stamp AND the stamp-proof step
+    -- and for the stamp, presence is explicitly NOT enough. Pin that it uses `re.subn` and exits
+    non-zero unless exactly one substitution occurred, and that a separate step checks the built
+    artefacts carry the `.dev` suffix. A step can be present and inert, which is how the draft's
+    version of this step recreated the defect it was added to fix; an assertion that only asks
+    "is it there?" certifies the inert version just as happily.
 12. The drift pins, with the non-vacuity guards and the pinned per-file `run:`-step counts set out
     under "The drift pin" above.
 
 ### The sdist guard, in `tests/test_packaging.py`
 
-This PR is what makes the sdist public and permanent, and nothing anywhere pins its contents.
-Measured on a real build rather than reasoned about: `python -m build` ships **166
-`tests/test_*.py` modules** inside the sdist, via distutils' default `optional` glob
-(`tests/test*.py`), because there is no `MANIFEST.in` and `packages.find` names only `sluice*`.
-`tests/test_packaging.py` never sees this -- it builds `--wheel` explicitly, from a copied tree
-containing only `sluice/`, `pyproject.toml`, `LICENSE` and `README.md`.
+Deliberately minimal. The draft's more ambitious version drew seven findings from five reviewers
+and was broken in four independent ways, so what survives is the smallest check that actually
+holds, with the rest deferred to PR 7 alongside `docs/INSTALL.md`.
 
-Today's shipped set is clean, so this is a gate gap rather than a leak. But the shipped subset is
-also USELESS: the same non-recursive glob leaves out `conftest.py` and the fixture packages beside
-it, so the tests that do ship cannot run. Shipping a broken test tree is worse than either
-shipping a working one or shipping none, so:
+**What is actually in the sdist**, measured rather than assumed:
 
-- **`MANIFEST.in` carries `prune tests`**, and the sdist ships the package, metadata and docs
-  only.
-- A new guard builds `--sdist` **from the real tree** into a tmpdir (never the repo root -- see
-  that module's docstring), opens it with `tarfile`, and asserts the set of top-level entries is
-  exactly an allowlist. A positive allowlist, not a negative sweep, so it cannot pass by matching
-  nothing; and the enumeration is asserted non-empty first.
-- Its falsify partner, per the module's existing convention, rebuilds with `prune tests` removed
-  and asserts the guard fires.
+```
+LICENSE  MANIFEST.in  PKG-INFO  README.md  job_sluice.egg-info  pyproject.toml  setup.cfg  sluice
+```
+
+Two corrections to the draft fall straight out of that list. It omitted `MANIFEST.in` and
+`setup.cfg`. And **no docs ship at all** -- `prune tests` alone produces no docs tree, and getting
+one would need a `graft` this design does not specify and does not want. The draft's phrase "ships
+the package, metadata and docs only" is therefore struck: it described an sdist that does not
+exist, and an implementer reading it as a requirement would have added a `graft docs` that
+published 67 files from `docs/superpowers/` -- a tree outside BOTH the neutrality rule (which
+binds `sluice/` and `tests/`) and `tests/test_no_leaked_files.py` (which gates paths, not
+content). A single loose word in a spec is all that separated those two outcomes.
+
+**The guard:**
+
+- **Strip the root prefix before asserting anything.** Every member of an sdist is
+  `job_sluice-<version>/<path>`, so "the set of top-level entries" is ONE element -- identical
+  whether the tarball is clean or carries 166 test modules. The draft's two stated defences
+  (a positive allowlist; assert non-empty) neither bite on a one-element set that is exactly
+  equal to itself. Derive the prefix from `PKG-INFO`'s parent and assert the set of entries
+  BELOW it equals the list above.
+- **Both the guard and its falsify partner build from ONE shared helper**, `_build_sdist(dest)`,
+  mirroring the existing `_build_wheel`: it copies `sluice/`, `tests/`, `MANIFEST.in`,
+  `pyproject.toml`, `LICENSE` and `README.md` into a tmpdir and builds there. This is not
+  stylistic. The draft said the guard should build "from the real tree" while its partner
+  "rebuilds with `prune tests` removed" -- and those are mutually exclusive, because removing
+  `prune tests` from the real tree means editing the repository's own `MANIFEST.in`. It also
+  inverted the module's docstring, which builds from a copy precisely to keep `build/` and
+  `.egg-info` out of the repo root. Measured: a `_build_wheel`-shaped copy (no `tests/`) ships
+  zero test members with or WITHOUT `prune tests`, so the draft's partner would have been red
+  while the guard stayed green -- a falsify partner that cannot falsify.
+- **Assert scope, not just contents**: the archive's total member count is non-trivial, so a
+  build that produced almost nothing is red rather than vacuously compliant.
+
+**What this deliberately does NOT cover**, stated so the gap is known rather than assumed closed:
+
+- `sluice/` membership is a filesystem walk (`packages.find` plus the `templates/*.html.j2`
+  package-data glob), so an UNTRACKED file under `sluice/` still ships, and the guard sees
+  `sluice` as a single entry. `tests/test_no_leaked_files.py` cannot see it either, being
+  `git ls-files`-based. This is bounded rather than closed: the released sdist is built by CI
+  from a clean checkout, where nothing is untracked. It is a real gap on any local build.
+- `--no-isolation` makes membership depend on the build environment, and the `[test]` venv this
+  guard runs in is not the release build's hash-locked set.
 
 Not duplicated here: SHA-pin format and the trailing-version-comment convention remain zizmor's
 job, and zizmor reaches `testpypi.yml` automatically because `ci.yml` globs the directory.
@@ -501,15 +604,41 @@ So the witness is named per assertion instead:
 
 | Assertion | Mutant | Kind |
 |---|---|---|
-| 1, 2, 7 (tag), 8, 9, 12 | delete the output / the `needs:` entry / the `env:` line / the step | delete |
-| 3 | change `environment: pypi` to `environment: testpypi` (and vice versa) | swap |
+| 1, 2, 8, 9 | delete the output / a `needs:` entry / the artifact `name:` / the permissions line | delete |
+| 3 (pypi half) | change `environment: pypi` to `environment: testpypi` | change |
+| 3 (testpypi half) | change `environment: testpypi` to `environment: pypi` | change |
 | 4 | ADD `contents: read` to `pypi`'s permissions block | add |
-| 5 | ADD `repository-url` to `pypi`'s publish step | add |
-| 6 | ADD `skip-existing: true` to `pypi`'s publish step | add |
+| 5 (pypi half) | ADD `repository-url` to `pypi`'s publish step | add |
+| 5 (testpypi half) | DELETE `repository-url` from `testpypi`'s publish step | delete |
+| 6 (pypi half) | ADD `skip-existing: true` to `pypi`'s publish step | add |
+| 6 (testpypi half) | DELETE `skip-existing: true` from `testpypi`'s publish step | delete |
 | 7 (permissions) | ADD `id-token: write` to `release-assets` | add |
+| 7 (tag) | delete `TAG:` from the upload step's `env:` | delete |
+| 7 (repo) | delete `GH_REPO:` from the upload step's `env:` | delete |
 | 10 | ADD `push:` to `testpypi.yml`'s `on:` block | add |
-| 11 | delete the branch-guard step; delete the version-stamp step | delete |
-| 12 (vacuity) | delete the `setup-python` step from `testpypi.yml` | delete |
+| 11 (branch guard) | delete the branch-guard step | delete |
+| 11 (stamp fails loudly) | change `re.subn` + exit back to a bare `re.sub` | change |
+| 11 (stamp proof) | delete the stamp-proof step | delete |
+| 12 (equality) | change `testpypi.yml`'s `python-version` to `"3.13"` | change |
+| 12 (count) | delete the `twine check` step from `testpypi.yml` | delete |
+| 12 (vacuity) | rename a key the extractor matches, so it returns nothing | change |
+
+**Three rows exist because the second review round found the draft's table watching the wrong
+half of what it pinned** -- the same defect class the revision was written to fix, reproduced in
+the fix:
+
+- **Assertions 5 and 6 are PAIRS and the draft mutated only the `pypi` side.** Assertion 5's
+  unwitnessed half is the one stopping a dry run reaching production PyPI, which is the single
+  worst outcome in this design. Assertion 3 got its "and vice versa"; 5 and 6 did not.
+- **Assertion 7's `GH_REPO` half was folded into a generic "the `env:` line" row**, which is
+  satisfied by deleting `TAG:` -- so the half added in response to round 1's most-corroborated
+  finding had no witness of its own.
+- **Assertion 12's equality -- the drift pin's entire purpose -- had no mutant at all.** Every row
+  was a delete, and deletes are caught by the vacuity guard instead, so the four-way comparison
+  was never exercised. A CHANGE mutant is the only shape that witnesses an equality. The draft's
+  sole row for 12, "delete the `setup-python` step", is also removed as an equivalent mutant for
+  the count pins: `setup-python` is a `uses:` step, so deleting it leaves both `run:` counts
+  unchanged.
 
 An ADD-mutant is legitimate for a negative assertion and is not the equivalent-mutant trap the
 general rule warns about -- that trap is adding a check BESIDE an original that still fires. Here
@@ -540,113 +669,68 @@ naming the wrong one fails with `invalid-publisher` rather than falling back -- 
 `release-please.yml`, or step 3 naming `testpypi.yml`, is a real and easy mistake with a
 confusing error.
 
-## Supersedes the sequencing spec's per-channel-hold MODEL
+## Revises the sequencing spec's release plan, and RESTORES its per-channel holds
 
-The reviewed draft said this superseded one SECTION. It supersedes a model, and three further
-passages rest on it. Naming only one is how the other three become stale prose that reads as
-current. This PR edits all of them:
+**Decision 1 (2026-08-21, revised the same day after the second review round): 1.0.0 ships once
+the PyPI channel is live** -- PR 3 merged, manual prerequisites configured, dry run green. Docker,
+deb/rpm and Homebrew land afterwards and ship in 1.1.0.
 
-| Document | Passage | Why it falls |
-|---|---|---|
-| sequencing spec | "Manual-prerequisite timing" | built entirely on per-channel holds |
-| sequencing spec | Sequencing rationale, lines 37-40 | justifies PyPI going first by release ORDERING, which no longer varies |
-| sequencing spec | Risks, fourth bullet (lines 168-174) | "Mitigated only by the explicit hold instructions" -- those instructions are gone |
-| sequencing spec | GHCR visibility timing bullet | "a late toggle only delays discovery" assumed incremental releases |
-| `README.md` | lines 134, 138-139 | "there is no PyPI release yet" / "There is no packaged in..." become false the moment anything publishes |
+The earlier form held 1.0.0 until every channel was ready. That version superseded the sequencing
+spec's per-channel-hold model and traded its partially-failed-release risk for a sharper one: five
+publish jobs firing for the first time simultaneously, with no environment protection rule.
 
-The Sequencing rationale is rewritten to rest on the dispatch dry run rather than on ordering --
-PyPI still belongs first, because it is the channel whose mechanism can be proven before it is
-load-bearing, and that argument survives the model change intact.
+**This revision restores the sequencing spec's model as written.** Releases resume their normal
+cadence, each channel's manual prerequisite is configured after its own PR merges and before the
+next release, and "Manual-prerequisite timing" applies exactly as that document states it. The
+supersession table the previous draft carried is **withdrawn in full**, together with the two
+findings against it -- a "why it falls" that rewrote a passage into itself, and a citation table
+that missed one dependency and miscited another. The correct edit to the sequencing spec is now a
+single paragraph recording that 1.0.0 is scoped to the PyPI channel rather than to all four.
 
-**1. 1.0.0 releases only after every channel is ready.** PR #124 stays parked until PRs 3-7 have
-merged and every manual prerequisite is configured.
+Three consequences, and they are the three largest residual risks the previous draft carried:
 
-This REMOVES the partially-failed-release risk the per-channel holds existed to mitigate, and
-REPLACES it with a sharper one: `pypi`, `release-assets`, `docker`, `linux-packages` and
-`homebrew` all execute for the first time SIMULTANEOUSLY, on the 1.0.0 merge, with no environment
-protection rule to pause any of them. Nothing is proven incrementally by a release that no longer
-happens. The dispatch-triggered dry run therefore stops being a nicety and becomes this channel's
-only pre-release proof -- and PRs 4-6 should each carry an equivalent rather than inheriting this
-one by precedent.
+- `release-please.yml`'s own trusted-publisher entry is exercised within days of PR 3 rather than
+  at the end of the sequence -- so the one mechanism no test can assert stops being a bet held
+  open for weeks.
+- The five-first-run-jobs-at-once risk disappears. Each channel's first execution is its own
+  release, which is what the sequencing spec assumed all along.
+- The `job-sluice` name is claimed by a legitimate 1.0.0 almost immediately.
 
-**2. The `job-sluice` name is NOT claimed early. Decided 2026-08-21, reversing the draft.**
+**Decision 2 is withdrawn as moot.** The early-name-claim question existed only because 1.0.0 was
+weeks away; it is not. Nothing publishes a `0.1.x`, no `Release-As:` footer is needed, and the
+changelog keeps its two BREAKING entries under 1.0.0 where they belong.
 
-Nothing publishes to `pypi.org` until 1.0.0. The name stays unreserved until then, and that is
-accepted rather than mitigated.
+The corrected cost figure is recorded anyway, because the draft got it wrong by an order of
+magnitude and the error is the instructive part. A rename is **52 tracked files**, not "three
+files and two tests": 41 occurrences in `cli.py` alone, 12 `sluice/` modules, 14 test files, and a
+PATH rename -- `plugins/job-sluice/job-sluice.plugin.zsh`, a shipped zsh completion whose internal
+guards are deliberate no-ops, so it would fail SILENTLY. The draft reached its figure by counting
+"the tests that pin the name" and mistaking that for the blast radius. Three reviewers caught it
+independently and it was confirmed by direct measurement.
 
-This reverses what the reviewed draft recorded as settled -- claim the name early with a `0.1.x`
-publish, left installable. Four reviewers independently established that **no mechanism existed to
-do it**, and the draft cited that publish twice as the only proof of the production path, so the
-contradiction propagated into the Risks section:
-
-- `pypi` is gated on `release_created == 'true'`, so only a release-please release can fire it.
-- `release-please.yml` has no `workflow_dispatch`, and this document rejects adding one.
-- `testpypi.yml` is pinned to `test.pypi.org`.
-- The one open release PR is 1.0.0, which decision 1 parks.
-- A hand-cut tag is forbidden outright: releases are cut by merging release-please's PR, never by
-  tagging from a shell.
-
-The two routes, costed:
-
-**(a) Claim it, via a `Release-As: 0.1.1` commit footer.** Works, and needs decision 1 restated to
-say the hold covers 1.0.0 and not a name-claiming 0.1.x. The cost is the changelog: `Release-As`
-sweeps every commit accumulated since 0.1.0 into the 0.1.1 release, **including the two BREAKING
-config changes** currently staged for 1.0.0. That publishes breaking changes under a patch version
-and leaves 1.0.0 with little to say. Recoverable only by hand-editing the release PR's changelog,
-which this repo does anyway -- but deliberately, not as cleanup.
-
-**(b) Drop the early claim and accept the risk.** The name stays unreserved until 1.0.0 --
-weeks -- while public issue #104 names it. If it is taken, the remedy is another rename, confined
-to `pyproject.toml`, `cli.py`'s `prog=`/`--version`, and the two tests that pin the name.
-
-**Route (b) is the decision.** The mechanism in (a) costs a corrupted release history to buy
-protection against a low-probability event whose remedy is bounded and mechanical. Breaking
-changes published under a patch version are a permanent, public misstatement of what that release
-contained; a squatted name costs a rename of three files and two tests.
-
-Two consequences follow, and both are stated here rather than left implicit:
-
-- **Nothing in this document may cite an early publish as a mitigation.** The Risks section is
-  written accordingly, and the first risk below -- that `release-please.yml`'s own publisher entry
-  is unexercised until the 1.0.0 merge -- is now genuinely unmitigated rather than covered by a
-  publish that was never going to happen.
-- **The exposure window is a reason to keep PRs 4-7 moving, not a reason to hold them.** The
-  window closes when 1.0.0 ships, so every week the remaining channels take is a week the name is
-  unreserved. That is the honest cost of decision 1, and it belongs beside decision 1 rather than
-  buried in a risk list.
-
-If the name IS taken before 1.0.0, the remedy is a rename confined to `pyproject.toml`'s `name`
-and `[project.scripts]`, `cli.py`'s `prog=`/`--version`, and the two tests that pin it
-(`test_release_version.py`, `tests/test_docs_claims.py`). The import package, the `SLUICE_*` env
-vars and the `~/.config/sluice/` XDG path are unaffected -- they are already independent of the
-distribution name by deliberate decision.
+One consequence for PR 7: the install docs are now due BEFORE 1.0.0 rather than after every
+channel, since README's install claims become false the moment 1.0.0 publishes. That is a
+sequencing change to record in the sequencing spec -- not work for this PR, which is why
+`README.md` left this document's Scope.
 
 ## Risks
 
-- **Trusted Publishing on `pypi.org` is proven only by its first real use.** The dry run proves
-  the mechanism, the environment wiring and the action version, but against `testpypi.yml`'s
-  publisher entry -- a different workflow filename, and therefore a different entry -- so
-  `release-please.yml`'s own entry is genuinely first exercised by whatever publishes first. Under
-  decisions 1 and 2 that is the 1.0.0 merge, with no earlier publish to prove it. **This is the
-  single largest residual risk in the design and it is accepted, not mitigated.** The dry run
-  proves everything about the mechanism except the one publisher entry that matters on the day.
+- **Trusted Publishing on `pypi.org` is still proven only by its first real use** -- the dry run
+  exercises `testpypi.yml`'s publisher entry, a different workflow filename and therefore a
+  different entry. Under the revised decision 1 that first use is the 1.0.0 publish, days after PR
+  3 rather than at the end of the sequence, and it is preceded by a green dry run of everything
+  except the entry itself. Reduced from the draft's position, not eliminated.
 - **No environment protection rule.** Declined by the owner. Once the trusted publishers exist,
-  any merge of a release PR publishes with no human step; combined with decision 1, the first such
-  merge fires five first-run publish jobs at once.
+  merging a release PR publishes with no human step.
 - **A separate dry-run file proves a different publisher entry than the release path uses.**
-  Inherent to the reusable-workflow limitation, not designed away. Bounded by the drift pin for
-  the build steps.
+  Inherent to the reusable-workflow limitation. Bounded by the drift pin for the build steps.
 - **`release-please` tags and cuts the GitHub Release BEFORE any of these jobs run** (carried from
-  PR 2). With this PR, a `build` failure now additionally means no PyPI publish and no release
-  assets -- a tagged, publicly visible release with nothing attached and nothing published. The
-  `GH_REPO` defect this review caught was an instance of exactly that shape, reaching the tag and
-  then failing.
-- **The sdist's contents are guarded from this PR onward, but everything published before the
-  guard lands is unexamined.** Nothing has been published yet, so the exposure is zero today; it
-  becomes non-zero the moment anything publishes ahead of the guard.
-- **`job-sluice` is unreserved on `pypi.org` until 1.0.0 ships** (decision 2). A pending publisher
-  does not reserve a name, and public issue #104 names the target. Accepted deliberately; the
-  remedy if it is taken is a bounded rename, and the window shrinks as PRs 4-7 land.
+  PR 2). A `build` failure means a tagged, publicly visible release with nothing attached and
+  nothing published. The `GH_REPO` defect round 1 caught was exactly that shape.
+- **The sdist guard's two stated gaps** -- an untracked file under `sluice/` still ships and is
+  invisible to both the guard and `test_no_leaked_files.py`; and `--no-isolation` makes membership
+  depend on the build environment. Bounded by CI building from a clean checkout, real on a local
+  build.
 
 ## Definition of done
 
@@ -654,7 +738,8 @@ distribution name by deliberate decision.
 # This worktree has no .venv of its own -- the interpreter lives in the main checkout, and a bare
 # `python` can silently resolve to a version-manager shim outside an activated venv. Create one
 # here first, then call it explicitly:
-python3 -m venv .venv && .venv/bin/pip install -e '.[test]' ruff==0.15.21 zizmor
+python3 -m venv .venv && .venv/bin/pip install -e '.[test]' ruff==0.15.21
+.venv/bin/pip install --require-hashes -r .github/zizmor-requirements.txt  # the pin CI uses
 
 .venv/bin/python -m pytest tests/test_release_publish_wiring.py -v
 .venv/bin/python -m pytest tests/test_packaging.py -v
