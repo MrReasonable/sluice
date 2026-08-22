@@ -210,8 +210,9 @@ failure, and most have an incident or a dedicated test behind them.
    on the ladder; apply transitioning from anything but `shortlist` (`can_apply` — note it is a
    *different* predicate from `can_advance`, deliberately).
 3. **The fabrication gate is hard.** No path may render, serve, or stage a CV with validation
-   violations. The gate stays pure and deterministic; retry is exactly once, then skip. Weakening it
-   is **Critical**.
+   violations. The gate stays pure and deterministic; a HARD or surviving STYLE/VOICE finding
+   (#167) drives exactly one retry, and the lead is skipped only if no attempt ever clears the
+   HARD tier. Weakening it is **Critical**.
 4. **Empty config abstains.** An unconfigured preference gate passes every lead through. A gate that
    rejects when unconfigured, or a non-empty default preference in shipped code, is **Critical**.
    (This is the `672ad2a` bug class: `target_locations` once defaulted to `["remote"]` and silently

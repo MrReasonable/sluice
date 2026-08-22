@@ -36,9 +36,9 @@ def test_check_phrases_catches_the_e_dropped_ing_form_of_stems_ending_in_e():
     # English drops the terminal 'e' before adding '-ing' ("leverage" -> "leveraging",
     # never "leverageing"), so "leverage" is not a substring of "leveraging". A stem
     # NOT ending in 'e' needs no such rule: its '-ing' form already contains it as a
-    # literal substring ("foster" in "fostering", already pinned via _PHRASE_RE
-    # before this fix and unaffected by it) -- which is also why "needle-mov" and
-    # "game-chang" are deliberately truncated rather than spelled with a trailing 'e'.
+    # literal substring ("foster" in "fostering" already matched before this fix,
+    # unaffected by it) -- which is also why "needle-mov" and "game-chang" are
+    # deliberately truncated rather than spelled with a trailing 'e'.
     #
     # Every stem in _PHRASES ending in 'e' whose gerund is a real, meaningful word:
     # "cutting-edge" and "wealth of experience" also end in 'e' but have no natural

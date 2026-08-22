@@ -330,9 +330,11 @@ See `core/protocols.py`, `docs/ARCHITECTURE.md`, and
 `tests/conformance/test_store_contract.py::test_merged_away_lead_is_never_recreated`.
 
 **Never-regress (status).** One `status` frontmatter key, two lifecycles with separate owners
-(`core/status.py`). Triage owns `new/shortlist/research/needs_review/dismiss` and may rewrite them;
-track owns `applied/phone_screen/.../rejected` and triage must never touch a lead that has entered
-that lifecycle. Status only moves forward on the ladder; terminals are never advanced out of.
+(`core/status.py`). Triage owns `new/shortlist/research/needs_review/dismiss/unjudgeable` (the last,
+#169, stamped in place of a judge verdict when a dossier's job description never arrived) and may
+rewrite them; track owns `applied/phone_screen/.../rejected` and triage must never touch a lead that
+has entered that lifecycle. Status only moves forward on the ladder; terminals are never advanced out
+of.
 `shortlist -> applied` is the only transition apply may make on send; track makes the same
 transition when a confirmation receipt arrives (`track/receipt.py`, #10) — both route
 through the one `can_apply` predicate (`can_transition` dispatches a `--to applied` request to it,
@@ -386,18 +388,46 @@ traceback) and `Vault.__init__` (which is what covers the ~150 direct `Vault(...
 loader-only check would miss). It carries its own named guard too, for the mirror-image reason:
 the sweep is keyed on LIST defaults, so a `str` field is invisible to it.
 
+`min_jd_chars` (#169) is the FOURTH: `0` (the shipped default) means the near-empty band is off, so
+only a wholly EMPTY fetched JD is ever treated as not having arrived -- a character count above that
+is a judgement about what counts as a real posting, which this repo does not ship uninvited. Its
+validator follows `lead_ttl_days`' exact shape (`bool` checked first, since it subclasses `int`), for
+the identical reason: `min_jd_chars: yes` is the natural spelling to turn it on, and would otherwise
+load as a one-character floor, letting nearly every fetched JD through with no error anywhere. It is
+shared, not per sub-app: `Sluice.dossier_cache()` reads `self.config.min_jd_chars` for both
+`triage()` and `compose_cv()`'s cache, since the two already share one dossier cache directory (#80)
+and must agree on the floor.
+
 **The CV fabrication gate is hard.** `cv/validate.py` is pure and deterministic: every WORK bullet
 must cite a real bundle `[id]` and every number in a bullet must appear in a cited entry; the PROFILE
 prose (which has no per-bullet citations) has a bundle-wide numeric floor — a figure present nowhere in
-the bundle is a violation, citations stripped with render's exact `_CITE_RE` — and a composed CV
-missing the exact `WORK EXPERIENCE`/`PROFILE` headers fails closed, since the section-keyed checks
-would otherwise silently not run. A non-empty violation list blocks rendering; the engine retries
-composition exactly once with the violations fed back, then skips the lead — a CV is never rendered
-ungated. Above this hard gate sits a softer, human-facing layer (#60, on by default via
-`cv.require_signoff`): an advisory LLM audit (`cv/audit.py`) catches the qualitative fabrication the
-deterministic gate cannot, and an `unsupported` flag WITHHOLDS the send-ready `tailored_cv` pointer (status `needs-signoff`, via
-`Store.sign_off`/`hold_for_signoff`, cleared by `job-sluice cv signoff`) rather than blocking rendering —
-it never touches the pure hard gate.
+the bundle is a violation, citations stripped with render's exact `_CITE_RE` — and — enforced
+beside it in `cv/engine.py`, since `validate` returns `[]` rather than complaining — a composed
+CV missing the exact `WORK EXPERIENCE`/`PROFILE` headers fails closed, since the section-keyed
+checks would otherwise silently not run. That verdict, together with `cv/engine.py`'s own inline STRUCTURAL
+guards beside it (the header checks just named, plus the three name/contact-block anchors described
+below), `cv/slop.py`'s unscoped HARD tier (an em dash or a literal `--`), and the renderer's own
+optional `precheck`, form the HARD gate: a non-empty finding list blocks rendering, and a lead with no
+attempt that ever cleared it is skipped — a CV is never rendered ungated. `cv/slop.py`'s SCOPED
+STYLE tier (#167: ~40 AI-tell stems, matched only in the PROFILE-prose/WORK-bullet lines
+`cv/validate.py`'s own `section_spans` yields) and the opt-in model-judged
+`cv/voice.py` check (`cv.voice_check`) never block, but a surviving finding from either ALSO drives the
+retry: the engine retries composition exactly once when the HARD gate fails OR a STYLE/VOICE finding
+survives, feeding every finding back, and RETAINS the last HARD-clean draft across that retry so a
+worse or failed second attempt can never bin a lead the first one already cleared — a phrase may never
+cost a lead. At shipped defaults (`cv.slop_allow` empty, `cv.style_hold` off) the retry still fires on
+a phrase hit, so a hard-clean draft using one of the ~40 stems in prose costs a second compose call;
+`compose.py`'s own prompt bans the identical list (rendered from `cv/slop.py`'s `_PHRASES`, so the two
+cannot drift), which is what keeps that cost the exception rather than the rule. See
+`docs/ARCHITECTURE.md` for the full two-tier mechanics. Above the hard gate sits a softer,
+human-facing layer (#60, on by default via `cv.require_signoff`): an advisory LLM audit
+(`cv/audit.py`) catches the qualitative fabrication the deterministic gate cannot, and an
+`unsupported` flag WITHHOLDS the send-ready `tailored_cv` pointer (status `needs-signoff`, via
+`Store.sign_off`/`hold_for_signoff`, cleared by `job-sluice cv signoff`) rather than blocking
+rendering. `cv.style_hold` (#167, off by default) gives a surviving STYLE/VOICE finding the SAME
+consequence, deliberately a SEPARATE key from `cv.require_signoff` — that flag's True default was
+chosen for FABRICATION, and riding it would withhold `tailored_cv` on any of ~40 stems out of the box
+on an unconfigured install. Neither signoff flag touches the pure hard gate.
 
 **The gate is blind to the name/contact block, and that block renders as the PDF's headline (#99).**
 `cv/validate.py` never inspects anything before `PROFILE`; `cv/parse.py`'s grammar takes the LAST

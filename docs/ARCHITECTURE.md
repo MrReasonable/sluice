@@ -36,11 +36,20 @@ Shared by every sub-app:
   source's own spec or the user's config, not from a scraped page.
 - `status.py`: the canonical status vocabulary shared across sub-apps.
   Triage owns the early states (new, shortlist, research, needs_review,
-  dismiss); track owns the later ones (applied, phone_screen, ... offer,
-  rejected); neither overwrites the other's. The one crossing between the
-  two lifecycles, `shortlist -> applied`, has two actors -- apply (on send)
-  and track (on a domain-matched confirmation receipt) -- both gated by the
-  same `can_apply` predicate.
+  dismiss, and -- #169 -- unjudgeable, stamped in place of a judge verdict
+  when a dossier's job description never arrived); track owns the later ones
+  (applied, phone_screen, ... offer, rejected); neither overwrites the
+  other's. The one crossing between the two lifecycles, `shortlist ->
+  applied`, has two actors -- apply (on send) and track (on a domain-matched
+  confirmation receipt) -- both gated by the same `can_apply` predicate.
+  `DEFAULT_TRIAGE_STATUSES` (`new`, `research`, `unjudgeable`) is the one
+  hand-picked RETRY subset `triage run --status` selects when the user names
+  nothing -- deliberately NOT derived from the triage-owned set as a whole,
+  which also holds `shortlist`/`needs_review`/`dismiss`, so a derivation
+  would re-judge leads a human has already decided about, every run.
+  `unjudgeable` belongs in it because that IS the retry: the cache no longer
+  persists a fetch that produced no JD (see `dossier.py` below), so the next
+  run refetches.
 - `paths.py`: where every path sluice owns lives (#80). One `resolve()`, one
   order -- env var, then config key, then the XDG base directory for that
   `kind` (`config`/`state`/`cache`, validated against that closed set). It
@@ -134,6 +143,44 @@ Shared by every sub-app:
   unreachable, so expect one full re-fetch on the first triage or cv run after
   upgrading -- bounded, not data loss, since the default `ttl_days: 7` would
   have expired them inside a week anyway.
+
+  `DossierCache.jd_arrived(dossier)` (#169) is the single owner of "did a JD
+  actually arrive" -- a predicate over the fetched `jd.markdown`, not a
+  marker key riding along in the returned dict (which `slim()` would have to
+  exclude by name, the way it already excludes `lead_snapshot`/`page_title`/
+  `structured_data`). `get_or_build` asks it before PERSISTING a fetch: the
+  freshly-fetched dossier is always returned to the caller, but a fetch that
+  produced no JD text is never written to disk, so the cache stops serving a
+  fetch failure for the whole TTL -- before this, an empty scrape was cached
+  exactly like a real one, and the nightly retry set (`DEFAULT_TRIAGE_STATUSES`
+  above) paid for the same non-answer every run until the entry aged out.
+  `_fresh()` applies the same predicate to a cache HIT, so an entry written
+  before this existed -- or one a later refetch still failed to fill -- is
+  treated as stale and retried on every read rather than served for the rest
+  of its TTL. `min_jd_chars` (root `Config`, default `0`: only a wholly empty
+  JD ever fails) is the shared floor below which a fetched JD counts as not
+  having arrived; `Sluice.triage()` and `Sluice.compose_cv()` both build their
+  `DossierCache` from `self.config.min_jd_chars`, since triage and cv already
+  share this one cache directory (#80) and must agree on the floor. Triage's
+  enrich pass asks `jd_arrived` per dossier and marks the lead `unjudgeable`
+  (never spending a judge call on page chrome) rather than letting it collapse
+  into `research`; `cv/engine.py`'s `run_one` asks the identical question and
+  sets `CvResult.dossier_failed` when it (or the fetch itself) fails, composing
+  with `jd=""` rather than refusing the lead outright.
+- `Sluice.health_report(include_leads=False)` (`core/app.py`) is the
+  per-source health REPORT `job-sluice health` and the MCP `health` tool both
+  show: `HealthStore`'s baseline/recent counts and stuck-streak reason,
+  merged with the source registry, sorted by source id. NO vault I/O by
+  default, so an ordinary, cheap-and-often call costs nothing beyond a file
+  read; opting in (`include_leads=True`, `job-sluice health --leads`) adds
+  exactly one `read_leads(DEFAULT_TRIAGE_STATUSES)` pass, which fills each
+  source's `unjudgeable`/`selected` counts (#169) -- both drawn from that SAME
+  one pass over the SAME lifecycle stage (the numerator is that source's leads
+  currently at status `unjudgeable`, the denominator is all of its leads
+  across `DEFAULT_TRIAGE_STATUSES`), never an unfiltered all-time read, which
+  would dilute a source that is 100% broken today by leads it dismissed months
+  ago. Classifying whether the resulting rate is bad is left to the caller;
+  `health_report` reports facts, not a verdict.
 - `candidate.py` (#133/#107): derivations over `CandidateProfile` (the
   dataclass itself lives in `protocols.py`, mirroring `criteria.py`'s
   type/logic split). `full_name`/`contact_block` build the CV header from the
@@ -318,25 +365,57 @@ whichever neighbour it was written next to:
    audit never claims a decision that was not applied.
 3. **cv** (`sluice/cv/`): select verified source material, bundle it into
    a closed set, compose a tailored CV against that bundle (an LLM call
-   over `core.backends`), validate it against a fabrication gate (a hard
-   fail triggers exactly one retry, then the lead is skipped rather than
-   rendered ungated), render (by default `template`: fill the user's own
-   Jinja2 template — or the packaged one — and write a PDF via WeasyPrint;
-   `script` shells out to an external render script instead), and serve
-   under an opaque, cache-busted filename. Above the hard gate sits a softer,
-   human-facing layer (#60): an advisory LLM audit (`audit.py`) flags claims
-   the bundle does not support, and an `unsupported` flag still renders and
-   serves the PDF (it passed the hard gate) but WITHHOLDS the send-ready
-   `tailored_cv` pointer, so `apply` cannot select it. The hold is
-   recorded in two NEW frontmatter keys (`pending_cv`, `needs_signoff`) — the
-   note's `status` stays `shortlist` (never-regress is untouched); the CV is
-   simply invisible to apply without the pointer. A held lead is skipped on
-   re-run so a non-deterministic re-audit cannot promote it by luck.
-   (`needs-signoff` and `skipped-needs-signoff` are `CvResult` run-report
-   labels, not `status`-key values.) `job-sluice cv signoff --lead X` promotes
-   the held CV after the candidate reviews the flagged claims; `--discard`
-   rejects it and frees a fresh compose. The default is on
-   (`cv.require_signoff`); it never touches the pure hard gate.
+   over `core.backends`), gate it, render (by default `template`: fill the
+   user's own Jinja2 template — or the packaged one — and write a PDF via
+   WeasyPrint; `script` shells out to an external render script instead), and
+   serve under an opaque, cache-busted filename. The gate has two tiers
+   (#167). The HARD tier -- `cv/validate.py`'s fabrication/citation checks,
+   `cv/engine.py`'s own inline STRUCTURAL guards beside them (the exact
+   `WORK EXPERIENCE`/`PROFILE` headers, and the header/contact-block
+   anchors, #99), the renderer's own optional `precheck`, and
+   `cv/slop.py`'s `check_hard` (an em dash or a literal `--`, unscoped over
+   the whole document) -- BLOCKS: a lead with no attempt that ever cleared
+   it is skipped rather than rendered ungated. The STYLE tier
+   (`cv/slop.py`'s `check_phrases`, ~40 case-insensitive AI-tell stems)
+   never blocks; it is also SCOPED, unlike the hard tier --
+   `cv/validate.py`'s `section_spans` (the gate's own line split, extracted
+   so nothing keeps a second copy) yields exactly the PROFILE-prose and
+   WORK-bullet lines, since the only way to answer a phrase complaint about
+   an employer, certificate or education line is to rename the thing it
+   names. An OPT-IN third signal (`cv.voice_check`, off by default,
+   `cv/voice.py`) rides the same retry once the hard tier is clean: a model
+   judgment of the draft's VOICE, for an AI-tell clause a fixed phrase list
+   cannot catch -- it fails open on a backend error, like the advisory audit
+   below. EITHER a HARD finding OR a surviving STYLE/VOICE finding triggers
+   exactly one retry with the findings fed back, and the loop RETAINS the
+   last HARD-clean draft across it, so a retry that comes back hard-dirty
+   (or simply fails) never bins a lead a style phrase alone would otherwise
+   have cost -- a phrase may never cost a lead. At shipped defaults
+   (`cv.style_hold` off, `cv.slop_allow` empty -- full enforcement of every
+   stem) that retry is the one real cost change: a hard-clean draft still
+   using one of the ~40 stems in prose costs a second compose call,
+   mitigated by `compose.py`'s own prompt already instructing the model
+   against the same list (rendered from `cv/slop.py`'s `_PHRASES` so the two
+   cannot drift). Above the hard gate sits a softer, human-facing layer
+   (#60): an advisory LLM audit (`audit.py`) flags claims the bundle does
+   not support, and an `unsupported` flag still renders and serves the PDF
+   (it passed the hard gate) but WITHHOLDS the send-ready `tailored_cv`
+   pointer, so `apply` cannot select it. `cv.style_hold` (#167, off by
+   default) gives a surviving STYLE or VOICE finding the SAME consequence,
+   deliberately as a SEPARATE config key rather than riding
+   `cv.require_signoff`: that flag's True default was chosen for
+   FABRICATION, and riding it would mean an unconfigured install withholds
+   `tailored_cv` on any of ~40 case-insensitive stems out of the box. The
+   hold is recorded in two NEW frontmatter keys (`pending_cv`,
+   `needs_signoff`) — the note's `status` stays `shortlist` (never-regress
+   is untouched); the CV is simply invisible to apply without the pointer. A
+   held lead is skipped on re-run so a non-deterministic re-audit cannot
+   promote it by luck. (`needs-signoff` and `skipped-needs-signoff` are
+   `CvResult` run-report labels, not `status`-key values.) `job-sluice cv
+   signoff --lead X` promotes the held CV after the candidate reviews the
+   flagged claims; `--discard` rejects it and frees a fresh compose. The
+   default is on for fabrication (`cv.require_signoff`); neither signoff
+   flag touches the pure hard gate.
 4. **apply** (`sluice/apply/`): select eligible leads, stage the rendered
    CV file and a prep packet, and record the applied transition
    (never-clobber). Actual ATS form submission is human-driven; this

@@ -261,8 +261,9 @@ Invariant and neutrality categories, as they appear in a plan:
   `APPLICATION_OWNED` lead from triage, advances out of a terminal, or adds a transition other than
   `shortlist -> applied` in apply. (`core/status.py`)
 - `fabrication-gate`: a step renders, serves or stages a CV without clearing validation, makes the
-  gate impure or non-deterministic, or changes the retry-once-then-skip contract.
-  (`cv/validate.py`, `cv/engine.py`)
+  gate impure or non-deterministic, or changes the retry-and-retain contract (exactly one retry;
+  a lead is skipped only if no attempt ever clears the HARD tier). (`cv/validate.py`,
+  `cv/engine.py`)
 - `abstain-default`: a gate the plan describes rejects when unconfigured, or a shipped default
   carries a real preference.
 - `personal-data`: the plan puts an employer, role preference, location, contact, hostname,
@@ -338,8 +339,9 @@ point of reviewing at plan time.
    but `shortlist` (`can_apply` is deliberately a *different* predicate from `can_advance`).
    (`core/status.py`)
 3. **The fabrication gate is hard.** No path may render, serve or stage a CV with validation
-   violations. The gate stays pure and deterministic; retry is exactly once, then skip. Weakening it
-   is **Critical**. (`cv/validate.py`, `cv/engine.py`)
+   violations. The gate stays pure and deterministic; a HARD or surviving STYLE/VOICE finding
+   (#167) drives exactly one retry, and the lead is skipped only if no attempt ever clears the
+   HARD tier. Weakening it is **Critical**. (`cv/validate.py`, `cv/engine.py`)
 4. **Empty config abstains.** An unconfigured preference gate passes every lead through. A gate that
    rejects when unconfigured, or a non-empty default preference in shipped code, is **Critical**.
    (This is the `672ad2a` bug class: `target_locations` once defaulted to `["remote"]` and silently
