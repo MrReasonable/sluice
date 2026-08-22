@@ -395,12 +395,18 @@ def cmd_health(args, config) -> int:
         # replaces the RETIRE flag for that case -- the one an operator reads days later.
         if src.broken_reason:
             flag += f" BROKEN reason={src.broken_reason} x{src.broken_runs}"
-        # Gated on the FLAG, not on `src.concluded` being truthy: a source with zero
-        # DEFAULT_TRIAGE_STATUSES leads is a legitimate 0/0 when --leads DID walk the
-        # vault, and printing nothing there is correct -- but without the flag every
-        # SourceHealth also reads 0/0 (the dataclass default), and printing the same
-        # "unjudgeable=0/0" text in that case would misrepresent "not measured" as
-        # "measured, and clean".
+        # Gated on the FLAG, never on `src.concluded` being truthy. The two zero cases
+        # look identical in the data and mean opposite things, and only the flag can tell
+        # them apart:
+        #   --leads given, source has no concluded leads -> a MEASURED 0/0. Printing
+        #     "unjudgeable=0/0" is correct: we looked, and there was nothing to count.
+        #   --leads absent -> every SourceHealth holds the dataclass default 0/0, because
+        #     nothing walked the vault. Printing the same text would assert "measured, and
+        #     clean" about a measurement that never happened.
+        # Suppressing on a falsy `concluded` would collapse the first case into silence
+        # and lose a real answer; printing unconditionally would fabricate the second.
+        # (The MCP `health` tool has no flag to consult, which is why it omits the keys
+        # entirely rather than choosing between these two -- see mcpserver.py.)
         if include_leads:
             flag += f" unjudgeable={src.unjudgeable}/{src.concluded}"
         print(f"{src.id:16} baseline={src.baseline:.0f} recent={src.recent}{flag}")
@@ -761,11 +767,12 @@ def cmd_cv_run(args, config) -> int:
             print(f"  {s}", file=sys.stderr)
         for v in r.voice_flags:
             print(f"  VOICE: {v}", file=sys.stderr)
-    # #18: a blocked/failed dossier fetch does not stop composition (cv/engine.py's
-    # `except` proceeds with jd="" so the fabrication gate still runs), so "rendered"
-    # alone would silently hide that some of these CVs were composed against no real
-    # job description at all. A dedicated summary line makes that countable without
-    # changing cv's control flow, which is a bigger change than this guard should carry.
+    # #18: a job description that did not arrive does not stop composition (cv/engine.py
+    # proceeds either way so the fabrication gate still runs), so "rendered" alone would
+    # silently hide that some of these CVs were composed against no real job description
+    # at all. A dedicated summary line makes that countable without changing cv's control
+    # flow, which is a bigger change than this guard should carry. `dossier_failed` covers
+    # both producers -- a fetch that raised and one that returned nothing usable (#169).
     blind = sum(1 for r in results if r.dossier_failed)
     if blind:
         print(f"cv: {blind} CV(s) composed blind (dossier fetch failed)", file=sys.stderr)

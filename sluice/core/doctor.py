@@ -30,6 +30,9 @@ from dataclasses import dataclass, field, fields
 
 from sluice.core.backends import option_like
 from sluice.core.camofox import profile_dir as camofox_profile_dir
+# The bucket boundaries this module LABELS and DossierCache.census COUNTS with -- one
+# home, so a moved boundary cannot leave the label asserting the old number.
+from sluice.core.dossier import JD_LENGTH_BUCKETS as _JD_LENGTH_BUCKETS
 
 # Four states, as bare strings so callers (cli formatter, exit_code) and tests
 # share one vocabulary without importing an enum. NOTICE is not a severity --
@@ -473,8 +476,12 @@ def classify_dossier_cache(counts: dict) -> ComponentCheck:
     opinion about which jobs are good stacked on top of `min_jd_chars`. Its real payoff
     is that it is exactly the evidence `job-sluice init`'s `min_jd_chars` question
     needs (Task 9): #169 was found only because someone hand-counted a real cache and
-    noticed 141 of 1336 entries were under 200 characters -- this row is what makes
-    that finding routine instead of a one-off archaeology exercise.
+    found a material fraction of entries below the 200-character mark -- this row is
+    what makes that finding routine instead of a one-off archaeology exercise. (The
+    counts from that cache are deliberately not quoted here. They are a measurement of
+    one person's private vault, and its size discloses the scale of their job hunt;
+    a shipped docstring is a worse place for that than the fixture it would have
+    replaced -- see the neutrality rule in CLAUDE.md.)
 
     `counts["empty"]`, `counts["under_200"]` and `counts["under_800"]` are CUMULATIVE,
     matching #169's own worked example above: `under_200` includes `empty`, and
@@ -495,9 +502,15 @@ def classify_dossier_cache(counts: dict) -> ComponentCheck:
     `DossierCache.jd_arrived`'s own established "cannot say = did not arrive" semantics
     (core/dossier.py), a dossier that cannot answer whether a JD arrived is treated the
     same as one that answers "no" -- so it stays folded into `empty`, not split into a
-    fourth bucket. `total` counts every scanned entry, unreadable ones included, so
-    `unreadable + <entries reachable by the empty/under_200/under_800 chain>` sums to
-    `total`.
+    fourth bucket. `total` counts every scanned entry, unreadable ones included.
+
+    The buckets do NOT sum to `total`, and an earlier version of this docstring claimed
+    they did. `empty`/`under_200`/`under_800` are CUMULATIVE (`empty` ⊆ `under_200` ⊆
+    `under_800`), and a healthy dossier of 800 characters or more falls in none of them,
+    so the identity is `unreadable + under_800 + (entries at or above 800) == total` --
+    which means `unreadable + under_800` is strictly less than `total` on any install with
+    a single good JD in it. Reading the printed numbers as a partition would make a
+    healthy cache look like it had lost entries.
 
     Always NOTICE, never DEGRADED/DEAD, for the same reason `classify_gate` is: a
     short-JD-heavy cache is a fact about this install's own scraped data, not evidence
@@ -511,12 +524,19 @@ def classify_dossier_cache(counts: dict) -> ComponentCheck:
         # slightly odd "0 cached; 0 unreadable, 0 empty, 0 under 200 chars, 0 under 800
         # chars".
         return ComponentCheck("dossier-cache", "cached JDs", NOTICE, "no cached dossiers yet")
+    # Labels RENDERED from the same tuple `DossierCache.census` counts with, never
+    # hand-written beside it. The boundary was a numeric comparison in one module and an
+    # English label in this one, so moving it left the label asserting the old number with
+    # the suite green -- the end-to-end fixtures sit well clear of both boundaries, so
+    # nothing would have caught the lie. `empty` is spelled out because "under 1 chars" is
+    # not what it means.
+    lengths = ", ".join(
+        f"{counts.get(label, 0)} empty" if label == "empty"
+        else f"{counts.get(label, 0)} under {bound} chars"
+        for label, bound in _JD_LENGTH_BUCKETS)
     return ComponentCheck(
         "dossier-cache", "cached JDs", NOTICE,
-        f"{total} cached; {counts.get('unreadable', 0)} unreadable, "
-        f"{counts.get('empty', 0)} empty, "
-        f"{counts.get('under_200', 0)} under 200 chars, "
-        f"{counts.get('under_800', 0)} under 800 chars")
+        f"{total} cached; {counts.get('unreadable', 0)} unreadable, {lengths}")
 
 
 def classify_gate(owner: str, name: str, value: list) -> ComponentCheck:

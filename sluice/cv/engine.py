@@ -94,11 +94,14 @@ class CvResult:
     voice_flags: list = field(default_factory=list)
     served: str | None = None
     backend: str | None = None
-    # #18: set when dossier_cache.get_or_build() raised (a blocked/failed fetch) and
-    # composition proceeded with jd="" anyway -- see the `except` below. This does NOT
-    # change control flow (skipping the lead here would be a bigger behaviour change
-    # than the SSRF guard should carry), only visibility: without it, "status: rendered"
-    # is indistinguishable from a CV genuinely tailored to a real job description.
+    # #18: set when the lead's job description did not arrive, and composition proceeded
+    # anyway. TWO producers since #169, not one: `get_or_build()` raising (a blocked or
+    # failed fetch, which composes with `jd=""`), and a fetch that succeeded while
+    # `jd_arrived` says no (which keeps whatever text it got -- see run_one for why the
+    # two arms deliberately differ). This does NOT change control flow (skipping the lead
+    # here would be a bigger behaviour change than the SSRF guard should carry), only
+    # visibility: without it, "status: rendered" is indistinguishable from a CV genuinely
+    # tailored to a real job description.
     dossier_failed: bool = False
 
 
@@ -242,9 +245,23 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
         d = dossier_cache.get_or_build(fm)
         jd = (d.get("jd") or {}).get("markdown", "")
         # A fetch that SUCCEEDED and produced no JD is the same fact as one that raised
-        # (#18), so it earns the same flag. Not the same control flow, though: the
-        # `except` arm below composes with jd="" and so does this, because a CV built
-        # from the verified bundle alone is degraded rather than fabricated.
+        # (#18), so it earns the same flag: a CV built from the verified bundle alone is
+        # degraded rather than fabricated, and the flag is what tells the user which.
+        #
+        # It is NOT the same control flow, and the difference is deliberate. The `except`
+        # arm below has no text at all, so it composes with `jd=""`. This arm does have
+        # text -- `jd` was bound from the fetched dossier above, BEFORE this test -- and
+        # KEEPS it. At the shipped `min_jd_chars: 0` the two are identical, because only a
+        # wholly empty JD fails the predicate. Above the floor they differ: a sub-floor JD
+        # is still handed to compose().
+        #
+        # That is on purpose, and it is why this does not mirror triage. Triage abstains
+        # on the same predicate because judging page chrome spends a real judge call and
+        # writes a verdict nobody can trust. Composition has already decided to build a
+        # CV; a short JD costs tailoring QUALITY, not correctness, and it is not a
+        # fabrication risk -- the gate still citation-checks every bullet against the
+        # bundle either way. Throwing away text the fetch actually returned would make the
+        # artefact worse for no safety gain.
         if not dossier_cache.jd_arrived(d):
             dossier_failed = True
     except Exception as e:

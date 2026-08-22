@@ -40,8 +40,15 @@ its own `*Config` dataclass, reading its own block of the single YAML file at `$
 **Adapter seams.** Four points are the intended seams for pluggable implementations: **backend**,
 **store**, **renderer** and **fetcher**. Each is a NAME-KEYED REGISTRY, not a hardwired import:
 `core/plugins.py` holds `register`/`get`, `core/app.py` holds the seam names
-(`_STORE_SEAM`/`_FETCHER_SEAM`/`_RENDERER_SEAM`/`_BACKEND_SEAM`) and resolves them in
-`Sluice._resolve`, and `core/protocols.py` holds the `Store`, `Fetcher` and `Renderer` contracts.
+(`_STORE_SEAM`/`_FETCHER_SEAM`/`_RENDERER_SEAM`/`_BACKEND_SEAM`), and `core/protocols.py` holds
+the `Store`, `Fetcher` and `Renderer` contracts. Only THREE of the four resolve through
+`Sluice._resolve`: store, fetcher and renderer each take the config object, so one generic
+lookup serves them. The backend does not — `Sluice.backend()` resolves it, because a role layer
+(auto/primary/fallback) sits above the provider lookup and the factory takes resolved
+construction params (model/key/base_url) rather than the config. `core/app.py` says so verbatim
+beside the code, and item 5 below repeats it; an earlier revision of THIS file claimed all four
+went through `_resolve`, which is the kind of false claim about the codebase this agent exists
+to catch.
 Implementations live in one package per seam — `sluice/backends/`, `sluice/stores/`,
 `sluice/renderers/`, `sluice/fetchers/` — and register themselves by name at import; `Sluice.available`
 imports the package to trigger that. (`Source.fetch` in `ingest/sources/` is a separate,

@@ -425,9 +425,12 @@ cannot drift), which is what keeps that cost the exception rather than the rule.
 `docs/ARCHITECTURE.md` for the full two-tier mechanics. Above the hard gate sits a softer,
 human-facing layer (#60, on by default via `cv.require_signoff`): an advisory LLM audit
 (`cv/audit.py`) catches the qualitative fabrication the deterministic gate cannot, and an
-`unsupported` flag WITHHOLDS the send-ready `tailored_cv` pointer (status `needs-signoff`, via
+`unsupported` flag WITHHOLDS the send-ready `tailored_cv` pointer (via
 `Store.sign_off`/`hold_for_signoff`, cleared by `job-sluice cv signoff`) rather than blocking
-rendering. `cv.style_hold` (#167, off by default) gives a surviving STYLE/VOICE finding the SAME
+rendering. The hold is recorded in two frontmatter keys, `pending_cv` and `needs_signoff`; the
+note's `status` stays `shortlist`, so never-regress is untouched. `needs-signoff` is the
+`CvResult` RUN-REPORT label for that outcome, never a `status`-key value — `docs/ARCHITECTURE.md`
+states the same distinction, and this file used to contradict it. `cv.style_hold` (#167, off by default) gives a surviving STYLE/VOICE finding the SAME
 consequence, deliberately a SEPARATE key from `cv.require_signoff` — that flag's True default was
 chosen for FABRICATION, and riding it would withhold `tailored_cv` on any of ~40 stems out of the box
 on an unconfigured install. Neither signoff flag touches the pure hard gate.

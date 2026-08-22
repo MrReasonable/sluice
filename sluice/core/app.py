@@ -1852,7 +1852,6 @@ class Sluice:
         built ONLY when there is something testable -- a known provider whose
         credentials are satisfied -- so a keyless per-token backend is
         classified from config alone, never by catching a construction error."""
-        import json
         import shutil
         import time
 
@@ -2105,58 +2104,18 @@ class Sluice:
         # cost; if a real deployment ever grows large enough for that to stop holding,
         # the fix is a bound reported IN the detail string (never a silent truncation --
         # a capped count reads as a complete one), not a silent skip.
-        dossier_dir = self._dossier_dir()
-        dossier_counts = {
-            "total": 0, "unreadable": 0, "empty": 0, "under_200": 0, "under_800": 0}
-        try:
-            entries = [e for e in os.listdir(dossier_dir) if e.endswith(".json")]
-        except OSError:
-            # Every reason the directory cannot be listed, not the two that were named.
-            # A mode-000 dossier dir raises PermissionError, which escaped -- and
-            # `cli.main` converts only ValueError, so `doctor` died with a traceback on
-            # exactly the broken install it exists to diagnose. The per-file read twelve
-            # lines below already catches OSError for this reason and says so; this is
-            # the same rule applied one level up.
-            entries = []
-        for entry in entries:
-            dossier_counts["total"] += 1
-            try:
-                with open(os.path.join(dossier_dir, entry), encoding="utf-8") as f:
-                    dossier = json.load(f)
-            except (OSError, ValueError):
-                # The FILE itself is broken -- not valid JSON, or unreadable outright
-                # (an interrupted write, a bad disk). This is a different fault than a
-                # dossier that parsed fine but carries no JD text, so it gets its own
-                # bucket rather than folding into "empty": an empty JD means the fetch
-                # produced nothing (a blocked scraper, a consent wall); an unreadable
-                # entry means the cache file is corrupt, which is a disk/write problem
-                # with nothing to do with scraping. Never re-raised -- doctor diagnoses
-                # a broken install, it does not crash on the very entry it is trying to
-                # report on -- and it is excluded from the length buckets below because
-                # its length is genuinely unknown, not zero.
-                dossier_counts["unreadable"] += 1
-                continue
-            text = ""
-            jd = dossier.get("jd") if isinstance(dossier, dict) else None
-            markdown = jd.get("markdown") if isinstance(jd, dict) else None
-            # A file missing the `jd` key entirely (a real shape: it predates #169, or
-            # `DossierCache.get_or_build`'s non-atomic write -- a plain `open(...).write`,
-            # not the temp-file + os.replace pattern the vault's writes use -- was
-            # interrupted mid-json.dump) degrades to "" here, the same verdict
-            # `DossierCache.jd_arrived` already gives a malformed `jd` for the identical
-            # reason: a dossier that cannot answer the question has not produced a JD
-            # either. Unlike the unreadable case above, the JSON itself parsed fine --
-            # this is "no JD content", not "broken file" -- so it stays folded into
-            # "empty" alongside a dossier whose fetch genuinely produced a blank JD.
-            if isinstance(markdown, str):
-                text = markdown.strip()
-            length = len(text)
-            if length < 800:
-                dossier_counts["under_800"] += 1
-            if length < 200:
-                dossier_counts["under_200"] += 1
-            if length == 0:
-                dossier_counts["empty"] += 1
+        # The SCAN itself lives on DossierCache (`census`), which owns the on-disk
+        # layout it reads and the `jd.markdown` extraction it measures. Inlined here it
+        # hardcoded both: a change to the cache's naming scheme would have left this
+        # counting ZERO and reporting "no cached dossiers yet" -- indistinguishable from
+        # a fresh install -- and it re-derived the extraction `jd_arrived` calls itself
+        # the sole owner of. Constructed with ttl/fetcher/floor it will not use, because
+        # a census reads what is on disk and asks nothing of them.
+        # ttl and floor are passed as 0: a census reads what is on disk and asks nothing
+        # of either, and passing a REAL floor here would be worse than meaningless -- it
+        # would look like the distribution depended on the operator's `min_jd_chars`,
+        # which is exactly the independence this row exists to give them.
+        dossier_counts = self.dossier_cache(self._dossier_dir(), 0, 0).census()
         components.append(_doctor.classify_dossier_cache(dossier_counts))
 
         return _doctor.DoctorReport(checks=checks, components=components)

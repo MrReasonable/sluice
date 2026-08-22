@@ -47,7 +47,7 @@ That second clause is why the STYLE **hold** is opt-in (decision 8) while the ST
    round 1.)* An empty JD always fails whatever the floor — a fact. A *character count* is a judgement,
    and `sluice.yaml.example:14-21` states the rule for exactly that case: `lead_ttl_days` ships
    commented because "an active value would hand every copier a judgement about what counts as stale
-   that they never made". **Accepted cost:** at `0` the 141 sub-200 entries in #169's table stay
+   that they never made". **Accepted cost:** at `0` the sub-200 entries in #169's table stay
    cached. The wizard question and the `doctor` distribution (decision 9) exist to close it.
 4. **The per-source signal is derived from the vault, not stored — hosted in `health_report()`.**
    Rejected: extending `HealthStore` (whole-object rewrite, ingest-only writer today). Rejected: a new
@@ -129,7 +129,7 @@ so this creates no protocol obligation — but it widens the duck type every tes
 ### Pre-existing poisoned entries self-heal — to the extent the floor allows
 
 `_fresh()` applies the predicate, so an entry whose JD is empty reads as not-fresh and is re-fetched.
-**At the shipped `min_jd_chars: 0` this closes the EMPTY subset only** — #169's 141 sub-200 entries stay
+**At the shipped `min_jd_chars: 0` this closes the EMPTY subset only** — #169's sub-200 entries stay
 cached until a floor is configured, which is decision 3's accepted cost, surfaced by decision 9's
 distribution. With a floor set, the same mechanism re-fetches the short entries too, and #169's manual
 "delete the sub-200 entries" step goes away.
