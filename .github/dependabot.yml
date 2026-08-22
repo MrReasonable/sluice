@@ -60,6 +60,28 @@ updates:
       pip:
         patterns: ["*"]
 
+  # docker covers the Dockerfile's digest-pinned base image (#104 PR 4).
+  #
+  # This entry is what makes that pin safe rather than a liability, and it is the same argument
+  # this file's header already makes for the action pins: a digest never updates itself, so
+  # without an updater the base image freezes permanently and the published image silently
+  # accrues known CVEs in cairo/pango/openssl while LOOKING well-secured (#3). Dependabot
+  # rewrites the digest and keeps the `name:tag@sha256:...` form, so the tag stays legible.
+  #
+  # `directory: /` is where the Dockerfile lives. docker-compose.yml is deliberately NOT a
+  # second entry: it references ghcr.io/mrreasonable/job-sluice, this repo's OWN image, and
+  # there is nothing upstream there to bump.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+      include: scope
+    groups:
+      docker:
+        patterns: ["*"]
+
   # npm covers package.json -- the rulesync generator only; sluice itself ships no JS.
   # A bump here is EXPECTED to land red: scripts/guard_rulesync_drift.py pins the per-feature
   # output counts, and a new rulesync version moves them. That is the gate working. Update
