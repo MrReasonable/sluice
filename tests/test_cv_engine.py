@@ -96,6 +96,15 @@ class FakeVault:
 
 class FakeCache:
     def get_or_build(self, fm): return {"jd": {"markdown": "we value delivery"}}
+    # #169: run_one now calls dossier_cache.jd_arrived(d) on every SUCCESSFUL fetch, so
+    # this duck-typed double needs an answer or every test using it AttributeErrors on
+    # that new line. FakeCache's fixed markdown above is a healthy, non-empty JD -- the
+    # fixture every OTHER test in this file relies on meaning "the fetch worked" -- so
+    # True is the answer that keeps this double's meaning consistent with what it
+    # returns, not a blanket stub: test_the_cv_consumer_records_a_clean_fetch_as_not_blind
+    # (tests/test_dossier_guard.py) pins that this exact combination must leave
+    # dossier_failed False.
+    def jd_arrived(self, dossier): return True
 
 class FakeRenderer:
     """The Renderer seam, injected. Records what it was asked to render so a test can
@@ -1452,7 +1461,13 @@ def test_batch_reports_dossier_failed_when_the_blocked_lead_then_errors():
 
     class _BlockedCache:
         """Stands in for Sluice.dossier_cache() after the SSRF guard has refused
-        the lead's url -- exactly what get_or_build raises in production."""
+        the lead's url -- exactly what get_or_build raises in production.
+
+        No jd_arrived here (#169): run_one's new call to it sits INSIDE the same
+        try block, after get_or_build's own line, so a raise from get_or_build never
+        reaches it -- the `except` arm sets dossier_failed and moves on. A double
+        whose get_or_build always raises has no jd_arrived branch to exercise.
+        """
         def get_or_build(self, fm):
             raise urlguard.DossierBlocked(urlguard.BLOCKED_ADDRESS)
 
@@ -1471,6 +1486,60 @@ def test_batch_reports_dossier_failed_when_the_blocked_lead_then_errors():
     assert results[0].status == "error"
     assert results[0].dossier_failed is True, \
         "the dossier WAS blocked -- run_batch's catch-all must not silently lose that"
+
+
+class _VariableJdCache:
+    """A dossier cache whose JD content the CALLER chooses, unlike FakeCache's and
+    RecordingCache's fixed non-empty one. Neither of those can exercise jd_arrived's
+    negative branch (see the #169 comment on each), so the test below -- which needs
+    to prove a SUCCESSFUL fetch that returns no JD is flagged, not just a raising one
+    -- needs a double whose answer can actually vary.
+
+    jd_arrived mirrors DossierCache.jd_arrived's core rule (core/dossier.py): an
+    empty/blank markdown never arrived. It does not model the real class's min_jd_chars
+    floor -- this test is about the fact of an empty JD, not the floor -- so it is a
+    narrower, purpose-built stand-in rather than a full fake of the real class.
+    """
+    def __init__(self, jd_markdown):
+        self._jd_markdown = jd_markdown
+
+    def get_or_build(self, fm):
+        return {"jd": {"markdown": self._jd_markdown}}
+
+    def jd_arrived(self, dossier):
+        markdown = (dossier.get("jd") or {}).get("markdown")
+        return bool(isinstance(markdown, str) and markdown.strip())
+
+
+def _run_one(tmp_path, *, jd_markdown):
+    """A single shortlist lead composed against CLEAN_CV, with the fetched JD content
+    controlled by the caller via _VariableJdCache. served_dir="" is the file's existing
+    no-serve idiom (see test_no_serve_renders_but_does_not_mark_lead) -- this helper is
+    about dossier_failed, not the served pointer, so skipping serve keeps the test off
+    disk without needing a monkeypatch fixture. tmp_path isolates output_dir from every
+    other test's hardcoded _cfg() value; nothing under it is actually read, since
+    FakeRenderer never touches disk.
+    """
+    cfg = _cfg()
+    cfg.output_dir = str(tmp_path / "cvout")
+    cfg.served_dir = ""
+    v = FakeVault(ENTRIES)
+    note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
+    return run_one(note, v, cfg, FakeBackend(CLEAN_CV), _VariableJdCache(jd_markdown),
+                   renderer=FakeRenderer())
+
+
+def test_a_cv_composed_without_a_JD_is_flagged_rather_than_silently_tailored(tmp_path):
+    # #18 added dossier_failed for a fetch that RAISED. A fetch that succeeds and
+    # returns page chrome is the same fact wearing different clothes: without the
+    # flag, "status: rendered" is indistinguishable from a CV genuinely tailored to a
+    # real job description. Control flow is deliberately unchanged -- composing from
+    # the bundle alone is degraded, not wrong, and skipping the lead here would be a
+    # bigger behaviour change than this issue should carry.
+    res = _run_one(tmp_path, jd_markdown="")
+    assert res.status == "rendered"
+    assert res.dossier_failed is True
+
 
 def test_batch_records_error_when_fallback_response_is_truncated():
     # A truncated fallback response (finish_reason==length) is a hard error, not
@@ -1583,6 +1652,10 @@ class RecordingCache:
     def get_or_build(self, fm):
         self.calls += 1
         return {"jd": {"markdown": "we value delivery"}}
+    # #169: same reasoning as FakeCache.jd_arrived beside it (this class returns the
+    # identical fixed, non-empty markdown) -- every test below that reaches PAST the
+    # staleness gate (cache.calls == 1) now calls this, not just get_or_build.
+    def jd_arrived(self, dossier): return True
 
 
 _STALE_FM = {"status": "shortlist", "company": "Example Foundry", "role": "Analyst",

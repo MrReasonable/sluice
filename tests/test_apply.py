@@ -1,6 +1,6 @@
 import os
 from sluice.core.vault import Vault
-from sluice.triage.apply import apply_classification, apply_verdict
+from sluice.triage.apply import apply_classification, apply_verdict, clamp_verdict
 
 
 def _note(vault, name, fm_lines):
@@ -78,3 +78,31 @@ def test_apply_verdict_returns_unchanged_on_a_status_change_between_read_and_wri
     verdict = {"verdict": "shortlist", "relevance_score": 82, "fit_reasoning": "fit"}
     assert apply_verdict(v, note, verdict, {}) == "unchanged"
     assert v.read_leads()[0].status == "applied"
+
+
+def test_a_model_verdict_outside_the_judges_vocabulary_becomes_needs_review():
+    assert clamp_verdict("shortlist") == "shortlist"
+    assert clamp_verdict("research") == "research"
+    assert clamp_verdict("dismiss") == "dismiss"
+    assert clamp_verdict("nonsense") == "needs_review"
+    assert clamp_verdict("") == "needs_review"
+
+
+def test_a_model_cannot_write_an_application_owned_status():
+    # Live hole independent of #169: require_status checks only the status the lead is
+    # CURRENTLY in, so a model returning "applied" on a `new` lead wrote it.
+    assert clamp_verdict("applied") == "needs_review"
+    assert clamp_verdict("rejected") == "needs_review"
+
+
+def test_apply_verdict_clamps_an_out_of_vocabulary_status_to_needs_review(tmp_path):
+    # apply_verdict itself must clamp too, not just the pure helper -- this is the
+    # WRITE half of the #169 hole: a model returning "applied" on a `new` lead must
+    # not land `status: applied` in the note.
+    v = Vault(str(tmp_path))
+    _note(v, "F.md", ['company: "Alpha"', "status: new", "score: 0",
+                      'glassdoor_rating: ""', 'culture_flags: ""', 'relevance_notes: ""'])
+    note = v.read_leads({"new"})[0]
+    verdict = {"verdict": "applied", "relevance_score": 82, "fit_reasoning": "fit"}
+    assert apply_verdict(v, note, verdict, {}) == "applied"    # the WRITE outcome, unchanged
+    assert v.read_leads()[0].status == "needs_review"          # the WRITTEN status is clamped

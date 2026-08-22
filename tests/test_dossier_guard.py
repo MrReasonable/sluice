@@ -468,7 +468,11 @@ def test_the_cv_consumer_proceeds_with_an_empty_jd(role, monkeypatch):
 
     class _BlockedCache:
         """Stands in for Sluice.dossier_cache() after the SSRF guard has refused
-        the lead's url -- exactly what get_or_build raises in production."""
+        the lead's url -- exactly what get_or_build raises in production.
+
+        No jd_arrived here (#169): run_one calls it only after get_or_build returns,
+        inside the same try block, so a raise from get_or_build never reaches it.
+        """
 
         def get_or_build(self, fm):
             raise urlguard.DossierBlocked(urlguard.BLOCKED_ADDRESS)

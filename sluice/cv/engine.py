@@ -197,6 +197,12 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
     try:
         d = dossier_cache.get_or_build(fm)
         jd = (d.get("jd") or {}).get("markdown", "")
+        # A fetch that SUCCEEDED and produced no JD is the same fact as one that raised
+        # (#18), so it earns the same flag. Not the same control flow, though: the
+        # `except` arm below composes with jd="" and so does this, because a CV built
+        # from the verified bundle alone is degraded rather than fabricated.
+        if not dossier_cache.jd_arrived(d):
+            dossier_failed = True
     except Exception as e:
         _log.warning("dossier for %s failed: %s", note.ref, e)
         dossier_failed = True
