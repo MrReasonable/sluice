@@ -119,8 +119,8 @@ def _job_names(path: Path) -> list[str]:
 # and `packages: write` appended to EITHER file left this entire module green. Pinning the
 # roster is what makes the per-job equality pins exhaustive in combination rather than merely
 # individually correct.
-_RELEASE_PLEASE_JOBS = ["release-please", "build", "attest", "pypi", "release-assets",
-                        "docker", "attest-image"]
+_RELEASE_PLEASE_JOBS = ["release-please", "build", "linux-packages", "attest", "pypi",
+                        "release-assets", "docker", "attest-image"]
 _TESTPYPI_JOBS = ["testpypi"]
 
 _ROSTER_MESSAGE = (
@@ -324,10 +324,283 @@ def test_attest_job_is_gated_on_release_created():
     )
 
 
-def test_attest_job_needs_release_please_and_build_exactly():
+_NFPM_FETCH_STEP = "Fetch and verify nfpm"
+_VERIFY_MODES_STEP = "Verify the packaged directories stay traversable"
+
+
+def test_linux_packages_job_has_no_elevated_permissions():
+    """The pin `_ROSTER_MESSAGE` demands by name for every job added to the roster: "Add the
+    job HERE and give it its own equality pin; extending this list alone restores the blind
+    spot it exists to close." This job was added to the roster WITHOUT one, which is the
+    documented mistake made verbatim.
+
+    It matters more here than for most: `linux-packages` checks out repository source and runs
+    a downloaded binary over it, so it is the natural place for someone to later add
+    `contents: write` (to upload straight to the release) or `packages: write`. Either would
+    falsify the workflow's own claim that `release-assets` is the ONLY holder of
+    `contents: write`, and with no equality pin the whole module stays green.
+    """
+    assert _permissions_block(RELEASE_PLEASE, "linux-packages") == (
+        "    permissions:\n      contents: read"
+    ), (
+        "linux-packages' permissions must be EXACTLY `contents: read`. It produces an artifact "
+        "and writes nothing back; `release-assets` is the one job that uploads."
+    )
+
+
+def test_linux_packages_job_is_gated_on_release_created():
+    assert (
+        "if: success() && needs.release-please.outputs.release_created == 'true'"
+        in _job_directives(RELEASE_PLEASE, "linux-packages")
+    )
+
+
+def test_linux_packages_job_needs_release_please_and_build_exactly():
+    match = re.search(r"\n    needs: (.+)\n",
+                      _job_directives(RELEASE_PLEASE, "linux-packages"))
+    assert match, "the 'linux-packages' job declares no `needs:`"
+    assert match.group(1).strip() == "[release-please, build]", (
+        f"linux-packages' needs: is no longer exactly [release-please, build], it is "
+        f"{match.group(1).strip()!r} -- it consumes build's wheel and release-please's version"
+    )
+
+
+def test_linux_packages_checks_out_the_tagged_sha_not_the_trigger_commit():
+    """nfpm.yaml, packaging/job-sluice and the staging script must come from the TAGGED tree,
+    the same reason `build` and `docker` pin their refs. Checking out the trigger commit would
+    package whatever happened to be on the branch when the workflow fired."""
+    step = _step_containing(RELEASE_PLEASE, "linux-packages", "actions/checkout@")
+    assert "ref: ${{ needs.release-please.outputs.sha }}" in step
+    assert "persist-credentials: false" in step
+
+
+def test_the_nfpm_download_verifies_its_checksum_before_executing_anything():
+    """The step's own comment calls `sha256sum --check --strict` the load-bearing part --
+    "without --check the hash would merely be PRINTED and the step would pass on any bytes at
+    all". Nothing asserted that until this test: `grep -rn 'sha256sum' tests/` returned
+    nothing, so deleting the flags, or hoisting the `tar` above the check, was green.
+
+    ORDER is pinned too, not just presence. A checksum verified after the archive is already
+    unpacked still fails the build, but only after untrusted bytes have been written to disk;
+    and if the extraction itself were ever what produced the binary that later runs, the check
+    would be decorative.
+    """
+    # Anchored on the step's NAME, the same way testpypi.yml's stamp-proof step is, because
+    # `_run_block_scalar` slices FORWARD from its needle and then looks for `run: |` -- so the
+    # needle has to sit between the step's `- ` and its `run:` key, which only a `name:` does.
+    # (`NFPM_SHA256` and `sha256sum --check` each occur twice in the file besides: once in the
+    # shell body and once in the env block or the comment explaining the flag.)
+    body = _run_block_scalar(RELEASE_PLEASE, _NFPM_FETCH_STEP)
+    assert "sha256sum --check --strict" in body, (
+        "the nfpm download must VERIFY its checksum, not merely print one"
+    )
+    assert body.index("sha256sum --check") < body.index("tar -xzf"), (
+        "the checksum must be verified BEFORE the archive is unpacked"
+    )
+    # Scope: a block scalar that failed to extract would make both `in` checks fail loudly,
+    # but an empty one would make the ordering comparison raise rather than assert. Pin that
+    # the body is the script actually shipped.
+    assert "curl" in body and "NFPM_VERSION" in body, (
+        f"the extracted run body does not look like the nfpm download step: {body!r}"
+    )
+
+
+def test_linux_packages_stages_the_wheel_and_builds_both_package_formats():
+    """The job's `run:` steps, pinned as an ordered SET rather than probed individually.
+
+    Two holes this closes, both created by an earlier revision of this PR. First, the
+    assertion tying the workflow to `scripts/build_linux_packages.py` was deleted when the
+    workflow probes moved out of tests/test_linux_packages_channel.py, and not replaced -- so
+    the import-set guard proved the STAGER never resolves from an index while nothing proved
+    the job runs it. Swapping that step for `pip install --target` was green.
+
+    Second, and worse: nothing pinned the two `nfpm package` invocations. Deleting the `-p rpm`
+    one leaves the roster, artifact-map, permissions, checkout and checksum pins all green, and
+    `upload-artifact` applies `if-no-files-found` to the AGGREGATE of its `path:` patterns --
+    so a deb-only run uploads, attests and publishes a release silently missing the .rpm.
+    """
+    runs = _post_checkout_run_steps(RELEASE_PLEASE, "linux-packages")
+    # Scope: the helper returning [] would satisfy every check below. The COUNT is the half the
+    # set below cannot do -- `_run_commands` renders every `run: |` block scalar as the literal
+    # `"|"`, so the two block-scalar steps (fetch nfpm, verify directory modes) collapse into a
+    # single set member and a deleted one would be invisible there. Each has its own test.
+    assert len(runs) == 5, (
+        f"expected 5 `run:` steps in linux-packages (fetch nfpm, stage, package deb, package "
+        f"rpm, verify modes), found {len(runs)}: {runs}"
+    )
+    # EXACT commands as a SET, not substrings. A substring pin accepts appended arguments, and
+    # the ones that matter here are silent: `--out build/other` or `--dist /tmp/elsewhere` on
+    # the stager both leave a substring check green while the job stages somewhere nfpm never
+    # looks. This module's own `_run_commands` docstring records fixing that class before, and
+    # an equality also catches a `-t` respelled as `--target`, which the sibling test's
+    # `re.findall(r"-t (\S+)")` cannot see. The `"|"` is the block-scalar fetch step, which
+    # `_run_commands` renders that way by design and which has its own test above.
+    assert _run_commands(RELEASE_PLEASE, "linux-packages") == {
+        "|",
+        "python scripts/build_linux_packages.py",
+        "./nfpm package -f nfpm.yaml -p deb -t build/",
+        "./nfpm package -f nfpm.yaml -p rpm -t build/",
+    }, (
+        f"linux-packages' run steps are not exactly the staging call and the two nfpm "
+        f"invocations: {sorted(_run_commands(RELEASE_PLEASE, 'linux-packages'))}. A missing "
+        f"nfpm invocation is SILENT -- the upload's if-no-files-found applies to the aggregate "
+        f"of its globs, so the other format still uploads and the release publishes without "
+        f"this one."
+    )
+
+
+def test_the_packaged_directories_are_verified_before_upload():
+    """The only check on what nfpm actually EMITS, so it needs its own row.
+
+    The offline suite asserts what `stage()` produces; nothing else looks at the package. That
+    gap is not hypothetical -- a blanket `file_info.mode` once made nfpm strip the search bit
+    from every directory it synthesised, and the package was unusable for non-root users while
+    the suite stayed green and three root-only container installs reported it healthy. A
+    umask-022 runner also makes the stager's chmod a no-op, so without this step CI exercises
+    neither the broken nor the fixed behaviour.
+
+    ORDER is pinned: verifying after the upload would publish the bad artefact first.
+    """
+    body = _run_block_scalar(RELEASE_PLEASE, _VERIFY_MODES_STEP)
+    assert "dpkg-deb -c" in body and "rpm -qlvp" in body, (
+        "both package formats must be inspected; checking one leaves the other unverified"
+    )
+    assert body.count('substr($1, 1, 10) != "drwxr-xr-x"') == 2, (
+        "both loops must compare the FULL directory mode against drwxr-xr-x. A `!~ /^drwx/` "
+        "test passes on drwx------, which is owner-traversable and unusable by anyone else -- "
+        "the property that broke, one permission column over"
+    )
+    assert "exit " in body, (
+        "the step must FAIL on a bad package rather than only printing -- a check whose "
+        "findings do not change the exit status is the present-and-inert shape this repo "
+        "keeps closing"
+    )
+    job = _job_directives(RELEASE_PLEASE, "linux-packages")
+    assert job.index(_VERIFY_MODES_STEP) < job.index("actions/upload-artifact"), (
+        "the mode check must run BEFORE the upload, or a bad package is published first"
+    )
+
+
+def test_the_nfpm_steps_take_their_version_from_release_please():
+    """The workflow claims the package version and the git tag "cannot disagree". Nothing
+    falsified that until this test: deleting `env: VERSION`, or swapping it to
+    `github.ref_name`, both left the whole suite green.
+
+    `ref_name` is the specific trap. It is the TAG (`v1.2.0`), not the version (`1.2.0`), so
+    the packages would ship named `job-sluice_v1.2.0_all.deb` -- a different version string
+    from the wheel and the image in the same release, and not obviously wrong at a glance.
+    """
+    job = _job_directives(RELEASE_PLEASE, "linux-packages")
+    # Anchored on the line start so `NFPM_VERSION:` -- which ends in the same eight characters
+    # -- is not swept up, and capturing to end of line because `${{ needs... }}` contains
+    # spaces that `\S+` would truncate. Both were wrong in the first spelling of this line.
+    versions = re.findall(r"^\s+VERSION: (.+)$", job, re.MULTILINE)
+    assert versions == ["${{ needs.release-please.outputs.version }}"] * 2, (
+        f"both nfpm steps must take VERSION from release-please's own `version` output, got "
+        f"{versions}. `github.ref_name` is the tag (v1.2.0), not the version (1.2.0)."
+    )
+
+
+def test_the_packaging_output_directory_agrees_across_config_workflow_and_upload():
+    """`-t build/`, nfpm.yaml's `src`, the stager's `--out` default and the upload's globs are
+    four statements of one path. The module already guards the `dst`/shim pair for the same
+    reason: a drift here yields a green run that packages nothing anybody uploads."""
+    job = _job_directives(RELEASE_PLEASE, "linux-packages")
+    upload = _step_containing(RELEASE_PLEASE, "linux-packages", "actions/upload-artifact")
+    # EVERY `-t` target, compared as a set. `"-t build/" in job` was the first spelling and it
+    # was inert: with two nfpm invocations, changing one to `-t out/` leaves the other's
+    # `-t build/` in the job text and the substring check still passes -- so the format whose
+    # target drifted is built somewhere nothing collects, and the release ships without it.
+    # Caught by a mutation witness, not by review.
+    targets = set(re.findall(r"-t (\S+)", job))
+    assert targets == {"build/"}, (
+        f"the nfpm invocations disagree on their output directory: {sorted(targets)}. Every "
+        f"one must write to the directory the upload globs collect."
+    )
+    for glob in ("build/*.deb", "build/*.rpm"):
+        assert glob in upload, (
+            f"the upload does not name {glob!r}, so nfpm's `-t build/` output for that format "
+            f"is produced and then never collected"
+        )
+    # Compared BY VALUE: the stager's default imported as a real object, and nfpm's `src` read
+    # from the parsed YAML. Both halves were text matches against raw source until a review
+    # round mutated them -- and nfpm.yaml's own header comment mentions the path, so
+    # `"./build/linux-packages/lib" in nfpm.yaml.read_text()` was satisfied by the COMMENT and
+    # stayed green when the real `src:` was changed. A guard over a file that documents itself
+    # cannot be a substring probe.
+    import yaml
+
+    from scripts.build_linux_packages import DEFAULT_OUT
+
+    tree = [entry for entry in yaml.safe_load((ROOT / "nfpm.yaml").read_text())["contents"]
+            if entry.get("type") == "tree"]
+    assert len(tree) == 1, f"expected exactly one `type: tree` entry in nfpm.yaml, got {tree}"
+    assert tree[0]["src"].removeprefix("./") == DEFAULT_OUT.as_posix(), (
+        f"nfpm.yaml packages {tree[0]['src']!r} but the stager writes to "
+        f"{DEFAULT_OUT.as_posix()!r} -- nfpm would package a directory nothing produced"
+    )
+
+
+def test_the_packages_upload_fails_at_the_producer_rather_than_downstream():
+    """Scoped to the JOB, not swept over the whole file. A whole-file substring probe passes on
+    a match anywhere -- in another job's step, or in a comment saying the opposite -- which is
+    how the first version of this guard was written and why it moved here, where
+    `_job_directives` bounds it.
+
+    On what `error` actually buys: the default `warn` means "output a warning but do not fail"
+    per the action's own action.yml, creating NO artifact, so the run does not go green on an
+    empty release -- `attest` and `release-assets` both fail at download-artifact. `error`
+    moves the failure to the producer, naming the glob that matched nothing, instead of
+    surfacing two jobs later as a missing-artifact error that reads like an infrastructure
+    fault.
+    """
+    step = _step_containing(RELEASE_PLEASE, "linux-packages", "actions/upload-artifact")
+    assert "if-no-files-found: error" in step, (
+        "the linux-packages upload must set if-no-files-found: error"
+    )
+
+
+def test_the_release_upload_names_every_artifact_directory():
+    """`gh release upload "$TAG" dist/* packages/*` -- both globs, pinned.
+
+    Without this, deleting just `packages/*` ships a green release with no .deb or .rpm:
+    `_JOB_ARTIFACTS` still matches because the DOWNLOAD step is untouched, and the two other
+    tests over this step check only `--clobber`, `TAG` and `GH_REPO`. `attest` got a
+    covers-every-directory guard; the user-facing upload had none.
+    """
+    block = _job_directives(RELEASE_PLEASE, "release-assets")
+    marker = "\n    steps:\n"
+    parts = re.split(r"\n(?=      - )", block[block.index(marker) + len(marker):])
+    downloads = [part for part in parts if "actions/download-artifact" in part]
+    # DERIVED from this job's own download paths, not hardcoded, which is the shape
+    # `test_attest_downloads_to_every_path_it_scans` already uses and this one lacked. A
+    # hardcoded pair closes only the delete-a-glob direction: RENAMING a download path leaves
+    # both literals present and green, while `gh release upload` fails on a glob matching
+    # nothing -- after `pypi` has already published and the release is public.
+    assert len(downloads) == len(_JOB_ARTIFACTS["release-assets"]), (
+        f"expected {len(_JOB_ARTIFACTS['release-assets'])} download-artifact steps in "
+        f"release-assets, found {len(downloads)}"
+    )
+    step = _step_containing(RELEASE_PLEASE, "release-assets", "gh release upload")
+    for download in downloads:
+        path = re.search(r"path:\s*(\S+)", download)
+        assert path, f"couldn't find path: in a release-assets download step: {download!r}"
+        assert f"{path.group(1)}*" in step, (
+            f"release-assets downloads to {path.group(1)!r} but its upload names no glob "
+            f"covering it -- those artifacts would be fetched and then silently not published"
+        )
+
+
+def test_attest_job_needs_release_please_build_and_linux_packages_exactly():
+    """`linux-packages` joined this list when the .deb/.rpm became attestation subjects. It is
+    load-bearing, not incidental: without the dependency this job can start while those
+    packages do not yet exist, and `download-artifact` would fail the release AFTER the tag is
+    public -- or worse, if the download were ever made non-fatal, attest a release whose
+    packages carry no provenance while its wheel does."""
     block = _job_directives(RELEASE_PLEASE, "attest")
-    assert re.search(r"^\s*needs:\s*\[release-please,\s*build\]\s*$", block, re.MULTILINE), (
-        "attest's needs: is no longer exactly [release-please, build]"
+    assert re.search(r"^\s*needs:\s*\[release-please,\s*build,\s*linux-packages\]\s*$",
+                     block, re.MULTILINE), (
+        "attest's needs: is no longer exactly [release-please, build, linux-packages]"
     )
 
 
@@ -342,47 +615,99 @@ def test_attest_job_has_the_elevated_permissions_it_needs():
     )
 
 
-def test_every_job_agrees_on_the_artifact_name():
-    """build uploads it; attest, pypi, release-assets and docker each download it. Read from
-    all five sides rather than hardcoded five times, so a rename on one side is caught instead
-    of silently decoupling the jobs. The `== "dist"` anchor stays: without it, five
-    extractions that all failed would compare equal and pass."""
-    steps = {
-        "build": _step_containing(RELEASE_PLEASE, "build", "actions/upload-artifact"),
-        "attest": _step_containing(RELEASE_PLEASE, "attest", "actions/download-artifact"),
-        "pypi": _step_containing(RELEASE_PLEASE, "pypi", "actions/download-artifact"),
-        "release-assets": _step_containing(
-            RELEASE_PLEASE, "release-assets", "actions/download-artifact"
-        ),
-        "docker": _step_containing(
-            RELEASE_PLEASE, "docker", "actions/download-artifact"
-        ),
+# Which artifact each job touches, upload or download. An `_step_containing`-based version of
+# this test could not survive #104's PR 5: `attest` and `release-assets` each download TWO
+# artifacts now, and that helper asserts exactly one match. Widening it to "the first match"
+# would have been the silent fix -- it would still have passed while pinning only whichever
+# step came first, so a rename of the SECOND artifact would decouple the jobs unnoticed.
+_JOB_ARTIFACTS = {
+    "build": {"dist"},
+    "linux-packages": {"dist", "linux-packages"},   # downloads the wheel, uploads the packages
+    "attest": {"dist", "linux-packages"},
+    "pypi": {"dist"},
+    "release-assets": {"dist", "linux-packages"},
+    "docker": {"dist"},
+}
+
+
+def _artifact_names(path: Path, job: str) -> set[str]:
+    """Every artifact `name:` an upload- or download-artifact step of `job` refers to.
+
+    Returns an empty set for a job with no artifact steps rather than asserting, so the test
+    below can pin the SCOPE -- which jobs have artifact steps at all -- instead of only
+    checking the ones it already thought to name.
+    """
+    block = _job_directives(path, job)
+    marker = "\n    steps:\n"
+    if marker not in block:
+        return set()
+    parts = re.split(r"\n(?=      - )", block[block.index(marker) + len(marker):])
+    names = set()
+    for part in parts:
+        if "actions/upload-artifact" not in part and "actions/download-artifact" not in part:
+            continue
+        match = re.search(r"name:\s*(\S+)", part)
+        assert match, f"an artifact step in the {job!r} job declares no `name:`: {part!r}"
+        names.add(match.group(1))
+    return names
+
+
+def test_every_job_agrees_on_the_artifact_names():
+    """`build` uploads `dist`; `linux-packages` consumes it and uploads its own. Read from
+    every side rather than hardcoded per job, so a rename on one side is caught instead of
+    silently decoupling them.
+
+    The mapping is compared as a whole, so it pins the SCOPE too: a job that GAINS an artifact
+    step (or loses one) fails here even though every name it uses is spelled correctly. A
+    per-job subset probe would have accepted `release-assets` quietly dropping its
+    `linux-packages` download -- which publishes a release whose .deb and .rpm are simply
+    absent, with every job green.
+    """
+    found = {
+        job: _artifact_names(RELEASE_PLEASE, job)
+        for job in _job_names(RELEASE_PLEASE)
+        if _artifact_names(RELEASE_PLEASE, job)
     }
-    names = {}
-    for job, step in steps.items():
-        match = re.search(r"name:\s*(\S+)", step)
-        assert match, f"couldn't find name: in {job}'s artifact step"
-        names[job] = match.group(1)
-    assert set(names.values()) == {"dist"}, f"jobs disagree on the artifact name: {names}"
+    assert found == _JOB_ARTIFACTS, (
+        f"jobs disagree with the pinned artifact map. Found {found}, expected "
+        f"{_JOB_ARTIFACTS}."
+    )
 
 
-def test_attest_covers_the_whole_dist_directory():
+def test_attest_covers_every_published_artifact_directory():
     step = _step_containing(RELEASE_PLEASE, "attest", "actions/attest-build-provenance")
-    assert "subject-path: dist/*" in step, (
-        "attest no longer covers the whole dist/ directory in one glob -- two enumerated "
-        "extensions (*.whl, *.tar.gz) could miss a third artifact type later"
+    assert "dist/*" in step and "packages/*" in step, (
+        "attest no longer covers both published directories in whole-directory globs -- "
+        "enumerated extensions (*.whl, *.tar.gz, *.deb, *.rpm) could miss a further artifact "
+        "type later, and every release asset must carry provenance"
     )
 
 
-def test_attest_downloads_to_the_path_it_scans():
-    download_step = _step_containing(RELEASE_PLEASE, "attest", "actions/download-artifact")
+def test_attest_downloads_to_every_path_it_scans():
+    """EVERY download path must be covered, not just the first one found.
+
+    Now that attest downloads two artifacts, checking one would leave the other free to land
+    in a directory no glob names: `attest-build-provenance` would then sign the wheel, report
+    success, and the .deb and .rpm would ship unattested with nothing red anywhere.
+    """
+    block = _job_directives(RELEASE_PLEASE, "attest")
+    marker = "\n    steps:\n"
+    parts = re.split(r"\n(?=      - )", block[block.index(marker) + len(marker):])
+    downloads = [part for part in parts if "actions/download-artifact" in part]
+    # Scope: this loop is vacuously true over an empty list, so the count is pinned against
+    # the artifact map above rather than left to whatever the split happened to yield.
+    assert len(downloads) == len(_JOB_ARTIFACTS["attest"]), (
+        f"expected {len(_JOB_ARTIFACTS['attest'])} download-artifact steps in attest, found "
+        f"{len(downloads)}"
+    )
     subject_step = _step_containing(RELEASE_PLEASE, "attest", "actions/attest-build-provenance")
-    download_path = re.search(r"path:\s*(\S+)", download_step)
-    assert download_path, "couldn't find path: in attest's download-artifact step"
-    assert f"subject-path: {download_path.group(1)}*" in subject_step, (
-        f"attest downloads to {download_path.group(1)!r} but its subject-path glob doesn't "
-        f"cover that same directory -- attest would silently find zero subjects"
-    )
+    for step in downloads:
+        download_path = re.search(r"path:\s*(\S+)", step)
+        assert download_path, f"couldn't find path: in an attest download-artifact step: {step!r}"
+        assert f"{download_path.group(1)}*" in subject_step, (
+            f"attest downloads to {download_path.group(1)!r} but no subject-path glob covers "
+            f"that directory -- those subjects would be silently unattested"
+        )
 
 
 def test_workflow_wide_permissions_stay_read_only():
@@ -488,17 +813,18 @@ def test_release_assets_holds_contents_write_and_no_id_token():
     )
 
 
-def test_release_assets_job_needs_release_please_and_build_exactly():
+def test_release_assets_job_needs_release_please_build_and_linux_packages_exactly():
     """`pypi` and `attest` each pin their `needs:`; this job's went unpinned. It reads
-    `needs.release-please.outputs.tag_name` and downloads `build`'s artifact, so dropping
-    either dependency makes it run before what it consumes exists -- and `release-please` is
-    the easy one to lose, since the `tag_name` reference LOOKS like a workflow-level value
-    rather than a job output."""
+    `needs.release-please.outputs.tag_name` and downloads both `build`'s and
+    `linux-packages`' artifacts, so dropping any dependency makes it run before what it
+    consumes exists -- and `release-please` is the easy one to lose, since the `tag_name`
+    reference LOOKS like a workflow-level value rather than a job output."""
     match = re.search(r"\n    needs: (.+)\n",
                       _job_directives(RELEASE_PLEASE, "release-assets"))
     assert match, "the 'release-assets' job declares no `needs:`"
-    assert match.group(1).strip() == "[release-please, build]", (
-        f"release-assets' needs: is no longer exactly [release-please, build], it is "
+    assert match.group(1).strip() == "[release-please, build, linux-packages]", (
+        f"release-assets' needs: is no longer exactly [release-please, build, "
+        f"linux-packages], it is "
         f"{match.group(1).strip()!r}"
     )
 
@@ -1128,7 +1454,7 @@ _MODULE_HELPER_NAMES = {
     "_text", "_job_directives", "_step_containing", "_permissions_block",
     "_workflow_wide_directives", "_post_checkout_run_steps", "_run_commands",
     "_publish_action_ref", "_python_version", "_job_names", "_artifact_retention_days",
-    "_roster_failure", "_run_block_scalar", "_channel_table_rows",
+    "_roster_failure", "_run_block_scalar", "_channel_table_rows", "_artifact_names",
 }
 
 
@@ -1180,7 +1506,7 @@ _CHANNEL_STATUSES = {"shipped", "planned"}
 
 # Which roster jobs PUBLISH something a user can install from, and the label the table gives
 # each. The other five jobs build, sign or upload -- they produce no channel of their own.
-_CHANNEL_JOBS = {"pypi": "PyPI", "docker": "Docker"}
+_CHANNEL_JOBS = {"pypi": "PyPI", "docker": "Docker", "linux-packages": "deb / rpm"}
 _NON_CHANNEL_JOBS = {"release-please", "build", "attest", "release-assets", "attest-image"}
 
 

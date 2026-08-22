@@ -9,8 +9,24 @@ wrong.
 ## Rendering fails at construction (`cv.renderer: template`)
 
 `template` (the default) needs the `render` extra plus WeasyPrint's own **system** libraries —
-cairo, pango, gdk-pixbuf. Neither pip install alone is enough, and there is no way around
-installing both:
+cairo, pango, gdk-pixbuf. A pip install alone is never enough, because pip cannot ship native
+libraries.
+
+**A packaged install usually avoids this entirely** — see the channel table under
+[Install](../README.md#install) for what exists. The `.deb`/`.rpm` *recommend* WeasyPrint, so a
+default `apt`/`dnf` install pulls cairo and pango for you; the container image ships them
+already built in. The deb/rpm caveat is that a recommendation is not a requirement:
+`apt --no-install-recommends`, or dnf with `install_weak_deps=False`, skips it. If that is how
+you installed, ask the package manager for the render stack directly rather than reaching for
+pip — the packaged install puts sluice on a distro-managed Python, where PEP 668 blocks
+`pip install` anyway:
+
+```bash
+sudo apt install weasyprint python3-jinja2        # Debian, Ubuntu
+sudo dnf install python3-weasyprint python3-jinja2  # Fedora
+```
+
+What follows is for a pip install.
 
 ```bash
 pip install -e '.[render]'

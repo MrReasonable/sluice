@@ -1,0 +1,121 @@
+# job-sluice as a .deb and .rpm (#104, PR 5 of 7).
+#
+# THE POINT OF THIS CHANNEL is an install that resolves cairo/pango through the distro's own
+# package manager instead of leaving it to the user -- the problem README.md and
+# docs/TROUBLESHOOTING.md both describe. Docker solves it by shipping the libraries; this
+# solves it by DECLARING them, which is what a system package is for.
+#
+# Built from ./build/linux-packages/lib, which scripts/build_linux_packages.py stages by
+# unpacking the wheel the release workflow's `build` job produced. Never from an index --
+# see that script's header for why installing from PyPI here would race the `pypi` job.
+
+name: job-sluice
+# `all` is nfpm's architecture-independent value: it emits `Architecture: all` in the deb and
+# `BuildArch: noarch` in the rpm. Correct here because `sluice/` is pure Python and every
+# runtime dependency is satisfied by a distro package rather than vendored -- nothing in this
+# package is compiled, so there is nothing to build per-architecture. Vendoring pyyaml instead
+# would have made this a build matrix: its wheels carry a C extension, so the package would
+# become specific to an architecture AND a Python minor version.
+arch: all
+platform: linux
+# Expanded by nfpm from the environment. The release workflow passes release-please's own
+# `version` output, so the package version and the git tag cannot disagree.
+version: ${VERSION}
+section: utils
+priority: optional
+maintainer: MrReasonable <4990954+MrReasonable@users.noreply.github.com>
+description: |
+  An engineered, config-driven job-hunting pipeline.
+  Sluice scans job boards into a lead store, triages leads against criteria you
+  configure, tailors a CV against a gated evidence bundle, and tracks what you
+  have applied to.
+vendor: MrReasonable
+homepage: https://github.com/MrReasonable/sluice
+license: MIT
+
+contents:
+  # The unpacked wheel. /usr/lib/job-sluice rather than the system site-packages, deliberately:
+  # PEP 668 marks distro Python installations EXTERNALLY-MANAGED precisely to stop third-party
+  # packages landing there, and a private directory also cannot collide with a future
+  # `python3-sluice` from the distro. packaging/job-sluice puts this path FIRST on sys.path;
+  # the two must agree, and tests/test_linux_packages_channel.py pins that they do.
+  #
+  # NO `file_info.mode` HERE, and its absence is load-bearing. An earlier revision set
+  # `mode: 0644` on this entry to stop the installed files inheriting the build runner's umask
+  # (`zipfile.extractall` does not restore mode bits). nfpm carries a tree's file_info onto the
+  # DIRECTORY entries it synthesises as well, so every directory under /usr/lib/job-sluice
+  # shipped without its search bit: measured as `drw-r--r--` in the built .deb, and then on a
+  # real install as `ModuleNotFoundError: No module named 'sluice'` for an ordinary user while
+  # root -- who bypasses directory traversal checks -- saw nothing wrong.
+  #
+  # scripts/build_linux_packages.py normalises the tree instead (dirs 0755, files 0644), which
+  # is testable offline. Those modes still reach the package only because nfpm's tree expansion
+  # copies each entry's ON-DISK mode -- what changed is that nothing now applies one blanket
+  # mode to files and directories alike. Verified on the rebuilt .deb: `drwxr-xr-x` for
+  # /usr/lib/job-sluice and every subpackage, against the `drw-r--r--` the blanket mode gave.
+  - src: ./build/linux-packages/lib
+    dst: /usr/lib/job-sluice
+    type: tree
+
+  - src: ./packaging/job-sluice
+    dst: /usr/bin/job-sluice
+    file_info:
+      mode: 0755
+
+# No top-level `depends:`/`recommends:`. The package names DIVERGE by packager, and a shared
+# default would be silently wrong for whichever family it did not match -- so each is stated
+# under its own override rather than half-stated here and patched below. Every name was
+# verified by querying the real distro indexes (debian:13-slim, ubuntu:24.04, fedora:41)
+# rather than assumed; the trailing comments record what was found.
+overrides:
+  deb:
+    depends:
+      # Debian 13 ships 3.13.5, Ubuntu 24.04 ships 3.12.3 -- both satisfy the floor, which is
+      # pyproject.toml's own `requires-python`. The guard derives it from there rather than
+      # repeating the number, so a floor bump cannot leave this line behind.
+      - python3 (>= 3.12)
+      - python3-yaml
+      # pyproject.toml's second runtime dependency. It ships as a WHEEL for pip, where the
+      # system tz database cannot be assumed (Windows has none, and a bare container often has
+      # none either); here the distro package IS that database, so this is the same dependency
+      # spelled the way this channel supplies it.
+      #
+      # Declared rather than relied upon. Measured, tzdata is already present on debian:13-slim
+      # and arrives transitively via python3 on ubuntu:24.04, so `ZoneInfo` resolves on both
+      # today without this line -- which is exactly why it is here. An incidental dependency
+      # that happens to be satisfied is one nothing protects: the day a minimal image drops it,
+      # `ZoneInfo(name)` raises, track/ics.py falls back to a naive datetime, and an Outlook
+      # invite is booked at an assumed instant rather than its stated one. Silently, and only
+      # on the machines nobody develops on -- the harm pyproject.toml's own #145 comment
+      # describes.
+      - tzdata
+    recommends:
+      # `weasyprint`, NOT `python3-weasyprint`: that is the binary package name on BOTH Debian
+      # 13 (62.3) and Ubuntu 24.04 (61.1). The python3- spelling exists on Fedora only, and
+      # naming it here would leave an unsatisfiable Recommends that apt quietly skips -- the
+      # render extra would then be absent on every Debian-family install with nothing said.
+      #
+      # A Recommends rather than a Depends: rendering a PDF is optional (cv.renderer: script
+      # is a supported alternative and `triage`/`ingest`/`track` need none of it), but it IS
+      # the reason to prefer this channel over pip, so it installs by default on apt.
+      #
+      # Recommending weasyprint rather than the cairo/pango libraries directly is deliberate,
+      # and it corrects #104's own scope note. weasyprint's own Depends already pull
+      # libpango-1.0-0, libpangoft2-1.0-0 and shared-mime-info; naming those here WITHOUT
+      # weasyprint would install the C libraries and still leave `import weasyprint` failing,
+      # which is a package that looks equipped and is not.
+      - weasyprint
+      - python3-jinja2
+  rpm:
+    depends:
+      # rpm's dependency grammar, which is not Debian's: no parentheses.
+      - python3 >= 3.12
+      # Fedora's spelling of the same project. `python3-yaml` does not exist there.
+      - python3-pyyaml
+      # Same name on both families, unlike the two above -- see the deb block for why this is
+      # declared even though it is already present on fedora:41.
+      - tzdata
+    recommends:
+      # Fedora DOES use the python3- prefix, and `weasyprint` there is the CLI package.
+      - python3-weasyprint
+      - python3-jinja2

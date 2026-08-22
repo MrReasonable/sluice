@@ -2,8 +2,14 @@
 #
 # THE POINT OF THIS IMAGE is the `render` extra working with zero host setup. WeasyPrint links
 # natively against cairo/pango/gdk-pixbuf, so `pip install` can never supply them -- README.md
-# and docs/TROUBLESHOOTING.md both say so in terms. Every other channel leaves that step to the
-# user; this one is the only place it can be solved once, for everybody.
+# and docs/TROUBLESHOOTING.md both say so in terms.
+#
+# This was once "the only place it can be solved once, for everybody". #104's PR 5 falsified
+# that: the .deb and .rpm recommend WeasyPrint, so apt and dnf resolve the same libraries
+# natively. Two things still distinguish the image. It works on any host Docker runs on rather
+# than only the Debian and Fedora families, so it is the one packaged answer on macOS and
+# Windows until the Homebrew tap lands; and it INSTALLS those libraries rather than recommending
+# them, so no local policy can decline them the way --no-install-recommends can.
 #
 # The base image is DIGEST-pinned, the same discipline every `uses:` in .github/workflows/ takes.
 # The trailing comment names the tag the digest resolved from; .github/dependabot.yml's `docker`

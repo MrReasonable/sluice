@@ -122,13 +122,15 @@ has needed one yet), and the install channels still marked *planned* under
 | --- | --- | --- |
 | PyPI | shipped | `pip install job-sluice` |
 | Docker | shipped | `docker run --rm ghcr.io/mrreasonable/job-sluice --help` |
-| deb / rpm | planned | — |
+| deb / rpm | shipped | download from the [latest release](https://github.com/MrReasonable/sluice/releases/latest), then `apt install ./job-sluice_*_all.deb` or `dnf install ./job-sluice-*.noarch.rpm` |
 | Homebrew | planned | — |
 
 That table is the single place this repository states which channels exist. Prose elsewhere
 links here rather than restating it, and `tests/test_release_publish_wiring.py` fails the
-build if a row disagrees with the jobs `.github/workflows/release-please.yml` actually runs —
-in either direction. It is a table rather than a sentence because two sentences in this file
+build if a row disagrees with the jobs declared in `.github/workflows/release-please.yml` —
+in either direction. **"Shipped" means the release workflow builds and publishes that channel**,
+so a row becomes shipped when its job lands and takes effect from the next release onward; it
+is not a claim that every past release carries it. It is a table rather than a sentence because two sentences in this file
 went on saying there was no Docker image for a day after one shipped, and nothing in the
 suite could notice. Rows marked *planned* are tracked in
 [#104](https://github.com/MrReasonable/sluice/issues/104).
@@ -355,7 +357,7 @@ gate runs on the composed text *before* any template exists, so the PDF is deriv
 from gate-approved content rather than identical to it: your own template is free text
 sluice does not audit, so it can add prose the gate never saw or a conditional that
 drops a gated section, either of which the gate cannot catch after the fact. Rendering
-needs an extra, and there is no way to skip it:
+needs the `render` extra, and on a **pip install** there is no way to skip it:
 
 ```bash
 pip install -e '.[render]'
@@ -363,9 +365,14 @@ pip install -e '.[render]'
 
 ...and, separately, WeasyPrint's own **system** libraries -- cairo, pango, and
 gdk-pixbuf. Those are **not** a Python dependency and cannot be made one (WeasyPrint
-links against them natively), so install them with your platform's package manager
-(Homebrew on macOS, `apt`/`dnf` on Linux -- see WeasyPrint's own installation docs for
-the exact package names on your system).
+links against them natively), so on a pip install you install them with your platform's
+package manager (Homebrew on macOS, `apt`/`dnf` on Linux -- see WeasyPrint's own
+installation docs for the exact package names on your system).
+
+The packaged channels do this for you, which is the main reason to prefer one: the
+container image ships the libraries already installed, and the `.deb`/`.rpm` recommend
+WeasyPrint so a default `apt`/`dnf` install pulls them in. See the table under
+[Install](#install) for what exists today.
 
 **macOS, measured rather than assumed:** with cairo/pango/gdk-pixbuf installed via
 Homebrew, `import weasyprint` still failed until the dynamic linker was told where to
