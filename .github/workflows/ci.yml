@@ -146,7 +146,7 @@ jobs:
   #
   # No `paths:` filter, deliberately. `ci-success` is the required check for the `qa-gates`
   # ruleset, and a path-filtered job makes that check dishonest on every run where it does not
-  # fire. The cost is a few minutes per PR, which is the cheaper side of that trade.
+  # fire. Measured on its first real run: 34 seconds end to end, build included.
   docker:
     runs-on: ubuntu-latest
     permissions:
