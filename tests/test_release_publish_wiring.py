@@ -117,7 +117,8 @@ def _job_names(path: Path) -> list[str]:
 # and `packages: write` appended to EITHER file left this entire module green. Pinning the
 # roster is what makes the per-job equality pins exhaustive in combination rather than merely
 # individually correct.
-_RELEASE_PLEASE_JOBS = ["release-please", "build", "attest", "pypi", "release-assets"]
+_RELEASE_PLEASE_JOBS = ["release-please", "build", "attest", "pypi", "release-assets",
+                        "docker", "attest-image"]
 _TESTPYPI_JOBS = ["testpypi"]
 
 _ROSTER_MESSAGE = (
@@ -340,9 +341,9 @@ def test_attest_job_has_the_elevated_permissions_it_needs():
 
 
 def test_every_job_agrees_on_the_artifact_name():
-    """build uploads it; attest, pypi and release-assets each download it. Read from all
-    four sides rather than hardcoded four times, so a rename on one side is caught instead
-    of silently decoupling the jobs. The `== "dist"` anchor stays: without it, four
+    """build uploads it; attest, pypi, release-assets and docker each download it. Read from
+    all five sides rather than hardcoded five times, so a rename on one side is caught instead
+    of silently decoupling the jobs. The `== "dist"` anchor stays: without it, five
     extractions that all failed would compare equal and pass."""
     steps = {
         "build": _step_containing(RELEASE_PLEASE, "build", "actions/upload-artifact"),
@@ -350,6 +351,9 @@ def test_every_job_agrees_on_the_artifact_name():
         "pypi": _step_containing(RELEASE_PLEASE, "pypi", "actions/download-artifact"),
         "release-assets": _step_containing(
             RELEASE_PLEASE, "release-assets", "actions/download-artifact"
+        ),
+        "docker": _step_containing(
+            RELEASE_PLEASE, "docker", "actions/download-artifact"
         ),
     }
     names = {}
@@ -433,7 +437,7 @@ def test_pypi_job_holds_id_token_and_no_contents_key_at_all():
         "unnamed THIRD permission slip into the narrowest and most dangerous job here "
         "unnoticed -- measured green before this was tightened. `packages: write` is the "
         "named example because it is the shape a later channel PR would plausibly want in "
-        "this file; no job here holds it today"
+        "this file; the docker job holds it, and no other job here does"
     )
 
 
@@ -478,7 +482,7 @@ def test_release_assets_holds_contents_write_and_no_id_token():
         "An `in`/`not in` probe over individual names accepts an unnamed THIRD permission, "
         "which is the gap `_permissions_block`'s own docstring was written to close. "
         "`packages: write` is the named example because it is the shape a later channel PR "
-        "would plausibly want in this file; no job here holds it today"
+        "would plausibly want in this file; the docker job holds it, and no other job here does"
     )
 
 
@@ -975,6 +979,138 @@ def test_the_dry_run_builds_exactly_the_way_the_release_build_does():
         f"testpypi.yml's `testpypi` job has {len(dry_run_steps)} post-checkout `run:` "
         f"steps, expected 5 (the three shared build commands plus the stamp and its proof). "
         f"{_NOT_THE_NUMBER} Found: {dry_run_steps}"
+    )
+
+
+# ── the Docker channel's two jobs (#104 PR 4) ────────────────────────────────
+
+
+def test_docker_job_is_gated_on_release_created():
+    assert (
+        "if: success() && needs.release-please.outputs.release_created == 'true'"
+        in _job_directives(RELEASE_PLEASE, "docker")
+    )
+
+
+def test_docker_job_needs_release_please_and_build_exactly():
+    """It reads `needs.release-please.outputs.{version,major,minor,sha}` for its tags and its
+    checkout ref, and consumes `build`'s artifact. `release-please` is named directly rather
+    than relied on transitively through `build`, for the reason `attest` and `pypi` do it:
+    reading `needs.<job>.outputs.*` requires a direct dependency edge."""
+    match = re.search(r"\n    needs: (.+)\n", _job_directives(RELEASE_PLEASE, "docker"))
+    assert match, "the 'docker' job declares no `needs:`"
+    assert match.group(1).strip() == "[release-please, build]", (
+        f"docker's needs: is no longer exactly [release-please, build], it is "
+        f"{match.group(1).strip()!r}"
+    )
+
+
+def test_docker_job_holds_contents_read_and_packages_write_exactly():
+    """`contents: read` is NOT redundant with the workflow-wide default here, which is the
+    trap this equality exists to hold. A job-level block is exhaustive, so naming
+    `packages: write` alone sets contents to `none` and the checkout this job performs fails
+    -- and it is the only publishing job in this file that checks out at all, because the
+    Dockerfile is repository source rather than a built artefact.
+
+    Resolved through `_permissions_block` rather than an `in` probe for the reason its own
+    docstring gives: a probe cannot see an unnamed THIRD permission, and this is now the
+    widest-permissioned job in the workflow."""
+    assert _permissions_block(RELEASE_PLEASE, "docker") == (
+        "    permissions:\n      contents: read\n      packages: write"
+    ), (
+        "docker's permissions must be EXACTLY `contents: read` + `packages: write`. It is the "
+        "only job in this file holding a registry credential, and the absence of every other "
+        "key -- `id-token: write` above all -- is the claim: signing lives in `attest-image`, "
+        "so that a registry credential and an OIDC identity are never held by one job"
+    )
+
+
+def test_docker_job_downloads_the_artifact_into_the_dist_directory():
+    """`path: dist/` is load-bearing, not consistency for its own sake. The Dockerfile's
+    `COPY dist/*.whl` and `.dockerignore`'s `!dist/*.whl` both name that exact directory, so
+    without it the artifact unpacks into the workspace root, the build context is empty, and
+    the failure appears as a confusing COPY error at image-build time. It fails only on the
+    release path, which nothing exercises until a tag is already public."""
+    step = _step_containing(RELEASE_PLEASE, "docker", "actions/download-artifact")
+    assert re.search(r"^\s*path: dist/[ \t]*$", step, re.MULTILINE), (
+        "docker's download-artifact step must set `path: dist/` -- the Dockerfile and "
+        ".dockerignore both hard-require the wheel at that exact location"
+    )
+
+
+def test_docker_job_exposes_the_pushed_digest_as_a_job_output():
+    """`id: push` on the step is NOT enough, and this is the whole point of the test: step
+    outputs do not cross a job boundary. Without the job-level `outputs:` mapping,
+    `needs.docker.outputs.digest` is the empty string, and `attest-image` signs NOTHING while
+    reporting success -- a green attestation over no subject, which is worse than no
+    attestation at all because it looks like coverage."""
+    block = _job_directives(RELEASE_PLEASE, "docker")
+    assert "digest: ${{ steps.push.outputs.digest }}" in block, (
+        "docker must expose the pushed digest as a JOB output; `id: push` alone leaves "
+        "needs.docker.outputs.digest empty"
+    )
+    assert re.search(r"^\s*id: push[ \t]*$", block, re.MULTILINE), (
+        "the job output above references `steps.push`, so a step must carry `id: push`"
+    )
+
+
+def test_docker_job_builds_both_target_platforms():
+    """A single-arch image silently excludes every Apple Silicon and arm64 Linux user, and
+    nothing about the published tag says so -- they get an emulated image or a manifest
+    error, depending on their client."""
+    step = _step_containing(RELEASE_PLEASE, "docker", "docker/build-push-action")
+    assert re.search(r"^\s*platforms: linux/amd64,linux/arm64[ \t]*$", step, re.MULTILINE), (
+        "docker must build linux/amd64 AND linux/arm64"
+    )
+
+
+def test_attest_image_is_gated_on_release_created():
+    assert (
+        "if: success() && needs.release-please.outputs.release_created == 'true'"
+        in _job_directives(RELEASE_PLEASE, "attest-image")
+    )
+
+
+def test_attest_image_needs_release_please_and_docker_exactly():
+    match = re.search(r"\n    needs: (.+)\n", _job_directives(RELEASE_PLEASE, "attest-image"))
+    assert match, "the 'attest-image' job declares no `needs:`"
+    assert match.group(1).strip() == "[release-please, docker]", (
+        f"attest-image's needs: is no longer exactly [release-please, docker], it is "
+        f"{match.group(1).strip()!r}"
+    )
+
+
+def test_attest_image_holds_the_signing_pair_and_no_registry_credential():
+    """The ABSENCE of `packages:` is the claim, and it is the reason this is a separate job
+    rather than two more steps on `docker`.
+
+    The justification is NOT that a BuildKit `RUN` is an arbitrary-code-execution surface the
+    way `python -m build --no-isolation` is -- that was an earlier draft's reasoning and it is
+    false, because a BuildKit step has no ACTIONS_ID_TOKEN_REQUEST_TOKEN in its environment and
+    so cannot mint an OIDC token however hostile a dependency is. The real basis is a property
+    a reader can check against this file in seconds: every write-holding job here holds exactly
+    one KIND of write, and folding these permissions into `docker` would put a registry
+    credential and an OIDC identity in the same job for the first time."""
+    assert _permissions_block(RELEASE_PLEASE, "attest-image") == (
+        "    permissions:\n      id-token: write\n      attestations: write"
+    ), (
+        "attest-image's permissions must be EXACTLY id-token + attestations. No `packages:` "
+        "key: the attestation is repo-side Sigstore, so nothing is written back to the "
+        "registry. No `contents:` key either -- this job checks nothing out"
+    )
+
+
+def test_attest_image_names_both_the_subject_name_and_the_pushed_digest():
+    """An OCI subject is not identified by a digest alone. `subject-name` is what
+    `gh attestation verify oci://...` matches against, and the digest must be the one
+    `docker` actually PUSHED rather than one recomputed here -- otherwise the attestation
+    covers an image nobody pulled."""
+    step = _step_containing(RELEASE_PLEASE, "attest-image", "actions/attest-build-provenance")
+    assert "subject-name: ghcr.io/mrreasonable/job-sluice" in step, (
+        "attest-image must name the OCI subject it is signing"
+    )
+    assert "subject-digest: ${{ needs.docker.outputs.digest }}" in step, (
+        "attest-image must sign the digest docker pushed, read from that job's output"
     )
 
 

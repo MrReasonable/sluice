@@ -421,7 +421,8 @@ comment goes stale silently.
   it proves.
 - **No mount source in `docker-compose.yml` is an absolute or `~`-rooted path.** This closes the
   one real gap in the existing neutrality sweep: `tests/test_no_leaked_files.py` covers every
-  tracked file, so a `/Users/...` or `/home/...` vault path in compose is already caught, but its
+  tracked file, so a `/Users/<name>/...` or `/home/<name>/...` vault path in compose is already
+  caught, but its
   `_WIDE_HOME_PATH_RE` is anchored on those two roots and so cannot see `~/vault` or a
   drive-lettered path.
 - **`CAMOFOX_URL`'s value carries a scheme, and its port matches `core/camofox.py`'s
