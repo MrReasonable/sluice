@@ -408,6 +408,89 @@ def test_lead_ttl_days_rejects_negative_and_non_int(tmp_path, monkeypatch, value
         load_config(None)
 
 
+# ── #169: the dossier-floor gate ──────────────────────────────────────────────
+# min_jd_chars needs its OWN guard for the same reason lead_ttl_days does: the
+# list-keyed sweep below is value-keyed on LIST defaults, and an int field is
+# invisible to it. `0 == abstain` is not universal for int fields either -- the
+# dossier-cache `ttl_days: int = 7` in cv/config.py and triage/config.py is a
+# legitimate non-zero default -- so this knob, like lead_ttl_days, must carry its
+# own named test rather than be folded into a widened sweep.
+
+def test_min_jd_chars_dataclass_default_is_off():
+    assert Config().min_jd_chars == 0
+
+
+def test_min_jd_chars_loader_default_is_off(monkeypatch):
+    # load_config names every field explicitly (no splat, no loop), so the loader
+    # default is an INDEPENDENT literal the dataclass assertion above does not pin.
+    monkeypatch.delenv("SLUICE_CONFIG", raising=False)
+    assert load_config(None).min_jd_chars == 0
+
+
+def test_min_jd_chars_absent_key_abstains_rather_than_raising(tmp_path, monkeypatch):
+    # ABSENT is the abstain case, not an error: an unconfigured install must load.
+    p = tmp_path / "c.yaml"
+    p.write_text("store: vault\n", encoding="utf-8")
+    monkeypatch.setenv("SLUICE_CONFIG", str(p))
+    assert load_config(None).min_jd_chars == 0
+
+
+def test_min_jd_chars_configured_value_round_trips(tmp_path, monkeypatch):
+    p = tmp_path / "c.yaml"
+    p.write_text("min_jd_chars: 200\n", encoding="utf-8")
+    monkeypatch.setenv("SLUICE_CONFIG", str(p))
+    assert load_config(None).min_jd_chars == 200
+
+
+@pytest.mark.parametrize("value", ["yes", "on", "true", "True"])
+def test_min_jd_chars_rejects_yaml_booleans(tmp_path, monkeypatch, value):
+    # bool subclasses int, and PyYAML resolves yes/on/true to True. A plain
+    # isinstance check would therefore admit `min_jd_chars: yes` -- the natural
+    # thing to type to turn this feature ON -- as a valid int, silently setting a
+    # ONE-CHARACTER floor that lets almost every fetched JD through unchanged.
+    p = tmp_path / "c.yaml"
+    p.write_text(f"min_jd_chars: {value}\n", encoding="utf-8")
+    monkeypatch.setenv("SLUICE_CONFIG", str(p))
+    with pytest.raises(ValueError, match="min_jd_chars"):
+        load_config(None)
+
+
+@pytest.mark.parametrize("value", ["-1", "'200'", "1.5", "[200]"])
+def test_min_jd_chars_rejects_negative_and_non_int(tmp_path, monkeypatch, value):
+    p = tmp_path / "c.yaml"
+    p.write_text(f"min_jd_chars: {value}\n", encoding="utf-8")
+    monkeypatch.setenv("SLUICE_CONFIG", str(p))
+    with pytest.raises(ValueError, match="min_jd_chars"):
+        load_config(None)
+
+
+def test_min_jd_chars_rejects_a_bool_before_checking_int(tmp_path, monkeypatch):
+    # PyYAML resolves `min_jd_chars: yes` to True and bool SUBCLASSES int, so the
+    # natural thing to type to turn this on would otherwise load as a 1-character
+    # floor with no error anywhere -- pinned directly against the loader, same
+    # shape as the yaml-boolean sweep above but driven through a real config file
+    # (this repo's construction-boundary convention: no root loader accepts a
+    # bare kwarg the way the sub-app loaders' `hasattr`+`setattr` loops do).
+    p = tmp_path / "c.yaml"
+    p.write_text("min_jd_chars: yes\n", encoding="utf-8")
+    monkeypatch.setenv("SLUICE_CONFIG", str(p))
+    with pytest.raises(ValueError, match="min_jd_chars"):
+        load_config(None)
+
+
+def test_example_config_ships_min_jd_chars_off():
+    # sluice.yaml.example is COPIED VERBATIM by the documented quickstart. A
+    # character-count floor is a judgement about what counts as a real posting,
+    # not a fact like an empty JD -- the same reasoning lead_ttl_days' equivalent
+    # guard states at length.
+    text = _EXAMPLE_PATH.read_text(encoding="utf-8")
+    active = [ln for ln in text.splitlines()
+              if ln.strip().startswith("min_jd_chars:")]
+    assert all(ln.split(":", 1)[1].strip() == "0" for ln in active), \
+        "min_jd_chars must ship commented out (or 0) in sluice.yaml.example"
+    assert "min_jd_chars" in text, "the knob must be documented in the example config"
+
+
 # ── #80: the two root path keys ──────────────────────────────────────────────
 # vault_dir and dossier_dir are str-typed, so the value-keyed sweep above misses them
 # BY DESIGN (it is list-only, and deliberately so -- see the #9 note). They carry two

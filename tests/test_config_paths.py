@@ -330,11 +330,17 @@ class _NullCache:
 
 
 def _dossier_dirs_used(app, monkeypatch):
-    """The directory each sub-app hands to dossier_cache, in call order."""
+    """The directory AND floor each sub-app hands to dossier_cache, in call order.
+
+    Both are recorded -- not just the directory -- because `dossier_cache` now takes
+    a third positional `min_jd_chars`. A capture that swallowed it (`lambda *a, **k:`)
+    would keep the four directory pins below green while making the floor assertion
+    below unwritable; recording the pair is what keeps both live.
+    """
     seen = []
 
-    def _capture(dossier_dir, ttl_days):
-        seen.append(dossier_dir)
+    def _capture(dossier_dir, ttl_days, min_jd_chars):
+        seen.append((dossier_dir, min_jd_chars))
         return _NullCache()
 
     monkeypatch.setattr(app, "dossier_cache", _capture)
@@ -357,28 +363,38 @@ def test_triage_and_cv_share_one_dossier_directory(tmp_path, monkeypatch):
     # What changes is WHY it is true -- one root key and one resolution, so it cannot
     # come apart. A partial sweep here is worse than none: split the cache and cv
     # re-fetches every dossier over the live SSRF-guarded network path.
-    used = _dossier_dirs_used(_app(tmp_path, monkeypatch), monkeypatch)
+    used = [d for d, _ in _dossier_dirs_used(_app(tmp_path, monkeypatch), monkeypatch)]
     assert len(used) == 2 and used[0] == used[1]
 
 
 def test_unconfigured_dossier_dir_lands_under_the_cache_root(tmp_path, monkeypatch):
     # CACHE, not state: a dossier is a re-fetchable copy of a job ad, so losing it
     # costs a refetch, not data.
-    used = _dossier_dirs_used(_app(tmp_path, monkeypatch), monkeypatch)
+    used = [d for d, _ in _dossier_dirs_used(_app(tmp_path, monkeypatch), monkeypatch)]
     assert used == [os.path.join(os.environ["XDG_CACHE_HOME"], "sluice", "dossiers")] * 2
 
 
 def test_the_root_dossier_dir_key_reaches_both_sub_apps(tmp_path, monkeypatch):
     mine = str(tmp_path / "mine-dossiers")
-    used = _dossier_dirs_used(_app(tmp_path, monkeypatch, dossier_dir=mine), monkeypatch)
+    used = [d for d, _ in _dossier_dirs_used(_app(tmp_path, monkeypatch, dossier_dir=mine),
+                                              monkeypatch)]
     assert used == [mine, mine]
 
 
 def test_dossier_dir_env_var_beats_the_root_key(tmp_path, monkeypatch):
     app = _app(tmp_path, monkeypatch, dossier_dir=str(tmp_path / "from-config"))
     monkeypatch.setenv("DOSSIER_DIR", str(tmp_path / "from-env"))
-    used = _dossier_dirs_used(app, monkeypatch)
+    used = [d for d, _ in _dossier_dirs_used(app, monkeypatch)]
     assert used == [str(tmp_path / "from-env")] * 2
+
+
+def test_the_root_min_jd_chars_reaches_both_sub_apps(tmp_path, monkeypatch):
+    # A per-sub-app floor would make the SHARED cache directory persist or refuse the
+    # same entry depending on which sub-app touched it last -- the "shared only by
+    # coincidence of a default" hazard _dossier_dir's own docstring exists to kill.
+    app = _app(tmp_path, monkeypatch, min_jd_chars=200)
+    floors = [f for _, f in _dossier_dirs_used(app, monkeypatch)]
+    assert floors == [200, 200], floors
 
 
 @pytest.mark.parametrize("block,loader_name,module", [

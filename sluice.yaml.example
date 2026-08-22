@@ -57,6 +57,17 @@ baseline_rel: My CV/CV.md
 # directory you are standing in, so write those out in full.
 # dossier_dir:        # <- uncomment and set YOUR OWN
 
+# The floor below which a fetched job ad is treated as NOT HAVING ARRIVED (#169), so
+# the dossier cache refuses to persist it and triage refuses to spend a judge call on
+# it. 0 = OFF, which is the shipped default: an EMPTY jd always fails (a fact), but a
+# character count is a judgement about what counts as a real posting, and this file is
+# COPIED -- an active value would hand every copier one they never made, the same
+# reason `lead_ttl_days` above ships commented. ONE key for both triage and cv, like
+# `dossier_dir` above and for the identical reason: they share the cache directory, so
+# two different floors over it would mean whichever sub-app ran last decides whether
+# an entry exists.
+# min_jd_chars: 200   # <- uncomment and set YOUR OWN
+
 # Hosts the dossier fetcher may reach even though they are not globally routable.
 # The fetcher follows lead urls scraped off job boards, so by default it refuses
 # non-http(s) schemes and any address that is not globally routable (loopback,

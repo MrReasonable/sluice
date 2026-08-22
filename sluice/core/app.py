@@ -505,7 +505,7 @@ class Sluice:
                              config_value=getattr(self.config, "dossier_dir", ""),
                              kind="cache", name="dossiers")
 
-    def dossier_cache(self, dossier_dir, ttl_days):
+    def dossier_cache(self, dossier_dir, ttl_days, min_jd_chars):
         """A DossierCache whose fetcher is resolved lazily on the first cache miss, so a
         --no-llm or fully-cached run never opens a browser. JD text read via
         evaluate(document.body.innerText) -- the same {"result": ...} shape ingest uses.
@@ -517,6 +517,11 @@ class Sluice:
         Also captures document.title and any JSON-LD script tag's text content in the
         same already-open tab (#109), for triage's tier-2 company resolution. Both are
         best-effort: an unreadable probe degrades to "" rather than refusing the fetch.
+
+        `min_jd_chars` (#169) is the ROOT config value, not a literal: both call sites
+        pass `self.config.min_jd_chars` so triage and cv -- which share this one cache
+        directory (#80, see `_dossier_dir` above) -- always agree on the floor below
+        which a fetched JD is treated as not having arrived.
         """
         from sluice.core.dossier import DossierCache
         from sluice.core import urlguard
@@ -637,7 +642,7 @@ class Sluice:
             return {"jd": {"markdown": md or ""}, "glassdoor": {},
                     "page_title": page_title, "structured_data": structured_data}
 
-        return DossierCache(dossier_dir, ttl_days, fetcher=fetch)
+        return DossierCache(dossier_dir, ttl_days, fetcher=fetch, min_jd_chars=min_jd_chars)
 
     def ingest(self, sources, *, dry_run=False, json_sink=False, out=None):
         """Run the ingest sub-app: fetch each given source, dedup/relevance-gate
@@ -1122,7 +1127,8 @@ class Sluice:
                 _log.warning(
                     "company resolution's tier-3 backend unavailable, tier 3 disabled "
                     "this run: %s", e)
-        cache = self.dossier_cache(self._dossier_dir(), tcfg.ttl_days)
+        cache = self.dossier_cache(self._dossier_dir(), tcfg.ttl_days,
+                                   self.config.min_jd_chars)
         return _triage_run(self.store(), tcfg, backend, cache, audit,
                            statuses=tuple(statuses), limit=limit,
                            dry_run=dry_run, no_llm=no_llm, get_source=sources.get,
@@ -1207,7 +1213,8 @@ class Sluice:
                 timeout=cvcfg.compose_timeout)
         except BackendError as e:
             raise ValueError(str(e)) from e
-        cache = self.dossier_cache(self._dossier_dir(), cvcfg.ttl_days)
+        cache = self.dossier_cache(self._dossier_dir(), cvcfg.ttl_days,
+                                   self.config.min_jd_chars)
         store = self.store()
         # Built ONCE here and passed to both branches, so the single-lead and batch paths
         # cannot disagree about what stale means or about --include-stale (#9).

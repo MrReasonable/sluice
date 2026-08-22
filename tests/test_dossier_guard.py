@@ -72,7 +72,7 @@ def _cache(tmp_path, fetcher, *, resolve=None, allow=()):
     cfg.dossier_allow_hosts = list(allow)
     app = Sluice(cfg, fetcher=fetcher,
                  resolve_host=resolve or (lambda h: [GLOBAL_ADDR]))
-    return app.dossier_cache(str(tmp_path), ttl_days=7)
+    return app.dossier_cache(str(tmp_path), ttl_days=7, min_jd_chars=0)
 
 
 def test_an_allowed_url_fetches_and_probes_in_order(tmp_path, role):
@@ -378,7 +378,7 @@ def test_a_production_shaped_sluice_fetches(tmp_path, role):
     tab = _Tab()
     cfg = Config()
     app = Sluice(cfg, fetcher=tab)          # no sleep=, today=, resolve_host=
-    cache = app.dossier_cache(str(tmp_path), ttl_days=7)
+    cache = app.dossier_cache(str(tmp_path), ttl_days=7, min_jd_chars=0)
     # The real resolver would be used, so the DNS guard fires -- that is the point:
     # it proves the closure got all the way to resolution without an attribute error.
     from tests.conftest import DnsUsedInTests

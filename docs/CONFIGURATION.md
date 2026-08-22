@@ -20,7 +20,7 @@ this backwards has silently binned someone's entire job hunt before (see
 Two shipped values are the deliberate **exception** to "empty by default", and they run the
 other way: `track.ats_relay_domains` and `track.job_board_domains` are non-empty **safety
 denylists**, not preference gates — see the Track table below. Numeric gates
-(`lead_ttl_days`, the two pay floors) follow the same abstain rule at `0`, not empty list, and
+(`lead_ttl_days`, `min_jd_chars`, the two pay floors) follow the same abstain rule at `0`, not empty list, and
 `lead_layout`/`cv.template` follow it at `""`, not empty list — each carries its own guard
 test rather than the shared list-keyed sweep, because a `str`/`int` field is invisible to a
 sweep keyed on list defaults.
@@ -34,6 +34,7 @@ sweep keyed on list defaults.
 | `baseline_rel` | `"My CV/CV.md"` | — | your baseline CV's path, relative to the store root |
 | `vault_dir` | `""` | `VAULT_DIR` | `./vault`, relative to the cwd — the one path sluice deliberately does **not** relocate to XDG, since it's your Obsidian directory, not sluice's state |
 | `dossier_dir` | `""` | `DOSSIER_DIR` | `<XDG_CACHE_HOME>/sluice/dossiers` — shared cache for triage's and cv's job-ad fetches |
+| `min_jd_chars` | `0` | — | the floor below which a fetched job ad is treated as not having arrived, so the dossier cache refuses to persist it and triage refuses to spend a judge call on it; `0` turns the band off entirely. ROOT, not per-sub-app — triage and cv share the one `dossier_dir` cache, so two different floors over it would mean whichever sub-app ran last decides whether an entry exists. Rejects YAML bools, same reasoning as `lead_ttl_days` above |
 | `dossier_allow_hosts` | `[]` | — | a **security allowlist**, not a preference gate: empty means no exceptions to the SSRF guard, not "block everything" — public urls still fetch either way. Entries are an exact hostname or a CIDR/IP; prefer a CIDR where you can, since a hostname grant covers every address that name resolves to, today and at each future fetch |
 | `relevance_keep` | `[]` | — | coarse ingest title keep-list, applied **before** dedup and any LLM call |
 | `relevance_drop` | `[]` | — | coarse ingest title drop-list, same timing |
