@@ -801,15 +801,40 @@ def test_the_doctor_smoke_asserts_on_output_rather_than_exit_status():
     before doctor runs at all. The positive half -- the report must actually be present -- is
     what makes it falsifiable, and a trailing `|| true` would discard the evidence that
     distinguishes those cases."""
-    block = _job_directives("docker")
-    assert "job-sluice doctor" in block, (
+    step = _step_containing("docker", "doctor renders its report")
+    assert "job-sluice doctor" in step, (
         "the doctor smoke no longer asserts the report is PRESENT; a bare traceback check "
         "passes against an image that prints nothing at all"
     )
-    assert "Traceback" in block, (
+    assert "Traceback" in step, (
         "the doctor smoke no longer checks for a traceback"
     )
-    assert "|| true" not in block, (
+    assert "|| true" not in step, (
         "the doctor smoke swallows the command's status with `|| true`, which green-lights a "
         "wholly broken image -- capture the output and assert on it instead"
+    )
+    # PRESENCE of the two needles is not the claim -- GATING is. Measured: deleting `; exit 1`
+    # from BOTH `case` arms left a smoke that prints its diagnosis and passes on a broken image,
+    # and every assertion above still held. Both arms must exit non-zero, so the count is two.
+    assert step.count("exit 1") >= 2, (
+        f"the doctor smoke has {step.count('exit 1')} failing arm(s), expected 2. Both the "
+        f"no-report case and the traceback case must EXIT, not merely print -- a `case` arm "
+        f"that echoes an ::error:: and falls through leaves the step green"
+    )
+
+
+def test_the_doctor_smoke_needle_matches_the_banner_the_cli_actually_prints():
+    """A drift pin, in the shape this module already uses for `_DEFAULT_URL`.
+
+    The smoke greps for a literal the CLI prints. Reword that banner and the only symptom is a
+    Docker-only CI failure whose message says the image is broken -- which would be false, and
+    would send someone to debug the container instead of the string."""
+    step = _step_containing("docker", "doctor renders its report")
+    match = re.search(r'\*"([^"]+)"\*\)', step)
+    assert match, "could not extract the doctor smoke's needle; the comparison would be vacuous"
+    needle = match.group(1)
+    cli = (ROOT / "sluice" / "cli.py").read_text()
+    assert f'print(f"{needle}' in cli, (
+        f"ci.yml's doctor smoke greps for {needle!r}, which sluice/cli.py no longer prints. "
+        f"Fix the needle or the banner -- a mismatch fails as though the IMAGE were broken"
     )
