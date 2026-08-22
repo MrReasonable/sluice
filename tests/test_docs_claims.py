@@ -214,12 +214,20 @@ _RETIRED_CONFIG = [
 
 
 # A `BREAKING CHANGES` block in CHANGELOG.md is the ONE place a shipped doc must be able to
-# NAME a retired key, because recording the retirement is the block's entire job. release-please
-# generates that block from commit footers, so the wording is not even editable here: the
-# `cv.name`/`cv.contact` removal's own footer says a `cv.name: ""` left by a half-finished
-# migration still raises -- accurate, useful, and matched by `_RETIRED_CONFIG`'s dotted pattern.
-# Left unnarrowed, the guard fired on the release PR and blocked it for two days (#170), and
-# would fire again on every future release whose changelog names a retired key.
+# NAME a retired key, because recording the retirement is the block's entire job: a migration
+# note forbidden from spelling the key it retires cannot tell a reader what to delete. The
+# `cv.name`/`cv.contact` removal's entry says a `cv.name: ""` left by a half-finished migration
+# still raises -- accurate, useful, and matched by `_RETIRED_CONFIG`'s dotted pattern. Left
+# unnarrowed, the guard fired on the release PR and blocked it for two days (#170), and would
+# fire again on every future release whose changelog names a retired key.
+#
+# release-please DRAFTS that block from commit footers, but the wording is NOT fixed by the
+# generator: CHANGELOG.md's own header, and CLAUDE.md's Conventions, both say the entry is
+# edited by hand in the release PR before it is merged, and that editing step is exactly where
+# a migration note gets written. So the exemption covers hand-written prose under the heading
+# as well as the generated bullets. That is a deliberate part of the trade-off rather than an
+# accident of the mechanism -- and it is why the three scoping rules below are what keep the
+# exemption affordable, since "the generator controls it" would not.
 #
 # Scoped as tightly as the failure demands, and no tighter:
 #   * CHANGELOG.md STAYS in `_DOCS`. Removing it would reopen the scope gap this file's own
@@ -227,34 +235,53 @@ _RETIRED_CONFIG = [
 #     said nothing.
 #   * Only the `_RETIRED_CONFIG` sweep skips the block. Every other check in this file still
 #     reads the whole changelog, breaking block included.
-#   * Only CHANGELOG.md gets the treatment. A BREAKING heading in any other doc is still swept.
-# EXACT heading text, not a substring. `.*BREAKING CHANGES.*` would also match
-# `### NOT BREAKING CHANGES` and `## Some BREAKING CHANGES notes`, exempting whatever sits
-# under them from the retired-key sweep -- a narrowing wide enough to hide the very thing it
-# narrows around (CodeRabbit, #171). The leading `(?:[^\w\s]\s*)*` admits release-please's
-# own decoration (it emits `### \u26a0 BREAKING CHANGES`) while still refusing any WORD before
-# the phrase; the trailing `#*` admits closed-ATX style.
+#   * Only CHANGELOG.md gets the treatment. A BREAKING heading in any other doc is still swept
+#     -- pinned by `test_the_narrowing_reaches_changelog_md_and_no_other_doc`, which drives the
+#     real sweep body over the SAME text under both filenames.
+#
 # Parsed explicitly rather than matched by one regex. Four review rounds narrowed a single
 # pattern and each spelling was still wider than the failure it was written for:
 # `.*BREAKING CHANGES.*` admitted `NOT BREAKING CHANGES`; `\s` admitted a marker spanning
 # NEWLINES (a bare `###` above a `BREAKING CHANGES` paragraph is two blocks, not a heading);
 # and `#*` admitted `BREAKING CHANGES###`, which is literal text, since a closed-ATX suffix
 # needs a space before it. Each fix was the narrowest thing that closed the case in hand, which
-# is why a fifth patch is not the answer. Stating the three rules separately makes each one
-# checkable on its own, and `test_only_an_exact_breaking_heading_is_stripped` carries every
-# near-miss found so far as a row.
+# is why a fifth patch is not the answer. Stating the rules separately makes each one checkable
+# on its own, and `test_only_an_exact_breaking_heading_is_stripped` carries every near-miss
+# found so far as a row.
+#
+# What each part is for:
+#   * `_ATX` -- two to six hashes, then at least one space or tab, all on ONE physical line.
+#     The `[ \t]` class rather than `\s` is what refuses a newline-spanning marker; the hash
+#     FLOOR of two is a stated decision, not an oversight (see the H1 rows in
+#     `test_only_an_exact_breaking_heading_is_stripped`).
+#   * `_CLOSING_HASHES` -- closed-ATX (`## BREAKING CHANGES ##`). It REQUIRES the preceding
+#     space, which is what keeps `BREAKING CHANGES###` literal text.
+#   * `_LEADING_DECORATION` -- release-please emits `### \u26a0 BREAKING CHANGES` (U+26A0), so a
+#     run of leading non-word, non-space characters must be tolerated. A WORD before the phrase
+#     must not be, which is why the class excludes `\w`.
+#   * `_ANY_HEADING` -- what ENDS a block. Any level 1 to 6, including a BARE `#{1,6}` with no
+#     text after it: that is a valid empty ATX heading, and one that failed to terminate would
+#     silently extend the exemption to the next non-empty heading instead.
+#   * `_FENCE` -- see `_without_breaking_blocks`; fenced content is code, not structure.
 _ATX = re.compile(r"^(#{2,6})[ \t]+(.*)$")
 _CLOSING_HASHES = re.compile(r"[ \t]+#+[ \t]*$")
 _LEADING_DECORATION = re.compile(r"^(?:[^\w\s][ \t]*)+")
-_ANY_HEADING = re.compile(r"^#{1,6}[ \t]")
+_ANY_HEADING = re.compile(r"^#{1,6}(?:[ \t]|$)")
+# CommonMark: a fence closes only on the SAME delimiter CHARACTER, at least as long as the
+# opener, followed by nothing but whitespace. Toggling on any ``` or ~~~ made a `~~~` line
+# INSIDE a ``` block close it, after which a `### BREAKING CHANGES` line still inside that
+# code block started a real exemption and could hide a retired-key instruction
+# (measured; the sixth spelling of this hole).
+_FENCE = re.compile(r"^[ \t]*(`{3,}|~{3,})[ \t]*(.*)$")
 
 
 def _is_breaking_heading(line):
     """True only for a heading whose text is exactly `BREAKING CHANGES`.
 
-    Tolerates what release-please actually emits (`### \u26a0 BREAKING CHANGES`) and closed-ATX
-    (`## BREAKING CHANGES ##`), and nothing else: no word before the phrase, nothing after it,
-    and the whole marker on one physical line.
+    Tolerates what release-please actually emits (`### \u26a0 BREAKING CHANGES`), closed-ATX
+    (`## BREAKING CHANGES ##`), and the trailing whitespace a hand-edit leaves behind (the
+    final `.strip()`) -- and nothing else: no word before the phrase, nothing after it, at
+    least one space or tab after the hashes, and the whole marker on one physical line.
     """
     m = _ATX.match(line)
     if not m:
@@ -271,14 +298,39 @@ def _without_breaking_blocks(text):
     function is pinned by `test_breaking_block_stripping_is_bounded` against SYNTHETIC input
     rather than against the live file: an assertion that "stripping removed something" would be
     vacuous on main and would start failing for the wrong reason the moment a release lands.
+
+    FENCED content is code, not Markdown structure, so no line inside a ``` or ~~~ fence opens
+    or closes a block. Without that, a `### BREAKING CHANGES` line QUOTED in a fence -- the
+    shape a doc explaining this very guard would write -- exempted everything after it from the
+    retired-key sweep. An unclosed fence therefore stops any LATER heading being recognised at
+    all, which fails toward scanning MORE than intended rather than less, so it cannot hide a
+    retired key that was not already inside a genuine block.
+
+    An UNTERMINATED block -- a BREAKING heading with no heading after it anywhere -- exempts to
+    EOF. That is a decision, not an accident: an ATX section runs to the next heading or to the
+    end of the document, so exempting to EOF is what the heading actually means, and the
+    alternative would make the exemption depend on whether a later release section happens to
+    exist below it. The exposure stays bounded by the three scoping rules above (CHANGELOG.md
+    only, retired-key patterns only), and CLAUDE.md's release process invites the hand-editing
+    that makes the shape reachable, so it gets its own row in
+    `test_breaking_block_stripping_is_bounded` rather than being left to chance.
     """
-    out, skipping = [], False
+    out, skipping, fence = [], False, None
     for line in text.split("\n"):
-        if _is_breaking_heading(line):
-            skipping = True
-            continue
-        if skipping and _ANY_HEADING.match(line):
-            skipping = False
+        m = _FENCE.match(line)
+        if m and fence is None:
+            # Opening: remember the character and length so only a matching closer ends it.
+            fence = m.group(1)
+        elif m and fence is not None:
+            # Closing only if same char, at least as long, and nothing but whitespace after.
+            if m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) and not m.group(2).strip():
+                fence = None
+        elif fence is None:
+            if _is_breaking_heading(line):
+                skipping = True
+                continue
+            if skipping and _ANY_HEADING.match(line):
+                skipping = False
         if not skipping:
             out.append(line)
     return "\n".join(out)
@@ -392,6 +444,70 @@ def test_breaking_block_stripping_is_bounded():
     )
     assert _without_breaking_blocks("no headings here") == "no headings here"
 
+    # A heading QUOTED inside a code fence is code, not structure. This is the shape a doc
+    # explaining this very guard would write, and before fence tracking it exempted the whole
+    # rest of the file from the retired-key sweep.
+    quoted = '```\n### BREAKING CHANGES\n```\n\nSet cv.name: "Ada Example" in your config.\n'
+    assert 'cv.name: "Ada Example"' in _without_breaking_blocks(quoted), (
+        "a BREAKING heading quoted inside a code fence exempted the rest of the file")
+
+    # A fence closes only on its OWN delimiter, per CommonMark: same character, at least as
+    # long, nothing but whitespace after. Toggling on any ``` or ~~~ let a `~~~` line INSIDE a
+    # ``` block close it, after which the heading below was read as structure again -- the hole
+    # this row exists to keep shut (CodeRabbit, #171). Four spellings, one per closing rule.
+    for label, doc in (
+        ("a ~~~ line inside a ``` block",
+         '```\n~~~\n### BREAKING CHANGES\n```\n\nSet cv.name: "Ada Example" in your config.\n'),
+        ("a SHORTER closer",
+         '````\n### BREAKING CHANGES\n```\n\nSet cv.name: "Ada Example" in your config.\n'),
+        ("a closer carrying an info string",
+         '```\n### BREAKING CHANGES\n``` python\n\nSet cv.name: "Ada Example" in your config.\n'),
+        ("a ``` line inside a ~~~ block",
+         '~~~\n```\n### BREAKING CHANGES\n~~~\n\nSet cv.name: "Ada Example" in your config.\n'),
+    ):
+        assert 'cv.name: "Ada Example"' in _without_breaking_blocks(doc), (
+            f"{label} closed the fence, so the heading inside the code block exempted the rest"
+        )
+
+    # An UNCLOSED fence must not swallow the file either: it suppresses later headings, which
+    # means less is exempted, never more.
+    unclosed = '```\n### BREAKING CHANGES\n\nSet cv.name: "Ada Example" in your config.\n'
+    assert 'cv.name: "Ada Example"' in _without_breaking_blocks(unclosed), (
+        "an unclosed fence swallowed the rest of the file")
+
+    # The mirror image: a fence INSIDE a real BREAKING block must not end the skip, because
+    # fence state is not heading state. The block still ends at its own next heading.
+    fenced_inside = (
+        "### BREAKING CHANGES\n\n"
+        '```yaml\ncv:\n  name: "Ada Example"\n```\n\n'
+        "### Features\n\nkeep me\n"
+    )
+    stripped = _without_breaking_blocks(fenced_inside)
+    assert "Ada Example" not in stripped, "a fence inside the block ended the skip early"
+    assert "keep me" in stripped, "a fence inside the block ran the skip past its own section"
+
+    # STATED DECISION: a BREAKING block that is the file's last heading exempts to EOF, which
+    # is what an ATX section means. Every other row here supplies a following heading, so
+    # nothing else in this file would notice if this behaviour changed. CLAUDE.md's release
+    # process invites hand-editing this changelog, so the shape is reachable.
+    to_eof = '### BREAKING CHANGES\n\n* a `cv.name: ""` left behind still raises.\n'
+    assert "cv.name" not in _without_breaking_blocks(to_eof), (
+        "a BREAKING block that is the file's last heading must exempt to EOF")
+
+    # A BARE `###` is a valid empty ATX heading and must terminate a block. Requiring a space
+    # or text after the hashes would silently run the exemption on to the next non-empty
+    # heading instead.
+    bare = '### BREAKING CHANGES\n\nSet cv.name: "x" here.\n\n###\n\nkeep me\n'
+    assert "keep me" in _without_breaking_blocks(bare), (
+        "a bare `###` is a valid empty ATX heading and must terminate a BREAKING block")
+
+    # A LEVEL-1 heading terminates a block, even though `_ATX` refuses level 1 as a block
+    # START -- see the H1 rows in test_only_an_exact_breaking_heading_is_stripped for why that
+    # asymmetry is deliberate. `# Changelog` is the one H1 both changelogs actually contain.
+    level_one = '### BREAKING CHANGES\n\nSet cv.name: "x" here.\n\n# Changelog\n\nkeep me\n'
+    assert "keep me" in _without_breaking_blocks(level_one), (
+        "a level-1 heading must terminate a BREAKING block")
+
 
 def test_only_an_exact_breaking_heading_is_stripped():
     """A heading merely CONTAINING the phrase must not exempt its body.
@@ -402,7 +518,11 @@ def test_only_an_exact_breaking_heading_is_stripped():
     is the failure this whole guard exists to avoid, reproduced one layer up.
     """
     for heading in ("### \u26a0 BREAKING CHANGES", "### BREAKING CHANGES",
-                    "## BREAKING CHANGES ##", "###   BREAKING CHANGES"):
+                    "## BREAKING CHANGES ##", "###   BREAKING CHANGES",
+                    # A hand-edit leaves trailing whitespace behind, which the final `.strip()`
+                    # in `_is_breaking_heading` is there to absorb. Nothing else in this table
+                    # needed that strip, so without this row it could be deleted unnoticed.
+                    "### BREAKING CHANGES "):
         body = f"{heading}\n\nSet cv.name: \"Ada Example\" here.\n\n### Features\n\nkeep me\n"
         stripped = _without_breaking_blocks(body)
         assert "Ada Example" not in stripped, f"{heading!r} should exempt its body"
@@ -410,9 +530,22 @@ def test_only_an_exact_breaking_heading_is_stripped():
 
     # A closed-ATX suffix needs a SPACE before it, so `BREAKING CHANGES###` is literal text and
     # the heading's text is not exactly the phrase. `#*` admitted it (CodeRabbit round 4).
+    #
+    # `#BREAKING CHANGES` is refused by hash COUNT (one is below `_ATX`'s floor of two), so it
+    # says nothing about the space rule; `##BREAKING CHANGES` has a valid count and no space,
+    # which is what isolates the `[ \t]+` requirement.
+    #
+    # RULING on `# BREAKING CHANGES` (CodeRabbit CLI asked for level 1 to be a block START
+    # too): level 1 stays refused. The only level-1 heading in either the hand-written or the
+    # generated changelog is `# Changelog`, the document title -- verified, exactly one in each
+    # -- so a level-1 BREAKING SECTION is not a shape either file uses, and after four rounds of
+    # this pattern being too wide the correct bias is the smaller exempt surface. Terminating on
+    # level 1 is a different question and stays permitted; see the level-one row in
+    # test_breaking_block_stripping_is_bounded.
     for heading in ("### NOT BREAKING CHANGES", "## Some BREAKING CHANGES notes",
                     "### BREAKING CHANGES policy", "### BREAKING CHANGES###",
-                    "### BREAKING CHANGES#", "#BREAKING CHANGES"):
+                    "### BREAKING CHANGES#", "#BREAKING CHANGES",
+                    "##BREAKING CHANGES", "# BREAKING CHANGES"):
         body = f"{heading}\n\nSet cv.name: \"Ada Example\" here.\n"
         assert "Ada Example" in _without_breaking_blocks(body), (
             f"{heading!r} is not an exact BREAKING CHANGES heading and must NOT exempt its body"
@@ -421,11 +554,20 @@ def test_only_an_exact_breaking_heading_is_stripped():
     # A heading marker must live on ONE physical line. `\s` matched newlines, so `###` alone
     # followed by a `BREAKING CHANGES` paragraph -- two separate blocks in Markdown, no heading
     # anywhere -- swallowed everything after it.
+    #
+    # These rows go through `_without_breaking_blocks`, which does `text.split("\n")` FIRST, so
+    # no line reaching `_ATX` can contain a newline: what they actually pin is the SPLIT, not
+    # `_ATX`'s `[ \t]` class. Measured -- reverting `_ATX` to the `\s+` spelling named above
+    # leaves them all green. The class is pinned by the direct calls below instead.
     for malformed in ("###\nBREAKING CHANGES", "###\n\nBREAKING CHANGES", "##\n  BREAKING CHANGES"):
         body = f"{malformed}\n\nSet cv.name: \"Ada Example\" here.\n"
         assert "Ada Example" in _without_breaking_blocks(body), (
             f"{malformed!r} spans a newline and is not a heading -- it must NOT exempt its body"
         )
+        # The same rule asked of the predicate that enforces it, with a string the line split
+        # cannot flatten on its behalf.
+        assert not _is_breaking_heading(malformed), (
+            f"{malformed!r} spans a newline -- `_ATX` must not accept it as a heading")
 
 
 # The NESTED-YAML half of the same sweep, closing what the comment above `_RETIRED_CONFIG`
