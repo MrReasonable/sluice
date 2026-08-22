@@ -42,7 +42,7 @@ def _uncommented(path: Path) -> str:
     the fixture green while discarding the tolerance the sequencing spec mandates, which is the
     worse failure because from the outside it looks identical.
     """
-    return _strip_comments(path.read_text())
+    return _fold_continuations(_strip_comments(path.read_text()))
 
 
 def _strip_comments(source: str) -> str:
@@ -58,8 +58,27 @@ def _strip_comments(source: str) -> str:
                      if not ln.lstrip().startswith("#"))
 
 
-# A pip install naming the BARE distribution `job-sluice`, with no local wheel or directory
-# path -- regardless of interposed flags, quoting, or an extras suffix.
+def _fold_continuations(source: str) -> str:
+    """Join backslash-continued lines into one, AFTER comment lines are removed -- the order
+    Docker's own parser uses, so a comment sitting inside a continuation is dropped rather than
+    welded into the command.
+
+    Without this the invariant guard cannot see the single likeliest spelling of the thing it
+    forbids. Measured: `RUN pip install --no-cache-dir \\` + newline + `job-sluice[render]` did
+    NOT match, because the pattern's `[^\n]*?` stops dead at the newline -- and every `RUN` in
+    this repo's own Dockerfile is written with exactly that continuation idiom. The guard was
+    blind in the direction that fails GREEN.
+    """
+    return re.sub(r"\\[ \t]*\n[ \t]*", " ", source)
+
+
+# A pip install naming the BARE distribution, with no local wheel or directory path --
+# regardless of interposed flags, quoting, an extras suffix, or a line continuation.
+#
+# `job[-_]sluice`, not `job-sluice`: PyPI normalises the two spellings to the same project, so
+# `pip install job_sluice` installs precisely the forbidden thing while reading as a different
+# string. The wheel FILENAME is `job_sluice-...whl`, which is why the lookarounds matter --
+# they are what still lets the underscore spelling through when it is part of a path.
 #
 # Deliberately not a fixed contiguous literal: the sequencing spec names
 # `pip install --no-cache-dir job-sluice` as the ordinary phrasing a literal would silently
@@ -67,7 +86,7 @@ def _strip_comments(source: str) -> str:
 # `./job-sluice/...` from matching -- a path-borne name is the ALLOWED case, and the whole point
 # of the guard is to tell it apart from an index-borne one.
 _PYPI_INSTALL = re.compile(
-    r"""pip3?\s+install\b[^\n]*?(?<![\w./'"-])['"]?job-sluice(?:\[[^\]]*\])?['"]?(?![\w./-])"""
+    r"""pip3?\s+install\b[^\n]*?(?<![\w./'"-])['"]?job[-_]sluice(?:\[[^\]]*\])?['"]?(?![\w./-])"""
 )
 
 
@@ -110,6 +129,19 @@ def test_the_pypi_install_guard_catches_an_interposed_flag():
     """The evasion the sequencing spec names by hand: ordinary phrasing that a fixed
     contiguous literal would sail straight past."""
     assert _installs_from_pypi('RUN pip install --no-cache-dir job-sluice')
+
+
+def test_the_pypi_install_guard_crosses_a_line_continuation():
+    """The likeliest real spelling, and the one the first version of this guard could not see.
+    Every `RUN` in this repo's Dockerfile is written with this idiom."""
+    assert _installs_from_pypi(_fold_continuations(_strip_comments(
+        "RUN pip install --no-cache-dir \\\n      job-sluice[render,google]")))
+
+
+def test_the_pypi_install_guard_catches_the_underscore_spelling():
+    """PyPI normalises `job_sluice` and `job-sluice` to the same project, so the underscore
+    installs the forbidden thing while reading as a different string."""
+    assert _installs_from_pypi("RUN pip install job_sluice")
 
 
 def test_the_pypi_install_guard_catches_a_quoted_extras_spelling():
@@ -207,17 +239,64 @@ def test_the_dockerignore_denies_everything_before_re_including_the_wheel():
 # ── the compose file ─────────────────────────────────────────────────────────
 
 
-def _compose_volume_pairs() -> list:
-    """(source, target) for every volume line in the compose file.
+# A line that LOOKS like a short-form mount, matched loosely on purpose. It is the SCOPE half
+# of the guard below: every line this finds must also parse, or the guard fails. Without it a
+# shape the strict pattern cannot read is silently skipped, and a per-line miss reads exactly
+# like a pass -- measured, before this was split in two: an access-mode suffix (`:ro`) dropped
+# a `/Users/<name>/vault` mount entirely while the assertion beside it still passed on the four
+# unsuffixed lines.
+_MOUNT_LINE = re.compile(r'^\s*-\s+["\']?[^"\'\s]+:[^"\'\s]+["\']?\s*$')
 
-    Split on the LAST colon preceding an absolute target, greedily: a source like
-    `${SLUICE_VAULT:-./vault}` contains its own colon, and a non-greedy split lands inside the
-    parameter expansion instead of between source and target."""
-    pairs = []
+# The strict read. Optional surrounding quotes, and an optional trailing access mode, because
+# both are ordinary compose spellings that the first version of this guard could not see.
+_MOUNT = re.compile(
+    r'^\s*-\s+["\']?(?P<src>.+?)["\']?:(?P<tgt>/[^:"\']*)(?::(?P<mode>[a-z,]+))?["\']?\s*$'
+)
+
+# `$HOME`/`${HOME}` is a home-rooted path that starts with neither `/` nor `~`, so the literal
+# prefix test cannot see it. Checked separately rather than by widening that test, which would
+# also have to understand `${VAR:-...}` to avoid rejecting every legitimate expansion.
+_HOME_VAR = re.compile(r"\$\{?HOME\b")
+
+
+def _compose_mount_lines() -> list:
+    """Every short-form mount line, scoped to an INDENTED `volumes:` block.
+
+    Scoped rather than swept file-wide because `extra_hosts:` entries have the identical shape
+    (`- "host.docker.internal:host-gateway"`) -- caught by the scope assertion below on its very
+    first run, which is precisely the job that assertion exists to do. The top-level `volumes:`
+    declaration block is excluded by the indent test: its children declare named volumes and are
+    not mounts at all.
+    """
+    out, indent_of_block = [], None
     for line in COMPOSE.read_text().splitlines():
-        match = re.match(r"^\s*-\s+(.+):(/[^:]*)$", line)
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        if indent_of_block is not None:
+            if stripped.startswith("- ") and indent > indent_of_block:
+                if _MOUNT_LINE.match(line):
+                    out.append(line)
+                continue
+            if indent <= indent_of_block:
+                indent_of_block = None
+        if stripped == "volumes:" and indent > 0:
+            indent_of_block = indent
+    return out
+
+
+def _compose_volume_pairs() -> list:
+    """(source, target) for every mount line that PARSES.
+
+    Deliberately returns less than `_compose_mount_lines` when a line is unreadable, so the
+    caller can compare the two counts and fail on the difference rather than silently checking
+    a subset."""
+    pairs = []
+    for line in _compose_mount_lines():
+        match = _MOUNT.match(line)
         if match:
-            pairs.append((match.group(1).strip(), match.group(2).strip()))
+            pairs.append((match.group("src").strip(), match.group("tgt").strip()))
     return pairs
 
 
@@ -228,19 +307,32 @@ def test_no_compose_mount_source_is_an_absolute_or_home_rooted_path():
     `/home/<name>/...` vault path in this file is already caught -- but its pattern is anchored on those two roots
     and so cannot see `~/vault`, a drive-lettered path, or any other absolute root. A mount
     source is exactly where someone's real vault location would end up."""
+    lines = _compose_mount_lines()
     pairs = _compose_volume_pairs()
-    assert pairs, "extracted no volume mounts from docker-compose.yml; nothing was checked"
+    assert lines, "found no mount lines in docker-compose.yml; nothing was checked"
+    # THE SCOPE ASSERTION, and the reason this guard is split into a loose finder and a strict
+    # reader. Asserting only on the violations is the fail-open shape this repo has been bitten
+    # by repeatedly: for a NEGATIVE guard, finding nothing IS the success case, so a line the
+    # strict pattern cannot read vanishes and looks identical to a line that passed.
+    assert len(pairs) == len(lines), (
+        f"{len(lines) - len(pairs)} mount line(s) in docker-compose.yml did not parse, so they "
+        f"were never checked: {[ln.strip() for ln in lines if not _MOUNT.match(ln)]}. Widen the "
+        f"pattern -- do NOT drop the line from scope"
+    )
     bad = []
     for source, _target in pairs:
-        # Check the literal AND any `:-default` inside a parameter expansion: the default is
-        # what ships when the variable is unset, which is the common case.
-        candidates = [source] + re.findall(r":-([^}]*)\}", source)
+        # The literal, AND any `${VAR:-default}` default -- the default is what ships when the
+        # variable is unset, which is the common case and the one a reader never sees exercised.
+        candidates = [source.strip("\"'")]
+        candidates += re.findall(r"\$\{[A-Za-z_][A-Za-z0-9_]*:-([^{}]*)\}", source)
         for candidate in candidates:
-            if candidate.startswith(("/", "~")) or re.match(r"^[A-Za-z]:[\\/]", candidate):
+            if (candidate.startswith(("/", "~"))
+                    or re.match(r"^[A-Za-z]:[\\/]", candidate)
+                    or _HOME_VAR.search(candidate)):
                 bad.append((source, candidate))
     assert not bad, (
-        f"compose mount sources must be relative or named volumes, never absolute or "
-        f"home-rooted: {bad}"
+        f"compose mount sources must be relative or named volumes, never absolute, "
+        f"home-rooted or $HOME-rooted: {bad}"
     )
 
 
@@ -345,6 +437,46 @@ def test_the_mcp_service_publishes_no_port():
 
 
 # ── the base image stays current ─────────────────────────────────────────────
+
+
+def test_the_env_file_compose_reads_is_gitignored():
+    """The compose file passes backend credentials through an optional `.env`, and never names
+    a provider key. That design is only safe because `.env` cannot be committed -- an assumption
+    nothing asserted until now, in a repo where the whole point of the neutrality gate is that a
+    private job hunt must not reach a public remote."""
+    ignored = [ln.strip() for ln in (ROOT / ".gitignore").read_text().splitlines()]
+    assert ".env" in ignored, ".gitignore no longer ignores .env, which docker-compose.yml reads"
+    assert "env_file" in COMPOSE.read_text(), (
+        "docker-compose.yml no longer reads an env_file; this guard would pass vacuously"
+    )
+
+
+def test_compose_persists_the_whole_working_directory():
+    """The second Critical this file closed, and the reason the mount is /work rather than a
+    list of five directories.
+
+    Five artefact paths in `sluice/` are cwd-relative by design, so under WORKDIR they land in
+    the container's writable layer -- which `docker compose run --rm` deletes, while the POINTER
+    to a rendered CV survives in the persistent vault note. The lead then wedges: `cv run` says
+    `skipped-has-cv`, `apply prep` says `missing_file`.
+
+    The cwd-relative set is DERIVED here rather than hand-listed, so a sixth one added later
+    cannot silently escape the guarantee -- which is exactly what a hand-list would allow."""
+    relative_defaults = []
+    for path in (ROOT / "sluice").rglob("*.py"):
+        if path.name == "paths.py":
+            continue  # the resolver itself, not a consumer
+        relative_defaults += re.findall(r'=\s*"(\./[^"]+)"', path.read_text())
+    assert relative_defaults, (
+        "found no cwd-relative artefact defaults in sluice/; this guard would pass vacuously"
+    )
+    targets = [target for _source, target in _compose_volume_pairs()]
+    assert "/work" in targets, (
+        f"docker-compose.yml does not persist /work, the container's WORKDIR. {len(relative_defaults)} "
+        f"cwd-relative artefact paths in sluice/ resolve under it ({sorted(set(relative_defaults))}), "
+        f"so without this mount a rendered CV dies with the container while the note still points "
+        f"at it"
+    )
 
 
 def test_dependabot_covers_the_docker_ecosystem():
