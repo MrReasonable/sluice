@@ -1,7 +1,7 @@
 """Canonical status vocabulary, shared by every sub-app.
 
 Two lifecycles share one `status` frontmatter key. Triage OWNS the early states
-(new -> shortlist/research/needs_review/dismiss) and may rewrite them. The
+(new -> shortlist/research/needs_review/dismiss/unjudgeable) and may rewrite them. The
 application tracker OWNS the later states (applied, phone_screen, ...); triage
 must never touch a lead once it has entered that lifecycle. The single
 exception into the application lifecycle is `shortlist -> applied`, made by apply (on
@@ -11,7 +11,7 @@ Researching/research) to one canonical token; an unrecognized value is passed
 through untouched so a genuinely new state is never silently rewritten.
 """
 
-TRIAGE_OWNED = ("new", "shortlist", "research", "needs_review", "dismiss")
+TRIAGE_OWNED = ("new", "shortlist", "research", "needs_review", "dismiss", "unjudgeable")
 APPLICATION_OWNED = (
     "applied", "phone_screen", "interview", "offer",
     "rejected", "accepted", "withdrawn",
@@ -27,7 +27,20 @@ _ALIASES = {
     "phone screen": "phone_screen",
     "phonescreen": "phone_screen",
     "interviewing": "interview",
+    "unjudgable": "unjudgeable",     # the common misspelling
 }
+
+# What `triage run --status` selects when the user names nothing. A hand-picked RETRY
+# subset with ONE home, deliberately NOT derived from TRIAGE_OWNED -- which also holds
+# shortlist, needs_review and dismiss, so a derivation would re-judge leads the user has
+# already decided about, every run. It lives here rather than in cli.py because the value
+# had FOUR homes before #169 (cli.py twice, core/app.py, triage/engine.py) and an earlier
+# draft of that fix changed only the one that is dead on the production path -- writing
+# `unjudgeable` onto leads that nothing would ever re-read.
+#
+# `unjudgeable` is in it because that IS the retry: the lead's JD never arrived, the
+# cache no longer serves the failure (#169), so the next run refetches.
+DEFAULT_TRIAGE_STATUSES = ("new", "research", "unjudgeable")
 
 
 def normalize(raw: str) -> str:

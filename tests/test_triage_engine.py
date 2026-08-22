@@ -122,6 +122,31 @@ class _RecordingCache(DossierCache):
         return {"lead_id": self.cache_key(fm), **self._dossier}
 
 
+class _CacheWhere(DossierCache):
+    """A DossierCache stand-in whose JD markdown is chosen PER LEAD, keyed by company --
+    for proving the #169 unjudgeable gate in a MIXED batch. `_RecordingCache` above hands
+    every lead the same dossier, which cannot express "this one lead's JD never arrived
+    while its neighbour's did" -- exactly the case a vacuous `prompts == []` assertion
+    would miss, since a run that judged NOTHING would satisfy that too.
+
+    Subclasses DossierCache rather than duck-typing it, matching _RecordingCache's own
+    reasoning: `lead_id` is stamped by the real, production `cache_key`, so it cannot
+    drift from what get_or_build actually stamps.
+
+    `jd_by_company` is indexed with `[...]`, not `.get(...)`: a company this run never
+    configured a JD for is a fixture bug in the CALLING test, and should raise loudly
+    rather than silently default to an empty JD that would make every unconfigured lead
+    look like it never arrived."""
+    def __init__(self, jd_by_company):
+        super().__init__("", 0, None)
+        self._jd_by_company = jd_by_company
+
+    def get_or_build(self, fm):
+        markdown = self._jd_by_company[fm.get("company", "")]
+        return {"lead_id": self.cache_key(fm), "jd": {"markdown": markdown},
+               "glassdoor": {}, "page_title": "", "structured_data": ""}
+
+
 def _tier1_source(company):
     class _Source:
         def company_from_url(self, url):
@@ -1065,7 +1090,15 @@ class _ResolveBackend:
         return reply
 
 
-_LLM_DOSSIER = {"page_title": "Senior Engineer | Example Board", "structured_data": ""}
+# `jd` carries a real markdown body (#169): these fixtures exist to prove tier-3
+# RESOLUTION mechanics, and several of them resolve a lead all the way to a `keep`
+# decision that then reaches the enrich+judge block. Without a JD that arrived, the
+# unjudgeable gate added above would short-circuit every one of those leads before the
+# judge, which is a real behaviour for THAT feature but silently defeats what these
+# tests are actually checking (e.g. that the judge backend, not the resolve backend,
+# is the one that gets called).
+_LLM_DOSSIER = {"page_title": "Senior Engineer | Example Board", "structured_data": "",
+                "jd": {"markdown": "A real JD, long enough to clear the unjudgeable floor."}}
 
 
 def test_tier3_resolution_writes_the_company_and_is_counted_under_its_own_tier(
@@ -1352,3 +1385,114 @@ def test_tier0_resolves_a_sentinel_company_note_on_a_fully_zero_config_install(t
     assert report.resolved["tier0"] == 1
     assert report.llm_calls == 0
     assert cache.calls == []   # no page visit and no LLM call -- the role text alone resolved it
+
+
+# ── unjudgeable (#169): the enrich loop short-circuits a lead whose JD never arrived ──
+
+def test_a_lead_whose_jd_never_arrived_is_marked_unjudgeable_and_never_judged(tmp_path, titles):
+    """Asserted on the backend spy's prompt CONTENT in a MIXED batch (one healthy lead,
+    one blocked): `prompts == []` would be satisfied by a run that judged NOTHING at
+    all, so it proves nothing on its own. The healthy lead must be SHOWN reaching the
+    judge in the same run the blocked one does not, or the assertion is vacuous."""
+    accept, _ = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "good.md", _fields("Good Co", accept[0].title(), url="https://x/1"))
+    _note(v, "blocked.md", _fields("Blocked Co", accept[0].title(), url="https://x/2"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.accept_titles = list(accept)
+    cache = _CacheWhere({"Good Co": "A real JD, long enough.", "Blocked Co": ""})
+    backend = _Backend()
+
+    report = eng.run(v, cfg, backend, cache, audit, statuses=("new",))
+
+    assert report.counts["unjudgeable"] == 1
+    after = {n.fm["company"]: n.status for n in v.read_leads()}
+    assert after["Blocked Co"] == "unjudgeable"
+    assert after["Good Co"] == "shortlist"   # _Backend shortlists everyone it is shown
+    joined = "\n".join(backend.prompts)
+    assert "Good Co" in joined, "the healthy lead must still reach the judge"
+    assert "Blocked Co" not in joined, "an unjudgeable lead must cost no judge call"
+
+
+def test_a_dry_run_counts_an_unjudgeable_lead_as_skipped_and_writes_nothing(tmp_path, titles):
+    # Mirrors the classify-pass convention (test_dry_run_resolution_keep_count_is_
+    # accurate_but_reject_bucket_is_not, above): a dry run reports what WOULD happen,
+    # never a write that did not occur, so a would-be `unjudgeable` write is counted
+    # `skipped` under dry_run -- exactly like a would-be `dismiss`/`needs_review` write
+    # is there. Asserting `counts["unjudgeable"] == 1` here would be a THIRD, competing
+    # counting convention inside one function; consistency with the two sibling passes
+    # is worth more than a dry-run count that claims a write which never landed.
+    accept, _ = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "blocked.md", _fields("Blocked Co", accept[0].title()))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.accept_titles = list(accept)
+    cache = _CacheWhere({"Blocked Co": ""})
+
+    report = eng.run(v, cfg, _Backend(), cache, audit, statuses=("new",), dry_run=True)
+
+    assert report.counts["unjudgeable"] == 0
+    assert report.counts["skipped"] == 1
+    assert v.read_leads()[0].status == "new"   # dry_run counts and reports, writes nothing
+
+
+def test_an_application_owned_lead_is_never_marked_unjudgeable(tmp_path, titles):
+    # apply_classification's _guarded refuses an application-owned lead outright;
+    # never-regress holds unchanged for this new decision exactly as it does for
+    # every other one apply_classification already writes. Also pins the fix for a
+    # real defect this task's own report flagged and the coordinator confirmed: the
+    # COUNT must follow the write outcome too, not just the vault status. `_guarded`
+    # refuses here (outcome "skipped"), so counting `unjudgeable` unconditionally
+    # would have claimed a status change for a lead that is actually `applied` --
+    # the OPPOSITE of its real state.
+    accept, _ = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "applied.md", _fields("Applied Co", accept[0].title(), status="applied"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.accept_titles = list(accept)
+    cache = _CacheWhere({"Applied Co": ""})
+
+    report = eng.run(v, cfg, _Backend(), cache, audit, statuses=("applied",))
+
+    assert v.read_leads()[0].status == "applied"
+    assert report.counts["unjudgeable"] == 0
+    assert report.counts["skipped"] == 1
+
+
+def test_triage_unjudgeable_conflict_is_counted_and_batch_continues(tmp_path, titles, monkeypatch):
+    # Symmetric to test_triage_classify_conflict_is_counted_and_batch_continues and
+    # test_triage_judge_conflict_is_counted_and_batch_continues above, at the THIRD
+    # apply_classification call site engine.py now has: the #169 unjudgeable branch.
+    # A VaultConflict there (a human editing the note in Obsidian mid-run) must not
+    # abort the whole run -- it is counted in report.failures and the conflicted
+    # lead is left untouched, while the next lead's write still lands.
+    accept, _ = titles
+    v = Vault(str(tmp_path / "vault"))
+    # sorts first -> conflicts; identity reused from the classify-pass conflict test above
+    _note(v, "aaa.md", _fields("Example Conflict Co", accept[0].title(), url="https://x/1"))
+    _note(v, "bbb.md", _fields("Beta", accept[0].title(), url="https://x/2"))   # sorts second -> survivor
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.accept_titles = list(accept)
+    cache = _CacheWhere({"Example Conflict Co": "", "Beta": ""})
+
+    real = eng.apply_classification
+    calls = {"n": 0}
+
+    def flaky(vault, note, decision, reason):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise VaultConflict(note.ref)
+        return real(vault, note, decision, reason)
+    monkeypatch.setattr(eng, "apply_classification", flaky)
+
+    report = eng.run(v, cfg, _Backend(), cache, audit, statuses=("new",))
+
+    assert any("apply" in f for f in report.failures)   # the conflict was recorded
+    statuses = {n.fm["company"]: n.status for n in v.read_leads()}
+    assert statuses["Example Conflict Co"] == "new"       # conflicted lead left in its prior state
+    assert statuses["Beta"] == "unjudgeable"    # survivor's write still landed (batch continued)
+    assert report.counts["unjudgeable"] == 1     # only the survivor's write is counted

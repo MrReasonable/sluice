@@ -30,6 +30,7 @@ except ImportError:  # pragma: no cover - exercised by not having the extra inst
     argcomplete = None
 
 from sluice import __version__
+from sluice.core import status as _status
 from sluice.core.config import load_config
 from sluice.core.health import HealthStore
 from sluice.core.log import get_logger, notify
@@ -649,7 +650,9 @@ def cmd_leads_expire(args, config) -> int:
 def cmd_triage_run(args, config) -> int:
     from sluice.core.app import Sluice
 
-    statuses = tuple(s.strip() for s in (args.status or "new,research").split(",") if s.strip())
+    statuses = tuple(s.strip() for s in
+                     (args.status or ",".join(_status.DEFAULT_TRIAGE_STATUSES)).split(",")
+                     if s.strip())
     report = Sluice(config).triage(statuses=statuses, limit=args.limit,
                                    dry_run=args.dry_run, no_llm=args.no_llm,
                                    backend_role=args.backend)
@@ -1551,7 +1554,7 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="cmd", required=True)
 
     tr = triage.add_parser("run", help="classify leads: deterministic rules, then an LLM judge")
-    tr.add_argument("--status", default="new,research")
+    tr.add_argument("--status", default=",".join(_status.DEFAULT_TRIAGE_STATUSES))
     tr.add_argument("--limit", type=int)
     tr.add_argument("--dry-run", action="store_true")
     tr.add_argument("--backend", choices=_BACKEND_CHOICES, default="auto",
