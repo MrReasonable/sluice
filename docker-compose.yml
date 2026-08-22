@@ -59,6 +59,29 @@ x-sluice: &sluice
     - "host.docker.internal:host-gateway"
 
   volumes:
+    # THE WHOLE WORKING DIRECTORY, not just the vault -- and this closes a second Critical of
+    # exactly the same shape as the VAULT_DIR one above.
+    #
+    # Five artefact directories in this codebase are cwd-relative BY DESIGN (cv/config.py's
+    # render_home/output_dir/served_dir, cv/render.py's home, apply/config.py's
+    # camofox_upload_dir and camofox_cv_dir): docs/CONFIGURATION.md calls them "a workspace
+    # you're standing in, not per-system state", which is right on a host and fatal in a
+    # container. Under WORKDIR /work they land in the container's writable layer, and
+    # `docker compose run --rm` -- the invocation this very file prescribes -- deletes it.
+    #
+    # The rendered PDF would die with the container while the POINTER to it survives in the
+    # vault note, which is persistent. cv/engine.py writes that pointer after serving the file,
+    # so the next `cv run` reports `skipped-has-cv` and never recomposes, while `apply prep`
+    # reports `missing_file` (apply/select.py) -- the lead wedges between two commands that each
+    # refuse it, after a run that printed `rendered`. A lead holding a #60 `pending_cv` sign-off
+    # hold is worse: `cv signoff` would promote a pointer to a file that no longer exists.
+    #
+    # Mounting /work WHOLE rather than listing those five directories is deliberate. A list
+    # would silently go stale the day a sixth cwd-relative artefact is added; this cannot.
+    # The vault bind mount below nests inside this volume, which is why it still wins for its
+    # own subtree -- verified against a real `compose run --rm`, not assumed.
+    - sluice-workspace:/work
+
     # The vault -- your Obsidian directory, and the one thing here that is genuinely yours.
     # It lands at /work/vault because WORKDIR is /work and this codebase's DEFAULT_VAULT is the
     # cwd-relative "./vault", so the default resolves to exactly this mount with no config at
@@ -111,5 +134,6 @@ services:
     command: ["mcp", "serve"]
 
 volumes:
+  sluice-workspace:
   sluice-state:
   sluice-cache:
