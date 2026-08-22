@@ -103,6 +103,16 @@ class Config:
     # -- sluice does not own the layout, it offers one, and an unconfigured install must be
     # byte-identical to the flat store.
     lead_layout: str = ""
+    # The floor below which a fetched JD is treated as NOT HAVING ARRIVED (#169), so the
+    # dossier cache refuses to persist it and triage refuses to spend a judge call on it.
+    # 0 = the band is OFF and is the SHIPPED default: an EMPTY jd always fails (a fact),
+    # but a character count is a judgement about what counts as a real posting, and an
+    # active value would hand every copier one they never made -- the same rule
+    # sluice.yaml.example states at length for `lead_ttl_days`. `job-sluice init` asks.
+    # ROOT, not per-sub-app, because triage and cv SHARE one dossier directory: two
+    # different floors over one directory means whichever sub-app ran last decides
+    # whether an entry exists.
+    min_jd_chars: int = 0
 
     def source(self, id: str) -> SourceConfig:
         """Config for a source id; unlisted sources default to enabled + no tuning."""
@@ -287,6 +297,16 @@ def load_config(path: str | None = None) -> Config:
             f"lead_layout must be one of "
             f"{', '.join(repr(n) for n in LEAD_LAYOUTS)}, got {raw_layout!r}")
 
+    # #169. Same shape as lead_ttl_days above, same reason: bool checked FIRST and
+    # separately because it SUBCLASSES int, so `min_jd_chars: yes` -- the natural
+    # spelling to turn this on -- would otherwise pass isinstance(int) and load as a
+    # one-character floor, letting nearly every fetched JD through with no error.
+    raw_floor = data.get("min_jd_chars")
+    raw_floor = 0 if raw_floor is None else raw_floor
+    if isinstance(raw_floor, bool) or not isinstance(raw_floor, int) or raw_floor < 0:
+        raise ValueError(
+            f"min_jd_chars must be a non-negative integer (0 = off), got {raw_floor!r}")
+
     # NB this loader names every field EXPLICITLY -- no splat, no loop, unlike the four
     # sub-app loaders' hasattr+setattr loops. A dataclass field added without a line
     # here is therefore dead: it loads as its default whatever the YAML says, silently.
@@ -310,4 +330,5 @@ def load_config(path: str | None = None) -> Config:
                                                      "dedupe_title_noise_words"),
                   lead_ttl_days=raw_ttl,
                   lead_layout=raw_layout or "",
+                  min_jd_chars=raw_floor,
                   dossier_allow_hosts=allow)

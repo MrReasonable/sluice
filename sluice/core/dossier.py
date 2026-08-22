@@ -30,11 +30,46 @@ def slim(dossier: dict, *, jd_limit: int = 4000) -> dict:
 
 
 class DossierCache:
-    def __init__(self, dir: str, ttl_days: int, fetcher, clock=datetime.now):
+    def __init__(self, dir: str, ttl_days: int, fetcher, clock=datetime.now,
+                 min_jd_chars: int = 0):
         self.dir = dir
         self.ttl_days = ttl_days
         self.fetcher = fetcher
         self.clock = clock
+        # 0 = the near-empty band is OFF, which is the SHIPPED default (#169, spec
+        # decision 3): a character count is a judgement about what counts as a real
+        # posting, and this repo does not ship one uninvited -- see sluice.yaml.example's
+        # `lead_ttl_days` for the same rule stated at length. An EMPTY jd is different in
+        # kind: it is a fact, so `jd_arrived` refuses it at every floor including 0.
+        # The constructor default is 0 rather than the config default so the bare
+        # `DossierCache(dir, ttl, fetcher=...)` constructions across the suite keep
+        # today's behaviour exactly.
+        self.min_jd_chars = min_jd_chars
+
+    def jd_arrived(self, dossier: dict) -> bool:
+        """Did this fetch actually produce a job description?
+
+        The ONE owner of that judgement. `get_or_build` asks it to decide whether to
+        PERSIST, and every caller asks it to decide what a miss means for them -- one
+        function, two uses, so there is no second copy of the rule to drift (#169).
+
+        A predicate rather than a marker key in the returned dict, deliberately: a marker
+        would ride `slim()` into the judge prompt, since `slim` excludes `lead_snapshot`,
+        `page_title` and `structured_data` by NAME and would not exclude a new key by
+        accident.
+
+        Degrades to False rather than raising on a malformed `jd`, matching what
+        `triage/resolve.py:_text` already does with this same field -- a dossier that
+        cannot answer the question has not produced a JD either.
+        """
+        jd = dossier.get("jd")
+        markdown = jd.get("markdown") if isinstance(jd, dict) else None
+        if not isinstance(markdown, str):
+            return False
+        text = markdown.strip()
+        if not text:
+            return False            # a FACT, refused at every floor
+        return len(text) >= self.min_jd_chars
 
     def cache_key(self, lead: dict) -> str:
         """`lead_id` first, then a stable hash of `url` (#109) -- url does not change
@@ -58,11 +93,26 @@ class DossierCache:
         if not os.path.exists(path):
             return False
         try:
-            built = json.loads(open(path, encoding="utf-8").read()).get("built_at")
-            age = self.clock() - datetime.fromisoformat(built)
-            return age.days < self.ttl_days
+            cached = json.loads(open(path, encoding="utf-8").read())
+            age = self.clock() - datetime.fromisoformat(cached.get("built_at"))
         except (OSError, ValueError, TypeError):
             return False
+        if age.days >= self.ttl_days:
+            return False
+        # Content as well as age (#169). An entry written BEFORE this existed whose JD
+        # never arrived is fresh by the clock and useless by content; without this check
+        # the fix reaches an existing deployment's cache only after a full TTL, and the
+        # issue's manual "delete the sub-200-character entries" step stays manual.
+        #
+        # At the shipped `min_jd_chars: 0` this re-fetches the EMPTY subset only -- the
+        # short-but-not-empty entries need a configured floor, which is the accepted cost
+        # recorded in the spec's decision 3 and surfaced by `doctor` (Task 8).
+        #
+        # If the refetch also fails, nothing is written and this file lingers, inert,
+        # re-read and re-rejected each run. That is the intended retry. There is
+        # deliberately NO cleanup pass: deleting on a read would make a read a write,
+        # which is the exact shape that disarmed the #81 relocation notice.
+        return self.jd_arrived(cached)
 
     def get_or_build(self, lead: dict) -> dict:
         path = self._path(lead)
@@ -86,7 +136,15 @@ class DossierCache:
             "structured_data": enrich.get("structured_data", ""),
             "built_at": self.clock().isoformat(),
         }
-        os.makedirs(self.dir, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(dossier, f, ensure_ascii=False)
+        # Do NOT persist a fetch that produced no JD (#169). Caching one makes every
+        # later run serve the failure for the whole TTL: triage judges a lead on a
+        # document nobody read, returns "unjudgeable" (a `research` verdict), and the
+        # nightly `--status new,research` run re-selects it and pays for the same
+        # non-answer until the entry expires. Not writing costs one refetch per run and
+        # ends the loop. The FRESHLY FETCHED dossier is still returned, never the
+        # rejected cached one, so the caller can answer `jd_arrived` on what it holds.
+        if self.jd_arrived(dossier):
+            os.makedirs(self.dir, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(dossier, f, ensure_ascii=False)
         return dossier

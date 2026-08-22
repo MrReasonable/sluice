@@ -239,7 +239,7 @@ def test_resolve_host_defaults_to_the_production_resolver(tmp_path, monkeypatch)
     # Bare `Sluice(config, fetcher=...)` -- resolve_host left at its default (None),
     # exactly like every real `cli.py` construction.
     app = Sluice(Config(), fetcher=_Tab())
-    cache = app.dossier_cache(str(tmp_path), ttl_days=7)
+    cache = app.dossier_cache(str(tmp_path), ttl_days=7, min_jd_chars=0)
     dossier = cache.get_or_build({"url": "https://jobs.invalid/x",
                                  "company": "Acme", "role": "Engineer"})
 
