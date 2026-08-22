@@ -3,18 +3,24 @@ compose file that wires it up.
 
 WHY THIS ONE PARSES YAML while `tests/test_ci_wiring.py` deliberately does not.
 
-That module's stated reason is that "pyyaml is a guarded optional import in `sluice/`, so a test
-needing it can skip itself into uselessness on a bare install". Checked rather than inherited:
-`pyproject.toml`'s `dependencies = ["pyyaml", "tzdata"]` makes pyyaml a HARD runtime dependency,
-so a bare install always has it. The `try/except ImportError` in the config modules is defensive,
-not optionality, and the premise does not hold. What DOES still hold there is its second reason:
-what those guards pin is a command STRING, which text matching pins exactly.
+Not because pyyaml is optional -- it is not. `pyproject.toml`'s
+`dependencies = ["pyyaml", "tzdata"]` makes it a hard runtime dependency and several modules in
+this directory already import it at module scope; the try/except in the config modules is
+defensive. Those sibling guards said otherwise until this change corrected them.
 
-This file is the other case. What it pins is compose's mount STRUCTURE, and a hand-rolled scanner
-for that needed three separate patches -- block scoping, then collecting every entry, then
-same-indent sequences -- each closing a YAML shape nobody had thought to ask about, and the third
-one had reproduced the very fail-open it was written to close. That is the repo's own
-stop-patching-and-parse trigger (`#170`), so it parses.
+And not because they pin "strings" while this pins "structure" -- an earlier version of this
+paragraph claimed that, and it is also false: `test_ci_wiring.py` parses `needs: [...]` flow
+lists, slices job blocks and asserts step ORDER. That was the second wrong reason given for a
+decision that is nonetheless right.
+
+The rule that survives: **parse when the guard needs YAML's OWN semantics** -- quoting,
+indentation, anchors, merge keys, long form versus short. Text-match when what is pinned is a
+literal the file contains, which is most of what those guards do and which a parse would only
+make harder to read. `#170`'s third-patch rule is the tiebreaker for an ambiguous case, and it
+is what settled this one: the hand-rolled scanner this replaced needed three patches in three
+review rounds -- block scoping, then collecting every entry, then same-indent sequences -- each
+closing a YAML shape nobody had thought to ask about, and the third had reproduced the very
+fail-open it was written to close.
 
 No real `docker build` runs here. Pulling a base image needs network, which this suite
 deliberately does not have; the sequencing spec fixes this as a text check on the Dockerfile
@@ -95,10 +101,15 @@ def _fold_continuations(source: str) -> str:
 # its own defect, in the direction that fails LOUD rather than green, which is why it survived
 # one round.
 #
-# `job[-_]sluice`, not `job-sluice`: PyPI normalises the two spellings to the same project, so
-# `pip install job_sluice` installs precisely the forbidden thing while reading as a different
-# string. The wheel FILENAME is `job_sluice-...whl`, which is why the lookarounds matter --
-# they are what still lets the underscore spelling through when it is part of a path.
+# `job[-_.]+sluice` under IGNORECASE, not `job-sluice`: PEP 503 normalises a project name by
+# lowercasing it and collapsing any run of `-`, `_` and `.` to a single `-`, so `job_sluice`,
+# `job.sluice`, `job__sluice` and `Job-Sluice` all install PRECISELY the forbidden thing while
+# reading as different strings. The wheel FILENAME is `job_sluice-...whl`, which is why the
+# lookarounds matter -- they are what still lets those spellings through when part of a path.
+#
+# `(?:-\S+\s+)*` between `pip` and `install` because global options may sit there
+# (`pip -q install ...`, `pip --no-cache-dir install ...`); without it the guard sees no
+# `pip install` at all and passes.
 #
 # Deliberately not a fixed contiguous literal: the sequencing spec names
 # `pip install --no-cache-dir job-sluice` as the ordinary phrasing a literal would silently
@@ -106,7 +117,9 @@ def _fold_continuations(source: str) -> str:
 # `./job-sluice/...` from matching -- a path-borne name is the ALLOWED case, and the whole point
 # of the guard is to tell it apart from an index-borne one.
 _PYPI_INSTALL = re.compile(
-    r"""pip3?\s+install\b[^\n;&|]*?(?<![\w./'"-])['"]?job[-_]sluice(?:\[[^\]]*\])?['"]?(?![\w./-])"""
+    r"""pip3?\s+(?:-\S+\s+)*install\b[^\n;&|]*?"""
+    r"""(?<![\w./'"-])['"]?job[-_.]+sluice(?:\[[^\]]*\])?['"]?(?![\w./-])""",
+    re.IGNORECASE,
 )
 
 
@@ -174,6 +187,21 @@ def test_the_pypi_install_guard_catches_the_underscore_spelling():
     """PyPI normalises `job_sluice` and `job-sluice` to the same project, so the underscore
     installs the forbidden thing while reading as a different string."""
     assert _installs_from_pypi("RUN pip install job_sluice")
+
+
+def test_the_pypi_install_guard_catches_pep_503_name_variants():
+    """PEP 503 normalises the project name, so every one of these resolves to the same PyPI
+    project and installs the forbidden thing under a different-looking string."""
+    for spelling in ("job_sluice", "job.sluice", "job__sluice", "Job-Sluice", "JOB_SLUICE"):
+        assert _installs_from_pypi(f"RUN pip install {spelling}"), spelling
+
+
+def test_the_pypi_install_guard_catches_a_global_pip_option_before_install():
+    """`pip -q install job-sluice` and `pip --no-cache-dir install job-sluice` are ordinary
+    spellings; without allowing options in that position the guard sees no `pip install` at
+    all and passes."""
+    assert _installs_from_pypi("RUN pip -q install job-sluice")
+    assert _installs_from_pypi("RUN pip --no-cache-dir install job-sluice")
 
 
 def test_the_pypi_install_guard_catches_a_quoted_extras_spelling():
@@ -295,12 +323,42 @@ def test_the_dockerignore_denies_everything_before_re_including_the_wheel():
 # `${VAR:-default}` contains its own colon, so the source/target split still needs a regex --
 # but only AFTER yaml has handled quoting, indentation, anchors, merge keys and the long form.
 # Greedy source, because the target is the LAST colon-separated field that starts with `/`.
-_SHORT_FORM = re.compile(r"^(?P<src>.+):(?P<tgt>/[^:]*)(?::(?P<mode>[a-z,]+))?$")
+_SHORT_FORM = re.compile(r"^(?P<src>.+):(?P<tgt>/[^:]*)(?::(?P<mode>[A-Za-z,]+))?$")
 
 # `$HOME`/`${HOME}` is home-rooted while starting with neither `/` nor `~`, so the prefix test
 # cannot see it. Checked separately rather than by widening that test, which would then have to
 # understand `${VAR:-...}` to avoid rejecting every legitimate expansion.
 _HOME_VAR = re.compile(r"\$\{?HOME\b")
+
+
+def _compose_env_file_paths() -> list:
+    """Every `env_file:` path in the document, whichever of its three spellings is used.
+
+    In scope for the home-rooted sweep because it is a HOST path exactly like a bind-mount
+    source, and this file already uses the long form for it -- so `- path: ~/secrets/.env`
+    would have been a personal host path the volumes-only sweep never looked at.
+    """
+    document = yaml.safe_load(COMPOSE.read_text())
+    out = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "env_file":
+                    entries = value if isinstance(value, list) else [value]
+                    for entry in entries:
+                        if isinstance(entry, dict):
+                            out.append(str(entry.get("path", "")))
+                        elif isinstance(entry, str):
+                            out.append(entry)
+                else:
+                    walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(document)
+    return [value for value in out if value]
 
 
 def _iter_volume_specs(node):
@@ -322,6 +380,30 @@ def _iter_volume_specs(node):
             yield from _iter_volume_specs(item)
 
 
+def _compose_services() -> dict:
+    """`{service: {"env": {...}, "mounts": [(source, target), ...]}}`, merge keys resolved.
+
+    THE ANCHOR IS NOT WHAT COMPOSE RUNS, and the difference is not cosmetic. YAML's `<<` merge
+    is KEY-level: a service that merges `*sluice` and then declares its own `environment:`
+    replaces the anchor's entire environment mapping rather than adding to it, so it silently
+    loses `VAULT_DIR` while keeping every mount. Measured on a copy -- and with the guards
+    reading a flat union over the whole document, all three of them passed.
+
+    That is the first Critical this file closed, reopened verbatim and invisible. So the pins
+    below ask what each SERVICE resolves to, not what appears somewhere in the document.
+    """
+    document = yaml.safe_load(COMPOSE.read_text())
+    services = document.get("services") or {}
+    assert services, "docker-compose.yml declares no services; the per-service pins are vacuous"
+    return {
+        name: {
+            "env": (service.get("environment") or {}),
+            "mounts": _mount_pairs(service.get("volumes") or []),
+        }
+        for name, service in services.items()
+    }
+
+
 def _compose_volume_pairs() -> list:
     """(source, target) for every mount in the compose file.
 
@@ -331,15 +413,29 @@ def _compose_volume_pairs() -> list:
     NEGATIVE guard, silently dropping an entry is indistinguishable from that entry passing,
     which is the failure every previous version of this function shipped with.
     """
-    document = yaml.safe_load(COMPOSE.read_text())
+    return _mount_pairs(_iter_volume_specs(yaml.safe_load(COMPOSE.read_text())))
+
+
+def _mount_pairs(specs) -> list:
+    """The ONE mount reader, shared by the flat sweep and the per-service view above, so the
+    two cannot disagree about what a mount is."""
     pairs = []
-    for spec in _iter_volume_specs(document):
+    for spec in specs:
         if isinstance(spec, dict):
+            # `source` is legitimately absent for `type: tmpfs` and for an anonymous
+            # `type: volume`; only the target is required. An empty source sweeps clean, which
+            # is correct -- there is no host path to be personal.
             source, target = spec.get("source", ""), spec.get("target", "")
-            assert source and target, f"long-form mount missing source/target: {spec!r}"
+            assert target, f"long-form mount declares no target: {spec!r}"
             pairs.append((str(source), str(target)))
             continue
         assert isinstance(spec, str), f"unrecognised volume entry {spec!r} in docker-compose.yml"
+        if ":" not in spec:
+            # An ANONYMOUS volume: a target and no source, which is the idiom for shadowing a
+            # subpath of a bind mount. There is no source to sweep, so it contributes an empty
+            # one rather than aborting -- raising here would fail the build for correct compose.
+            pairs.append(("", spec))
+            continue
         match = _SHORT_FORM.match(spec)
         assert match, (
             f"could not split the mount {spec!r} into source and target. Fix this reader -- do "
@@ -348,6 +444,23 @@ def _compose_volume_pairs() -> list:
         )
         pairs.append((match.group("src").strip(), match.group("tgt").strip()))
     return pairs
+
+
+def _home_rooted_hits(value: str) -> list:
+    """Every reason `value` names somewhere personal: [] when it is clean.
+
+    Checks the literal AND any `${VAR:-default}` default, because the default is what ships
+    when the variable is unset -- the common case, and the one a reader never sees exercised.
+    `$HOME`/`${HOME}` is checked separately because it is home-rooted while starting with
+    neither `/` nor `~`, and widening the prefix test to cover it would mean teaching that test
+    about `${VAR:-...}` just to avoid rejecting every legitimate expansion.
+    """
+    candidates = [value.strip("\"'")]
+    candidates += re.findall(r"\$\{[A-Za-z_][A-Za-z0-9_]*:-([^{}]*)\}", value)
+    return [c for c in candidates
+            if c.startswith(("/", "~"))
+            or re.match(r"^[A-Za-z]:[\\/]", c)
+            or _HOME_VAR.search(c)]
 
 
 def test_no_compose_mount_source_is_an_absolute_or_home_rooted_path():
@@ -363,25 +476,91 @@ def test_no_compose_mount_source_is_an_absolute_or_home_rooted_path():
     # so "no mounts at all" must not read as a pass.
     pairs = _compose_volume_pairs()
     assert pairs, "found no mounts in docker-compose.yml; nothing was checked"
-    bad = []
-    for source, _target in pairs:
-        # The literal, AND any `${VAR:-default}` default -- the default is what ships when the
-        # variable is unset, which is the common case and the one a reader never sees exercised.
-        candidates = [source.strip("\"'")]
-        candidates += re.findall(r"\$\{[A-Za-z_][A-Za-z0-9_]*:-([^{}]*)\}", source)
-        for candidate in candidates:
-            if (candidate.startswith(("/", "~"))
-                    or re.match(r"^[A-Za-z]:[\\/]", candidate)
-                    or _HOME_VAR.search(candidate)):
-                bad.append((source, candidate))
+    # env_file paths are host paths too, and this file uses the long form for one -- so a
+    # `- path: ~/secrets/.env` was exactly the `~`-rooted shape this guard exists to catch,
+    # sitting in the one place a volumes-only sweep never looked.
+    host_paths = [source for source, _target in pairs] + _compose_env_file_paths()
+    bad = [(value, hit) for value in host_paths for hit in _home_rooted_hits(value)]
     assert not bad, (
-        f"compose mount sources must be relative or named volumes, never absolute, "
-        f"home-rooted or $HOME-rooted: {bad}"
+        f"compose host paths must be relative or named volumes, never absolute, home-rooted "
+        f"or $HOME-rooted: {bad}"
     )
 
 
-def test_compose_pins_the_vault_directory_into_the_container():
-    """The load-bearing line in the compose file, and it closes a Critical.
+# Synthetic inputs for the two halves of the mount guard. The real compose file's five sources
+# are all named volumes or `./`-relative, so it exercises NEITHER half: neutralising the
+# home-rooted predicate to never match left the sweep green, and so did dropping the mode group
+# from the short-form reader. A guard whose live input lacks the shape it guards is invisible
+# when it breaks -- which is how all three previous versions of this reader shipped their gaps.
+_PERSONAL_SOURCES = [
+    "/srv/exampleuser/vault",              # absolute
+    "~/vault",                             # home-rooted
+    '"~/vault"',                           # ...and quoted, which the first version missed
+    "$HOME/vault",                         # env-rooted, starts with neither / nor ~
+    "${HOME}/vault",
+    "${SLUICE_VAULT:-$HOME/vault}",        # personal only in the DEFAULT
+    "${SLUICE_VAULT:-/srv/exampleuser/v}",
+    # Drive-lettered. The path after the drive letter is deliberately impersonal and does
+    # NOT name a home root: what this fixture exercises is the `^[A-Za-z]:[\\/]` prefix,
+    # and a home-root component would additionally trip test_no_leaked_files.py's
+    # repo-wide sweep -- which it did, on the first run, from inside this very comment.
+    # is the `^[A-Za-z]:[\\/]` prefix, and a `/Users/` component would additionally trip
+    # tests/test_no_leaked_files.py's repo-wide sweep -- which it did, on the first run.
+    "C:/data/vaults/personal",
+    "C:\\data\\vaults\\personal",
+]
+
+_IMPERSONAL_SOURCES = [
+    "sluice-workspace",                    # a named volume
+    "./vault",
+    "${SLUICE_VAULT:-./vault}",
+    "${SLUICE_CONFIG_DIR:-./config}",
+    "",                                    # an anonymous volume contributes no source
+]
+
+
+def test_the_home_rooted_predicate_flags_every_personal_shape():
+    assert _PERSONAL_SOURCES, "no fixtures; this guard would pass vacuously"
+    missed = [s for s in _PERSONAL_SOURCES if not _home_rooted_hits(s)]
+    assert not missed, (
+        f"the home-rooted predicate does not flag {missed}. Each of these names somewhere "
+        f"personal, and the real compose file contains none of them -- so nothing else in the "
+        f"suite would go red if this predicate stopped working"
+    )
+
+
+def test_the_home_rooted_predicate_clears_every_impersonal_shape():
+    """The other direction, and not symmetry for its own sake: a predicate that flags a named
+    volume or a `./`-relative default would fail the build for correct compose, and the
+    actionable reading of that is "stop using named volumes"."""
+    assert _IMPERSONAL_SOURCES, "no fixtures; this guard would pass vacuously"
+    wrong = [(s, _home_rooted_hits(s)) for s in _IMPERSONAL_SOURCES if _home_rooted_hits(s)]
+    assert not wrong, f"the predicate wrongly flags impersonal sources: {wrong}"
+
+
+def test_the_mount_reader_handles_every_legitimate_compose_spelling():
+    """`_mount_pairs` RAISES on an entry it cannot read, which is right -- a silently skipped
+    entry is indistinguishable from one that passed. That makes the set it accepts load-bearing
+    in the other direction: each of these is valid compose, and raising on one would abort the
+    mount sweep, the vault pin and the WORKDIR pin together."""
+    cases = [
+        ("./vault:/work/vault", ("./vault", "/work/vault")),
+        ("${SLUICE_VAULT:-./vault}:/work/vault", ("${SLUICE_VAULT:-./vault}", "/work/vault")),
+        ("named-vol:/app/state", ("named-vol", "/app/state")),
+        ("./a:/work/b:ro", ("./a", "/work/b")),
+        ("./a:/work/b:z,ro", ("./a", "/work/b")),
+        ("./a:/work/b:Z", ("./a", "/work/b")),       # SELinux, upper case
+        ("/work/scratch", ("", "/work/scratch")),     # anonymous volume: target only
+        ({"type": "bind", "source": "./x", "target": "/work/x"}, ("./x", "/work/x")),
+        ({"type": "tmpfs", "target": "/work/tmp"}, ("", "/work/tmp")),  # no source, legitimate
+    ]
+    assert cases, "no fixtures; this guard would pass vacuously"
+    for spec, expected in cases:
+        assert _mount_pairs([spec]) == [expected], spec
+
+
+def test_every_service_pins_the_vault_directory_into_its_own_mounts():
+    """The load-bearing guard, and it closes a Critical twice over.
 
     `stores/vault.py:_make` is `Vault(os.environ.get("VAULT_DIR") or config.vault_dir or None)`,
     so this env var outranks a configured value BY CONSTRUCTION. It has to, because the config
@@ -391,19 +570,27 @@ def test_compose_pins_the_vault_directory_into_the_container():
     Without the pin the failure is silent and unrecoverable. `Vault` never checks that its
     directory exists and `upsert`'s create arm makedirs it, so a wrong path is CREATED in the
     container's ephemeral layer; leads land there as `created`, which is on `ingest/sink.py`'s
-    allowlist, so they are recorded in a seen.db that lives in a PERSISTENT volume. Remove the
+    allowlist, so they are recorded in a seen.db that lives on a PERSISTENT volume. Remove the
     container and the notes are gone while seen.db still suppresses them -- forever, since it
-    has no removal path."""
-    text = COMPOSE.read_text()
-    match = re.search(r"^\s*VAULT_DIR:\s*(\S+)\s*$", text, re.MULTILINE)
-    assert match, "docker-compose.yml does not pin VAULT_DIR"
-    pinned = match.group(1)
-    targets = [target for _source, target in _compose_volume_pairs()]
-    assert targets, "extracted no volume targets; the comparison below would be vacuous"
-    assert pinned in targets, (
-        f"VAULT_DIR is pinned to {pinned!r}, which is not one of the container paths anything "
-        f"is mounted at ({targets}). The pin only protects the vault if it names the mount"
-    )
+    has no removal path.
+
+    PER SERVICE, not over the document: see `_compose_services`. A flat union let a service that
+    merges the anchor and declares its own `environment:` drop `VAULT_DIR` while keeping every
+    mount, with this guard still green.
+    """
+    services = _compose_services()
+    for name, service in services.items():
+        pinned = service["env"].get("VAULT_DIR")
+        assert pinned, (
+            f"service {name!r} does not pin VAULT_DIR. If it merges the `x-sluice` anchor and "
+            f"declares its own `environment:`, YAML's key-level merge REPLACED the anchor's "
+            f"mapping and dropped the pin -- re-state VAULT_DIR in that service"
+        )
+        targets = [target for _source, target in service["mounts"]]
+        assert pinned in targets, (
+            f"service {name!r} pins VAULT_DIR to {pinned!r}, which is not among its own mount "
+            f"targets ({targets}). The pin only protects the vault if that service mounts it"
+        )
 
 
 def test_compose_camofox_url_carries_a_scheme_and_the_shipped_port():
@@ -495,17 +682,19 @@ def test_the_env_file_compose_reads_is_gitignored():
     )
 
 
-def test_compose_persists_the_whole_working_directory():
-    """The second Critical this file closed, and the reason the mount is /work rather than a
-    list of five directories.
+def test_every_service_persists_the_whole_working_directory():
+    """The second Critical, and the reason the mount is the WORKDIR rather than a list of five.
 
-    The cwd-relative artefact paths in `sluice/` land, under WORKDIR, in
-    the container's writable layer -- which `docker compose run --rm` deletes, while the POINTER
-    to a rendered CV survives in the persistent vault note. The lead then wedges: `cv run` says
+    The cwd-relative artefact paths in `sluice/` land, under WORKDIR, in the container's
+    writable layer -- which `docker compose run --rm` deletes, while the POINTER to a rendered
+    CV survives in the persistent vault note. The lead then wedges: `cv run` says
     `skipped-has-cv`, `apply prep` says `missing_file`.
 
-    The cwd-relative set is DERIVED here rather than hand-listed, so a sixth one added later
-    cannot silently escape the guarantee -- which is exactly what a hand-list would allow."""
+    The cwd-relative set is DERIVED rather than hand-listed, so a sixth one added later cannot
+    silently escape the guarantee. WORKDIR is READ from the Dockerfile rather than hardcoded,
+    so renaming it cannot leave this guard green while the mount goes inert. And it is asserted
+    per SERVICE for the same reason the vault pin is.
+    """
     relative_defaults = []
     for path in (ROOT / "sluice").rglob("*.py"):
         if path.name == "paths.py":
@@ -514,26 +703,21 @@ def test_compose_persists_the_whole_working_directory():
     assert relative_defaults, (
         "found no cwd-relative artefact defaults in sluice/; this guard would pass vacuously"
     )
-    # WORKDIR is READ from the Dockerfile, never hardcoded here. Hardcoding `/work` was the
-    # round-3 finding, raised independently by two reviewers: change `WORKDIR` to anything else
-    # and this guard stayed green while the mount went inert and the Critical reopened verbatim.
-    # The LAST WORKDIR wins, which is Docker's own rule for repeated instructions.
     workdirs = re.findall(r"^WORKDIR\s+(\S+)\s*$", _uncommented(DOCKERFILE), re.MULTILINE)
     assert workdirs, "no WORKDIR in the Dockerfile; this guard has nothing to anchor on"
     workdir = workdirs[-1].strip('"\'')
     assert workdir.startswith("/"), (
         f"WORKDIR is {workdir!r}, a relative path. Docker resolves it against the previous "
-        f"WORKDIR, so the mount below may still be correct -- but this guard compares it to "
-        f"mount targets as though it were absolute, and its failure message would name a "
-        f"fragment. Spell WORKDIR absolutely."
+        f"WORKDIR, so the mount may still be correct -- but this guard compares it to mount "
+        f"targets as though it were absolute. Spell WORKDIR absolutely."
     )
-    targets = [target for _source, target in _compose_volume_pairs()]
-    assert workdir in targets, (
-        f"docker-compose.yml does not persist {workdir!r}, the container's WORKDIR. "
-        f"{len(relative_defaults)} cwd-relative paths in sluice/ resolve under it "
-        f"({sorted(set(relative_defaults))}), so without this mount a rendered CV dies with the "
-        f"container while the vault note still points at it"
-    )
+    for name, service in _compose_services().items():
+        targets = [target for _source, target in service["mounts"]]
+        assert workdir in targets, (
+            f"service {name!r} does not persist {workdir!r}, the container's WORKDIR. "
+            f"{len(relative_defaults)} cwd-relative paths in sluice/ resolve under it, so a "
+            f"rendered CV would die with the container while the vault note still points at it"
+        )
 
 
 def test_dependabot_covers_the_docker_ecosystem():
