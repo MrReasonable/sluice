@@ -328,17 +328,25 @@ _SHORT_FORM = re.compile(r"^(?P<src>.+):(?P<tgt>/[^:]*)(?::(?P<mode>[A-Za-z,]+))
 # `$HOME`/`${HOME}` is home-rooted while starting with neither `/` nor `~`, so the prefix test
 # cannot see it. Checked separately rather than by widening that test, which would then have to
 # understand `${VAR:-...}` to avoid rejecting every legitimate expansion.
-_HOME_VAR = re.compile(r"\$\{?HOME\b")
+# `$HOME`/`${HOME}` and their Windows equivalents. All are home-rooted while starting with
+# neither `/` nor `~`, so the prefix test cannot see them. `%USERPROFILE%` is the cmd spelling
+# and `$USERPROFILE`/`${USERPROFILE}` the shell one; a compose file written on Windows uses the
+# first, and it names the user's profile directory as squarely as `$HOME` does.
+_HOME_VAR = re.compile(r"\$\{?(?:HOME|USERPROFILE)\b|%USERPROFILE%", re.IGNORECASE)
 
 
 def _compose_env_file_paths() -> list:
+    """The shipped file's env_file paths."""
+    return _env_file_paths(yaml.safe_load(COMPOSE.read_text()))
+
+
+def _env_file_paths(document) -> list:
     """Every `env_file:` path in the document, whichever of its three spellings is used.
 
     In scope for the home-rooted sweep because it is a HOST path exactly like a bind-mount
     source, and this file already uses the long form for it -- so `- path: ~/secrets/.env`
     would have been a personal host path the volumes-only sweep never looked at.
     """
-    document = yaml.safe_load(COMPOSE.read_text())
     out = []
 
     def walk(node):
@@ -408,10 +416,27 @@ def _compose_services() -> dict:
     document = yaml.safe_load(COMPOSE.read_text())
     services = document.get("services") or {}
     assert services, "docker-compose.yml declares no services; the per-service pins are vacuous"
+    # `include:` and `extends:` pull in services this reader never sees, so the roster would
+    # shrink silently rather than the guard failing. Neither is used today; asserting their
+    # absence forces a human to widen the reader instead of letting the scope quietly narrow.
+    assert "include" not in document, (
+        "docker-compose.yml now uses `include:`, which brings in services this reader does not "
+        "resolve -- widen it rather than letting the per-service pins cover a subset"
+    )
+    extending = [n for n, s in services.items() if isinstance(s, dict) and "extends" in s]
+    assert not extending, (
+        f"services {extending} use `extends:`, whose inherited keys this reader does not "
+        f"resolve -- widen it rather than letting the per-service pins cover a subset"
+    )
     return {
         name: {
             "env": _env_mapping(service.get("environment")),
             "mounts": _mount_pairs(service.get("volumes") or []),
+            # Compose's own `working_dir:` OVERRIDES the image's WORKDIR for that service, and
+            # it lives here -- per service -- which is exactly where the previous version of
+            # this guard stopped looking. `None` when unset, so the caller falls back to the
+            # Dockerfile's WORKDIR rather than this file inventing a default.
+            "cwd": service.get("working_dir"),
         }
         for name, service in services.items()
     }
@@ -472,6 +497,9 @@ def _home_rooted_hits(value: str) -> list:
     candidates += re.findall(r"\$\{[A-Za-z_][A-Za-z0-9_]*:-([^{}]*)\}", value)
     return [c for c in candidates
             if c.startswith(("/", "~"))
+            # A UNC path embeds a private HOSTNAME, which the neutrality rule names in its own
+            # right -- and it starts with a separator the POSIX-rooted checks do not recognise.
+            or c.startswith("\\\\")
             or re.match(r"^[A-Za-z]:[\\/]", c)
             or _HOME_VAR.search(c)]
 
@@ -492,7 +520,12 @@ def test_no_compose_mount_source_is_an_absolute_or_home_rooted_path():
     # env_file paths are host paths too, and this file uses the long form for one -- so a
     # `- path: ~/secrets/.env` was exactly the `~`-rooted shape this guard exists to catch,
     # sitting in the one place a volumes-only sweep never looked.
-    host_paths = [source for source, _target in pairs] + _compose_env_file_paths()
+    env_files = _compose_env_file_paths()
+    # The same scope assertion the mounts arm carries. Forcing this reader to return []
+    # previously left the sweep green even against a compose file whose env_file was
+    # `~/secrets/.env` -- a whole arm of the guard disappearing without a single test noticing.
+    assert env_files, "found no env_file paths in docker-compose.yml; that arm checked nothing"
+    host_paths = [source for source, _target in pairs] + env_files
     bad = [(value, hit) for value in host_paths for hit in _home_rooted_hits(value)]
     assert not bad, (
         f"compose host paths must be relative or named volumes, never absolute, home-rooted "
@@ -517,6 +550,9 @@ _PERSONAL_SOURCES = [
     # NOT name a home root: what this fixture exercises is the `^[A-Za-z]:[\\/]` prefix,
     # and a home-root component would additionally trip test_no_leaked_files.py's
     # repo-wide sweep -- which it did, on the first run, from inside this very comment.
+    "\\\\fileserver\\share\\vault",   # UNC -- embeds a private hostname
+    "%USERPROFILE%/vault",                 # the Windows spelling of $HOME
+    "${USERPROFILE}/vault",
     "C:/data/vaults/personal",
     "C:\\data\\vaults\\personal",
 ]
@@ -528,6 +564,34 @@ _IMPERSONAL_SOURCES = [
     "${SLUICE_CONFIG_DIR:-./config}",
     "",                                    # an anonymous volume contributes no source
 ]
+
+
+def test_the_environment_reader_handles_both_compose_spellings():
+    """`_env_mapping`'s list branch is unexercised by the real file, which uses the mapping
+    spelling exclusively -- the same invisibility the source fixtures above exist to remove."""
+    assert _env_mapping({"VAULT_DIR": "/work/vault"}) == {"VAULT_DIR": "/work/vault"}
+    assert _env_mapping(["VAULT_DIR=/work/vault"]) == {"VAULT_DIR": "/work/vault"}
+    assert _env_mapping(["FLAG"]) == {"FLAG": ""}          # a bare name is valid compose
+    assert _env_mapping(["A=b=c"]) == {"A": "b=c"}         # only the FIRST `=` splits
+    assert _env_mapping(None) == {}
+    assert _env_mapping([]) == {}
+
+
+def test_the_env_file_reader_handles_every_compose_spelling():
+    """Compose accepts a scalar, a list of strings, and a list of `{path, required}` maps. The
+    shipped file uses only the last, so the other two reached no test -- and this arm of the
+    sweep is the one that would see a `~`-rooted secrets path."""
+    cases = [
+        ({"services": {"a": {"env_file": ".env"}}}, [".env"]),
+        ({"services": {"a": {"env_file": [".env", "other.env"]}}}, [".env", "other.env"]),
+        ({"services": {"a": {"env_file": [{"path": ".env", "required": False}]}}}, [".env"]),
+    ]
+    assert cases, "no fixtures; this guard would pass vacuously"
+    for document, expected in cases:
+        assert _env_file_paths(document) == expected, document
+    # And the shape the sweep exists to refuse, through the real predicate.
+    assert _home_rooted_hits(_env_file_paths(
+        {"services": {"a": {"env_file": [{"path": "~/secrets/.env"}]}}})[0])
 
 
 def test_the_home_rooted_predicate_flags_every_personal_shape():
@@ -723,9 +787,21 @@ def test_every_service_persists_the_whole_working_directory():
         f"targets as though it were absolute. Spell WORKDIR absolutely."
     )
     for name, service in _compose_services().items():
+        # The EFFECTIVE cwd, not the image's. Compose's `working_dir:` overrides WORKDIR per
+        # service, and the guard read only the Dockerfile -- measured, adding
+        # `working_dir: /srv/run` to a service left all three compose guards GREEN while the
+        # cwd-relative artefacts resolved into the layer `compose run --rm` deletes. That is
+        # the same Critical this guard exists for, reopened one level up: round 5 moved the
+        # check per service, and `working_dir:` is precisely a per-service key.
+        effective = service["cwd"] or workdir
+        assert effective.startswith("/"), (
+            f"service {name!r} sets a relative working_dir {effective!r}; compose resolves it "
+            f"against the image WORKDIR, but this guard compares it to absolute mount targets"
+        )
         targets = [target for _source, target in service["mounts"]]
-        assert workdir in targets, (
-            f"service {name!r} does not persist {workdir!r}, the container's WORKDIR. "
+        assert effective in targets, (
+            f"service {name!r} does not persist {effective!r}, its effective working directory "
+            f"({'working_dir:' if service['cwd'] else 'the image WORKDIR'}). "
             f"{len(relative_defaults)} cwd-relative paths in sluice/ resolve under it, so a "
             f"rendered CV would die with the container while the vault note still points at it"
         )
