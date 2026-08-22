@@ -1,10 +1,20 @@
 """Guards for the Docker channel (#104, PR 4): the Dockerfile, its build context, and the
 compose file that wires it up.
 
-WHY TEXT, NOT A YAML PARSE, for the compose half: `pyyaml` is a guarded optional import in
-`sluice/` (CLAUDE.md's stdlib-only rule), so a test needing it is a test that can skip itself
-into uselessness on a bare install. `tests/test_ci_wiring.py` states the same rule for the
-workflow files and this module follows it.
+WHY THIS ONE PARSES YAML while `tests/test_ci_wiring.py` deliberately does not.
+
+That module's stated reason is that "pyyaml is a guarded optional import in `sluice/`, so a test
+needing it can skip itself into uselessness on a bare install". Checked rather than inherited:
+`pyproject.toml`'s `dependencies = ["pyyaml", "tzdata"]` makes pyyaml a HARD runtime dependency,
+so a bare install always has it. The `try/except ImportError` in the config modules is defensive,
+not optionality, and the premise does not hold. What DOES still hold there is its second reason:
+what those guards pin is a command STRING, which text matching pins exactly.
+
+This file is the other case. What it pins is compose's mount STRUCTURE, and a hand-rolled scanner
+for that needed three separate patches -- block scoping, then collecting every entry, then
+same-indent sequences -- each closing a YAML shape nobody had thought to ask about, and the third
+one had reproduced the very fail-open it was written to close. That is the repo's own
+stop-patching-and-parse trigger (`#170`), so it parses.
 
 No real `docker build` runs here. Pulling a base image needs network, which this suite
 deliberately does not have; the sequencing spec fixes this as a text check on the Dockerfile
@@ -13,6 +23,8 @@ source for exactly that reason. The real build runs in CI's `docker` job instead
 
 import re
 from pathlib import Path
+
+import yaml
 
 ROOT = Path(__file__).parent.parent
 DOCKERFILE = ROOT / "Dockerfile"
@@ -280,73 +292,61 @@ def test_the_dockerignore_denies_everything_before_re_including_the_wheel():
 # ── the compose file ─────────────────────────────────────────────────────────
 
 
-# A line that LOOKS like a short-form mount, matched loosely on purpose. It is the SCOPE half
-# of the guard below: every line this finds must also parse, or the guard fails. Without it a
-# shape the strict pattern cannot read is silently skipped, and a per-line miss reads exactly
-# like a pass -- measured, before this was split in two: an access-mode suffix (`:ro`) dropped
-# a `/Users/<name>/vault` mount entirely while the assertion beside it still passed on the four
-# unsuffixed lines.
-_MOUNT_LINE = re.compile(r'^\s*-\s+["\']?[^"\'\s]+:[^"\'\s]+["\']?\s*$')
+# `${VAR:-default}` contains its own colon, so the source/target split still needs a regex --
+# but only AFTER yaml has handled quoting, indentation, anchors, merge keys and the long form.
+# Greedy source, because the target is the LAST colon-separated field that starts with `/`.
+_SHORT_FORM = re.compile(r"^(?P<src>.+):(?P<tgt>/[^:]*)(?::(?P<mode>[a-z,]+))?$")
 
-# The strict read. Optional surrounding quotes, and an optional trailing access mode, because
-# both are ordinary compose spellings that the first version of this guard could not see.
-_MOUNT = re.compile(
-    r'^\s*-\s+["\']?(?P<src>.+?)["\']?:(?P<tgt>/[^:"\']*)(?::(?P<mode>[a-z,]+))?["\']?\s*$'
-)
-
-# `$HOME`/`${HOME}` is a home-rooted path that starts with neither `/` nor `~`, so the literal
-# prefix test cannot see it. Checked separately rather than by widening that test, which would
-# also have to understand `${VAR:-...}` to avoid rejecting every legitimate expansion.
+# `$HOME`/`${HOME}` is home-rooted while starting with neither `/` nor `~`, so the prefix test
+# cannot see it. Checked separately rather than by widening that test, which would then have to
+# understand `${VAR:-...}` to avoid rejecting every legitimate expansion.
 _HOME_VAR = re.compile(r"\$\{?HOME\b")
 
 
-def _compose_mount_lines() -> list:
-    """Every short-form mount line, scoped to an INDENTED `volumes:` block.
+def _iter_volume_specs(node):
+    """Every `volumes:` LIST anywhere in the parsed document, entry by entry.
 
-    Scoped rather than swept file-wide because `extra_hosts:` entries have the identical shape
-    (`- "host.docker.internal:host-gateway"`) -- caught by the scope assertion below on its very
-    first run, which is precisely the job that assertion exists to do. The top-level `volumes:`
-    declaration block is excluded by the indent test: its children declare named volumes and are
-    not mounts at all.
+    A list, specifically: compose's top-level `volumes:` declares named volumes and is a MAPPING,
+    so this walks past it rather than needing an indent rule to exclude it. The `x-sluice` anchor
+    is walked like any other node, and merge keys are already resolved by the parser -- so a
+    mount reaches this whether it was written in the anchor, in a service, or in both.
     """
-    out, indent_of_block = [], None
-    for line in COMPOSE.read_text().splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        indent = len(line) - len(line.lstrip())
-        if indent_of_block is not None:
-            # `>=`, not `>`: YAML lets a block sequence sit at its KEY's own indentation, and
-            # compose files are commonly written that way. With `>` those entries matched
-            # neither branch, so they left BOTH `lines` and `pairs` short by one and the scope
-            # assertion -- the thing written to stop exactly this -- passed with the source
-            # unchecked. Measured with an absolute-path mount appended at the key's indent.
-            if stripped.startswith("- ") and indent >= indent_of_block:
-                # EVERY entry, not only the ones that look like short-form mounts. Filtering
-                # here would make a long-form entry (`- type: bind` with a `source:` key on the
-                # next line) invisible to the scope assertion too, so `lines` and `pairs` would
-                # both stay short by one and the guard would pass with that source unchecked --
-                # measured, and the long form is already live in this file for `env_file`.
-                out.append(line)
-                continue
-            if indent <= indent_of_block:
-                indent_of_block = None
-        if stripped == "volumes:" and indent > 0:
-            indent_of_block = indent
-    return out
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "volumes" and isinstance(value, list):
+                yield from value
+            else:
+                yield from _iter_volume_specs(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _iter_volume_specs(item)
 
 
 def _compose_volume_pairs() -> list:
-    """(source, target) for every mount line that PARSES.
+    """(source, target) for every mount in the compose file.
 
-    Deliberately returns less than `_compose_mount_lines` when a line is unreadable, so the
-    caller can compare the two counts and fail on the difference rather than silently checking
-    a subset."""
+    Both spellings are handled by the parser rather than by pattern-guessing: the long form
+    arrives as a dict (`{type, source, target}`), the short form as a string. An entry that is
+    neither, or a short form this cannot split, raises rather than being skipped -- for a
+    NEGATIVE guard, silently dropping an entry is indistinguishable from that entry passing,
+    which is the failure every previous version of this function shipped with.
+    """
+    document = yaml.safe_load(COMPOSE.read_text())
     pairs = []
-    for line in _compose_mount_lines():
-        match = _MOUNT.match(line)
-        if match:
-            pairs.append((match.group("src").strip(), match.group("tgt").strip()))
+    for spec in _iter_volume_specs(document):
+        if isinstance(spec, dict):
+            source, target = spec.get("source", ""), spec.get("target", "")
+            assert source and target, f"long-form mount missing source/target: {spec!r}"
+            pairs.append((str(source), str(target)))
+            continue
+        assert isinstance(spec, str), f"unrecognised volume entry {spec!r} in docker-compose.yml"
+        match = _SHORT_FORM.match(spec)
+        assert match, (
+            f"could not split the mount {spec!r} into source and target. Fix this reader -- do "
+            f"NOT let the entry through unchecked, which is what makes a negative guard pass "
+            f"for the wrong reason"
+        )
+        pairs.append((match.group("src").strip(), match.group("tgt").strip()))
     return pairs
 
 
@@ -357,18 +357,12 @@ def test_no_compose_mount_source_is_an_absolute_or_home_rooted_path():
     `/home/<name>/...` vault path in this file is already caught -- but its pattern is anchored on those two roots
     and so cannot see `~/vault`, a drive-lettered path, or any other absolute root. A mount
     source is exactly where someone's real vault location would end up."""
-    lines = _compose_mount_lines()
+    # SCOPE is now held by `_compose_volume_pairs` itself: it raises on any entry it cannot read
+    # rather than skipping it, so there is no longer a subset for this sweep to run over silently.
+    # The non-vacuity anchor stays -- for a negative guard, finding nothing IS the success case,
+    # so "no mounts at all" must not read as a pass.
     pairs = _compose_volume_pairs()
-    assert lines, "found no mount lines in docker-compose.yml; nothing was checked"
-    # THE SCOPE ASSERTION, and the reason this guard is split into a loose finder and a strict
-    # reader. Asserting only on the violations is the fail-open shape this repo has been bitten
-    # by repeatedly: for a NEGATIVE guard, finding nothing IS the success case, so a line the
-    # strict pattern cannot read vanishes and looks identical to a line that passed.
-    assert len(pairs) == len(lines), (
-        f"{len(lines) - len(pairs)} mount line(s) in docker-compose.yml did not parse, so they "
-        f"were never checked: {[ln.strip() for ln in lines if not _MOUNT.match(ln)]}. Widen the "
-        f"pattern -- do NOT drop the line from scope"
-    )
+    assert pairs, "found no mounts in docker-compose.yml; nothing was checked"
     bad = []
     for source, _target in pairs:
         # The literal, AND any `${VAR:-default}` default -- the default is what ships when the
