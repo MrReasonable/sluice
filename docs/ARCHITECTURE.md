@@ -1282,8 +1282,15 @@ LLM spend rather than after), the store's on-disk artefacts (the vault directory
 the baseline CV, the Judging Profile, Experience Library entry counts, and -- #133/#107
 -- the Candidate Profile note's own declared name/contact, checked here rather than as
 a separate identity-fields row, via the Store seam's OPTIONAL `preflight()` hook),
-track's Google adapter, the Camofox profile an ingest run will drive, and the current
-posture (abstaining or active) of every list-typed preference gate. A legacy
+track's Google adapter, the Camofox profile an ingest run will drive, the current
+posture (abstaining or active) of every list-typed preference gate, and the shared
+dossier cache's cached-JD length distribution (#169) -- how many entries are empty, how
+many under 200 characters, how many under 800, and how many are unreadable outright (a
+broken cache file -- an interrupted write, a bad disk -- kept as its own bucket rather
+than folded into "empty", since that is a storage fault, not evidence the fetch itself
+produced nothing), always reported as a fact rather than a threshold verdict, since
+`min_jd_chars` ships at `0` (the near-empty band off) and a count against that floor
+would be identically zero at the shipped default. A legacy
 `cv.name`/`cv.contact` still set in `sluice.yaml` is a THIRD, separate failure mode: it
 makes `load_cv_config()` raise, which `Sluice.doctor` catches ahead of the
 deliberately-guarded `self.renderer()`/`self.store()` constructions below it (triage's config

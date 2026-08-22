@@ -384,13 +384,25 @@ def cmd_leads_rename(args, config) -> int:
 def cmd_health(args, config) -> int:
     from sluice.core.app import Sluice
 
-    for src in Sluice(config).health_report():
+    # --leads is the opt-in for health_report's one vault walk (#169 §2): the default
+    # print format must stay byte-identical to before (test_health_cli.py pins it), so
+    # the extra field only appears when a caller asked to pay for it.
+    include_leads = getattr(args, "leads", False)
+    for src in Sluice(config).health_report(include_leads=include_leads):
         flag = " RETIRE" if src.should_retire else ""
         # A source stuck on a NAMED failure is not retired (an operator action fixes it), so
         # without this line it would look merely quiet. This is the cumulative signal that
         # replaces the RETIRE flag for that case -- the one an operator reads days later.
         if src.broken_reason:
             flag += f" BROKEN reason={src.broken_reason} x{src.broken_runs}"
+        # Gated on the FLAG, not on `src.selected` being truthy: a source with zero
+        # DEFAULT_TRIAGE_STATUSES leads is a legitimate 0/0 when --leads DID walk the
+        # vault, and printing nothing there is correct -- but without the flag every
+        # SourceHealth also reads 0/0 (the dataclass default), and printing the same
+        # "unjudgeable=0/0" text in that case would misrepresent "not measured" as
+        # "measured, and clean".
+        if include_leads:
+            flag += f" unjudgeable={src.unjudgeable}/{src.selected}"
         print(f"{src.id:16} baseline={src.baseline:.0f} recent={src.recent}{flag}")
     return 0
 
@@ -1698,6 +1710,11 @@ def _build_parser() -> argparse.ArgumentParser:
     rn.set_defaults(func=cmd_leads_rename)
 
     health = top.add_parser("health", help="per-source baseline + retire state")
+    health.add_argument(
+        "--leads", action="store_true",
+        help="also walk the vault and report each source's unjudgeable rate "
+             "(#169 §2) -- off by default, since this command otherwise reads "
+             "only the source registry and the health store")
     health.set_defaults(func=cmd_health)
 
     mcp_group = top.add_parser("mcp", help="Model Context Protocol server").add_subparsers(

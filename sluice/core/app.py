@@ -122,6 +122,21 @@ class SourceHealth:
     # persisted in the health store; nothing ever read it back.
     broken_reason: "str | None" = None
     broken_runs: int = 0
+    # #169 §2: FACTS, not a verdict -- this dataclass reports counts, and classifying
+    # whether a rate is bad belongs elsewhere (`core/doctor.py`'s `classify_*` shape),
+    # the same split the store seam already draws. `unjudgeable` is source X's leads
+    # currently at status `unjudgeable`; `selected` is source X's leads across
+    # DEFAULT_TRIAGE_STATUSES -- the SAME lifecycle stage as the numerator, never an
+    # unfiltered read_leads() (that set is ALL-TIME: dismiss, applied, every terminal
+    # included, which would dilute a source that is 100% broken TODAY by its entire
+    # history and could structurally never surface the case this exists to catch --
+    # the #156 mistake, a ratio's two terms drawn from different populations, in a new
+    # costume). Both are 0 by default, and stay 0 unless a caller opts into
+    # `health_report(include_leads=True)`'s vault walk -- 0/0 must never be read as
+    # "measured, clean"; it is indistinguishable from "not measured" by construction,
+    # and it is the CALLER's job (cmd_health's `--leads` flag) to know which it asked for.
+    unjudgeable: int = 0
+    selected: int = 0
 
 
 @dataclass
@@ -1051,24 +1066,51 @@ class Sluice:
         rep["deadletter"] = {"refiled": refiled, "failed": failed}
         return rep
 
-    def health_report(self) -> list:
+    def health_report(self, *, include_leads: bool = False) -> list:
         """The per-source health REPORT `job-sluice health` and the MCP `health` tool
         both show -- sorted by source id, mirroring `dedupe_report`/`expire_report`/
-        `reconcile_report`'s report-idiom. Changes nothing.
+        `reconcile_report`'s report-idiom. Changes nothing (a vault WALK, never a write).
 
         `cmd_list_sources --health` (cli.py) still constructs its own `HealthStore()`
         and walks the registry independently: it also needs enabled/disabled overlay
         state this method does not compute, considered and deliberately not folded in
-        here (#105)."""
+        here (#105).
+
+        Reads only the source registry and `HealthStore` -- NO vault I/O -- unless
+        `include_leads=True`. Default False: `job-sluice health` and the MCP `health`
+        tool both call this, both are things a user runs often and cheaply, and an
+        unconditional walk would tax every caller for the one feature (#169 §2) that
+        needs it. Opting in adds exactly one `read_leads()` pass, which populates each
+        `SourceHealth`'s `unjudgeable`/`selected` facts -- see `SourceHealth` for why
+        both terms must come from the SAME lifecycle stage. Classifying whether a rate
+        is bad is deliberately not this method's job; `health_report` reports facts."""
         from sluice.core.health import HealthStore
         from sluice.ingest import sources as registry
         health = HealthStore()
+
+        # Both terms of the rate come from ONE read_leads() pass over the SAME
+        # lifecycle stage: the numerator is `unjudgeable` for source X, the
+        # denominator is source X's leads in DEFAULT_TRIAGE_STATUSES. NOT an
+        # unfiltered read_leads(), which is ALL-TIME (dismiss, applied, every
+        # terminal included) and would dilute a source that is 100% broken TODAY by
+        # its entire history -- the classification could then structurally never
+        # fire on the case it exists to detect. Computed once, up front, rather than
+        # per-source, so a vault with N sources costs one walk, not N.
+        rates = {}
+        if include_leads:
+            for note in self.store().read_leads(set(_status.DEFAULT_TRIAGE_STATUSES)):
+                src = note.fm.get("source", "")
+                bad, total = rates.get(src, (0, 0))
+                rates[src] = (bad + (1 if note.status == "unjudgeable" else 0), total + 1)
+
         def _one(src):
             reason, n = health.explained_streak(src.id)
+            bad, total = rates.get(src.id, (0, 0))
             return SourceHealth(id=src.id, kind=src.kind, baseline=health.baseline(src.id),
                                 recent=health.counts(src.id),
                                 should_retire=health.should_retire(src.id),
-                                broken_reason=reason, broken_runs=n)
+                                broken_reason=reason, broken_runs=n,
+                                unjudgeable=bad, selected=total)
 
         return [_one(src) for src in sorted(registry.all_sources(), key=lambda s: s.id)]
 
@@ -1775,6 +1817,7 @@ class Sluice:
         built ONLY when there is something testable -- a known provider whose
         credentials are satisfied -- so a keyless per-token backend is
         classified from config alone, never by catching a construction error."""
+        import json
         import shutil
         import time
 
@@ -1999,6 +2042,82 @@ class Sluice:
             components.extend(
                 _doctor.classify_gate(owner, name, value)
                 for name, value in _doctor.list_typed_fields(cfg))
+
+        # Cached-JD length distribution (Task 8, #169). See classify_dossier_cache's
+        # own docstring for why this is a DISTRIBUTION rather than a threshold verdict
+        # against `min_jd_chars` -- the short version is that a threshold count would
+        # be identically zero at the shipped `min_jd_chars: 0`, exactly the inert-
+        # control shape three reviewers rejected on an earlier draft of this task.
+        #
+        # `_dossier_dir()` never creates the directory (see its own docstring, and
+        # `core/paths.py`'s "resolve performs NO WRITES"), so `os.listdir` raising
+        # FileNotFoundError is the ordinary fresh-install shape, not an error --
+        # nothing has been dossiered yet. Reading it this way (rather than checking
+        # os.path.isdir first) keeps the "does not exist" and "cannot be listed"
+        # cases (e.g. a dangling symlink, ENOTDIR from a stray same-named file) behind
+        # one guard instead of two, and either way this function performs no writes:
+        # it must not disarm the #81 relocation notice the way `sqlite3.connect`
+        # opening a store file for a mere read once did.
+        #
+        # Deliberately UNBOUNDED -- no cap, and this is the "say why in a comment"
+        # case CLAUDE.md's Task 8 constraint asks for when a scan is not bounded. The
+        # #169 deployment this feature was built against measured 1336 entries, and a
+        # cache entry exists per DISTINCT lead ever dossiered (keyed by DossierCache.
+        # cache_key), never per status transition or per re-scrape of the same lead --
+        # unlike the full lead-note walk `Vault.preflight()`'s contract forbids it from
+        # doing (core/protocols.py), which parses YAML frontmatter across every active,
+        # applied and archived note. A few thousand small JSON reads costs low tens of
+        # milliseconds, well inside what a preflight users run often and cheaply should
+        # cost; if a real deployment ever grows large enough for that to stop holding,
+        # the fix is a bound reported IN the detail string (never a silent truncation --
+        # a capped count reads as a complete one), not a silent skip.
+        dossier_dir = self._dossier_dir()
+        dossier_counts = {
+            "total": 0, "unreadable": 0, "empty": 0, "under_200": 0, "under_800": 0}
+        try:
+            entries = [e for e in os.listdir(dossier_dir) if e.endswith(".json")]
+        except (FileNotFoundError, NotADirectoryError):
+            entries = []
+        for entry in entries:
+            dossier_counts["total"] += 1
+            try:
+                with open(os.path.join(dossier_dir, entry), encoding="utf-8") as f:
+                    dossier = json.load(f)
+            except (OSError, ValueError):
+                # The FILE itself is broken -- not valid JSON, or unreadable outright
+                # (an interrupted write, a bad disk). This is a different fault than a
+                # dossier that parsed fine but carries no JD text, so it gets its own
+                # bucket rather than folding into "empty": an empty JD means the fetch
+                # produced nothing (a blocked scraper, a consent wall); an unreadable
+                # entry means the cache file is corrupt, which is a disk/write problem
+                # with nothing to do with scraping. Never re-raised -- doctor diagnoses
+                # a broken install, it does not crash on the very entry it is trying to
+                # report on -- and it is excluded from the length buckets below because
+                # its length is genuinely unknown, not zero.
+                dossier_counts["unreadable"] += 1
+                continue
+            text = ""
+            jd = dossier.get("jd") if isinstance(dossier, dict) else None
+            markdown = jd.get("markdown") if isinstance(jd, dict) else None
+            # A file missing the `jd` key entirely (a real shape: it predates #169, or
+            # `DossierCache.get_or_build`'s non-atomic write -- a plain `open(...).write`,
+            # not the temp-file + os.replace pattern the vault's writes use -- was
+            # interrupted mid-json.dump) degrades to "" here, the same verdict
+            # `DossierCache.jd_arrived` already gives a malformed `jd` for the identical
+            # reason: a dossier that cannot answer the question has not produced a JD
+            # either. Unlike the unreadable case above, the JSON itself parsed fine --
+            # this is "no JD content", not "broken file" -- so it stays folded into
+            # "empty" alongside a dossier whose fetch genuinely produced a blank JD.
+            if isinstance(markdown, str):
+                text = markdown.strip()
+            length = len(text)
+            if length < 800:
+                dossier_counts["under_800"] += 1
+            if length < 200:
+                dossier_counts["under_200"] += 1
+            if length == 0:
+                dossier_counts["empty"] += 1
+        components.append(_doctor.classify_dossier_cache(dossier_counts))
 
         return _doctor.DoctorReport(checks=checks, components=components)
 

@@ -456,6 +456,69 @@ def list_typed_fields(cfg) -> list:
             if isinstance(getattr(cfg, f.name), list)]
 
 
+def classify_dossier_cache(counts: dict) -> ComponentCheck:
+    """The cached-JD length distribution (#169), as one NOTICE row -- deliberately a
+    DISTRIBUTION, never a threshold verdict.
+
+    An earlier draft of this made it a threshold NOTICE (a count of dossiers below
+    `min_jd_chars`), and three independent reviewers killed it: at the shipped
+    `min_jd_chars: 0` the near-empty band is OFF (`DossierCache`'s own docstring), so a
+    count against that floor is identically zero -- the one control meant to keep
+    #169's accepted residual visible would itself have been INERT at the shipped
+    default, exactly the silent-gap shape #169 exists to close. A distribution can
+    never be inert: it describes what is actually on disk, at any floor including 0. It
+    is also purely descriptive -- unlike `classify_gate`'s preference-gate rows, this
+    number changes nothing about which leads get judged -- so 200/800 are a
+    PRESENTATION choice (round numbers a human can eyeball at a glance), not a second
+    opinion about which jobs are good stacked on top of `min_jd_chars`. Its real payoff
+    is that it is exactly the evidence `job-sluice init`'s `min_jd_chars` question
+    needs (Task 9): #169 was found only because someone hand-counted a real cache and
+    noticed 141 of 1336 entries were under 200 characters -- this row is what makes
+    that finding routine instead of a one-off archaeology exercise.
+
+    `counts["empty"]`, `counts["under_200"]` and `counts["under_800"]` are CUMULATIVE,
+    matching #169's own worked example above: `under_200` includes `empty`, and
+    `under_800` includes `under_200`. Each bucket therefore answers "how many are AT
+    MOST this short", which is independently meaningful without subtracting the others
+    first -- `Sluice.doctor` (core/app.py) builds it that way from the real cache.
+
+    `counts["unreadable"]` sits OUTSIDE that chain, not under it -- it is not part of
+    the length distribution at all. A dossier file that will not parse (invalid JSON)
+    or cannot be read (an interrupted write, a bad disk) has an unknown length, not a
+    zero one, so it must never be folded into "empty": an empty JD means the FETCH
+    produced nothing (a blocked scraper, a consent wall) -- a scraping problem. An
+    unreadable entry means the CACHE FILE itself is broken -- a storage problem. The
+    two have different causes and different remedies, and a report that conflates them
+    hands a user "50 empty" when their disk is failing, not their scraper. A file that
+    parses fine but has no `jd` key (or a malformed one) is a THIRD, distinct shape from
+    either: the JSON read succeeded, so it is not "unreadable"; and per
+    `DossierCache.jd_arrived`'s own established "cannot say = did not arrive" semantics
+    (core/dossier.py), a dossier that cannot answer whether a JD arrived is treated the
+    same as one that answers "no" -- so it stays folded into `empty`, not split into a
+    fourth bucket. `total` counts every scanned entry, unreadable ones included, so
+    `unreadable + <entries reachable by the empty/under_200/under_800 chain>` sums to
+    `total`.
+
+    Always NOTICE, never DEGRADED/DEAD, for the same reason `classify_gate` is: a
+    short-JD-heavy cache is a fact about this install's own scraped data, not evidence
+    the PIPELINE itself is broken, so it must never trip `--strict`'s exit code (see
+    `DoctorReport.exit_code`'s own reasoning for why NOTICE is excluded by
+    construction)."""
+    total = counts.get("total", 0)
+    if total == 0:
+        # The fresh-install shape: nothing has been dossiered yet. Reported as a fact,
+        # not folded into the general f-string below, which would otherwise print the
+        # slightly odd "0 cached; 0 unreadable, 0 empty, 0 under 200 chars, 0 under 800
+        # chars".
+        return ComponentCheck("dossier-cache", "cached JDs", NOTICE, "no cached dossiers yet")
+    return ComponentCheck(
+        "dossier-cache", "cached JDs", NOTICE,
+        f"{total} cached; {counts.get('unreadable', 0)} unreadable, "
+        f"{counts.get('empty', 0)} empty, "
+        f"{counts.get('under_200', 0)} under 200 chars, "
+        f"{counts.get('under_800', 0)} under 800 chars")
+
+
 def classify_gate(owner: str, name: str, value: list) -> ComponentCheck:
     """One posture NOTICE per list-typed field `list_typed_fields` swept from a
     loaded config: abstaining (empty) or active (non-empty). Most of these are

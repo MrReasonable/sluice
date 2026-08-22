@@ -8,7 +8,7 @@ import pytest
 
 from sluice.core.doctor import (
     DEAD, DEGRADED, NOTICE, OK, BackendCheck, BackendTarget, ComponentCheck,
-    DoctorReport, RoleUse, classify, classify_gate,
+    DoctorReport, RoleUse, classify, classify_dossier_cache, classify_gate,
     classify_renderer, classify_store, classify_track_google, enumerate_targets,
     format_roles, list_typed_fields,
 )
@@ -832,6 +832,52 @@ def test_an_abstaining_gate_never_affects_the_exit_code():
     assert rep.exit_code(strict=True) == 0
 
 
+# ── classify_dossier_cache (#169) ─────────────────────────────────────────────
+def test_classify_dossier_cache_reports_a_distribution_not_a_verdict():
+    # A distribution is descriptive: it changes nothing about which leads are
+    # judged, so it is not the shipped judgement a threshold verdict would be. And
+    # it is never inert -- at the shipped `min_jd_chars: 0` a threshold count
+    # against that floor would be identically zero, leaving the accepted residual
+    # (#169 decision 3) invisible, which is how #169 was found in the first place
+    # (a human hand-counting a real cache).
+    check = classify_dossier_cache({"total": 1336, "empty": 12, "under_200": 141,
+                                    "under_800": 426})
+    assert check.state == NOTICE
+    assert "141" in check.detail and "1336" in check.detail
+
+
+def test_classify_dossier_cache_names_every_bucket():
+    # Not just the two figures the brief happens to assert on -- every number the
+    # facts dict carries must reach the printed report, or a bucket could silently
+    # stop being reported while this test stayed green on the other two. Includes
+    # "unreadable" (#169 fix round): a broken cache FILE (corrupt JSON, unreadable
+    # outright) is a distinct fact from an "empty" JD (a fetch that produced nothing),
+    # so it must appear in the detail string as its own figure, not vanish into
+    # "empty"'s count.
+    check = classify_dossier_cache({"total": 1336, "unreadable": 7, "empty": 12,
+                                    "under_200": 141, "under_800": 426})
+    for n in ("1336", "7", "12", "141", "426"):
+        assert n in check.detail, check.detail
+
+
+def test_classify_dossier_cache_is_always_a_notice_never_a_severity():
+    # Mirrors classify_gate: an install's own scraped-data shape is a fact worth
+    # knowing, not a defect doctor should fail a run -- let alone a `--strict`
+    # one -- over. A short-JD-heavy cache is not evidence the PIPELINE is broken.
+    check = classify_dossier_cache(
+        {"total": 5, "unreadable": 0, "empty": 5, "under_200": 5, "under_800": 5})
+    assert check.state == NOTICE
+
+
+def test_classify_dossier_cache_empty_cache_is_reported_without_a_verdict():
+    # The fresh-install shape: nothing cached yet. Must not read as an error --
+    # `doctor` is exactly the tool a user runs before ever having scraped anything.
+    check = classify_dossier_cache(
+        {"total": 0, "unreadable": 0, "empty": 0, "under_200": 0, "under_800": 0})
+    assert check.state == NOTICE
+    assert "no" in check.detail.lower()
+
+
 # ── component checks: through the full Sluice.doctor wiring ──────────────────
 def test_a_dead_renderer_fails_the_exit_code(monkeypatch):
     from sluice.core.protocols import RenderError
@@ -1266,6 +1312,121 @@ def test_a_store_whose_preflight_raises_is_reported_dead_not_crashed(monkeypatch
     assert store_checks and store_checks[0].state == DEAD
     assert "cannot stat vault_dir" in store_checks[0].detail
     assert rep.exit_code() == 1
+
+
+def _write_dossier(dossier_dir, cache_key, *, markdown=None, omit_jd=False):
+    """One cached dossier file, the on-disk shape `DossierCache.get_or_build`
+    (core/dossier.py) actually writes -- `.json` suffix, `jd.markdown` the field
+    the scan reads. `omit_jd=True` writes a dossier with no `jd` key at all (one
+    of the three degenerate shapes Task 8's brief names), which a pre-#169 cached
+    entry could legitimately have."""
+    import json
+
+    os.makedirs(dossier_dir, exist_ok=True)
+    body = {"schema_version": 2, "lead_id": cache_key, "built_at": "2026-01-01T00:00:00"}
+    if not omit_jd:
+        body["jd"] = {"markdown": markdown}
+    with open(os.path.join(dossier_dir, f"{cache_key}.json"), "w", encoding="utf-8") as f:
+        json.dump(body, f)
+
+
+def test_sluice_doctor_reports_the_real_dossier_cache_distribution(monkeypatch, tmp_path):
+    # Closes the same gap the other "wires a real X" tests close: nothing before this
+    # built REAL cached-dossier files on disk and checked the resulting component row.
+    dossier_dir = str(tmp_path / "dossiers")
+    monkeypatch.setenv("DOSSIER_DIR", dossier_dir)
+    _write_dossier(dossier_dir, "a", markdown="x" * 1000)   # >= 800: neither bucket
+    _write_dossier(dossier_dir, "b", markdown="x" * 500)    # >= 200, < 800
+    _write_dossier(dossier_dir, "c", markdown="x" * 50)     # < 200
+    _write_dossier(dossier_dir, "d", markdown="")            # empty
+
+    rep = Sluice().doctor(offline=True)
+    row = _one([c for c in rep.components if c.component == "dossier-cache"], "cached JDs")
+    assert row.state == NOTICE
+    assert "4 cached" in row.detail
+    assert "1 empty" in row.detail
+    assert "2 under 200 chars" in row.detail    # cumulative: the empty one counts too
+    assert "3 under 800 chars" in row.detail    # cumulative: under_200 counts too
+
+
+def test_sluice_doctor_reports_no_dossiers_yet_for_a_fresh_install(monkeypatch, tmp_path):
+    # The directory is never created by resolving _dossier_dir() or by scanning it --
+    # a fresh install (or any install that has not run triage/cv yet) must be reported
+    # honestly as "nothing cached", not crash and not silently create the directory
+    # (the #81 shape: a read that creates something disarms a later notice).
+    dossier_dir = str(tmp_path / "never-created")
+    monkeypatch.setenv("DOSSIER_DIR", dossier_dir)
+    assert not os.path.exists(dossier_dir)
+
+    rep = Sluice().doctor(offline=True)   # must not raise
+
+    row = _one([c for c in rep.components if c.component == "dossier-cache"], "cached JDs")
+    assert row.state == NOTICE
+    assert not os.path.exists(dossier_dir), "resolving/scanning must not create the directory"
+
+
+def test_sluice_doctor_dossier_cache_scan_tolerates_a_stray_file_where_the_dir_should_be(
+        monkeypatch, tmp_path):
+    # FileNotFoundError's sibling in the same except tuple: a real deployment can have
+    # a stray plain FILE sitting at the path the dossier directory is expected (e.g. a
+    # leftover from an aborted migration). os.listdir on that path raises
+    # NotADirectoryError, not FileNotFoundError -- must be treated the same as "nothing
+    # cached", not crash.
+    dossier_dir = str(tmp_path / "dossiers")
+    monkeypatch.setenv("DOSSIER_DIR", dossier_dir)
+    with open(dossier_dir, "w", encoding="utf-8") as f:
+        f.write("not a directory")
+
+    rep = Sluice().doctor(offline=True)   # must not raise
+
+    row = _one([c for c in rep.components if c.component == "dossier-cache"], "cached JDs")
+    assert row.state == NOTICE
+    assert "no" in row.detail.lower()
+
+
+def test_sluice_doctor_dossier_cache_scan_tolerates_corrupt_and_keyless_entries(
+        monkeypatch, tmp_path):
+    # Two of the three degenerate shapes the brief names (the third, a missing
+    # directory, is covered above): a file that is not valid JSON at all, and a file
+    # whose JSON is valid but has no `jd` key. Neither may raise out of doctor -- but
+    # they are NOT the same fact, and must land in different buckets (the fix-round
+    # finding this test now pins): a file that will not parse is a broken CACHE FILE
+    # (an interrupted write, a bad disk), reported as "unreadable", never folded into
+    # "empty" -- a user reading "2 empty" would conclude their scraper is blocked when
+    # their disk is failing. A keyless-but-valid file, by contrast, genuinely carries
+    # no JD text -- the same verdict `jd_arrived` (core/dossier.py) already gives a
+    # malformed `jd` -- so it stays folded into "empty" alongside a dossier whose fetch
+    # produced a real but blank JD (see classify_dossier_cache's docstring for the
+    # full reasoning).
+    dossier_dir = str(tmp_path / "dossiers")
+    monkeypatch.setenv("DOSSIER_DIR", dossier_dir)
+    os.makedirs(dossier_dir, exist_ok=True)
+    with open(os.path.join(dossier_dir, "corrupt.json"), "w", encoding="utf-8") as f:
+        f.write("{not valid json")
+    _write_dossier(dossier_dir, "keyless", omit_jd=True)
+
+    rep = Sluice().doctor(offline=True)   # must not raise
+
+    row = _one([c for c in rep.components if c.component == "dossier-cache"], "cached JDs")
+    assert row.state == NOTICE
+    assert "2 cached" in row.detail
+    assert "1 unreadable" in row.detail
+    assert "1 empty" in row.detail
+
+
+def test_sluice_doctor_dossier_cache_scan_creates_and_writes_nothing(monkeypatch, tmp_path):
+    # Never-clobber, applied to a READ: scanning the cache to report on it must not
+    # create the directory, touch an existing entry, or write anything -- the same
+    # property test_doctor_store_preflight_writes_nothing pins for the store.
+    dossier_dir = str(tmp_path / "dossiers")
+    monkeypatch.setenv("DOSSIER_DIR", dossier_dir)
+    _write_dossier(dossier_dir, "a", markdown="hello")
+    before = sorted(str(p) for p in tmp_path.rglob("*"))
+
+    Sluice().doctor(offline=True)
+
+    after = sorted(str(p) for p in tmp_path.rglob("*"))
+    assert before == after, f"the dossier-cache scan wrote something: before={before} after={after}"
 
 
 def test_cli_doctor_prints_component_section(monkeypatch, capsys):

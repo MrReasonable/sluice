@@ -122,6 +122,17 @@ def test_prose_mentioning_a_key_does_NOT_satisfy_the_scope_matcher():
     assert not re.search(r"^\s*#\s*accept_titles:", prose, re.M)
 
 
+def test_an_unanswered_min_jd_chars_renders_COMMENTED(tmp_path):
+    # The wizard's contract: an unanswered run writes a file field-for-field equal to no config at
+    # all except vault_dir (the enumerated differential above already proves this generically for
+    # every catalogue key). Pinned again here BY NAME, because an active floor at this specific key
+    # would hand every copier a judgement about what counts as a real posting that they never
+    # made -- the 672ad2a shape, landing at a brand new key rather than an old one.
+    text = _plan(tmp_path).config_text
+    assert "# min_jd_chars:" in text
+    assert not re.search(r"^min_jd_chars:", text, re.M)
+
+
 def test_answers_become_active_keys(tmp_path):
     path = _written(tmp_path, {"accept_titles": ["example role"], "perm_floor": 90000,
                                "lead_ttl_days": 90})
