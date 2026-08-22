@@ -56,7 +56,8 @@ agent state — that is the fragility sluice exists to remove.
 ### 2. Never-regress (status) — `core/status.py`
 
 One `status` key, two lifecycles, separate owners. Triage owns
-`new/shortlist/research/needs_review/dismiss`. Track owns
+`new/shortlist/research/needs_review/dismiss/unjudgeable` (the last stamped when a
+dossier's job description never arrived, #169). Track owns
 `applied/phone_screen/interview/offer/rejected/accepted/withdrawn`.
 
 **Critical if:** triage writes to a lead whose status is `APPLICATION_OWNED`; a status moves
@@ -68,7 +69,10 @@ normalized or overwritten instead of passed through untouched.
 
 `validate()` is pure and deterministic. Every WORK bullet cites a real bundle `[id]`; every
 number in a bullet appears in a cited entry. A non-empty violation list **blocks rendering**.
-The engine retries composition exactly once with the violations fed back, then skips the lead.
+The engine retries composition exactly once, feeding back the HARD violations plus any
+surviving STYLE/VOICE finding (#167) -- and skips the lead only when **no** attempt ever
+cleared the HARD tier; the retry loop retains the last HARD-clean draft, so a hard-dirty
+second attempt renders that retained draft rather than skipping it.
 
 **Critical if:** any path renders, serves, or stages a CV with violations; the gate is
 downgraded to a warning; the retry becomes unbounded; the gate is made non-deterministic or
