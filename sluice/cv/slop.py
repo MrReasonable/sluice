@@ -13,8 +13,40 @@ _PHRASES = [
     "results-driven", "detail-oriented", "team player", "synergy", "holistic",
     "not just", "passionate about", "best-in-class", "dive into",
     "at the end of the day", "needle-mov",
+    # #167 (Task 17): compose.py's prompt banned this in prose while this list never
+    # enforced it -- banned in prose, unchecked in code, nothing keeping the two in
+    # step. Low-risk to add: the STYLE tier only HOLDS (never blocks) and
+    # cv.style_hold is off by default.
+    "drove",
 ]
-_PHRASE_RE = re.compile("(?i)(" + "|".join(re.escape(p) for p in _PHRASES) + ")")
+
+
+def _stem_pattern(stem):
+    """Compile ONE stem's own case-insensitive alternation: its literal text, plus --
+    for a stem ENDING IN 'e' -- its e-dropped '-ing' inflection.
+
+    Measured against this shipped list while reviewing Task 12 (#167, Task 17): the
+    single combined-alternation regex this replaced did LITERAL substring matching,
+    so a stem ending in 'e' matched every OTHER inflection ("leverage" is a substring
+    of "leveraged") but never its own gerund -- English drops the terminal 'e' before
+    adding '-ing' ("leverage" -> "leveraging", never "leverageing"), so "leverage" is
+    not a substring of "leveraging". A stem NOT ending in 'e' needs no second branch:
+    its '-ing' form already contains it as a literal substring ("foster" in
+    "fostering"), which is also why "needle-mov" and "game-chang" above are
+    deliberately truncated rather than spelled with a trailing 'e' -- they already
+    catch every inflection by construction.
+    """
+    alts = [re.escape(stem)]
+    if stem.endswith("e"):
+        alts.append(re.escape(stem[:-1] + "ing"))
+    return re.compile("(?i)(" + "|".join(alts) + ")")
+
+
+# One compiled pattern PER STEM, not one combined alternation (see check_phrases:
+# reporting which STEM matched -- not the matched substring itself -- is what makes
+# cv.slop_allow's stem-keyed suppression correctly cover every inflection a pattern
+# here catches, the '-ing' form included).
+_PHRASE_PATTERNS = [(stem, _stem_pattern(stem)) for stem in _PHRASES]
 
 
 def check_hard(text: str):
@@ -46,17 +78,27 @@ def check_phrases(lines, *, allow=()):
     why handing it an unscoped line (e.g. an employer name) would be a caller bug, not
     a bug here.
 
-    `allow` is matched case-insensitively against the matched STEM (lower-cased on
+    `allow` is matched case-insensitively against the REPORTED stem (lower-cased on
     both sides): cv.slop_allow entries are validated at config load (Task 11) to be
     members of _PHRASES, but the casing of a config entry vs. the text's casing of the
     same stem are independent, so both sides must be normalized before comparing.
+
+    Reports the STEM that matched, never the matched TEXT (#167, Task 17) -- e.g. an
+    "-ing" hit on the "leverage" pattern is reported as "leverage", not "leveraging".
+    This is what makes `allow` correctly suppress every inflection a pattern here
+    catches: `slop_allow` entries are STEMS by construction (the config-load
+    validation above), so comparing stem-to-stem is trivially correct, whereas
+    comparing the ALLOWED stem against the matched TEXT would mean `slop_allow:
+    ["leverage"]` fails to suppress a "leveraging" hit.
     """
     lowered = {a.lower() for a in allow}
     out = []
     for lineno, line in lines:
-        for m in _PHRASE_RE.finditer(line):
-            if m.group(1).lower() not in lowered:
-                out.append((lineno, m.group(1), line.strip()[:80]))
+        for stem, rx in _PHRASE_PATTERNS:
+            if stem.lower() in lowered:
+                continue
+            for _m in rx.finditer(line):
+                out.append((lineno, stem, line.strip()[:80]))
     return out
 
 

@@ -2,6 +2,7 @@
 bundle + the JD + the format contract; the backend has no other source. On a gate failure
 -- HARD, or a scoped STYLE finding (#167) -- the engine calls compose again with the
 findings appended (one retry)."""
+from sluice.cv.slop import _PHRASES
 
 _RULES = """CV RULES (follow exactly):
 
@@ -12,7 +13,7 @@ _RULES = """CV RULES (follow exactly):
 - Every WORK EXPERIENCE bullet MUST end with a citation [id] naming the bundle entry it came from (several allowed: [id] [id]). No uncited bullets. Any number in a bullet must appear in a cited entry.
 - {employer_line}
 - NO em dashes anywhere. Use commas, colons, semicolons, periods, or parentheses. No double hyphens (--). En-dash date ranges (12/2025-present) are fine.
-- No AI slop (no spearheaded, fostered, drove, leveraged, seamless, passionate about, proven track record). Short sentences. Real metrics only.
+- No AI slop (avoid these words/phrases and any inflection of them: {banned_phrases}). Short sentences. Real metrics only.
 - Profile: "I" voice, 2 to 3 sentences. Compose it ONLY from facts in the SOURCE BUNDLE, ordered and emphasised for {role}. Introduce nothing not in the bundle. No motivations, aspirations, or company-specific claims. Any number in the profile must appear in the SOURCE BUNDLE.
 - Output ONLY the CV, nothing else: no preamble, acknowledgement, commentary, separator, or closing remark before the contact block or after the last section. The first non-blank line of your reply is the first line of the CV.
 
@@ -49,6 +50,32 @@ def _employer_line(employers):
     return "Include every employer present in the SOURCE BUNDLE, reverse chronological."
 
 
+def _banned_phrases_sentence(slop_allow=None):
+    """Render the ban-list FROM slop._PHRASES rather than a hand-written duplicate
+    (#167). Before this, the prompt banned `drove` in prose while _PHRASES never
+    enforced it -- banned in prose, unchecked in code, nothing keeping the two in
+    step -- and the reverse gap (a stem `_PHRASES` enforces but the prose never
+    names) was equally possible and equally silent. Rendering FROM the one list the
+    deterministic gate reads is what makes the two identical by construction, pinned
+    by tests/test_cv_compose.py::test_the_prompt_names_exactly_the_phrases_the_gate_enforces.
+
+    Renders `_PHRASES` STEMS ("spearhead"), not the INFLECTIONS ("spearheaded") the
+    old hand-written sentence used -- an equality test against the enforced list must
+    compare like with like, or it would fail on wording that was never actually in
+    disagreement (see that test's own comment).
+
+    `_PHRASES - slop_allow`, not `_PHRASES` alone: a phrase the candidate has
+    explicitly allowed (cv/config.py's `cv.slop_allow`, validated there to be a real
+    stem) must not still be instructed against on every compose -- otherwise
+    slop_allow only suppresses the STYLE HOLD while the candidate's own voice is
+    composed out of the draft anyway, half of #167's fix left inert. Case-insensitive
+    on both sides for the same reason slop.check_phrases' own `allow` matching is:
+    the config value and _PHRASES' casing are independent.
+    """
+    allowed = {p.lower() for p in (slop_allow or ())}
+    return ", ".join(p for p in _PHRASES if p.lower() not in allowed)
+
+
 # `name` is KEYWORD-ONLY and REQUIRED, not defaulted to a placeholder. It used to default to
 # "Your Name" purely for callers (this module's own unit tests) that did not care about
 # identity for what they were testing -- but with the #99/#100 sentinel check that once
@@ -65,12 +92,13 @@ def _employer_line(employers):
 # explicitly anyway, already non-blank (guaranteed by the skipped-config refusal that runs
 # before compose is ever reached).
 def build_prompt(bundle_text, jd, company, role, *, name, contact="",
-                  employers=None, prior_violations=None):
+                  employers=None, prior_violations=None, slop_allow=None):
     parts = [
         f"Compose a tailored CV for {name} applying for {role} at {company}.",
         "",
         _RULES.format(contact=contact, name_heading=name.upper(),
-                     employer_line=_employer_line(employers), role=role),
+                     employer_line=_employer_line(employers), role=role,
+                     banned_phrases=_banned_phrases_sentence(slop_allow)),
         "",
         "=== THE ROLE (JD) ===",
         jd or "(no JD text captured; compose from the bundle for a general fit)",
@@ -202,8 +230,9 @@ def _unwrap_agent_envelope(text):
 # cv/engine.py's run_one actually calls (build_prompt is an internal helper compose() forwards
 # to), so a reader arriving at the real call site is exactly who that comment exists to reach.
 def compose(backend, bundle_text, jd, company, role, *, name, contact="",
-            employers=None, prior_violations=None):
+            employers=None, prior_violations=None, slop_allow=None):
     raw = backend.complete(build_prompt(bundle_text, jd, company, role, name=name,
                                         contact=contact, employers=employers,
-                                        prior_violations=prior_violations))
+                                        prior_violations=prior_violations,
+                                        slop_allow=slop_allow))
     return _unwrap_agent_envelope(raw)

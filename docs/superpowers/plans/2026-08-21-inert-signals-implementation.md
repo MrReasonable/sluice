@@ -1415,6 +1415,7 @@ Inside `if not hard_msgs:`, before `best` is assigned, and only when `cvcfg.voic
                         _log.warning("voice check failed for %s: %s", note.ref, e)
                         voice_flags = []
                 style_msgs = style_msgs + [f"VOICE: {f}" for f in voice_flags]
+```
 
 - [ ] **Step 5: Run, lint, commit**
 

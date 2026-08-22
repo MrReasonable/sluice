@@ -1189,6 +1189,48 @@ def test_the_compose_prompt_carries_the_derived_identity_not_cvcfg(tmp_path):
         "may be reading a diverted identity instead of the derived cv_contact")
 
 
+def test_slop_allow_reaches_the_shipped_compose_prompt():
+    """#167 (Task 17, item 1): cv.slop_allow must reach the ACTUAL compose() call
+    engine.py makes, not merely be plumbed through compose.py's own build_prompt in
+    isolation. A unit test of build_prompt alone (see
+    tests/test_cv_compose.py::test_an_allowed_phrase_is_not_instructed_against_either)
+    would stay green even if run_one's `_compose.compose(...)` call site never forwarded
+    `cvcfg.slop_allow` -- the parameter would exist and be dead. Mirrors
+    test_the_compose_prompt_carries_the_derived_identity_not_cvcfg immediately above:
+    only inspecting the recorded prompt itself proves the argument at the real call
+    site, not merely a guard reading it back.
+
+    "leverage" is chosen because it appears NOWHERE in this file's fixtures (ENTRIES,
+    CLEAN_CV, the identity block) outside the ban-list sentence itself, so its absence
+    from the shipped prompt can only mean slop_allow suppressed it there.
+
+    `dry_run=True`: this test's only interest is the PROMPT compose() was sent, not the
+    render/serve tail end of run_one -- CLEAN_CV matches DEFAULT_CANDIDATE (FakeVault's
+    default), so the hard gate clears on attempt 1 and the real (unmocked)
+    `sluice.cv.render.serve` would otherwise run against a path FakeRenderer never
+    actually writes.
+    """
+    class RecordingBackend:
+        def __init__(self):
+            self.last_backend = "primary"; self.prompts = []
+        def complete(self, prompt):
+            self.prompts.append(prompt)
+            return CLEAN_CV if "SOURCE BUNDLE" in prompt and "auditing" not in prompt \
+                else "supported\tx\tSF1"
+
+    v = FakeVault(ENTRIES)
+    note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
+    cfg = _cfg()
+    cfg.slop_allow = ["leverage"]
+    be = RecordingBackend()
+    run_one(note, v, cfg, be, FakeCache(), renderer=FakeRenderer(), dry_run=True)
+    compose_prompts = [p for p in be.prompts if "SOURCE BUNDLE" in p and "auditing" not in p]
+    assert compose_prompts, "compose was never reached"
+    assert "leverage" not in compose_prompts[0], (
+        "cvcfg.slop_allow did not reach the shipped compose prompt -- engine.py's "
+        "_compose.compose(...) call site may not be forwarding slop_allow")
+
+
 def test_happy_path_renders_and_records(monkeypatch):
     import sluice.cv.render as _render_mod
     monkeypatch.setattr(_render_mod, "render",
@@ -2192,6 +2234,59 @@ def test_a_voice_finding_reaches_the_retry(monkeypatch):
     assert res.status == "rendered"
     assert be.calls.count("compose") == 2, "the VOICE finding never reached the retry"
     assert "VOICE: flag\tThis reads like a press release." in be.compose_prompts[1]
+
+
+# ── #167 Task 16: CvResult.slop and CvResult.voice_flags gain readers ────────────────
+#
+# `slop` has had NO reader since it was added -- a field computed and never read is
+# the same defect #167 opened over the slop linter's own matches. `voice_flags` is a
+# brand-new field. The trap this section exists to avoid: a test asserting only that a
+# field EXISTS, or that it is empty on a clean run, cannot tell a working reader from a
+# broken one -- an empty list is what BOTH produce. Every test below therefore drives a
+# genuinely populated case.
+
+def test_a_rendered_results_slop_and_voice_flags_describe_the_RETAINED_draft(
+        monkeypatch):
+    """The populated case for the success path: attempt 1 (hard-clean-style-dirty) is
+    RETAINED and carries a real STYLE phrase match plus a scripted VOICE finding;
+    attempt 2 (hard-dirty) is discarded. `res.slop`/`res.voice_flags` must describe
+    attempt 1, never attempt 2 -- mirroring the same retained-vs-discarded property
+    test_a_hard_clean_draft_is_rendered_even_when_the_retry_comes_back_dirty already
+    pins for `rend.rendered` and the retry prompt."""
+    res, be = _run_voice_sequence(
+        monkeypatch, ["hard-clean-style-dirty", "hard-dirty"], voice_check=True,
+        voice_out="flag\tThis reads like a press release.\n")
+    assert res.status == "rendered"
+    assert be.calls.count("compose") == 2, "attempt 2 never ran, so this proves nothing"
+    # STYLE_DIRTY_CV's own phrase (see its fixture comment) -- pre-formatted "SLOP
+    # <phrase>: <snippet>", the same shape `hard_msgs` already used for the retry.
+    assert any(s.startswith("SLOP leverage:") for s in res.slop), res.slop
+    # The scripted VOICE finding, verbatim -- run_voice keeps the whole "flag\t..."
+    # line, not just the phrase (cv/voice.py's own parsing).
+    assert res.voice_flags == ["flag\tThis reads like a press release."]
+    # attempt 2's own defect (an em dash, HARD_DIRTY_CV's fixture) must not appear:
+    # a reader seeing it would mean the fields drifted back onto the discarded draft.
+    assert not any("EM-DASH" in s for s in res.slop), res.slop
+
+
+def test_skipped_gate_slop_carries_both_tiers_SLOP_formatted():
+    """`slop`'s WRITER on this branch predates #167 entirely (it stored bare HARD-tier
+    snippets, with no "SLOP" label and no STYLE tier at all) and had no reader either
+    way, so nothing here regresses a previously-observed shape -- see the field's own
+    comment on CvResult. Reformatted to match `hard_msgs`'s own "SLOP <label>:
+    <snippet>" shape and folded together with the STYLE tier, so a caller printing
+    `r.slop` sees every deterministic finding on the failing draft, not half of them.
+    """
+    both_dirty = STYLE_DIRTY_CV.replace(
+        "- Coached [EF1]", "- Coached — and mentored [EF1]")
+    v = FakeVault(ENTRIES)
+    r = run_one(Note({"status": "shortlist", "company": "Example Foundry",
+                      "role": "Analyst"}),
+               v, _cfg(), FakeBackend(both_dirty), FakeCache(), renderer=FakeRenderer())
+    assert r.status == "skipped-gate"
+    assert any(s.startswith("SLOP EM-DASH:") for s in r.slop), r.slop
+    assert any(s.startswith("SLOP leverage:") for s in r.slop), r.slop
+    assert r.voice_flags == []
 
 
 # ── #167 Task 15: cv.style_hold withholds the send-ready pointer ─────────────────────

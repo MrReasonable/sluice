@@ -43,8 +43,22 @@ _LIST_LEADS_CONTENT_WARNING = (
 # them FROM a third-party job description, rather than reproducing it verbatim -- so
 # they get the DERIVED warning, not the SCRAPED one, sharing the same
 # `_NEVER_AN_INSTRUCTION` tail (see UNTRUSTED_DERIVED_CONTENT_WARNING's own comment).
+#
+# #167 Task 16 widens this to cover `slop` and `voice_flags` too, both new readers of
+# CvResult fields the retry loop already computed. `voice_flags` is the easy call --
+# it is an LLM's own prose about the CV, exactly `violations`/`audit_flags`'s shape.
+# `slop` is less obvious: cv/slop.py's matcher is a plain regex, not a model call, so
+# it is NOT model-derived in the sense the OTHER three are. But `violations` already
+# sets the precedent that matters here -- cv/validate.py's STRUCTURAL checks are just
+# as deterministic and already carry this same warning, because what makes a finding
+# worth warning about is not whether ITS OWN classifier used an LLM, but whether the
+# VALUE it embeds does: every `slop` entry embeds an `[:80]`-truncated, verbatim
+# snippet of the LLM-composed CV text (cv/slop.py's `check_hard`/`check_phrases`), the
+# very text an attacker-controlled job description could have steered. A deterministic
+# detector wrapped around untrusted LLM output is still handing untrusted LLM output to
+# the caller -- so `slop` gets the identical warning, not a separate or absent one.
 _CV_RUN_CONTENT_WARNING = (
-    f"Composed CV violations/audit_flags {UNTRUSTED_DERIVED_CONTENT_WARNING}")
+    f"Composed CV violations/audit_flags/slop/voice_flags {UNTRUSTED_DERIVED_CONTENT_WARNING}")
 _CV_SIGNOFF_CONTENT_WARNING = (
     f"The flagged claims {UNTRUSTED_DERIVED_CONTENT_WARNING}")
 
@@ -280,9 +294,10 @@ def cv_run(sluice: Sluice, lead: str, backend: _BackendRole = "auto") -> dict:
     the ONLY route past cv/engine.py's fabrication gate (decision 2). Always a REAL
     (non-dry-run) compose: this tool's contract deliberately excludes `dry_run`
     (decision 14). The composed CV text itself is never returned in the response,
-    only violations/audit_flags/served/dossier_failed -- it's an LLM document derived
-    from an attacker-controlled job description, and echoing it back would be a large,
-    unnecessary step past what the response needs to convey. Write tool.
+    only violations/audit_flags/slop/voice_flags/served/dossier_failed -- it's an LLM
+    document derived from an attacker-controlled job description, and echoing it back
+    would be a large, unnecessary step past what the response needs to convey. Write
+    tool.
 
     Resolution is scoped to `{"shortlist"}` ONLY (decision 4) -- unlike cv_signoff's
     wide TRIAGE_OWNED scope -- matching compose_cv's own single-lead resolution
@@ -320,7 +335,17 @@ def cv_run(sluice: Sluice, lead: str, backend: _BackendRole = "auto") -> dict:
         out["violations"] = r.violations
     if r.audit_flags:
         out["audit_flags"] = r.audit_flags
-    if r.violations or r.audit_flags:
+    # #167 Task 16: cv/engine.py's retry loop already computes both -- `slop` (the
+    # deterministic linter, cv/slop.py) and `voice_flags` (the opt-in model-judged
+    # voice check, cv/voice.py) -- and until this task nothing read either back out
+    # of CvResult. Same sparse-key discipline as violations/audit_flags above: an
+    # empty list stays OFF the payload rather than a client having to distinguish
+    # "field present but empty" from "field absent".
+    if r.slop:
+        out["slop"] = r.slop
+    if r.voice_flags:
+        out["voice_flags"] = r.voice_flags
+    if r.violations or r.audit_flags or r.slop or r.voice_flags:
         out["content_warning"] = _CV_RUN_CONTENT_WARNING
     return out
 
@@ -569,8 +594,8 @@ def build_server(config, write: bool = False):
         @mcp_server.tool(name="cv_run")
         def cv_run_tool(lead: str, backend: _BackendRole = "auto") -> dict:
             """Compose and render a CV for one shortlisted lead. The composed text
-            itself is never returned, only violations/audit_flags/served/
-            dossier_failed."""
+            itself is never returned, only violations/audit_flags/slop/voice_flags/
+            served/dossier_failed."""
             return cv_run(sluice, lead, backend=backend)
 
         @mcp_server.tool(name="cv_signoff")

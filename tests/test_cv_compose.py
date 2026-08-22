@@ -1,4 +1,5 @@
 from sluice.cv import compose as C
+from sluice.cv.slop import _PHRASES
 
 # `name` is now a required keyword-only argument on build_prompt/compose (#133/#107 removed
 # the "Your Name" signature default -- a shipped identity placeholder with nothing left to
@@ -6,6 +7,16 @@ from sluice.cv import compose as C
 # One fixture identity for every call in this file that does not care what the name actually
 # is, so the placeholder risk is closed by construction rather than merely unreached.
 _NAME = "Example Candidate"
+
+
+def _phrases_named_in(prompt):
+    """Which of slop._PHRASES are literally present in a rendered prompt -- checked
+    against the REAL list (an import, not a second hand-copied one) so this stays in
+    lockstep with whatever compose.py actually renders. Used to pin that the ban-list
+    sentence is DERIVED from _PHRASES rather than hand-written (#167): a hand-written
+    sentence is exactly how the prompt banned `drove` while _PHRASES never enforced it
+    -- banned in prose, unchecked in code, nothing keeping the two in step."""
+    return {p for p in _PHRASES if p in prompt}
 
 
 class FakeBackend:
@@ -48,6 +59,26 @@ def test_prompt_is_a_tailoring_task_and_forbids_invention():
     assert "you include must remain unchanged" in p     # preservation rule is conditional, not "include everything"
     assert "—" not in p                 # still no em dash (matches the existing guard)
     assert p.count("--") == 1                            # only the (--) rule names the token; no `--` in the prompt's own prose
+
+
+def test_the_prompt_names_exactly_the_phrases_the_gate_enforces():
+    # compose.py banned `drove` while _PHRASES did not hold it: banned in prose,
+    # unchecked in code, with nothing keeping the two in step. Equality, not subset --
+    # the prompt named INFLECTIONS (spearheaded) while _PHRASES holds STEMS
+    # (spearhead), so a subset test would fail on wording that is not in disagreement.
+    p = C.build_prompt("BUNDLE-TEXT", "JD-TEXT", "Acme", "Analyst", name=_NAME)
+    assert _phrases_named_in(p) == set(_PHRASES)
+
+
+def test_an_allowed_phrase_is_not_instructed_against_either():
+    # Otherwise slop_allow suppresses the hold while the model is still told to avoid the
+    # phrase on every compose -- the candidate's own voice composed out regardless.
+    p = C.build_prompt("BUNDLE-TEXT", "JD-TEXT", "Acme", "Analyst", name=_NAME,
+                       slop_allow=["leverage"])
+    assert "leverage" not in _phrases_named_in(p)
+    # ...and everything else is still named -- an allowed entry must not silently
+    # drop the WHOLE ban list, only the one phrase it names.
+    assert _phrases_named_in(p) == set(_PHRASES) - {"leverage"}
 
 
 def test_prompt_forbids_a_preamble_before_the_cv():
