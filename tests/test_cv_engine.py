@@ -1859,12 +1859,27 @@ EMPLOYER_PHRASE_CV = CLEAN_CV.replace(
 DOUBLED_PROFILE_CV = CLEAN_CV.replace(
     "CERTIFICATES", "PROFILE\n- I foster delivery [EF1]\n\nCERTIFICATES", 1)
 
+# A draft with NO candidate prose in scope at all: the PROFILE region holds only blank
+# lines and the WORK section holds no bullets, so `section_spans` yields nothing but
+# whitespace. Still gate-clean and HARD-clean -- neither tier requires a CV to say
+# anything -- which is what makes it reachable at the voice check's call site. The
+# PROFILE and WORK EXPERIENCE headers themselves stay: both are STRUCTURAL requirements
+# the engine hard-fails without (see its own guards), so a fixture missing either would
+# never reach that branch and would prove nothing.
+NO_SCOPED_PROSE_CV = (CLEAN_CV
+                      .replace("I build reliable systems.", "", 1)
+                      .replace("- Shipped [EF1]", "", 1)
+                      .replace("- Grew team from 3 to 8 [EF1]", "", 1)
+                      .replace("- Coached [EF1]", "", 1)
+                      .replace("- CI [EF1]", "", 1))
+
 _DRAFTS = {
     "clean": CLEAN_CV,
     "hard-clean-style-dirty": STYLE_DIRTY_CV,
     "hard-dirty": HARD_DIRTY_CV,
     "employer-phrase": EMPLOYER_PHRASE_CV,
     "doubled-profile": DOUBLED_PROFILE_CV,
+    "no-scoped-prose": NO_SCOPED_PROSE_CV,
 }
 
 
@@ -1901,10 +1916,23 @@ def test_the_sequence_fixtures_are_the_tiers_they_claim():
         ("hard-dirty", HARD_DIRTY_CV, True, False),
         ("employer-phrase", EMPLOYER_PHRASE_CV, False, True),
         ("doubled-profile", DOUBLED_PROFILE_CV, False, True),
+        ("no-scoped-prose", NO_SCOPED_PROSE_CV, False, False),
     ]:
         assert validate(text, bundle_text) == [], f"{name} is no longer gate-clean"
         assert bool(check_hard(text)) is hard, f"{name}'s HARD tier drifted"
         assert bool(_style(text)) is style, f"{name}'s STYLE tier drifted"
+
+    # NO_SCOPED_PROSE_CV's own premise, which its row above cannot express: "style-clean"
+    # is what a fixture with no scoped lines AND one with clean scoped lines both look
+    # like. What this fixture is for is the scoped region being EMPTY -- and empty of
+    # anything but WHITESPACE specifically, because the engine's guard is
+    # `scoped_text.strip()` and a bare truthiness check would already be satisfied by the
+    # newline join of the two blank PROFILE lines this fixture has.
+    _p, _w = section_spans(NO_SCOPED_PROSE_CV)
+    assert not _w, "the bullet replaces no-opped; the WORK region is not empty"
+    assert _p and not any(t.strip() for _ln, t in _p), (
+        "the fixture no longer has a whitespace-ONLY profile region, so the engine's "
+        "`.strip()` would no longer be what keeps the voice call from being spent")
 
     # The employer line's OWN phrase must exist, or the scoping test below asserts the
     # absence of something that was never there in the first place.
@@ -2145,28 +2173,71 @@ def test_a_FIRST_compose_that_raises_still_bins_the_lead(monkeypatch):
 # third prompt kind into _SequenceBackend's two-way dispatch risks a voice call being
 # silently misrouted into `audited` -- corrupting every OTHER test in this file that
 # reads `be.audited` -- rather than a clean failure local to these tests.
+
+# cv/voice.py's own content delimiter. Deliberately NOT _SequenceBackend._CV_MARKER
+# ("=== CV ==="), which belongs to the AUDIT prompt: the two prompts carry different
+# documents and now say so, and a test that split on the wrong one would silently read
+# the whole CV back out of a voice prompt and pass.
+_VOICE_MARKER = "=== EXCERPT ==="
+
+
+def _voice_judge(excerpt, marks):
+    """The scripted model, as a REACTIVE rule rather than a fixed reply: flag every
+    line of the text it was SHOWN that contains one of `marks`.
+
+    A fixed `voice_out` cannot witness the scoping tests below at all. The scoping
+    they pin is on the check's INPUT -- the engine hands cv/voice.py the PROFILE/WORK
+    subset, not the document -- so a backend that returns the same finding whatever it
+    is shown would produce that finding identically before and after the fix, and the
+    test would be asserting the engine's output filter, which there isn't one of. Made
+    a module-level function, not a method, so a test can run the SAME rule over the
+    whole document as a control and prove the rule genuinely fires on the line whose
+    absence it is about to assert.
+    """
+    return "".join(f"flag\t{line.strip()}\treads as machine-generated\n"
+                   for line in excerpt.splitlines()
+                   if any(m in line for m in marks))
+
+
 class _VoiceBackend:
     """Scripts the compose drafts (from _DRAFTS, one per call) and the model's own
     reply to the VOICE check, and records which KIND every `complete()` call carried
     -- "compose", "voice", or "audit" -- so a wiring test can assert not just the
-    outcome but which calls were made, and how many."""
+    outcome but which calls were made, and how many.
 
-    def __init__(self, drafts, *, voice_out="", voice_raises=False,
+    `voice_marks` swaps the fixed `voice_out` for `_voice_judge` over the text this
+    backend was actually shown; `voice_prompts` keeps those texts so a test can assert
+    on the INPUT directly and not only on what came back.
+    """
+
+    def __init__(self, drafts, *, voice_out="", voice_raises=False, voice_marks=(),
                 audit_out="supported\tx\tSF1"):
         self.drafts = list(drafts)
         self.voice_out = voice_out
         self.voice_raises = voice_raises
+        self.voice_marks = tuple(voice_marks)
         self.audit_out = audit_out
         self.last_backend = "primary"
         self.calls = []                # "compose" | "voice" | "audit", in call order
         self.compose_prompts = []
+        self.voice_prompts = []
 
     def complete(self, prompt):
         first = prompt.splitlines()[0] if prompt else ""
         if first.startswith("You are judging the VOICE"):
             self.calls.append("voice")
+            self.voice_prompts.append(prompt)
             if self.voice_raises:
                 raise RuntimeError("voice backend down")
+            if self.voice_marks:
+                # Judge only what follows the prompt's own content marker, so the rule
+                # can never fire on the instruction preamble. cv/voice.py's marker is
+                # "=== EXCERPT ===" and cv/audit.py's is "=== CV ===" (the audit really
+                # is handed the document) -- distinct, so neither backend can split on
+                # the other's prompt by accident. Indexed `[1]`, never `[-1]`: a marker
+                # that stopped matching would make `[-1]` hand back the WHOLE prompt and
+                # scan the preamble with it, passing silently.
+                return _voice_judge(prompt.split(_VOICE_MARKER, 1)[1], self.voice_marks)
             return self.voice_out
         if "SOURCE BUNDLE" in prompt and "auditing" not in prompt:
             self.calls.append("compose")
@@ -2234,6 +2305,130 @@ def test_a_voice_finding_reaches_the_retry(monkeypatch):
     assert res.status == "rendered"
     assert be.calls.count("compose") == 2, "the VOICE finding never reached the retry"
     assert "VOICE: flag\tThis reads like a press release." in be.compose_prompts[1]
+
+
+# ── #167: the STYLE tier's scoping covers BOTH its halves ────────────────────────────
+#
+# `check_phrases` has been handed `section_spans`'s PROFILE/WORK subset since Task 12,
+# and test_a_phrase_in_an_EMPLOYER_line_never_reaches_the_retry pins that. `run_voice`
+# was handed the WHOLE document, so the model-judged half of the same tier could flag a
+# line the deterministic half is deliberately kept away from -- and cv/compose.py folds
+# every finding into "YOUR PREVIOUS DRAFT FAILED THE GATE. Fix these and re-emit the
+# FULL CV". An employer or certificate line is answerable only by renaming the employer
+# or the certificate: a style rule turned into fabrication pressure, which is the shape
+# CLAUDE.md records as the worst case this codebase has shipped. The prompt's own "do
+# not suggest new content" is not a guarantee, and the design's stated property has to
+# hold on the path, not in the wording.
+#
+# Both tests below drive a REACTIVE backend (`_voice_judge`): it flags whatever line it
+# is shown. That is what makes them non-vacuous in the direction that matters -- each
+# asserts, in the same run, that the voice call HAPPENED, that the rule genuinely fires
+# on the out-of-scope line when shown it, and that an IN-SCOPE finding from the very
+# same call did reach the retry. A test whose backend returned nothing would pass while
+# proving nothing at all.
+
+def test_a_voice_finding_on_an_EMPLOYER_line_never_reaches_the_retry(monkeypatch):
+    employer = "Example Leverage"          # EMPLOYER_PHRASE_CV's renamed employer line
+    in_scope = "I streamline delivery for platform teams."   # its PROFILE prose
+    marks = (employer, in_scope)
+
+    # CONTROL, before the run: shown the WHOLE document, this backend's rule does flag
+    # the employer line. Without this the assertion below could hold because the rule
+    # never fires on that line at all.
+    assert employer in _voice_judge(EMPLOYER_PHRASE_CV, marks)
+
+    res, be = _run_voice_sequence(
+        monkeypatch, ["employer-phrase", "employer-phrase"], voice_check=True,
+        voice_marks=marks)
+    assert res.status == "rendered"
+    assert be.voice_prompts, "the voice check never ran"
+    assert len(be.compose_prompts) == 2, "no retry happened, so this asserts nothing"
+
+    # The guarantee at the INPUT, which is where the scoping lives. Over EVERY voice
+    # call, not just the first: both scripted attempts are hard-clean, so the check
+    # runs on each, and a scoping that held only on attempt 1 would still be the bug.
+    assert not any(employer in p for p in be.voice_prompts), be.voice_prompts
+    # ...and at the OUTPUT, which is what the composer is actually told to fix.
+    retry = be.compose_prompts[1]
+    assert f"VOICE: flag\t{in_scope}" in retry, (
+        "no VOICE finding reached the retry at all, so the absence below would say "
+        "nothing about SCOPING")
+    assert employer not in retry, retry
+
+
+def test_a_voice_finding_on_a_CERTIFICATE_line_never_reaches_the_retry(monkeypatch):
+    # CERTIFICATES/EDUCATION are section_spans' terminators: it clears both flags there,
+    # so their bullets are collected by neither list even though they LOOK like WORK
+    # bullets. A certificate is a named award, so a voice complaint about it is as
+    # unanswerable as one about an employer.
+    certificate = "Example Scrum Master"                       # CLEAN_CV's CERTIFICATES
+    in_scope = "I leverage the same delivery patterns across teams."  # STYLE_DIRTY_CV
+    marks = (certificate, in_scope)
+
+    assert certificate in _voice_judge(STYLE_DIRTY_CV, marks)
+
+    res, be = _run_voice_sequence(
+        monkeypatch, ["hard-clean-style-dirty", "hard-clean-style-dirty"],
+        voice_check=True, voice_marks=marks)
+    assert res.status == "rendered"
+    assert be.voice_prompts, "the voice check never ran"
+    assert len(be.compose_prompts) == 2, "no retry happened, so this asserts nothing"
+
+    assert not any(certificate in p for p in be.voice_prompts), be.voice_prompts
+    retry = be.compose_prompts[1]
+    assert f"VOICE: flag\t{in_scope}" in retry, (
+        "no VOICE finding reached the retry at all, so the absence below would say "
+        "nothing about SCOPING")
+    assert certificate not in retry, retry
+
+
+def test_no_voice_call_is_spent_on_a_draft_with_no_prose_in_scope(monkeypatch):
+    """The third gate on the call, alongside `voice_check` and `not hard_msgs`.
+
+    Scoping the input introduced a case the unscoped call did not have: the scoped text
+    can be EMPTY where the document never is. Judging the voice of nothing costs a
+    backend call and can only come back with a finding that names no line of the CV --
+    which would still spend the draft's single retry.
+    """
+    res, be = _run_voice_sequence(monkeypatch, ["no-scoped-prose"], voice_check=True)
+    assert res.status == "rendered", (
+        "the draft never cleared the HARD tier, so the voice branch was never reached "
+        "and this test would pass for the wrong reason")
+    assert "voice" not in be.calls, be.calls
+    # The audit still runs on the same draft: this guard is about the VOICE call alone,
+    # not about the engine quietly skipping everything downstream of it.
+    assert "audit" in be.calls, be.calls
+
+
+def test_the_voice_check_is_shown_exactly_the_lines_the_phrase_tier_is(monkeypatch):
+    """The two halves of the STYLE tier judge ONE set of lines, not two.
+
+    Asserted against `section_spans` itself rather than against a transcribed list, so
+    a later change to the split moves both halves together or fails here. The engine
+    de-duplicates into a line-ordered union before either half runs (a CV repeating
+    `PROFILE` after `WORK EXPERIENCE` puts a line in both regions), which is why the
+    expected text is rebuilt the same way and not as `profile + work`.
+    """
+    from sluice.cv.validate import section_spans
+
+    _res, be = _run_voice_sequence(monkeypatch, ["hard-clean-style-dirty", "clean"],
+                                   voice_check=True)
+    assert be.voice_prompts, "the voice check never ran"
+    shown = be.voice_prompts[0].split(_VOICE_MARKER, 1)[1].strip()
+
+    profile, work = section_spans(STYLE_DIRTY_CV)
+    expected = "\n".join(t for _ln, t in sorted(dict(profile + work).items())).strip()
+    assert shown == expected
+
+    # Non-vacuity: the scoped text is a PROPER subset -- it really does drop lines the
+    # document has. Named individually because "shorter" alone would also be true of a
+    # truncation bug.
+    for dropped in ("JANE ROE", "+1 555 0100", "Example Systems", "CERTIFICATES",
+                    "Example Scrum Master", "Staff Engineer"):
+        assert dropped not in shown, dropped
+    # ...while the prose the check exists to judge is all still there.
+    assert "I leverage the same delivery patterns across teams." in shown
+    assert "- Grew team from 3 to 8 [EF1]" in shown
 
 
 # ── #167 Task 16: CvResult.slop and CvResult.voice_flags gain readers ────────────────

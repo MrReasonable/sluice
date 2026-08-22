@@ -190,8 +190,23 @@ These are comments CodeRabbit cannot post inline because the code is outside the
 # --paginate runs the --jq filter ONCE PER PAGE, so `| last` is last-of-page, not last-of-all:
 # with >1 page this returned several ids and the follow-up fetch could pull the WRONG review.
 # --slurp merges the pages into one array first, then pick the newest once.
+#
+# Two things this command must NOT do, both of which FAIL OPEN (they yield an empty body, which
+# reads exactly like "no outside-diff-range comments" rather than like an error):
+#
+#  1. `--slurp` and `--jq` are MUTUALLY EXCLUSIVE. `gh api` rejects the pair outright with
+#     "the `--slurp` option is not supported with `--jq` or `--template`" and exits 1. Pipe the
+#     slurped JSON into a separate `jq` instead of using `--jq`.
+#  2. Do NOT take the newest CR review unconditionally. Replying to a review thread makes
+#     CodeRabbit post its own EMPTY-BODIED `COMMENTED` review as a side effect -- one per reply
+#     -- so immediately after Step 6 the newest CR review is almost always a body-less artefact
+#     of your own replies. Filter to reviews that carry a body (or are APPROVED) BEFORE taking
+#     the last one, or this fetches "" and Source 2 is silently skipped.
 LATEST_CR_REVIEW_ID=$(gh api --paginate --slurp "repos/$repo_full/pulls/$PR/reviews" \
-  --jq 'add | map(select(.user.login | test("coderabbit"; "i"))) | sort_by(.submitted_at) | last | .id')
+  | jq -r 'add
+           | map(select((.user.login | test("coderabbit"; "i"))
+                        and ((.body | length) > 0 or .state == "APPROVED")))
+           | sort_by(.submitted_at) | last | .id')
 
 if [ -n "$LATEST_CR_REVIEW_ID" ] && [ "$LATEST_CR_REVIEW_ID" != "null" ]; then
   gh api "repos/$repo_full/pulls/$PR/reviews/$LATEST_CR_REVIEW_ID" --jq .body \

@@ -408,10 +408,13 @@ checks would otherwise silently not run. That verdict, together with `cv/engine.
 guards beside it (the header checks just named, plus the three name/contact-block anchors described
 below), `cv/slop.py`'s unscoped HARD tier (an em dash or a literal `--`), and the renderer's own
 optional `precheck`, form the HARD gate: a non-empty finding list blocks rendering, and a lead with no
-attempt that ever cleared it is skipped — a CV is never rendered ungated. `cv/slop.py`'s SCOPED
-STYLE tier (#167: ~40 AI-tell stems, matched only in the PROFILE-prose/WORK-bullet lines
-`cv/validate.py`'s own `section_spans` yields) and the opt-in model-judged
-`cv/voice.py` check (`cv.voice_check`) never block, but a surviving finding from either ALSO drives the
+attempt that ever cleared it is skipped — a CV is never rendered ungated. The SCOPED STYLE tier
+(#167) has TWO halves and neither blocks: `cv/slop.py`'s ~40 AI-tell stems and the opt-in
+model-judged `cv/voice.py` check (`cv.voice_check`). The scoping is a property of the TIER, so it
+covers both — `cv/engine.py` matches the stems against, and shows the model, exactly the
+PROFILE-prose/WORK-bullet lines `cv/validate.py`'s own `section_spans` yields, never the whole
+document, because a complaint naming an employer, certificate or education line is answerable only
+by renaming the thing it names. A surviving finding from either ALSO drives the
 retry: the engine retries composition exactly once when the HARD gate fails OR a STYLE/VOICE finding
 survives, feeding every finding back, and RETAINS the last HARD-clean draft across that retry so a
 worse or failed second attempt can never bin a lead the first one already cleared — a phrase may never

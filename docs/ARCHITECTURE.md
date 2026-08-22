@@ -386,7 +386,16 @@ whichever neighbour it was written next to:
    `cv/voice.py`) rides the same retry once the hard tier is clean: a model
    judgment of the draft's VOICE, for an AI-tell clause a fixed phrase list
    cannot catch -- it fails open on a backend error, like the advisory audit
-   below. EITHER a HARD finding OR a surviving STYLE/VOICE finding triggers
+   below. It is scoped by the SAME `section_spans` split, because the reason
+   for that scoping is a property of the tier and not of the phrase list: the
+   engine rejoins those lines into the text it hands `run_voice`, so the model
+   never sees an employer, certificate or education line it could complain
+   about, and skips the call entirely when that text is blank. What the model
+   gives up is document context (the contact block, section headers and the
+   employer/date/role meta lines) -- acceptable because those lines are
+   transcribed declared facts rather than composed prose, and the prompt
+   already forbids judging content. EITHER a HARD finding OR a surviving
+   STYLE/VOICE finding triggers
    exactly one retry with the findings fed back, and the loop RETAINS the
    last HARD-clean draft across it, so a retry that comes back hard-dirty
    (or simply fails) never bins a lead a style phrase alone would otherwise

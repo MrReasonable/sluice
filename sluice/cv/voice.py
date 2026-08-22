@@ -30,28 +30,52 @@ is already closed whether or not this module ever runs.
 The model call goes through core/backends (the `backend` argument below is whatever
 cv/engine.py was constructed with), never a hardcoded host path -- this module has no
 network code of its own.
+
+SCOPING is the CALLER's, exactly as it is for this check's deterministic sibling
+(cv/slop.py's `check_phrases`, which takes lines it has no opinion about). This module is
+never handed the document -- what goes in the `excerpt` is cv/engine.py's call, and it
+sends the PROFILE prose and WORK bullets `validate.section_spans` yields, because a voice
+complaint about an EMPLOYER or CERTIFICATE line is answerable only by renaming the
+employer or the certificate -- a style rule turned into fabrication pressure. That policy
+lives with the tier, in cv/engine.py, and this module keeps its zero imports rather than
+reaching for cv/validate.py to reproduce the split.
 """
 
 
-def build_voice_prompt(cv_text: str) -> str:
+def build_voice_prompt(excerpt: str) -> str:
+    # The EXCERPT sentence is load-bearing, not politeness. The caller passes a SUBSET
+    # of the document (see the module docstring), so the text below genuinely is missing
+    # headings, employer names and contact details -- and a model told it is looking at
+    # a whole CV can answer with an ABSENCE ("no contact block", "no employer named").
+    # Every finding rides cv/engine.py's retry into cv/compose.py under "Fix these and
+    # re-emit the FULL CV", so an absence complaint is an instruction to ADD material --
+    # the fabrication pressure the scoping exists to remove, re-entering through the
+    # prompt. The parameter name says this to a READER of the code; the sentence below
+    # says it to the MODEL. The delimiter has to agree with both -- it is the LAST
+    # framing before the content, so one still calling this a whole CV would re-assert
+    # exactly what that sentence has just denied. All three stay free of the PROFILE/WORK
+    # policy: which lines make up the excerpt is the caller's.
     return (
         "You are judging the VOICE of a CV, not its accuracy. Flag lines that read as "
         "machine-generated: inflated register, empty intensifiers, corporate cliche, "
         "hollow abstraction, or a claim shaped like a slogan.\n"
+        "You are shown an EXCERPT: the candidate's own prose lines, and nothing else. "
+        "Judge only the lines you are given -- a heading, fact, or section that is "
+        "absent from the excerpt is not a finding.\n"
         "Judge the writing ONLY. Do not comment on whether a claim is true, and do not "
         "suggest new content.\n"
         "Output one line per finding: flag\\t<the offending phrase>\\t<why, in under 12 "
         "words>. Output nothing at all if the writing is clean.\n\n"
-        "=== CV ===\n" + cv_text + "\n"
+        "=== EXCERPT ===\n" + excerpt + "\n"
     )
 
 
-def run_voice(backend, cv_text: str):
+def run_voice(backend, excerpt: str):
     """(raw report, flagged lines). Pure over the backend's reply -- fails open
     (a backend error or timeout) is the CALLER's job, exactly as it is for run_audit:
     this function makes no attempt to swallow anything itself, so a caller that forgets
     to wrap it finds out immediately rather than shipping a silent no-op."""
-    report = backend.complete(build_voice_prompt(cv_text))
+    report = backend.complete(build_voice_prompt(excerpt))
     flagged = [line for line in report.splitlines()
                if line.strip().lower().startswith("flag")]
     return report, flagged

@@ -10,8 +10,10 @@ computes and reports but writes nothing.
 
 An OPT-IN third signal (`cv.voice_check`, cv/voice.py) rides the same retry once the HARD
 tier is clean: a model judgment of the draft's VOICE, for the AI-tell phrasing a fixed
-phrase list cannot catch. Off by default and fails open on a backend error -- see the
-comment at its call site below.
+phrase list cannot catch. It is the SECOND HALF of the STYLE tier and is scoped the same
+way -- the model is shown the same PROFILE/WORK lines the phrase list is handed, never
+the whole document. Off by default and fails open on a backend error -- see the comment
+at its call site below.
 
 At shipped defaults a STYLE finding that survives the retry costs nothing beyond that
 retry: `cv.style_hold` (also opt-in, off by default) is the ONLY thing that turns it into
@@ -518,6 +520,25 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
             scoped_lines = sorted(dict(profile_lines + work_lines).items())
             style_msgs = [f"SLOP {phrase}: {snip}" for _ln, phrase, snip
                           in _slop_phrases(scoped_lines, allow=cvcfg.slop_allow)]
+            # The SAME scoped lines the deterministic half of the STYLE tier just read,
+            # rejoined into a document for the model to judge (#167). Both halves of one
+            # tier must see one set of lines: the scoping above exists because a style
+            # complaint naming an EMPLOYER or CERTIFICATE line is answerable only by
+            # renaming the employer or the certificate, and that is true of a MODEL's
+            # complaint about the line exactly as it is of a phrase match on it. Handing
+            # `check_phrases` the scoped subset and `run_voice` the whole document would
+            # leave the model-judged half free to drive a retry on a line the gate
+            # deliberately put out of reach -- the scoping is a property of the TIER, not
+            # of the phrase list.
+            #
+            # Composed HERE rather than by passing lines into cv/voice.py, for the same
+            # reason cv/slop.py takes lines it has no opinion about: the PROFILE/WORK
+            # split is POLICY, it belongs to the module that owns the tier, and
+            # `voice.py` stays import-free. It is built from `scoped_lines` -- the merged,
+            # line-ordered union -- and not from `profile_lines + work_lines`, so a CV
+            # that repeats `PROFILE` after `WORK EXPERIENCE` (see section_spans) does not
+            # show the model the same line twice.
+            scoped_text = "\n".join(text for _ln, text in scoped_lines)
             voice_flags = []
             if not hard_msgs:
                 # Model-judged VOICE check (#167, cv/voice.py): a fixed phrase list
@@ -533,9 +554,16 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
                 # actually ran. Swallow and log -- never propagate, and never let a
                 # dead backend turn a style-clean, voice-untested draft into a lost
                 # lead.
-                if cvcfg.voice_check:
+                #
+                # `scoped_text.strip()` is the THIRD gate on the call, and the same
+                # spend argument as the two above: a draft whose PROFILE and WORK
+                # regions are both empty (or blank) has no candidate prose in it at
+                # all, so there is nothing for a VOICE judgment to be about -- and a
+                # finding returned against an empty document could name nothing in the
+                # CV, while still costing the draft its one retry.
+                if cvcfg.voice_check and scoped_text.strip():
                     try:
-                        _report, voice_flags = run_voice(backend, cv_text)
+                        _report, voice_flags = run_voice(backend, scoped_text)
                     except Exception as e:
                         _log.warning("voice check for %s failed (%s); treating as "
                                      "clean", note.ref, e)

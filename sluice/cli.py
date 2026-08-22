@@ -794,12 +794,22 @@ def _print_signoff_claims(slug: str, claims: list) -> None:
     is not. Each group prints only when non-empty (sparse, mirroring _print_report's own
     discipline elsewhere in this file): a hold carrying just one kind gets exactly one
     block, not a "0 unsupported claim(s)" line nobody asked for.
+
+    `str(c)`, not `c.partition(...)`: `needs_signoff` is hand-editable YAML and
+    `Sluice.sign_off_cv` passes a parsed JSON array through element-wise (`parsed if
+    isinstance(parsed, list) else [str(parsed)]`, core/app.py), so `needs_signoff:
+    '[1, 2]'` arrives here as ints. The pre-Task-15 printer was a bare f-string and took
+    any type; splitting per entry made a non-string raise AttributeError and took the
+    whole `cv signoff` command down for that lead -- safe (the hold stood, no CV was
+    released) but unclearable. A stringified entry carries no "style" tab-field, so it
+    lands in the fabrication group with today's unprefixed entries.
     """
     fabrication, style = [], []
     for c in claims:
-        kind, sep, rest = c.partition("\t")
+        text = str(c)
+        kind, sep, rest = text.partition("\t")
         (style if sep and kind == "style" else fabrication).append(
-            rest if sep and kind == "style" else c)
+            rest if sep and kind == "style" else text)
     if fabrication:
         print(f"cv signoff: {slug} has {len(fabrication)} unsupported claim(s):",
               file=sys.stderr)

@@ -2060,8 +2060,7 @@ class Sluice:
         # opening a store file for a mere read once did.
         #
         # Deliberately UNBOUNDED -- no cap, and this is the "say why in a comment"
-        # case CLAUDE.md's Task 8 constraint asks for when a scan is not bounded. The
-        # #169 deployment this feature was built against measured 1336 entries, and a
+        # case CLAUDE.md's Task 8 constraint asks for when a scan is not bounded. A
         # cache entry exists per DISTINCT lead ever dossiered (keyed by DossierCache.
         # cache_key), never per status transition or per re-scrape of the same lead --
         # unlike the full lead-note walk `Vault.preflight()`'s contract forbids it from

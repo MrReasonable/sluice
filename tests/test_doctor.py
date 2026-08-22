@@ -840,10 +840,13 @@ def test_classify_dossier_cache_reports_a_distribution_not_a_verdict():
     # against that floor would be identically zero, leaving the accepted residual
     # (#169 decision 3) invisible, which is how #169 was found in the first place
     # (a human hand-counting a real cache).
-    check = classify_dossier_cache({"total": 1336, "empty": 12, "under_200": 141,
-                                    "under_800": 426})
+    # Arbitrary counts, deliberately not #169's measured ones: the assertion is that each
+    # number REACHES the detail string, which any numbers exercise identically, and a
+    # fixture is the one position where a real install's figures buy nothing at all.
+    check = classify_dossier_cache({"total": 91, "empty": 13, "under_200": 27,
+                                    "under_800": 58})
     assert check.state == NOTICE
-    assert "141" in check.detail and "1336" in check.detail
+    assert "27" in check.detail and "91" in check.detail
 
 
 def test_classify_dossier_cache_names_every_bucket():
@@ -854,9 +857,12 @@ def test_classify_dossier_cache_names_every_bucket():
     # outright) is a distinct fact from an "empty" JD (a fetch that produced nothing),
     # so it must appear in the detail string as its own figure, not vanish into
     # "empty"'s count.
-    check = classify_dossier_cache({"total": 1336, "unreadable": 7, "empty": 12,
-                                    "under_200": 141, "under_800": 426})
-    for n in ("1336", "7", "12", "141", "426"):
+    # Arbitrary again, and distinct enough that no expected figure is a substring of
+    # another (or of the "200"/"800" bucket labels), which is what keeps a bucket that
+    # stopped being printed from passing on somebody else's digits.
+    check = classify_dossier_cache({"total": 91, "unreadable": 4, "empty": 13,
+                                    "under_200": 27, "under_800": 58})
+    for n in ("91", "4", "13", "27", "58"):
         assert n in check.detail, check.detail
 
 

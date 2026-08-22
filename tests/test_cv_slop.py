@@ -84,7 +84,7 @@ def test_check_phrases_sees_ONLY_the_lines_it_is_given():
     # the retry under "Fix these and re-emit the FULL CV" and is answerable only by
     # renaming the employer, turning a style rule into fabrication pressure -- the
     # LOCATION-refusal shape CLAUDE.md records as the worst case this codebase shipped.
-    employer_line = [(1, "Leverage Partners Ltd")]
+    employer_line = [(1, "Example Leverage Partners")]
     assert check_phrases(employer_line) != [], "no scoping happens in this function"
     assert check_phrases([]) == []
 
