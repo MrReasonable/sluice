@@ -774,9 +774,13 @@ def test_ci_image_smoke_covers_every_baked_extra():
 
     weasyprint is named explicitly because it is the only one whose import actually exercises
     the apt-installed cairo/pango; the rest would pass on a wheel-only install."""
-    block = _job_directives("docker")
+    # Scoped to the STEP, not the job. `module in block` is a bare substring test over the whole
+    # job, so any future step merely NAMING `mcp` or `jinja2` satisfies it -- including after the
+    # import smoke step is deleted. That is presence standing in for gating, the same shape the
+    # doctor pin below was corrected for.
+    step = _step_containing("docker", "every baked extra imports")
     for module in ("weasyprint", "jinja2", "googleapiclient", "mcp", "argcomplete"):
-        assert module in block, (
+        assert module in step, (
             f"ci.yml's docker job no longer smoke-imports {module!r}; a missing extra would "
             f"ship with nothing red"
         )
