@@ -327,6 +327,12 @@ class _NullCache:
     """Faithful enough for a --no-llm triage and a dry-run compose: neither reaches a
     cache miss, but both hold the object."""
     def get_or_build(self, lead): return {"jd": {"markdown": ""}}
+    # #169: neither triage's --no-llm path nor compose_cv's dry-run over an empty
+    # vault (see _dossier_dirs_used's own docstring) has any lead to fetch a dossier
+    # for, so get_or_build -- and this -- are never actually called here. Answered
+    # anyway, matching get_or_build's own empty markdown above, so this double stays
+    # correct if a future test reuses it against a real lead.
+    def jd_arrived(self, dossier): return False
 
 
 def _dossier_dirs_used(app, monkeypatch):

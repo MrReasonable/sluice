@@ -36,7 +36,7 @@ from sluice.core.leads import (
 from sluice.core.log import get_logger
 from sluice.core.protocols import VaultConflict
 from sluice.triage import resolve
-from sluice.triage.apply import apply_classification, apply_verdict
+from sluice.triage.apply import apply_classification, apply_verdict, clamp_verdict
 from sluice.triage.audit import render_rejected_note
 from sluice.triage.classify import classify
 from sluice.triage.judge import judge
@@ -427,14 +427,21 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
             # is grouped with `skipped` for counting/audit purposes only -- it is never
             # reported in report.failures, since it is reachable only via a benign
             # require_status no-op, never a real content collision.
-            key = "skipped" if outcome in ("skipped", "unchanged") else _status.normalize(
+            #
+            # #169: clamp_verdict, not the raw model string or a bare _status.normalize.
+            # apply_verdict() above already clamps what it WRITES, but counts/audit are
+            # computed here, outside it, off the same raw `verdict` dict -- a clamp that
+            # fixed only the write would report a verdict that never landed (the
+            # #109/#118 bug class this repo has already fixed twice). One shared helper
+            # in triage/apply.py, not a second copy of the rule here.
+            key = "skipped" if outcome in ("skipped", "unchanged") else clamp_verdict(
                 verdict.get("verdict", ""))
             report.counts[key] = report.counts.get(key, 0) + 1
             if outcome not in ("skipped", "unchanged"):
                 _audit({"ts": today, "slug": verdict["lead_id"],
                         "company": note.fm.get("company", ""),
                         "role": note.fm.get("role", ""), "url": note.fm.get("url", ""),
-                        "stage": "judge", "verdict": verdict.get("verdict"),
+                        "stage": "judge", "verdict": clamp_verdict(verdict.get("verdict", "")),
                         "reason": verdict.get("fit_reasoning", ""),
                         "score": verdict.get("relevance_score", 0)})
 

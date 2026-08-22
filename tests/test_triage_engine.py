@@ -191,6 +191,38 @@ def test_no_llm_skips_judge(tmp_path):
     assert v.read_leads()[0].status == "new"    # kept, not judged
 
 
+class _AppliedVerdictBackend:
+    """A judge that returns an APPLICATION-OWNED status, exactly like a real model
+    hallucinating outside its own vocabulary (triage/prompt.py:60 asks for
+    shortlist|research|dismiss only). #169: this is the live hole -- `_status.normalize`
+    passes an unrecognised verdict through untouched, so this used to write `applied`
+    straight from triage, reachable from model output."""
+    last_backend = "primary"
+    def complete(self, prompt):
+        ids = re.findall(_DOSSIER_ID, prompt)
+        return json.dumps([{"lead_id": i, "verdict": "applied",
+                            "relevance_score": 80} for i in ids])
+
+
+def test_a_judge_verdict_outside_the_vocabulary_is_clamped_in_the_write_the_counts_and_the_audit(
+        tmp_path):
+    # counts and the audit row are computed in the engine, OUTSIDE apply_verdict, and
+    # both keyed on the RAW model string -- a clamp that fixed only the write would
+    # report a verdict that never landed (the #109/#118 bug class this repo has
+    # already fixed twice).
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _fields("Acme", "Banker"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    report = run(v, TriageConfig(), _AppliedVerdictBackend(), _cache(tmp_path), audit,
+                 statuses=("new",))
+    assert report.counts["needs_review"] == 1
+    assert report.counts.get("applied", 0) == 0
+    assert v.read_leads()[0].status == "needs_review"    # the WRITE is clamped too
+    lines = open(str(tmp_path / "audit.jsonl")).read().strip().splitlines()
+    last = json.loads(lines[-1])
+    assert last["verdict"] == "needs_review"    # the audit reports what actually landed
+
+
 class _CapturingBackend:
     last_backend = "primary"
     def __init__(self):

@@ -12,6 +12,29 @@ _log = get_logger("triage.apply")
 _DECISION_STATUS = {"reject": "dismiss", "needs_review": "needs_review", "keep": "new",
                     "unjudgeable": "unjudgeable"}
 
+# The judge's OWN vocabulary -- three verdicts, exactly what triage/prompt.py:60 and
+# triage/judge.py:44 ask the model for.
+_JUDGE_VERDICTS = frozenset({"shortlist", "research", "dismiss"})
+
+
+def clamp_verdict(raw: str) -> str:
+    """The model's verdict, or `needs_review` if it said something else.
+
+    `_status.normalize` passes an unrecognised value through untouched, and
+    `apply_verdict` used to write whatever came back straight into `status`. That was a
+    live hole: `require_status` checks only the status the lead is CURRENTLY in, not
+    the one being written, so a model returning `verdict: "applied"` on a `new` lead
+    wrote an APPLICATION-OWNED status from triage -- the never-regress invariant,
+    reachable from model output.
+
+    Pure, and shared: the engine's counts row and audit trail call this too, so a run
+    reports the status that was actually WRITTEN rather than the raw model string. A
+    second copy inline in engine.py would be exactly the hand-list drift this codebase
+    keeps engineering out -- and it WOULD drift, since the two live in different files.
+    """
+    s = _status.normalize(raw or "")
+    return s if s in _JUDGE_VERDICTS else "needs_review"
+
 
 def _guarded(note) -> bool:
     if _status.is_application_owned(note.status):
@@ -46,7 +69,7 @@ def apply_classification(vault, note, decision, reason) -> str:
 def apply_verdict(vault, note, verdict, dossier) -> str:
     if _guarded(note):
         return "skipped"
-    status = _status.normalize(verdict.get("verdict", "needs_review"))
+    status = clamp_verdict(verdict.get("verdict", ""))
     score = int(verdict.get("relevance_score", 0) or 0)
     # BOTH untrusted, and both were written into quoted YAML scalars raw. `culture_flags` is
     # the model's verdict JSON; `glassdoor_rating` comes off the fetched dossier. A `"` closes
