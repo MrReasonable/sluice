@@ -1128,7 +1128,7 @@ _MODULE_HELPER_NAMES = {
     "_text", "_job_directives", "_step_containing", "_permissions_block",
     "_workflow_wide_directives", "_post_checkout_run_steps", "_run_commands",
     "_publish_action_ref", "_python_version", "_job_names", "_artifact_retention_days",
-    "_roster_failure", "_run_block_scalar",
+    "_roster_failure", "_run_block_scalar", "_channel_table_rows",
 }
 
 
@@ -1151,3 +1151,125 @@ def test_every_module_level_helper_takes_path_first_with_no_default():
         assert first.name == "path" and first.default is inspect.Parameter.empty, (
             f"{name}'s first parameter must be a required `path`, got {first!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# The README's channel-status table (#104).
+#
+# WHY A TABLE AND NOT A SWEEP OVER THE PROSE. This guard exists because README.md asserted
+# "there is no Docker image" in two places for a day after the Docker channel shipped in
+# 1.1.0, with nothing in the suite able to notice. The obvious fix -- sweep shipped prose for
+# a negation near a channel name -- is the shape this codebase keeps getting burned by: a
+# heuristic whose failure mode is SILENCE (a phrasing it does not match passes), and one
+# needing an allow-list besides, because README.md and docs/TROUBLESHOOTING.md both mention
+# Homebrew legitimately when telling a macOS user where cairo/pango come from. So the drift
+# SURFACE is removed instead: availability is claimed in exactly one machine-readable place,
+# and the prose links to it rather than restating it.
+#
+# The derivation is bidirectional. A channel the workflow produces but the table does not mark
+# shipped fails; a channel the table marks shipped that no job produces fails too.
+# ---------------------------------------------------------------------------
+
+README = ROOT / "README.md"
+
+_CHANNEL_TABLE_MARKER = "<!-- channel-status -->"
+
+# A CLOSED vocabulary. Without this, a typo'd status ("shippped") silently reads as
+# not-shipped -- the table would go quietly wrong in exactly the direction it exists to catch.
+_CHANNEL_STATUSES = {"shipped", "planned"}
+
+# Which roster jobs PUBLISH something a user can install from, and the label the table gives
+# each. The other five jobs build, sign or upload -- they produce no channel of their own.
+_CHANNEL_JOBS = {"pypi": "PyPI", "docker": "Docker"}
+_NON_CHANNEL_JOBS = {"release-please", "build", "attest", "release-assets", "attest-image"}
+
+
+def _channel_table_rows(path: Path) -> dict[str, str]:
+    """{channel label: status} from the marked table in `path`.
+
+    Anchored on a marker comment rather than "the first table in the file", so that adding an
+    unrelated table above it cannot silently retarget this parser at the wrong rows -- the
+    same reason `_job_names` bounds on a literal `\\njobs:\\n` instead of a positional guess.
+
+    Asserts the marker is present exactly once rather than returning `{}` when it is absent.
+    A parser that answers "no rows" for a missing table is the fail-open shape CLAUDE.md
+    names: every assertion made over an empty mapping passes, so deleting the table would
+    delete the guard along with it and nothing would go red.
+    """
+    text = _text(path)
+    assert text.count(_CHANNEL_TABLE_MARKER) == 1, (
+        f"{path.name} must carry exactly one {_CHANNEL_TABLE_MARKER} marker, found "
+        f"{text.count(_CHANNEL_TABLE_MARKER)}. It anchors the channel-status table that is "
+        f"the single place this repo states which install channels exist."
+    )
+    rows: dict[str, str] = {}
+    reached = False
+    for line in text.split(_CHANNEL_TABLE_MARKER, 1)[1].splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            if reached:
+                break          # the first non-row line after the table ends it
+            continue
+        reached = True
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        assert len(cells) == 3, (
+            f"every row of {path.name}'s channel-status table must have three cells "
+            f"(channel, status, install), got {len(cells)}: {stripped!r}"
+        )
+        channel, status = cells[0], cells[1]
+        if channel.casefold() == "channel" or set(channel) <= set("-: "):
+            continue           # the header row, or the alignment row under it
+        rows[channel] = status
+    return rows
+
+
+def test_every_release_job_is_classified_as_channel_or_infrastructure():
+    """The SCOPE half of this guard, and the half that makes it survive a new channel.
+
+    `_CHANNEL_JOBS` is what the table is derived FROM, so a job absent from both mappings is a
+    channel nothing compares the table against. Adding a `homebrew` job without touching this
+    file would otherwise leave the table's "Homebrew | planned" row standing and correct-
+    looking -- the exact defect this whole section exists to prevent, one release later.
+    """
+    jobs = set(_job_names(RELEASE_PLEASE))
+    assert set(_CHANNEL_JOBS) | _NON_CHANNEL_JOBS == jobs, (
+        f"every job in {RELEASE_PLEASE.name} must be classified as either publishing a "
+        f"channel (_CHANNEL_JOBS) or not (_NON_CHANNEL_JOBS). Unclassified: "
+        f"{sorted(jobs - set(_CHANNEL_JOBS) - _NON_CHANNEL_JOBS)}; named here but absent from "
+        f"the workflow: {sorted((set(_CHANNEL_JOBS) | _NON_CHANNEL_JOBS) - jobs)}."
+    )
+    assert not (set(_CHANNEL_JOBS) & _NON_CHANNEL_JOBS), (
+        "a job cannot be both a channel publisher and infrastructure: "
+        f"{sorted(set(_CHANNEL_JOBS) & _NON_CHANNEL_JOBS)}"
+    )
+
+
+def test_readme_channel_table_parses_with_a_closed_status_vocabulary():
+    rows = _channel_table_rows(README)
+    # Scope, again: at least the number of produced channels, so a table that parsed down to
+    # one stray row cannot satisfy the equality test below by accident.
+    assert len(rows) >= len(_CHANNEL_JOBS), (
+        f"README.md's channel-status table parsed to {len(rows)} row(s): {rows}. It must list "
+        f"at least the {len(_CHANNEL_JOBS)} channel(s) the release workflow produces."
+    )
+    unknown = set(rows.values()) - _CHANNEL_STATUSES
+    assert not unknown, (
+        f"README.md's channel-status table uses status(es) {sorted(unknown)}, outside the "
+        f"closed vocabulary {sorted(_CHANNEL_STATUSES)}. A status this guard does not "
+        f"recognise reads as not-shipped and fails open."
+    )
+
+
+def test_readme_marks_shipped_exactly_the_channels_the_release_workflow_produces():
+    """Both directions at once. `==` not `<=`: a subset probe would accept a table that
+    silently dropped a shipped channel, and a superset one would accept a channel claimed as
+    shipped that no job builds -- an install instruction pointing at nothing.
+    """
+    rows = _channel_table_rows(README)
+    shipped = {channel for channel, status in rows.items() if status == "shipped"}
+    assert shipped == set(_CHANNEL_JOBS.values()), (
+        f"README.md marks {sorted(shipped)} shipped; {RELEASE_PLEASE.name} produces "
+        f"{sorted(_CHANNEL_JOBS.values())}. Claimed but not built: "
+        f"{sorted(shipped - set(_CHANNEL_JOBS.values()))}; built but not claimed: "
+        f"{sorted(set(_CHANNEL_JOBS.values()) - shipped)}."
+    )

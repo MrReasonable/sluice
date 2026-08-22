@@ -111,10 +111,29 @@ most of that work is now done rather than planned:
   versioned releases from Conventional Commits.
 
 What's still genuinely ahead: a second store/fetcher implementation (nobody
-has needed one yet), and the install channels beyond PyPI — there is no Docker
-image and no Homebrew formula — see [Install](#install).
+has needed one yet), and the install channels still marked *planned* under
+[Install](#install).
 
 ## Install
+
+<!-- channel-status -->
+
+| Channel | Status | Install |
+| --- | --- | --- |
+| PyPI | shipped | `pip install job-sluice` |
+| Docker | shipped | `docker run --rm ghcr.io/mrreasonable/job-sluice --help` |
+| deb / rpm | planned | — |
+| Homebrew | planned | — |
+
+That table is the single place this repository states which channels exist. Prose elsewhere
+links here rather than restating it, and `tests/test_release_publish_wiring.py` fails the
+build if a row disagrees with the jobs `.github/workflows/release-please.yml` actually runs —
+in either direction. It is a table rather than a sentence because two sentences in this file
+went on saying there was no Docker image for a day after one shipped, and nothing in the
+suite could notice. Rows marked *planned* are tracked in
+[#104](https://github.com/MrReasonable/sluice/issues/104).
+
+From a checkout:
 
 ```bash
 git clone https://github.com/MrReasonable/sluice.git
@@ -123,9 +142,9 @@ pip install -e .
 job-sluice --version
 ```
 
-That gives you the CLI with `pyyaml` as the only runtime dependency —
-everything else in `sluice/` is standard library. Two things it does **not**
-give you, both opt-in extras:
+That gives you the CLI with `pyyaml` and `tzdata` as the only runtime
+dependencies — everything else in `sluice/` is standard library. Two things it
+does **not** give you, both opt-in extras:
 
 ```bash
 pip install -e '.[render]'   # cv.renderer: template (the default) -- see below
@@ -138,9 +157,9 @@ distribution instead — `pip install 'job-sluice[render]'` — because extras a
 to a different, unrelated package. See [Naming](#naming).)
 
 `pip install job-sluice` installs from PyPI from 1.0.0 onward — the first release this
-project publishes there, so nothing on the index precedes it. There is still no Docker image
-and no Homebrew formula; source and PyPI are the two paths. See [Naming](#naming) for why the
-distribution is `job-sluice` rather than `sluice`.
+project publishes there, so nothing on the index precedes it. For the other channels, see the
+table above. See [Naming](#naming) for why the distribution is `job-sluice` rather than
+`sluice`.
 
 ### Shell completion
 
