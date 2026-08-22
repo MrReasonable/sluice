@@ -216,6 +216,47 @@ def test_call_tool_cv_run_reports_a_real_sdk_error_for_an_invalid_backend(tmp_pa
     assert "bogus" in result.content[0].text
 
 
+def test_call_tool_cv_run_round_trips_slop_and_voice_flags_through_real_json(
+        tmp_path, monkeypatch):
+    """#167 Task 16: `CvResult.slop` had no reader since it was added, and
+    `voice_flags` is new. tests/test_mcpserver.py already pins that `cv_run()`'s own
+    projection reads both fields and stamps the untrusted-content warning; what THIS
+    file exists to prove (see its own module docstring) is the one thing that unit
+    layer cannot -- that a populated `slop`/`voice_flags` list actually SURVIVES a
+    real JSON-RPC round trip through the SDK's own serialization, not just an
+    in-process dict comparison.
+
+    `Sluice.compose_cv` is monkeypatched to a canned CvResult (the same shape
+    test_call_tool_cv_run_reports_a_real_sdk_error_for_an_invalid_backend above
+    already establishes as this file's precedent for stubbing past compose_cv's own
+    heavy machinery -- vault/backend/renderer construction is not what this test is
+    about) so no real vault, backend or renderer needs constructing."""
+    from sluice.core.app import Sluice
+    from sluice.core.leads import UNTRUSTED_DERIVED_CONTENT_WARNING
+    from sluice.cv.engine import CvResult
+
+    result = CvResult(
+        "Job Applications/Job Leads/Example Foundry - Analyst.md", "rendered",
+        served="Example_CV_deadbeef.pdf",
+        slop=["SLOP leverage: I leverage strong delivery patterns."],
+        voice_flags=["flag\tThis reads like a press release."])
+    monkeypatch.setattr(Sluice, "compose_cv", lambda self, **kw: [result])
+
+    async def _run():
+        from mcp import Client
+        server = build_server(Config(vault_dir=str(tmp_path / "vault")), write=True)
+        async with Client(server, raise_exceptions=True) as client:
+            return await client.call_tool(
+                "cv_run", {"lead": "Example Foundry - Analyst"})
+
+    out = asyncio.run(_run())
+    assert out.is_error is False
+    payload = json.loads(out.content[0].text)
+    assert payload["slop"] == ["SLOP leverage: I leverage strong delivery patterns."]
+    assert payload["voice_flags"] == ["flag\tThis reads like a press release."]
+    assert UNTRUSTED_DERIVED_CONTENT_WARNING in payload["content_warning"]
+
+
 # #131: the five write tools (dismiss_lead, apply_record, cv_run, cv_signoff,
 # create_lead) are registered only when build_server(config, write=True) is called --
 # the tests above all use the default write=False and so never see them. The two

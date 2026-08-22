@@ -13,7 +13,11 @@ import pytest
 import sluice.mcpserver as mcpserver_mod
 from sluice.core.app import Sluice
 from sluice.core.config import Config
-from sluice.core.leads import UNTRUSTED_SCRAPED_CONTENT_WARNING, Lead
+from sluice.core.leads import (
+    UNTRUSTED_DERIVED_CONTENT_WARNING,
+    UNTRUSTED_SCRAPED_CONTENT_WARNING,
+    Lead,
+)
 from sluice.core.protocols import Store
 from sluice.core.vault import Vault
 from sluice.mcpserver import (
@@ -704,6 +708,40 @@ def test_cv_run_tool_skipped_selection_for_a_non_shortlist_lead(monkeypatch):
     out = cv_run(app, "Example Foundry - Analyst")
     assert out["outcome"] == "out_of_scope"
     assert out["status"] == "research"
+
+
+def test_cv_run_tool_carries_slop_and_voice_flags_under_the_untrusted_warning(
+        monkeypatch, tmp_path):
+    """#167 Task 16: `CvResult.slop` has had NO reader since it was added, and
+    `voice_flags` is a brand-new field cv/engine.py's retry loop now threads through
+    (Task 14) -- both must reach this projection alongside violations/audit_flags,
+    under the SAME `_CV_RUN_CONTENT_WARNING` (decision 16: a composed CV's findings
+    all quote or paraphrase the scraped job description, whether the judge that
+    produced them was deterministic (slop, a raw snippet of the LLM-composed CV) or
+    an LLM (voice_flags) -- see cv_run's own module-level comment on that constant).
+
+    Bypasses run_one entirely (a canned CvResult via a monkeypatched
+    `Sluice.compose_cv`): the RETAINED-draft rebind that populates these two fields
+    is already pinned directly against `run_one` in tests/test_cv_engine.py, so this
+    test's own job is the PROJECTION -- does `cv_run()` read them off `CvResult` and
+    warn about them correctly, not re-prove the engine's retry machinery a second
+    time.
+    """
+    from sluice.cv.engine import CvResult
+
+    result = CvResult(
+        "Job Applications/Job Leads/Example Foundry - Analyst.md", "rendered",
+        served="Example_CV_deadbeef.pdf",
+        slop=["SLOP leverage: I leverage strong delivery patterns."],
+        voice_flags=["flag\tThis reads like a press release."])
+    monkeypatch.setattr(Sluice, "compose_cv", lambda self, **kw: [result])
+
+    app = _cv_app(Vault(str(tmp_path)))
+    out = cv_run(app, "Example Foundry - Analyst")
+    assert out["slop"] == ["SLOP leverage: I leverage strong delivery patterns."]
+    assert out["voice_flags"] == ["flag\tThis reads like a press release."]
+    assert out["content_warning"] == mcpserver_mod._CV_RUN_CONTENT_WARNING
+    assert UNTRUSTED_DERIVED_CONTENT_WARNING in out["content_warning"]
 
 
 def test_cv_run_tool_bad_backend_raises_value_error_naming_valid_choices(tmp_path):

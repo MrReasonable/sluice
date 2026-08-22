@@ -119,8 +119,12 @@ Compose, gate, render and sign off a tailored CV.
 | `--include-stale` | compose even for a lead older than `lead_ttl_days` (see #9 in `docs/CONFIGURATION.md`) |
 | `--no-serve` | skip staging the rendered PDF for `apply` |
 
-Per-result line to stderr: `cv: <status> <lead> served=<path> violations=<N> audit_flags=<N> dossier_failed=<bool>`,
-plus a summary line when any dossier fetch failed and composition proceeded blind. **Exit 1**
+Per-result line to stderr: `cv: <status> <lead> served=<path> violations=<N> audit_flags=<N>
+slop=<N> voice_flags=<N> dossier_failed=<bool>`, followed by one indented line per slop
+finding (`SLOP <label>: <snippet>`, already prefixed) and one per voice finding (`VOICE:
+<flag>`, opt-in via `cv.voice_check` -- see `docs/CONFIGURATION.md`) -- both empty on a
+clean run, so nothing extra prints. A summary line follows when any dossier fetch failed
+and composition proceeded blind. **Exit 1**
 if: `--lead` matched no shortlist lead; `--lead` was ambiguous; or any result is
 `skipped-config` (the candidate's derived name or contact block — from `Job Applications/
 Candidate Profile.md` in your vault — is blank; the compose refuses before any LLM spend).

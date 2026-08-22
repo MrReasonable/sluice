@@ -745,8 +745,22 @@ def cmd_cv_run(args, config) -> int:
     for r in results:
         print(f"cv: {r.status} {r.lead} served={r.served} "
               f"violations={len(r.violations)} audit_flags={len(r.audit_flags)} "
+              f"slop={len(r.slop)} voice_flags={len(r.voice_flags)} "
               f"dossier_failed={r.dossier_failed}",
               file=sys.stderr)
+        # slop (cv/slop.py's deterministic linter, both tiers) and voice_flags (the
+        # opt-in model-judged voice check) are the two signals #167 opened over: each
+        # was computed by cv/engine.py's retry loop and then discarded, never reaching
+        # a human. A bare count above would repeat that mistake one level up, so every
+        # finding also prints on its own line -- mirroring _print_signoff_claims's
+        # content-not-just-count discipline for the same two judges at `cv signoff`.
+        # `r.slop` entries already carry their own "SLOP <label>: <snippet>" prefix
+        # (cv/engine.py); `voice_flags` entries do not (cv/voice.py hands back the raw
+        # "flag\t..." line), so the "VOICE:" label is added here to read the same way.
+        for s in r.slop:
+            print(f"  {s}", file=sys.stderr)
+        for v in r.voice_flags:
+            print(f"  VOICE: {v}", file=sys.stderr)
     # #18: a blocked/failed dossier fetch does not stop composition (cv/engine.py's
     # `except` proceeds with jd="" so the fabrication gate still runs), so "rendered"
     # alone would silently hide that some of these CVs were composed against no real

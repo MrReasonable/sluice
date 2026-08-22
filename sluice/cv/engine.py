@@ -68,8 +68,28 @@ class CvResult:
     lead: str
     status: str
     violations: list = field(default_factory=list)
+    # `slop`: the deterministic slop-linter's OWN findings (cv/slop.py's HARD tier --
+    # em dash / "--" -- plus the scoped STYLE tier of AI-tell phrases), each already
+    # formatted "SLOP <label>: <snippet>" so a reader never has to know which tier
+    # produced it. On skipped-gate this is the LAST attempt's findings (both tiers,
+    # mirroring `violations`/`slop_err` in that branch's own comment); on every other
+    # status it is the RETAINED (hard-clean) draft's STYLE tier alone -- its HARD tier
+    # is empty by construction, since `best` is only set once `hard_msgs` (which
+    # includes the HARD slop entries) is empty. Distinct from `audit_flags`, which is
+    # the model-judged FABRICATION verdict, and from `voice_flags` below, which is the
+    # model-judged VOICE verdict -- three different judges, kept apart rather than
+    # merged (#167, Task 16: this field had NO reader from the day it was added,
+    # which is the same "computed and discarded" defect #167 opened over).
     slop: list = field(default_factory=list)
     audit_flags: list = field(default_factory=list)
+    # The model-judged VOICE check's findings (cv/voice.py, opt-in via `cv.voice_check`)
+    # for the RETAINED draft -- raw "flag\t<phrase>\t<why>" lines, unprefixed (unlike
+    # `slop` above, these are never merged with the deterministic tier: a false
+    # "SLOP"-prefixed voice line would misattribute a model judgment to the
+    # regex-based linter). Empty whenever voice_check is off, the hard gate never
+    # cleared, or the model found nothing -- an empty list here does not by itself
+    # prove the reader works; see the populated-case tests instead.
+    voice_flags: list = field(default_factory=list)
     served: str | None = None
     backend: str | None = None
     # #18: set when dossier_cache.get_or_build() raised (a blocked/failed fetch) and
@@ -273,10 +293,16 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
             # never see it -- but a wrapper around the body would silently convert it
             # into "ship whatever attempt 1 produced" the moment the retry re-raised it.
             try:
+                # slop_allow=cvcfg.slop_allow (#167, Task 17): without this, the
+                # config knob would still suppress the STYLE HOLD (via _slop_phrases'
+                # own `allow` below) while the PROMPT kept instructing the model
+                # against the very phrase the candidate asked to keep -- suppressing
+                # the hold while composing the candidate's own voice out anyway.
                 cv_text = _compose.compose(backend, bundle_text, jd, company, role,
                                            name=cv_name, contact=cv_contact,
                                            employers=cvcfg.employers,
-                                           prior_violations=retry_msgs)
+                                           prior_violations=retry_msgs,
+                                           slop_allow=cvcfg.slop_allow)
             except Exception as e:
                 # A retry that never RETURNS must not bin a lead attempt 1 already
                 # earned. compose() catches nothing, so a BackendError -- a timeout,
@@ -529,12 +555,24 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
         if best is None:
             # No attempt was EVER hard-clean, which is the same fact the pre-#167 loop
             # tested for: it broke on the first clean attempt, so a non-empty gate list
-            # here meant every attempt had failed. `violations` and `slop_err` still
-            # describe the LAST attempt, exactly as they did before -- this branch is
-            # reached only when no draft was ever worth retaining, so there is no other
-            # attempt they could sensibly describe.
+            # here meant every attempt had failed. `violations`, `slop_err` and
+            # `style_msgs` still describe the LAST attempt, exactly as `violations`
+            # and `slop_err` did before -- this branch is reached only when no draft
+            # was ever worth retaining, so there is no other attempt they could
+            # sensibly describe.
+            #
+            # Both slop TIERS, reformatted to match `hard_msgs`'s own "SLOP <label>:
+            # <snippet>" shape (Task 16) rather than the bare snippet `slop_err`
+            # carried before this task gave the field a reader -- a caller printing
+            # `r.slop` should not have to know which tier produced which entry.
+            # `voice_flags` is passed too, for symmetry with every other CvResult
+            # constructor call below: it is always `[]` here, because the voice check
+            # (cv/voice.py) runs only inside the `if not hard_msgs:` branch above, and
+            # `best is None` means that branch never ran to completion on any attempt.
             return CvResult(note.ref, "skipped-gate", violations=violations,
-                            slop=[s[2] for s in slop_err], backend=backend_used,
+                            slop=[f"SLOP {lbl}: {snip}" for _ln, lbl, snip in slop_err]
+                                 + style_msgs,
+                            voice_flags=voice_flags, backend=backend_used,
                             dossier_failed=dossier_failed)
         # REBIND, before ANYTHING below reads `cv_text`. It is bound to the LAST attempt,
         # which on the sequence [attempt 1 hard-clean, attempt 2 hard-dirty] is a draft
@@ -566,7 +604,14 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
             _log.warning("advisory audit failed for %s: %s", note.ref, e)
             audit_flags = []
         if dry_run:
-            return CvResult(note.ref, "dry-run", audit_flags=audit_flags, backend=backend_used,
+            # `slop=style_msgs, voice_flags=voice_flags` here and at every remaining
+            # CvResult(...) call below (Task 16): both describe the RETAINED draft (the
+            # rebind above), the same one `style_blockers` reads a few lines down for
+            # `cv.style_hold` -- a dry run reports what a real run would have found, not
+            # an empty placeholder. The HARD slop tier is not repeated here because it is
+            # empty by construction on this path (see `slop`'s own field comment).
+            return CvResult(note.ref, "dry-run", slop=style_msgs, voice_flags=voice_flags,
+                            audit_flags=audit_flags, backend=backend_used,
                             dossier_failed=dossier_failed)
 
         from sluice.cv import render as _render
@@ -626,9 +671,11 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
                 note.ref, pending=f"{served} ({date.today().isoformat()})",
                 claims=json.dumps(blockers))
             if not held:
-                return CvResult(note.ref, "skipped-has-cv", audit_flags=audit_flags,
+                return CvResult(note.ref, "skipped-has-cv", slop=style_msgs,
+                                voice_flags=voice_flags, audit_flags=audit_flags,
                                 backend=backend_used, dossier_failed=dossier_failed)
-            return CvResult(note.ref, "needs-signoff", audit_flags=audit_flags,
+            return CvResult(note.ref, "needs-signoff", slop=style_msgs,
+                            voice_flags=voice_flags, audit_flags=audit_flags,
                             served=served, backend=backend_used, dossier_failed=dossier_failed)
         if served:
             wrote = vault.set_tailored_cv(
@@ -638,10 +685,12 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
                 # A CV appeared for this lead during our compose+render window; do not clobber
                 # it. The served PDF we rendered is left in served_dir (it passed the gate);
                 # only the note pointer is withheld. See #16 cv long-window.
-                return CvResult(note.ref, "skipped-has-cv", audit_flags=audit_flags,
+                return CvResult(note.ref, "skipped-has-cv", slop=style_msgs,
+                                voice_flags=voice_flags, audit_flags=audit_flags,
                                 backend=backend_used, dossier_failed=dossier_failed)
-        return CvResult(note.ref, "rendered", audit_flags=audit_flags,
-                        served=served, backend=backend_used, dossier_failed=dossier_failed)
+        return CvResult(note.ref, "rendered", slop=style_msgs, voice_flags=voice_flags,
+                        audit_flags=audit_flags, served=served, backend=backend_used,
+                        dossier_failed=dossier_failed)
     except Exception as e:
         e.dossier_failed = dossier_failed
         raise
