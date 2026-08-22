@@ -188,18 +188,21 @@ jobs:
       - name: Smoke -- doctor renders its report
         run: |
           set -uo pipefail
+          # `doctor_status`, not `status`: the latter is a READ-ONLY variable in zsh, so the
+          # otherwise-identical snippet fails the moment anyone pastes it into their own shell
+          # to reproduce a CI failure. The job itself runs bash, where it would have worked.
           if out="$(docker run --rm job-sluice:ci doctor --offline 2>&1)"; then
-            status=0
+            doctor_status=0
           else
-            status=$?
+            doctor_status=$?
           fi
           printf '%s\n' "$out"
           case "$out" in
             *"job-sluice doctor"*) ;;
-            *) echo "::error::doctor emitted no report (exit $status) -- the image is broken, not merely degraded"; exit 1 ;;
+            *) echo "::error::doctor emitted no report (exit $doctor_status) -- the image is broken, not merely degraded"; exit 1 ;;
           esac
           case "$out" in
-            *Traceback*) echo "::error::doctor raised inside the image (exit $status)"; exit 1 ;;
+            *Traceback*) echo "::error::doctor raised inside the image (exit $doctor_status)"; exit 1 ;;
           esac
 
   ci-success:
