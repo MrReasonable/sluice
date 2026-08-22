@@ -205,14 +205,17 @@ def _write_source_note(leads_dir, *, source, status, company, role="Analyst"):
 
 
 def test_the_unjudgeable_rate_counts_numerator_and_denominator_at_the_SAME_stage(tmp_path):
-    """The rate's two terms must come from the SAME lifecycle stage.
+    """The rate's two terms must come from a population that does not diverge over time.
 
-    `read_leads()` unfiltered is ALL-TIME (dismiss, applied, every terminal included), so
-    an all-time denominator would dilute a source that is 100% broken TODAY by its entire
-    history -- the classification could then structurally never fire on the case it exists
-    to detect. Both terms come from the shared `DEFAULT_TRIAGE_STATUSES` selection instead:
-    one point in the LIFECYCLE, not merely one point in time (the #156 mistake -- a ratio's
-    numerator and denominator drawn from different populations -- in a new costume)."""
+    The denominator was `DEFAULT_TRIAGE_STATUSES`, and a lead LEAVES that set the moment
+    triage judges it -- so the numerator stayed while the denominator drained, and the
+    printed figure climbed toward 100% precisely as a source got healthier. That is the
+    #156 mistake after all: a ratio whose two terms are drawn from populations that
+    diverge. `_CONCLUDED` (every triage-owned status but `new`) does not drain.
+
+    `new` stays excluded: triage has not looked at those leads, so counting them would
+    understate in the same way, just quietly.
+    """
     from sluice.core.app import Sluice
     from sluice.core.config import Config
     from sluice.ingest import sources as registry
@@ -226,15 +229,40 @@ def test_the_unjudgeable_rate_counts_numerator_and_denominator_at_the_SAME_stage
     for i in range(3):
         _write_source_note(leads, source=broken, status="unjudgeable", company=f"Beta{i}")
     for i in range(3):
-        # dismiss is TRIAGE_OWNED but outside DEFAULT_TRIAGE_STATUSES -- a real source's
-        # entire dismissed history must not dilute today's rate, or a source that is 100%
-        # broken today could never read as such once it has accumulated any history.
         _write_source_note(leads, source=quiet, status="dismiss", company=f"Gamma{i}")
 
-    report = {h.id: (h.unjudgeable, h.selected)
+    report = {h.id: (h.unjudgeable, h.concluded)
               for h in Sluice(Config()).health_report(include_leads=True)}
-    assert report[broken] == (3, 4)
-    assert report[quiet] == (0, 0), "dismissed leads are not in the selection set"
+    assert report[broken] == (3, 3), "the `new` lead is not concluded and must not count"
+    assert report[quiet] == (0, 3), "a concluded lead counts even though it is dismissed"
+
+
+def test_a_mostly_healthy_source_does_not_print_a_100_percent_unjudgeable_rate(tmp_path):
+    """The defect the denominator change exists to fix, as the numbers a user would see.
+
+    A mature source: most leads dismissed at classify, some judged, a few whose JD never
+    arrived. Under the old `DEFAULT_TRIAGE_STATUSES` denominator every judged lead had
+    left the set, so this printed 3/3 -- a 100% failure rate for a source working almost
+    perfectly, in a HEALTH report next to retire state. A false alarm there is worse than
+    a muted true one, because it trains ignoring the row.
+    """
+    from sluice.core.app import Sluice
+    from sluice.core.config import Config
+    from sluice.ingest import sources as registry
+
+    src = sorted(s.id for s in registry.all_sources())[0]
+    leads = tmp_path / "vault" / "Job Applications" / "Job Leads"
+    for i in range(40):
+        _write_source_note(leads, source=src, status="dismiss", company=f"Dismissed{i}")
+    for i in range(7):
+        _write_source_note(leads, source=src, status="shortlist", company=f"Short{i}")
+    for i in range(3):
+        _write_source_note(leads, source=src, status="unjudgeable", company=f"Stuck{i}")
+
+    health = {h.id: h for h in Sluice(Config()).health_report(include_leads=True)}[src]
+    assert (health.unjudgeable, health.concluded) == (3, 50)
+    assert health.unjudgeable / health.concluded < 0.1, (
+        "a 94%-healthy source is reporting as mostly broken")
 
 
 class _CountingVault:

@@ -76,6 +76,20 @@ def run_voice(backend, excerpt: str):
     this function makes no attempt to swallow anything itself, so a caller that forgets
     to wrap it finds out immediately rather than shipping a silent no-op."""
     report = backend.complete(build_voice_prompt(excerpt))
+    # Matches the FLAG token exactly -- the first tab-delimited field of the
+    # `flag\t<phrase>\t<why>` line the prompt asks for -- not a prefix, the same
+    # discipline `cv/audit.py`'s `unsupported_claims` states for the same reason one
+    # module over.
+    #
+    # A prefix match here is worse than it looks, because the false positive lands on
+    # the CLEAN case. The prompt says "output nothing at all if the writing is clean",
+    # and an agentic backend routinely answers that in a sentence instead -- measured,
+    # "Flagged nothing: the writing is clean." returned ONE finding. That burns the
+    # single retry on every such run and, under `cv.style_hold`, withholds the
+    # send-ready `tailored_cv` pointer from a CV with nothing wrong with it. An
+    # ordinary "Flagship product ..." line does the same. `_unwrap_agent_envelope`
+    # exists in compose.py precisely because these backends do not honour "output
+    # nothing"; this is the same lesson at the parse instead of the prompt.
     flagged = [line for line in report.splitlines()
-               if line.strip().lower().startswith("flag")]
+               if line.partition("\t")[0].strip().lower() == "flag"]
     return report, flagged

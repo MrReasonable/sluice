@@ -46,6 +46,29 @@ def _guarded(note) -> bool:
     return False
 
 
+# Which statuses each decision may be written OVER. The default is the whole
+# triage-owned set: never-regress permits triage to rewrite freely among its own states,
+# and `shortlist -> dismiss` after re-reading a JD is a normal, correct re-judgement.
+#
+# `unjudgeable` is the one exception, and the difference is EVIDENCE (#169, found in
+# review round 2). Every other decision here is a JUDGEMENT -- something read the posting
+# and concluded. `unjudgeable` records the ABSENCE of one: the JD never arrived. Writing
+# an absence over a verdict destroys a real conclusion on no evidence at all, and the
+# measured case is the bad one -- a transient fetch failure during
+# `triage run --status shortlist` demoted a SHORTLISTED lead (one already carrying a
+# composed CV pointer, which stayed on the note pointing at nothing), left
+# `read_leads({"shortlist"})` empty so cv/apply/track saw no verdict and no route back,
+# and exited 0.
+#
+# `new` and `unjudgeable` are the only two triage states that carry no verdict, so they
+# are the only two this may overwrite. Deliberately NOT `DEFAULT_TRIAGE_STATUSES`, which
+# is the SELECTION default -- which leads a run READS -- a different concern that merely
+# overlaps today; conflating a selection set with a write guard is the same
+# cache-key/identity-key mistake #109 already made once. Keyed on the DECISION rather
+# than passed by the caller so a future call site cannot forget it.
+_DECISION_REQUIRE = {"unjudgeable": frozenset({"new", "unjudgeable"})}
+
+
 def apply_classification(vault, note, decision, reason) -> str:
     if _guarded(note):
         return "skipped"
@@ -59,7 +82,7 @@ def apply_classification(vault, note, decision, reason) -> str:
     wrote = vault.update_fields(
         note.ref, {"status": new_status},
         append_note=f"{tag} {decision}: {reason}".strip(), note_tag=tag,
-        require_status=frozenset(_status.TRIAGE_OWNED))
+        require_status=_DECISION_REQUIRE.get(decision, frozenset(_status.TRIAGE_OWNED)))
     # #118: `wrote=False` here is always a genuine no-op, never a race -- either
     # require_status refused on a fresh re-read (the lead already left TRIAGE_OWNED,
     # someone got there first) or the write was a byte-identical rewrite (the value

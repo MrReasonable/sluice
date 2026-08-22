@@ -9,11 +9,19 @@ matched nothing.
 import pytest
 
 from sluice.cli import _build_parser
-from sluice.core.app import Sluice
+from sluice.core.app import _EXPIRABLE, Sluice
 from sluice.core.config import Config
 from sluice.core.leads import Lead
 from sluice.core.protocols import VaultConflict
 from sluice.core.vault import Vault
+
+# DERIVED from the shipped set, never hand-listed. These two rosters were literals
+# ["new","shortlist","research","needs_review"] and silently went stale when #169 added
+# a sixth triage status: `unjudgeable` became expirable -- the only bound on a lead that
+# can never be judged -- with no row exercising it either way. Deriving means a seventh
+# status is covered the day it is added, which is the property the hand-list only looked
+# like it had.
+EXPIRABLE_STATUSES = sorted(_EXPIRABLE)
 
 TODAY = "2026-07-27"
 ANCIENT = "2026-01-01"      # 207 days before TODAY
@@ -85,13 +93,13 @@ def test_fresh_lead_is_not_reported(tmp_path):
     assert _app(tmp_path).expire_report() == []
 
 
-@pytest.mark.parametrize("status", ["new", "shortlist", "research", "needs_review"])
+@pytest.mark.parametrize("status", EXPIRABLE_STATUSES)
 def test_every_expirable_triage_status_is_reported(tmp_path, status):
     _seed(tmp_path, status=status)
     assert [r.status for r in _app(tmp_path).expire_report()] == [status]
 
 
-@pytest.mark.parametrize("status", ["new", "shortlist", "research", "needs_review"])
+@pytest.mark.parametrize("status", EXPIRABLE_STATUSES)
 def test_every_expirable_triage_status_is_actually_WRITTEN(tmp_path, status):
     # The report parametrize above only proves each status is SEEN. `require_status` is
     # the write-side guard, and it is the same set -- so a mismatch between the read

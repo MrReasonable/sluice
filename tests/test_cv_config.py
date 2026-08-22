@@ -258,3 +258,55 @@ def test_a_real_yaml_boolean_still_sets_a_bool_cv_field(tmp_path, field):
     p.write_text(f"cv:\n  {field}: false\n", encoding="utf-8")
     cfg = load_cv_config(str(p))
     assert getattr(cfg, field) is False
+
+
+def test_slop_allow_refuses_a_non_list_by_name_rather_than_a_bare_TypeError(tmp_path):
+    # This key's whole posture is fail-loudly-and-name-the-problem, and both non-list
+    # spellings defeated it before the shape was checked ahead of the membership scan.
+    #
+    # The scalar case is the one a real user hits: `slop_allow: leverage` names a VALID
+    # stem in the spelling YAML makes easiest, and it used to iterate the string PER
+    # CHARACTER and raise about 'l', 'e', 'v', ... -- which reads as a bug in sluice
+    # rather than as a YAML mistake, and never mentions the actual fix.
+    for value in ("leverage", "5", "true"):
+        p = tmp_path / f"config-{value}.yaml"
+        p.write_text(f"cv:\n  slop_allow: {value}\n", encoding="utf-8")
+        with pytest.raises(ValueError) as e:
+            load_cv_config(str(p))
+        msg = str(e.value)
+        assert "cv.slop_allow" in msg, f"{value!r} raised without naming the key: {msg}"
+        assert "list of strings" in msg
+        # The per-character tell: a scalar must never be reported as a set of one-letter
+        # unknown stems.
+        assert "'l', 'e'" not in msg
+
+
+def test_slop_allow_still_accepts_a_real_list(tmp_path):
+    # The other direction: refusing non-lists must not refuse the shape that works, or
+    # the guard above passes while the feature is unusable.
+    p = tmp_path / "config-ok.yaml"
+    p.write_text("cv:\n  slop_allow: [leverage]\n", encoding="utf-8")
+    assert load_cv_config(str(p)).slop_allow == ["leverage"]
+
+
+def test_slop_allow_accepts_a_capitalised_stem(tmp_path):
+    # `check_phrases`' docstring justifies lower-casing both sides of the `allow`
+    # comparison by saying the config entry's casing and the text's casing are
+    # independent. Under a case-SENSITIVE membership check that was false -- no
+    # mixed-case entry could ever reach it -- so the normalisation was unreachable and
+    # its stated reason was wrong. Accepting the capitalisation a user would actually
+    # type makes the claim true and the code path live.
+    p = tmp_path / "config-caps.yaml"
+    p.write_text("cv:\n  slop_allow: [Leverage]\n", encoding="utf-8")
+    assert load_cv_config(str(p)).slop_allow == ["Leverage"]
+
+
+def test_slop_allow_still_rejects_an_inflection_regardless_of_case(tmp_path):
+    # Case-insensitivity must not become stem-insensitivity: "leveraged" is a different
+    # word from the stem, and the whole point of this guard is that a silently-inert
+    # entry recurs forever with nothing pointing at the typo.
+    p = tmp_path / "config-infl.yaml"
+    p.write_text("cv:\n  slop_allow: [Leveraged]\n", encoding="utf-8")
+    with pytest.raises(ValueError) as e:
+        load_cv_config(str(p))
+    assert "Leveraged" in str(e.value)

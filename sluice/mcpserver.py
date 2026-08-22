@@ -153,14 +153,29 @@ def doctor(sluice: Sluice, offline: bool = True) -> dict:
     return out
 
 
+# SourceHealth fields this tool does not measure, and therefore does not report.
+#
+# `health_report()` is called with its default `include_leads=False` -- the vault walk
+# that populates the #169 §2 unjudgeable rate is opt-in, because this is a read-only tool
+# an agent may call casually and an unconditional walk would tax every such call for a
+# fact only some callers want. Emitting the dataclass defaults instead would put a literal
+# `0`/`0` in front of an agent, and `SourceHealth`'s own comment forbids exactly that:
+# 0/0 must never be read as "measured, clean", because it is indistinguishable from "not
+# measured". The CLI resolves that ambiguity by knowing whether it passed `--leads`; an
+# MCP client cannot, and this tool's input schema is pinned EMPTY on purpose
+# (tests/functional/test_mcp_contract.py), so there is no flag for it to have passed.
+#
+# Omitting the keys is the same sparse-key discipline `cv_run` already applies to its
+# optional lists: an absent key means "not measured" unambiguously, which a zero cannot.
+# `job-sluice health --leads` is the surface that opts in.
+_UNMEASURED_BY_MCP = ("unjudgeable", "concluded")
+
+
 def health(sluice: Sluice) -> dict:
-    """Per-source scrape baseline + retire state, sorted by source id. Each source also
-    carries `unjudgeable`/`selected` (#169 §2's per-source unjudgeable rate), but both
-    read 0 here: this tool calls `health_report()` with its default `include_leads=False`
-    -- the vault walk that populates them is opt-in, since this is a read-only tool an
-    agent may call casually and an unconditional walk would tax every such call for a
-    fact only some callers want. `job-sluice health --leads` is the surface that opts in."""
-    return {"sources": [dataclasses.asdict(s) for s in sluice.health_report()]}
+    """Per-source scrape baseline + retire state, sorted by source id."""
+    return {"sources": [{k: v for k, v in dataclasses.asdict(s).items()
+                         if k not in _UNMEASURED_BY_MCP}
+                        for s in sluice.health_report()]}
 
 
 def dismiss_lead(sluice: Sluice, lead: str, reason: str, note_tag: str | None = None) -> dict:
@@ -575,7 +590,11 @@ def build_server(config, write: bool = False):
 
     @mcp_server.tool(name="health")
     def health_tool() -> dict:
-        """Per-source scrape baseline + retire state."""
+        """Per-source scrape baseline + retire state.
+
+        Does not report the per-source unjudgeable rate: computing it needs a vault
+        walk this tool deliberately does not do. Run `job-sluice health --leads` for
+        that."""
         return health(sluice)
 
     if write:

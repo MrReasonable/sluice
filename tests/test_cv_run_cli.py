@@ -35,6 +35,12 @@ def test_cmd_cv_run_prints_the_style_and_voice_findings(monkeypatch, tmp_path, c
     err = capsys.readouterr().err
     assert "SLOP leverage: I leverage strong delivery patterns." in err
     assert "flag\tThis reads like a press release." in err
+    # The LABEL, not just the text. `slop` entries arrive already prefixed by
+    # cv/engine.py; `voice_flags` do not (cv/voice.py hands back the raw "flag\t..."
+    # line), so cmd_cv_run adds "VOICE: " to make the two read alike. Measured:
+    # dropping that prefix left the whole suite green, so the two kinds of finding
+    # became indistinguishable in the output with nothing to catch it.
+    assert "VOICE: flag\tThis reads like a press release." in err
 
 
 def test_cmd_cv_run_prints_nothing_extra_when_slop_and_voice_flags_are_empty(

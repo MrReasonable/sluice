@@ -330,13 +330,20 @@ Per-source scrape baseline and retire state, one line each:
 `BROKEN` is the cumulative signal for a source stuck on a NAMED, non-retiring failure (`auth`,
 `blocked`, `unreachable`) — see `docs/ARCHITECTURE.md`'s `_RECOVERABLE` note.
 
-`unjudgeable=<N>/<N>` (numerator/denominator: that source's `unjudgeable`-status leads over its
-leads in `new`/`research`/`unjudgeable`) appears only with `--leads`, which walks the vault once
-to compute it — off by default, since this command is otherwise a source-registry-and-health-store
-read a user runs often and cheaply, and a JD fetch that never arrives for one board clusters by
-source rather than at random (#169 §2). Both terms come from the same selection, never an
-all-time lead count, or a source's own history would dilute a failure that is 100% live today.
-Fully offline either way. Exit 0 always.
+`unjudgeable=<N>/<N>` (numerator/denominator: that source's `unjudgeable`-status leads over the
+leads triage has *concluded* about — every triage-owned status except `new`) appears only with
+`--leads`, which walks the vault once to compute it — off by default, since this command is
+otherwise a source-registry-and-health-store read a user runs often and cheaply, and a JD fetch
+that never arrives for one board clusters by source rather than at random (#169 §2).
+
+The denominator is deliberately *not* the `new`/`research`/`unjudgeable` triage selection, which
+it was at first: a lead leaves that set the moment it is judged, so the numerator stayed while the
+denominator drained and the figure climbed toward 100% as a source got *healthier* — a source with
+500 scraped, 480 dismissed, 17 judged and 3 stuck printed `3/3`. The trade taken in return is that
+a source breaking *today* now shows a percentage against its own history rather than 100%; that is
+the right way round here, because a false alarm in a health report trains people to ignore the row,
+and `detect_drift`'s per-run reasons and the ingest breaker are what actually catch a source
+breaking today. Fully offline either way. Exit 0 always.
 
 ## `job-sluice mcp`
 
