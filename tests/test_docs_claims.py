@@ -234,13 +234,33 @@ _RETIRED_CONFIG = [
 # narrows around (CodeRabbit, #171). The leading `(?:[^\w\s]\s*)*` admits release-please's
 # own decoration (it emits `### \u26a0 BREAKING CHANGES`) while still refusing any WORD before
 # the phrase; the trailing `#*` admits closed-ATX style.
-# `[ \t]`, never `\s`: under re.MULTILINE `^`/`$` bind to line boundaries but `\s` still matches
-# a NEWLINE, so `\s+` let the "heading" span lines -- a bare `###` followed by a `BREAKING
-# CHANGES` paragraph is two ordinary blocks in Markdown, not a heading, and it exempted
-# everything after it (CodeRabbit, #171). Third narrowing of this pattern, each one still a
-# little wider than the failure it was written for.
-_BREAKING_HEADING = re.compile(
-    r"^#{2,6}[ \t]+(?:[^\w\s][ \t]*)*BREAKING CHANGES[ \t]*#*[ \t]*$", re.MULTILINE)
+# Parsed explicitly rather than matched by one regex. Four review rounds narrowed a single
+# pattern and each spelling was still wider than the failure it was written for:
+# `.*BREAKING CHANGES.*` admitted `NOT BREAKING CHANGES`; `\s` admitted a marker spanning
+# NEWLINES (a bare `###` above a `BREAKING CHANGES` paragraph is two blocks, not a heading);
+# and `#*` admitted `BREAKING CHANGES###`, which is literal text, since a closed-ATX suffix
+# needs a space before it. Each fix was the narrowest thing that closed the case in hand, which
+# is why a fifth patch is not the answer. Stating the three rules separately makes each one
+# checkable on its own, and `test_only_an_exact_breaking_heading_is_stripped` carries every
+# near-miss found so far as a row.
+_ATX = re.compile(r"^(#{2,6})[ \t]+(.*)$")
+_CLOSING_HASHES = re.compile(r"[ \t]+#+[ \t]*$")
+_LEADING_DECORATION = re.compile(r"^(?:[^\w\s][ \t]*)+")
+_ANY_HEADING = re.compile(r"^#{1,6}[ \t]")
+
+
+def _is_breaking_heading(line):
+    """True only for a heading whose text is exactly `BREAKING CHANGES`.
+
+    Tolerates what release-please actually emits (`### \u26a0 BREAKING CHANGES`) and closed-ATX
+    (`## BREAKING CHANGES ##`), and nothing else: no word before the phrase, nothing after it,
+    and the whole marker on one physical line.
+    """
+    m = _ATX.match(line)
+    if not m:
+        return False
+    text = _CLOSING_HASHES.sub("", m.group(2))
+    return _LEADING_DECORATION.sub("", text).strip() == "BREAKING CHANGES"
 
 
 def _without_breaking_blocks(text):
@@ -252,14 +272,16 @@ def _without_breaking_blocks(text):
     rather than against the live file: an assertion that "stripping removed something" would be
     vacuous on main and would start failing for the wrong reason the moment a release lands.
     """
-    out, pos = [], 0
-    for m in _BREAKING_HEADING.finditer(text):
-        nxt = re.compile(r"^#{1,6} ", re.MULTILINE).search(text, m.end())
-        end = nxt.start() if nxt else len(text)
-        out.append(text[pos : m.start()])
-        pos = end
-    out.append(text[pos:])
-    return "".join(out)
+    out, skipping = [], False
+    for line in text.split("\n"):
+        if _is_breaking_heading(line):
+            skipping = True
+            continue
+        if skipping and _ANY_HEADING.match(line):
+            skipping = False
+        if not skipping:
+            out.append(line)
+    return "\n".join(out)
 
 
 def test_no_shipped_doc_instructs_a_retired_config_key():
@@ -323,8 +345,11 @@ def test_only_an_exact_breaking_heading_is_stripped():
         assert "Ada Example" not in stripped, f"{heading!r} should exempt its body"
         assert "keep me" in stripped, f"{heading!r} stripped past its own section"
 
+    # A closed-ATX suffix needs a SPACE before it, so `BREAKING CHANGES###` is literal text and
+    # the heading's text is not exactly the phrase. `#*` admitted it (CodeRabbit round 4).
     for heading in ("### NOT BREAKING CHANGES", "## Some BREAKING CHANGES notes",
-                    "### BREAKING CHANGES policy"):
+                    "### BREAKING CHANGES policy", "### BREAKING CHANGES###",
+                    "### BREAKING CHANGES#", "#BREAKING CHANGES"):
         body = f"{heading}\n\nSet cv.name: \"Ada Example\" here.\n"
         assert "Ada Example" in _without_breaking_blocks(body), (
             f"{heading!r} is not an exact BREAKING CHANGES heading and must NOT exempt its body"
