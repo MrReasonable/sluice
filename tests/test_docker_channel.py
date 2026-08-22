@@ -316,7 +316,12 @@ def _compose_mount_lines() -> list:
             continue
         indent = len(line) - len(line.lstrip())
         if indent_of_block is not None:
-            if stripped.startswith("- ") and indent > indent_of_block:
+            # `>=`, not `>`: YAML lets a block sequence sit at its KEY's own indentation, and
+            # compose files are commonly written that way. With `>` those entries matched
+            # neither branch, so they left BOTH `lines` and `pairs` short by one and the scope
+            # assertion -- the thing written to stop exactly this -- passed with the source
+            # unchecked. Measured with an absolute-path mount appended at the key's indent.
+            if stripped.startswith("- ") and indent >= indent_of_block:
                 # EVERY entry, not only the ones that look like short-form mounts. Filtering
                 # here would make a long-form entry (`- type: bind` with a `source:` key on the
                 # next line) invisible to the scope assertion too, so `lines` and `pairs` would
@@ -521,7 +526,13 @@ def test_compose_persists_the_whole_working_directory():
     # The LAST WORKDIR wins, which is Docker's own rule for repeated instructions.
     workdirs = re.findall(r"^WORKDIR\s+(\S+)\s*$", _uncommented(DOCKERFILE), re.MULTILINE)
     assert workdirs, "no WORKDIR in the Dockerfile; this guard has nothing to anchor on"
-    workdir = workdirs[-1]
+    workdir = workdirs[-1].strip('"\'')
+    assert workdir.startswith("/"), (
+        f"WORKDIR is {workdir!r}, a relative path. Docker resolves it against the previous "
+        f"WORKDIR, so the mount below may still be correct -- but this guard compares it to "
+        f"mount targets as though it were absolute, and its failure message would name a "
+        f"fragment. Spell WORKDIR absolutely."
+    )
     targets = [target for _source, target in _compose_volume_pairs()]
     assert workdir in targets, (
         f"docker-compose.yml does not persist {workdir!r}, the container's WORKDIR. "
