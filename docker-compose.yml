@@ -1,0 +1,115 @@
+# job-sluice under Docker Compose (#104, PR 4 of 7).
+#
+# What this file is FOR: the image alone needs a long `docker run` to be useful, because four
+# separate directories have to survive the container -- the vault, the config, and two pieces of
+# per-system state. Getting one of them wrong is not a visible error, it is a silent data
+# problem, so the wiring is written down once here rather than retyped per invocation.
+#
+# The image does not exist until 1.1.0 publishes it. This file is inert until then, exactly like
+# the `docker` job that will push it.
+#
+# Camofox is NOT here, and cannot be: `ingest run`/`ingest test-source` need a persistent,
+# authenticated headless browser server that this repository does not bundle. It runs on the
+# host; `CAMOFOX_URL` below points the container at it. Every other command works without it,
+# and `triage`/`cv` reach it only on a dossier cache miss -- which is why the cache volume below
+# is worth keeping.
+
+x-sluice: &sluice
+  image: ghcr.io/mrreasonable/job-sluice:${JOB_SLUICE_TAG:-latest}
+
+  # Backend credentials. Which variables matter depends on which providers you configured as
+  # `primary_backend`/`fallback_backend`, so they are deliberately NOT enumerated here: a list
+  # in this file would be a second source of truth that goes stale the moment a provider is
+  # added. Put whatever your configured providers need in `.env`; `claude-max` needs none.
+  #
+  # `required: false` so `docker compose up` works with no `.env` at all -- an absent optional
+  # file must not be a startup error. Needs Compose v2.24+ for the long form.
+  env_file:
+    - path: .env
+      required: false
+
+  environment:
+    # PINNED, not left to the config file, and this is the load-bearing line in this file.
+    #
+    # `stores/vault.py:_make` is `Vault(os.environ.get("VAULT_DIR") or config.vault_dir or None)`,
+    # so this env var outranks a configured value BY CONSTRUCTION. That matters because the config
+    # directory below is bind-mounted from the host: a `job-sluice init` run on the host leaves an
+    # absolute HOST vault path in config.yaml, which means nothing inside the container.
+    #
+    # Without this pin the failure is silent and unrecoverable. `Vault` never checks that its
+    # directory exists, and `upsert`'s create arm runs `os.makedirs(leads_dir, exist_ok=True)`
+    # (core/vault.py) -- so a wrong path is CREATED, in the container's ephemeral layer. Leads land
+    # there as `created`, and `created` is on `ingest/sink.py`'s allowlist, so they are recorded in
+    # seen.db -- which is a persistent named volume below. Remove the container and the notes are
+    # gone while seen.db still remembers them, and seen.db has no removal path: those leads are
+    # suppressed forever, with no note anywhere, after a run that printed a plausible `created: N`.
+    # That is the #81 harm reached by a route core/paths.py cannot guard, because the vault
+    # deliberately does not relocate to an XDG root and so is not in its `_LEGACY` table.
+    VAULT_DIR: /work/vault
+
+    # The one genuinely container-specific value: on the host, Camofox's default is
+    # http://127.0.0.1:9377, which inside a container means the CONTAINER's loopback and would
+    # fail to connect with no obvious reason why. The scheme is REQUIRED -- core/camofox.py
+    # concatenates this value directly, so a scheme-less host:port raises `unknown url type`.
+    CAMOFOX_URL: ${CAMOFOX_URL:-http://host.docker.internal:9377}
+
+  # Linux does not resolve host.docker.internal on its own; Docker Desktop does. This makes the
+  # two behave the same rather than leaving a platform-dependent failure for the user to hit.
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+
+  volumes:
+    # The vault -- your Obsidian directory, and the one thing here that is genuinely yours.
+    # It lands at /work/vault because WORKDIR is /work and this codebase's DEFAULT_VAULT is the
+    # cwd-relative "./vault", so the default resolves to exactly this mount with no config at
+    # all. The vault deliberately does not relocate via XDG; it is not per-system state.
+    - ${SLUICE_VAULT:-./vault}:/work/vault
+
+    # Config. $XDG_CONFIG_HOME is /app/config in the image, and config_file() resolves to
+    # <XDG_CONFIG_HOME>/sluice/config.yaml -- so config.yaml goes in the host directory below.
+    # A bind mount whose host directory does not exist yet is created by Docker as ROOT, which
+    # the container's non-root user then cannot write: create it first, or run `job-sluice init`
+    # on the host, if you want the container to be able to write its config.
+    - ${SLUICE_CONFIG_DIR:-./config}:/app/config/sluice
+
+    # State, as a NAMED volume rather than a bind mount, because it is the tool's bookkeeping
+    # and not something you edit. Keeping it is load-bearing: it holds the dedup databases, and
+    # an empty dedup set makes every already-known lead read as unseen and re-submits it to the
+    # write path (#81). `docker compose down` preserves this; `down -v` destroys it.
+    #
+    # A host install's existing seen.db is NOT migrated here, and core/paths.py's relocation
+    # refusal structurally cannot notice: it compares paths inside this container and never sees
+    # the host's. The first container run therefore starts with an empty dedup set. With the vault
+    # correctly mounted above that is a re-scrape rather than a re-application -- `upsert` finds
+    # the existing notes and returns `updated` -- so the cost is work, not duplicate applications.
+    # Copy the host file in beforehand if you want to skip even that.
+    - sluice-state:/app/state/sluice
+
+    # Dossier cache. Losing it costs re-fetches (and so needs Camofox again), never correctness.
+    - sluice-cache:/app/cache/sluice
+
+services:
+  job-sluice:
+    <<: *sluice
+    # No `command:`, so the image's own ENTRYPOINT + CMD apply and
+    # `docker compose run --rm job-sluice <args>` reads exactly like the bare CLI.
+
+  # `job-sluice mcp serve` speaks MCP over STDIO -- there is no HTTP or SSE transport in
+  # sluice/mcpserver.py, so there is no port to publish and this is not a long-running service.
+  # It is a profile so an ordinary `docker compose up` does not try to start it:
+  #
+  #   docker compose run --rm -T mcp
+  #
+  # is what an MCP client should be configured to launch. `-T` matters: it disables TTY
+  # allocation, and a TTY would corrupt the stdio framing. Everything this needs -- the vault,
+  # the config, the same state -- comes from the shared block above, which is the whole reason
+  # it is worth expressing here rather than as a hand-written `docker run -i`.
+  mcp:
+    <<: *sluice
+    profiles: [mcp]
+    stdin_open: true
+    command: ["mcp", "serve"]
+
+volumes:
+  sluice-state:
+  sluice-cache:
