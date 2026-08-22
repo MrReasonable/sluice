@@ -140,7 +140,12 @@ def doctor(sluice: Sluice, offline: bool = True) -> dict:
 
 
 def health(sluice: Sluice) -> dict:
-    """Per-source scrape baseline + retire state, sorted by source id."""
+    """Per-source scrape baseline + retire state, sorted by source id. Each source also
+    carries `unjudgeable`/`selected` (#169 §2's per-source unjudgeable rate), but both
+    read 0 here: this tool calls `health_report()` with its default `include_leads=False`
+    -- the vault walk that populates them is opt-in, since this is a read-only tool an
+    agent may call casually and an unconditional walk would tax every such call for a
+    fact only some callers want. `job-sluice health --leads` is the surface that opts in."""
     return {"sources": [dataclasses.asdict(s) for s in sluice.health_report()]}
 
 

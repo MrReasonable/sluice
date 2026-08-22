@@ -319,13 +319,20 @@ store known to be unreachable refuses the *whole* run before any note is renamed
 `--apply` if `collisions`, `ambiguous`, `resurrected`, `skipped`, or a dead-letter migration
 failure is non-empty; exit 2 (`job-sluice: <exc>`) if the store cannot rename notes at all.
 
-## `job-sluice health`
+## `job-sluice health [--leads]`
 
-No flags. Per-source scrape baseline and retire state, one line each:
-`<id> baseline=<N> recent=<counts>[ RETIRE][ BROKEN reason=<reason> x<N>]`. `BROKEN` is the
-cumulative signal for a source stuck on a NAMED, non-retiring failure (`auth`, `blocked`,
-`unreachable`) — see `docs/ARCHITECTURE.md`'s `_RECOVERABLE` note. Fully offline. Exit 0
-always.
+Per-source scrape baseline and retire state, one line each:
+`<id> baseline=<N> recent=<counts>[ RETIRE][ BROKEN reason=<reason> x<N>][ unjudgeable=<N>/<N>]`.
+`BROKEN` is the cumulative signal for a source stuck on a NAMED, non-retiring failure (`auth`,
+`blocked`, `unreachable`) — see `docs/ARCHITECTURE.md`'s `_RECOVERABLE` note.
+
+`unjudgeable=<N>/<N>` (numerator/denominator: that source's `unjudgeable`-status leads over its
+leads in `new`/`research`/`unjudgeable`) appears only with `--leads`, which walks the vault once
+to compute it — off by default, since this command is otherwise a source-registry-and-health-store
+read a user runs often and cheaply, and a JD fetch that never arrives for one board clusters by
+source rather than at random (#169 §2). Both terms come from the same selection, never an
+all-time lead count, or a source's own history would dilute a failure that is 100% live today.
+Fully offline either way. Exit 0 always.
 
 ## `job-sluice mcp`
 

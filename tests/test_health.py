@@ -190,3 +190,84 @@ def test_health_report_reflects_the_real_registry_sorted_by_id(tmp_path):
     assert by_id[second].should_retire is True
     assert all(isinstance(s.kind, str) and s.kind for s in report), \
         "every SourceHealth must carry its source's real kind"
+
+
+# ── #169 §2: per-source unjudgeable rate ──────────────────────────────────────
+
+def _write_source_note(leads_dir, *, source, status, company, role="Analyst"):
+    """A raw lead note carrying a `source` field -- `read_leads` reads it back via
+    `LeadNote.fm`, and `health_report`'s per-source rate keys off exactly that field
+    (`sluice/core/leads.py:271`'s `Lead.source`, mirrored into the note)."""
+    leads_dir.mkdir(parents=True, exist_ok=True)
+    (leads_dir / f"{company} - {role}.md").write_text(
+        f'---\ncompany: "{company}"\nrole: "{role}"\nstatus: {status}\nsource: {source}\n'
+        "---\n\nbody\n")
+
+
+def test_the_unjudgeable_rate_counts_numerator_and_denominator_at_the_SAME_stage(tmp_path):
+    """The rate's two terms must come from the SAME lifecycle stage.
+
+    `read_leads()` unfiltered is ALL-TIME (dismiss, applied, every terminal included), so
+    an all-time denominator would dilute a source that is 100% broken TODAY by its entire
+    history -- the classification could then structurally never fire on the case it exists
+    to detect. Both terms come from the shared `DEFAULT_TRIAGE_STATUSES` selection instead:
+    one point in the LIFECYCLE, not merely one point in time (the #156 mistake -- a ratio's
+    numerator and denominator drawn from different populations -- in a new costume)."""
+    from sluice.core.app import Sluice
+    from sluice.core.config import Config
+    from sluice.ingest import sources as registry
+
+    ids = sorted(s.id for s in registry.all_sources())
+    assert len(ids) >= 2, "the real source registry enumerated fewer than two sources"
+    broken, quiet = ids[0], ids[-1]
+
+    leads = tmp_path / "vault" / "Job Applications" / "Job Leads"
+    _write_source_note(leads, source=broken, status="new", company="Alpha")
+    for i in range(3):
+        _write_source_note(leads, source=broken, status="unjudgeable", company=f"Beta{i}")
+    for i in range(3):
+        # dismiss is TRIAGE_OWNED but outside DEFAULT_TRIAGE_STATUSES -- a real source's
+        # entire dismissed history must not dilute today's rate, or a source that is 100%
+        # broken today could never read as such once it has accumulated any history.
+        _write_source_note(leads, source=quiet, status="dismiss", company=f"Gamma{i}")
+
+    report = {h.id: (h.unjudgeable, h.selected)
+              for h in Sluice(Config()).health_report(include_leads=True)}
+    assert report[broken] == (3, 4)
+    assert report[quiet] == (0, 0), "dismissed leads are not in the selection set"
+
+
+class _CountingVault:
+    """A minimal Store double recording `read_leads` calls. Nothing else about the Store
+    contract (writes, preflight) matters to what the two tests below check."""
+    def __init__(self):
+        self.read_leads_calls = 0
+
+    def read_leads(self, statuses=None):
+        self.read_leads_calls += 1
+        return []
+
+
+def test_health_report_does_no_vault_io_by_default():
+    """`job-sluice health` and the MCP `health` tool both call `health_report()` often and
+    cheaply; the default must keep that cost. In the real implementation `self.store()` is
+    reached only inside the `include_leads` branch, so this double is never even
+    constructed -- this test pins the outward promise a caller actually depends on
+    (zero reads), not the internal mechanism that happens to deliver it."""
+    from sluice.core.app import Sluice
+    from sluice.core.config import Config
+
+    vault = _CountingVault()
+    Sluice(Config(), store=vault).health_report()
+    assert vault.read_leads_calls == 0
+
+
+def test_health_report_include_leads_walks_the_vault_exactly_once():
+    """A vault with N registered sources must cost ONE `read_leads()` pass, not N -- the
+    rates dict is built up front and looked up per source inside `_one`, never re-walked."""
+    from sluice.core.app import Sluice
+    from sluice.core.config import Config
+
+    vault = _CountingVault()
+    Sluice(Config(), store=vault).health_report(include_leads=True)
+    assert vault.read_leads_calls == 1

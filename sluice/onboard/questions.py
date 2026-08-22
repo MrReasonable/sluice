@@ -184,6 +184,20 @@ def catalogue(*, default_vault: str = "") -> tuple:
                  hint="0 or blank turns staleness off, which is the shipped default.",
                  consequence="treat leads unseen for {value} days as stale"),
 
+        # #169: same reasoning as lead_ttl_days above -- an EMPTY job ad always fails the dossier
+        # cache regardless of this key (that is a fact, not a preference), but a character count is
+        # a judgement about what counts as a real posting, so it ships off (0) and this question is
+        # how a user who wants it opts in rather than inheriting one from a stranger's copied file.
+        Question("min_jd_chars", "Treat a fetched job ad shorter than how many characters as not "
+                 "having arrived?", parse_int, ("min_jd_chars",), "Want",
+                 hint="0 or blank turns this off, which is the shipped default -- only a "
+                      "completely EMPTY job ad is ever refused. Run `job-sluice doctor` first: it "
+                      "reports how many of your cached job ads already fall under 200 and under "
+                      "800 characters, which is the evidence for choosing a number here rather "
+                      "than guessing one.",
+                 consequence="treat a fetched job ad under {value} characters as not having "
+                             "arrived"),
+
         Question("relevance_keep", "Keep only titles containing these words, comma-separated?",
                  parse_csv, ("relevance_keep",), "Cost",
                  hint="A cheap filter at scrape time, BEFORE anything else runs. Anything not "
