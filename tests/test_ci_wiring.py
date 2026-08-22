@@ -778,7 +778,11 @@ def test_ci_image_smoke_covers_every_baked_extra():
     # job, so any future step merely NAMING `mcp` or `jinja2` satisfies it -- including after the
     # import smoke step is deleted. That is presence standing in for gating, the same shape the
     # doctor pin below was corrected for.
-    step = _step_containing("docker", "every baked extra imports")
+    # Anchored on the INVOCATION, not the step's title -- this module's own rule, stated at
+    # the coverage-summary guard above: "assert the invocation, never the phrase". A title is
+    # prose someone may reword, and a reword would fail the build for correct CI while the
+    # message blamed a missing extra. `--entrypoint python` occurs exactly once in ci.yml.
+    step = _step_containing("docker", "--entrypoint python")
     for module in ("weasyprint", "jinja2", "googleapiclient", "mcp", "argcomplete"):
         assert module in step, (
             f"ci.yml's docker job no longer smoke-imports {module!r}; a missing extra would "
@@ -830,11 +834,12 @@ def test_the_doctor_smoke_asserts_on_output_rather_than_exit_status():
     )
     # PRESENCE of the two needles is not the claim -- GATING is. Measured: deleting `; exit 1`
     # from BOTH `case` arms left a smoke that prints its diagnosis and passes on a broken image,
-    # and every assertion above still held. Both arms must exit non-zero, so the count is two.
-    # PER-ARM, not a count. A count is a global BUDGET: dropping the exit from the no-report arm
-    # while adding some other exiting arm keeps the total at two and passes with the gate that
-    # matters gone -- measured. It also reddens a legitimate third gated arm for no reason.
-    # Each arm is now asserted by the thing it is FOR.
+    # and every assertion above still held.
+    #
+    # PER-ARM, and deliberately not a count. A count is a global BUDGET: dropping the exit from
+    # the no-report arm while adding some other exiting arm keeps the total at two and passes
+    # with the gate that matters gone -- measured. It also reddens a legitimate third gated arm
+    # for no reason. Each arm is asserted by the thing it is FOR.
     for arm, why in (
         (r"\*\)[^\n]*emitted no report[^\n]*; exit 1 ;;",
          "the no-report arm must EXIT: a container that prints nothing is broken, not degraded"),
