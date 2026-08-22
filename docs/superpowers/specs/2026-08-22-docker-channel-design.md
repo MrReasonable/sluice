@@ -154,7 +154,12 @@ Out, each with its reason:
   `job-sluice` service itself is a different thing and is not covered by that boundary**; the
   spec scopes out one *service*, not the *file*.
 - **`README.md`.** Lines 114 and 141 say there is no Docker image. That stays TRUE until 1.1.0
-  publishes one. Editing them here would assert something unverified -- the exact principle the
+  publishes one. **PR 7 owns FOUR documents here, not one:** `README.md`'s install section,
+  `docs/INSTALL.md`, `docs/CONFIGURATION.md`'s environment-variable table (which gains the
+  container's XDG mount points) and `docs/TROUBLESHOOTING.md`'s cairo/pango advice (whose whole
+  premise -- that pip cannot supply them -- the image is the answer to). Nothing in the release
+  flow forces a doc update, and `tests/test_docs_claims.py` walks only the CLI parser, so none of
+  these four goes red on its own when 1.1.0 makes them false. Editing them here would assert something unverified -- the exact principle the
   sequencing spec invokes for install docs. The README install section and `docs/INSTALL.md` are
   PR 7's.
 - **An HTTP transport for `mcp serve`.** A feature change to `sluice/mcpserver.py`, not packaging.
@@ -338,11 +343,17 @@ reach -- which is precisely what makes withholding `id-token: write` from `build
 BuildKit `RUN` step has none of that environment, so a malicious dependency during the image's
 `pip install` cannot mint an OIDC token. The principle does not transfer.
 
-The split stands on a different and checkable basis. Every write-holding job in this workflow holds
-exactly one kind of write -- `pypi` an OIDC identity, `release-assets` a contents write, `attest` a
-signing pair and nothing else -- and folding attestation into `docker` would, for the first time in
-this file, put a REGISTRY CREDENTIAL and an OIDC IDENTITY in the same job. That is a property a
-reader can verify against the file in a few seconds, unlike a claim about what BuildKit exposes.
+The split stands on a narrower basis, and the second draft of this passage overstated that too --
+recorded because it is the same failure twice in one paragraph. It said "every write-holding job
+holds exactly one KIND of write", which is a grouping this document chose rather than a property the
+file states: `attest` and `attest-image` each hold two write scopes, and calling `id-token` +
+`attestations` "one kind" is the generalisation doing the work.
+
+The claim that survives is the one the suite ENFORCES: `docker` holds no `id-token`, `attest-image`
+holds no `packages`, every job in the file carries an exact `_permissions_block` equality pin, and
+`_RELEASE_PLEASE_JOBS` pins the roster -- so a future job holding a registry credential AND an OIDC
+identity together cannot land without a human editing both pins on purpose. That is checkable by
+running the tests, rather than by agreeing with a taxonomy.
 The attestation is repo-side (Sigstore, verifiable with `gh attestation verify oci://...`), so it
 needs no registry write and this job holds none.
 
@@ -490,8 +501,10 @@ built-in `GITHUB_TOKEN` is sufficient to create the package.
   upload cannot.
 - **`latest` moves on every release.** Correct for a single-branch release-please repo, and
   wrong the moment a patch is ever cut for an older minor. Nothing in this repo does that today.
-- **The `ci.yml` job adds minutes to every pull request.** Accepted deliberately; the alternative
-  is discovering a broken Dockerfile after the tag is public.
+- **The `ci.yml` job costs 34 seconds per pull request**, measured on its first real run rather
+  than estimated -- an earlier draft of this line said "adds minutes", which was a guess written
+  as a fact and is the reason it is now a measurement. Accepted deliberately either way; the
+  alternative is discovering a broken Dockerfile after the tag is public.
 - **QEMU arm64 emulation is slow.** Acceptable in a release-only job. Native arm runners are the
   fallback if it bites, and are deliberately not adopted pre-emptively.
 

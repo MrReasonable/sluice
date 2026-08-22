@@ -286,11 +286,19 @@ jobs:
     needs: [release-please, docker]
     if: success() && needs.release-please.outputs.release_created == 'true'
     runs-on: ubuntu-latest
-    # A SEPARATE job, for the reason the `attest` job above states for itself: the job that runs
-    # the build never holds the permissions that sign a provenance claim, and a job boundary is
-    # what makes that split enforceable, since permissions are granted per job and not per step.
-    # `docker build` executes a Dockerfile -- apt, pip, and this project's own wheel -- so it is
-    # the same arbitrary-code-execution surface `build` is.
+    # A SEPARATE job -- but NOT for the reason the `attest` job above gives for itself, and the
+    # difference is worth stating because an earlier draft of this job claimed it was.
+    #
+    # `attest`'s reasoning is that `python -m build --no-isolation` runs the build backend in the
+    # RUNNER's own process, where ACTIONS_ID_TOKEN_REQUEST_TOKEN and _URL are in reach, so a
+    # hostile dependency could mint an OIDC token if `build` held `id-token: write`. A BuildKit
+    # `RUN` step has none of that environment, so that argument does NOT transfer to this job.
+    #
+    # What holds instead is narrower and is actually enforced by the suite rather than argued
+    # here: `docker` holds no `id-token`, this job holds no `packages`, every job in this file
+    # has an exact `_permissions_block` equality pin, and `_RELEASE_PLEASE_JOBS` pins the roster
+    # -- so a future job holding a registry credential AND an OIDC identity together cannot land
+    # without a human editing both pins deliberately.
     #
     # No `packages:` key: the attestation is repo-side (Sigstore, verifiable with
     # `gh attestation verify oci://...`), so nothing is written back to the registry and this job
