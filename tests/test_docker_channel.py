@@ -380,6 +380,19 @@ def _iter_volume_specs(node):
             yield from _iter_volume_specs(item)
 
 
+def _env_mapping(value) -> dict:
+    """`environment:` as a mapping, whichever of compose's two spellings was used.
+
+    Compose accepts `environment: {KEY: value}` AND `environment: [- KEY=value]`. Calling
+    `.get()` on the list form raises AttributeError, which would replace the failure message
+    the guard below exists to print with a traceback -- hiding the property, not reporting it.
+    """
+    if isinstance(value, list):
+        pairs = [str(item).split("=", 1) for item in value]
+        return {pair[0]: (pair[1] if len(pair) == 2 else "") for pair in pairs}
+    return value or {}
+
+
 def _compose_services() -> dict:
     """`{service: {"env": {...}, "mounts": [(source, target), ...]}}`, merge keys resolved.
 
@@ -397,7 +410,7 @@ def _compose_services() -> dict:
     assert services, "docker-compose.yml declares no services; the per-service pins are vacuous"
     return {
         name: {
-            "env": (service.get("environment") or {}),
+            "env": _env_mapping(service.get("environment")),
             "mounts": _mount_pairs(service.get("volumes") or []),
         }
         for name, service in services.items()
@@ -504,8 +517,6 @@ _PERSONAL_SOURCES = [
     # NOT name a home root: what this fixture exercises is the `^[A-Za-z]:[\\/]` prefix,
     # and a home-root component would additionally trip test_no_leaked_files.py's
     # repo-wide sweep -- which it did, on the first run, from inside this very comment.
-    # is the `^[A-Za-z]:[\\/]` prefix, and a `/Users/` component would additionally trip
-    # tests/test_no_leaked_files.py's repo-wide sweep -- which it did, on the first run.
     "C:/data/vaults/personal",
     "C:\\data\\vaults\\personal",
 ]

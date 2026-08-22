@@ -103,7 +103,7 @@ wrong, invalidates a section below rather than a sentence.
 
 Docker 29.4.0 was available, so none of this is theoretical.
 
-**An earlier version of this heading said "against the FINAL committed files, not a draft".**
+**An earlier version of this heading said: "against the FINAL committed files, not a draft".**
 That was true when written and stopped being true four commits later, which is the hazard of
 dating a claim by adjective rather than by commit -- `docker-compose.yml` gained the
 `sluice-workspace:/work` mount and the guard module changed substantially afterwards. The
@@ -129,7 +129,7 @@ af6e415..HEAD -- Dockerfile` is empty, which is the check rather than the memory
   out to be reliably harder than writing the guard. Two are worth recording: one edited the
   comment beside `path: dist/` instead of the directive the assertion reads, and one mutated
   `; exit 1 ;;` into `; exit 1; exit 1 ;;`, which still ENDS with the pinned substring, so the
-  count never moved and the row read SURVIVED having proved nothing.
+  count never moved, and the row read SURVIVED having proved nothing.
 - `status` is a read-only variable in zsh. The doctor smoke used it, worked under CI's bash,
   and would have failed for anyone pasting it into their own shell to reproduce a failure.
   Found by running the smoke, not by reading it.
@@ -176,7 +176,7 @@ Out, each with its reason:
 
 `ghcr.io/mrreasonable/job-sluice`.
 
-#104's job table says `ghcr.io/mrreasonable/sluice`. That predates the `job-sluice` rename
+Issue #104's job table says `ghcr.io/mrreasonable/sluice`. That predates the `job-sluice` rename
 settling, and the reason PyPI forced `job-sluice` -- a 2015 squat -- has no analogue on GHCR,
 which namespaces by owner. CLAUDE.md already treats distribution name, import package and
 console-script name as three independent things; the image name is a fourth, and choosing it

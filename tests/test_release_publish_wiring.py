@@ -1089,10 +1089,18 @@ def test_attest_image_holds_the_signing_pair_and_no_registry_credential():
     The justification is NOT that a BuildKit `RUN` is an arbitrary-code-execution surface the
     way `python -m build --no-isolation` is -- that was an earlier draft's reasoning and it is
     false, because a BuildKit step has no ACTIONS_ID_TOKEN_REQUEST_TOKEN in its environment and
-    so cannot mint an OIDC token however hostile a dependency is. The real basis is a property
-    a reader can check against this file in seconds: every write-holding job here holds exactly
-    one KIND of write, and folding these permissions into `docker` would put a registry
-    credential and an OIDC identity in the same job for the first time."""
+    so cannot mint an OIDC token however hostile a dependency is.
+
+    Nor is it that "every write-holding job holds exactly one KIND of write" -- an earlier
+    version of this docstring said so, and that is a grouping rather than a property of the
+    file: `attest` and this job each hold TWO write scopes. It is the third wrong reason given
+    for a decision that is nonetheless right, which is worth stating so the next reader does not
+    reach for a fourth.
+
+    The basis that survives is what this suite ENFORCES: `docker` holds no `id-token`, this job
+    holds no `packages`, every job in the file carries an exact `_permissions_block` equality
+    pin, and `_RELEASE_PLEASE_JOBS` pins the roster -- so a job holding a registry credential
+    AND an OIDC identity cannot land without a human editing both pins on purpose."""
     assert _permissions_block(RELEASE_PLEASE, "attest-image") == (
         "    permissions:\n      id-token: write\n      attestations: write"
     ), (
