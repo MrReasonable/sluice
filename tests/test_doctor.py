@@ -1428,11 +1428,35 @@ def test_sluice_doctor_dossier_cache_scan_creates_and_writes_nothing(monkeypatch
     monkeypatch.setenv("DOSSIER_DIR", dossier_dir)
     _write_dossier(dossier_dir, "a", markdown="hello")
     before = sorted(str(p) for p in tmp_path.rglob("*"))
+    before_bytes = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
 
     Sluice().doctor(offline=True)
 
     after = sorted(str(p) for p in tmp_path.rglob("*"))
     assert before == after, f"the dossier-cache scan wrote something: before={before} after={after}"
+    # Names alone do not pin "touch an existing entry": an in-place rewrite leaves the
+    # path set identical. Compare CONTENT too, or the docstring above claims more than
+    # the assertion checks.
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before_bytes
+
+
+def test_sluice_doctor_reports_an_unreadable_dossier_dir_instead_of_tracebacking(
+        monkeypatch, tmp_path):
+    # doctor exists to diagnose a broken install, so it must survive the broken install.
+    # os.listdir on a mode-000 directory raises PermissionError, which is not
+    # FileNotFoundError or NotADirectoryError; cli.main converts only ValueError, so this
+    # escaped as a traceback from the one command meant to explain it.
+    dossier_dir = tmp_path / "dossiers"
+    dossier_dir.mkdir()
+    _write_dossier(str(dossier_dir), "a", markdown="hello")
+    monkeypatch.setenv("DOSSIER_DIR", str(dossier_dir))
+    dossier_dir.chmod(0o000)
+    try:
+        rep = Sluice().doctor(offline=True)          # must not raise
+    finally:
+        dossier_dir.chmod(0o755)                     # always restorable for cleanup
+    row = _one([c for c in rep.components if c.component == "dossier-cache"], "cached JDs")
+    assert row.state == NOTICE
 
 
 def test_cli_doctor_prints_component_section(monkeypatch, capsys):

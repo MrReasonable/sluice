@@ -173,14 +173,20 @@ Shared by every sub-app:
   merged with the source registry, sorted by source id. NO vault I/O by
   default, so an ordinary, cheap-and-often call costs nothing beyond a file
   read; opting in (`include_leads=True`, `job-sluice health --leads`) adds
-  exactly one `read_leads(DEFAULT_TRIAGE_STATUSES)` pass, which fills each
-  source's `unjudgeable`/`selected` counts (#169) -- both drawn from that SAME
-  one pass over the SAME lifecycle stage (the numerator is that source's leads
-  currently at status `unjudgeable`, the denominator is all of its leads
-  across `DEFAULT_TRIAGE_STATUSES`), never an unfiltered all-time read, which
-  would dilute a source that is 100% broken today by leads it dismissed months
-  ago. Classifying whether the resulting rate is bad is left to the caller;
-  `health_report` reports facts, not a verdict.
+  exactly one `read_leads(_CONCLUDED)` pass, which fills each source's
+  `unjudgeable`/`concluded` counts (#169). `_CONCLUDED` is every triage-owned
+  status except `new` -- the leads triage has reached a conclusion about, in
+  either direction. It is deliberately NOT `DEFAULT_TRIAGE_STATUSES`, which is
+  the SELECTION default: a lead leaves that set as soon as it is judged, so the
+  numerator stayed while the denominator drained and the printed rate climbed
+  toward 100% as a source got HEALTHIER (measured: 500 scraped, 480 dismissed,
+  17 judged, 3 stuck printed `3/3`). Including `dismiss` does dilute a source
+  that breaks today against its own history; that trade is taken deliberately,
+  because a false alarm in a health report trains people to ignore the row,
+  and `detect_drift`'s per-run reasons plus the ingest breaker are what
+  actually catch a source breaking today. Classifying whether the resulting
+  rate is bad is left to the caller; `health_report` reports facts, not a
+  verdict.
 - `candidate.py` (#133/#107): derivations over `CandidateProfile` (the
   dataclass itself lives in `protocols.py`, mirroring `criteria.py`'s
   type/logic split). `full_name`/`contact_block` build the CV header from the

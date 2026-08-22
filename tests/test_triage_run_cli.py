@@ -94,3 +94,40 @@ def test_cmd_triage_run_prints_the_resolved_by_tier_counts_and_the_llm_call_coun
     err = capsys.readouterr().err
     assert "resolved={'tier1': 0, 'tier2': 1, 'tier3': 3}" in err
     assert "llm_calls=9" in err
+
+
+def test_the_selection_default_reaches_the_engine_from_BOTH_of_its_spellings(
+        monkeypatch, tmp_path):
+    """`cmd_triage_run` resolves the selection twice, and only one of them was covered.
+
+    `tests/test_status.py::test_the_selection_default_has_ONE_home_and_the_parser_uses_it`
+    walks the PARSER, so it never reaches the `args.status or ...` fallback beside it --
+    replacing that fallback with a stale literal left the whole suite green. `--status ""`
+    is what reaches it: argparse's default only applies when the flag is ABSENT, so an
+    explicitly empty value falls through to the fallback instead.
+
+    Both spellings must hand the engine the same tuple, and it must be the shipped
+    constant rather than anything transcribed from it.
+    """
+    from sluice.core import status as _status
+
+    seen = {}
+
+    def _capture(self, **kw):
+        seen["statuses"] = kw["statuses"]
+        return TriageReport(counts={}, judged=0, backend=None, failures=[])
+
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    monkeypatch.setattr(Sluice, "triage", _capture)
+    expected = tuple(_status.DEFAULT_TRIAGE_STATUSES)
+
+    # Flag absent: argparse's default supplies it.
+    cmd_triage_run(_build_parser().parse_args(["triage", "run", "--no-llm"]), Config())
+    assert seen["statuses"] == expected
+
+    # Flag present but empty: the in-function fallback supplies it.
+    seen.clear()
+    cmd_triage_run(
+        _build_parser().parse_args(["triage", "run", "--no-llm", "--status", ""]), Config())
+    assert seen["statuses"] == expected, (
+        "the --status '' fallback in cmd_triage_run disagrees with the parser default")

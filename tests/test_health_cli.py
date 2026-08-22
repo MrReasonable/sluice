@@ -49,6 +49,13 @@ def test_cmd_health_leads_flag_reports_the_unjudgeable_rate(tmp_path, capsys):
     (leads / "Beta - Analyst.md").write_text(
         f'---\ncompany: "Beta"\nrole: "Analyst"\nstatus: unjudgeable\nsource: {source}\n'
         "---\n\nbody\n")
+    # A CONCLUDED lead that is not in the triage selection. The denominator is
+    # `_CONCLUDED`, so this counts and the `new` lead above does not -- 1/2 here is a
+    # different two than it was under the old selection-set denominator, and a fixture
+    # of only new+unjudgeable would print 1/1 while looking like it still tested this.
+    (leads / "Gamma - Analyst.md").write_text(
+        f'---\ncompany: "Gamma"\nrole: "Analyst"\nstatus: dismiss\nsource: {source}\n'
+        "---\n\nbody\n")
 
     args = _build_parser().parse_args(["health", "--leads"])
     assert cmd_health(args, Config()) == 0
@@ -59,7 +66,7 @@ def test_cmd_health_leads_flag_reports_the_unjudgeable_rate(tmp_path, capsys):
 
 def test_cmd_health_without_leads_flag_never_shows_the_unjudgeable_fragment(tmp_path, capsys):
     """Without `--leads`, every `SourceHealth` reads the dataclass default `unjudgeable=0
-    selected=0` -- printing that unconditionally would misrepresent "not measured" as
+    concluded=0` -- printing that unconditionally would misrepresent "not measured" as
     "measured, and clean". Same fixture as the test above, but no `--leads`: the fragment
     must be absent entirely, not merely zero."""
     ids = sorted(s.id for s in registry.all_sources())

@@ -80,7 +80,26 @@ class StaleLead:
 # See _DISMISSABLE_FROM below (#131) -- dismiss_lead's own required-status set, which
 # is NOT a rename of this one: it needs "dismiss" included, since it has no pre-filter
 # of already-dismissed leads the way expire_report() has.
+#
+# Being DERIVED means `unjudgeable` (#169) joined this set automatically, which arrived as
+# an accident and is kept as a DECISION -- it is the only bound on a lead that cannot be
+# judged. Such a lead is permanently re-selected (`DEFAULT_TRIAGE_STATUSES`), never
+# cached, and re-fetched every run, so without a bound it retries a dead posting forever;
+# with `--limit` set, an early-sorting block of them can consume the whole budget and
+# starve the `new` leads behind them. A posting whose JD has not arrived in `lead_ttl_days`
+# is exactly what "stale" is meant to mean, so expiring it is right rather than merely
+# convenient. Note the bound is OFF by default, because `lead_ttl_days` is 0 by default --
+# the deliberate abstain posture, not an oversight.
 _EXPIRABLE = frozenset(_status.TRIAGE_OWNED) - {"dismiss"}
+
+# The denominator of the per-source unjudgeable rate (#169 §2): every lead triage has
+# reached a CONCLUSION about, in either direction. `new` is excluded because triage has
+# not looked at those leads yet. Derived from TRIAGE_OWNED rather than hand-listed, so a
+# seventh triage status joins it automatically -- and deliberately NOT
+# DEFAULT_TRIAGE_STATUSES, which is the SELECTION default: a lead leaves that set as soon
+# as it is judged, which is what made the printed rate read ~100% for a healthy source.
+# See health_report for the measured case and the trade-off taken.
+_CONCLUDED = frozenset(_status.TRIAGE_OWNED) - {"new"}
 
 # dismiss_lead's OWN required-status set (#131 decision 6) -- NOT a reuse of
 # _EXPIRABLE. _EXPIRABLE excludes "dismiss" safely ONLY because expire_report()
@@ -125,18 +144,19 @@ class SourceHealth:
     # #169 §2: FACTS, not a verdict -- this dataclass reports counts, and classifying
     # whether a rate is bad belongs elsewhere (`core/doctor.py`'s `classify_*` shape),
     # the same split the store seam already draws. `unjudgeable` is source X's leads
-    # currently at status `unjudgeable`; `selected` is source X's leads across
-    # DEFAULT_TRIAGE_STATUSES -- the SAME lifecycle stage as the numerator, never an
-    # unfiltered read_leads() (that set is ALL-TIME: dismiss, applied, every terminal
-    # included, which would dilute a source that is 100% broken TODAY by its entire
-    # history and could structurally never surface the case this exists to catch --
-    # the #156 mistake, a ratio's two terms drawn from different populations, in a new
-    # costume). Both are 0 by default, and stay 0 unless a caller opts into
+    # currently at status `unjudgeable`; `concluded` is source X's leads that triage has
+    # finished with in either direction (`_CONCLUDED`: every triage-owned status but
+    # `new`). The field was called `selected` over DEFAULT_TRIAGE_STATUSES, which is the
+    # #156 mistake in a new costume after all -- a lead LEAVES the selection set when it
+    # is judged, so numerator and denominator were drawn from populations that diverge
+    # over time, and a 99.4%-healthy source printed 100%. The name changed with the set,
+    # because "selected" is what made the number readable as something it was not.
+    # Both are 0 by default, and stay 0 unless a caller opts into
     # `health_report(include_leads=True)`'s vault walk -- 0/0 must never be read as
     # "measured, clean"; it is indistinguishable from "not measured" by construction,
     # and it is the CALLER's job (cmd_health's `--leads` flag) to know which it asked for.
     unjudgeable: int = 0
-    selected: int = 0
+    concluded: int = 0
 
 
 @dataclass
@@ -1081,24 +1101,39 @@ class Sluice:
         tool both call this, both are things a user runs often and cheaply, and an
         unconditional walk would tax every caller for the one feature (#169 §2) that
         needs it. Opting in adds exactly one `read_leads()` pass, which populates each
-        `SourceHealth`'s `unjudgeable`/`selected` facts -- see `SourceHealth` for why
+        `SourceHealth`'s `unjudgeable`/`concluded` facts -- see `SourceHealth` for why
         both terms must come from the SAME lifecycle stage. Classifying whether a rate
         is bad is deliberately not this method's job; `health_report` reports facts."""
         from sluice.core.health import HealthStore
         from sluice.ingest import sources as registry
         health = HealthStore()
 
-        # Both terms of the rate come from ONE read_leads() pass over the SAME
-        # lifecycle stage: the numerator is `unjudgeable` for source X, the
-        # denominator is source X's leads in DEFAULT_TRIAGE_STATUSES. NOT an
-        # unfiltered read_leads(), which is ALL-TIME (dismiss, applied, every
-        # terminal included) and would dilute a source that is 100% broken TODAY by
-        # its entire history -- the classification could then structurally never
-        # fire on the case it exists to detect. Computed once, up front, rather than
-        # per-source, so a vault with N sources costs one walk, not N.
+        # Both terms come from ONE read_leads() pass, over the leads triage has
+        # CONCLUDED about -- `_CONCLUDED`, every triage-owned status except `new`.
+        #
+        # The denominator used to be DEFAULT_TRIAGE_STATUSES, which over-reported
+        # badly and in the direction that trains people to ignore the signal. That set
+        # is the SELECTION default, and a lead LEAVES it the moment triage judges it,
+        # so in steady state it collapses to roughly the stuck leads themselves: a
+        # source with 500 scraped, 480 dismissed, 17 judged and 3 whose JD never
+        # arrived printed 3/3 -- 100% -- while being 99.4% healthy. Under `_CONCLUDED`
+        # the same source reads 3/500.
+        #
+        # The cost, stated because the previous comment here stated only the opposite
+        # one: including `dismiss` does dilute a source that breaks TODAY against its
+        # own history, so a newly-broken mature source shows a percentage rather than
+        # 100%. That is the right trade. A false alarm on a healthy source is worse
+        # than a muted true one HERE specifically, because this is a supplementary
+        # report -- `detect_drift`'s per-run reasons and the ingest breaker are what
+        # actually catch a source breaking today, and they are unaffected. `new` is
+        # excluded because triage has not reached those leads at all; counting them
+        # would understate in the same way, just quietly.
+        #
+        # Computed once, up front, rather than per-source, so a vault with N sources
+        # costs one walk, not N.
         rates = {}
         if include_leads:
-            for note in self.store().read_leads(set(_status.DEFAULT_TRIAGE_STATUSES)):
+            for note in self.store().read_leads(set(_CONCLUDED)):
                 src = note.fm.get("source", "")
                 bad, total = rates.get(src, (0, 0))
                 rates[src] = (bad + (1 if note.status == "unjudgeable" else 0), total + 1)
@@ -1110,7 +1145,7 @@ class Sluice:
                                 recent=health.counts(src.id),
                                 should_retire=health.should_retire(src.id),
                                 broken_reason=reason, broken_runs=n,
-                                unjudgeable=bad, selected=total)
+                                unjudgeable=bad, concluded=total)
 
         return [_one(src) for src in sorted(registry.all_sources(), key=lambda s: s.id)]
 
@@ -2075,7 +2110,13 @@ class Sluice:
             "total": 0, "unreadable": 0, "empty": 0, "under_200": 0, "under_800": 0}
         try:
             entries = [e for e in os.listdir(dossier_dir) if e.endswith(".json")]
-        except (FileNotFoundError, NotADirectoryError):
+        except OSError:
+            # Every reason the directory cannot be listed, not the two that were named.
+            # A mode-000 dossier dir raises PermissionError, which escaped -- and
+            # `cli.main` converts only ValueError, so `doctor` died with a traceback on
+            # exactly the broken install it exists to diagnose. The per-file read twelve
+            # lines below already catches OSError for this reason and says so; this is
+            # the same rule applied one level up.
             entries = []
         for entry in entries:
             dossier_counts["total"] += 1

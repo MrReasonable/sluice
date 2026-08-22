@@ -2495,7 +2495,8 @@ def test_skipped_gate_slop_carries_both_tiers_SLOP_formatted():
 # voice_check.
 
 def _run_sequence_with_note(monkeypatch, drafts, *, style_hold=False,
-                            require_signoff=True, audit_out="supported\tx\tSF1"):
+                            require_signoff=True, audit_out="supported\tx\tSF1",
+                            slop_allow=()):
     _served(monkeypatch)
     note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
     be = _SequenceBackend(drafts, audit_out=audit_out)
@@ -2503,6 +2504,7 @@ def _run_sequence_with_note(monkeypatch, drafts, *, style_hold=False,
     cfg = _cfg()
     cfg.style_hold = style_hold
     cfg.require_signoff = require_signoff
+    cfg.slop_allow = list(slop_allow)
     res = run_one(note, v, cfg, be, FakeCache(), renderer=FakeRenderer())
     return res, note, be
 
@@ -2543,6 +2545,28 @@ def test_style_hold_withholds_the_pointer_when_enabled(monkeypatch):
     assert res.status == "needs-signoff"
     assert "tailored_cv" not in note.fm
     assert note.fm.get("pending_cv")
+
+
+def test_slop_allow_suppresses_the_style_finding_at_the_ENFORCEMENT_site(monkeypatch):
+    # The ENFORCEMENT half of cv.slop_allow. Its sibling
+    # test_slop_allow_reaches_the_shipped_compose_prompt covers only the PROMPT half, and
+    # it drives a CLEAN draft under dry_run, so no phrase ever matches and no retry ever
+    # runs there: dropping `allow=` from engine.py's `_slop_phrases(...)` call reddened
+    # nothing at all before this test.
+    #
+    # STYLE_DIRTY_CV's only defect is "leverage" in PROFILE prose. Allowing that stem must
+    # leave the first draft clean, so the retry never fires -- ONE compose call is the
+    # discriminator, and it is what an un-suppressed finding would double. style_hold is
+    # ON deliberately: it makes the consequence of getting this wrong visible on the note
+    # (a withheld pointer) as well as in the call count.
+    res, note, be = _run_sequence_with_note(
+        monkeypatch, ["hard-clean-style-dirty", "hard-dirty"],
+        style_hold=True, slop_allow=["leverage"])
+    assert len(be.compose_prompts) == 1, (
+        "an allowed phrase still drove the retry -- cvcfg.slop_allow is not reaching "
+        "the enforcement call in cv/engine.py")
+    assert res.status == "rendered"
+    assert note.fm.get("tailored_cv"), "an allowed phrase withheld the send-ready pointer"
 
 
 def test_style_hold_withholds_even_when_require_signoff_is_off(monkeypatch):

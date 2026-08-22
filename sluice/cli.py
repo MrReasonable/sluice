@@ -395,14 +395,14 @@ def cmd_health(args, config) -> int:
         # replaces the RETIRE flag for that case -- the one an operator reads days later.
         if src.broken_reason:
             flag += f" BROKEN reason={src.broken_reason} x{src.broken_runs}"
-        # Gated on the FLAG, not on `src.selected` being truthy: a source with zero
+        # Gated on the FLAG, not on `src.concluded` being truthy: a source with zero
         # DEFAULT_TRIAGE_STATUSES leads is a legitimate 0/0 when --leads DID walk the
         # vault, and printing nothing there is correct -- but without the flag every
         # SourceHealth also reads 0/0 (the dataclass default), and printing the same
         # "unjudgeable=0/0" text in that case would misrepresent "not measured" as
         # "measured, and clean".
         if include_leads:
-            flag += f" unjudgeable={src.unjudgeable}/{src.selected}"
+            flag += f" unjudgeable={src.unjudgeable}/{src.concluded}"
         print(f"{src.id:16} baseline={src.baseline:.0f} recent={src.recent}{flag}")
     return 0
 

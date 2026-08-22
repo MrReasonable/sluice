@@ -255,7 +255,28 @@ def test_doctor_defaults_to_offline_and_matches_sluice_doctor_offline(tmp_path):
 def test_health_wraps_health_report_as_asdict_sources(tmp_path):
     app = Sluice(Config(), store=Vault(str(tmp_path)))
     out = health(app)
-    assert out == {"sources": [dataclasses.asdict(s) for s in app.health_report()]}
+    expected = [{k: v for k, v in dataclasses.asdict(s).items()
+                 if k not in ("unjudgeable", "concluded")}
+                for s in app.health_report()]
+    assert out == {"sources": expected}
+
+
+def test_health_omits_the_rate_it_does_not_measure_rather_than_reporting_zero(tmp_path):
+    """0/0 must never reach an agent as if it were measured.
+
+    This tool calls health_report() without the vault walk, so the two rate fields hold
+    their dataclass defaults. Emitting them would put a literal 0 in front of a caller
+    that -- unlike the CLI, which knows whether it passed --leads -- has no way to tell
+    "measured, clean" from "not measured", and no flag it could have passed either: the
+    tool's input schema is pinned empty on purpose. An absent key says it unambiguously.
+    """
+    app = Sluice(Config(), store=Vault(str(tmp_path)))
+    sources = health(app)["sources"]
+    assert sources, "the real source registry enumerated nothing, so this asserts nothing"
+    for row in sources:
+        assert "unjudgeable" not in row, "an unmeasured rate was reported as 0"
+        assert "concluded" not in row
+        assert "baseline" in row, "the fields this tool DOES measure must still be there"
 
 
 # ── import-guard tests (item 3 of the design's Testing section) ──────────────

@@ -255,7 +255,30 @@ def load_cv_config(path: str | None = None) -> CvConfig:
     # not "raise on the first hit", same discipline as the cv.name/cv.contact guard
     # above.
     if data.get("slop_allow") is not None:
-        unknown = [p for p in data["slop_allow"] if p not in _PHRASES]
+        # The TYPE first, because this guard's whole posture is fail-loudly-with-a-name
+        # and both non-list spellings defeated it. `slop_allow: 5` raised a bare
+        # `TypeError: 'int' object is not iterable` from inside the comprehension --
+        # no key named, nothing pointing at the config file. Worse, `slop_allow:
+        # leverage`, the natural scalar spelling of a VALID stem, iterated the string
+        # PER CHARACTER and raised naming 'l', 'e', 'v', ... which reads as a bug in
+        # sluice rather than a YAML mistake. Both are fixed by refusing the shape before
+        # iterating it. (The loader's generic list handling has the same hole for every
+        # other list key; that is #176, deliberately not half-fixed here -- this guard is
+        # patched because it is THIS field's own fail-loudly contract that was broken.)
+        raw = data["slop_allow"]
+        if not isinstance(raw, list) or any(not isinstance(p, str) for p in raw):
+            raise ValueError(
+                f"cv.slop_allow must be a list of strings, got {raw!r}. Write it as a "
+                "YAML list -- `slop_allow: [leverage]`, not `slop_allow: leverage`.")
+        # Case-INSENSITIVE membership. Every stem in _PHRASES is lower-case, and a user
+        # writing `slop_allow: [Leverage]` means the stem, not a different one -- raising
+        # "not in slop._PHRASES" over a capital letter is a papercut with no upside.
+        # It also makes true a claim `check_phrases` already relies on: its docstring says
+        # the config entry's casing and the text's casing are independent, which is why it
+        # lower-cases both sides of the `allow` comparison. Under a case-SENSITIVE check
+        # here that was false -- no mixed-case entry could reach it, so the defensive
+        # normalisation was unreachable and the stated reason for it was wrong.
+        unknown = [p for p in raw if p.lower() not in _PHRASES]
         if unknown:
             raise ValueError(
                 f"cv.slop_allow names {', '.join(repr(p) for p in unknown)}, not in "

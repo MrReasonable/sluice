@@ -1494,6 +1494,78 @@ def test_an_application_owned_lead_is_never_marked_unjudgeable(tmp_path, titles)
     assert report.counts["skipped"] == 1
 
 
+def test_a_shortlisted_lead_is_never_demoted_to_unjudgeable(tmp_path, titles):
+    # #169, review round 2: `unjudgeable` records the ABSENCE of a verdict, so it must
+    # never overwrite one. `_guarded` does not cover this -- `shortlist` is TRIAGE_OWNED,
+    # not application-owned, so the write was permitted and a transient JD-fetch failure
+    # during `triage run --status shortlist` demoted a real judge verdict to
+    # `unjudgeable`, orphaning the composed CV pointer that stays on the note and leaving
+    # cv/apply/track with nothing in the shortlist index and no route back. Exit 0
+    # throughout, which is what made it silent.
+    #
+    # `tailored_cv` is asserted SURVIVING rather than merely present-before: the harm is
+    # not just the status, it is a pointer left addressing a lead nobody will look at.
+    accept, _ = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "short.md",
+          _fields("Shortlisted Co", accept[0].title(), status="shortlist")
+          + ['tailored_cv: "cv-abc.pdf (2026-08-01)"'])
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.accept_titles = list(accept)
+    cache = _CacheWhere({"Shortlisted Co": ""})   # JD never arrives -> unjudgeable branch
+
+    report = eng.run(v, cfg, _Backend(), cache, audit, statuses=("shortlist",))
+
+    note = v.read_leads()[0]
+    assert note.status == "shortlist", "a transient fetch failure demoted a real verdict"
+    assert note.fm.get("tailored_cv") == "cv-abc.pdf (2026-08-01)"
+    assert report.counts["unjudgeable"] == 0
+    assert report.counts["skipped"] == 1
+
+
+def test_an_unjudgeable_lead_is_re_selected_and_judged_once_its_jd_arrives(tmp_path, titles):
+    # THE promise #169 exists for, and it had no test anywhere: every other triage test
+    # passes an explicit `statuses=`, so nothing drove the engine over a lead already at
+    # `unjudgeable` using the SHIPPED default. Mutating DEFAULT_TRIAGE_STATUSES to
+    # ("new","research") -- stranding every such lead forever, the exact harm this feature
+    # exists to prevent -- was killed only incidentally, by two health-rate tests that
+    # happen to name the constant.
+    #
+    # No `statuses=` kwarg on purpose. That is the whole point of the test.
+    accept, _ = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "stuck.md", _fields("Retry Co", accept[0].title(), status="unjudgeable"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.accept_titles = list(accept)
+    cache = _CacheWhere({"Retry Co": "a real job description that arrived this time"})
+
+    report = eng.run(v, cfg, _Backend(), cache, audit)
+
+    assert v.read_leads()[0].status in ("shortlist", "research", "dismiss", "needs_review"), (
+        "an unjudgeable lead was never re-selected, so its JD arriving changed nothing")
+    assert report.counts.get("unjudgeable", 0) == 0
+
+
+def test_a_new_lead_is_still_marked_unjudgeable(tmp_path, titles):
+    # The other direction of the same guard: narrowing `unjudgeable`'s require_status
+    # must not make the decision unreachable. Without this row, refusing EVERY status
+    # passes the test above while silently disabling #169 outright.
+    accept, _ = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "fresh.md", _fields("Fresh Co", accept[0].title(), status="new"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.accept_titles = list(accept)
+    cache = _CacheWhere({"Fresh Co": ""})
+
+    report = eng.run(v, cfg, _Backend(), cache, audit, statuses=("new",))
+
+    assert v.read_leads()[0].status == "unjudgeable"
+    assert report.counts["unjudgeable"] == 1
+
+
 def test_triage_unjudgeable_conflict_is_counted_and_batch_continues(tmp_path, titles, monkeypatch):
     # Symmetric to test_triage_classify_conflict_is_counted_and_batch_continues and
     # test_triage_judge_conflict_is_counted_and_batch_continues above, at the THIRD
