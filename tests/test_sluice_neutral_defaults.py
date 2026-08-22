@@ -651,6 +651,64 @@ def test_the_example_config_ships_company_resolve_llm_commented():
         "company_resolve_llm must ship COMMENTED, not active"
 
 
+# ── #167: cv.voice_check, cv.style_hold, cv.slop_allow ────────────────────────
+# voice_check and style_hold need their OWN guards, same reasoning as
+# company_resolve_llm above: the value-keyed sweep at
+# test_every_list_defaulting_config_field_defaults_empty only sees LIST-defaulting
+# fields, so it is blind to these two bools entirely -- a regression to
+# `voice_check: bool = True` would leave every other row in this file green. Their
+# comment in sluice/cv/config.py explains why each ships off: voice_check gates a
+# NEW LLM call, so an unconfigured install must never start spending the moment it
+# upgrades (the company_resolve_llm precedent above); style_hold gates whether a
+# surviving style finding WITHHOLDS the send-ready pointer, and deliberately does
+# NOT ride require_signoff (True by default, chosen for fabrication, not style) --
+# riding it would withhold tailored_cv on ~40 case-insensitive stems at shipped
+# defaults, and a rendered CV with no pointer is inert to apply/select.
+#
+# slop_allow IS list-defaulting, so the sweep above already pins its code default
+# at [] -- but that default is the INVERSE of every other list-defaulting field's:
+# it SUBTRACTS from slop._PHRASES, so empty means FULL enforcement, not abstain
+# (the dossier_allow_hosts polarity). What makes the shipped default safe is
+# style_hold being off, not this list being empty, so its "ships commented" guard
+# sits here beside its siblings rather than reading as licence to loosen it.
+
+
+def test_voice_check_and_style_hold_dataclass_default_is_off():
+    assert CvConfig().voice_check is False
+    assert CvConfig().style_hold is False
+
+
+def test_voice_check_and_style_hold_loader_default_is_off(tmp_path, monkeypatch):
+    # Same hermeticity belt-and-braces as company_resolve_fetch/llm above: both
+    # rungs are already sandboxed by conftest's autouse `_pin_paths`, pinned again
+    # here only to keep a defaults assertion legible where the assertion is.
+    monkeypatch.delenv("SLUICE_CONFIG", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    cfg = load_cv_config(None)
+    assert cfg.voice_check is False
+    assert cfg.style_hold is False
+
+
+def test_the_example_config_ships_voice_check_and_style_hold_commented():
+    import yaml
+    text = _EXAMPLE_PATH.read_text(encoding="utf-8")
+    assert "voice_check:" in text, "voice_check must be documented at all"
+    assert "style_hold:" in text, "style_hold must be documented at all"
+    doc = yaml.safe_load(text) or {}
+    cv_block = doc.get("cv") or {}
+    assert "voice_check" not in cv_block, "voice_check must ship COMMENTED, not active"
+    assert "style_hold" not in cv_block, "style_hold must ship COMMENTED, not active"
+
+
+def test_the_example_config_ships_slop_allow_commented():
+    import yaml
+    text = _EXAMPLE_PATH.read_text(encoding="utf-8")
+    assert "slop_allow:" in text, "slop_allow must be documented at all"
+    doc = yaml.safe_load(text) or {}
+    assert "slop_allow" not in (doc.get("cv") or {}), \
+        "slop_allow must ship COMMENTED, not active"
+
+
 # ── #80: the example config must ship no machine-specific path ───────────────
 
 # `key: value` on a line that may be commented out, or a block-sequence item (`- value`).

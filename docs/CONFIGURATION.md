@@ -96,7 +96,10 @@ the Candidate Profile section that follows this table.
 | `prefix_map` | `{}` | |
 | `negatives` | `[]` | |
 | `ttl_days` | `7` | dossier cache TTL for cv |
-| `require_signoff` | `true` | a safety valve, not a preference — ships **on**; an `unsupported` audit claim withholds the send-ready pointer until `job-sluice cv signoff` |
+| `require_signoff` | `true` | a safety valve, not a preference — ships **on**; an `unsupported` audit claim withholds the send-ready pointer until `job-sluice cv signoff`. Rejects non-bool values (see `lead_ttl_days` above for why) |
+| `voice_check` | `false` | opt-in (#167): whether the model-judged voice check runs at all, gating a **new LLM call** — off by default so an unconfigured install never starts spending the moment it upgrades, the `company_resolve_llm` precedent. The deterministic phrase matches reach the composer's retry either way, so leaving this off does not make the underlying fix inert. Rejects non-bool values, same reasoning as `lead_ttl_days` above |
+| `style_hold` | `false` | opt-in (#167): whether a style finding that survives the retry **withholds** the send-ready pointer. Deliberately does **not** ride `require_signoff` (`true` by default, chosen for fabrication, not style) — turning this on means a hard-clean CV containing any of ~40 case-insensitive AI-tell stems (`sluice/cv/slop.py`) has `tailored_cv` withheld until the source wording is fixed. Rejects non-bool values, same reasoning as `lead_ttl_days` above |
+| `slop_allow` | `[]` | phrases from `slop._PHRASES` you legitimately use in your own voice. **Not** abstain-shaped like every other list default above — it *subtracts* from a hardcoded list, so empty means **full enforcement**, the `dossier_allow_hosts` polarity. An entry not found among the stems raises at load, naming the valid ones (the list holds stems like `"leverage"`, not an inflection like `"leveraged"`) |
 | `renderer` | `"template"` | `template` or `script`; `weasyprint` (the old bundled renderer) is **retired** and raises, naming `template` as the replacement |
 | `template` | `""` | blank = the packaged layout; point at your own `.html.j2` (contract: `docs/cv-template-example.html.j2`) |
 | `render_script` | `"./scripts/cv_render_v2.py"` | `script` renderer only; no script ships — point it at your own or it fails at construction |

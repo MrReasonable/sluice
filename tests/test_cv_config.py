@@ -173,3 +173,88 @@ def test_compose_timeout_rejects_a_nonpositive_or_non_integer(tmp_path, bad):
     p.write_text(f"cv:\n  compose_timeout: {bad}\n", encoding="utf-8")
     with pytest.raises(ValueError):
         load_cv_config(str(p))
+
+
+# ── #167: voice_check, style_hold, slop_allow ─────────────────────────────────
+# The neutrality/abstain-default guards for these three (dataclass default, loader
+# default, "ships commented" in sluice.yaml.example) live in
+# test_sluice_neutral_defaults.py, the file the docs and review agents point at for
+# that claim -- same split as company_resolve_fetch/company_resolve_llm in
+# TriageConfig, which have no equivalent tests in test_triage_config.py either. This
+# file covers the FUNCTIONAL behaviour: that a configured value round-trips, and
+# that slop_allow's fail-loudly-on-an-unknown-stem validation actually fires.
+
+
+def test_voice_check_and_style_hold_round_trip_through_the_cv_block(tmp_path):
+    p = tmp_path / "config.yaml"
+    p.write_text("cv:\n  voice_check: true\n  style_hold: true\n", encoding="utf-8")
+    cfg = load_cv_config(str(p))
+    assert cfg.voice_check is True
+    assert cfg.style_hold is True
+
+
+def test_slop_allow_rejects_a_phrase_that_is_not_in_the_list_it_subtracts_from(tmp_path):
+    # slop_allow SUBTRACTS from slop._PHRASES, so an entry that matches no stem is
+    # silently inert -- the hold it was meant to suppress just recurs forever, with
+    # nothing anywhere going red. _PHRASES holds STEMS ("leverage"), and the
+    # INFLECTION a candidate actually types ("leveraged") is exactly the entry most
+    # likely to slip through un-caught. Fail loudly at construction, naming the
+    # valid stems -- this repo's rule 8 for an unknown name.
+    p = tmp_path / "config.yaml"
+    p.write_text("cv:\n  slop_allow: [leveraged]\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="leveraged"):
+        load_cv_config(str(p))
+
+
+def test_slop_allow_accepts_a_real_stem_and_round_trips(tmp_path):
+    # The paired falsifier for the test above: a guard that refused EVERY value
+    # would be indistinguishable from the knob being dead.
+    p = tmp_path / "config.yaml"
+    p.write_text("cv:\n  slop_allow: [leverage]\n", encoding="utf-8")
+    assert load_cv_config(str(p)).slop_allow == ["leverage"]
+
+
+def test_slop_allow_names_every_unknown_entry_in_one_raise(tmp_path):
+    # Same discipline as the cv.name/cv.contact guard above: collect every offender
+    # before raising, not "raise on the first hit" -- otherwise an operator fixing
+    # one typo reruns only to hit the next one, one avoidable round trip at a time.
+    p = tmp_path / "config.yaml"
+    p.write_text("cv:\n  slop_allow: [leveraged, spearheaded]\n", encoding="utf-8")
+    with pytest.raises(ValueError) as e:
+        load_cv_config(str(p))
+    msg = str(e.value)
+    assert "leveraged" in msg
+    assert "spearheaded" in msg
+
+
+# ── #167 review follow-up: bool-typed cv: keys reject a non-bool YAML value ──
+# Ported from triage/config.py's identical guard (company_resolve_fetch/
+# company_resolve_llm) after review pointed out cv/config.py's setattr loop had
+# never had this check for ANY bool field, including the long-standing
+# require_signoff. TYPE-KEYED (isinstance(getattr(cfg, k), bool)), not a
+# hardcoded field list, so it covers every bool this dataclass has today AND
+# any added later with no extra wiring -- see the loader's own comment.
+
+
+@pytest.mark.parametrize("field", ["voice_check", "style_hold", "require_signoff"])
+def test_a_quoted_false_does_not_silently_enable_a_bool_cv_field(tmp_path, field):
+    # require_signoff is the load-bearing row here: it is NOT one of the two fields
+    # this task added, so a test covering only voice_check/style_hold cannot tell a
+    # type-keyed guard from a field-keyed one that just happens to name both new
+    # fields. Only a bool the guard was never written FOR proves it is generic --
+    # the same "a hardcoded field list would drift the moment a bool is added
+    # later" hazard the triage precedent's own comment names.
+    p = tmp_path / "config.yaml"
+    p.write_text(f'cv:\n  {field}: "false"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match=field):
+        load_cv_config(str(p))
+
+
+@pytest.mark.parametrize("field", ["voice_check", "style_hold", "require_signoff"])
+def test_a_real_yaml_boolean_still_sets_a_bool_cv_field(tmp_path, field):
+    # The paired falsifier: a guard that refused every value would be
+    # indistinguishable from the loader being broken for these keys entirely.
+    p = tmp_path / "config.yaml"
+    p.write_text(f"cv:\n  {field}: false\n", encoding="utf-8")
+    cfg = load_cv_config(str(p))
+    assert getattr(cfg, field) is False
