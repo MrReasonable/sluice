@@ -54,9 +54,12 @@ def test_the_common_misspelling_normalises():
 
 
 def test_the_selection_default_has_ONE_home_and_the_parser_uses_it():
-    # The value lived in FOUR places before this (cli.py:652, cli.py:1554,
-    # core/app.py:1070, triage/engine.py:81) and only the last was ever changed by an
-    # earlier draft -- which would have written `unjudgeable` and then never re-read it.
+    # The value lived in FOUR places before this (cli.py's `cmd_triage_run` fallback and
+    # its `--status` argparse default, `Sluice.triage`'s `statuses=` default in
+    # core/app.py, and `triage/engine.py`'s `run`) and only the last was ever changed by
+    # an earlier draft -- which would have written `unjudgeable` and then never re-read
+    # it. Symbols, not line numbers: the numbers this comment first carried were accurate
+    # in the pre-change tree and point somewhere else entirely in this one.
     from sluice.cli import _build_parser
     actions = _walk_actions(_build_parser())
     status_defaults = [a.default for a in actions if "--status" in (a.option_strings or [])]

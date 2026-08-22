@@ -21,6 +21,15 @@ from sluice.core.status import resolve_merge_status
     (["rejected", "accepted"], None, "conflict"),         # two terminals
     (["shortlist", "dismiss"], None, "conflict"),         # two non-new triage
     (["weird", "shortlist"], None, "conflict"),           # non-canonical + different
+    # #169's new triage status, and the row that DISCRIMINATES it. An earlier ruling on
+    # this branch held that no merge row could -- true only of the `research` +
+    # `unjudgeable` pair traced then (two different non-new triage states either way, so
+    # "conflict" whether or not `unjudgeable` is canonical), and false in general: drop
+    # `unjudgeable` from status.CANONICAL and this row returns (None, "conflict") via the
+    # `s - CANONICAL` guard instead. It pins a real behaviour change, not a tautology --
+    # a duplicate cluster carrying an `unjudgeable` twin now RESOLVES to it rather than
+    # refusing to dedupe.
+    (["new", "unjudgeable"], "unjudgeable", "ok"),        # new is the floor here too
 ])
 def test_pairwise_both_orders(statuses, winner, outcome):
     assert resolve_merge_status(statuses) == (winner, outcome)

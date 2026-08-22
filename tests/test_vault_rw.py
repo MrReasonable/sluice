@@ -134,7 +134,8 @@ def test_normalize_all_statuses_treats_unjudgeable_as_known(tmp_path):
     (can_apply/can_advance/can_transition/is_application_owned), none of which reference
     TRIAGE_OWNED at all, so none of them could have changed behaviour for this new member.
     No existing test exercised `summary["unknown"]` for this sweep at all (grepped: only
-    `leads reconcile`'s SEPARATE `unknown` list, vault.py:1695, was covered), so a status
+    `leads reconcile`'s SEPARATE `unknown` list, in `Vault.reconcile_layout`, was
+    covered), so a status
     vocabulary regression here -- e.g. `unjudgeable` silently dropping back out of
     TRIAGE_OWNED -- would land in `summary["unknown"]` with nothing red anywhere."""
     v = Vault(str(tmp_path))

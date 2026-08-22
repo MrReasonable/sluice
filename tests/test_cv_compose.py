@@ -299,6 +299,14 @@ def test_cv_prompt_expresses_no_role_or_culture_preference():
     # which jobs are good. Check the STATIC shipped rules, NOT build_prompt's output
     # -- that interpolates the caller's company/role/JD/bundle, and a real JD could
     # legitimately contain "startup" and must not trip this guard.
+    #
+    # Which is why this guard alone is no longer enough: #167 moved the ban list out of
+    # _RULES and into a `{banned_phrases}` placeholder rendered from slop._PHRASES, so
+    # everything below this line now covers ZERO of the ~40 stems that actually reach the
+    # model. tests/test_prompt_neutrality.py sweeps the RENDERED text of every shipped
+    # prompt (built from fixed SYNTHETIC arguments, so no caller data is in scope there
+    # either) and covers the list this one cannot see. Both are load-bearing: that sweep
+    # can only carry terms every prompt can honour, so the fuller list stays here.
     rules = C._RULES.lower()
     forbidden = [
         # company type / industry

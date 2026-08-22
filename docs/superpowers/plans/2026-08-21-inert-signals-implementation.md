@@ -24,7 +24,7 @@
 
 ---
 
-# Track A — #169: the dossier and triage track
+## Track A — #169: the dossier and triage track
 
 ### Task 1: `DossierCache.jd_arrived` and the not-persisted path
 
@@ -666,7 +666,8 @@ git commit -m "fix(cv): flag a CV composed without a job description (#169)"
 **Files:**
 - Modify: `sluice/triage/apply.py` (new pure helper + `apply_verdict`)
 - Modify: `sluice/triage/engine.py:386-395` (counts key + audit row)
-- Test: `tests/test_triage_apply.py`, `tests/test_triage_engine.py`
+- Test: `tests/test_apply.py` (`triage/apply.py`'s unit tests, including `clamp_verdict`),
+  `tests/test_triage_engine.py` (the counts-and-audit assertion)
 
 **Interfaces:**
 - Consumes: nothing.
@@ -705,7 +706,7 @@ def test_the_clamped_status_is_what_gets_COUNTED_and_AUDITED(tmp_path):
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `.venv/bin/python -m pytest tests/test_triage_apply.py -k clamp -v`
+Run: `.venv/bin/python -m pytest tests/test_apply.py tests/test_triage_engine.py -k clamp -v`
 Expected: FAIL — `ImportError: cannot import name 'clamp_verdict'`.
 
 - [ ] **Step 3: Implement the pure helper**
@@ -762,9 +763,12 @@ git commit -m "fix(triage): clamp a model verdict to the judge's own vocabulary 
 ### Task 7: Per-source unjudgeable rate in `health_report`
 
 **Files:**
-- Modify: `sluice/core/app.py:1049-1068` (`health_report`), `sluice/core/doctor.py`
+- Modify: `sluice/core/app.py:1049-1068` (`health_report`) — `sluice/core/doctor.py` was
+  listed here in the original plan and turned out not to be needed: `SourceHealth` carries
+  the two FACTS and `job-sluice health` prints them, so no classifier was added
 - Modify: `sluice/cli.py` (`cmd_health` print format), `sluice/mcpserver.py:143` (docstring)
-- Test: `tests/test_health_cli.py`, `tests/test_doctor.py`
+- Test: `tests/test_health.py` (the `health_report` assertions), `tests/test_health_cli.py`
+  (the `--leads` line format)
 
 **Interfaces:**
 - Consumes: `DEFAULT_TRIAGE_STATUSES` (Task 4).
@@ -797,7 +801,7 @@ def test_health_report_does_no_vault_io_by_default(tmp_path):
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `.venv/bin/python -m pytest tests/test_health_cli.py -k unjudgeable -v`
+Run: `.venv/bin/python -m pytest tests/test_health.py tests/test_health_cli.py -k unjudgeable -v`
 Expected: FAIL — `TypeError: health_report() got an unexpected keyword argument 'include_leads'`.
 
 - [ ] **Step 3: Implement**
@@ -830,7 +834,7 @@ Add `unjudgeable: int = 0` and `selected: int = 0` to `SourceHealth`, then:
 
 …and pass `unjudgeable`/`selected` into each `SourceHealth`. `core/vault.py:1004` returns `[]` on a missing `leads_dir`, so a fresh install does not break.
 
-Classification stays pure in `core/doctor.py`, mirroring `classify_gate`'s shape.
+No classifier was added, and `core/doctor.py` was not touched (`ad98493`). `SourceHealth` carries the two FACTS and `job-sluice health` prints them: nothing would have called a classifier here (`health_report` is reached from `cli.py` and `mcpserver.py`, never from `Sluice.doctor`), and a verdict would need a threshold — a shipped judgement about which sources are good enough, which is exactly what this repo declines to ship. The rate is reported; the reader decides.
 
 - [ ] **Step 4: Update the surfaces and their docs**
 
@@ -839,7 +843,7 @@ Classification stays pure in `core/doctor.py`, mirroring `classify_gate`'s shape
 - [ ] **Step 5: Run, lint, commit**
 
 ```bash
-git add sluice/core/app.py sluice/core/doctor.py sluice/cli.py sluice/mcpserver.py tests/
+git add sluice/core/app.py sluice/cli.py sluice/mcpserver.py tests/
 git commit -m "feat(health): report each source's unjudgeable rate (#169)"
 ```
 
@@ -863,10 +867,12 @@ def test_doctor_reports_the_cache_distribution_as_a_NOTICE_not_a_verdict():
     # it is not the shipped judgement a threshold verdict would be. And it is never
     # inert -- at min_jd_chars: 0 a threshold count would be identically zero, leaving
     # decision 3's accepted cost invisible, which is how #169 happened in the first place.
-    check = classify_dossier_cache({"total": 1336, "empty": 12, "under_200": 141,
-                                    "under_800": 426})
+    # Arbitrary counts, not the measured ones: the assertion is that each number reaches
+    # the detail string, which any numbers exercise identically.
+    check = classify_dossier_cache({"total": 91, "empty": 13, "under_200": 27,
+                                    "under_800": 58})
     assert check.state == NOTICE
-    assert "141" in check.detail and "1336" in check.detail
+    assert "27" in check.detail and "91" in check.detail
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -918,7 +924,7 @@ git commit -m "feat(onboard): ask for the JD floor during init (#169)"
 
 ---
 
-# Track B — #167: the CV style track
+## Track B — #167: the CV style track
 
 ### Task 10: Extract `section_spans()` from `validate`'s inline loop
 
@@ -1116,7 +1122,7 @@ def test_check_phrases_sees_ONLY_the_lines_it_is_given():
     # the retry under "Fix these and re-emit the FULL CV" and is answerable only by
     # renaming the employer, turning a style rule into fabrication pressure -- the
     # LOCATION-refusal shape CLAUDE.md records as the worst case this codebase shipped.
-    employer_line = [(1, "Leverage Partners Ltd")]
+    employer_line = [(1, "Example Leverage Partners")]
     assert check_phrases(employer_line) != [], "no scoping happens in this function"
     assert check_phrases([]) == []
 
@@ -1225,8 +1231,8 @@ def test_a_phrase_in_an_EMPLOYER_line_never_reaches_the_retry(tmp_path):
     # and WORK bullets. A retry message naming an employer line is answerable only by
     # renaming the employer -- a style rule turned into fabrication pressure.
     prompts = _run_one_capturing_prompts(
-        tmp_path, cv_with_employer="Leverage Partners Ltd")
-    assert not any("Leverage Partners" in p for p in prompts), prompts
+        tmp_path, cv_with_employer="Example Leverage Partners")
+    assert not any("Example Leverage" in p for p in prompts), prompts
 
 
 def test_the_audit_runs_over_the_RENDERED_draft_not_the_discarded_one(tmp_path):
@@ -1325,7 +1331,11 @@ git commit -m "fix(cv): render the last hard-clean draft, and audit the draft th
 - Test: `tests/test_cv_voice.py`
 
 **Interfaces:**
-- Produces: `voice.build_voice_prompt(cv_text) -> str`, `voice.run_voice(backend, cv_text) -> tuple[str, list]`.
+- Produces: `voice.build_voice_prompt(excerpt) -> str`, `voice.run_voice(backend, excerpt)
+  -> tuple[str, list]`. The parameter was drafted as `cv_text` here and shipped as
+  `excerpt`: cv/engine.py hands this the SCOPED PROFILE/WORK lines, not the document,
+  so `cv_text` was a name that had to be corrected in prose everywhere it appeared.
+  The illustrative code below still shows the drafted name.
 
 - [ ] **Step 1: Write the failing tests**
 

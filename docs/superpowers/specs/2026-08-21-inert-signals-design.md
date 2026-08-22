@@ -107,7 +107,7 @@ That second clause is why the STYLE **hold** is opt-in (decision 8) while the ST
 `DossierCache.__init__` gains `min_jd_chars`, defaulting to `0`. One public predicate owns the
 judgement:
 
-```
+```python
 cache.jd_arrived(dossier) -> bool
 ```
 
@@ -264,7 +264,7 @@ Because this refactors the pure gate, the Risk register no longer claims `cv/val
 
 Round 1's headline fix, and round 2 found it incomplete.
 
-```
+```python
 retry_msgs = None                 # compose() takes prior_violations=None on attempt 1
 best = None                       # (cv_text, style_msgs) of the last HARD-clean attempt
 for _ in range(2):

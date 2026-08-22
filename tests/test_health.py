@@ -197,7 +197,7 @@ def test_health_report_reflects_the_real_registry_sorted_by_id(tmp_path):
 def _write_source_note(leads_dir, *, source, status, company, role="Analyst"):
     """A raw lead note carrying a `source` field -- `read_leads` reads it back via
     `LeadNote.fm`, and `health_report`'s per-source rate keys off exactly that field
-    (`sluice/core/leads.py:271`'s `Lead.source`, mirrored into the note)."""
+    (`sluice/core/leads.py`'s `Lead.source`, mirrored into the note)."""
     leads_dir.mkdir(parents=True, exist_ok=True)
     (leads_dir / f"{company} - {role}.md").write_text(
         f'---\ncompany: "{company}"\nrole: "{role}"\nstatus: {status}\nsource: {source}\n'

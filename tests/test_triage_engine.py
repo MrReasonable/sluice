@@ -193,8 +193,8 @@ def test_no_llm_skips_judge(tmp_path):
 
 class _AppliedVerdictBackend:
     """A judge that returns an APPLICATION-OWNED status, exactly like a real model
-    hallucinating outside its own vocabulary (triage/prompt.py:60 asks for
-    shortlist|research|dismiss only). #169: this is the live hole -- `_status.normalize`
+    hallucinating outside its own vocabulary (triage/prompt.py's `_SCAFFOLD_TAIL` output
+    schema asks for shortlist|research|dismiss only). #169: this is the live hole -- `_status.normalize`
     passes an unrecognised verdict through untouched, so this used to write `applied`
     straight from triage, reachable from model output."""
     last_backend = "primary"

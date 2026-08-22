@@ -125,6 +125,39 @@ def test_a_jd_that_did_not_arrive_is_not_persisted(tmp_path):
     assert not (tmp_path / "nothing.json").exists()
 
 
+def test_a_jd_that_did_not_arrive_is_REFETCHED_by_the_NEXT_run(tmp_path):
+    """#169's promise stated end to end, which no single-call test above states.
+
+    The test immediately above proves ONE call writes no file; the poisoned-entry test
+    below proves a MANUALLY SEEDED empty entry is not served. Neither runs the sequence
+    the issue is actually about -- the failure the FIRST run produced being RETRIED by
+    the SECOND rather than served back to it for the rest of the TTL.
+
+    Today that follows from "no file written" plus "there is no in-process memo", so
+    this asserts a composite rather than a distinct branch, deliberately: a memo (or any
+    other layer added in front of the write gate) would restore exactly the loop #169
+    closed while leaving both of the neighbouring tests green.
+    """
+    calls = []
+
+    def _fetch(lead):
+        calls.append(dict(lead))
+        return {"jd": {"markdown": ""}, "glassdoor": {}}
+
+    dc = DossierCache(str(tmp_path), ttl_days=7, fetcher=_fetch,
+                      clock=_clock(datetime(2026, 7, 8)))
+    lead = {"lead_id": "never-arrives"}
+    first = dc.get_or_build(lead)
+    second = dc.get_or_build(lead)
+
+    assert len(calls) == 2, "the second run served the failure instead of retrying it"
+    assert not (tmp_path / "never-arrives.json").exists()
+    # Both runs hand back the FRESHLY FETCHED dossier, so each caller can answer
+    # jd_arrived on what it is holding -- the property the not-persisted path exists for.
+    assert dc.jd_arrived(first) is False
+    assert dc.jd_arrived(second) is False
+
+
 def test_the_not_persisted_path_returns_the_FRESH_dossier(tmp_path):
     # The caller must be able to answer jd_arrived on what it is holding, so the
     # rejected cached entry is never what comes back.

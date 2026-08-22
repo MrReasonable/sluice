@@ -51,3 +51,19 @@ def test_a_hold_carrying_both_kinds_names_both(capsys):
     err = capsys.readouterr().err
     assert "1 unsupported claim(s)" in err
     assert "SLOP leverage" in err
+
+
+def test_a_non_string_claim_is_printed_rather_than_crashing_the_prompt(capsys):
+    # `needs_signoff` is hand-editable YAML in a lead note, and Sluice.sign_off_cv passes
+    # a parsed JSON array through element-wise (`parsed if isinstance(parsed, list) else
+    # [str(parsed)]`, core/app.py) -- so `needs_signoff: '[1, 2]'` reaches this printer as
+    # ints, not strings. This helper's split calls `.partition("\t")` per entry, which the
+    # pre-Task-15 `print(f"  - {c}")` never did: an int raised AttributeError and took the
+    # whole `cv signoff` command down for that lead. It failed in the SAFE direction (the
+    # hold stands, no CV is released), but the candidate could not clear the hold at all.
+    # An unsplittable entry carries no "style" tag, so it belongs in the fabrication group
+    # -- the same place today's unprefixed entries go.
+    _print_signoff_claims("slug", [1, "unsupported\tclaim"])
+    err = capsys.readouterr().err
+    assert "2 unsupported claim(s)" in err
+    assert "- 1" in err

@@ -12,6 +12,17 @@ def test_prompt_frames_the_judgement_as_voice_not_accuracy():
     assert "not its accuracy" in p
 
 
+def test_prompt_names_its_input_an_excerpt_and_rules_absence_out_of_scope():
+    """cv/engine.py hands this an EXCERPT (the scoped PROFILE/WORK lines), so the text
+    really is missing headings, employers and contact details. Every finding rides the
+    engine's retry into cv/compose.py under "re-emit the FULL CV" -- so a model that
+    answered with an ABSENCE would be instructing the composer to ADD material, which
+    is the fabrication pressure the scoping exists to remove."""
+    p = V.build_voice_prompt("CV TEXT")
+    assert "EXCERPT" in p
+    assert "is not a finding" in p
+
+
 def test_run_voice_returns_the_flagged_lines():
     backend = FakeBackend("flag\tThis reads like a press release.\n")
     report, findings = V.run_voice(backend, "PROFILE\nProse.\n")

@@ -12,8 +12,11 @@ _log = get_logger("triage.apply")
 _DECISION_STATUS = {"reject": "dismiss", "needs_review": "needs_review", "keep": "new",
                     "unjudgeable": "unjudgeable"}
 
-# The judge's OWN vocabulary -- three verdicts, exactly what triage/prompt.py:60 and
-# triage/judge.py:44 ask the model for.
+# The judge's OWN vocabulary -- three verdicts, exactly what triage/prompt.py's
+# `_SCAFFOLD_TAIL` (its "Output schema" block) and triage/judge.py's `_build_prompt`
+# tail ask the model for. Named by SYMBOL, not by line number: a line number is
+# accurate only until someone inserts anything above it, and a citation that has
+# silently drifted is worse than none.
 _JUDGE_VERDICTS = frozenset({"shortlist", "research", "dismiss"})
 
 
