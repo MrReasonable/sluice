@@ -131,11 +131,23 @@ def test_the_pypi_install_guard_catches_an_interposed_flag():
     assert _installs_from_pypi('RUN pip install --no-cache-dir job-sluice')
 
 
-def test_the_pypi_install_guard_crosses_a_line_continuation():
+def test_the_pypi_install_guard_crosses_a_line_continuation(tmp_path):
     """The likeliest real spelling, and the one the first version of this guard could not see.
-    Every `RUN` in this repo's Dockerfile is written with this idiom."""
-    assert _installs_from_pypi(_fold_continuations(_strip_comments(
-        "RUN pip install --no-cache-dir \\\n      job-sluice[render,google]")))
+    Every `RUN` in this repo's Dockerfile is written with this idiom.
+
+    It goes through `_uncommented` on a real FILE rather than calling the two helpers directly,
+    and that is the whole point of the fixture. Composed by hand, this test passed even with
+    `_uncommented` reverted to skip the fold -- it was exercising the helpers, not the call site
+    the guard actually uses, which is this repo's recorded "#170" defect: when a fix is one call
+    site, the test has to exercise THAT call site or it reproduces the bug one level up."""
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(
+        "FROM python:3.13-slim\n"
+        "# a comment that mentions pip install job-sluice and must stay invisible\n"
+        "RUN pip install --no-cache-dir \\\n"
+        "      job-sluice[render,google]\n"
+    )
+    assert _installs_from_pypi(_uncommented(dockerfile))
 
 
 def test_the_pypi_install_guard_catches_the_underscore_spelling():
