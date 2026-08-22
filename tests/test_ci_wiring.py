@@ -739,3 +739,77 @@ def test_package_json_runs_the_locked_binary_by_path():
     assert manifest["scripts"]["rulesync"] == (
         "node_modules/.bin/rulesync generate -t 'claudecode,agentsmd' -f '*'"
     )
+
+
+# ── the Docker channel's pre-release build (#104 PR 4) ───────────────────────
+
+
+def test_ci_builds_the_image_for_real():
+    """The release workflow's `docker` job is gated on `release_created`, so its first ever
+    execution would be AFTER the tag is public. That is not hypothetical: `build` and
+    `twine check --strict` had exactly that shape until 1.0.0, and their first real run came
+    after the release was cut. This job is what moves the discovery to a pull request."""
+    block = _job_directives("docker")
+    assert re.search(r"^\s*-\s*run: docker build ", block, re.MULTILINE), (
+        "ci.yml's docker job no longer runs a real `docker build`, so nothing exercises the "
+        "Dockerfile until a release tag is already public"
+    )
+
+
+def test_ci_image_smoke_covers_every_baked_extra():
+    """`--version` passes on an image with no system libraries at all, so it cannot see the
+    failure this image exists to prevent. And `pip install` only WARNS on an unknown extra
+    rather than failing, so a typo'd or renamed one ships an image silently missing it.
+
+    weasyprint is named explicitly because it is the only one whose import actually exercises
+    the apt-installed cairo/pango; the rest would pass on a wheel-only install."""
+    block = _job_directives("docker")
+    for module in ("weasyprint", "jinja2", "googleapiclient", "mcp", "argcomplete"):
+        assert module in block, (
+            f"ci.yml's docker job no longer smoke-imports {module!r}; a missing extra would "
+            f"ship with nothing red"
+        )
+
+
+def test_the_ci_image_build_does_not_use_the_release_hash_pins():
+    """This assertion looks backwards, and that is the point.
+
+    The CI job builds its wheel with a plain `pip install build`, NOT with
+    `--require-hashes -r .github/build-requirements.txt`. The divergence is deliberate: this
+    wheel is a smoke fixture discarded at the end of the job, not an artefact anyone publishes,
+    so hash-pinning it would couple a pull-request check to the release supply chain for no
+    property gained -- and would create a THIRD copy of the release build sequence, firing the
+    composite-action extraction the PyPI channel deliberately deferred.
+
+    Nothing else records that. "Make CI consistent with the release build" is the most likely
+    review suggestion this job will ever attract, and taking it silently is exactly the drift
+    this pins shut, with a message that names the reason."""
+    assert "build-requirements.txt" not in _job_directives("docker"), (
+        "ci.yml's docker job now references .github/build-requirements.txt. That makes a third "
+        "copy of the release build sequence and reopens the composite-action extraction the "
+        "PyPI channel deferred -- if this is intended, take that decision explicitly rather "
+        "than as a side effect of a consistency cleanup"
+    )
+
+
+def test_the_doctor_smoke_asserts_on_output_rather_than_exit_status():
+    """`doctor` exits 1 in ANY container by design -- DoctorReport.exit_code() returns 1
+    whenever a check is DEAD, and claude-max is DEAD whenever the `claude` CLI is absent from
+    PATH, which it always is in this image. So the smoke must not assert a status.
+
+    But a bare "no traceback" negative passes against a container that prints nothing, or dies
+    before doctor runs at all. The positive half -- the report must actually be present -- is
+    what makes it falsifiable, and a trailing `|| true` would discard the evidence that
+    distinguishes those cases."""
+    block = _job_directives("docker")
+    assert "job-sluice doctor" in block, (
+        "the doctor smoke no longer asserts the report is PRESENT; a bare traceback check "
+        "passes against an image that prints nothing at all"
+    )
+    assert "Traceback" in block, (
+        "the doctor smoke no longer checks for a traceback"
+    )
+    assert "|| true" not in block, (
+        "the doctor smoke swallows the command's status with `|| true`, which green-lights a "
+        "wholly broken image -- capture the output and assert on it instead"
+    )
