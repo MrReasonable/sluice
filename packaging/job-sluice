@@ -1,0 +1,49 @@
+#!/usr/bin/python3
+"""The `/usr/bin/job-sluice` entry point installed by the .deb and .rpm (#104, PR 5 of 7).
+
+WHY A SHIM AT ALL. The wheel is unpacked to /usr/lib/job-sluice rather than into the system
+`site-packages`, so `import sluice` does not resolve without help. That placement is the
+deliberate part: dropping a third-party package into a distro-managed site-packages is what
+PEP 668 marks systems EXTERNALLY-MANAGED to prevent, and it risks colliding with a future
+`python3-sluice` from the distro itself. A private directory plus a shim keeps this package's
+files entirely under paths it owns.
+
+WHY `/usr/bin/python3` AND NOT `/usr/bin/env python3`. The interpreter must be the one the
+package's `Depends:`/`Requires:` guarantees (python3 >= 3.12). `env` would resolve against the
+invoking user's PATH, so a pyenv/conda/asdf shim earlier on it would silently run this CLI on an
+interpreter nothing declared -- possibly older than 3.12, where the codebase's own syntax does
+not parse, and the traceback would name sluice rather than the interpreter mix-up.
+"""
+import sys
+
+
+def main() -> int:
+    """Put the packaged tree first, then hand off to the real CLI.
+
+    `insert(0)`, not `append`, and the difference is not cosmetic. Appending puts this
+    directory LAST, so any `sluice` already importable -- most realistically a leftover
+    `pip install job-sluice` in system or user site-packages, which README.md actively
+    instructs -- wins over the one this package installed. The user would then run `apt
+    install job-sluice`, get a different version, and `job-sluice --version` would report the
+    pip copy while naming the packaged path nowhere. An earlier revision of this file appended
+    and justified it as stopping this directory shadowing the standard library; that risk is
+    theoretical here and this one is not. The directory's contents are known and controlled --
+    the unpacked wheel is `sluice/` plus its dist-info, and nothing else is ever written there
+    -- so there is no stdlib name for it to shadow, while a stale pip install is an ordinary
+    thing to find on a real machine.
+
+    The import sits inside this function rather than at module scope because the path must be
+    set before it runs. That also keeps the file free of a module-scope import below other
+    statements, so it needs no linter exemption -- an earlier revision carried a `# noqa: E402`
+    that nothing enforced, since `ruff check` runs over `sluice tests scripts` and never sees
+    this file. It matches `sluice/cli.py`'s own convention besides, where the heavy imports
+    live inside the command functions.
+    """
+    sys.path.insert(0, "/usr/lib/job-sluice")
+    from sluice.cli import main as cli_main
+
+    return cli_main()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

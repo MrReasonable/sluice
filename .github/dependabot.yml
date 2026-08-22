@@ -71,6 +71,14 @@ updates:
   # `directory: /` is where the Dockerfile lives. docker-compose.yml is deliberately NOT a
   # second entry: it references ghcr.io/mrreasonable/job-sluice, this repo's OWN image, and
   # there is nothing upstream there to bump.
+  #
+  # NOT COVERED, and named here rather than left to be discovered: the nfpm release pinned by
+  # NFPM_VERSION + NFPM_SHA256 in .github/workflows/release-please.yml's `linux-packages` job
+  # (#104 PR 5). No Dependabot ecosystem reaches a `curl`-downloaded GitHub release, so that
+  # pair is the one third-party binary in this repo with no updater behind it and must be
+  # bumped by hand -- version and digest together, since either alone fails closed at the
+  # checksum. It is a build-time tool that never ships to a user, which is why this is recorded
+  # as a known gap rather than treated the way the base-image pin above is.
   - package-ecosystem: docker
     directory: /
     schedule:

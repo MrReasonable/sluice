@@ -131,8 +131,126 @@ jobs:
           # step.
           retention-days: 7
 
-  attest:
+  linux-packages:
     needs: [release-please, build]
+    if: success() && needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    # `contents: read` is needed here and is NOT redundant with the workflow default, for the
+    # reason `docker` states at length: a job-level block is exhaustive, so this job needs the
+    # key named explicitly or the checkout below fails. It DOES check out, unlike
+    # `pypi`/`attest`/`release-assets`, because nfpm.yaml, packaging/job-sluice and the staging
+    # script are repository source rather than built artefacts.
+    #
+    # It writes nothing back. The packages leave as an artifact and `release-assets` uploads
+    # them, so that job remains THE only holder of `contents: write` in this workflow -- the
+    # property its own comment claims, which a second uploading job here would quietly falsify.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The commit release-please TAGGED, for the same reason `build` and `docker` pin it.
+          ref: ${{ needs.release-please.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist/
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      # nfpm is a Go binary, so `pip install --require-hashes -r ...` -- this repo's pattern for
+      # ruff, zizmor and build -- does not transfer. The same GUARANTEE is spelled out instead:
+      # download, verify against a pinned SHA-256, and only then execute. The version and the
+      # digest are ONE unit; bumping either alone fails closed at the checksum rather than
+      # silently running an unverified binary. The digest below was verified by downloading the
+      # release tarball and hashing it independently, not copied from the release page.
+      #
+      # `sha256sum --check --strict` is what makes this load-bearing. Without --check the hash
+      # would merely be PRINTED and the step would pass on any bytes at all, which is exactly
+      # the present-and-inert shape this repo keeps closing elsewhere.
+      - name: Fetch and verify nfpm
+        run: |
+          curl -fsSL --proto '=https' --tlsv1.2 -o nfpm.tar.gz \
+            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
+          echo "${NFPM_SHA256}  nfpm.tar.gz" | sha256sum --check --strict -
+          tar -xzf nfpm.tar.gz nfpm
+        env:
+          NFPM_VERSION: 2.47.0
+          NFPM_SHA256: 0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783
+      # Unpacks the wheel `build` produced into the tree nfpm.yaml copies to /usr/lib/job-sluice.
+      # Asserts there is exactly ONE wheel and that it contained a sluice/ package -- see the
+      # script's header; both failures are otherwise silent and produce an installable package
+      # that dies on ImportError at every invocation.
+      - run: python scripts/build_linux_packages.py
+      # VERSION reaches nfpm.yaml's `version: ${VERSION}` through the environment rather than
+      # being interpolated into the run body -- the house rule ci.yml states and zizmor's
+      # template-injection audit gates on. release-please's own output, so the package version
+      # and the git tag cannot disagree.
+      - run: ./nfpm package -f nfpm.yaml -p deb -t build/
+        env:
+          VERSION: ${{ needs.release-please.outputs.version }}
+      - run: ./nfpm package -f nfpm.yaml -p rpm -t build/
+        env:
+          VERSION: ${{ needs.release-please.outputs.version }}
+      # Inspect what nfpm actually EMITTED, not what it was asked to emit.
+      #
+      # This exists because the reverse shipped once. An earlier revision set a blanket
+      # `file_info.mode: 0644` on nfpm.yaml's tree entry; nfpm applied it to the directories it
+      # synthesises as well, so every directory under /usr/lib/job-sluice lost its search bit
+      # and `import sluice` failed for every non-root user. The offline suite could not see it
+      # (it asserts what the stager produces, not what nfpm packages) and neither could three
+      # container installs, because they ran as root, who bypasses directory traversal checks.
+      #
+      # A umask-022 runner also makes the stager's chmod a no-op, so CI never exercises the
+      # difference. This step is the only place the SHIPPED artefact's directory modes are
+      # checked at all.
+      - name: Verify the packaged directories stay traversable
+        run: |
+          set -euo pipefail
+          fail=0
+          # EXACT drwxr-xr-x, not merely "has an owner search bit". An earlier version tested
+          # `!~ /^drwx/`, which accepts drwx------ -- owner-traversable and unusable by anyone
+          # else, which is the very failure this step exists to catch, one permission column
+          # over. Exact is also the right strength here rather than "x for all three": the
+          # stager produces 0755 and nothing else, both packages contain exactly that one
+          # directory mode, so any deviation means something changed that nobody intended.
+          for deb in build/*.deb; do
+            bad=$(dpkg-deb -c "$deb" | awk '$1 ~ /^d/ && substr($1, 1, 10) != "drwxr-xr-x" { print }')
+            if [ -n "$bad" ]; then
+              echo "::error::$deb ships directories that are not drwxr-xr-x:"; echo "$bad"; fail=1
+            fi
+          done
+          for rpm in build/*.rpm; do
+            bad=$(rpm -qlvp "$rpm" | awk '$1 ~ /^d/ && substr($1, 1, 10) != "drwxr-xr-x" { print }')
+            if [ -n "$bad" ]; then
+              echo "::error::$rpm ships directories that are not drwxr-xr-x:"; echo "$bad"; fail=1
+            fi
+          done
+          exit "$fail"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-packages
+          path: |
+            build/*.deb
+            build/*.rpm
+          # Fail HERE rather than downstream. The default is `warn`, which per the action's own
+          # action.yml means "output a warning but do not fail" -- it creates no artifact at
+          # all. So the run does not go green on an empty release: `attest` and
+          # `release-assets` both fail at `download-artifact` with "Unable to find an artifact
+          # with the name: linux-packages". What `error` buys is WHERE and WHAT the failure
+          # says -- at the producer, naming the glob that matched nothing, instead of two jobs
+          # later as a missing-artifact error that reads like an infrastructure fault. (An
+          # earlier revision of this comment claimed `warn` uploads an empty artifact and lets
+          # the release ship silently. That is false, and the claim outlived a review round.)
+          if-no-files-found: error
+          # 7 days, matching `dist` and for the same reason: this artifact feeds
+          # `release-assets`, and re-running that job after a failure is the only automated
+          # recovery once release-please has already cut the release.
+          retention-days: 7
+
+  attest:
+    needs: [release-please, build, linux-packages]
     # success() is belt-and-suspenders, not load-bearing on its own: GitHub Actions already
     # ANDs an implicit success() into any custom `if:` that doesn't name a status function
     # (verified against GitHub's own docs), so a failed `build` would skip this job even
@@ -163,9 +281,22 @@ jobs:
         with:
           name: dist
           path: dist/
+      # The .deb and .rpm are attested HERE rather than in their own job, unlike the image.
+      # `attest-image`'s separate existence is about keeping a registry credential and an OIDC
+      # identity out of the same job; these packages are plain files this job already has the
+      # shape to sign, so a third near-identical job would add a roster entry and a permissions
+      # pin to maintain and buy no separation. The cost is that `attest` no longer starts in
+      # parallel with `linux-packages` -- accepted, so that no published release asset ships
+      # without provenance while its siblings carry it.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: linux-packages
+          path: packages/
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: dist/*
+          subject-path: |
+            dist/*
+            packages/*
 
   pypi:
     needs: [release-please, build]
@@ -199,7 +330,15 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
 
   release-assets:
-    needs: [release-please, build]
+    # `linux-packages` is a HARD dependency, and the cost is worth stating: if nfpm, the curl
+    # or the checksum fails, this job is skipped and the public release carries NO assets at
+    # all -- not the wheel, not the sdist -- while `pypi` has already published, since it does
+    # not depend on packaging. That is the deliberate trade: the alternative (uploading
+    # whatever happens to exist) publishes a release whose asset list silently varies by which
+    # jobs succeeded, and a partial release is harder to notice than an empty one. Recovery is
+    # re-running this job while `build`'s 7-day artifact still exists, which is the same
+    # recovery path `build`'s own retention comment describes.
+    needs: [release-please, build, linux-packages]
     if: success() && needs.release-please.outputs.release_created == 'true'
     runs-on: ubuntu-latest
     # The only job in this workflow holding contents: write, and it holds it for one API
@@ -213,6 +352,10 @@ jobs:
         with:
           name: dist
           path: dist/
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: linux-packages
+          path: packages/
       # No --clobber: an asset that already exists means something already uploaded, which
       # should surface rather than be silently overwritten -- the same reasoning as
       # skip-existing on `pypi`.
@@ -222,7 +365,7 @@ jobs:
       # it `gh` cannot determine a base repository and fails AFTER the release is public.
       # Both values go through env: rather than being interpolated into the script body --
       # the house rule ci.yml already states, which zizmor's template-injection audit gates on.
-      - run: gh release upload "$TAG" dist/*
+      - run: gh release upload "$TAG" dist/* packages/*
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
