@@ -221,9 +221,10 @@ def _expected_python_classifiers():
     listed: a hand-listed copy is exactly the shape of drift this guard exists to catch --
     measured, bumping CI's matrix to a 4th Python version and leaving a hand-listed
     constant here untouched left the guard built from it green. Text-matched, not YAML-
-    parsed, for the same reason tests/test_ci_wiring.py gives in its own module docstring:
-    pyyaml is a guarded optional import in `sluice/`, so a test that needs it can skip
-    itself into uselessness on a bare install.
+    parsed, for the reason tests/test_ci_wiring.py gives in its own module docstring: what is
+    pinned is a bracketed list literal, which text matching pins exactly. NOT because pyyaml is
+    unavailable -- it is a hard runtime dependency, and an earlier version of this line said
+    otherwise.
 
     `python-version: [...]` (bracketed) appears in ci.yml exactly once -- every other
     `python-version:` line in that file sets a single quoted string (`"3.12"`), not a
