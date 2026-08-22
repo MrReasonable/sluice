@@ -1,9 +1,23 @@
 # sluice/cv/engine.py
 """CV tailoring orchestrator: select -> bundle -> compose -> gate -> render -> serve
 -> record -> notify. Composition is a bounded backend call over the closed verified
-bundle; a HARD-gate failure triggers exactly one retry with the violations fed back,
-then the lead is skipped (never rendered ungated). dry_run computes and reports but
-writes nothing."""
+bundle. The gate has two tiers: a HARD one (fabrication, structure, the renderer's own
+precheck, em dashes) and a SCOPED STYLE one (#167: AI-slop phrases, in PROFILE prose and
+WORK bullets only). Either triggers exactly one retry with the findings fed back, and the
+loop RETAINS the last HARD-clean draft -- so the lead is skipped (never rendered ungated)
+when no attempt ever cleared the hard tier, and never merely over a phrase. dry_run
+computes and reports but writes nothing.
+
+An OPT-IN third signal (`cv.voice_check`, cv/voice.py) rides the same retry once the HARD
+tier is clean: a model judgment of the draft's VOICE, for the AI-tell phrasing a fixed
+phrase list cannot catch. Off by default and fails open on a backend error -- see the
+comment at its call site below.
+
+At shipped defaults a STYLE finding that survives the retry costs nothing beyond that
+retry: `cv.style_hold` (also opt-in, off by default) is the ONLY thing that turns it into
+a #60-style sign-off hold on `tailored_cv` -- see the comment at that call site for why it
+is a separate gate from `cv.require_signoff`, which continues to gate the fabrication hold
+alone."""
 import json
 import re
 from dataclasses import dataclass, field
@@ -16,8 +30,16 @@ from sluice.core.log import get_logger
 from sluice.cv import bundle as _bundle
 from sluice.cv import compose as _compose
 from sluice.cv.audit import run_audit, unsupported_claims
-from sluice.cv.slop import check_text as _slop
-from sluice.cv.validate import validate as _validate
+# The two TIERS separately, never `check_text` (#167). That wrapper scans every line of
+# the document for phrases, and the whole point of the split is that the STYLE tier is
+# SCOPED: it is handed only the PROFILE prose and WORK bullets `section_spans` yields.
+# `check_text` survives in cv/slop.py for the fixture-cleanliness guards in tests/, and
+# production must not reach for it -- an unscoped phrase complaint about an employer,
+# certificate or education line is answerable only by renaming the thing it names.
+from sluice.cv.slop import check_hard as _slop_hard
+from sluice.cv.slop import check_phrases as _slop_phrases
+from sluice.cv.validate import section_spans, validate as _validate
+from sluice.cv.voice import run_voice
 
 _log = get_logger("cv.engine")
 
@@ -226,11 +248,56 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
                                  _jd_keywords(role, jd), cvcfg.prefix_map)
         bundle_text = _bundle.render_bundle(b)
 
-        gate_msgs, cv_text, violations, slop_err = None, "", [], []
+        retry_msgs, cv_text, violations, slop_err = None, "", [], []
+        # The last attempt that cleared the HARD gate, as `(cv_text, style_msgs,
+        # voice_flags)`, or None if no attempt ever did. Retaining it is what lets a
+        # STYLE or VOICE finding drive the retry WITHOUT being able to bin a lead
+        # (#167): attempt 2 is an unconstrained, non-deterministic compose, so a loop
+        # that threw away a hard-clean draft to chase a phrase would lose the lead
+        # whenever the retry came back worse -- a CV that renders today. The findings
+        # ride along with the draft they were found IN, because they describe that text
+        # and no other; re-deriving them later from whatever `cv_text` happens to hold
+        # is the mistake the rebind below exists to prevent.
+        #
+        # `voice_flags` is a THIRD tuple element, not folded into `style_msgs` with a
+        # distinguishing prefix (Task 16 needs the two apart as `CvResult.voice_flags`
+        # vs. the deterministic slop findings, the same way `audit_flags` already means
+        # fabrication and nothing else -- prefixing would make Task 16 parse a string
+        # back into a verdict, which is the fragile direction).
+        best = None
         for _ in range(2):
-            cv_text = _compose.compose(backend, bundle_text, jd, company, role,
-                                       name=cv_name, contact=cv_contact,
-                                       employers=cvcfg.employers, prior_violations=gate_msgs)
+            # Only the COMPOSE call is wrapped, never the loop body. The body raises a
+            # deliberate TypeError when a renderer breaks the `precheck` contract below,
+            # and that must keep propagating: `precheck` runs on attempt 1 too, so a
+            # broken renderer raises before any draft is retained and this arm would
+            # never see it -- but a wrapper around the body would silently convert it
+            # into "ship whatever attempt 1 produced" the moment the retry re-raised it.
+            try:
+                cv_text = _compose.compose(backend, bundle_text, jd, company, role,
+                                           name=cv_name, contact=cv_contact,
+                                           employers=cvcfg.employers,
+                                           prior_violations=retry_msgs)
+            except Exception as e:
+                # A retry that never RETURNS must not bin a lead attempt 1 already
+                # earned. compose() catches nothing, so a BackendError -- a timeout,
+                # every fallback leg down, a reply truncated at max_tokens -- would
+                # otherwise cross this loop, past the retained draft, and be recorded as
+                # `error`. Measured: that same failure is HARMLESS when attempt 1 is
+                # style-clean, because the loop has already broken and no second compose
+                # happens. So with `best` set, the ONLY thing that turns a backend outage
+                # into a lost lead is a phrase match, and a phrase may never cost a lead
+                # (#167).
+                #
+                # With nothing retained there is no fallback to prefer, so a bare `raise`
+                # keeps today's behaviour AND the original traceback -- and run_one's
+                # outer handler still stamps dossier_failed onto it on the way out.
+                if best is None:
+                    raise
+                # Never silently: a swallowed backend failure that logs nothing is a lead
+                # composed once instead of twice with no trace of why.
+                _log.warning("cv retry compose for %s failed (%s); shipping the retained "
+                             "hard-clean draft", note.ref, e)
+                break
             violations = _validate(cv_text, bundle_text, employers=cvcfg.employers,
                                    fabrication_decoys=cvcfg.fabrication_decoys)
             # Fail-closed: validate()'s per-bullet citation checks only run inside the
@@ -358,7 +425,7 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
             # it. Discovering that at render time would be AFTER the LLM spend with no
             # recovery: this loop is the only retry there is, and it closes before render
             # ever runs. Asking here means the model gets one chance to fix its own
-            # formatting, feeding gate_msgs into the second compose prompt exactly like a
+            # formatting, feeding retry_msgs into the second compose prompt exactly like a
             # citation violation would.
             #
             # Asking the renderer, rather than parsing here, is what keeps the requirement
@@ -401,16 +468,94 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
                         f"{type(reported).__name__}, not a list/tuple of str -- see the "
                         f"Renderer seam's contract in sluice/core/protocols.py")
                 violations = violations + list(reported)
-            slop_err, _warns = _slop(cv_text)
-            gate_msgs = violations + [f"SLOP {lbl}: {snip}" for _ln, lbl, snip in slop_err]
-            if not gate_msgs:
-                break
+            # The BLOCKING tier, unscoped over the whole document (see slop.check_hard):
+            # an em dash in an employer line is always fixable without inventing anything.
+            slop_err = _slop_hard(cv_text)
+            hard_msgs = violations + [f"SLOP {lbl}: {snip}" for _ln, lbl, snip in slop_err]
+            # The STYLE tier, SCOPED (#167). `section_spans` is the gate's own split, so
+            # these are exactly the lines validate() reasons about -- the candidate's own
+            # PROSE, where a phrase can be reworded from the same facts. Every other line
+            # (employer, dates, certificate, education) is deliberately out of scope: the
+            # only way to answer "SLOP <phrase>" about an employer NAME is to rename the
+            # employer, which turns a style rule into fabrication pressure. slop.py takes
+            # LINES and has no opinion about which ones, so this scoping is the engine's
+            # job and exists nowhere else. Called again here rather than threaded out of
+            # `_validate` -- it is pure and does no I/O, and that keeps validate()'s
+            # signature the list-of-strings the whole gate is built on.
+            #
+            # Merged into ONE line-ordered pass over the union, mirroring `validate`'s own
+            # merge for `validate`'s own stated reason: a CV that repeats `PROFILE` after
+            # `WORK EXPERIENCE` puts a line in BOTH lists (see section_spans), and this
+            # list is handed to the composer VERBATIM -- a duplicated or out-of-order
+            # complaint is what the model reads.
+            profile_lines, work_lines = section_spans(cv_text)
+            scoped_lines = sorted(dict(profile_lines + work_lines).items())
+            style_msgs = [f"SLOP {phrase}: {snip}" for _ln, phrase, snip
+                          in _slop_phrases(scoped_lines, allow=cvcfg.slop_allow)]
+            voice_flags = []
+            if not hard_msgs:
+                # Model-judged VOICE check (#167, cv/voice.py): a fixed phrase list
+                # cannot catch a novel AI-tell clause, which is the issue's own point
+                # about the deterministic tier above. Gated twice over: `voice_check`
+                # (opt-in, default False -- an unconfigured install spends no extra
+                # LLM call) AND `not hard_msgs` -- there is no point spending a call
+                # judging the voice of a draft about to be recomposed for citation
+                # reasons anyway.
+                #
+                # Fails OPEN, exactly as the fabrication audit below does: a backend
+                # error or timeout must not make this gate HARDER than the check that
+                # actually ran. Swallow and log -- never propagate, and never let a
+                # dead backend turn a style-clean, voice-untested draft into a lost
+                # lead.
+                if cvcfg.voice_check:
+                    try:
+                        _report, voice_flags = run_voice(backend, cv_text)
+                    except Exception as e:
+                        _log.warning("voice check for %s failed (%s); treating as "
+                                     "clean", note.ref, e)
+                        voice_flags = []
+                best = (cv_text, style_msgs, voice_flags)
+                if not style_msgs and not voice_flags:
+                    break
+            # ALL THREE tiers reach the composer. A style or voice finding is worth one
+            # retry -- it is the whole of #167's complaint that these matches were
+            # computed and thrown away -- and the retry is bounded at one either way:
+            # `range(2)`. The VOICE prefix mirrors the SLOP one immediately above:
+            # both are read by the same model, in the same retry prompt, and need to
+            # look like the same kind of instruction to it.
+            retry_msgs = hard_msgs + style_msgs + [f"VOICE: {f}" for f in voice_flags]
 
         backend_used = getattr(backend, "last_backend", None)
-        if gate_msgs:
+        if best is None:
+            # No attempt was EVER hard-clean, which is the same fact the pre-#167 loop
+            # tested for: it broke on the first clean attempt, so a non-empty gate list
+            # here meant every attempt had failed. `violations` and `slop_err` still
+            # describe the LAST attempt, exactly as they did before -- this branch is
+            # reached only when no draft was ever worth retaining, so there is no other
+            # attempt they could sensibly describe.
             return CvResult(note.ref, "skipped-gate", violations=violations,
                             slop=[s[2] for s in slop_err], backend=backend_used,
                             dossier_failed=dossier_failed)
+        # REBIND, before ANYTHING below reads `cv_text`. It is bound to the LAST attempt,
+        # which on the sequence [attempt 1 hard-clean, attempt 2 hard-dirty] is a draft
+        # that never cleared the gate. Everything past this line reads it -- `run_audit`
+        # just below, `renderer.render` further down -- and the audit's flags drive
+        # `unsupported_claims` -> `hold_for_signoff` -> the WITHHELD `tailored_cv`. Rebind
+        # for only some of them and the engine renders one draft while auditing another: a
+        # fabricated claim in the SERVED CV goes un-held, `set_tailored_cv` writes it
+        # send-ready, and the run reports `rendered / audit flags: 0`. Rebind for none and
+        # the renderer -- which validates nothing itself -- is handed the HARD-dirty
+        # draft. ONE assignment covers every reader precisely because they all read this
+        # one NAME; keep it that way rather than passing `best[0]` at a call site, which
+        # is what would let a reader added later quietly miss it.
+        #
+        # `style_msgs` and `voice_flags` are rebound with it, and have to be: each
+        # describes the retained draft and no other, so anything that gives a surviving
+        # style or voice finding a consequence (Task 15's `cv.style_hold`, Task 16's
+        # `CvResult.voice_flags`) must read the retained TRIPLE. Taking either from
+        # whatever the loop's last iteration left behind would be the identical defect,
+        # one line up.
+        cv_text, style_msgs, voice_flags = best
 
         # The audit is advisory only (see audit.py: "NEVER blocks"). A backend error or
         # timeout here must not prevent a CV that already passed the HARD gate from
@@ -438,7 +583,37 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
         # `unsupported` (never `paraphrase`, which is legitimate tailoring) blocks. Fail-open:
         # an audit backend error already yields no flags above, so a possibly-fabricated CV
         # still serves -- the gate is best-effort, never harder than the audit ran.
-        blockers = unsupported_claims(audit_flags) if cvcfg.require_signoff else []
+        #
+        # A surviving STYLE finding earns the SAME consequence under `cv.style_hold`
+        # (#167, Task 15) -- deliberately a SEPARATE gate, not folded into
+        # `require_signoff`: that flag's True default was chosen for FABRICATION, and
+        # riding it would mean an unconfigured install withholds tailored_cv on ~40
+        # case-insensitive stems out of the box (see CvConfig.style_hold's own comment).
+        # `style_msgs` and `voice_flags` both describe the RETAINED draft (the rebind
+        # above), and both are the STYLE tier (slop phrase matches plus the opt-in
+        # model-judged voice check, Task 14) -- a voice-only finding must hold exactly
+        # like a slop-phrase one, so both lists feed this the same way. One inherited
+        # note from Task 13: the loop keeps the LAST hard-clean draft, so a retry that is
+        # hard-clean but carries MORE style findings than a cleaner attempt 1 supersedes
+        # it here too -- not a safety issue (both cleared the hard gate), but it means
+        # this hold can fire on a draft that was not the least-style-dirty one composed.
+        #
+        # Each finding becomes its own entry in the SAME flat claims array the
+        # fabrication hold already writes -- hold_for_signoff's `claims` parameter stays
+        # the Store protocol's plain JSON ARRAY (core/protocols.py; not widened), and
+        # core/app.py reads it back as `parsed if isinstance(parsed, list) else
+        # [str(parsed)]`. A wrapped `{"kind": ..., "claims": [...]}` object would
+        # therefore collapse into ONE bogus claim string -- the kind has to live on each
+        # ENTRY instead, as a "style\t" prefix. An entry with NO such prefix is exactly
+        # the shape every hold stamped before this change used (a raw audit verdict
+        # line, e.g. "unsupported\t..."), and sluice/cli.py's sign-off prompt keeps
+        # today's wording for it unchanged -- a pre-existing hold must not be
+        # re-described by this upgrade.
+        style_blockers = ([f"style\t{msg}" for msg in style_msgs + voice_flags]
+                          if cvcfg.style_hold else [])
+        blockers = (
+            (unsupported_claims(audit_flags) if cvcfg.require_signoff else [])
+            + style_blockers)
         if served and blockers:
             # Record what to promote (pending_cv) and what to review (needs_signoff, a
             # single-line JSON scalar so a claim's quote/colon can't corrupt the frontmatter);

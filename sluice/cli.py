@@ -763,6 +763,41 @@ def cmd_cv_run(args, config) -> int:
     return 0
 
 
+def _print_signoff_claims(slug: str, claims: list) -> None:
+    """The `cv signoff` prompt's claim listing, split by KIND (#167 Task 15).
+
+    `claims` (sluice/cv/engine.py's `hold_for_signoff` call) is a flat JSON array
+    carrying two shapes of entry: a raw audit verdict line ("unsupported\\t<claim>\\t
+    <cited-id>", the ONLY shape every hold stamped before this change ever wrote) and a
+    "style\\t<finding>"-tagged one (a `cv.style_hold` consequence -- a slop phrase match
+    or a model-judged voice finding that survived the retry). Splitting on the literal
+    "style" tab-field, not on the presence of a tab at all, is what keeps a raw audit
+    line's own internal tabs from being mistaken for the new tag.
+
+    An entry with NO "style\\t" prefix keeps EXACTLY today's "unsupported claim(s)"
+    wording -- a hold stamped before this change must not be re-described by this
+    upgrade, and a style/voice finding must not be announced as a fabrication risk it
+    is not. Each group prints only when non-empty (sparse, mirroring _print_report's own
+    discipline elsewhere in this file): a hold carrying just one kind gets exactly one
+    block, not a "0 unsupported claim(s)" line nobody asked for.
+    """
+    fabrication, style = [], []
+    for c in claims:
+        kind, sep, rest = c.partition("\t")
+        (style if sep and kind == "style" else fabrication).append(
+            rest if sep and kind == "style" else c)
+    if fabrication:
+        print(f"cv signoff: {slug} has {len(fabrication)} unsupported claim(s):",
+              file=sys.stderr)
+        for c in fabrication:
+            print(f"  - {c}", file=sys.stderr)
+    if style:
+        print(f"cv signoff: {slug} has {len(style)} style/voice concern(s):",
+              file=sys.stderr)
+        for c in style:
+            print(f"  - {c}", file=sys.stderr)
+
+
 def cmd_cv_signoff(args, config) -> int:
     from sluice.core.app import Sluice
 
@@ -773,9 +808,7 @@ def cmd_cv_signoff(args, config) -> int:
         # lives HERE (the CLI), passed into sign_off_cv as a callback, so the app layer does
         # no I/O and still resolves the lead exactly once (no peek/execute divergence).
         def confirm(slug, pending, claims):
-            print(f"cv signoff: {slug} has {len(claims)} unsupported claim(s):", file=sys.stderr)
-            for c in claims:
-                print(f"  - {c}", file=sys.stderr)
+            _print_signoff_claims(slug, claims)
             print(f"served CV: {pending}", file=sys.stderr)
             return input(f"sign off {slug}? [y/N] ").strip().lower() in ("y", "yes")
 
