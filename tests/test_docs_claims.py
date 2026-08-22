@@ -284,19 +284,82 @@ def _without_breaking_blocks(text):
     return "\n".join(out)
 
 
-def test_no_shipped_doc_instructs_a_retired_config_key():
-    checked = 0
-    for path, text in _read_all():
-        checked += 1
-        scanned = _without_breaking_blocks(text) if path == "CHANGELOG.md" else text
+def _scan_target(path, text):
+    """What the retired-key sweep actually reads for `path`.
+
+    The whole of #170's fix, in one named place. It was a conditional buried in the sweep's
+    loop, and BOTH mutations that revert it -- returning `text` unconditionally, and dropping
+    the `CHANGELOG.md` gate so every doc's BREAKING blocks go exempt -- survived the suite with
+    everything green, because `main`'s CHANGELOG.md carries no BREAKING heading and so neither
+    mutation changes anything observable against the live tree. Naming it is what lets
+    `test_the_narrowing_reaches_changelog_md_and_no_other_doc` assert on it directly.
+    """
+    return _without_breaking_blocks(text) if path == "CHANGELOG.md" else text
+
+
+def _retired_key_failures(docs):
+    """`[(path, why, matched text)]` for every retired-key instruction in `(path, text)` pairs.
+
+    The sweep's body, split out so a synthetic corpus can drive the REAL scan -- including its
+    `_scan_target` call -- rather than only the helpers underneath it. Testing the pieces while
+    leaving the call site unexercised is precisely how the two mutations above stayed green.
+    """
+    out = []
+    for path, text in docs:
+        scanned = _scan_target(path, text)
         for pattern, why, _sample in _RETIRED_CONFIG:
             hit = pattern.search(scanned)
-            assert not hit, f"{path} instructs a retired config key -- {why} ({hit.group(0)!r})"
-    assert checked >= 5
-    assert "CHANGELOG.md" in {path for path, _ in _read_all()}, (
+            if hit:
+                out.append((path, why, hit.group(0)))
+    return out
+
+
+def test_no_shipped_doc_instructs_a_retired_config_key():
+    docs = _read_all()
+    assert len(docs) >= 5
+    assert "CHANGELOG.md" in {path for path, _ in docs}, (
         "CHANGELOG.md dropped out of the sweep's scope -- the narrowing above skips its BREAKING "
         "block only, and is worthless if the file stops being read at all"
     )
+    failures = _retired_key_failures(docs)
+    assert not failures, "\n".join(
+        f"{path} instructs a retired config key -- {why} ({matched!r})"
+        for path, why, matched in failures)
+
+
+def test_the_narrowing_reaches_changelog_md_and_no_other_doc():
+    """The narrowing must be REACHED by the sweep, and reached for CHANGELOG.md alone.
+
+    One synthetic release block, scanned twice under two filenames. Under `CHANGELOG.md` the
+    retired key it names must be exempt (that is #170); under `README.md` the identical text
+    must still be caught, because a `### ⚠ BREAKING CHANGES` heading in any other shipped doc
+    would otherwise hide a real instruction to set one.
+
+    Asserted through `_retired_key_failures` -- the sweep's own body -- and through
+    `_scan_target` directly, so neither the decision nor the call site can be reverted in
+    silence. Both halves compare against `_RETIRED_CONFIG`'s real patterns rather than a
+    hand-written regex, so a pattern added to that list is swept here too.
+    """
+    release_block = (
+        "## [1.0.0](x) (2026-08-21)\n\n"
+        "### ⚠ BREAKING CHANGES\n\n"
+        "* **cv:** a `cv.name: \"\"` left by a half-finished migration still raises.\n\n"
+        "### Features\n\n"
+        "* something unrelated\n"
+    )
+    assert _retired_key_failures([("CHANGELOG.md", release_block)]) == [], (
+        "CHANGELOG.md's BREAKING block is no longer exempt -- this is the #170 failure, which "
+        "blocks the release PR")
+    assert _retired_key_failures([("README.md", release_block)]), (
+        "the same BREAKING block went exempt in README.md -- the narrowing must be scoped to "
+        "CHANGELOG.md, or a real retired-key instruction hides under a BREAKING heading anywhere")
+
+    # ...and the seam itself, both ways round, so the assertions above cannot be satisfied by a
+    # `_scan_target` that ignores its `path` argument in either direction.
+    assert _scan_target("CHANGELOG.md", release_block) != release_block, (
+        "_scan_target returned CHANGELOG.md unchanged -- the narrowing never ran")
+    assert _scan_target("README.md", release_block) == release_block, (
+        "_scan_target stripped a non-CHANGELOG doc")
 
 
 def test_breaking_block_stripping_is_bounded():
