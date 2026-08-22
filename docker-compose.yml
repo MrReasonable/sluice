@@ -34,7 +34,10 @@ x-sluice: &sluice
     # `stores/vault.py:_make` is `Vault(os.environ.get("VAULT_DIR") or config.vault_dir or None)`,
     # so this env var outranks a configured value BY CONSTRUCTION. That matters because the config
     # directory below is bind-mounted from the host: a `job-sluice init` run on the host leaves an
-    # absolute HOST vault path in config.yaml, which means nothing inside the container.
+    # absolute HOST vault path in config.yaml, which means nothing inside the container. The
+    # reverse also holds and is NOT fixed by this pin: `init` run INSIDE the container abspaths
+    # `vault_dir: /work/vault` into that same shared config, so a later HOST run reads a path
+    # that does not exist there and reports zero leads. Run `init` on the host, or not at all.
     #
     # Without this pin the failure is silent and unrecoverable. `Vault` never checks that its
     # directory exists, and `upsert`'s create arm runs `os.makedirs(leads_dir, exist_ok=True)`
@@ -81,6 +84,18 @@ x-sluice: &sluice
     # The vault bind mount below nests inside this volume, which is why it still wins for its
     # own subtree -- verified against a real `compose run --rm`, not assumed.
     - sluice-workspace:/work
+
+    # TWO RESIDUALS, stated rather than left to be discovered:
+    #
+    # This guarantee is DEFAULTS-ONLY. None of the five cwd-relative keys goes through
+    # core/paths.py, so none has the env-var override VAULT_DIR gets above -- a host-set
+    # `cv.output_dir: ~/cv-output` in the shared config puts the artefact back outside every
+    # mount, silently. Keep those keys unset unless you also mount where you point them.
+    #
+    # `docker compose down -v` destroys this volume. A lead holding a #60 `pending_cv` hold then
+    # keeps its pointer in the vault while the PDF is gone, and `cv signoff` will offer to
+    # promote a file that no longer exists. Recoverable with `cv signoff --discard`, which is
+    # why this is a note and not a refusal -- but it is not obvious from `down -v`.
 
     # The vault -- your Obsidian directory, and the one thing here that is genuinely yours.
     # It lands at /work/vault because WORKDIR is /work and this codebase's DEFAULT_VAULT is the

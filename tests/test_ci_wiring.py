@@ -816,10 +816,13 @@ def test_the_doctor_smoke_asserts_on_output_rather_than_exit_status():
     # PRESENCE of the two needles is not the claim -- GATING is. Measured: deleting `; exit 1`
     # from BOTH `case` arms left a smoke that prints its diagnosis and passes on a broken image,
     # and every assertion above still held. Both arms must exit non-zero, so the count is two.
-    assert step.count("exit 1") >= 2, (
-        f"the doctor smoke has {step.count('exit 1')} failing arm(s), expected 2. Both the "
-        f"no-report case and the traceback case must EXIT, not merely print -- a `case` arm "
-        f"that echoes an ::error:: and falls through leaves the step green"
+    # `count("; exit 1 ;;") == 2`, not `count("exit 1") >= 2`: the looser form is satisfied by
+    # ONE arm carrying two exits while the other merely echoes -- measured on a copy. Pinning
+    # the per-arm spelling makes each arm's exit the thing asserted.
+    assert step.count("; exit 1 ;;") == 2, (
+        f"the doctor smoke has {step.count('; exit 1 ;;')} terminated failing arm(s), expected "
+        f"2. Both the no-report case and the traceback case must EXIT, not merely print -- a "
+        f"`case` arm that echoes an ::error:: and falls through leaves the step green"
     )
 
 
@@ -830,9 +833,14 @@ def test_the_doctor_smoke_needle_matches_the_banner_the_cli_actually_prints():
     Docker-only CI failure whose message says the image is broken -- which would be false, and
     would send someone to debug the container instead of the string."""
     step = _step_containing("docker", "doctor renders its report")
-    match = re.search(r'\*"([^"]+)"\*\)', step)
-    assert match, "could not extract the doctor smoke's needle; the comparison would be vacuous"
-    needle = match.group(1)
+    # findall + an exactly-one assertion, not `search`: a second quoted `case` arm would leave
+    # `search` silently pinning only the first, so the new arm's needle would go unchecked.
+    needles = re.findall(r'\*"([^"]+)"\*\)', step)
+    assert len(needles) == 1, (
+        f"expected exactly one quoted case arm in the doctor smoke, found {len(needles)}: "
+        f"{needles}. Pin each of them, or this check covers only the first"
+    )
+    needle = needles[0]
     cli = (ROOT / "sluice" / "cli.py").read_text()
     assert f'print(f"{needle}' in cli, (
         f"ci.yml's doctor smoke greps for {needle!r}, which sluice/cli.py no longer prints. "

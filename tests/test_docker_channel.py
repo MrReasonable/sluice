@@ -75,6 +75,14 @@ def _fold_continuations(source: str) -> str:
 # A pip install naming the BARE distribution, with no local wheel or directory path --
 # regardless of interposed flags, quoting, an extras suffix, or a line continuation.
 #
+# `[^\n;&|]*?` and not `[^\n]*?`: folding continuations (below) deliberately removes the newline,
+# which also removed the only thing bounding this match to ONE command. Measured after the fold
+# landed: `RUN pip install ./dist/x.whl \\` + `&& job-sluice --version` matched, and so did an
+# `&& echo "installed job-sluice"` -- both correct code, both would have failed the build. A
+# shell separator ends the command, so it must end the match too. That is a repair introducing
+# its own defect, in the direction that fails LOUD rather than green, which is why it survived
+# one round.
+#
 # `job[-_]sluice`, not `job-sluice`: PyPI normalises the two spellings to the same project, so
 # `pip install job_sluice` installs precisely the forbidden thing while reading as a different
 # string. The wheel FILENAME is `job_sluice-...whl`, which is why the lookarounds matter --
@@ -86,7 +94,7 @@ def _fold_continuations(source: str) -> str:
 # `./job-sluice/...` from matching -- a path-borne name is the ALLOWED case, and the whole point
 # of the guard is to tell it apart from an index-borne one.
 _PYPI_INSTALL = re.compile(
-    r"""pip3?\s+install\b[^\n]*?(?<![\w./'"-])['"]?job[-_]sluice(?:\[[^\]]*\])?['"]?(?![\w./-])"""
+    r"""pip3?\s+install\b[^\n;&|]*?(?<![\w./'"-])['"]?job[-_]sluice(?:\[[^\]]*\])?['"]?(?![\w./-])"""
 )
 
 
@@ -170,6 +178,27 @@ def test_the_pypi_install_guard_catches_the_forbidden_phrase_on_a_real_run_line(
     comment, and asserts it is still caught."""
     smuggled = "RUN echo ok && pip install job-sluice  # from PyPI -- the forbidden shape"
     assert _installs_from_pypi(_strip_comments(smuggled))
+
+
+def test_the_guard_does_not_fire_on_a_command_chained_after_a_local_wheel_install(tmp_path):
+    """The FALSE-POSITIVE direction, which folding line continuations opened up.
+
+    Removing the newline to join a continuation also removed the only thing bounding the match
+    to one command, so `pip install ./dist/x.whl && job-sluice --version` -- correct code, and
+    the obvious way to smoke-test an install in the same layer -- started matching. A guard that
+    fails the build for correct code is not merely noisy: the actionable reading of it is "stop
+    verifying your install", which is the opposite of the point.
+
+    Read through `_uncommented` on a real file, so it exercises the fold rather than the pattern
+    alone."""
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(
+        "FROM python:3.13-slim\n"
+        "RUN pip install --no-cache-dir /tmp/wheels/job_sluice-1.0.0-py3-none-any.whl \\\n"
+        "      && job-sluice --version \\\n"
+        '      && echo "installed job-sluice"\n'
+    )
+    assert not _installs_from_pypi(_uncommented(dockerfile))
 
 
 def test_the_guard_does_not_fire_on_a_local_wheel_path():
@@ -288,8 +317,12 @@ def _compose_mount_lines() -> list:
         indent = len(line) - len(line.lstrip())
         if indent_of_block is not None:
             if stripped.startswith("- ") and indent > indent_of_block:
-                if _MOUNT_LINE.match(line):
-                    out.append(line)
+                # EVERY entry, not only the ones that look like short-form mounts. Filtering
+                # here would make a long-form entry (`- type: bind` with a `source:` key on the
+                # next line) invisible to the scope assertion too, so `lines` and `pairs` would
+                # both stay short by one and the guard would pass with that source unchecked --
+                # measured, and the long form is already live in this file for `env_file`.
+                out.append(line)
                 continue
             if indent <= indent_of_block:
                 indent_of_block = None
@@ -467,7 +500,7 @@ def test_compose_persists_the_whole_working_directory():
     """The second Critical this file closed, and the reason the mount is /work rather than a
     list of five directories.
 
-    Five artefact paths in `sluice/` are cwd-relative by design, so under WORKDIR they land in
+    The cwd-relative artefact paths in `sluice/` land, under WORKDIR, in
     the container's writable layer -- which `docker compose run --rm` deletes, while the POINTER
     to a rendered CV survives in the persistent vault note. The lead then wedges: `cv run` says
     `skipped-has-cv`, `apply prep` says `missing_file`.
@@ -482,12 +515,19 @@ def test_compose_persists_the_whole_working_directory():
     assert relative_defaults, (
         "found no cwd-relative artefact defaults in sluice/; this guard would pass vacuously"
     )
+    # WORKDIR is READ from the Dockerfile, never hardcoded here. Hardcoding `/work` was the
+    # round-3 finding, raised independently by two reviewers: change `WORKDIR` to anything else
+    # and this guard stayed green while the mount went inert and the Critical reopened verbatim.
+    # The LAST WORKDIR wins, which is Docker's own rule for repeated instructions.
+    workdirs = re.findall(r"^WORKDIR\s+(\S+)\s*$", _uncommented(DOCKERFILE), re.MULTILINE)
+    assert workdirs, "no WORKDIR in the Dockerfile; this guard has nothing to anchor on"
+    workdir = workdirs[-1]
     targets = [target for _source, target in _compose_volume_pairs()]
-    assert "/work" in targets, (
-        f"docker-compose.yml does not persist /work, the container's WORKDIR. {len(relative_defaults)} "
-        f"cwd-relative artefact paths in sluice/ resolve under it ({sorted(set(relative_defaults))}), "
-        f"so without this mount a rendered CV dies with the container while the note still points "
-        f"at it"
+    assert workdir in targets, (
+        f"docker-compose.yml does not persist {workdir!r}, the container's WORKDIR. "
+        f"{len(relative_defaults)} cwd-relative paths in sluice/ resolve under it "
+        f"({sorted(set(relative_defaults))}), so without this mount a rendered CV dies with the "
+        f"container while the vault note still points at it"
     )
 
 
