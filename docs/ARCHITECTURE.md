@@ -166,7 +166,15 @@ Shared by every sub-app:
   (never spending a judge call on page chrome) rather than letting it collapse
   into `research`; `cv/engine.py`'s `run_one` asks the identical question and
   sets `CvResult.dossier_failed` when it (or the fetch itself) fails, composing
-  with `jd=""` rather than refusing the lead outright.
+  anyway rather than refusing the lead outright. The two sub-apps ask the same
+  question and take DIFFERENT actions on purpose. Triage abstains because
+  judging chrome spends a real judge call and writes a verdict nobody can
+  trust; composition proceeds because a thin JD costs tailoring QUALITY, not
+  correctness, and the gate still citation-checks every bullet against the
+  bundle. So a fetch that RAISED composes with `jd=""` (there is no text), while
+  one that returned sub-floor text keeps it -- identical at the shipped
+  `min_jd_chars: 0`, where only a wholly empty JD fails the predicate, and
+  divergent above it.
 - `Sluice.health_report(include_leads=False)` (`core/app.py`) is the
   per-source health REPORT `job-sluice health` and the MCP `health` tool both
   show: `HealthStore`'s baseline/recent counts and stuck-streak reason,

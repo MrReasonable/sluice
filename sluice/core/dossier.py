@@ -10,9 +10,43 @@ import re
 from datetime import datetime
 
 
+# The JD-length distribution `job-sluice doctor` reports (#169), as (bucket, exclusive
+# upper bound) pairs. ONE home for the boundary and its label: they were a numeric
+# comparison in core/app.py and a hand-written English label in core/doctor.py, so moving
+# a boundary left the label asserting the old number with the whole suite green -- and the
+# end-to-end test's fixtures were chosen well clear of both, so nothing would have caught
+# it. `classify_dossier_cache` renders its text from this tuple.
+#
+# CUMULATIVE by construction: each bound is an upper bound, so `empty` <= `under_200` <=
+# `under_800`, and each bucket answers "how many are AT MOST this short" without
+# subtracting the others. They therefore do NOT partition `total` -- a dossier at or above
+# the largest bound is in none of them, and `unreadable` sits outside the chain entirely.
+#
+# 200/800 are a PRESENTATION choice, round numbers a human can eyeball. They are not a
+# second opinion about which jobs are good stacked on top of `min_jd_chars`: this row
+# changes nothing about which leads get judged.
+JD_LENGTH_BUCKETS = (("empty", 1), ("under_200", 200), ("under_800", 800))
+
+
 def _slug(lead: dict) -> str:
     base = f"{lead.get('company','')}-{lead.get('role','')}".lower()
     return re.sub(r"[^a-z0-9]+", "-", base).strip("-")[:80] or "lead"
+
+
+def jd_text(dossier: dict) -> str:
+    """The JD markdown a cached dossier carries, stripped -- "" when it has none.
+
+    The ONE extraction of that field. `jd_arrived` judges it and `census` measures it,
+    and both used to re-derive the same three checks (is it a dict, is `markdown` a str,
+    strip it) in different files. Degrades to "" rather than raising on any malformed
+    shape, matching what `triage/resolve.py:_text` already does with this same field: a
+    dossier that cannot answer the question has not produced a JD either. A file missing
+    the `jd` key entirely is a real shape -- it predates #169, or `get_or_build`'s
+    non-atomic write was interrupted mid-dump.
+    """
+    jd = dossier.get("jd") if isinstance(dossier, dict) else None
+    markdown = jd.get("markdown") if isinstance(jd, dict) else None
+    return markdown.strip() if isinstance(markdown, str) else ""
 
 
 def slim(dossier: dict, *, jd_limit: int = 4000) -> dict:
@@ -62,14 +96,60 @@ class DossierCache:
         `triage/resolve.py:_text` already does with this same field -- a dossier that
         cannot answer the question has not produced a JD either.
         """
-        jd = dossier.get("jd")
-        markdown = jd.get("markdown") if isinstance(jd, dict) else None
-        if not isinstance(markdown, str):
-            return False
-        text = markdown.strip()
+        text = jd_text(dossier)
         if not text:
             return False            # a FACT, refused at every floor
         return len(text) >= self.min_jd_chars
+
+    def census(self) -> dict:
+        """Bucket counts over every cached dossier on disk, for `job-sluice doctor`.
+
+        Lives HERE because it reads this class's own on-disk layout -- the `.json`
+        suffix and the directory `_path` writes into. `Sluice.doctor` had that shape
+        inlined, so a change to the naming scheme would have left the scan silently
+        counting ZERO and reporting "no cached dossiers yet", which reads as a fresh
+        install rather than as a broken scan. It also re-derived the `jd.markdown`
+        extraction that `jd_arrived` calls itself the sole owner of; both now go
+        through `jd_text`.
+
+        Pure-ish: it READS, and must never create the directory it is reporting on
+        (`os.listdir` on a missing dir raises rather than creating, and the caller
+        turns that into an empty census). `doctor` diagnoses a broken install, so
+        every per-entry failure is counted rather than raised.
+
+        Buckets are CUMULATIVE (`empty` <= `under_200` <= `under_800`), so each answers
+        "how many are AT MOST this short" without subtracting the others. `unreadable`
+        sits outside that chain -- its length is unknown, not zero -- which is why the
+        buckets do not partition `total`.
+        """
+        counts = {"total": 0, "unreadable": 0}
+        for label, _bound in JD_LENGTH_BUCKETS:
+            counts[label] = 0
+        try:
+            entries = [e for e in os.listdir(self.dir) if e.endswith(".json")]
+        except OSError:
+            # Every reason the directory cannot be listed, not just "missing". A
+            # mode-000 cache dir raises PermissionError, and `cli.main` converts only
+            # ValueError -- so this escaping killed the one command that exists to
+            # explain a broken install.
+            return counts
+        for entry in entries:
+            counts["total"] += 1
+            try:
+                with open(os.path.join(self.dir, entry), encoding="utf-8") as f:
+                    dossier = json.load(f)
+            except (OSError, ValueError):
+                # The FILE is broken -- invalid JSON, or unreadable outright (an
+                # interrupted write, a bad disk). A different fault from a dossier that
+                # parsed fine and carries no JD, and excluded from the length buckets
+                # because its length is genuinely unknown rather than zero.
+                counts["unreadable"] += 1
+                continue
+            length = len(jd_text(dossier))
+            for label, bound in JD_LENGTH_BUCKETS:
+                if length < bound:
+                    counts[label] += 1
+        return counts
 
     def cache_key(self, lead: dict) -> str:
         """`lead_id` first, then a stable hash of `url` (#109) -- url does not change

@@ -68,6 +68,20 @@ def _pin_paths(tmp_path, monkeypatch, request):
     # That is precisely the 2026-08-15 incident config, on the machine most likely to have it.
     for var in ("CAMOFOX_USER", "CAMOFOX_SESSION", "CAMOFOX_URL"):
         monkeypatch.delenv(var, raising=False)
+    # Same hole, and the only one here that reaches the NETWORK. `core/log.py`'s
+    # `_resolve_telegram` reads these two BEFORE consulting Config, so an empty `Config()`
+    # does not protect anything: a developer (or a CI runner) with both exported would
+    # have `_notify_reporting` build a real sender and POST to Telegram. Four commands
+    # call it -- `ingest run` (degraded report), `triage run`, `cv run` and `track run`'s
+    # failure path -- so every CLI-level test of those that reaches a non-empty result
+    # sends a live request. The suite is meant to be fully offline, and this was the one
+    # remaining way it was not.
+    #
+    # Both are deleted, not just one: `_resolve_telegram` needs BOTH to return credentials,
+    # so clearing either would be enough to stop the send -- and would therefore hide the
+    # other from any test written to prove this pin works.
+    for var in ("SLUICE_TELEGRAM_TOKEN", "SLUICE_TELEGRAM_CHAT"):
+        monkeypatch.delenv(var, raising=False)
     # SLUICE_LOG_LEVEL, same hole, and it needs TWO steps rather than one (#144).
     #
     # `get_logger` sets a logger's level exactly ONCE -- the whole body is guarded on

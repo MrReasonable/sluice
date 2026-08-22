@@ -92,3 +92,36 @@ def test_no_path_env_var_survives_into_a_test(var):
     assert var not in os.environ, (
         f"{var} is set during a test; it outranks every sandbox pin, so this run is "
         f"resolving against whatever it points at")
+
+
+@pytest.mark.parametrize("var", ["SLUICE_TELEGRAM_TOKEN", "SLUICE_TELEGRAM_CHAT"])
+def test_no_telegram_credential_survives_into_a_test(var):
+    """The one sandbox hole that reached the NETWORK.
+
+    `core/log.py`'s `_resolve_telegram` reads these BEFORE consulting Config, so passing an
+    empty `Config()` protects nothing. Four commands call `_notify_reporting` -- ingest's
+    degraded report, `triage run`, `cv run`, and `track run`'s failure path -- so any
+    CLI-level test of those that produces a non-empty result would POST to Telegram for
+    real on a machine with both exported. The suite is meant to be fully offline.
+
+    Reads the LIVE environment, like its `PATH_ENV_VARS` sibling above, so it fails on the
+    machine that actually has one set rather than only in review.
+    """
+    assert var not in os.environ, (
+        f"{var} is set during a test; _notify_reporting would build a real Telegram "
+        "sender and send a live request from the offline suite")
+
+
+def test_notify_resolves_no_telegram_sender_under_the_sandbox():
+    """The behavioural half: the env pins above are what make this None.
+
+    Asserting the variables are absent does not prove the SENDER is not built -- config
+    could supply credentials too. This drives the real resolver with the empty Config a
+    CLI test passes and pins that no sender comes back, which is what actually stops the
+    request.
+    """
+    from sluice.core.config import Config
+    from sluice.core.log import _resolve_telegram, _telegram_sender
+
+    assert _resolve_telegram(Config()) is None
+    assert _telegram_sender(Config()) is None

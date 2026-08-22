@@ -1472,3 +1472,34 @@ def test_cli_doctor_prints_component_section(monkeypatch, capsys):
     # line for components follows it, counting a fourth state the first line
     # never has to.
     assert " notice\n" in out
+
+
+def test_the_dossier_buckets_are_cumulative_and_do_not_partition_total(monkeypatch, tmp_path):
+    """The bucket arithmetic, pinned because the docstring got it wrong.
+
+    `empty`/`under_200`/`under_800` are CUMULATIVE, and an entry of 800+ characters falls
+    in none of them. So the identity is `unreadable + under_800 + (>= 800) == total`, and
+    `unreadable + under_800` is strictly LESS than `total` on any install holding one good
+    JD. An earlier docstring claimed the buckets summed to `total`, which would make a
+    healthy cache look like it had lost entries.
+    """
+    dossier_dir = str(tmp_path / "dossiers")
+    monkeypatch.setenv("DOSSIER_DIR", dossier_dir)
+    _write_dossier(dossier_dir, "healthy", markdown="x" * 900)   # in NO length bucket
+    _write_dossier(dossier_dir, "shortish", markdown="y" * 300)  # under_800 only
+    _write_dossier(dossier_dir, "tiny", markdown="z" * 50)       # under_800 + under_200
+    _write_dossier(dossier_dir, "blank", markdown="")            # all three
+    with open(os.path.join(dossier_dir, "broken.json"), "w", encoding="utf-8") as f:
+        f.write("{not json")
+
+    rep = Sluice().doctor(offline=True)
+    detail = _one([c for c in rep.components if c.component == "dossier-cache"],
+                  "cached JDs").detail
+
+    assert "5 cached" in detail
+    assert "1 unreadable" in detail
+    assert "1 empty" in detail
+    assert "2 under 200 chars" in detail    # blank + tiny -- cumulative, not disjoint
+    assert "3 under 800 chars" in detail    # blank + tiny + shortish
+    # The identity the docstring now states, and the one it used to state.
+    assert 1 + 3 < 5, "unreadable + under_800 must be strictly less than total here"

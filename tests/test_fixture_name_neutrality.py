@@ -26,6 +26,16 @@ a leaked employer name could land in either shape, so both are swept and neither
 out. A name written into some other shape — prose in a comment, a docstring, an unusual
 helper — is NOT covered; the email-domain guard below is the broader net.
 
+CV-BODY EMPLOYER LINES are the concrete instance of that gap worth naming, because #167 added
+several and none of the four collectors reaches them: a CV fixture is a block of prose, and the
+employer sits on a bare line inside it rather than in a frontmatter key, a filename or a helper
+argument. `test_cv_fixture_identities_are_on_the_reviewed_roster` below is a NARROW ratchet for
+them — it sweeps `Example <Word>` literals in the CV test modules. That shape check is
+deliberately weaker than the four positional collectors and must not be mistaken for closing the
+gap: it can only ratchet names that ALREADY look synthetic, so a real employer written into CV
+body prose still passes everything here. Nothing local can catch that; a human reading the diff
+is the only control, which is the same limit this whole file's docstring opens with.
+
 Those collectors all read `tests/**/*.py`. The file has a SECOND half, at the bottom, that
 reads `tests/fixtures/*/raw.json` instead — the captured golden payloads, which no collector
 here ever walked, which is how real employer names and a real hunt geography shipped publicly
@@ -149,9 +159,19 @@ _SELF = Path(__file__).name
 # `NON_ANSWER_COMPANIES` in core/leads.py lists "n/a" itself as one of its members.
 # `tests/test_leads_rename.py`'s sanitize-aware placeholder-head test is what put it in the
 # filename position this sweep watches.
+# The CV-BODY identities (#167). Added when the narrow CV ratchet at the bottom of this file
+# first swept them -- before it existed, NO collector here saw a name written into CV fixture
+# prose, so these eleven were live identities that never forced the roster call this file
+# exists to force. Each follows the repo's established `Example <Word>` synthetic convention,
+# and several are not employers at all (`Example Candidate`, `Example Location`,
+# `Example Cert`, `Example University`, `Example Decoy` name a person, a place, a
+# certificate, a school and a deliberate fabrication-gate decoy).
 _REVIEWED_FIXTURE_IDENTITIES = frozenset({
     "A", "A-B", "Acme", "Alpha", "Aye", "B", "Beavni", "Bee", "Beta", "C", "Conflicted",
-    "D", "Delta", "E", "Epsilon", "Example", "Example Analytics", "Example Beta", "Example Co",
+    "D", "Delta", "E", "Epsilon", "Example", "Example Analytics", "Example Beta",
+    "Example Candidate", "Example Cartography", "Example Cert", "Example Cloud",
+    "Example Co", "Example Data", "Example Decoy", "Example Leverage",
+    "Example Location", "Example Robotics", "Example Scrum", "Example University",
     "Example Foundry", "Example Ltd", "Example Meridian", "Example MeridianRemote",
     "Example Northgate",
     "Example Systems", "Example Telemetry", "Example Tidal", "Foo", "Gamma",
@@ -595,7 +615,12 @@ def test_the_reviewed_roster_carries_no_identity_the_fixtures_stopped_using():
     from the fixtures for a NEUTRALITY reason stays written down here — the same "the
     remediation records the value" trap the deletion was meant to close.
     """
-    stale = sorted(_REVIEWED_FIXTURE_IDENTITIES - _all_fixture_identities())
+    # Both sweeps, because both feed the roster: the four positional collectors AND the
+    # narrow CV-body one at the bottom of this file. Checking only the first would report
+    # every CV-fixture identity as stale the moment it was reviewed -- the reverse check
+    # marking a name unused while a fixture is actively using it.
+    in_use = _all_fixture_identities() | _cv_fixture_identities()
+    stale = sorted(_REVIEWED_FIXTURE_IDENTITIES - in_use)
     assert not stale, (
         "these values are on the reviewed roster but no fixture uses them any more:\n  "
         + "\n  ".join(stale)
@@ -1283,3 +1308,49 @@ def test_every_captured_fixture_matches_its_reviewed_digest():
             if _REVIEWED_CORPUS_DIGESTS.get(src) != dig)
         + "".join(f"\n  {src}: (fixture removed, drop the entry)"
                   for src in sorted(set(_REVIEWED_CORPUS_DIGESTS) - set(actual))))
+
+
+# ── CV-body employer lines (#167): a NARROW ratchet for the gap named in the docstring ──
+
+_CV_TEST_MODULES = ("test_cv_engine.py", "test_cv_slop.py", "test_cv_compose.py",
+                    "test_cv_validate.py", "test_cv_parse.py", "test_cv_voice.py")
+
+# `Example <Word>` literals only. Weaker than the four positional collectors ON PURPOSE and
+# stated as such above: this can ratchet a name that already LOOKS synthetic, which is not
+# the same as catching a real one. It exists because #167 put employer identities into CV
+# body prose, where no positional collector reaches them, and an unreviewed value there was
+# previously invisible to every check in this file.
+_CV_IDENTITY_RE = re.compile(r"\bExample [A-Z][A-Za-z]+")
+
+
+def _cv_fixture_identities():
+    found = set()
+    for name in _CV_TEST_MODULES:
+        path = _TESTS_DIR / name
+        if not path.exists():
+            continue
+        found |= set(_CV_IDENTITY_RE.findall(path.read_text(encoding="utf-8")))
+    return found
+
+
+def test_the_cv_identity_collector_actually_finds_fixtures():
+    # Same vacuity guard every other collector here carries: a regex that silently stops
+    # matching makes the check below green over an empty set.
+    found = _cv_fixture_identities()
+    assert len(found) >= 3, (
+        f"the CV identity sweep found {len(found)} names; it has stopped matching and the "
+        "roster check below is now vacuous")
+
+
+def test_cv_fixture_identities_are_on_the_reviewed_roster():
+    """An employer written into CV BODY prose must still force the roster call.
+
+    Measured before this existed: `Example Leverage` and `Example Scrum` were live CV
+    fixture identities that NO collector in this file saw, so adding them needed no human
+    to look. That is exactly what the roster exists to prevent, just at a position the
+    four positional collectors do not reach.
+    """
+    unreviewed = sorted(_cv_fixture_identities() - _REVIEWED_FIXTURE_IDENTITIES)
+    assert unreviewed == [], (
+        "these CV-fixture identities are not on _REVIEWED_FIXTURE_IDENTITIES: "
+        f"{unreviewed}. Confirm each names no real firm, then add it to the roster.")

@@ -230,3 +230,55 @@ def test_get_or_build_loads_a_legacy_cached_dossier_missing_the_new_fields(tmp_p
     d = dc.get_or_build({"lead_id": "legacy-co-role"})
     assert d["company"] == "Example Legacy Co"
     assert d.get("page_title") is None    # never written; get_or_build must not raise
+
+
+def test_census_labels_and_counts_share_one_boundary(monkeypatch):
+    """A moved boundary must move its LABEL too.
+
+    The boundary was a numeric comparison in core/app.py and a hand-written English
+    label in core/doctor.py, so moving it left the label asserting the old number with
+    the whole suite green -- and the end-to-end fixtures sit well clear of both
+    boundaries, so nothing would have caught the lie. Both now render from
+    JD_LENGTH_BUCKETS, which this pins by moving it.
+    """
+    import sluice.core.doctor as D
+    from sluice.core.dossier import JD_LENGTH_BUCKETS
+
+    assert [b for _l, b in JD_LENGTH_BUCKETS] == [1, 200, 800], (
+        "the shipped boundaries changed; update this row deliberately")
+
+    monkeypatch.setattr(D, "_JD_LENGTH_BUCKETS",
+                        (("empty", 1), ("under_200", 350), ("under_800", 900)))
+    detail = D.classify_dossier_cache(
+        {"total": 2, "unreadable": 0, "empty": 0, "under_200": 1, "under_800": 2}).detail
+    assert "under 350 chars" in detail and "under 900 chars" in detail, detail
+    assert "under 200 chars" not in detail, "the label did not follow the boundary"
+
+
+def test_census_reads_the_cache_without_creating_it(tmp_path):
+    """A census must never create the directory it reports on.
+
+    `Sluice.doctor` must not disarm the #81 relocation notice, which is keyed on the
+    resolved path NOT existing -- the same way `sqlite3.connect` opening a store file
+    for a mere read once did.
+    """
+    missing = tmp_path / "not-there"
+    cache = DossierCache(str(missing), ttl_days=7, fetcher=lambda lead: {})
+    assert cache.census() == {"total": 0, "unreadable": 0,
+                              "empty": 0, "under_200": 0, "under_800": 0}
+    assert not missing.exists(), "the census created the cache directory"
+
+
+def test_census_buckets_are_cumulative_over_real_files(tmp_path):
+    # The counting itself, over the on-disk shape census owns. Cumulative, so a 50-char
+    # JD lands in under_800 AND under_200 but not empty; an 900-char one lands in none.
+    cache = DossierCache(str(tmp_path), ttl_days=7, fetcher=lambda lead: {})
+    for name, md in [("healthy", "x" * 900), ("shortish", "y" * 300),
+                     ("tiny", "z" * 50), ("blank", "")]:
+        (tmp_path / f"{name}.json").write_text(
+            json.dumps({"schema_version": 2, "jd": {"markdown": md}}), encoding="utf-8")
+    (tmp_path / "broken.json").write_text("{not json", encoding="utf-8")
+    (tmp_path / "ignored.txt").write_text("not a dossier", encoding="utf-8")
+
+    assert cache.census() == {"total": 5, "unreadable": 1,
+                              "empty": 1, "under_200": 2, "under_800": 3}
