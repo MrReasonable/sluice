@@ -1,6 +1,7 @@
 """Bounded CV composition. The prompt's entire factual content is the closed verified
-bundle + the JD + the format contract; the backend has no other source. On a HARD-gate
-failure the engine calls compose again with the violations appended (one retry)."""
+bundle + the JD + the format contract; the backend has no other source. On a gate failure
+-- HARD, or a scoped STYLE finding (#167) -- the engine calls compose again with the
+findings appended (one retry)."""
 
 _RULES = """CV RULES (follow exactly):
 

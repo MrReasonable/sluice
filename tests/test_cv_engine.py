@@ -1776,3 +1776,541 @@ def test_run_batch_still_composes_an_unambiguous_lead_beside_a_twin_pair(monkeyp
     assert by_ref[ordinary.ref] == "rendered"
     assert set(v.written) == {ordinary.ref}
     assert [s for s in by_ref.values() if s == "skipped-ambiguous"] == ["skipped-ambiguous"] * 2
+
+
+# ── #167: the loop retains the last HARD-clean draft, and rebinds before the audit ──
+#
+# "Attempt 1 clears the HARD gate but carries a STYLE finding" is a sequence NO fixture
+# in this file could produce before #167: the loop broke the moment the HARD gate was
+# clean, so attempt 2 never ran and nothing here ever exercised a retained draft
+# outliving a dirtier retry. Every fixture below exists to build one of those sequences.
+
+# HARD-clean, STYLE-dirty. "leverage" is a slop._PHRASES stem, placed in PROFILE prose --
+# one of the two regions cv/engine.py scopes the style tier to via section_spans. The
+# replacement introduces no digit, so validate()'s profile-metric sweep stays clean and
+# this draft clears the HARD gate exactly as CLEAN_CV does.
+STYLE_DIRTY_CV = CLEAN_CV.replace(
+    "I build reliable systems.",
+    "I leverage the same delivery patterns across teams.")
+
+# HARD-dirty and nothing else: an em dash, slop.HARD's blocking tier. The bullet keeps
+# its citation and gains no number, so validate() still reports nothing -- the ONLY thing
+# wrong with this draft is the HARD slop rule, which is what makes it a clean
+# discriminator between the two tiers rather than a draft failing for several reasons at
+# once.
+HARD_DIRTY_CV = CLEAN_CV.replace("- Coached [EF1]", "- Coached — and mentored [EF1]")
+
+# A phrase stem in an EMPLOYER line AND one in PROFILE prose. Both halves are
+# load-bearing: the profile phrase is what forces a retry to exist at all, and without a
+# retry prompt "no retry message names the employer" would be vacuously true. The
+# employer keeps this file's synthetic "Example <Word>" convention -- nothing local can
+# tell a real firm from an invented one, so the fixture must not put the question.
+EMPLOYER_PHRASE_CV = CLEAN_CV.replace(
+    "Example Systems", "Example Leverage", 1).replace(
+    "I build reliable systems.", "I streamline delivery for platform teams.", 1)
+
+# A CV that repeats the PROFILE header AFTER `WORK EXPERIENCE`. `section_spans` sets
+# in_profile on that second header WITHOUT clearing in_work (its own docstring says so),
+# so a BULLET underneath lands in BOTH of the lists it returns -- the only shape that
+# can. Gate-clean and HARD-clean: the bullet carries a real bundle citation and no
+# number, so the ONE thing this fixture exercises is the overlap.
+DOUBLED_PROFILE_CV = CLEAN_CV.replace(
+    "CERTIFICATES", "PROFILE\n- I foster delivery [EF1]\n\nCERTIFICATES", 1)
+
+_DRAFTS = {
+    "clean": CLEAN_CV,
+    "hard-clean-style-dirty": STYLE_DIRTY_CV,
+    "hard-dirty": HARD_DIRTY_CV,
+    "employer-phrase": EMPLOYER_PHRASE_CV,
+    "doubled-profile": DOUBLED_PROFILE_CV,
+}
+
+
+def test_the_sequence_fixtures_are_the_tiers_they_claim():
+    """PREMISE of every test below, per fixture and per TIER.
+
+    Each test below asserts a SEQUENCE outcome, and every one of them stays green if a
+    fixture silently drifts into a different tier: a "hard-clean-style-dirty" draft that
+    had become HARD-dirty would still produce skipped-gate, for a reason that has nothing
+    to do with the retention this task adds. The same trap
+    test_clean_cv_is_actually_clean closes for CLEAN_CV.
+
+    This also subsumes the usual no-op check on the `.replace()` calls above: a
+    replacement that silently matched nothing leaves the fixture equal to CLEAN_CV, which
+    is (hard=False, style=False), so it fails its own row here.
+    """
+    from sluice.cv.slop import check_hard, check_phrases
+    from sluice.cv.validate import section_spans
+
+    bundle_text = render_bundle(build_bundle(
+        entries=ENTRIES, baseline="BASELINE", negatives=[],
+        jd_keywords=[], prefix_map={"Example Foundry": "EF"}))
+
+    def _style(text):
+        # The engine's own scoping, reproduced: PROFILE prose + WORK bullets, nothing
+        # else. A fixture that is "style-dirty" only OUTSIDE that scope is not
+        # style-dirty as far as this loop is concerned.
+        profile, work = section_spans(text)
+        return check_phrases(profile + work)
+
+    for name, text, hard, style in [
+        ("clean", CLEAN_CV, False, False),
+        ("hard-clean-style-dirty", STYLE_DIRTY_CV, False, True),
+        ("hard-dirty", HARD_DIRTY_CV, True, False),
+        ("employer-phrase", EMPLOYER_PHRASE_CV, False, True),
+        ("doubled-profile", DOUBLED_PROFILE_CV, False, True),
+    ]:
+        assert validate(text, bundle_text) == [], f"{name} is no longer gate-clean"
+        assert bool(check_hard(text)) is hard, f"{name}'s HARD tier drifted"
+        assert bool(_style(text)) is style, f"{name}'s STYLE tier drifted"
+
+    # The employer line's OWN phrase must exist, or the scoping test below asserts the
+    # absence of something that was never there in the first place.
+    assert "Example Leverage" in EMPLOYER_PHRASE_CV, "the employer replace no-opped"
+    assert check_phrases([(1, "Example Leverage")]), (
+        "'Example Leverage' no longer matches a slop._PHRASES stem, so the scoping "
+        "test below would pass without the engine scoping anything")
+
+
+class _SequenceBackend:
+    """Hands back a scripted SEQUENCE of composed drafts, one per compose call, and
+    records what every AUDIT call was asked to audit.
+
+    The audited text is recovered from the audit prompt itself -- cv/audit.py's
+    build_audit_prompt appends `"=== CV ===\\n" + cv_text + "\\n"` -- rather than by
+    monkeypatching run_audit, so these tests exercise the real seam run_one calls. The
+    marker assertion below is what turns a prompt-shape change into a loud failure
+    instead of a silently empty `audited` list.
+    """
+    _CV_MARKER = "=== CV ===\n"
+
+    def __init__(self, drafts, audit_out="supported\tx\tSF1"):
+        # Draft NAMES, resolved per call rather than up front: "backend-error" is not a
+        # draft at all but an instruction to fail the way core/backends fails, and no
+        # text could express that. A compose that never RETURNS is a case the retry has
+        # to survive, not a shape of CV.
+        self.drafts = list(drafts)
+        self.audit_out = audit_out
+        self.last_backend = "primary"
+        self.compose_prompts = []
+        self.audited = []
+
+    def complete(self, prompt):
+        # Same routing rule as FakeBackend: a compose prompt carries "SOURCE BUNDLE"
+        # and not "auditing"; an audit prompt carries both.
+        if "SOURCE BUNDLE" in prompt and "auditing" not in prompt:
+            self.compose_prompts.append(prompt)
+            # Running past the end of the sequence means the engine composed more times
+            # than the retry budget allows -- a regression to report, not a shortfall to
+            # improvise a draft for.
+            assert len(self.compose_prompts) <= len(self.drafts), (
+                f"the engine composed {len(self.compose_prompts)} times; this sequence "
+                f"scripts {len(self.drafts)} draft(s) and the retry budget is one")
+            name = self.drafts[len(self.compose_prompts) - 1]
+            if name == "backend-error":
+                # The shape core/backends raises when every leg is down, the request
+                # times out, or a reply is truncated at max_tokens. compose() catches
+                # nothing, so this lands in the engine's loop.
+                raise BackendError("compose timeout: every backend leg is down")
+            return _DRAFTS[name]
+        body = prompt.partition(self._CV_MARKER)[2]
+        assert body, "cv/audit.py no longer carries the CV under '=== CV ==='"
+        self.audited.append(body[:-1])   # build_audit_prompt appends exactly one "\n"
+        return self.audit_out
+
+
+def _run_sequence(monkeypatch, drafts):
+    """run_one over a scripted sequence of composed drafts.
+
+    Returns (result, backend, renderer): the renderer records what SHIPPED and the
+    backend records what was AUDITED, which is the pair these tests compare. _served
+    stands in for the real render/serve seam for the same reason every other "rendered"
+    test in this file does it -- FakeRenderer hands back a path that does not exist.
+    """
+    _served(monkeypatch)
+    be, rend = _SequenceBackend(drafts), FakeRenderer()
+    v = FakeVault(ENTRIES)
+    res = run_one(Note({"status": "shortlist", "company": "Example Foundry",
+                        "role": "Analyst"}),
+                  v, _cfg(), be, FakeCache(), renderer=rend)
+    return res, be, rend
+
+
+def test_skipped_gate_IFF_no_attempt_was_ever_hard_clean(monkeypatch):
+    """The safety property: `skipped-gate` iff no attempt was ever HARD-clean.
+
+    The loop is two attempts, so the space is SEQUENCES, not per-attempt outcomes -- a
+    table of (hard, style) per-attempt combinations samples something else entirely. But
+    these rows are a SAMPLE too, and saying otherwise would be the claim this file most
+    wants to avoid: six of the nine two-attempt sequences over the three tiers. What
+    makes the sample worth having is the second assertion, which DERIVES the expected
+    verdict from the sequence instead of reading it off a hand-written column, so a row
+    added later cannot be given a wrong expectation.
+
+    A STYLE finding must NEVER bin a lead -- attempt 2 is an unconstrained,
+    non-deterministic compose, so a loop that discarded a hard-clean draft to chase a
+    phrase would lose the lead whenever the retry came back worse, which is exactly what
+    the decision to HOLD rather than block exists to avoid.
+    """
+    for seq, expected in [
+        (["hard-dirty", "hard-dirty"], "skipped-gate"),
+        (["hard-dirty", "clean"], "rendered"),
+        (["clean", "clean"], "rendered"),
+        # `best` first set on attempt 2 AND carrying live style findings -- the one
+        # sequence that produces that `(cv_text, style_msgs)` state, which is what a
+        # surviving-style consequence would read.
+        (["hard-dirty", "hard-clean-style-dirty"], "rendered"),
+        (["hard-clean-style-dirty", "hard-dirty"], "rendered"),        # the regression
+        (["hard-clean-style-dirty", "hard-clean-style-dirty"], "rendered"),
+    ]:
+        res, _be, _rend = _run_sequence(monkeypatch, seq)
+        # The FULL status, not `!= "skipped-gate"`. `error`, `skipped-has-cv` and
+        # `dry-run` all satisfy that weaker form, so a lead lost to an exception or held
+        # back by a clobber guard would have read as a pass -- and one of them really
+        # was live: a retry that RAISED returned `error` here (see
+        # test_a_retry_that_RAISES_still_ships_the_draft_attempt_1_earned).
+        assert res.status == expected, (seq, res.status)
+        # ...and the property those statuses encode, DERIVED from the sequence rather
+        # than restated: every draft name here except "hard-dirty" clears the HARD gate,
+        # and a scripted hard-clean draft is always reached (attempt 1 always runs, and
+        # the loop only breaks early on a draft that was itself hard-clean).
+        assert (res.status != "skipped-gate") == any(d != "hard-dirty" for d in seq), (
+            seq, res.status)
+
+
+def test_a_hard_clean_draft_is_rendered_even_when_the_retry_comes_back_dirty(monkeypatch):
+    """The sequence nothing in this file could produce before #167.
+
+    The pre-#167 loop broke the moment the HARD gate was clean, so a hard-clean attempt 1
+    WAS what rendered. Adding a STYLE tier that feeds the retry must not change that: the
+    retained draft, not the dirtier retry, is what ships -- and a HARD-dirty attempt 2
+    must never reach the renderer, which validates nothing itself.
+    """
+    res, be, rend = _run_sequence(monkeypatch, ["hard-clean-style-dirty", "hard-dirty"])
+    assert res.status == "rendered"
+    assert len(be.compose_prompts) == 2, "the STYLE finding never reached the retry"
+    assert rend.rendered == [STYLE_DIRTY_CV], (
+        "the retained HARD-clean draft is what must ship")
+
+
+def test_the_audit_runs_over_the_RENDERED_draft_not_the_discarded_one(monkeypatch):
+    """`cv_text` is read post-loop TWICE -- by run_audit and by renderer.render -- and the
+    audit's flags drive unsupported_claims -> hold_for_signoff -> the withheld
+    tailored_cv. Auditing one draft while rendering another means a fabricated claim in
+    the SERVED CV goes un-held, is written send-ready, and the run reports
+    "rendered / audit flags: 0".
+
+    Agreement alone is NOT the property, which is why the last assertion is here and is
+    not a restatement of the first: dropping the rebind entirely leaves BOTH readers on
+    the discarded attempt-2 draft, so they still agree -- on a CV that never cleared the
+    HARD gate. They must agree ON THE RETAINED DRAFT.
+    """
+    from sluice.cv.slop import check_hard
+
+    res, be, rend = _run_sequence(monkeypatch, ["hard-clean-style-dirty", "hard-dirty"])
+    assert res.status == "rendered"
+    assert be.audited, "the audit never ran, so the comparisons below would be vacuous"
+    assert be.audited[-1] == rend.rendered[-1], (
+        "the audit ran over a draft the user never sees")
+    assert not check_hard(be.audited[-1]), (
+        "both readers moved together onto the DISCARDED, HARD-dirty draft")
+
+
+def test_a_phrase_in_an_EMPLOYER_line_never_reaches_the_retry(monkeypatch):
+    """The scoping guarantee, pinned where the scoping actually HAPPENS.
+
+    cv/slop.py's check_phrases has no opinion about which lines it is handed (it is
+    deliberately dependency-free, so the PROFILE/WORK split cannot live there); the
+    ENGINE is what must hand it only PROFILE prose and WORK bullets, via section_spans.
+    A retry message naming an employer line is answerable only by RENAMING THE EMPLOYER
+    -- a style rule turned into fabrication pressure, the shape CLAUDE.md records as the
+    worst case this codebase has shipped.
+    """
+    _res, be, _rend = _run_sequence(monkeypatch, ["employer-phrase", "employer-phrase"])
+    assert len(be.compose_prompts) == 2, "no retry happened, so this asserts nothing"
+    retry = be.compose_prompts[1]
+    assert "SLOP streamline" in retry, (
+        "the PROFILE phrase never reached the retry either, so the absence below would "
+        "say nothing about SCOPING")
+    assert "Example Leverage" not in retry, retry
+
+
+def test_a_line_in_BOTH_scoped_regions_is_complained_about_once(monkeypatch):
+    """The style findings are handed to the composer VERBATIM, so the SHAPE of the list is
+    what the model reads -- which is why `validate` merges its own two regions into one
+    line-ordered pass rather than concatenating them (see its comment), and why the
+    engine's style tier has to do the same. Concatenating instead yields the identical
+    complaint once per region the line belongs to, and puts a late PROFILE line ahead of
+    an earlier WORK bullet.
+    """
+    from sluice.cv.validate import section_spans
+
+    profile, work = section_spans(DOUBLED_PROFILE_CV)
+    assert set(dict(profile)) & set(dict(work)), (
+        "the fixture no longer puts a line in BOTH regions, so this asserts nothing")
+
+    _res, be, _rend = _run_sequence(monkeypatch, ["doubled-profile", "doubled-profile"])
+    assert len(be.compose_prompts) == 2, "no retry happened, so there is no list to check"
+    assert be.compose_prompts[1].count("SLOP foster") == 1, be.compose_prompts[1]
+
+
+def test_a_retry_that_RAISES_still_ships_the_draft_attempt_1_earned(monkeypatch, caplog):
+    """Retention has to cover a retry that never RETURNS, not just one that comes back
+    worse.
+
+    `_compose.compose` catches nothing (cv/compose.py), so a BackendError -- a timeout,
+    every fallback leg down, a reply truncated at max_tokens -- propagates out of this
+    loop, past the retained draft, to run_one's outer `except: raise` and then to
+    run_batch, which records `error`. The CONTROL is the whole argument: that identical
+    backend failure is HARMLESS when attempt 1 is style-CLEAN, because no second compose
+    is attempted at all (see the sibling below). So the only thing that turns it into a
+    lost lead is a phrase match -- and a phrase may never cost a lead (#167).
+    """
+    with caplog.at_level("WARNING"):
+        res, be, rend = _run_sequence(monkeypatch,
+                                      ["hard-clean-style-dirty", "backend-error"])
+    assert res.status == "rendered"
+    assert len(be.compose_prompts) == 2, "the retry never happened, so nothing raised"
+    assert rend.rendered == [STYLE_DIRTY_CV]
+    assert any("compose timeout" in r.getMessage() for r in caplog.records), (
+        "a swallowed backend failure that logs nothing is invisible in production")
+
+
+def test_the_same_backend_failure_is_harmless_when_attempt_1_is_style_clean(monkeypatch):
+    """The CONTROL for the test above, and the reason this is a REGRESSION rather than a
+    pre-existing weakness: with a style-clean attempt 1 the loop breaks and the scripted
+    failure is never reached. That was the path EVERY hard-clean attempt 1 took before
+    the style tier existed."""
+    res, be, _rend = _run_sequence(monkeypatch, ["clean", "backend-error"])
+    assert res.status == "rendered"
+    assert len(be.compose_prompts) == 1, "a style-clean draft must not buy a second call"
+
+
+def test_a_FIRST_compose_that_raises_still_bins_the_lead(monkeypatch):
+    """MIRROR HARM. The guard above must not swallow a failure with nothing retained
+    behind it: with `best` unset there is no draft to ship, and turning a backend outage
+    into a silent non-result would be strictly worse than today's `error`. A bare `raise`
+    keeps both the behaviour and the original traceback."""
+    with pytest.raises(BackendError):
+        _run_sequence(monkeypatch, ["backend-error"])
+
+
+# ── #167 Task 14: the opt-in model-judged VOICE check (cv/voice.py) ──────────────
+#
+# A separate scripted backend rather than an extension of _SequenceBackend: the VOICE
+# prompt (cv/voice.py's "You are judging the VOICE...") shares no marker with either
+# the compose prompt ("SOURCE BUNDLE") or the audit one ("auditing"), and folding a
+# third prompt kind into _SequenceBackend's two-way dispatch risks a voice call being
+# silently misrouted into `audited` -- corrupting every OTHER test in this file that
+# reads `be.audited` -- rather than a clean failure local to these tests.
+class _VoiceBackend:
+    """Scripts the compose drafts (from _DRAFTS, one per call) and the model's own
+    reply to the VOICE check, and records which KIND every `complete()` call carried
+    -- "compose", "voice", or "audit" -- so a wiring test can assert not just the
+    outcome but which calls were made, and how many."""
+
+    def __init__(self, drafts, *, voice_out="", voice_raises=False,
+                audit_out="supported\tx\tSF1"):
+        self.drafts = list(drafts)
+        self.voice_out = voice_out
+        self.voice_raises = voice_raises
+        self.audit_out = audit_out
+        self.last_backend = "primary"
+        self.calls = []                # "compose" | "voice" | "audit", in call order
+        self.compose_prompts = []
+
+    def complete(self, prompt):
+        first = prompt.splitlines()[0] if prompt else ""
+        if first.startswith("You are judging the VOICE"):
+            self.calls.append("voice")
+            if self.voice_raises:
+                raise RuntimeError("voice backend down")
+            return self.voice_out
+        if "SOURCE BUNDLE" in prompt and "auditing" not in prompt:
+            self.calls.append("compose")
+            self.compose_prompts.append(prompt)
+            assert len(self.compose_prompts) <= len(self.drafts), (
+                f"the engine composed {len(self.compose_prompts)} times; this "
+                f"sequence scripts {len(self.drafts)} draft(s)")
+            return _DRAFTS[self.drafts[len(self.compose_prompts) - 1]]
+        self.calls.append("audit")
+        return self.audit_out
+
+
+def _run_voice_sequence(monkeypatch, drafts, *, voice_check, **kw):
+    """run_one over a scripted draft sequence with `cv.voice_check` set. Returns
+    (result, backend) -- mirrors _run_sequence, minus the renderer no test below
+    needs to inspect."""
+    _served(monkeypatch)
+    be = _VoiceBackend(drafts, **kw)
+    v = FakeVault(ENTRIES)
+    cfg = _cfg()
+    cfg.voice_check = voice_check
+    res = run_one(Note({"status": "shortlist", "company": "Example Foundry",
+                        "role": "Analyst"}),
+                  v, cfg, be, FakeCache(), renderer=FakeRenderer())
+    return res, be
+
+
+def test_voice_check_off_by_default_makes_no_extra_backend_call(monkeypatch):
+    # An unconfigured install (voice_check defaults False -- #167 Task 11's
+    # CvConfig field) must make ZERO additional backend calls -- not "a call that is
+    # skipped quickly", literally no `complete()` invocation shaped like the voice
+    # prompt.
+    res, be = _run_voice_sequence(monkeypatch, ["clean"], voice_check=False)
+    assert res.status == "rendered"
+    assert "voice" not in be.calls
+
+
+def test_a_voice_backend_error_degrades_to_no_findings_rather_than_blocking(
+        monkeypatch, caplog):
+    # Fails OPEN, exactly as the fabrication audit does (cv/audit.py): a gate must
+    # never be harder than the check that actually ran.
+    with caplog.at_level("WARNING"):
+        res, be = _run_voice_sequence(monkeypatch, ["clean"], voice_check=True,
+                                      voice_raises=True)
+    assert res.status == "rendered"
+    assert be.calls.count("voice") == 1
+    assert any("voice check" in r.getMessage() for r in caplog.records), (
+        "a swallowed voice-backend failure that logs nothing is the counting-only "
+        "`except` this repo has a real incident for")
+
+
+def test_the_voice_check_does_not_run_while_the_hard_gate_is_dirty(monkeypatch):
+    # No point spending a call judging the voice of a draft about to be recomposed
+    # for citation reasons anyway.
+    res, be = _run_voice_sequence(monkeypatch, ["hard-dirty", "clean"],
+                                  voice_check=True)
+    assert res.status == "rendered"
+    assert be.calls.count("voice") == 1
+
+
+def test_a_voice_finding_reaches_the_retry(monkeypatch):
+    res, be = _run_voice_sequence(
+        monkeypatch, ["clean", "clean"], voice_check=True,
+        voice_out="flag\tThis reads like a press release.\n")
+    assert res.status == "rendered"
+    assert be.calls.count("compose") == 2, "the VOICE finding never reached the retry"
+    assert "VOICE: flag\tThis reads like a press release." in be.compose_prompts[1]
+
+
+# ── #167 Task 15: cv.style_hold withholds the send-ready pointer ─────────────────────
+#
+# Neither _run_sequence nor _run_voice_sequence's FakeVault carries `notes=`, so none of
+# their siblings could ever read back what landed in frontmatter -- every existing
+# assertion there stops at `res`/`be`/`rend`. These tests need `note.fm` itself
+# (pending_cv, needs_signoff, tailored_cv), so the two helpers below seed a real Note the
+# vault can mutate in place and hand it back -- otherwise identical to their namesakes,
+# mirroring _run_voice_sequence's own cfg-copy-and-flip pattern for style_hold instead of
+# voice_check.
+
+def _run_sequence_with_note(monkeypatch, drafts, *, style_hold=False,
+                            require_signoff=True, audit_out="supported\tx\tSF1"):
+    _served(monkeypatch)
+    note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
+    be = _SequenceBackend(drafts, audit_out=audit_out)
+    v = FakeVault(ENTRIES, notes=[note])
+    cfg = _cfg()
+    cfg.style_hold = style_hold
+    cfg.require_signoff = require_signoff
+    res = run_one(note, v, cfg, be, FakeCache(), renderer=FakeRenderer())
+    return res, note, be
+
+
+def _run_voice_sequence_with_note(monkeypatch, drafts, *, voice_check, style_hold=False,
+                                  **kw):
+    """Only the style_hold x voice interaction test below needs note.fm from a voice-
+    scripted run; every other voice test reads `be.calls`/`be.compose_prompts` and is
+    served fine by the shared _run_voice_sequence."""
+    _served(monkeypatch)
+    note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
+    be = _VoiceBackend(drafts, **kw)
+    v = FakeVault(ENTRIES, notes=[note])
+    cfg = _cfg()
+    cfg.voice_check = voice_check
+    cfg.style_hold = style_hold
+    res = run_one(note, v, cfg, be, FakeCache(), renderer=FakeRenderer())
+    return res, note, be
+
+
+def test_a_style_finding_does_not_withhold_the_pointer_by_default(monkeypatch):
+    # style_hold defaults False (CvConfig, Task 11): a STYLE finding feeds the retry
+    # (Task 13) but, on its own, must not cost the lead its send-ready pointer -- riding
+    # require_signoff (True by default, chosen for FABRICATION) would withhold
+    # tailored_cv on ~40 case-insensitive stems out of the box at shipped defaults
+    # (CvConfig.style_hold's own comment), and a rendered CV with no pointer is inert to
+    # apply/select.
+    res, note, _be = _run_sequence_with_note(
+        monkeypatch, ["hard-clean-style-dirty", "hard-dirty"])
+    assert res.status == "rendered"
+    assert note.fm.get("tailored_cv"), "style_hold is off by default"
+    assert "pending_cv" not in note.fm and "needs_signoff" not in note.fm
+
+
+def test_style_hold_withholds_the_pointer_when_enabled(monkeypatch):
+    res, note, _be = _run_sequence_with_note(
+        monkeypatch, ["hard-clean-style-dirty", "hard-dirty"], style_hold=True)
+    assert res.status == "needs-signoff"
+    assert "tailored_cv" not in note.fm
+    assert note.fm.get("pending_cv")
+
+
+def test_style_hold_withholds_even_when_require_signoff_is_off(monkeypatch):
+    # cv.require_signoff continues to gate the FABRICATION hold alone -- its default was
+    # chosen for fabrication, and style_hold borrows nothing from it. Turning it off must
+    # not disable style_hold's own, independent consequence.
+    res, note, _be = _run_sequence_with_note(
+        monkeypatch, ["hard-clean-style-dirty", "hard-dirty"],
+        style_hold=True, require_signoff=False)
+    assert res.status == "needs-signoff"
+    assert "tailored_cv" not in note.fm
+
+
+def test_style_hold_claims_are_style_tagged_not_the_fabrication_shape(monkeypatch):
+    # hold_for_signoff(ref, *, pending, claims) keeps its Store-protocol signature
+    # unwidened: `claims` stays a flat JSON ARRAY, and core/app.py reads it back as
+    # `parsed if isinstance(parsed, list) else [str(parsed)]` -- a wrapped
+    # {"kind": ..., "claims": [...]} object would collapse into ONE bogus claim string,
+    # so the kind has to live on each ENTRY instead. The retained draft's own STYLE
+    # finding ("SLOP leverage: ...", from _slop_phrases) must reach the array tagged
+    # "style\t...", distinguishing it from a raw, unprefixed audit verdict line.
+    import json
+    res, note, _be = _run_sequence_with_note(
+        monkeypatch, ["hard-clean-style-dirty", "hard-dirty"], style_hold=True)
+    assert res.status == "needs-signoff"
+    claims = json.loads(note.fm["needs_signoff"])
+    assert claims, "the style finding never reached the hold"
+    assert all(c.startswith("style\t") for c in claims), claims
+    assert any("leverag" in c for c in claims), claims
+
+
+def test_a_hold_combines_fabrication_and_style_claims_in_one_call(monkeypatch):
+    # Never-clobber: ONE hold_for_signoff call carries BOTH kinds when both fire -- never
+    # a second write function, and never two separate holds racing each other. Also pins
+    # that a legacy fabrication claim stays UNPREFIXED even once style_hold is on.
+    import json
+    res, note, _be = _run_sequence_with_note(
+        monkeypatch, ["hard-clean-style-dirty", "hard-dirty"], style_hold=True,
+        audit_out="unsupported\tMotivated by placeholder\tNONE")
+    assert res.status == "needs-signoff"
+    claims = json.loads(note.fm["needs_signoff"])
+    fabrication = [c for c in claims if not c.startswith("style\t")]
+    style = [c for c in claims if c.startswith("style\t")]
+    assert fabrication == ["unsupported\tMotivated by placeholder\tNONE"]
+    assert style, "the style finding was dropped once a fabrication claim also held"
+
+
+def test_a_voice_finding_alone_can_trigger_the_style_hold(monkeypatch):
+    # The STYLE tier is slop._PHRASES matches PLUS LLM voice findings (both feed the
+    # SAME retry, Task 14), so a voice-only finding -- no slop phrase survives at all --
+    # must still withhold the pointer under style_hold; the consequence is not wired to
+    # style_msgs alone.
+    import json
+    res, note, be = _run_voice_sequence_with_note(
+        monkeypatch, ["clean", "clean"], voice_check=True, style_hold=True,
+        voice_out="flag\tThis reads like a press release.\n")
+    assert res.status == "needs-signoff"
+    assert be.calls.count("compose") == 2, "the voice finding never reached the retry"
+    assert "tailored_cv" not in note.fm
+    claims = json.loads(note.fm["needs_signoff"])
+    assert any(c.startswith("style\t") and "press release" in c for c in claims), claims
