@@ -22,9 +22,19 @@ Coverage does not gate, so it can stop being measured, stop being published, or 
 the wrong tree with the build still green -- and losing branch coverage makes the number go UP,
 which reads as an improvement. Each of those is asserted here rather than left to a reader.
 
-WHY TEXT, NOT A YAML PARSE: pyyaml is a guarded optional import in `sluice/` (CLAUDE.md's
-stdlib-only rule), so a test needing it is a test that can skip itself into uselessness on a bare
-install. What is being pinned is a command STRING, which text matching pins exactly.
+WHY TEXT, NOT A YAML PARSE. Not because pyyaml is unavailable -- an earlier version of this
+paragraph said it was "a guarded optional import, so a test needing it can skip itself into
+uselessness on a bare install", and that is FALSE: `pyproject.toml`'s
+`dependencies = ["pyyaml", "tzdata"]` makes it a hard runtime dependency, and several modules in
+this directory already import it at module scope. The try/except in the config modules is
+defensive, not optionality.
+
+The real reason is that most of what these guards pin is a command STRING -- `ruff check ...`,
+`npm ci --ignore-scripts` -- which text matching pins exactly and a parse would only make
+harder to read. Where a guard needs YAML's OWN semantics (quoting, indentation, anchors, merge
+keys, long form vs short), parse instead: `tests/test_docker_channel.py` does, and its docstring
+records why. `#170`'s rule is the tiebreaker for an ambiguous case -- if a hand-rolled scanner
+here ever needs a third patch, stop patching and parse.
 
 THE THREE CASES, and why prose is not simply skipped. `ruff check` appears in the docs as a
 command (`ruff check sluice tests scripts`), and as prose that names no targets at all -- a
@@ -450,8 +460,9 @@ def test_the_documented_install_command_is_the_one_ci_runs():
 
 def _pyproject() -> dict:
     """pyproject.toml, parsed. tomllib is stdlib on every version this repo supports
-    (requires-python >= 3.12), so unlike the yaml case in the module docstring there is no
-    optional import to skip a test into uselessness."""
+    (requires-python >= 3.12), so this needs no dependency at all -- unlike the yaml case the
+    module docstring discusses, which is a question of what a guard should pin rather than of
+    what is importable."""
     return tomllib.loads(PYPROJECT.read_text())
 
 

@@ -14,8 +14,10 @@ the wrong file and still pass. Deliberately no count and no roster: this sentenc
 five helpers by hand, and had gone stale two commits later in this same branch (seven, then
 nine) without anything going red -- the standing hazard with a number in prose.
 
-Text-matching, not a YAML parse -- pyyaml is a guarded optional import in sluice/ (CLAUDE.md's
-stdlib-only rule), so a test needing it could skip itself into uselessness on a bare install.
+Text-matching, not a YAML parse -- because what is pinned here is command strings, action
+pins and permission blocks, which text matching pins exactly. NOT because pyyaml is unavailable:
+it is a hard runtime dependency (`pyproject.toml`'s `dependencies`), and an earlier version of
+this line claimed otherwise. See tests/test_ci_wiring.py's docstring for when to parse instead.
 Mirrors tests/test_ci_wiring.py's own idiom (_job_directives/_step_containing, comment-stripped)
 rather than importing it -- file-scoped helpers, matching that file's own convention, for two
 small functions that don't warrant cross-file coupling.
