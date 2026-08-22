@@ -40,6 +40,34 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [1.1.0](https://github.com/MrReasonable/sluice/compare/v1.0.0...v1.1.0) (2026-08-22)
+
+
+### Features
+
+* **packaging:** a compose file that pins VAULT_DIR ([#104](https://github.com/MrReasonable/sluice/issues/104)) ([97dfc85](https://github.com/MrReasonable/sluice/commit/97dfc858272ed6d675960ddaf9e9fa282681d927))
+* **packaging:** the Dockerfile and its build context ([#104](https://github.com/MrReasonable/sluice/issues/104)) ([ba83d69](https://github.com/MrReasonable/sluice/commit/ba83d69bb4240932c715b1a1933252a2263aabf2))
+
+
+### Bug Fixes
+
+* **packaging:** address CodeRabbit's five findings on the Docker channel ([#104](https://github.com/MrReasonable/sluice/issues/104)) ([0a7010b](https://github.com/MrReasonable/sluice/commit/0a7010b333d53a32539da279a60a0071a2dc6548))
+* **packaging:** assert the compose guards per SERVICE, not over the anchor ([#104](https://github.com/MrReasonable/sluice/issues/104)) ([942af85](https://github.com/MrReasonable/sluice/commit/942af85fffb715e1585a939cfe97f71685e45313))
+* **packaging:** close the round-3 holes, including one my own repair opened ([#104](https://github.com/MrReasonable/sluice/issues/104)) ([f57ab58](https://github.com/MrReasonable/sluice/commit/f57ab58831aa5429db477c5f3fe8555463dcfc3e))
+* **packaging:** make the mount sweep see a same-indent sequence ([#104](https://github.com/MrReasonable/sluice/issues/104)) ([04e305c](https://github.com/MrReasonable/sluice/commit/04e305c9af9b4f7052ce08a6f8ec99c8b8b5f607))
+* **packaging:** persist the whole working directory, not just the vault ([#104](https://github.com/MrReasonable/sluice/issues/104)) ([362d71e](https://github.com/MrReasonable/sluice/commit/362d71e2af890ee9fb16de3135501e1641bceb6e))
+* **packaging:** read the EFFECTIVE working directory, not the image's ([#104](https://github.com/MrReasonable/sluice/issues/104)) ([ac73f06](https://github.com/MrReasonable/sluice/commit/ac73f063dab23a271a85817b8bdf9ea8e15cd464))
+
+
+### Documentation
+
+* **packaging:** correct the attest-image justification at its last site ([#104](https://github.com/MrReasonable/sluice/issues/104)) ([821d250](https://github.com/MrReasonable/sluice/commit/821d250e79adaf1cd35d88ed7464a50ae036f8f3))
+* **packaging:** design the Docker channel ([#104](https://github.com/MrReasonable/sluice/issues/104)) ([feab07d](https://github.com/MrReasonable/sluice/commit/feab07d7c8386e8827a21ce06bb591bba9b6ae5e))
+* **packaging:** re-run the stale end-to-end claims and name the third idiom ([#104](https://github.com/MrReasonable/sluice/issues/104)) ([c1134eb](https://github.com/MrReasonable/sluice/commit/c1134ebb6592b61463a957b851facc19ed89fb20))
+* **packaging:** record what was proven locally before pushing ([#104](https://github.com/MrReasonable/sluice/issues/104)) ([aa914e0](https://github.com/MrReasonable/sluice/commit/aa914e0b1075b52d3b83a910e93b4a2eb05f0e16))
+* **packaging:** revise the Docker channel design after plan review ([#104](https://github.com/MrReasonable/sluice/issues/104)) ([7be8fcb](https://github.com/MrReasonable/sluice/commit/7be8fcb276408b91aac3ad7a134af5fe758601f2))
+* **tests:** correct the pyyaml premise wherever it is stated ([#104](https://github.com/MrReasonable/sluice/issues/104)) ([00e33dc](https://github.com/MrReasonable/sluice/commit/00e33dcd0a8f9fa080cdded5b0bb2d7ec161913f))
+
 ## [1.0.0](https://github.com/MrReasonable/sluice/compare/v0.1.0...v1.0.0) (2026-08-22)
 
 
