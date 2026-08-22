@@ -16,7 +16,7 @@
 # `FROM` takes one or three arguments and rejects a trailing `# tag` outright (measured -- it is
 # a parse error, not a lint warning), so the `uses: ...@sha # vX.Y.Z` idiom every workflow file
 # here uses does NOT transfer. `name:tag@digest` is valid and records the same fact.
-FROM python:3.13-slim@sha256:ffb752e139c0a19692a43af8d8523b274222dd68eebad5d583b45c2201c6e30a
+FROM python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4
 
 # WeasyPrint's runtime shared libraries. NOT a Python dependency and not makeable into one.
 #
