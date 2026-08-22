@@ -99,6 +99,33 @@ wrong, invalidates a section below rather than a sentence.
   A job-level `outputs:` mapping is still required to cross the job boundary into `attest-image`;
   `id: push` alone does not.
 
+## Proven end to end, locally, before any push
+
+Docker 29.4.0 was available, so none of this is theoretical. Run against the FINAL committed
+files, not a draft:
+
+- `docker build` succeeds; the image is 565MB; the runtime user is uid 1000 with `/work` as cwd
+  and both `/work` and the XDG roots writable by it.
+- All three CI smokes pass exactly as the job runs them: `--version` exits 0;
+  `weasyprint 69.0`, `jinja2`, `googleapiclient`, `mcp 2.0.0` and `argcomplete` all import
+  inside the image; `doctor --offline` renders its report with **exit 1**, as designed.
+- `docker compose config` validates, and `VAULT_DIR` resolves to `/work/vault` -- the same path
+  the vault bind mount targets, which is the property the Critical fix depends on.
+- **The MCP stdio service works through compose.** `docker compose run --rm -T mcp` fed a
+  JSON-RPC `initialize` returned a real capabilities response. The compose file's claim about
+  that service is measured, not asserted.
+- Both `linux/amd64` and `linux/arm64` build (`--output type=cacheonly`).
+- **22 of 22 mutation witnesses were killed by their named test**, including narrowing the
+  invariant pattern to a fixed literal, which kills the interposed-flag fixture -- so the
+  tolerance the sequencing spec mandates is demonstrably load-bearing rather than merely
+  written down. Two rows failed on the first run and BOTH were broken harness rows rather than
+  surviving mutants: one edited the comment beside `path: dist/` instead of the directive
+  itself, which is the exact "a witness must delete the thing the assertion checks" trap this
+  repo has recorded before.
+- `status` is a read-only variable in zsh. The doctor smoke used it, worked under CI's bash,
+  and would have failed for anyone pasting it into their own shell to reproduce a failure.
+  Found by running the smoke, not by reading it.
+
 ## Scope
 
 In: `Dockerfile`; `.dockerignore`; `docker-compose.yml`; two new jobs in
