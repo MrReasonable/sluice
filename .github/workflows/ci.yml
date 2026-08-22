@@ -136,12 +136,79 @@ jobs:
             exit 1
           fi
 
+  # A REAL `docker build` on every pull request, single-arch and never pushed (#104 PR 4).
+  #
+  # WHY THIS EXISTS: the release workflow's `docker` job is gated on `release_created`, so its
+  # first ever execution would be AFTER the tag is public. That is not hypothetical -- `build`
+  # and `twine check --strict` had exactly that shape until 1.0.0, and their first real run came
+  # after the release was cut. A broken Dockerfile discovered there is a publicly visible,
+  # partially-failed release; discovered here it is a red check on a pull request.
+  #
+  # No `paths:` filter, deliberately. `ci-success` is the required check for the `qa-gates`
+  # ruleset, and a path-filtered job makes that check dishonest on every run where it does not
+  # fire. The cost is a few minutes per PR, which is the cheaper side of that trade.
+  docker:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      # Deliberately NOT `pip install --require-hashes -r .github/build-requirements.txt`, which
+      # is what the release `build` job uses. This wheel is a smoke fixture that is discarded at
+      # the end of the job, not an artefact anyone publishes, so hash-pinning it would couple a
+      # pull-request check to the release supply chain for no property gained -- and would create
+      # a THIRD copy of the release build sequence, firing the composite-action extraction the
+      # PyPI PR deliberately deferred. `tests/test_ci_wiring.py` asserts this job does not
+      # reference that file, so "make CI consistent with the release build" cannot be taken
+      # silently.
+      - run: pip install build
+      - run: python -m build --wheel
+      - run: docker build -t job-sluice:ci .
+      - name: Smoke -- the console script runs
+        run: docker run --rm job-sluice:ci --version
+      # The highest-value assertion in this job. WeasyPrint links natively against cairo/pango,
+      # which `--version` never touches, so an image missing every system library still passes
+      # the step above. It covers ALL FOUR baked extras rather than `render` alone because
+      # `pip install` only WARNS on an unknown extra -- a typo'd or renamed one would otherwise
+      # ship an image silently missing google, mcp or completion with nothing red anywhere.
+      - name: Smoke -- every baked extra imports, system libraries included
+        run: docker run --rm --entrypoint python job-sluice:ci -c "import weasyprint, jinja2, googleapiclient, mcp, argcomplete"
+      # `doctor` exits 1 in ANY container by design: DoctorReport.exit_code() returns 1 whenever
+      # a check is DEAD, and claude-max is DEAD whenever the `claude` CLI is absent from PATH,
+      # which it always is here. So the status is asserted in NEITHER direction -- 0 would fail
+      # every run, and 1 would pin a degraded state as correct and start lying the moment a check
+      # changed. It is captured rather than discarded with a trailing `|| true`, because a bare
+      # "no traceback" negative passes against a container that prints nothing or dies before
+      # doctor runs at all; the report must be positively present too.
+      - name: Smoke -- doctor renders its report
+        run: |
+          set -uo pipefail
+          if out="$(docker run --rm job-sluice:ci doctor --offline 2>&1)"; then
+            status=0
+          else
+            status=$?
+          fi
+          printf '%s\n' "$out"
+          case "$out" in
+            *"job-sluice doctor"*) ;;
+            *) echo "::error::doctor emitted no report (exit $status) -- the image is broken, not merely degraded"; exit 1 ;;
+          esac
+          case "$out" in
+            *Traceback*) echo "::error::doctor raised inside the image (exit $status)"; exit 1 ;;
+          esac
+
   ci-success:
-    needs: [lint, test, rulesync]
+    needs: [lint, test, rulesync, docker]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - run: |
           [ "${{ needs.lint.result }}" = success ] && \
           [ "${{ needs.test.result }}" = success ] && \
-          [ "${{ needs.rulesync.result }}" = success ]
+          [ "${{ needs.rulesync.result }}" = success ] && \
+          [ "${{ needs.docker.result }}" = success ]
