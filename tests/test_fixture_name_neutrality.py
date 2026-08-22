@@ -151,7 +151,7 @@ _SELF = Path(__file__).name
 # filename position this sweep watches.
 _REVIEWED_FIXTURE_IDENTITIES = frozenset({
     "A", "A-B", "Acme", "Alpha", "Aye", "B", "Beavni", "Bee", "Beta", "C", "Conflicted",
-    "D", "Delta", "Epsilon", "Example", "Example Analytics", "Example Beta", "Example Co",
+    "D", "Delta", "E", "Epsilon", "Example", "Example Analytics", "Example Beta", "Example Co",
     "Example Foundry", "Example Ltd", "Example Meridian", "Example MeridianRemote",
     "Example Northgate",
     "Example Systems", "Example Telemetry", "Example Tidal", "Foo", "Gamma",

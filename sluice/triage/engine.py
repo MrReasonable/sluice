@@ -58,7 +58,7 @@ _LLM_BREAKER_THRESHOLD = 3
 class TriageReport:
     counts: dict = field(default_factory=lambda: {
         "keep": 0, "shortlist": 0, "research": 0, "dismiss": 0,
-        "needs_review": 0, "skipped": 0})
+        "needs_review": 0, "skipped": 0, "unjudgeable": 0})
     judged: int = 0
     backend: str | None = None
     failures: list = field(default_factory=list)
@@ -78,7 +78,7 @@ class TriageReport:
 
 
 def run(vault, cfg, backend, dossier_cache, audit, *,
-        statuses=("new", "research"), limit=None, dry_run=False, no_llm=False,
+        statuses=_status.DEFAULT_TRIAGE_STATUSES, limit=None, dry_run=False, no_llm=False,
         get_source=None, resolve_backend=None):
     report = TriageReport()
     today = date.today().isoformat()
@@ -291,6 +291,50 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
                 d = dossier_cache.get_or_build(note.fm)
             except Exception as e:
                 report.failures.append(f"dossier {note.ref}: {e}")
+                continue
+            # The JD never arrived (#169). Spending a judge call here buys a verdict on
+            # page chrome -- and because "unjudgeable" used to collapse into `research`,
+            # the nightly `--status new,research` run re-selected the lead and paid for
+            # the same non-answer every night until the cache entry expired. Nothing was
+            # cached this run (see DossierCache.get_or_build), so the next run refetches;
+            # marking the lead `unjudgeable` is what separates "the pipeline should retry
+            # this" from "a human should investigate this", which is what `research` means.
+            #
+            # `continue` BEFORE dossiers.append(d) below is the whole saving: the lead
+            # never enters the batch handed to the judge, so it costs no judge call --
+            # placing this check after the append, or filtering the batch later, would
+            # still pay for the call this exists to avoid.
+            if not dossier_cache.jd_arrived(d):
+                reason = (f"no job description was fetched (floor: "
+                         f"{dossier_cache.min_jd_chars} chars)")
+                if dry_run:
+                    outcome = "skipped"
+                else:
+                    try:
+                        outcome = apply_classification(vault, note, "unjudgeable", reason)
+                    except VaultConflict as e:
+                        # Symmetric with the classify-pass site earlier in this function
+                        # (#16): a concurrent edit -- a human in Obsidian, another process
+                        # -- won the write race. apply_classification can raise this (the
+                        # classify pass already proves it), and leaving it uncaught HERE
+                        # would abort the WHOLE triage run over one lead that is simply
+                        # retried next run regardless. `continue` skips the counting
+                        # below for this lead, matching the classify-pass site exactly.
+                        report.failures.append(f"apply {note.ref}: {e}")
+                        continue
+                # Counted off the WRITE OUTCOME, not unconditionally -- mirroring the
+                # classify-pass convention: a count that includes a write the vault
+                # refused claims a status change that never happened. Worse here than
+                # the generic case: a `_guarded` refusal means this lead is `applied`
+                # or later, so counting it `unjudgeable` unconditionally would report
+                # the OPPOSITE of that lead's real state. `dry_run` forces `skipped`
+                # above for the identical reason it does at the classify-pass site: a
+                # dry run reports what WOULD happen, never a write that did not occur.
+                # `unjudgeable` is the only non-skip outcome this branch can produce
+                # (unlike the classify pass, which routes to `dismiss`/`needs_review`
+                # depending on `decision`), so the key has no third case to name.
+                key = "skipped" if outcome in ("skipped", "unchanged") else "unjudgeable"
+                report.counts[key] = report.counts.get(key, 0) + 1
                 continue
             # #109: get_or_build SNAPSHOTS these four off the lead at BUILD time, and the
             # classify pass above resolves a blank/placeholder company into note.fm AFTER that --

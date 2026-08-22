@@ -1072,7 +1072,7 @@ class Sluice:
 
         return [_one(src) for src in sorted(registry.all_sources(), key=lambda s: s.id)]
 
-    def triage(self, *, statuses=("new", "research"), limit=None, dry_run=False,
+    def triage(self, *, statuses=_status.DEFAULT_TRIAGE_STATUSES, limit=None, dry_run=False,
                no_llm=False, backend_role="auto"):
         """Run the triage sub-app end to end: classify, dossier-enrich the kept leads,
         judge them, and write the audit trail. `no_llm` skips backend construction

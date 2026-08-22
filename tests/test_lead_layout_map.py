@@ -53,7 +53,7 @@ def test_the_archive_set_is_derived_from_status_not_hand_listed():
     satisfy every membership check below, and for a guard whose success case is 'nothing was
     mis-filed' that is indistinguishable from working.
     """
-    assert len(_status.CANONICAL) == 12, sorted(_status.CANONICAL)
+    assert len(_status.CANONICAL) == 13, sorted(_status.CANONICAL)
     expected_archive = {"dismiss"} | set(_status._TERMINAL)
     got_archive = {s for s in _status.CANONICAL
                    if layout_subfolder(s, "active_archive") == ARCHIVE_SUBDIR}

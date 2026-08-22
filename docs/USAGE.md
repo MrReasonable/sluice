@@ -81,7 +81,7 @@ Classify leads.
 
 | Flag | Default | Notes |
 |---|---|---|
-| `--status` | `new,research` | comma-separated statuses to consider |
+| `--status` | `new,research,unjudgeable` | comma-separated statuses to consider |
 | `--limit` | none | cap the number processed |
 | `--backend` | `auto` | `auto`, `primary`, `fallback` (`claude-max`/`deepseek` are deprecated role aliases). Selects the JUDGE's backend only -- tier-3 company resolution (`triage.company_resolve_llm`) always runs on the cheap `fallback` role regardless of this flag |
 | `--no-llm` | off | deterministic rules only; touches no backend at all, judge or resolution |

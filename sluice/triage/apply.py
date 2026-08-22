@@ -9,7 +9,8 @@ from sluice.core.log import get_logger
 from sluice.core.vault import frontmatter_safe
 
 _log = get_logger("triage.apply")
-_DECISION_STATUS = {"reject": "dismiss", "needs_review": "needs_review", "keep": "new"}
+_DECISION_STATUS = {"reject": "dismiss", "needs_review": "needs_review", "keep": "new",
+                    "unjudgeable": "unjudgeable"}
 
 
 def _guarded(note) -> bool:

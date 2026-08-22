@@ -127,6 +127,23 @@ def test_normalize_all_statuses(tmp_path):
     assert "status: new" in d_raw and 'status: "new"' not in d_raw
 
 
+def test_normalize_all_statuses_treats_unjudgeable_as_known(tmp_path):
+    """#169 (Task 4): `unjudgeable` joined TRIAGE_OWNED, which widens CANONICAL, which is
+    the ONLY thing this sweep's `is_canonical(canonical)` check (core/vault.py) reads to
+    decide `summary["unknown"]` membership -- unlike every other status predicate
+    (can_apply/can_advance/can_transition/is_application_owned), none of which reference
+    TRIAGE_OWNED at all, so none of them could have changed behaviour for this new member.
+    No existing test exercised `summary["unknown"]` for this sweep at all (grepped: only
+    `leads reconcile`'s SEPARATE `unknown` list, vault.py:1695, was covered), so a status
+    vocabulary regression here -- e.g. `unjudgeable` silently dropping back out of
+    TRIAGE_OWNED -- would land in `summary["unknown"]` with nothing red anywhere."""
+    v = Vault(str(tmp_path))
+    _write_note(v, "E.md", ['company: "E"', 'status: "unjudgeable"'])
+    summary = v.normalize_all_statuses(dry_run=False)
+    assert "unjudgeable" not in summary["unknown"], summary["unknown"]
+    assert v.read_leads({"unjudgeable"})[0].status == "unjudgeable"
+
+
 def test_normalize_collapses_consistent_duplicate_status_lines(tmp_path):
     v = Vault(str(tmp_path))
     # legacy corruption: two status lines, same value, mixed quoting
