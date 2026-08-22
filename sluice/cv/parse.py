@@ -95,8 +95,8 @@ _TRAILING_SECTIONS = frozenset({"CERTIFICATES", "EDUCATION"})
 _BULLET_MARKERS = ("-", "•", "*")
 
 # CERTIFICATES/EDUCATION only, and DELIBERATELY WIDER than `_BULLET_MARKERS`. Widening
-# the shared tuple above would be a gate bypass: validate.py:123 citation-checks a WORK
-# line only when it starts with one of `-`/`•`/`*`, so a marker this parser accepted
+# the shared tuple above would be a gate bypass: `validate.section_spans` citation-checks
+# a WORK line only when it starts with one of `-`/`•`/`*`, so a marker this parser accepted
 # there and the gate did not would render an UNCITED bullet into the PDF with the
 # citation gate never having looked at it. That reasoning does not reach the two trailing
 # sections, because the gate never citation-checks them AT ALL (`in_work` is false
@@ -114,7 +114,7 @@ _BULLET_MARKERS = ("-", "•", "*")
 # `_DASH`: the two are equally plausible outputs and equally invisible to the gate.
 _TRAILING_MARKERS = _BULLET_MARKERS + ("–", "—")
 
-# The gate at cv/validate.py:89 matches `\d{2}/(\d{4})\s*[–-]` -- EN DASH (U+2013) or
+# `validate()`'s chronology check matches `\d{2}/(\d{4})\s*[–-]` -- EN DASH (U+2013) or
 # ASCII hyphen, with optional surrounding whitespace -- and this repo's own gate-clean
 # fixture (CLEAN_CV in tests/test_cv_engine.py) uses the en dash exclusively. The spec's
 # literal grammar (`MM/YYYY-MM/YYYY`, ASCII hyphen only) is wrong as a sole rule: a parser
@@ -165,7 +165,7 @@ _DASH = r"(?:\s*[-–—]\s*|\s+to\s+)"
 # free text -- so strictness concentrated on `parts[0]`'s terminal word alone was never
 # buying anything the prefix does not already buy.
 #
-# The MONTH itself is `\d{1,2}`, not `\d{2}`: validate.py:89's chronology check is
+# The MONTH itself is `\d{1,2}`, not `\d{2}`: `validate()`'s chronology check is
 # `\d{2}/(\d{4})\s*[–-]` -- a literal TWO-digit month -- so a single-digit month
 # ("1/2020-present") simply does not match that regex at all. `re.findall` then finds
 # no start year for that entry and silently omits it from the years list; an omitted
@@ -207,7 +207,7 @@ _CITE_ONLY_RE = re.compile(r"^(?:\[[A-Za-z]{2}[0-9]+\]\s*)+$")
 
 def _is_section(line: str, name: str) -> bool:
     """True if `line` is exactly the section header `name`, compared the way the gate
-    compares it: validate.py:99-108 upper-cases before comparing, and `run_one`'s own
+    compares it: `validate.section_spans` upper-cases before comparing, and `run_one`'s own
     "WORK EXPERIENCE"/"PROFILE" structural guards (cv/engine.py) deliberately mirror
     that so they fire in exactly the cases validate() silently skips. `casefold()`
     rather than `.upper()` is the more correct general tool for case-insensitive
@@ -581,7 +581,7 @@ def parse_cv(text: str) -> CvDocument:
         ))
 
     # ---- CERTIFICATES / EDUCATION (both optional, in EITHER order) ----
-    # validate.py:107 turns `in_work`/`in_profile` off on seeing EITHER header and never
+    # `validate.section_spans` turns `in_work`/`in_profile` off on seeing EITHER header and never
     # records which one it saw or in what order -- the gate is completely order-agnostic
     # between these two sections. A parser that hard-coded CERTIFICATES-then-EDUCATION
     # would be stricter than the gate on an axis the gate never checks at all: composing

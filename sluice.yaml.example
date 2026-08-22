@@ -196,6 +196,24 @@ triage:
 #   # send-ready pointer until you `job-sluice cv signoff` the lead, rather than auto-serving.
 #   # Ships on (a safety valve, not a preference); set false to restore auto-serve.
 #   require_signoff: true
+#   # Whether the model-judged VOICE check runs at all (#167). OFF by default -- an
+#   # unconfigured install must never start spending LLM calls the moment it upgrades,
+#   # the same reasoning as triage.company_resolve_llm. The deterministic phrase matches
+#   # (below) reach the composer's retry either way, so leaving this off does not make
+#   # the slop fix inert.
+#   voice_check: false
+#   # Whether a STYLE finding that survives the retry WITHHOLDS the send-ready pointer
+#   # (#167). OFF by default, and deliberately does NOT ride require_signoff above,
+#   # whose true default was chosen for FABRICATION, not style -- turning this on means
+#   # a hard-clean CV containing any of ~40 case-insensitive AI-tell stems (see
+#   # sluice/cv/slop.py) has tailored_cv withheld until you fix the source wording.
+#   style_hold: false
+#   # Phrases from slop._PHRASES you legitimately use in your own voice. NOT
+#   # abstain-shaped like the lists above: it SUBTRACTS from a hardcoded list, so EMPTY
+#   # means FULL enforcement, not "nothing checked" -- the dossier_allow_hosts polarity.
+#   # An entry not found among the stems raises at load, naming the valid ones (the list
+#   # holds stems like "leverage", not the inflection "leveraged" you might type).
+#   slop_allow: [leverage]
 #   # Your name and contact details no longer live here (#133/#107): they moved to a
 #   # vault note, `Job Applications/Candidate Profile.md`, so they can be edited
 #   # without a config change and so cv and apply can share one source for 36

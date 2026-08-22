@@ -305,7 +305,7 @@ def test_parse_does_not_silently_misassign_fields(mutation, replacement, field, 
 
 
 @pytest.mark.parametrize("variant", [
-    # The SEPARATOR axis: the gate at cv/validate.py:89 matches `\d{2}/(\d{4})\s*[–-]`
+    # The SEPARATOR axis: `cv.validate.validate`'s chronology check matches `\d{2}/(\d{4})\s*[–-]`
     # -- EN DASH or hyphen, with optional surrounding whitespace -- and this repo's own
     # CLEAN_CV fixture uses the EN DASH. A parser that took the spec's literal
     # `MM/YYYY-MM/YYYY` would raise on a CV the gate PASSES, sending every lead through
@@ -352,7 +352,7 @@ def test_parse_accepts_every_date_dash_the_gate_accepts(variant):
     ("EDUCATION", "Education"),
 ])
 def test_parse_accepts_case_drifted_section_headers(canonical, drifted):
-    """validate.py:99-108 upper-cases every section header before comparing (`u =
+    """`validate.section_spans` upper-cases every section header before comparing (`u =
     line.strip().upper()`), and engine.py's own two structural guards (~140, ~147)
     deliberately mirror that -- so a CV titled "Work Experience" (title case) is exactly
     as gate-clean as one titled "WORK EXPERIENCE". Before this fix the four section
@@ -421,7 +421,7 @@ def test_parse_accepts_an_all_caps_company_name():
 
 
 def test_parse_accepts_bullet_and_asterisk_markers():
-    """cv/validate.py:120-123: the renderer treats a hyphen, a bullet glyph, and an
+    """`cv.validate.section_spans`: the renderer treats a hyphen, a bullet glyph, and an
     asterisk all as bullet markers, so a WORK bullet composed with either of the other
     two already passes the gate this parser sits downstream of. A parser that only
     recognised a hyphen is STRICTER than the gate -- exactly the en-dash bug's shape: a
@@ -576,7 +576,7 @@ def test_parse_accepts_a_dash_marker_the_gate_never_inspects():
     could only spend re-emitting what it had already sent.
 
     The wider set is safe HERE and would not be safe in the WORK loop: a marker the
-    parser accepts and validate.py:123 does not would render an UNCITED bullet into the
+    parser accepts and `validate.section_spans` does not would render an UNCITED bullet into the
     PDF with the citation gate never having looked at it. That is why there are two
     tuples rather than one widened one -- see `_TRAILING_MARKERS`' comment.
     """
@@ -614,7 +614,10 @@ def test_the_work_bullet_markers_are_exactly_what_the_gate_citation_checks():
     from sluice.cv import validate as _validate_mod
     from sluice.cv.parse import _BULLET_MARKERS, _TRAILING_MARKERS
 
-    # The one `startswith((...))` call in validate.validate that gates the citation check.
+    # The one `startswith((...))` call in cv/validate.py that gates the citation check.
+    # It lives in `section_spans` (the line-set helper `validate` consumes), not in
+    # `validate` itself; this walks the whole MODULE, so where it sits does not matter --
+    # what matters is that there stays exactly ONE of them to read.
     tree = ast.parse(inspect.getsource(_validate_mod))
     gate_markers = [
         tuple(el.value for el in node.args[0].elts)
@@ -845,7 +848,7 @@ def test_parse_drops_an_empty_certificate_entry():
     ("03/2021-9/2024 | EXAMPLECITY | Staff Engineer", "03/2021-9/2024"),
 ])
 def test_parse_accepts_a_single_digit_month(meta, expected_dates):
-    """validate.py:89's chronology check is `\\d{2}/(\\d{4})\\s*[–-]` -- a literal
+    """`validate()`'s chronology check is `\\d{2}/(\\d{4})\\s*[–-]` -- a literal
     TWO-digit month. A single-digit month does not match that regex at all, so
     `re.findall` omits the entry from the years list entirely and the reverse-
     chronological check passes VACUOUSLY rather than failing -- the gate does not
@@ -861,7 +864,7 @@ def test_parse_accepts_a_single_digit_month(meta, expected_dates):
 
 
 def test_parse_accepts_education_before_certificates():
-    """validate.py:107 turns `in_work`/`in_profile` off on seeing EITHER header and
+    """`validate.section_spans` turns `in_work`/`in_profile` off on seeing EITHER header and
     never records which one it saw or in what order -- the gate is completely
     order-agnostic between these two sections, so a CV composing them in the other
     order is exactly as gate-clean as the canonical one. Before this fix the two

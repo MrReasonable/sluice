@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from sluice.core.backends import DEFAULT_TIMEOUT
 from sluice.core.config import refuse_retired_dossier_dir, sub_app_block
 from sluice.core.paths import config_file
+from sluice.cv.slop import _PHRASES
 
 try:
     import yaml
@@ -45,6 +46,26 @@ class CvConfig:
     # CV (#60). A safety valve, not a job preference, so it ships LIVE (True); set False to
     # restore the old auto-serve. The hard validate gate is unaffected either way.
     require_signoff: bool = True
+    # Whether the model-judged VOICE check runs at all (#167). OFF by default: an
+    # unconfigured install must never start spending LLM calls the moment it upgrades --
+    # the company_resolve_llm precedent (sluice/triage/config.py). This does NOT make
+    # #167's fix inert: the deterministic phrase matches still reach the composer's
+    # retry either way, which is the issue's actual complaint.
+    voice_check: bool = False
+    # Whether a STYLE finding that survives the retry WITHHOLDS the send-ready pointer
+    # (#167). OFF by default, and deliberately NOT riding `require_signoff`, whose True
+    # default was chosen for FABRICATION. Riding it would mean a hard-clean CV containing
+    # any of ~40 case-insensitive stems in PROFILE prose or a WORK bullet has
+    # `tailored_cv` withheld at shipped defaults -- and a rendered CV with no pointer is
+    # inert to apply/select, so "the CV still renders" understates the cost. Via the
+    # source-material vector (the composer is told to reuse the bundle's wording), one
+    # phrase in an Experience Library entry would hold EVERY lead composed from it.
+    style_hold: bool = False
+    # Phrases from slop._PHRASES this candidate legitimately uses in their own voice.
+    # NB this is NOT abstain-shaped: it SUBTRACTS from a hardcoded list, so empty means
+    # FULL enforcement -- the dossier_allow_hosts polarity. What makes the shipped
+    # default safe is `style_hold` being off, not this list being empty.
+    slop_allow: list = field(default_factory=list)
     # NB no `dossier_dir` here: #80 retired it in favour of one root `dossier_dir`,
     # because triage and cv share this cache and two keys could split it.
     # load_cv_config RAISES on it rather than letting `hasattr` drop it in silence.
@@ -223,7 +244,48 @@ def load_cv_config(path: str | None = None) -> CvConfig:
             raise ValueError(
                 f"cv.compose_timeout must be a positive integer (seconds), got {raw!r}")
 
+    # cv.slop_allow SUBTRACTS from slop._PHRASES (#167) -- unlike every other
+    # list-typed key in this loader, an entry that names no real phrase is not merely
+    # inert, it is SILENTLY inert: the style hold it was meant to suppress just recurs
+    # forever, with no error anywhere pointing at the typo. _PHRASES holds STEMS
+    # ("leverage", "spearhead"), and a candidate naturally writes the INFLECTION they
+    # actually typed ("leveraged", "spearheaded") -- exactly the entry most likely to
+    # slip past a silent check. Fail loudly at construction and name the valid stems,
+    # this repo's rule 8 for an unknown name. Every offender collected before raising,
+    # not "raise on the first hit", same discipline as the cv.name/cv.contact guard
+    # above.
+    if data.get("slop_allow") is not None:
+        unknown = [p for p in data["slop_allow"] if p not in _PHRASES]
+        if unknown:
+            raise ValueError(
+                f"cv.slop_allow names {', '.join(repr(p) for p in unknown)}, not in "
+                "slop._PHRASES. slop_allow holds STEMS, not inflections -- e.g. "
+                "'leverage', not 'leveraged'. Valid stems: "
+                + ", ".join(repr(p) for p in _PHRASES))
+
     for k, v in data.items():
-        if hasattr(cfg, k) and v is not None:
-            setattr(cfg, k, v)
+        if not hasattr(cfg, k) or v is None:
+            continue
+        # A field whose CODE DEFAULT is a bool must be given a real YAML boolean.
+        # Ported verbatim from triage/config.py's identical guard (#167 review): this
+        # loader had never had it for ANY bool field, not even the long-standing
+        # require_signoff, and the hazard is the same one that check exists for --
+        # a QUOTED `voice_check: "false"` is not a YAML boolean at all, it stays the
+        # STRING "false", which this loop would setattr verbatim and every consumer
+        # reads in a boolean context, where a non-empty string is TRUE. So the one
+        # spelling a user reaches for to keep a knob OFF is the spelling that
+        # silently switches it ON, with nothing anywhere going red. Fail loudly at
+        # construction instead, this file's house style.
+        #
+        # Keyed on the default's type rather than on a hardcoded field list
+        # (`voice_check`, `style_hold`, `require_signoff` today) so a bool knob added
+        # later cannot quietly opt out of the check. `getattr(cfg, k)` is still the
+        # code default here: a YAML mapping yields each key once, so no earlier
+        # iteration of this loop has replaced it.
+        if isinstance(getattr(cfg, k), bool) and not isinstance(v, bool):
+            raise ValueError(
+                f"cv.{k} must be a YAML boolean (true/false), got {v!r}. Quoted, it "
+                f'is a STRING -- and "false" is truthy in Python, so the knob would '
+                f"be switched ON by the value meant to switch it off.")
+        setattr(cfg, k, v)
     return cfg
