@@ -99,29 +99,37 @@ wrong, invalidates a section below rather than a sentence.
   A job-level `outputs:` mapping is still required to cross the job boundary into `attest-image`;
   `id: push` alone does not.
 
-## Proven end to end, locally, before any push
+## Proven end to end, locally
 
-Docker 29.4.0 was available, so none of this is theoretical. Run against the FINAL committed
-files, not a draft:
+Docker 29.4.0 was available, so none of this is theoretical.
+
+**An earlier version of this heading said "against the FINAL committed files, not a draft".**
+That was true when written and stopped being true four commits later, which is the hazard of
+dating a claim by adjective rather than by commit -- `docker-compose.yml` gained the
+`sluice-workspace:/work` mount and the guard module changed substantially afterwards. The
+compose-level bullets below were RE-RUN at the current head; the image-level ones did not need
+re-running, because `Dockerfile` has not changed since the commit that verified it (`git diff
+af6e415..HEAD -- Dockerfile` is empty, which is the check rather than the memory):
 
 - `docker build` succeeds; the image is 565MB; the runtime user is uid 1000 with `/work` as cwd
   and both `/work` and the XDG roots writable by it.
 - All three CI smokes pass exactly as the job runs them: `--version` exits 0;
   `weasyprint 69.0`, `jinja2`, `googleapiclient`, `mcp 2.0.0` and `argcomplete` all import
   inside the image; `doctor --offline` renders its report with **exit 1**, as designed.
-- `docker compose config` validates, and `VAULT_DIR` resolves to `/work/vault` -- the same path
-  the vault bind mount targets, which is the property the Critical fix depends on.
+- `docker compose config` validates, and PER SERVICE `VAULT_DIR` resolves to `/work/vault` with
+  `/work` among that service's own mount targets -- the two properties both Critical fixes
+  depend on, and the two the guards now assert per service rather than over the document.
 - **The MCP stdio service works through compose.** `docker compose run --rm -T mcp` fed a
   JSON-RPC `initialize` returned a real capabilities response. The compose file's claim about
   that service is measured, not asserted.
 - Both `linux/amd64` and `linux/arm64` build (`--output type=cacheonly`).
-- **22 of 22 mutation witnesses were killed by their named test**, including narrowing the
-  invariant pattern to a fixed literal, which kills the interposed-flag fixture -- so the
-  tolerance the sequencing spec mandates is demonstrably load-bearing rather than merely
-  written down. Two rows failed on the first run and BOTH were broken harness rows rather than
-  surviving mutants: one edited the comment beside `path: dist/` instead of the directive
-  itself, which is the exact "a witness must delete the thing the assertion checks" trap this
-  repo has recorded before.
+- **44 mutation witnesses across five review rounds, all killed by their named test** (a review
+  round independently ran 10 more of its own, same result). SIX rows failed on first attempt and
+  every one was a BROKEN HARNESS ROW rather than a surviving mutant -- writing the witness turned
+  out to be reliably harder than writing the guard. Two are worth recording: one edited the
+  comment beside `path: dist/` instead of the directive the assertion reads, and one mutated
+  `; exit 1 ;;` into `; exit 1; exit 1 ;;`, which still ENDS with the pinned substring, so the
+  count never moved and the row read SURVIVED having proved nothing.
 - `status` is a read-only variable in zsh. The doctor smoke used it, worked under CI's bash,
   and would have failed for anyone pasting it into their own shell to reproduce a failure.
   Found by running the smoke, not by reading it.
@@ -407,7 +415,12 @@ the PyPI PR deliberately deferred.
 
 ## Testing
 
-Extends the two existing packaging-guard idioms; no third one is invented.
+Extends the two existing packaging-guard idioms, and -- contrary to an earlier draft of this
+line, which claimed no third one was invented -- adds a third for `docker-compose.yml`: a real
+`yaml.safe_load` parse. `tests/test_docker_channel.py`'s docstring carries the rule that decides
+which of the three applies (parse when the guard needs YAML's own semantics; text-match a
+literal; `#170`'s third-patch rule as tiebreaker) and why the sibling modules' stated reason for
+never parsing was false.
 
 **`tests/test_release_publish_wiring.py`** (text matching, no YAML parse). `_RELEASE_PLEASE_JOBS`
 is a **list equality**, so `docker` and `attest-image` go in at their file-order position, and --
