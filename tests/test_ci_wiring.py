@@ -816,14 +816,20 @@ def test_the_doctor_smoke_asserts_on_output_rather_than_exit_status():
     # PRESENCE of the two needles is not the claim -- GATING is. Measured: deleting `; exit 1`
     # from BOTH `case` arms left a smoke that prints its diagnosis and passes on a broken image,
     # and every assertion above still held. Both arms must exit non-zero, so the count is two.
-    # `count("; exit 1 ;;") == 2`, not `count("exit 1") >= 2`: the looser form is satisfied by
-    # ONE arm carrying two exits while the other merely echoes -- measured on a copy. Pinning
-    # the per-arm spelling makes each arm's exit the thing asserted.
-    assert step.count("; exit 1 ;;") == 2, (
-        f"the doctor smoke has {step.count('; exit 1 ;;')} terminated failing arm(s), expected "
-        f"2. Both the no-report case and the traceback case must EXIT, not merely print -- a "
-        f"`case` arm that echoes an ::error:: and falls through leaves the step green"
-    )
+    # PER-ARM, not a count. A count is a global BUDGET: dropping the exit from the no-report arm
+    # while adding some other exiting arm keeps the total at two and passes with the gate that
+    # matters gone -- measured. It also reddens a legitimate third gated arm for no reason.
+    # Each arm is now asserted by the thing it is FOR.
+    for arm, why in (
+        (r"\*\)[^\n]*emitted no report[^\n]*; exit 1 ;;",
+         "the no-report arm must EXIT: a container that prints nothing is broken, not degraded"),
+        (r"\*Traceback\*\)[^\n]*; exit 1 ;;",
+         "the traceback arm must EXIT: doctor raising inside the image is a failure"),
+    ):
+        assert re.search(arm, step), (
+            f"{why}. A `case` arm that echoes an ::error:: and falls through leaves the step "
+            f"green, and the exit status is deliberately not asserted anywhere else here"
+        )
 
 
 def test_the_doctor_smoke_needle_matches_the_banner_the_cli_actually_prints():
