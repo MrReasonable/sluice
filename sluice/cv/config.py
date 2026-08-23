@@ -7,7 +7,10 @@ from sluice.core.backends import DEFAULT_TIMEOUT
 from sluice.core.config import (refuse_retired_dossier_dir,
                                 refuse_wrong_container, sub_app_block)
 from sluice.core.paths import config_file
-from sluice.cv.slop import _PHRASES
+from sluice.core.log import get_logger
+from sluice.cv.slop import _PHRASES, _RETIRED_PHRASES
+
+_log = get_logger("cv.config")
 
 try:
     import yaml
@@ -280,12 +283,48 @@ def load_cv_config(path: str | None = None) -> CvConfig:
         # lower-cases both sides of the `allow` comparison. Under a case-SENSITIVE check
         # here that was false -- no mixed-case entry could reach it, so the defensive
         # normalisation was unreachable and the stated reason for it was wrong.
-        unknown = [p for p in raw if p.lower() not in _PHRASES]
+        # A stem that has since been RENAMED is migrated rather than refused (#181).
+        # Raising there would break a working config over a lint tweak the user has no
+        # stake in, and unlike a retired ADAPTER name -- which `plugins._RETIRED` still
+        # refuses, because no substitute is safe -- a stem has an exact replacement: the
+        # same suppression under a new spelling. Warned, not silent, so the user learns
+        # their config has drifted and can update it at their leisure.
+        migrated, unknown = [], []
+        for p in raw:
+            low = p.lower()
+            if low in _PHRASES:
+                continue
+            if low in _RETIRED_PHRASES:
+                migrated.append((p, _RETIRED_PHRASES[low]))
+            else:
+                unknown.append(p)
+        for old, new in migrated:
+            if new:
+                _log.warning(
+                    "cv.slop_allow: %r was renamed to %r; using the new stem. Update "
+                    "your config when convenient.", old, new)
+            else:
+                _log.warning(
+                    "cv.slop_allow: %r is no longer a checked phrase, so allowing it "
+                    "has no effect. Remove it from your config.", old)
+        # Written BACK into `data`, not just into `raw`. The assignment to the config
+        # happens in the generic `for k, v in data.items()` loop further down, which reads
+        # `data` -- so a migration computed here and left in a local would be discarded,
+        # the warning would still print, and the user's retired stem would reach
+        # `check_phrases` unmapped. That is #167's own bug class (a signal computed and
+        # then dropped) and it is what the first draft of this block did.
+        data["slop_allow"] = [p for p in
+                              (_RETIRED_PHRASES.get(p.lower(), p) for p in raw)
+                              if p]      # a stem retired outright drops out entirely
         if unknown:
+            # Names the offending ENTRIES and the valid stems, but NOT the internal
+            # symbol that holds them (#181): `slop._PHRASES` is a module-private name a
+            # user cannot open, look up, or act on, and an error that cites one is
+            # telling them where the maintainer keeps something rather than what to do.
             raise ValueError(
-                f"cv.slop_allow names {', '.join(repr(p) for p in unknown)}, not in "
-                "slop._PHRASES. slop_allow holds STEMS, not inflections -- e.g. "
-                "'leverage', not 'leveraged'. Valid stems: "
+                f"cv.slop_allow names {', '.join(repr(p) for p in unknown)}, which "
+                "is not a phrase sluice checks for. It holds STEMS, not inflections -- "
+                "e.g. 'leverage', not 'leveraged'. Valid stems: "
                 + ", ".join(repr(p) for p in _PHRASES))
 
     for k, v in data.items():

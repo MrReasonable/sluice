@@ -48,6 +48,29 @@ def _stem_pattern(stem):
 # here catches, the '-ing' form included).
 _PHRASE_PATTERNS = [(stem, _stem_pattern(stem)) for stem in _PHRASES]
 
+# Stems that have LEFT `_PHRASES`, mapped to what replaced them ("" = removed outright).
+#
+# #181. `cv.slop_allow` is validated by membership against `_PHRASES` and RAISES on a
+# miss, which is right -- a typo'd entry is otherwise SILENTLY inert, and the style hold
+# it was meant to suppress just recurs forever with nothing pointing at the entry. But
+# that raise quietly made `_PHRASES` a config compatibility surface: the day a stem is
+# renamed, a working `sluice.yaml` stops loading and every `cv` command dies, over a lint
+# heuristic the user has no stake in.
+#
+# This is the graveyard that keeps a rename from doing that, and it is deliberately NOT
+# the same shape as `plugins._RETIRED`, which still RAISES. The difference is whether a
+# substitution is safe. Accepting a retired ADAPTER name would run an implementation the
+# user did not select -- there is no safe substitute for it. A retired STEM has an exact
+# one: the same suppression under a new spelling, so accepting it is a correct migration
+# rather than a quiet wrong default. The raise is a typo catcher here, not a correctness
+# requirement, and a typo is still caught because it matches NEITHER table.
+#
+# `_PHRASES` therefore stays private and stays tunable. It must track model-output drift
+# (#167 added `drove` in its own PR), and versioning a lint heuristic would ossify exactly
+# the thing that needs to keep moving. `tests/test_cv_slop.py` ratchets the set so a
+# REMOVAL cannot land without an entry here.
+_RETIRED_PHRASES: dict[str, str] = {}
+
 
 def check_hard(text: str):
     """The BLOCKING tier: em dash and literal '--', over the WHOLE document.
