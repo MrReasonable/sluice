@@ -123,32 +123,65 @@ def _str_list(value, name: str) -> list:
     """A list of strings from config, failing loudly. `None`/absent -> []. A YAML SCALAR
     (`location_noise_words: remote`) would otherwise `list()`-explode into single characters
     and silently mis-configure the gate; a clear error at construction is the house style
-    (see _select_backend). Rejects a non-list and any non-string entry."""
+    (see _select_backend). Rejects a non-list and any non-string entry.
+
+    Use this for a list whose ENTRIES are strings. For one whose entries are anything
+    else -- `sources.<id>.searches`, whose entries are themselves lists -- use
+    `refuse_wrong_container` below, which checks the container's SHAPE and says
+    nothing about what is inside it. The two are not interchangeable in either
+    direction: this one rejects every valid `searches` value, and that one accepts a
+    list of integers where strings were meant."""
     if value is None:
         return []
-    if not isinstance(value, list) or any(not isinstance(x, str) for x in value):
-        # Names the TYPE, never the VALUE. `relevance_keep`/`relevance_drop` are job-title
-        # preferences and `location_noise_words` is geography -- personal, and a config
-        # file is one of the few places a user's real ones legitimately live. That is the
-        # same reasoning `load_config` gives for routing `dossier_allow_hosts` through
-        # `parse_allow_hosts` INSTEAD of this helper, and `urlguard.py` already prints
-        # `type(entries).__name__` for it; echoing here made that choice inconsistent with
-        # itself (#176).
+    # Names the TYPE, never the VALUE. `relevance_keep`/`relevance_drop` are job-title
+    # preferences and `location_noise_words` is geography -- personal, and a config file is
+    # one of the few places a user's real ones legitimately live. That is the same
+    # reasoning `load_config` gives for routing `dossier_allow_hosts` through
+    # `parse_allow_hosts` INSTEAD of this helper, and `urlguard.py` already prints
+    # `type(entries).__name__` for it; echoing here made that choice inconsistent with
+    # itself (#176).
+    #
+    # The two arms are SEPARATE, and collapsing them was a real defect: with one message,
+    # `relevance_keep: [2024]` said "must be a YAML list of strings, but got a list" --
+    # naming the wrong problem and instructing the user to write what they had already
+    # written. Dropping the value echo is right; dropping it without splitting the arms
+    # took the information away with it. Naming the INDEX and the element's TYPE restores
+    # what a user needs while still printing nothing they wrote -- the shape
+    # `parse_allow_hosts` and `_merge_denylist` already use.
+    if not isinstance(value, list):
         raise ValueError(
             f"{name} must be a YAML list of strings, but got a {type(value).__name__}. "
             f"Write it as `{name}: [first, second]`, or one `- first` per line.")
+    bad = [(i, type(x).__name__) for i, x in enumerate(value) if not isinstance(x, str)]
+    if bad:
+        where = ", ".join(f"index {i} is a {t}" for i, t in bad)
+        # No literal example VALUE in the message on purpose: any number named here
+        # could coincide with the user's own, which would make the no-echo property
+        # untestable and, worse, make a real leak look like boilerplate. Caught by
+        # the no-echo test itself, which could not tell the two apart.
+        raise ValueError(
+            f"{name} must be a YAML list of STRINGS, but {where}. Quote the entry if "
+            f"it is meant to be text -- an unquoted year or `true` is a number or a "
+            f"boolean to YAML, not a string.")
     return list(value)
 
 
-def refuse_wrong_container(block: str, key: str, value, default) -> None:
+def refuse_wrong_container(block: str, key: str, value, default, *,
+                           example: str = "") -> None:
     """Refuse a YAML SCALAR given for a field whose CODE DEFAULT is a list or a dict.
+
+    SHAPE only. For a list whose entries must be strings, `_str_list` above is the
+    stricter helper and the right one; this checks the container and stops there,
+    which is what a field like `sources.<id>.searches` needs (its entries are
+    themselves lists, so an element check would reject every valid value).
 
     Keyed on the DEFAULT's type, never on a field list, so a container field added
     later cannot quietly opt out -- the same shape, and the same reasoning, as the
-    quoted-bool guard this sits beside. Shape only, never range: `compose_timeout > 0`
+    quoted-bool guard it is called beside -- which lives in the sub-app loaders, not in
+    this file. Shape only, never range: `compose_timeout > 0`
     and the cross-field checks stay where their own reasons live.
 
-    #176. `_str_list` below already named this exact hazard ("would otherwise
+    #176. `_str_list` ABOVE already named this exact hazard ("would otherwise
     `list()`-explode into single characters and silently mis-configure the gate") and
     was then wired to two root fields and none of the sub-app ones -- the half-applied
     defensive pattern this codebase treats as worse than none. Measured on the pre-fix
@@ -178,17 +211,37 @@ def refuse_wrong_container(block: str, key: str, value, default) -> None:
     a real person's preferences, and `load_config` already declines `_str_list` for
     `dossier_allow_hosts` on exactly this ground.
     """
-    if isinstance(default, bool) or not isinstance(default, (list, dict)):
+    # No `isinstance(default, bool)` arm: a bool is not a list or a dict, so the second
+    # disjunct already returns for it. Spelling it out read as load-bearing while
+    # deciding nothing -- the redundant-guard shape this repo treats as worse than none,
+    # because it implies bools need special handling here and they do not.
+    if not isinstance(default, (list, dict)):
         return
     if isinstance(value, type(default)):
         return
     qualified = f"{block}.{key}" if block else key
     if isinstance(default, list):
-        shape = (f"Write it as `{key}: [first, second]`, or one `- first` per line. "
-                 f"A bare `{key}: value` is a STRING, and sluice would read it one "
-                 f"CHARACTER at a time.")
+        # `example` is what stops this refusal INSTRUCTING the bug it exists to prevent.
+        # The generic wording suits a list of plain strings; for a field whose entries are
+        # themselves lists it is actively harmful. Measured on `sources.<id>.searches`,
+        # whose entries are `[label, url, {params}?]`: a user following
+        # "`searches: [first, second]`" verbatim gets a FLAT two-string list, each string
+        # is then indexed `spec[0], spec[1]`, and "My search" becomes label='M', url='y'
+        # -- the per-character explosion this whole helper exists to refuse, arrived at by
+        # obeying the refusal. A refusal must be answerable without making things worse;
+        # this repo already learned that from the CV parser's LOCATION field, where the
+        # only actionable reading of the message was to invent a city.
+        shape = (f"Write it as `{key}: {example}`."
+                 if example else
+                 f"Write it as `{key}: [first, second]`, or one `- first` per line.")
+        # The "one CHARACTER at a time" warning is TRUE only for a string, which is the
+        # common case and the dangerous one. Asserting it for `{key}: 5` or `{key}: true`
+        # would be describing a mechanism that does not happen.
+        if isinstance(value, str):
+            shape += (f" A bare `{key}: value` is a STRING, and sluice would read it one "
+                      f"CHARACTER at a time.")
     else:
-        shape = (f"Write it as `{key}:` followed by indented `name: value` lines.")
+        shape = f"Write it as `{key}:` followed by indented `name: value` lines."
     raise ValueError(
         f"{qualified} must be a YAML {'list' if isinstance(default, list) else 'mapping'}, "
         f"but got a {type(value).__name__}. {shape}")
@@ -317,8 +370,12 @@ def load_config(path: str | None = None) -> Config:
             refuse_wrong_container("sources", sid, sconf, {})
         sconf = sconf or {}
         if sconf.get("searches") is not None:
-            refuse_wrong_container(f"sources.{sid}", "searches",
-                                   sconf["searches"], [])
+            # `example` because a searches ENTRY is itself a list -- see the
+            # helper. The generic "[first, second]" wording would tell a user to
+            # write the exact flat shape that explodes per character.
+            refuse_wrong_container(
+                f"sources.{sid}", "searches", sconf["searches"], [],
+                example='[["My label", "https://example.invalid/jobs"]]')
         if sconf.get("tuning") is not None:
             refuse_wrong_container(f"sources.{sid}", "tuning", sconf["tuning"], {})
         sources[sid] = SourceConfig(
@@ -326,9 +383,10 @@ def load_config(path: str | None = None) -> Config:
             tuning=dict(sconf.get("tuning") or {}),   # guarded by the sid check above
             # #176: same hazard one level down -- a scalar would explode into one
             # search per character and quietly scrape nothing useful. Deliberately
-            # NOT `_str_list`: a search is a `[label, url, {params}?]` TRIPLE, not a
-            # string, so that helper's element check would reject every valid value.
-            # Shape only is exactly the distinction `refuse_wrong_container` draws.
+            # NOT `_str_list`: a search entry is a nested LIST -- `[label, url]` with
+            # an optional third `{params}` element -- not a string, so that helper's
+            # element check would reject every valid value. Shape only is exactly
+            # the distinction `refuse_wrong_container` draws.
             searches=list(sconf.get("searches") or []),
         )
 

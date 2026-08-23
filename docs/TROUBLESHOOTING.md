@@ -73,6 +73,54 @@ omitted; the old `cv.contact` catalogue's labels, e.g. "Phone number: ...", were
 choice living in a value you could edit, and there is nowhere left in config to put one — write
 the label into the field's own value if you want it back).
 
+## A config that used to load now refuses: "must be a YAML list" (#176)
+
+A key that takes a **list** or a **mapping** was written as a bare scalar. That used to load
+and silently mis-configure whatever read it; it now refuses at load, so the run stops instead.
+
+```
+job-sluice: triage.target_locations must be a YAML list, but got a str.
+Write it as `target_locations: [first, second]`, or one `- first` per line.
+A bare `target_locations: value` is a STRING, and sluice would read it one
+CHARACTER at a time.
+```
+
+The fix is one edit — write the value as a list:
+
+```yaml
+triage:
+  target_locations: remote           # before: a string
+  target_locations: [remote]         # after
+  # or, equivalently
+  target_locations:
+    - remote
+```
+
+**Why it refuses rather than guessing.** A scalar was read one character at a time, which is
+why this matters more than a formatting nit. Measured on the affected keys: `relevance_drop:
+senior` became `['s','e','n','i','o','r']` and dropped **every** lead at ingest, before dedup
+and before any note was written; `triage.target_locations: remote` matched almost every
+location and behaved exactly like an unconfigured filter. Nothing said so in either case.
+
+Coercing `remote` into `[remote]` would fix the one-word case and quietly break the likelier
+one: `target_locations: London, Berlin` is a single YAML string, and coerced it becomes one
+token matching nothing — every located lead rejected, still silently. Refusing is the only
+answer that cannot guess wrong.
+
+**`sources.<id>.searches` is the exception to the wording.** Its entries are themselves lists,
+so the generic advice does not apply and the message says so:
+
+```yaml
+sources:
+  reed:
+    searches:
+      - ["My label", "https://example.invalid/jobs"]
+      - ["Another", "https://example.invalid/other", {job_type: perm}]
+```
+
+Nothing shipped is affected: `sluice.yaml.example` and anything `job-sluice init` writes
+already use list syntax throughout.
+
 ## A gate-clean CV is still refused (a renderer `precheck` violation)
 
 The hard fabrication gate (`cv/validate.py`) can pass while the `template` renderer's own

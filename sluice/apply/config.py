@@ -3,7 +3,7 @@ sluice.yaml. Every field has a sane default so apply runs with no config file.""
 import os
 from dataclasses import dataclass
 
-from sluice.core.config import sub_app_block
+from sluice.core.config import refuse_wrong_container, sub_app_block
 from sluice.core.paths import config_file
 
 try:
@@ -32,5 +32,14 @@ def load_apply_config(path: str | None = None) -> ApplyConfig:
         data = sub_app_block("apply", (yaml.safe_load(f) or {}).get("apply"))
     for k, v in data.items():
         if hasattr(cfg, k) and v is not None:
+            # #176. ApplyConfig has NO container field today, so this is currently
+            # a no-op -- wired anyway because this loop is otherwise a bare
+            # `hasattr`+`setattr` with no shape guard at all, and the field it
+            # gains next would be silently unprotected. Guarding three loaders and
+            # leaving the fourth bare is the half-applied defensive pattern this
+            # repo treats as worse than none. `track` is deliberately NOT wired:
+            # its two dict fields are already refused by `_merge_denylist`, whose
+            # message is strictly more specific than this one.
+            refuse_wrong_container("apply", k, v, getattr(cfg, k))
             setattr(cfg, k, v)
     return cfg
