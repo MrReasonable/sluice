@@ -19,8 +19,8 @@ made and half-applied: `core/config.py`'s `_str_list` names this exact scalar ca
 says "a clear error at construction is the house style". Coercion cannot be made safe
 here, because the likeliest scalar is the COMMA-SEPARATED one -- `init` asks
 "comma-separated?", and a user hand-editing YAML repeats that phrasing.
-`target_locations: London, Berlin` coerces to ONE token matching nothing, so every
-located lead is rejected. Coercion converts "the gate abstains" into "the gate matches
+`target_locations: Example City, Example Region` coerces to ONE token matching nothing,
+so every located lead is rejected. Coercion converts "the gate abstains" into "the gate matches
 nothing", which is the same bug class one step further from view.
 """
 import pytest
@@ -66,7 +66,12 @@ def test_a_comma_separated_scalar_is_refused_rather_than_silently_one_token(tmp_
     # Coerced, this becomes ONE token that matches nothing, and every located lead is
     # rejected with nothing said. It is the likeliest scalar a user writes, because
     # `job-sluice init` asks for these answers comma-separated.
-    path = _write(tmp_path, "csv.yaml", "triage:\n  target_locations: London, Berlin\n")
+    # Synthetic places, matching `sluice.yaml.example`'s own `[Antarctica]` for this
+    # key. The property under test is the COMMA, not the cities -- every other
+    # London/Berlin in tests/ is an IANA timezone under the standing exemption, and
+    # this is the first in a geography-PREFERENCE position.
+    path = _write(tmp_path, "csv.yaml",
+                  "triage:\n  target_locations: Example City, Example Region\n")
     with pytest.raises(ValueError) as e:
         load_triage_config(path)
     assert "target_locations" in str(e.value)
@@ -150,30 +155,137 @@ def test_every_container_field_in_every_loader_is_guarded(tmp_path):
     """
     import dataclasses
 
+    from sluice.apply.config import ApplyConfig, load_apply_config
     from sluice.core.config import Config
     from sluice.cv.config import CvConfig
+    from sluice.track.config import TrackConfig, load_track_config
     from sluice.triage.config import TriageConfig
 
+    # ALL FIVE loaders, not the three that happened to change. An earlier version walked
+    # three and was named for five, which is the same half-application this sweep exists
+    # to catch, one level up: `load_apply_config` is a bare `hasattr`+`setattr` loop, so a
+    # container field added there later would be unguarded AND invisible here.
     cases = [("", Config, load_config, "vault_dir: ./v\n"),
              ("triage", TriageConfig, load_triage_config, ""),
-             ("cv", CvConfig, load_cv_config, "")]
+             ("cv", CvConfig, load_cv_config, ""),
+             ("apply", ApplyConfig, load_apply_config, ""),
+             ("track", TrackConfig, load_track_config, "")]
 
-    checked = 0
+    # PER-BLOCK counts, not one global floor. A single `>= N` is slack by however much the
+    # largest block contributes -- measured, the old `>= 12` against a true 19 meant a
+    # whole loader (triage's five preference gates) could drop out of discovery and the
+    # sweep would still pass. A per-block floor cannot hide that.
+    seen = {}
     for block, klass, loader, preamble in cases:
         for f in dataclasses.fields(klass):
             default = (f.default_factory() if f.default_factory is not dataclasses.MISSING
                        else f.default)
             if not isinstance(default, (list, dict)):
                 continue
-            # A scalar for this field must be refused by SOME guard -- this one, or the
-            # field's own bespoke validator (dossier_allow_hosts, slop_allow).
+            # A scalar for this field must be refused by SOME guard -- the shared one, or
+            # the field's own bespoke validator (`dossier_allow_hosts`, `slop_allow`,
+            # track's `_merge_denylist`), whichever gives the more specific message.
             body = (f"{preamble}{block}:\n  {f.name}: scalar\n" if block
                     else f"{preamble}{f.name}: scalar\n")
-            path = _write(tmp_path, f"scope-{block}-{f.name}.yaml", body)
+            path = _write(tmp_path, f"scope-{block or 'root'}-{f.name}.yaml", body)
             with pytest.raises(ValueError):
                 loader(path)
-            checked += 1
+            seen[block or "root"] = seen.get(block or "root", 0) + 1
 
-    assert checked >= 12, (
-        f"the walk found only {checked} container fields across three loaders; "
-        "discovery has stopped matching and this sweep is now vacuous")
+    # `apply` is absent on purpose: it has NO container fields today. Asserting a floor of
+    # 0 for it would be indistinguishable from discovery breaking, so its coverage is the
+    # assertion below instead -- if it ever gains one, this dict grows a key and the
+    # per-block floors here stop describing reality.
+    expected = {"root": 7, "triage": 5, "cv": 5, "track": 2}
+    assert seen == expected, (
+        f"container-field discovery changed: {seen} != {expected}.\n"
+        "If a field was ADDED, update this map. If a block VANISHED, discovery has broken "
+        "and the sweep is now passing over nothing -- which is the failure this test "
+        "exists to make impossible.")
+
+
+def test_apply_has_no_container_field_and_would_be_guarded_if_it_gained_one():
+    """`apply` is the loader with nothing to sweep, so it needs its own assertion.
+
+    A zero count is indistinguishable from broken discovery, so the sweep above cannot
+    carry it. This pins the FACT (zero container fields today) and the CONSEQUENCE (its
+    loop calls the shared guard, so the day it gains one it is covered) separately.
+    """
+    import dataclasses
+    import inspect
+
+    from sluice.apply.config import ApplyConfig, load_apply_config
+
+    containers = [f.name for f in dataclasses.fields(ApplyConfig)
+                  if isinstance((f.default_factory() if f.default_factory
+                                 is not dataclasses.MISSING else f.default), (list, dict))]
+    assert containers == [], (
+        f"apply gained container fields {containers}; add 'apply' to the sweep's expected "
+        "map above, which currently records that it has none.")
+    assert "refuse_wrong_container" in inspect.getsource(load_apply_config), (
+        "apply's loader no longer calls the shared container guard, so the field it "
+        "gains next will be unprotected")
+
+
+# ── the refusal must never INSTRUCT the bug it refuses (review round 1, High) ────
+
+def test_the_searches_refusal_teaches_a_spelling_that_actually_works(tmp_path):
+    """A refusal must be answerable without making things worse.
+
+    `sources.<id>.searches` entries are themselves lists (`[label, url, {params}?]`), so
+    the generic "write it as `[first, second]`" advice was actively harmful here.
+    Measured before the fix: following it produced a FLAT two-string list, each string was
+    then indexed `spec[0], spec[1]`, and "My search" became label='M', url='y' -- the
+    per-character explosion the guard exists to refuse, arrived at BY OBEYING the refusal.
+
+    This repo already learned the lesson from the CV parser's LOCATION field, where the
+    only actionable reading of the message was to invent a city.
+    """
+    path = _write(tmp_path, "s.yaml",
+                  "vault_dir: ./v\nsources:\n  reed:\n    searches: my search\n")
+    with pytest.raises(ValueError) as e:
+        load_config(path)
+    msg = str(e.value)
+    assert "[[" in msg, "the refusal must show the NESTED shape, not a flat list"
+
+    # And the spelling it teaches must load into the shape the consumer expects: ONE
+    # entry that is itself a list, not two bare strings.
+    import re as _re
+    example = _re.search(r"`searches: (\[\[.*?\]\])`", msg)
+    assert example, f"could not find the taught spelling in: {msg}"
+    good = _write(tmp_path, "good.yaml",
+                  "vault_dir: ./v\nsources:\n  reed:\n"
+                  f"    searches: {example.group(1)}\n")
+    loaded = load_config(good).source("reed").searches
+    assert len(loaded) == 1 and isinstance(loaded[0], list), (
+        f"following the refusal produced {loaded!r}, which is the flat shape that "
+        "explodes per character")
+
+
+def test_a_non_string_scalar_is_not_told_it_is_a_string(tmp_path):
+    # "sluice would read it one CHARACTER at a time" is true of a str and false of an int
+    # or a bool. Asserting a mechanism that does not happen is the stale-prose class this
+    # repo keeps finding in its own comments.
+    path = _write(tmp_path, "n.yaml", "triage:\n  target_locations: 5\n")
+    with pytest.raises(ValueError) as e:
+        load_triage_config(path)
+    msg = str(e.value)
+    assert "int" in msg
+    assert "CHARACTER" not in msg, "an int was told it would be read character by character"
+
+
+def test_a_bad_ELEMENT_names_the_index_and_type_not_the_value(tmp_path):
+    """The element arm must not be answered with the container arm's advice.
+
+    Collapsed into one message, `relevance_keep: [2024]` said "must be a YAML list of
+    strings, but got a list" -- naming the wrong problem and instructing the user to write
+    what they had already written. Dropping the value echo was right; dropping it without
+    splitting the arms took the information away with it.
+    """
+    path = _write(tmp_path, "el.yaml", "vault_dir: ./v\nrelevance_keep: [2024]\n")
+    with pytest.raises(ValueError) as e:
+        load_config(path)
+    msg = str(e.value)
+    assert "index 0" in msg, "the offending POSITION must be named"
+    assert "int" in msg, "the offending element's TYPE must be named"
+    assert "2024" not in msg, "the element's VALUE must not be echoed"
