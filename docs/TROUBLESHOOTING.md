@@ -78,7 +78,7 @@ the label into the field's own value if you want it back).
 A key that takes a **list** or a **mapping** was written as a bare scalar. That used to load
 and silently mis-configure whatever read it; it now refuses at load, so the run stops instead.
 
-```
+```text
 job-sluice: triage.target_locations must be a YAML list, but got a str.
 Write it as `target_locations: [first, second]`, or one `- first` per line.
 A bare `target_locations: value` is a STRING, and sluice would read it one
