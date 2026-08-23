@@ -6,8 +6,9 @@ The bug class, measured on the pre-fix tree rather than reasoned about:
     `is_relevant` then returned False for EVERY title tried -- the whole scrape
     binned, at ingest, before dedup and before any note exists to notice.
   * `triage.target_locations: remote` loaded as the STRING `"remote"`, and `classify`
-    then kept Remote AND London AND Berlin -- byte-identical to the unconfigured
-    abstain, so a geography filter the user believes they configured does nothing.
+    then kept EVERY location tried, including ones sharing no word with the configured
+    value -- byte-identical to the unconfigured abstain, so a geography filter the user
+    believes they configured does nothing.
   * `cv.fabrication_decoys: Acme` made the CV gate emit `FABRICATED: contains 'A'`,
     `'c'`, `'m'`, `'e'` and hard-block every CV.
 
@@ -67,9 +68,10 @@ def test_a_comma_separated_scalar_is_refused_rather_than_silently_one_token(tmp_
     # rejected with nothing said. It is the likeliest scalar a user writes, because
     # `job-sluice init` asks for these answers comma-separated.
     # Synthetic places, matching `sluice.yaml.example`'s own `[Antarctica]` for this
-    # key. The property under test is the COMMA, not the cities -- every other
-    # London/Berlin in tests/ is an IANA timezone under the standing exemption, and
-    # this is the first in a geography-PREFERENCE position.
+    # key. The property under test is the COMMA, not the place names -- every other real
+    # city in tests/ is an IANA timezone under the standing exemption, and a fixture for
+    # `target_locations` is the one position where a bare city reads as a declared
+    # geography preference rather than an illustration.
     path = _write(tmp_path, "csv.yaml",
                   "triage:\n  target_locations: Example City, Example Region\n")
     with pytest.raises(ValueError) as e:
