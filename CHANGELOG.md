@@ -40,6 +40,38 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [1.2.0](https://github.com/MrReasonable/sluice/compare/v1.1.0...v1.2.0) (2026-08-23)
+
+
+### Features
+
+* **cv:** enforce the discarded style warnings through one retry ([#167](https://github.com/MrReasonable/sluice/issues/167)) ([4e76c59](https://github.com/MrReasonable/sluice/commit/4e76c596913b465ca138af0a99948e38146a6857))
+* **cv:** surface the findings, and render the ban list from the enforced list ([#167](https://github.com/MrReasonable/sluice/issues/167)) ([1c139d2](https://github.com/MrReasonable/sluice/commit/1c139d2879bbe7e15e4359fbb4950bebe26dba6a))
+* **dossier:** own the "did the JD arrive?" verdict, and stop caching a miss ([#169](https://github.com/MrReasonable/sluice/issues/169)) ([7f9e940](https://github.com/MrReasonable/sluice/commit/7f9e94028339bcf3767247462d5c64bade60d4da))
+* **health,doctor,onboard:** report the JD-arrival facts, never a verdict ([#169](https://github.com/MrReasonable/sluice/issues/169)) ([8d7a79c](https://github.com/MrReasonable/sluice/commit/8d7a79cb40e30636d31856234d02a61028951e86))
+* **packaging:** ship job-sluice as a .deb and .rpm ([#104](https://github.com/MrReasonable/sluice/issues/104)) ([6ed2425](https://github.com/MrReasonable/sluice/commit/6ed2425cd3de63b35ab73130203af8e90c90a5b6))
+* **status,triage:** add `unjudgeable`, and never judge a JD that did not arrive ([#169](https://github.com/MrReasonable/sluice/issues/169)) ([64ab949](https://github.com/MrReasonable/sluice/commit/64ab94952284124b87f5599ca3fe0a4f7b611f22))
+
+
+### Bug Fixes
+
+* **cv,cli,skills:** correct what self-review found, including one live gap ([#167](https://github.com/MrReasonable/sluice/issues/167), [#169](https://github.com/MrReasonable/sluice/issues/169)) ([79b7c48](https://github.com/MrReasonable/sluice/commit/79b7c4892300f0b3031cb7dca9ddd16f86640e24))
+* **cv,triage,health,mcp:** close what multi-agent review found ([#167](https://github.com/MrReasonable/sluice/issues/167), [#169](https://github.com/MrReasonable/sluice/issues/169)) ([4c70339](https://github.com/MrReasonable/sluice/commit/4c703397518a295271e00b7865812a36a4824506))
+* **cv,triage:** flag a blind CV, and clamp a model verdict to the judge's vocabulary ([#169](https://github.com/MrReasonable/sluice/issues/169)) ([4d91ad4](https://github.com/MrReasonable/sluice/commit/4d91ad46eabce8d402074f2104b9e9b8875e964e))
+* **dossier,docs,test:** correct the prose, own the census, close the sandbox ([#167](https://github.com/MrReasonable/sluice/issues/167), [#169](https://github.com/MrReasonable/sluice/issues/169)) ([73ab48a](https://github.com/MrReasonable/sluice/commit/73ab48ae8728cdadeb7e632af74520a469ba0b4b))
+
+
+### Refactoring
+
+* **cv:** share the gate's own section split, and add three inert knobs ([#167](https://github.com/MrReasonable/sluice/issues/167)) ([f1c4e7f](https://github.com/MrReasonable/sluice/commit/f1c4e7f94dd718d8f35a9f52e824d01bdb228ade))
+
+
+### Documentation
+
+* describe the JD-arrival contract and the two CV gate tiers ([#167](https://github.com/MrReasonable/sluice/issues/167), [#169](https://github.com/MrReasonable/sluice/issues/169)) ([19b4258](https://github.com/MrReasonable/sluice/commit/19b4258bbc55df1bc02fc7ce33013edcd1a775a4))
+* design and plan the fix for two inert signals ([#167](https://github.com/MrReasonable/sluice/issues/167), [#169](https://github.com/MrReasonable/sluice/issues/169)) ([b5fb4ce](https://github.com/MrReasonable/sluice/commit/b5fb4ce4d26cd2892e9aa04a3470e229a4f4ccd3))
+* **packaging:** claim install channels in one guarded table ([#104](https://github.com/MrReasonable/sluice/issues/104)) ([73cccd4](https://github.com/MrReasonable/sluice/commit/73cccd4f64b2c98e12a037255a2c2be8c44b8443))
+
 ## [1.1.0](https://github.com/MrReasonable/sluice/compare/v1.0.0...v1.1.0) (2026-08-22)
 
 
