@@ -67,7 +67,8 @@ _PHRASE_PATTERNS = [(stem, _stem_pattern(stem)) for stem in _PHRASES]
 #
 # `_PHRASES` therefore stays private and stays tunable. It must track model-output drift
 # (#167 added `drove` in its own PR), and versioning a lint heuristic would ossify exactly
-# the thing that needs to keep moving. `tests/test_cv_slop.py` ratchets the set so a
+# the thing that needs to keep moving. `tests/test_slop_phrase_retirement.py`
+# ratchets the set so a
 # REMOVAL cannot land without an entry here.
 _RETIRED_PHRASES: dict[str, str] = {}
 
