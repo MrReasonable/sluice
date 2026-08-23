@@ -188,8 +188,17 @@ def test_every_container_field_in_every_loader_is_guarded(tmp_path):
             body = (f"{preamble}{block}:\n  {f.name}: scalar\n" if block
                     else f"{preamble}{f.name}: scalar\n")
             path = _write(tmp_path, f"scope-{block or 'root'}-{f.name}.yaml", body)
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError) as e:
                 loader(path)
+            # Assert the KEY, not just the exception TYPE. A guard that raises the
+            # same type as the unguarded path it precedes cannot be witnessed by the
+            # type alone -- and `notify` proved it: unguarded, `dict("scalar")`
+            # raises ValueError by itself, so deleting the notify guard left this
+            # sweep, and the whole suite, green.
+            assert f.name in str(e.value), (
+                f"{block or 'root'}.{f.name} raised, but the message does not name "
+                f"the key -- so this row cannot tell a real guard from an incidental "
+                f"ValueError from the unguarded path: {e.value}")
             seen[block or "root"] = seen.get(block or "root", 0) + 1
 
     # `apply` is absent on purpose: it has NO container fields today. Asserting a floor of
@@ -204,7 +213,8 @@ def test_every_container_field_in_every_loader_is_guarded(tmp_path):
         "exists to make impossible.")
 
 
-def test_apply_has_no_container_field_and_would_be_guarded_if_it_gained_one():
+def test_apply_has_no_container_field_and_would_be_guarded_if_it_gained_one(
+        tmp_path, monkeypatch):
     """`apply` is the loader with nothing to sweep, so it needs its own assertion.
 
     A zero count is indistinguishable from broken discovery, so the sweep above cannot
@@ -212,7 +222,6 @@ def test_apply_has_no_container_field_and_would_be_guarded_if_it_gained_one():
     loop calls the shared guard, so the day it gains one it is covered) separately.
     """
     import dataclasses
-    import inspect
 
     from sluice.apply.config import ApplyConfig, load_apply_config
 
@@ -222,9 +231,28 @@ def test_apply_has_no_container_field_and_would_be_guarded_if_it_gained_one():
     assert containers == [], (
         f"apply gained container fields {containers}; add 'apply' to the sweep's expected "
         "map above, which currently records that it has none.")
-    assert "refuse_wrong_container" in inspect.getsource(load_apply_config), (
-        "apply's loader no longer calls the shared container guard, so the field it "
-        "gains next will be unprotected")
+    # BEHAVIOURAL, not a source-text match. The previous version asserted
+    # `"refuse_wrong_container" in inspect.getsource(...)`, which was wrong in BOTH
+    # directions: commenting the call out left it GREEN (the string survives in the
+    # comment), and aliasing the import turned it RED with behaviour unchanged.
+    #
+    # ApplyConfig has no container field to test with, so give it one: a subclass
+    # with a list default, swapped in for the duration. That exercises the loop's
+    # guard exactly as a real future field would.
+    import dataclasses as _dc
+
+    @_dc.dataclass
+    class _WithContainer(ApplyConfig):
+        future_list: list = _dc.field(default_factory=list)
+
+    monkeypatch.setattr("sluice.apply.config.ApplyConfig", _WithContainer)
+    path = tmp_path / "apply.yaml"
+    path.write_text("apply:\n  future_list: scalar\n", encoding="utf-8")
+    with pytest.raises(ValueError) as e:
+        load_apply_config(str(path))
+    assert "future_list" in str(e.value), (
+        "apply's loader does not guard a container field, so the one it gains next "
+        f"would be silently unprotected: {e.value}")
 
 
 # ── the refusal must never INSTRUCT the bug it refuses (review round 1, High) ────
@@ -289,3 +317,29 @@ def test_a_bad_ELEMENT_names_the_index_and_type_not_the_value(tmp_path):
     assert "index 0" in msg, "the offending POSITION must be named"
     assert "int" in msg, "the offending element's TYPE must be named"
     assert "2024" not in msg, "the element's VALUE must not be echoed"
+
+
+# ── the NESTED call sites, which the dataclass walk cannot reach ─────────────────
+#
+# `sources.<id>` and `sources.<id>.tuning` live inside a mapping, not on a top-level
+# dataclass field, so the sweep above never visits them. Measured before these rows
+# existed: deleting either guard left the entire suite green. `searches` had its own row
+# already and survived only because of it.
+
+@pytest.mark.parametrize("body,expect_key", [
+    ("vault_dir: ./v\nsources: reed\n", "sources"),
+    ("vault_dir: ./v\nsources:\n  reed: enabled\n", "reed"),
+    ("vault_dir: ./v\nsources:\n  reed:\n    tuning: fast\n", "tuning"),
+    ("vault_dir: ./v\nsources:\n  reed:\n    searches: my search\n", "searches"),
+    ("vault_dir: ./v\nnotify: telegram\n", "notify"),
+])
+def test_a_nested_container_refuses_a_scalar_and_names_its_key(tmp_path, body, expect_key):
+    path = _write(tmp_path, f"nested-{expect_key}.yaml", body)
+    with pytest.raises(ValueError) as e:
+        load_config(path)
+    # The KEY, deliberately, not just the type. `notify: telegram` reaches `dict(...)`,
+    # which raises ValueError unaided -- so a type-only assertion here would pass with the
+    # guard deleted, which is exactly how this hole stayed open.
+    assert expect_key in str(e.value), (
+        f"the refusal for {expect_key!r} does not name it, so this row cannot distinguish "
+        f"a real guard from an incidental ValueError: {e.value}")
