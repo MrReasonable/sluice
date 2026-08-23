@@ -5,7 +5,8 @@ with no config file at all."""
 import os
 from dataclasses import dataclass, field
 
-from sluice.core.config import refuse_retired_dossier_dir, sub_app_block
+from sluice.core.config import (refuse_retired_dossier_dir,
+                                refuse_wrong_container, sub_app_block)
 from sluice.core.paths import config_file, resolve
 
 try:
@@ -110,6 +111,12 @@ def load_triage_config(path: str | None = None) -> TriageConfig:
                     f"triage.{k} must be a YAML boolean (true/false), got {v!r}. Quoted, "
                     f'it is a STRING -- and "false" is truthy in Python, so the knob '
                     f"would be switched ON by the value meant to switch it off.")
+            # #176, the container sibling of the bool guard above and keyed the same
+            # way. These five fields are the PREFERENCE GATES: measured before this
+            # existed, `target_locations: remote` loaded as a str and `classify` then
+            # kept every location, byte-identical to the unconfigured abstain -- a
+            # geography filter the user believes they configured doing nothing at all.
+            refuse_wrong_container("triage", k, v, getattr(cfg, k))
             setattr(cfg, k, v)
     # #120: unconditional (not inside the `if path...` block above) because it must
     # run on every LOAD, whether or not a config FILE was present -- the DEFAULT
