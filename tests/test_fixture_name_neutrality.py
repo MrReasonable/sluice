@@ -1313,7 +1313,13 @@ def test_every_captured_fixture_matches_its_reviewed_digest():
 # ── CV-body employer lines (#167): a NARROW ratchet for the gap named in the docstring ──
 
 _CV_TEST_MODULES = ("test_cv_engine.py", "test_cv_slop.py", "test_cv_compose.py",
-                    "test_cv_validate.py", "test_cv_parse.py", "test_cv_voice.py")
+                    "test_cv_validate.py", "test_cv_parse.py", "test_cv_voice.py",
+                    # A CV-domain module whose name does not start `test_cv_` (#181).
+                    # It holds no identity today, so adding it is inert -- which is
+                    # the point: a hand-list is only safe while somebody remembers
+                    # it, and the convention that would have caught this one
+                    # ("test_cv_*.py") does not match the file.
+                    "test_slop_phrase_retirement.py")
 
 # `Example <Word>` literals only. Weaker than the four positional collectors ON PURPOSE and
 # stated as such above: this can ratchet a name that already LOOKS synthetic, which is not

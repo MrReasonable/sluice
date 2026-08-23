@@ -132,6 +132,20 @@ class CvConfig:
     compose_timeout: int = DEFAULT_TIMEOUT
 
 
+def _not_a_phrase(items) -> str:
+    """`is not a phrase` / `are not phrases` -- the verb AND the noun, in one string.
+
+    Both halves live here because splitting them is precisely what broke: the verb was
+    returned carrying its own `which`, the caller wrote a second one, and the noun stayed
+    singular on the plural path, so a real refusal read `'leveraged', which which is not a
+    phrase` and a two-entry one read `which which are not a phrase`. A message that
+    garbles itself gets read as a bug in sluice rather than as the config error it is
+    naming. The multi-offender path is deliberately supported (every offender is collected
+    before raising), so the message has to agree with itself.
+    """
+    return "is not a phrase" if len(items) == 1 else "are not phrases"
+
+
 def load_cv_config(path: str | None = None) -> CvConfig:
     cfg = CvConfig()
     path = path or config_file()
@@ -298,24 +312,9 @@ def load_cv_config(path: str | None = None) -> CvConfig:
                 migrated.append((p, _RETIRED_PHRASES[low]))
             else:
                 unknown.append(p)
-        for old, new in migrated:
-            if new:
-                _log.warning(
-                    "cv.slop_allow: %r was renamed to %r; using the new stem. Update "
-                    "your config when convenient.", old, new)
-            else:
-                _log.warning(
-                    "cv.slop_allow: %r is no longer a checked phrase, so allowing it "
-                    "has no effect. Remove it from your config.", old)
-        # Written BACK into `data`, not just into `raw`. The assignment to the config
-        # happens in the generic `for k, v in data.items()` loop further down, which reads
-        # `data` -- so a migration computed here and left in a local would be discarded,
-        # the warning would still print, and the user's retired stem would reach
-        # `check_phrases` unmapped. That is #167's own bug class (a signal computed and
-        # then dropped) and it is what the first draft of this block did.
-        data["slop_allow"] = [p for p in
-                              (_RETIRED_PHRASES.get(p.lower(), p) for p in raw)
-                              if p]      # a stem retired outright drops out entirely
+        # The RAISE comes first. A migration warning printed above a load that then dies
+        # tells the user a migration happened when nothing was kept -- they read
+        # "using the new stem" on a run that produced no config at all.
         if unknown:
             # Names the offending ENTRIES and the valid stems, but NOT the internal
             # symbol that holds them (#181): `slop._PHRASES` is a module-private name a
@@ -323,9 +322,32 @@ def load_cv_config(path: str | None = None) -> CvConfig:
             # telling them where the maintainer keeps something rather than what to do.
             raise ValueError(
                 f"cv.slop_allow names {', '.join(repr(p) for p in unknown)}, which "
-                "is not a phrase sluice checks for. It holds STEMS, not inflections -- "
-                "e.g. 'leverage', not 'leveraged'. Valid stems: "
-                + ", ".join(repr(p) for p in _PHRASES))
+                f"{_not_a_phrase(unknown)} sluice checks for. It holds STEMS, "
+                "not inflections -- an inflected form like a past tense will not match. "
+                "Valid stems: " + ", ".join(repr(p) for p in _PHRASES))
+
+        for old_stem, new_stem in migrated:
+            if new_stem:
+                _log.warning(
+                    "cv.slop_allow: %r was renamed to %r; using the new stem. Update "
+                    "your config when convenient.", old_stem, new_stem)
+            else:
+                _log.warning(
+                    "cv.slop_allow: %r is no longer a checked phrase, so allowing it "
+                    "has no effect. Remove it from your config.", old_stem)
+        # Applied from `migrated` itself, NOT recomputed from `raw`. Recomputing consulted
+        # the graveyard for EVERY entry, including a live stem, while the loop above
+        # skipped live stems before classifying -- so the two disagreed about precedence.
+        # Measured: with a graveyard entry keyed on a still-live stem, `slop_allow:
+        # [leverage]` loaded as `['foster']` with ZERO warnings. Only the invariant test
+        # forbade that state; the code itself was inconsistent. Deriving one from the other
+        # removes the disagreement rather than documenting it.
+        if migrated:
+            replacement = dict(migrated)
+            data["slop_allow"] = [
+                new_stem for new_stem in
+                (replacement.get(entry, entry) for entry in raw)
+                if new_stem]    # a stem retired outright drops out entirely
 
     for k, v in data.items():
         if not hasattr(cfg, k) or v is None:
