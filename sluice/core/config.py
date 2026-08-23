@@ -127,8 +127,71 @@ def _str_list(value, name: str) -> list:
     if value is None:
         return []
     if not isinstance(value, list) or any(not isinstance(x, str) for x in value):
-        raise ValueError(f"{name} must be a list of strings, got {value!r}")
+        # Names the TYPE, never the VALUE. `relevance_keep`/`relevance_drop` are job-title
+        # preferences and `location_noise_words` is geography -- personal, and a config
+        # file is one of the few places a user's real ones legitimately live. That is the
+        # same reasoning `load_config` gives for routing `dossier_allow_hosts` through
+        # `parse_allow_hosts` INSTEAD of this helper, and `urlguard.py` already prints
+        # `type(entries).__name__` for it; echoing here made that choice inconsistent with
+        # itself (#176).
+        raise ValueError(
+            f"{name} must be a YAML list of strings, but got a {type(value).__name__}. "
+            f"Write it as `{name}: [first, second]`, or one `- first` per line.")
     return list(value)
+
+
+def refuse_wrong_container(block: str, key: str, value, default) -> None:
+    """Refuse a YAML SCALAR given for a field whose CODE DEFAULT is a list or a dict.
+
+    Keyed on the DEFAULT's type, never on a field list, so a container field added
+    later cannot quietly opt out -- the same shape, and the same reasoning, as the
+    quoted-bool guard this sits beside. Shape only, never range: `compose_timeout > 0`
+    and the cross-field checks stay where their own reasons live.
+
+    #176. `_str_list` below already named this exact hazard ("would otherwise
+    `list()`-explode into single characters and silently mis-configure the gate") and
+    was then wired to two root fields and none of the sub-app ones -- the half-applied
+    defensive pattern this codebase treats as worse than none. Measured on the pre-fix
+    tree, all three shapes are 672ad2a reached through a YAML typo instead of a shipped
+    default:
+
+      * `relevance_drop: senior` loaded as `['s','e','n','i','o','r']`, and
+        `is_relevant` then returned False for EVERY title -- the whole scrape binned at
+        ingest, before dedup and before a note exists anywhere to notice.
+      * `triage.target_locations: remote` loaded as a `str`, and `classify` then kept
+        every location: byte-identical to the unconfigured abstain, so a filter the
+        user believes they configured does nothing.
+      * `cv.fabrication_decoys: Acme` made the CV gate emit `FABRICATED: contains 'A'`
+        and hard-block every CV.
+
+    RAISES rather than coercing, and that is the load-bearing choice. Coercion looks
+    kinder -- `remote` clearly means `[remote]` -- but it cannot be made safe, because
+    the likeliest scalar is the COMMA-SEPARATED one: `job-sluice init` asks for these
+    answers "comma-separated", and a user hand-editing YAML repeats that phrasing.
+    `target_locations: London, Berlin` coerces to ONE token matching nothing, so every
+    located lead is rejected. Coercion converts "the gate abstains" into "the gate
+    matches nothing" -- the same bug class, one step further from view. Raising is also
+    this repo's unanimous house style: every validator here refuses and names the key,
+    and nothing coerces an unvalidated value.
+
+    Never echoes the VALUE. `reject_companies`, `target_locations` and `employers` hold
+    a real person's preferences, and `load_config` already declines `_str_list` for
+    `dossier_allow_hosts` on exactly this ground.
+    """
+    if isinstance(default, bool) or not isinstance(default, (list, dict)):
+        return
+    if isinstance(value, type(default)):
+        return
+    qualified = f"{block}.{key}" if block else key
+    if isinstance(default, list):
+        shape = (f"Write it as `{key}: [first, second]`, or one `- first` per line. "
+                 f"A bare `{key}: value` is a STRING, and sluice would read it one "
+                 f"CHARACTER at a time.")
+    else:
+        shape = (f"Write it as `{key}:` followed by indented `name: value` lines.")
+    raise ValueError(
+        f"{qualified} must be a YAML {'list' if isinstance(default, list) else 'mapping'}, "
+        f"but got a {type(value).__name__}. {shape}")
 
 
 def sub_app_block(block: str, loaded: object) -> dict:
@@ -244,14 +307,33 @@ def load_config(path: str | None = None) -> Config:
     refuse_retired_locations(data)
 
     sources = {}
+    # #176: a scalar here reached `.items()` and died with a bare AttributeError
+    # naming no key at all -- worse than the list case, which at least produced a
+    # value. The per-source check below is the same hazard one level down.
+    if data.get("sources") is not None:
+        refuse_wrong_container("", "sources", data["sources"], {})
     for sid, sconf in (data.get("sources") or {}).items():
+        if sconf is not None:
+            refuse_wrong_container("sources", sid, sconf, {})
         sconf = sconf or {}
+        if sconf.get("searches") is not None:
+            refuse_wrong_container(f"sources.{sid}", "searches",
+                                   sconf["searches"], [])
+        if sconf.get("tuning") is not None:
+            refuse_wrong_container(f"sources.{sid}", "tuning", sconf["tuning"], {})
         sources[sid] = SourceConfig(
             enabled=bool(sconf.get("enabled", True)),
-            tuning=dict(sconf.get("tuning") or {}),
+            tuning=dict(sconf.get("tuning") or {}),   # guarded by the sid check above
+            # #176: same hazard one level down -- a scalar would explode into one
+            # search per character and quietly scrape nothing useful. Deliberately
+            # NOT `_str_list`: a search is a `[label, url, {params}?]` TRIPLE, not a
+            # string, so that helper's element check would reject every valid value.
+            # Shape only is exactly the distinction `refuse_wrong_container` draws.
             searches=list(sconf.get("searches") or []),
         )
 
+    if data.get("notify") is not None:
+        refuse_wrong_container("", "notify", data["notify"], {})
     notify = dict(data.get("notify") or {})
     token = os.environ.get("SLUICE_TELEGRAM_TOKEN")
     chat = os.environ.get("SLUICE_TELEGRAM_CHAT")
@@ -322,8 +404,16 @@ def load_config(path: str | None = None) -> Config:
                   vault_dir=str(data.get("vault_dir") or ""),
                   dossier_dir=str(data.get("dossier_dir") or ""),
                   fetcher=str(data.get("fetcher") or "camofox"),
-                  relevance_keep=list(data.get("relevance_keep") or []),
-                  relevance_drop=list(data.get("relevance_drop") or []),
+                  # #176: `_str_list`, not `list(...)`. The bare `list()` here was the
+                  # SEVEREST instance of the bug this helper was written for and the
+                  # one the issue did not name -- these two run at INGEST, before
+                  # dedup and before any LLM call, so `relevance_drop: senior` loaded
+                  # as six single characters and binned the entire scrape with nothing
+                  # written to the vault to notice it.
+                  relevance_keep=_str_list(data.get("relevance_keep"),
+                                           "relevance_keep"),
+                  relevance_drop=_str_list(data.get("relevance_drop"),
+                                           "relevance_drop"),
                   location_noise_words=_str_list(data.get("location_noise_words"),
                                                  "location_noise_words"),
                   dedupe_title_noise_words=_str_list(data.get("dedupe_title_noise_words"),

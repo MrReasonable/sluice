@@ -4,7 +4,8 @@ import os
 from dataclasses import dataclass, field
 
 from sluice.core.backends import DEFAULT_TIMEOUT
-from sluice.core.config import refuse_retired_dossier_dir, sub_app_block
+from sluice.core.config import (refuse_retired_dossier_dir,
+                                refuse_wrong_container, sub_app_block)
 from sluice.core.paths import config_file
 from sluice.cv.slop import _PHRASES
 
@@ -268,8 +269,9 @@ def load_cv_config(path: str | None = None) -> CvConfig:
         raw = data["slop_allow"]
         if not isinstance(raw, list) or any(not isinstance(p, str) for p in raw):
             raise ValueError(
-                f"cv.slop_allow must be a list of strings, got {raw!r}. Write it as a "
-                "YAML list -- `slop_allow: [leverage]`, not `slop_allow: leverage`.")
+                f"cv.slop_allow must be a YAML list of strings, but got a "
+                f"{type(raw).__name__}. Write it as `slop_allow: [leverage]`, not "
+                "`slop_allow: leverage`.")
         # Case-INSENSITIVE membership. Every stem in _PHRASES is lower-case, and a user
         # writing `slop_allow: [Leverage]` means the stem, not a different one -- raising
         # "not in slop._PHRASES" over a capital letter is a papercut with no upside.
@@ -310,5 +312,13 @@ def load_cv_config(path: str | None = None) -> CvConfig:
                 f"cv.{k} must be a YAML boolean (true/false), got {v!r}. Quoted, it "
                 f'is a STRING -- and "false" is truthy in Python, so the knob would '
                 f"be switched ON by the value meant to switch it off.")
+        # #176, the container sibling of the bool guard above and keyed the same way.
+        # `employers`, `fabrication_decoys` and `negatives` feed the FABRICATION GATE,
+        # which iterates them: measured before this existed, `fabrication_decoys: Acme`
+        # made `validate()` return `FABRICATED: contains 'A'`, `'c'`, `'m'` and
+        # hard-block every CV, accusing the model and naming neither the config key nor
+        # the word "list". `slop_allow` keeps its own bespoke check above, which is
+        # narrower than this one (it also validates MEMBERSHIP against the stem list).
+        refuse_wrong_container("cv", k, v, getattr(cfg, k))
         setattr(cfg, k, v)
     return cfg
