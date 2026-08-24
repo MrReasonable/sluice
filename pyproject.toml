@@ -23,7 +23,24 @@ requires-python = ">=3.12"
 # every Outlook invite is booked at an ASSUMED instant instead of its stated one. Silently,
 # and only on the machines nobody develops on. It is a data package with no code, so the
 # cost of carrying it unconditionally is a download, not a risk (#145).
-dependencies = ["pyyaml", "tzdata"]
+# Version-constrained rather than bare names, so Dependabot has something to update
+# (.github/dependabot.yml's pip ecosystem is a no-op against unpinned names) and so a
+# breaking major cannot arrive silently -- mcp 2.1.0 did exactly that on 2026-08-24,
+# changing UnexpectedToolError to redact the underlying exception text and turning a
+# green main red with no commit in between.
+#
+# RUNTIME deps get a floor plus a major CEILING, never an `==`. This package is published
+# to PyPI and installed alongside whatever else a user has; an exact pin here turns a
+# routine `pip install job-sluice` into a resolver conflict for them. The dev extras below
+# are the opposite case and ARE exactly pinned -- see `test`.
+#
+# `tzdata` is the ONE exception to the ceiling rule, and it is deliberate rather than an
+# oversight: it is CALENDAR-versioned (`YYYY.minor` -- 2026.3 is the third tz release of
+# 2026), so there is no semantic major to cap below. `<2027` would not mean "before the
+# next breaking change", it would mean "expires on 1 January", and it would block exactly
+# the timezone-data updates this dependency exists to deliver. A floor is the only
+# meaningful constraint here.
+dependencies = ["pyyaml>=6.0.3,<7", "tzdata>=2026.3"]
 # PEP 639 SPDX license expression -- the modern, non-deprecated form. setuptools >=77 (this
 # repo pins >=83 in [build-system] and the test extra) HARD-ERRORS at build time
 # (setuptools.errors.InvalidConfigError, confirmed by a real build attempt -- not merely a
@@ -71,8 +88,8 @@ keywords = ["job-search", "job-hunting", "cli", "cv", "resume", "automation"]
 job-sluice = "sluice.cli:main"
 
 [project.optional-dependencies]
-render = ["weasyprint", "jinja2"]
-google = ["google-api-python-client", "google-auth"]
+render = ["weasyprint>=69.0,<70", "jinja2>=3.1.6,<4"]
+google = ["google-api-python-client>=2.199.0,<3", "google-auth>=2.57.0,<3"]
 # Shell completion (zsh, bash, tcsh, fish). Same shape as `render`/`google`: a bare install
 # never needs it, `sluice/cli.py` guards the import (`try/except ImportError`), and
 # `argcomplete.autocomplete(parser)` is itself a no-op unless a shell's completion hook has
@@ -81,7 +98,7 @@ google = ["google-api-python-client", "google-auth"]
 # argcomplete's `.completer` callbacks complete REAL values -- actual registered source ids,
 # actual status tokens -- by reading the live argparse tree, so there is no generated file to
 # keep in sync and no drift-detection machinery needed at all.
-completion = ["argcomplete"]
+completion = ["argcomplete>=3.7.2,<4"]
 # `job-sluice mcp serve`'s only dependency (sluice/mcpserver.py:build_server(), the
 # ONE place `mcp` is imported -- see .rulesync/rules/CLAUDE.md's stdlib-only
 # exception list). Pinned at >=2.0.0: that release renamed the high-level server
@@ -90,7 +107,7 @@ completion = ["argcomplete"]
 # (tests/functional/test_mcp_contract.py) -- verified against a real install,
 # 2026-08-12. A 1.x install has FastMCP but no top-level Client; >=2.0.0 is the only
 # floor where both halves of this feature are buildable from one dependency.
-mcp = ["mcp>=2.0.0"]
+mcp = ["mcp>=2.0.0,<3"]
 # The suite generates its own synthetic job titles rather than hardcoding anyone's
 # real role preferences, so faker is a test dependency (see tests/conftest.py).
 #
@@ -110,7 +127,26 @@ mcp = ["mcp>=2.0.0"]
 #
 # setuptools + build are here so tests/test_packaging.py can build a REAL wheel offline
 # (`--no-isolation`, measured at 0.6s). Dev-time only, never imported by `sluice/`.
-test = ["pytest", "faker", "pytest-cov", "jinja2", "setuptools>=83.0.0", "build", "mcp>=2.0.0"]
+# EXACTLY pinned, unlike the runtime deps and extras above. Nothing here ships: this
+# extra exists to run the gate, and CI installs it fresh on every run, so an unpinned name
+# means CI silently tests against whatever released since the last run. That is not
+# hypothetical -- it is how mcp 2.1.0 broke tests/functional/test_mcp_contract.py hours
+# after main was green on the identical commit. Reproducibility is worth more here than
+# range flexibility, and the user-facing conflict argument does not apply.
+#
+# Dependabot bumps these weekly (grouped, one PR). A bump that lands RED is the gate
+# working, not a nuisance: it means the new release changed a contract this suite asserts,
+# and the assertion needs re-deriving before the bump merges. The npm entry in
+# .github/dependabot.yml already documents that same expectation for rulesync.
+test = [
+    "pytest==9.1.1",
+    "faker==40.37.0",
+    "pytest-cov==7.1.0",
+    "jinja2==3.1.6",
+    "setuptools==84.0.0",
+    "build==1.5.0",
+    "mcp==2.1.0",
+]
 
 # `packages.find` selects PACKAGES, not DATA. Without this table a built wheel ships
 # sluice/templates/__init__.py and NOT the template beside it -- measured 2026-08-06 --

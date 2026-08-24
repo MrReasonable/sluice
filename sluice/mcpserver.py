@@ -614,12 +614,20 @@ def build_server(config, write: bool = False):
     attempt to call. `write` is a flag on `serve`, not a config key: a
     per-registration trust decision about one client, not a property of the install.
 
-    Verified live, 2026-08-14, against a real `mcp==2.0.0` install: `MCPServer`
-    dispatches a sync `@tool`-decorated function to an AnyIO WORKER THREAD, never
-    inline on the event loop -- two concurrent `call_tool` requests genuinely
-    overlap (measured directly: two 0.3s tool calls fired via `asyncio.gather`
-    completed in ~0.3s total, on two distinct "AnyIO worker thread" threads, not
-    serialized on the main thread). This is an ERGONOMICS fact (a long cv_run does
+    Verified live against a real install, twice: 2026-08-14 on `mcp==2.0.0`, and
+    again 2026-08-24 on `mcp==2.1.0` (the version `[test]` now pins, so CI exercises
+    what this claim describes). `MCPServer` dispatches a sync `@tool`-decorated
+    function to an AnyIO WORKER THREAD, never inline on the event loop -- concurrent
+    `call_tool` requests genuinely overlap. The 2026-08-24 measurement: three 0.5s
+    tool calls fired via `asyncio.gather` completed in 0.529s total (serial would be
+    ~1.5s) on three DISTINCT thread idents, none of them the main thread.
+    Re-measured rather than merely re-dated, because 2.1.0 did change unrelated
+    error-wrapping behaviour and a version bump is not evidence a threading contract
+    survived it.
+    Compare by thread IDENT, not name, if you ever re-run this: AnyIO names every
+    worker thread "AnyIO worker thread", so a set of names collapses to one however
+    many threads are really in play -- which is exactly the false negative the first
+    attempt at the 2026-08-24 re-measurement produced. This is an ERGONOMICS fact (a long cv_run does
     NOT block other tool calls), not a safety one: every write this module can
     reach is a single CAS transaction whose decision inputs are re-read INSIDE the
     transform (require_status, require_blank, require_pending, upsert's O_EXCL

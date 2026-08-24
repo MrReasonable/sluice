@@ -1380,7 +1380,8 @@ def test_build_server_accepts_a_write_parameter():
 def _tool_names(server) -> set[str]:
     """Enumerate registered tool names off a constructed MCPServer directly.
     `list_tools()` is async on the server object itself (verified live against
-    mcp==2.0.0) -- mirrors how tests/functional/test_mcp_contract.py drives the
+    mcp==2.0.0, and still so on the 2.1.0 that `[test]` now pins) -- mirrors how
+    tests/functional/test_mcp_contract.py drives the
     identical call through a real `mcp.Client`, but without a Client session,
     since this file otherwise carries no async test machinery at all."""
     return {t.name for t in asyncio.run(server.list_tools())}
