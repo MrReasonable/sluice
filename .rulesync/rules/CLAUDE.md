@@ -138,10 +138,27 @@ reading the diff it is certifying.
 ## Architecture
 
 Pipeline: `ingest -> triage -> cv -> apply -> track`. Five sub-apps under `sluice/`, all sitting on
-`sluice/core/`, plus `sluice/onboard/` — a COMMAND package for `job-sluice init`, not a sixth sub-app:
-nothing downstream imports it and it sits beside the pipeline rather than inside it.
-`docs/ARCHITECTURE.md` has the per-module detail; what follows is what you cannot see from the file
-tree.
+`sluice/core/`, plus two COMMAND packages, neither a sixth sub-app: `sluice/onboard/` for
+`job-sluice init` and (#164) `sluice/evidence/` for the nine `job-sluice
+{experience,skills,stories} {add,list,verify}` handlers. Neither pipeline sub-app -- ingest,
+triage, cv, apply, track -- imports either. `cli.py` imports both, and neither import sits at
+cli.py's own module scope, but that is NOT uniformly the same as deferred until the command
+runs: `sluice.onboard.ask`/`.plan`/`.questions` and `sluice.evidence.wizard`'s `collect_evidence`
+are imported inside `cmd_init`'s own body, so none of them loads unless `init` actually runs, but
+`sluice.evidence.commands` is imported inside `_build_parser()`, which runs on EVERY invocation to
+build the whole argparse tree -- so it loads unconditionally, and being inside a function body
+only keeps it off cli.py's module scope, not off the critical path. What stays genuinely deferred
+there is the vault/backend-touching `Sluice` construction, one layer further in, inside each
+`cmd_evidence_*` function body. `commands.py`'s own module docstring now states that
+distinction -- it previously asserted the opposite, crediting the `_build_parser` import for a
+deferral that import does not provide, which invited someone to "restore" the laziness by
+hoisting the per-function `Sluice` import to module scope and putting a heavy import on every
+invocation. The two packages are not mutually isolated, either: `sluice/evidence/commands.py`
+imports `sluice.onboard.ask` directly (the same `NoInputAsker`/`TtyAsker` classes `cli.py` itself
+imports for `cmd_init`), lazily, inside `cmd_evidence_verify` -- a deliberate cross-import between
+the two command packages, not a boundary violation. `sluice/evidence/wizard.py` takes its asker
+INJECTED instead and imports nothing from onboard at all. `docs/ARCHITECTURE.md` has the
+per-module detail; what follows is what you cannot see from the file tree.
 
 **Config is layered and single-file.** Code defaults < the YAML file at `$SLUICE_CONFIG` (else
 `<XDG config>/sluice/config.yaml`) < env vars. Each sub-app has its own `load_*_config()` reading
@@ -435,6 +452,47 @@ consequence, deliberately a SEPARATE key from `cv.require_signoff` — that flag
 chosen for FABRICATION, and riding it would withhold `tailored_cv` on any of ~40 stems out of the box
 on an unconfigured install. Neither signoff flag touches the pure hard gate.
 
+**Citability has ONE writer: `Store.verify_evidence` (#164).** The `verified:` frontmatter key is
+what makes an evidence entry citable by the gate above, and `verify_evidence` is the only thing in
+`sluice/` that ever writes it. Sluice's own WRITE PATHS are arranged so no other route through THEM
+exists, rather than so no other route is taken. `propose_evidence` always lands under `_inbox/`,
+which `read_evidence` cannot see, and its `fields` parameter cannot carry the key because
+`_render_evidence_note` REJECTS an undeclared field key by name — the round-trip check beside it
+cannot, since `{'verified': ...}` round-trips equal to itself. (Do not restate that as "the
+signature has no parameter that could carry it": `fields` is exactly such a parameter, and a
+second store could satisfy that sentence to the letter while passing the mapping straight into an
+INSERT. `core/protocols.py` states the obligation, which is the form a second store is written
+against.) `EvidenceKind.fields` is the user-facing set only, and `cli.py` derives `add`'s
+flags from that tuple, so listing `verified` there would generate a `--verified` flag — exactly
+what an agent shelling out to the CLI would reach for; and `verify` carries no `--all` and no
+`--yes`, because a bulk flag is the same
+hole one level up. The MCP server exposes `list_evidence` and nothing that proposes or verifies, at
+any `--write` level. `verify_evidence` itself is compare-and-set against the exact bytes a human
+was shown, so an edit made after approval abstains rather than becoming citable — the same
+discipline `update_fields`' `require_status` uses, and reachable in practice, since the human sits
+at a prompt while their editor is free to save. Two things follow. The `verified:` key is
+STORE-MANAGED, so a new evidence field must never be one a caller supplies; and a second promotion
+path — a bulk verifier, an MCP write tool, a `--yes` — is not a convenience but a new trust root,
+and would need the whole set of refusals above rebuilt around it. `EvidenceKind.cited_by_gate` says
+which corpora the gate actually reads today (`experience` alone; `skills`/`stories` at #165), and
+every user-facing message that says what `verify` buys is keyed on it rather than asserting
+citability for all three.
+
+**Where that boundary STOPS, stated rather than implied: a human editing their own vault.** The
+vault is the user's Obsidian directory and hand-editing it is a first-class workflow here, so a
+note hand-placed in an evidence kind's own directory carrying `verified:` IS citable — measured:
+`read_evidence("experience")` returns it under the default `verified_only=True`, and nothing in
+`sluice/` inspects a file it never wrote. `_refuse_citation_shaped_body` does not reach it either,
+since that runs on the two WRITE paths (`_render_evidence_note` and `verify_evidence`), which is
+why it is a NARROWING and #174 — `validate()`'s signature change — is the close on the gate side.
+That is the same posture the rest of the store takes (never-clobber protects the user's edits, it
+does not police them). What must not be claimed is that the single-writer property makes the
+citable set unreachable by any other means: it makes it unreachable THROUGH SLUICE. The symlink
+refusals in `Vault._evidence_dir` and `_evidence_entry_path` are the same boundary drawn on the
+other axis — a store may refuse to reach OUTSIDE the vault the user named, and does, on every
+directory component below it and on the entry file itself; what is inside that vault is the
+user's.
+
 **The gate is blind to the name/contact block, and that block renders as the PDF's headline (#99).**
 `cv/validate.py` never inspects anything before `PROFILE`; `cv/parse.py`'s grammar takes the LAST
 non-blank line before `PROFILE` as the name and everything before it as contact, with zero shape check
@@ -715,8 +773,11 @@ consistently engineers out; see `_select_backend`'s guard in `cli.py`.
   `camofox`); the STORE seam has since grown the same OPTIONAL shape, `preflight() -> dict`, reached
   via `getattr` exactly like `precheck` and for the same reason (an implementation that cannot say is
   not one that is broken) — `job-sluice doctor` (see below) is the one caller, and `Vault.preflight`
-  answers with FACTS (vault dir, baseline CV, Judging Profile, Experience Library counts, and --
-  #133/#107 -- whether a candidate name and a contact block are declared), never
+  answers with FACTS (vault dir, baseline CV, Judging Profile, a total/verified/pending count for
+  each of the three evidence corpora -- #164: `experience` (keeping its pre-#164
+  `experience_total`/`experience_verified` names since `doctor` already consumes them),
+  `skills`, `stories`, iterated off `EVIDENCE_KINDS` rather than hand-listed -- and, #133/#107,
+  whether a candidate name and a contact block are declared), never
   verdicts, keeping classification in `core/doctor.py` where the backend rules already live. The
   selection is also exercised in tests — `tests/harness/` registers a fake fetcher
   (`browser.py`) and renderer (`renderer.py`) and resolves them through the same seam. The backend seam
