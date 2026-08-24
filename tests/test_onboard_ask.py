@@ -234,3 +234,45 @@ def test_the_tty_asker_is_the_only_thing_that_can_open_an_editor(monkeypatch):
     monkeypatch.setattr(subprocess, "call", boom)
     asker = TtyAsker(stdin=io.StringIO("\n" * 8), stdout=io.StringIO(), editor=None)
     assert collect_profile(asker) == {}
+
+
+@pytest.mark.parametrize("answer", ["y", "yes", "Y", "YES", "  yes  ", "Yes"])
+def test_tty_confirm_accepts_only_an_explicit_yes(answer):
+    """#164: `confirm` is the y/N primitive `job-sluice <kind> verify` uses to gate
+    citability. Case and surrounding whitespace are tolerated on the YES side --
+    a human typing "Yes" at a real terminal must not be refused -- but nothing
+    else is."""
+    asker = _tty(answer + "\n")
+    assert asker.confirm("verify this entry? [y/N] ") is True
+
+
+@pytest.mark.parametrize("answer", ["n", "no", "", "maybe", "yesss", " ", "1"])
+def test_tty_confirm_defaults_to_no_on_anything_else(answer):
+    """The load-bearing half: default-no. An empty line, a mistyped answer, or
+    anything that isn't an explicit yes must never promote an entry -- there is
+    no re-ask here (unlike `ask`/`ask_url`), because a wrong NO is recoverable
+    (re-run verify) while a wrong YES is not (a fabrication-gate citability grant
+    that already happened)."""
+    asker = _tty(answer + "\n")
+    assert asker.confirm("verify this entry? [y/N] ") is False
+
+
+def test_tty_confirm_treats_eof_as_no():
+    """EOF (an exhausted script, or Ctrl-D on a real terminal) must read as NO, not
+    hang or raise -- `_read` already returns "" at EOF, so this is the same path
+    an empty line takes, exercised via a stream with nothing left to give."""
+    asker = _tty("")  # empty stream: the first readline() is immediately EOF
+    assert asker.confirm("verify this entry? [y/N] ") is False
+
+
+def test_tty_confirm_shows_the_prompt_before_reading():
+    asker = _tty("y\n")
+    asker.confirm("verify this entry?\n---\nbody\n---")
+    assert "verify this entry?" in asker.stdout.getvalue()
+
+
+def test_no_input_confirm_is_always_false():
+    """A flag-only run must never be able to promote an entry to citable: nothing is
+    prompted for and nothing is inferred, so this is unconditional -- not merely
+    "the same default as TtyAsker's no-answer case"."""
+    assert NoInputAsker().confirm("verify this entry? [y/N] ") is False

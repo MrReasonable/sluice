@@ -231,6 +231,41 @@ def test_the_prose_roster_covers_every_declared_constant():
             f"{module}.{name} is neither swept as prose nor named in _NOT_PROSE"
 
 
+def test_the_declared_constant_sweep_actually_walks_both_command_packages():
+    """`test_the_prose_roster_covers_every_declared_constant` is a NEGATIVE guard: it checks
+    every DISCOVERED constant is accounted for, and a walk that silently stopped discovering
+    `sluice.evidence` would leave that test just as green -- there would be nothing left over
+    to complain about. Pin the SCOPE directly, the way this repo's other enumerations have
+    learned to: a sweep over an empty set passes every assertion about what it found.
+
+    SCOPE, stated honestly: this (and the sweep it pins) reaches `sluice.evidence.wizard`'s
+    MODULE-LEVEL prompt constants, because Task 8 hoisted them out of in-body f-strings for
+    exactly this reason. It reaches NOTHING in `sluice.evidence.commands` -- that module's
+    user-facing `print()`/error messages are in-body f-strings, the same shape `wizard.py`
+    was in before Task 8's fix, so widening discovery to include the module does not sweep
+    them; there is no module-level constant there for `_declared_string_constants` to find.
+
+    Those messages are no longer unswept, though, and this docstring used to say hoisting
+    was the outstanding fix (#164 review, L2). They are swept WHERE THEY RUN, by
+    `test_no_command_message_names_a_taxonomy_word` in `tests/test_evidence_cli.py`, which
+    drives all nine commands through `main` under capsys and runs `expresses_a_preference`
+    over the real output -- `tests/functional/test_init.py`'s
+    `test_the_commands_own_report_names_no_exemplar` precedent. For CLI status output that
+    is the better sweep, not merely the cheaper one: it also covers the INTERPOLATED halves
+    (a store error message, an entry title, a kind name) that no roster of constants can
+    reach. The same test also sweeps `sluice/core/app.py`'s one user-facing prompt
+    (`verify_evidence_interactive`'s `verify this entry? [y/N]`), which is outside this
+    walk's packages altogether. What THIS test still does not cover is a message on a branch
+    that sweep's driven sequence never reaches."""
+    from tests.onboard_prose import _declared_string_constants
+    modules_seen = {module for module, _ in _declared_string_constants()}
+    assert "sluice.evidence.wizard" in modules_seen, \
+        "sluice/evidence/wizard.py dropped out of the discovery walk -- its prompt " \
+        "constants would ship unswept"
+    assert "sluice.onboard.plan" in modules_seen, \
+        "sluice/onboard/ dropped out of the discovery walk"
+
+
 def test_every_value_bearing_question_states_its_consequence():
     """A question whose answer changes what the pipeline DOES must say so in the post-write report.
 

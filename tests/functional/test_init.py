@@ -841,12 +841,46 @@ def test_a_declared_answer_actually_lands_in_the_written_note(run_init, tmp_path
     # attempt the primary write, get refused by never-clobber (run 1's note is already there), and
     # land in the spare -- giving `assert not spare.exists()` below something it could actually
     # witness too, rather than being true either way regardless of what ran.
-    asker2, out2 = _prompting_asker(["", "ShouldNeverBeAsked", "", "", ""])
+    #
+    # Explicit "n" per evidence kind PREPENDED (Task 8 review, FIX 2): the evidence corpus is
+    # still empty after run 1 (its own wizard offer ran out of scripted lines and auto-declined
+    # via EOF), so run 2's `corpus_empty` gate is ALSO True and the wizard is offered again here
+    # -- correctly, since `corpus_empty`, not `candidate_exists`, is what gates it (a
+    # `candidate_exists` gate would silently hide the wizard from every user who already has a
+    # Candidate Profile note on their very FIRST `init`). `len(EVIDENCE_KINDS)` explicit declines,
+    # not a hand-counted three, so this script does not silently under/over-shoot a kind added or
+    # removed later. The original 5-line candidate payload is UNCHANGED and follows immediately
+    # after, so this remains a script EXTENSION: if `collect_candidate` were ever wrongly
+    # re-invoked here, it still consumes exactly that payload and its own second answer
+    # (unchanged from before this edit) still trips the regression check below.
+    from sluice.core.protocols import EVIDENCE_KINDS
+    asker2, out2 = _prompting_asker(["n"] * len(EVIDENCE_KINDS) + ["", "ShouldNeverBeAsked", "", "", ""])
     rc2 = _init(["init", "--vault", str(vault)], asker2)
 
     assert rc2 == 0
-    assert out2.getvalue() == "", \
-        "a note that landed must not be re-interviewed for -- nothing should even be PRINTED"
+    # Not `out2.getvalue() == ""` any more: the evidence wizard now LEGITIMATELY prints its own
+    # "capture some ... now?" offers here (the corpus is genuinely empty, so re-offering is
+    # correct, not a regression). What must still never appear is text unique to
+    # `collect_candidate`'s own prompts (`_CANDIDATE_PROMPTS` in sluice/onboard/ask.py) -- the
+    # same "forename(s)" substring check `test_a_populated_candidate_note_is_left_alone_and_the_
+    # questions_are_not_re_asked` (above) already uses for the identical property.
+    assert "forename(s)" not in out2.getvalue(), \
+        "a note that landed must not be re-interviewed for"
+    # And the wizard's OWN offers, though shown, must not have captured anything: every "n"
+    # declines, so the corpus stays exactly as empty as it was going in.
+    # Restored coverage the old exact-empty assertion incidentally provided (Task 8
+    # re-review): that check would ALSO have caught `collect_profile` or `collect_sources`
+    # wrongly re-running here (a `profile_exists`- or `config_exists`-gate regression), and
+    # nothing else in this file asserts either absence on a fully-populated second run.
+    # Same idiom as "forename(s)" above -- a distinctive substring from each interview's
+    # OWN prompt text (`_PROFILE_QUESTIONS` and `collect_sources`' own prompt, both in
+    # sluice/onboard/ask.py), not a guess at the wording.
+    assert "shape of role you want" not in out2.getvalue(), \
+        "a Judging Profile that already exists must not be re-interviewed for"
+    assert "boards do you want to add your own searches to" not in out2.getvalue(), \
+        "a config that already exists must not re-walk the board list"
+    for kind in EVIDENCE_KINDS:
+        assert Vault(str(vault)).read_pending_evidence(kind) == []
     spare = vault / CANDIDATE_PROFILE_RELPATH.replace(".md", ".init-scaffold.md")
     assert not spare.exists()
     assert (vault / CANDIDATE_PROFILE_RELPATH).read_text(encoding="utf-8") == note, \
@@ -882,3 +916,314 @@ def test_a_hand_started_note_with_no_frontmatter_is_named_as_the_real_blocker(
     assert str(dest) in err and "declares nothing" in err
     assert dest.read_text(encoding="utf-8") == "Notes to self: fill this in later.\n", \
         "the note a human started must never be touched"
+
+
+def test_the_evidence_wizard_runs_through_cmd_init_and_seeds_the_correct_vault(run_init, tmp_path):
+    """CRITICAL 1 (#164, Task 8 review): nothing outside test_evidence_cli.py exercised
+    `collect_evidence` through `cmd_init` itself -- `tests/functional/test_init.py` never
+    mentioned evidence at all before this test -- so the whole wiring could be deleted with
+    the full suite green, and along with it two things nothing else pins: WHICH vault the
+    wizard writes into, and that it is offered at all on an ordinary first run.
+
+    An existing config (written by hand, matching `test_an_existing_config_skips_the_
+    questions_that_only_write_to_it` above) collapses the catalogue AND the board walk to
+    zero prompts, leaving a short, exact script: the 5 Judging Profile prose questions, the
+    5 candidate identity questions, then the wizard's own prompts, in EVIDENCE_KINDS' own
+    order (experience, skills, stories) -- decline the first, accept the second (one entry,
+    its 4 fields, a blank body), decline "add another", decline the third.
+
+    Mutation-verified (see the Task 8 fix report): deleting the `if interactive and
+    corpus_empty:` block in `cmd_init` makes this go red (nothing lands in `_inbox/`), and
+    reverting `sluice_app`'s construction from `Sluice(dataclasses.replace(config,
+    vault_dir=vault_dir))` back to the brief's bare `Sluice(config)` also makes this go red
+    (the entry lands in the DEFAULT `./vault` under the cwd, not under `vault`, so
+    `Vault(str(vault)).read_pending_evidence("skills")` here comes back empty).
+    """
+    dest = config_file()
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "w", encoding="utf-8") as fh:
+        fh.write("# hand written\n")
+
+    vault = tmp_path / "notes"
+    script = (
+        [""] * 5    # the 5 Judging Profile prose questions -- blank keeps the neutral default
+        + [""] * 5  # the 5 candidate identity questions -- blank declares nothing
+        + ["n", "y", "widget", "v1", "v2", "v3", "v4", "", "n", "n"]
+        # decline `experience`, accept `skills` (name "widget", its 4 fields, blank body),
+        # decline "add another", decline `stories`.
+    )
+    rc = _init(["init", "--vault", str(vault)], _scripted(script))
+    assert rc == 0
+
+    entries = Vault(str(vault)).read_pending_evidence("skills")
+    assert len(entries) == 1, "the wizard's own offer was not reached, or nothing landed"
+    assert entries[0]["title"] == "widget"
+    assert entries[0]["fields"] == {
+        "Proficiency": "v1", "Domain": "v2", "Evidence": "v3", "Signal Value": "v4",
+    }
+    # Never citable straight out of the wizard (#164's own contract): only `_inbox/` holds
+    # it, not the verified set.
+    assert Vault(str(vault)).read_evidence("skills", verified_only=True) == []
+
+
+def test_a_seeded_corpus_stops_the_wizard_being_offered_again_pending_or_verified(
+        run_init, tmp_path):
+    """The `and corpus_empty` half of `cmd_init`'s evidence gate, which shipped with NO
+    witness: the #164 whole-branch review measured that deleting it left the entire suite
+    green (the test above only covers a FIRST run, where the gate is True either way).
+
+    `corpus_empty` is the fix for a real trap, so it needs a test that dies when it goes.
+    The predicate tried first was `not candidate_exists`, which is False on the very first
+    `init` of every user who already has a Candidate Profile note -- the whole installed
+    1.0.0 base -- so the wizard would have been permanently hidden from them. That failure
+    is silent, which is why the replacement is gated on the artefact this interview
+    actually writes.
+
+    Three runs, because the gate is `pending OR verified` and each arm holds the property
+    in a different real state:
+
+      run 1  seeds one PENDING entry, and declares a surname so the Candidate Profile
+             lands too -- otherwise run 2 would re-ask the identity questions and the
+             script below would feed them the wizard's answers instead.
+      run 2  the ordinary post-wizard state: entries exist but nobody has run `verify`
+             yet. `pending=True` is the arm that must see them.
+      run 3  the steady state after `verify`: the inbox is empty again and only the
+             CITABLE set remains, so `pending=False` is the only arm left that can see
+             anything. Deleting it alone would re-offer the wizard forever to exactly the
+             users who finished the workflow.
+
+    Both later runs are scripted to ACCEPT and capture -- so the assertions can fail. An
+    empty or all-"n" script would leave the corpus unchanged whether the wizard ran or
+    not, which is the vacuous shape this file's own `_prompting_asker` docstring warns
+    about.
+    """
+    from sluice.core.protocols import EVIDENCE_KINDS
+
+    dest = config_file()
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "w", encoding="utf-8") as fh:
+        fh.write("# hand written\n")
+
+    vault = tmp_path / "notes"
+    script1 = (
+        [""] * 5                              # the 5 Judging Profile prose questions
+        + ["", "RunOneSurname", "", "", ""]   # candidate identity -- DECLARED, so the note lands
+        + ["n", "y", "widget", "v1", "v2", "v3", "v4", "", "n", "n"]
+    )
+    assert _init(["init", "--vault", str(vault)], _scripted(script1)) == 0
+    assert [e["title"] for e in Vault(str(vault)).read_pending_evidence("skills")] == ["widget"]
+
+    # One accept-and-capture block per kind, so a re-offered wizard captures something in
+    # EVERY kind rather than only whichever one the script happens to stay aligned with:
+    # y, a name, four field answers (more than any kind declares -- the surplus is
+    # harmlessly eaten by the next prompt), a blank body, then "n" to "add another".
+    hostile = ["y", "should-never-be-captured", "x", "x", "x", "x", "", "n"] * len(EVIDENCE_KINDS)
+
+    for run in ("pending", "verified"):
+        if run == "verified":
+            # Promote through the store rather than a second `init`: this test is about
+            # cmd_init's gate, and the promotion is just how the vault reaches the state
+            # where only the CITABLE arm can still see the corpus.
+            v = Vault(str(vault))
+            [entry] = v.read_pending_evidence("skills")
+            with open(entry["path"], encoding="utf-8") as fh:
+                reviewed = fh.read()
+            assert v.verify_evidence("skills", entry["title"], today="2026-08-22",
+                                     reviewed=reviewed) is True
+            assert v.read_pending_evidence("skills") == [], \
+                f"precondition for the {run} arm: the inbox must be empty"
+
+        asker, out = _prompting_asker(list(hostile))
+        assert _init(["init", "--vault", str(vault)], asker) == 0
+        shown = out.getvalue()
+        # A distinctive substring of the wizard's OWN offer (`_CAPTURE_PROMPT` in
+        # sluice/evidence/wizard.py), the same idiom the candidate/profile absence checks
+        # in this file use -- not a guess at the wording.
+        assert "Capture some" not in shown, \
+            f"the wizard was re-offered over a non-empty corpus ({run})"
+        for kind in EVIDENCE_KINDS:
+            titles = ([e["title"] for e in Vault(str(vault)).read_pending_evidence(kind)]
+                      + [e["title"] for e in Vault(str(vault)).read_evidence(kind)])
+            assert "should-never-be-captured" not in titles, \
+                f"a re-offered wizard captured into {kind} ({run})"
+            assert titles == (["widget"] if kind == "skills" else []), \
+                f"{kind}'s corpus changed on a run that should not have asked ({run})"
+
+
+def _symlink_a_kind_out_of_the_vault(tmp_path, vault, kind):
+    """Point one evidence kind's directory at a real directory OUTSIDE `vault`.
+
+    The exact shape `Vault._evidence_dir` refuses, and the refusal is correct -- reading or
+    writing through it would let `verify_evidence` promote (and then `os.unlink`) a file the
+    user never put in their vault. These two tests are about the CALLERS surviving it, never
+    about softening it. Derived from the registry's own `relpath` rather than a hardcoded
+    "Job Applications/STAR Stories", so a renamed or fourth kind cannot leave this fixture
+    building a directory nothing resolves to.
+    """
+    from sluice.core.protocols import EVIDENCE_KINDS
+
+    outside = tmp_path / "outside-the-vault"
+    outside.mkdir()
+    link = vault.joinpath(*EVIDENCE_KINDS[kind].relpath.split("/"))
+    link.parent.mkdir(parents=True, exist_ok=True)
+    os.symlink(str(outside), str(link))
+    return link
+
+
+def test_no_input_init_never_probes_the_evidence_corpus_at_all(run_init, tmp_path):
+    """Round-2 review, H1(a). `corpus_empty`'s ONLY reader is `if interactive and
+    corpus_empty:`, so computing it on a `--no-input` run is six store reads whose result
+    nothing can consult -- and one of them ABORTED onboarding once `Vault._evidence_dir`
+    grew its symlink refusal.
+
+    Measured on this exact fixture. Neither the probe nor `Vault._evidence_dir` exists
+    before #164, so there the symlink is a stray directory nothing reads and `init` writes
+    both artefacts; the branch before this fix tracebacked out of `cmd_init` (past `main`'s
+    `except ValueError`, which does not catch OSError) on the FIRST run and on the
+    idempotent re-run alike, writing neither artefact.
+
+    Asserted on the ARTEFACTS, not on a call count: a probe that ran and swallowed its own
+    error would satisfy a "no traceback" assertion while still doing the six reads. The
+    artefacts are what a user loses, and `test_a_symlinked_evidence_kind_is_reported_...`
+    below is the row that covers the interactive half where the probe legitimately runs.
+    """
+    vault = tmp_path / "notes"
+    _symlink_a_kind_out_of_the_vault(tmp_path, vault, "stories")
+
+    rc, out, err = run_init(["init", "--vault", str(vault), "--no-input"])
+    assert rc == 0, err
+    assert os.path.exists(config_file())
+    assert (vault / CRITERIA_RELPATH).exists()
+    assert "is a symlink" not in out + err, \
+        "a --no-input run consulted a corpus it can never read the answer of"
+
+    # The idempotent re-run is asserted too: the first run creates `Job Applications/`, so
+    # the second reaches the probe's call site with a DIFFERENT filesystem underneath it.
+    rc, _out, err = run_init(["init", "--vault", str(vault), "--no-input"])
+    assert rc == 0, err
+
+
+def test_a_symlinked_evidence_kind_is_reported_rather_than_crashing_the_interview(
+        run_init, tmp_path, capsys):
+    """Round-2 review, H1(b). The interactive half, where the probe legitimately runs.
+
+    `Vault._evidence_dir`'s refusal is right and stays; what must not happen is that it
+    takes the whole command down. `cmd_init` already answers an unwritable artefact with a
+    FAILED line rather than a traceback (three `except OSError` handlers), and `main`'s own
+    `except ValueError` exists because a traceback there "blocked hardest the one command
+    that would have written them a correct config" -- the identical argument.
+
+    So: both artefacts still land, the failure is NAMED on stderr, the capture step is
+    skipped rather than offered against a corpus this run could not read, and the exit code
+    is 1 because something genuinely did not work.
+
+    The wizard-was-not-offered assertion goes through `_prompting_asker`, NOT capsys. A
+    prompt is written to the ASKER's stdout, and `_scripted` hands it a throwaway
+    `io.StringIO()` with no handle back -- so `"Capture some" not in capsys.out` is true
+    whether the wizard ran or not. Measured on the mutant that matters (`corpus_empty`
+    forced True, i.e. offering the capture loop against the corpus whose read just raised):
+    `'Capture some'` was absent from capsys' stdout and present in the asker's own, so the
+    capsys spelling of this assertion left the whole suite green. That is the
+    reads-like-a-guard-cannot-fail shape `_prompting_asker`'s own docstring exists for.
+    """
+    dest = config_file()
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "w", encoding="utf-8") as fh:
+        fh.write("# hand written\n")
+
+    vault = tmp_path / "notes"
+    _symlink_a_kind_out_of_the_vault(tmp_path, vault, "stories")
+
+    # An existing config collapses the catalogue and the board walk to nothing, leaving the
+    # 5 Judging Profile prose questions and the 5 candidate identity questions. Two extra
+    # blanks past those ten, so a wizard that WAS offered has answers to read rather than
+    # running out of script and taking a different path than the one under test. Blanks
+    # throughout: this row is about the probe, and a declared candidate answer would only
+    # add a second artefact to reason about.
+    capsys.readouterr()
+    asker, shown = _prompting_asker([""] * 12)
+    rc = _init(["init", "--vault", str(vault)], asker)
+    cap = capsys.readouterr()
+
+    assert rc == 1, "a corpus the run could not read must not report as success"
+    assert (vault / CRITERIA_RELPATH).exists(), \
+        "the Judging Profile is what this command exists to write; a broken corpus must not cost it"
+    assert "FAILED" in cap.err and "is a symlink" in cap.err
+    assert "could not read the evidence corpus" in cap.err
+    transcript = shown.getvalue()
+    # Scope: the asker's transcript is the stream the wizard's prompts WOULD land in, so a
+    # non-empty one is what stops this from being a sweep over nothing. The five Judging
+    # Profile questions are asked on every run of this shape, so it can never be empty here.
+    assert transcript, "the asker was never prompted; the absence check below is vacuous"
+    assert "Capture some" not in transcript, \
+        "the capture step was offered against a corpus this run could not read"
+
+
+def _mis_encode_an_evidence_entry(vault, kind):
+    """Write one entry file under `kind` whose bytes are NOT valid UTF-8.
+
+    A hand-edited vault, or a note round-tripped through a single-byte codepage by a sync
+    client, is where this comes from. `Vault._evidence_entries` reads every entry through
+    `_read`, which opens with `encoding="utf-8"` and no `errors=`, so the read raises
+    UnicodeDecodeError -- a ValueError SUBCLASS, and not an OSError. That is the whole
+    point of having this fixture beside the symlink one: the two reach the SAME handler
+    down two DIFFERENT exception hierarchies, so a handler that catches only one of them
+    stays green under the other's row.
+
+    Real bytes on disk, never a monkeypatched `_read`: a patched reader would prove only
+    that the handler catches whatever the test chose to raise at it.
+
+    `experience` by default because `any` short-circuits over `EVIDENCE_KINDS` in registry
+    order, so the FIRST kind is the one the probe is guaranteed to reach. The relpath comes
+    from the registry for the same reason `_symlink_a_kind_out_of_the_vault`'s does.
+    """
+    from sluice.core.protocols import EVIDENCE_KINDS
+
+    entry = vault.joinpath(*EVIDENCE_KINDS[kind].relpath.split("/")) / "alpha.md"
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    entry.write_bytes(b"---\nCompany: \xff\xfe\n---\nbody\n")
+    return entry
+
+
+def test_a_mis_encoded_evidence_entry_is_reported_rather_than_crashing_the_interview(
+        run_init, tmp_path, capsys):
+    """The ValueError half of the arm the row above covers, which shipped as `except
+    OSError` alone under a comment that named only OSError causes.
+
+    Measured through `main` on the narrow spelling, with a mis-encoded `experience` entry
+    and the identical fixture below: the UnicodeDecodeError escaped `cmd_init` entirely and
+    landed in `main`'s own `except ValueError`, so the command exited 2 and the Judging
+    Profile was never written -- the probe sits ahead of every artefact write in the
+    function. One bad byte in one evidence note cost the user the whole command, which is
+    exactly the harm the symlink row above says this arm exists to prevent.
+
+    Asserted like that row, on the ARTEFACT and the MESSAGE rather than on a call count, and
+    the wizard-not-offered check goes through the asker's own transcript for the reason
+    `_prompting_asker`'s docstring gives (a prompt lands in the ASKER's stdout, so the capsys
+    spelling of it is true whether the wizard ran or not).
+    """
+    dest = config_file()
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "w", encoding="utf-8") as fh:
+        fh.write("# hand written\n")
+
+    vault = tmp_path / "notes"
+    _mis_encode_an_evidence_entry(vault, "experience")
+
+    capsys.readouterr()
+    asker, shown = _prompting_asker([""] * 12)
+    rc = _init(["init", "--vault", str(vault)], asker)
+    cap = capsys.readouterr()
+
+    assert rc == 1, "a corpus the run could not read must not report as success"
+    assert (vault / CRITERIA_RELPATH).exists(), \
+        "the Judging Profile is what this command exists to write; one bad byte must not cost it"
+    assert "FAILED" in cap.err
+    assert "could not read the evidence corpus" in cap.err
+    # The decoder's own message, so this cannot pass on a DIFFERENT failure that happened to
+    # reach the same arm -- the symlink row's `is a symlink` assertion, one hierarchy over.
+    assert "utf-8" in cap.err and "decode" in cap.err
+    transcript = shown.getvalue()
+    assert transcript, "the asker was never prompted; the absence check below is vacuous"
+    assert "Capture some" not in transcript, \
+        "the capture step was offered against a corpus this run could not read"

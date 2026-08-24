@@ -12,7 +12,7 @@ fails the build if this page falls out of sync with it.
 `job-sluice --version` prints the installed version and exits 0; it works without a
 subcommand.
 
-Ten top-level command groups. `main()` loads the config before dispatching to any command,
+Thirteen top-level command groups. `main()` loads the config before dispatching to any command,
 so a retired or malformed key fails identically for all of them: `job-sluice: <message>` to
 stderr, exit code `2`, no traceback. That is deliberate rather than incidental — a clean usage
 error, not a crash, is what lets you actually read what's wrong and re-run `init` or `doctor`
@@ -323,6 +323,84 @@ store known to be unreachable refuses the *whole* run before any note is renamed
 `--apply` if `collisions`, `ambiguous`, `resurrected`, `skipped`, or a dead-letter migration
 failure is non-empty; exit 2 (`job-sluice: <exc>`) if the store cannot rename notes at all.
 
+## Evidence corpus capture: `experience`, `skills`, `stories`
+
+Human-authored source material for the CV fabrication gate to cite from (#164) — the Experience
+Library (cited today), the Skills Inventory and STAR Stories (captured now, read by the gate at
+#165), one per `EvidenceKind` in
+`sluice/core/protocols.py`. All three groups (and their `add`/`list`/`verify` subcommands) are
+built from ONE loop over that registry, so they share an identical shape and a fourth kind later
+is one registry entry rather than three more hand-written command blocks.
+
+**Nothing captured this way is used by the CV gate unless a human runs `verify`.** `add` only
+ever proposes an entry into the kind's `_inbox/`; there is deliberately no `--all` and no `--yes`
+anywhere in `verify` — it is the ONE operation that grants citability to the CV fabrication gate,
+and a bulk flag would be the same `--verified` hole one level up (`add`'s field flags are derived
+from the kind's user-facing fields, which is exactly why `verified` is never among them). `--id`
+on `verify` FILTERS which pending entries are offered for review; it never answers for you.
+
+*Unless*, not *until*: review is necessary for every kind, and sufficient for one. The gate reads
+the **Experience Library** only — `skills` and `stories` are captured and reviewed the same way,
+but nothing consumes them until #165. `EvidenceKind.cited_by_gate` is the single source for that,
+and `add`'s confirmation line and `doctor`'s row both read it, so neither claims a citability the
+code does not have.
+
+### `job-sluice experience add --name NAME [--company V] [--category V] [--best-for V] [--metrics V] [--body TEXT] [--body-file PATH|-]`
+### `job-sluice skills add --name NAME [--proficiency V] [--domain V] [--evidence V] [--signal-value V] [--body TEXT] [--body-file PATH|-]`
+### `job-sluice stories add --name NAME [--company V] [--best-for V] [--body TEXT] [--body-file PATH|-]`
+
+Proposes one entry. `--name` becomes the entry's filename (reduced to letters, digits and
+hyphens) and must not already be taken — either by a pending entry or by a verified one, since
+both would collide at promotion and the name is only worth arguing about while you are typing it.
+`--body-file -` reads the body from stdin instead of `--body`. Exit 1 (stderr) if the name is
+already proposed (`'<slug>' is already proposed`) or already verified (`a verified <kind> entry is
+already named '<slug>'`), the name does not reduce to a usable filename, a body line is shaped
+like a bundle citation code, `--body-file` cannot be read, or the store refuses to write (e.g. a
+symlinked evidence directory); otherwise prints the written path and exits 0. (An unknown *field*
+is not among them: each group's flags are generated from its own kind, so argparse rejects an
+undeclared one as a usage error before the command runs.)
+
+### `job-sluice experience list [--pending]`
+### `job-sluice skills list [--pending]`
+### `job-sluice stories list [--pending]`
+
+Lists verified entries by default, one per line: `<title>  [<verified date>]`. With
+`--pending`, lists the not-yet-verified queue instead: `<title>  [pending]`. Exit 0 unless the
+store cannot read an entry (see the note under `verify`, below).
+
+Verified is not the same as **citable**: the CV fabrication gate reads the Experience Library
+alone today, so a verified `skills` or `stories` entry is reviewed but not yet cited by
+anything (`EvidenceKind.cited_by_gate`; #165 is what widens it).
+
+### `job-sluice experience verify [--id NAME]`
+### `job-sluice skills verify [--id NAME]`
+### `job-sluice stories verify [--id NAME]`
+
+Interactive only: under a non-interactive terminal (piped stdin, CI), nothing is promoted —
+every pending entry (post-`--id`-filter) is printed `pending: <title>` and the command exits 0
+with a note to stderr that promotion needs a real terminal. At a real terminal, shows each
+pending entry's full text and asks `verify this entry? [y/N] ` — **anything but an explicit
+`y`/`yes` is NO**, including a blank line or EOF. `--id NAME` offers only that one entry for
+review, and matches either way round: the title `list --pending` displays (which is what an
+entry you added to `_inbox/` by hand is called), or the same value `add --name` took, reduced
+to a slug the way `add` reduced it — so the name's original spaces/casing still match. If it
+does not name a pending entry, exits **1** with `<kind> verify: no pending entry matching
+'<NAME>'` (stderr) rather than silently reporting nothing to do.
+
+Each promotion is reported `verified: <title>` on stdout. Two per-entry outcomes go to stderr and
+never stop the rest of the queue being offered:
+
+- `changed since you reviewed it, not promoted: <title>` — the entry was edited (in Obsidian, say)
+  between being shown to you and being promoted. You approved specific bytes; different bytes are
+  not promoted. Exit 0 — nothing failed, there is just work to redo.
+- `not promoted: <title> -- <reason>` — that one entry could not be read or promoted (its name is
+  already taken in the citable set, it vanished mid-review, it is unreadable). The reason is
+  words, never an errno. Exit **1**, with every successful promotion still listed on stdout.
+
+`list` and `verify` both read a directory you may edit by hand, so a failure affecting the WHOLE
+command (an unreadable inbox, a symlinked evidence directory, an unknown kind) exits **1** with
+`<kind> list: <error>` / `<kind> verify: <error>` on stderr rather than a traceback.
+
 ## `job-sluice health [--leads]`
 
 Per-source scrape baseline and retire state, one line each:
@@ -356,8 +434,16 @@ installed, exits 2 with a stderr message naming `job-sluice[mcp]` as the extra t
 install (see `sluice/mcpserver.py`'s `McpNotInstalled`) rather than a traceback.
 Blocks for the life of the process once started; there is no `--dry-run`.
 
-**Without `--write`** (the default), four read-only tools are registered:
-`list_leads`, `get_lead`, `doctor`, `health`.
+**Without `--write`** (the default), the read-only tools are registered:
+`list_leads`, `get_lead`, `doctor`, `health`, `list_evidence`. `list_evidence(kind,
+pending=False)` lists evidence corpus entries (`experience`, `skills`, `stories`) --
+verified ones by default, or the not-yet-verified queue when `pending=True`. Verified
+does not mean citable for every kind: the CV fabrication gate reads the Experience
+Library alone today (#165 widens it). A non-empty result carries a `content_warning` --
+entry text is written by the user, and reaches the calling agent as data to read, never
+as instructions to follow. Deliberately read-only: there is no MCP tool anywhere that
+proposes or verifies an entry (see `sluice/mcpserver.py`'s `list_evidence` docstring for
+why).
 
 **With `--write`**, five more tools are registered:
 
@@ -423,11 +509,12 @@ a directory. Exit 1 if any individual write failed. Otherwise 0.
 ## `job-sluice doctor [--offline] [--strict]`
 
 Preflights backends, the renderer, the store's on-disk artefacts (vault, baseline CV, Judging
-Profile, Experience Library, and the Candidate Profile note's own declared name/contact —
-#133/#107), track's Google adapter, and every list-typed preference gate's abstain/active
-posture. A `cv.name`/`cv.contact` key still set in `sluice.yaml` from an older config is its own
-DEAD `cv-config` row rather than a traceback — see `docs/TROUBLESHOOTING.md`. Never opens a
-browser and never writes through the store or renderer.
+Profile, a verified/pending count for each of the three evidence corpora — #164: Experience
+Library, Skills Inventory, STAR Stories — and the Candidate Profile note's own declared
+name/contact — #133/#107), track's Google adapter, and every list-typed preference gate's
+abstain/active posture. A `cv.name`/`cv.contact` key still set in `sluice.yaml` from an older
+config is its own DEAD `cv-config` row rather than a traceback — see
+`docs/TROUBLESHOOTING.md`. Never opens a browser and never writes through the store or renderer.
 
 | Flag | Notes |
 |---|---|
