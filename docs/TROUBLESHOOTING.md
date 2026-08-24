@@ -101,13 +101,27 @@ A bare `target_locations: value` is a STRING, and sluice would read it one
 CHARACTER at a time.
 ```
 
-The fix is one edit — write the value as a list:
+The fix is one edit — write the value as a list. Before, the broken scalar form:
 
 ```yaml
+# before: a string
 triage:
-  target_locations: remote           # before: a string
-  target_locations: [remote]         # after
-  # or, equivalently
+  target_locations: remote
+```
+
+After, the corrected list form:
+
+```yaml
+# after
+triage:
+  target_locations: [remote]
+```
+
+Or, equivalently, spelled as a multi-line list:
+
+```yaml
+# after, equivalent multi-line spelling
+triage:
   target_locations:
     - remote
 ```
