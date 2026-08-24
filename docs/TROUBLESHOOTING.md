@@ -50,6 +50,12 @@ construction check buys you is *when* the failure surfaces: at `cv run` startup,
 LLM composition or fabrication-gate pass has spent tokens on a CV that was never going to
 render — not silently after.
 
+**If you installed via `brew install`, you don't need this export.** The failure above is
+specific to a non-Homebrew Python: Homebrew's own CPython patches `ctypes`' library-search
+fallback to include the Homebrew prefix, so `import weasyprint` resolves cairo/pango/
+gdk-pixbuf with no export set. The variable that decides this is the *interpreter*, not the
+libraries — a `pip install` under a version-manager Python still needs it.
+
 If you'd rather avoid all of this, `cv.renderer: script` needs neither the extra nor the
 system libraries — it shells out to a render script you supply. See `sluice.yaml.example`.
 

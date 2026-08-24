@@ -18,7 +18,7 @@
 # makes for action pins (#3). The digest is the multi-arch INDEX digest, not a per-platform one,
 # which is what lets one FROM serve both linux/amd64 and linux/arm64.
 #
-# The `3.13-slim` tag is kept IN the reference rather than in a trailing comment: a Dockerfile
+# The version tag is kept IN the reference rather than in a trailing comment: a Dockerfile
 # `FROM` takes one or three arguments and rejects a trailing `# tag` outright (measured -- it is
 # a parse error, not a lint warning), so the `uses: ...@sha # vX.Y.Z` idiom every workflow file
 # here uses does NOT transfer. `name:tag@digest` is valid and records the same fact.

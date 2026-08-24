@@ -36,8 +36,9 @@ _MISSING_EXTRA = (
     "'job-sluice[render]'. If that extra is ALREADY installed, WeasyPrint additionally needs "
     "its native libraries (cairo, pango, gdk-pixbuf), which are not Python packages and "
     "cannot be installed by pip -- see README.md's 'Rendering prerequisites', including "
-    "the macOS DYLD_FALLBACK_LIBRARY_PATH step that is needed even once Homebrew has "
-    "installed them. Or set cv.renderer: script to use your own render script instead."
+    "the macOS DYLD_FALLBACK_LIBRARY_PATH step (not needed if you installed via "
+    "brew install -- only a pip install under a non-Homebrew Python needs it). "
+    "Or set cv.renderer: script to use your own render script instead."
 )
 
 
