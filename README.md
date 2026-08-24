@@ -111,8 +111,8 @@ most of that work is now done rather than planned:
   versioned releases from Conventional Commits.
 
 What's still genuinely ahead: a second store/fetcher implementation (nobody
-has needed one yet), and the install channels still marked *planned* under
-[Install](#install).
+has needed one yet). Install-channel status is tracked in the table under
+[Install](#install) rather than restated here.
 
 ## Install
 
@@ -123,7 +123,7 @@ has needed one yet), and the install channels still marked *planned* under
 | PyPI | shipped | `pip install job-sluice` |
 | Docker | shipped | `docker run --rm ghcr.io/mrreasonable/job-sluice --help` |
 | deb / rpm | shipped | download from the [latest release](https://github.com/MrReasonable/sluice/releases/latest), then `apt install ./job-sluice_*_all.deb` or `dnf install ./job-sluice-*.noarch.rpm` |
-| Homebrew | planned | — |
+| Homebrew | shipped | `brew install MrReasonable/tap/job-sluice` — resolves once the tap holds its first formula, see below |
 
 That table is the single place this repository states which channels exist. Prose elsewhere
 links here rather than restating it, and `tests/test_release_publish_wiring.py` fails the
@@ -132,8 +132,16 @@ in either direction. **"Shipped" means the release workflow builds and publishes
 so a row becomes shipped when its job lands and takes effect from the next release onward; it
 is not a claim that every past release carries it. It is a table rather than a sentence because two sentences in this file
 went on saying there was no Docker image for a day after one shipped, and nothing in the
-suite could notice. Rows marked *planned* are tracked in
-[#104](https://github.com/MrReasonable/sluice/issues/104).
+suite could notice. [#104](https://github.com/MrReasonable/sluice/issues/104) is the tracking
+issue for this table's channels; a future channel starts here as *planned* and only becomes
+*shipped* once its release job lands.
+
+The Homebrew row carries a qualifier the others do not need. A tap is a separate repository, so
+unlike PyPI, GHCR and the release assets — which the release workflow writes into infrastructure
+that already exists — its first formula has to be created before `brew install` can resolve
+anything. That happens on the first run of the `homebrew` job or of the `Homebrew dry run`
+workflow, whichever comes first. The row is *shipped* in this table's sense from the moment the
+job lands; the command starts working when the tap is populated.
 
 From a checkout:
 
@@ -375,12 +383,17 @@ WeasyPrint so a default `apt`/`dnf` install pulls them in. See the table under
 [Install](#install) for what exists today.
 
 **macOS, measured rather than assumed:** with cairo/pango/gdk-pixbuf installed via
-Homebrew, `import weasyprint` still failed until the dynamic linker was told where to
-find them:
+Homebrew, `import weasyprint` still failed under a non-Homebrew Python until the dynamic
+linker was told where to look:
 
 ```bash
 export DYLD_FALLBACK_LIBRARY_PATH="$(brew --prefix)/lib"
 ```
+
+The variable that decides this is the **interpreter**, not the libraries. Homebrew's own
+CPython patches `ctypes`' library-search fallback to include the Homebrew prefix, so a
+`brew install` of job-sluice needs no such export -- while a `pip install` under a
+version-manager Python does.
 
 None of this is new work removing a real limitation -- a bare `pip install -e .`
 still cannot produce a PDF with `template`, because those system libraries sit outside
