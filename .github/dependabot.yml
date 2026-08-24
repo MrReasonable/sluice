@@ -45,16 +45,30 @@ updates:
       prefix: chore
       include: scope
     ignore:
-      # setuptools here is a build-system floor (`requires = ["setuptools>=N"]`) --
-      # a MINIMUM, not a pin. A PEP 517 isolated build (what `pip install` does here)
-      # installs the current setuptools regardless of the floor, so raising it carries
-      # no supply-chain value and just spends a review cycle each release (#71 bumped
-      # it 61 -> 83 for nothing under this repo's isolated build). pyproject declares
-      # no other version-constrained dependency -- every runtime and extra dep is an
-      # unpinned name Dependabot has nothing to update -- so `/` now yields no bumps,
-      # yet it stays in `directories` so a future *pinned* pyproject dep is still
-      # covered. Revisit if setuptools ever becomes a pinned+hashed dep here: this
-      # blanket, version-unscoped ignore would then silently exempt it.
+      # setuptools in [build-system] is a build-system floor (`requires =
+      # ["setuptools>=N"]`) -- a MINIMUM, not a pin. A PEP 517 isolated build (what
+      # `pip install` does here) installs the current setuptools regardless of the
+      # floor, so raising it carries no supply-chain value and just spends a review
+      # cycle each release (#71 bumped it 61 -> 83 for nothing under this repo's
+      # isolated build).
+      #
+      # `/` is NO LONGER a no-op. This comment used to record that every runtime and
+      # extra dep was an unpinned name Dependabot had nothing to update; they are now
+      # constrained -- runtime and extras with a floor plus a major ceiling, the `test`
+      # extra with exact `==` pins -- so this ecosystem produces real bumps. See
+      # pyproject.toml for why the two are pinned differently.
+      #
+      # One dependency has a floor and NO ceiling, and it is not an omission: `tzdata`
+      # is calendar-versioned (`YYYY.minor`), so a "major" ceiling would just expire
+      # each January and block the timezone-data updates it exists to ship. Expect its
+      # bumps to look like `2026.3 -> 2026.4`; there is no major to review across.
+      #
+      # NOTE the ignore below is version-unscoped and so ALSO exempts the `test`
+      # extra's `setuptools==` pin, which is a genuine pin and would otherwise be
+      # bumped. That is accepted rather than overlooked: `build`+`setuptools` there
+      # exist only so tests/test_packaging.py can build a real wheel offline, and the
+      # floor argument above applies to that use too. Narrow this to the
+      # [build-system] requirement if the test extra's copy ever needs tracking.
       - dependency-name: setuptools
     groups:
       pip:

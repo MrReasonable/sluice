@@ -219,7 +219,30 @@ def test_call_tool_round_trips_list_evidence_with_real_arguments(tmp_path):
 
 def test_call_tool_reports_a_real_sdk_error_for_a_tool_level_exception(tmp_path):
     """A tool-level exception (list_leads raising ValueError for an unknown status)
-    must degrade to a proper SDK-level tool error, never crash the server."""
+    must degrade to a proper SDK-level tool error, never crash the server.
+
+    That degrade -- `is_error is True` rather than a dead connection -- is the property
+    this test exists for, and it holds unchanged.
+
+    What it no longer asserts is that the OFFENDING VALUE reaches the caller. Until
+    mcp 2.0.0 the SDK re-raised with the original exception text, so a client saw
+    `not-a-real-status` and could act on it. mcp 2.1.0 wraps every unhandled tool
+    exception as `UnexpectedToolError(f"Error executing tool {name}")`, discarding the
+    detail -- deliberate redaction upstream, not a regression to work around, and the
+    reason is sound: a tool that lets an arbitrary exception escape is leaking whatever
+    that exception happened to carry.
+
+    Measured on the real SDK, 2026-08-24: 2.1.0 changes exactly this one assertion
+    across the whole suite (4880 of 4881 tests unaffected), so nothing else in this
+    repo depended on the old behaviour.
+
+    Recovering the detail is real work rather than a test edit: `sluice/mcpserver.py`'s
+    handlers would have to raise an MCP-native error type that survives the wrapper,
+    instead of letting a bare `ValueError` escape into it. Until they do, a client gets
+    a correct-but-vague error, and this test says so rather than pretending otherwise.
+    The tool NAME does survive, and is asserted because it is the one piece of the
+    diagnostic the SDK still guarantees.
+    """
     async def _run():
         from mcp import Client
         server = build_server(Config(vault_dir=str(tmp_path)))
@@ -228,7 +251,7 @@ def test_call_tool_reports_a_real_sdk_error_for_a_tool_level_exception(tmp_path)
 
     result = asyncio.run(_run())
     assert result.is_error is True
-    assert "not-a-real-status" in result.content[0].text
+    assert "list_leads" in result.content[0].text
 
 
 def test_call_tool_cv_run_reports_a_real_sdk_error_for_an_invalid_backend(tmp_path, monkeypatch):
