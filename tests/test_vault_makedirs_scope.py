@@ -29,6 +29,7 @@ list, passed as an argument, or reached as an attribute of an object -- and `_CO
 pins the other half, that binding something else entirely is not mistaken for a dir-maker."""
 import ast
 import pathlib
+import re
 
 _VAULT = pathlib.Path(__file__).resolve().parents[1] / "sluice" / "core" / "vault.py"
 
@@ -55,14 +56,41 @@ _EXPECTED = {
     # from read_leads AND from _locate, re-creating all of them on the next scrape.
     #
     # NB this key is a BARE LOCAL NAME, so a second `os.makedirs(dest_dir)` anywhere in vault.py --
-    # however that local is derived -- would be absorbed by this classification silently. Three of
-    # the six keys now have that shape (`write_dir`, `dest_dir`, `merged_dir`), which is why it is
-    # RECORDED rather than fixed: the guard's job is to make an author classify each new call, and
-    # a bare name cannot tell two call sites apart. Stated so the limit is known, not assumed.
+    # however that local is derived -- would be absorbed by this classification silently.
+    # `_BARE_LOCAL_KEYS` below (derived from this table, not hand-counted) names every key with
+    # this shape today, which is why it is RECORDED rather than fixed: the guard's job is to make
+    # an author classify each new call, and a bare name cannot tell two call sites apart. Stated
+    # so the limit is known, not assumed.
     "reconcile_layout:dest_dir": "a reconcile destination folder, scanned",
     # leads_dir/_merged -- under leads_dir, and therefore MUST be in _PRIVATE_SUBDIRS.
     "merge_cluster:merged_dir": "the merge archive, pruned from the scan set",
+    # The evidence inbox (#164) -- Job Applications/<kind>/_inbox, entirely outside leads_dir.
+    # It is not a lead-scan concern at all, so it needs no _PRIVATE_SUBDIRS entry: that
+    # mechanism prunes SUBTREES OF leads_dir, and this directory is never one. Evidence's own
+    # visibility rule lives elsewhere -- _evidence_entries' flat os.listdir never descends into
+    # a subdirectory, so a proposal in _inbox/ is invisible to read_evidence regardless.
+    "propose_evidence:inbox": "evidence inbox, outside leads_dir -- not a lead-scan concern",
+    # verify_evidence's promotion destination (#164) -- Job Applications/<kind>, the SAME
+    # directory read_evidence reads via _evidence_dir(kind) (inbox=False; propose_evidence
+    # only ever calls _evidence_dir(kind, inbox=True), the inbox row above). Outside
+    # leads_dir, for the identical reason as the inbox entry above: an evidence store's own
+    # kind directory is never part of the lead scan set, verified or not.
+    "verify_evidence:dest_dir": "evidence kind directory, outside leads_dir -- not a lead-scan concern",
 }
+
+
+# Keys whose argument half is a BARE local name (no dots, no calls, no literals) -- DERIVED
+# from _EXPECTED rather than hand-counted in prose. This used to be a hand-counted number
+# ("three of six") in two comments below; #164 added TWO more (`propose_evidence:inbox` and
+# `verify_evidence:dest_dir`) and neither comment was updated -- and the replacement comment
+# then said "a fourth (`inbox`)", getting the same count wrong a second time while the test
+# below had it right (#164 review, L3). Which is the point: a count in prose beside a growing
+# list has nothing holding it, and correcting the number is not the fix -- removing it is.
+# Both comments now point HERE instead of repeating one, and
+# test_the_bare_local_name_set_is_derived_and_current pins this SET so a wrong regex -- not
+# just a stale number -- is caught.
+_BARE_LOCAL_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
+_BARE_LOCAL_KEYS = tuple(k for k in _EXPECTED if _BARE_LOCAL_RE.match(k.split(":", 1)[1]))
 
 
 _DIRMAKERS = {"makedirs", "mkdir"}
@@ -163,8 +191,9 @@ def _local_dirmakers(tree):
 def _makedirs_args(tree, qualify=True):
     """Every dir-making call, keyed on (enclosing function, argument expression).
 
-    The FUNCTION half is load-bearing. Three of the six keys are bare LOCAL NAMES
-    (`write_dir`, `dest_dir`, `merged_dir`), and on a bare name alone a NEW
+    The FUNCTION half is load-bearing. `_BARE_LOCAL_KEYS` (derived from `_EXPECTED`, not
+    hand-counted -- see its own comment) names every key that is a bare LOCAL NAME rather
+    than a qualified expression, and on a bare name alone a NEW
     `os.makedirs(dest_dir, ...)` added to a DIFFERENT method inherits an existing
     classification silently -- which is exactly the escape this guard exists to close. An
     earlier revision weakened `self._write_folder()` to `write_dir` when the call was hoisted,
@@ -225,6 +254,22 @@ def test_the_sweep_actually_finds_the_makedirs_calls():
     assert not stale, (
         f"_EXPECTED classifies {stale}, which vault.py no longer creates. Remove the entry, or "
         f"restore the call if its deletion was accidental.")
+
+
+def test_the_bare_local_name_set_is_derived_and_current():
+    """`_BARE_LOCAL_KEYS` replaces a hand-counted number that used to sit in two comments
+    above ("three of six") and went stale silently: #164 added TWO more bare-local keys
+    (`propose_evidence:inbox` and `verify_evidence:dest_dir`) and neither comment was
+    updated. Deriving the set
+    from `_EXPECTED` via a regex closes that specific drift, but shifts the risk one layer
+    down -- a wrong regex could silently derive the WRONG set instead. Pinning the set here
+    (not a bare len()) catches both: a member missing, a member that should not be there, and
+    a regressed count all fail this the same way."""
+    assert set(_BARE_LOCAL_KEYS) == {
+        "upsert:write_dir", "reconcile_layout:dest_dir",
+        "merge_cluster:merged_dir", "propose_evidence:inbox",
+        "verify_evidence:dest_dir",
+    }
 
 
 def test_every_makedirs_call_is_classified():

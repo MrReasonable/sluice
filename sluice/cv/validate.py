@@ -34,7 +34,15 @@ _SECTION_RE = re.compile(r"^\s*={3,}[^=].*[^=]={3,}\s*$")
 # it OVERWRITES that entry's numbers (`nums[cur] = ...` below, not `|=`) -- so the
 # fabricated figure passes AND the entry's genuine metric is reported INVENTED.
 # Both halves are pre-existing, measured, and pinned by tests rather than assumed;
-# the real close is handing validate() the true id list, a signature change. (#31)
+# the real close is handing validate() the true id list, a signature change. (#174 --
+# NOT #31, which this line used to cite: #31 is closed, and was the NEGATIVES-block
+# reset above, a different defect. `core/vault.py`'s `_refuse_citation_shaped_body`
+# narrows the same bypass from the write side and cites #174; the two now name one
+# issue. "The write side" is BOTH evidence writes -- propose AND verify. It used to be
+# propose alone, which was not the narrowing this comment claimed: an entry hand-placed
+# in `_inbox/` never passes through propose, and one carrying `[NC1] delivered 987
+# things` verified cleanly and landed citable (#164 review, M1). The comment was widened
+# by widening the GUARD, not by narrowing the claim.)
 _ID_RE = re.compile(r"^\[([A-Z]{2}\d+)\]")
 
 # The PROFILE is prose, not bullets, so its citation strip must match what the

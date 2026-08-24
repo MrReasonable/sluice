@@ -43,6 +43,7 @@ from sluice.core.log import get_logger
 from sluice.core.protocols import (
     CANDIDATE_PROFILE_RELPATH,
     CRITERIA_RELPATH,
+    EVIDENCE_KINDS,
     CandidateProfile,
     LeadNote,
     MalformedNoteField,
@@ -51,7 +52,6 @@ from sluice.core.protocols import (
 )
 
 _LEADS_SUBDIR = os.path.join("Job Applications", "Job Leads")
-_EXP_SUBDIR = os.path.join("Job Applications", "Experience Library")
 _MYCV_BASELINE = os.path.join("My CV", "CV.md")
 _CRITERIA_RELPATH = CRITERIA_RELPATH
 # Public: `sluice init` offers this as the vault question's default. Imported by `cli.py` and
@@ -68,6 +68,17 @@ _CHAR_CAP = 120     # max chars of a note stem before the byte-clamp; identity-d
 _CREATE_RACE_RETRIES = 3  # #16: bounded re-reconciles when a create loses the TOCTOU race
 _RMW_RACE_RETRIES = 3  # #16: bounded re-derivations before a modify-write refuses loudly
 _MERGED_SUBDIR = "_merged"          # where merge_cluster archives losers (#23)
+
+INBOX_SUBDIR = "_inbox"
+"""Where a proposed, unverified entry lands. The vault's own mechanism, NOT on the
+Store contract: a SQLite store would use a column, and no consumer outside this
+module needs the name."""
+
+VERIFIED_KEY = "verified"
+"""The frontmatter key that makes an entry citable by the hard fabrication gate.
+Store-managed: `propose_evidence` never writes it and `EvidenceKind.fields` never
+lists it."""
+
 # Directories under leads_dir that SLUICE owns, pruned from the scan set. Everything else
 # under leads_dir is the user's and is scanned -- a `_`-prefix rule instead would silently
 # swallow a user folder named `_archive`, and a lead invisible to read_leads is invisible to
@@ -128,6 +139,207 @@ def _parse_fm_spaced(inner: str | None) -> dict:
             out[key] = val.strip().strip('"')
             last_key = key
     return out
+
+
+_SLUG_SAFE = re.compile(r"\A[a-z0-9][a-z0-9-]*\Z")
+
+# The _ID_RE shape from cv/validate.py:38, kept as its own copy rather than imported:
+# core/ must not depend on cv/. The two patterns must stay EQUAL, not merely "at least
+# as wide" -- a claim this comment used to make and which is false in general: WIDENING
+# _ID_RE (say, to a third prefix letter) without widening this one would make this guard
+# refuse LESS than the gate actually parses as a citation code, reopening the exact hole
+# the guard above exists to close. test_id_shaped_pattern_matches_validate_id_re_pattern
+# (tests/test_evidence_store.py) pins the two patterns textually equal so a drift in
+# EITHER file is caught, mirroring cv/validate.py's own
+# test_profile_strip_matches_render_citation_shape precedent for the identical reason:
+# a comment cannot enforce an equality a test can.
+_ID_SHAPED = re.compile(r"^\[([A-Z]{2}\d+)\]")
+
+
+def evidence_slug(name: str) -> str:
+    """Reduce a user-supplied entry name to a bare filename component, or raise.
+
+    Called at CREATE time only. `propose_evidence` reduces the user's `--name` here
+    and files the entry under the result; nothing looks an existing entry up by
+    re-running this (see `_evidence_component`, below, for the bug that rule fixes).
+
+    PUBLIC (no leading underscore) rather than a vault-private helper: #164 review
+    found `verify`'s `--id` compared a human-typed NAME against `title`, and for an
+    entry `propose_evidence` created, `title` IS the reduced slug -- so a name with
+    spaces or mixed case could never match its own entry. `core/app.py`'s
+    verify_evidence_interactive imports this directly (the same "import a pure
+    vault helper straight into the facade" precedent `frontmatter_safe` already
+    set) to apply the IDENTICAL reduction as one arm of that comparison, rather than
+    hand-duplicating this regex a second place and risking the two drifting apart.
+    It is only one arm: an entry added to `_inbox/` by hand has a `title` no
+    reduction produces, which is why that filter also compares verbatim.
+
+    The reduction runs FIRST and its result's SHAPE is asserted. The reverse --
+    joining the raw name onto the inbox and checking containment afterwards -- makes
+    the check unfirable, because no reduced slug contains a separator: an equivalent
+    mutant, green forever. Asserting the shape stays falsifiable if the reduction
+    itself is ever weakened.
+
+    `os.path.basename(slug) != slug` is INERT under the character class above, not
+    load-bearing: `_SLUG_SAFE`'s alphabet (`[a-z0-9-]`) can never produce a `/` or a
+    `.`, so for every string that reaches this check `os.path.basename(slug)` already
+    equals `slug` -- there is no input, today, that makes the two halves disagree.
+    Measured, not argued: deleting this half changes the outcome of nothing the test
+    suite exercises. It is kept anyway as defence-in-depth for a FUTURE widening of
+    `_SLUG_SAFE` -- to admit a path separator or a dot, say -- which is exactly the
+    change this half would then catch and `_SLUG_SAFE` alone would not.
+    `test_slug_safe_pattern_is_pinned_so_a_widening_cannot_silently_arm_the_basename_guard`
+    (tests/test_evidence_store.py) pins `_SLUG_SAFE.pattern` so such a widening cannot
+    pass silently: its failure message names this guard as the thing to re-examine.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")[:80]
+    if not _SLUG_SAFE.match(slug) or os.path.basename(slug) != slug:
+        raise ValueError(
+            f"evidence entry name {name!r} does not reduce to a usable filename "
+            f"component (got {slug!r}) -- use letters and digits")
+    return slug
+
+
+def _evidence_component(name: str) -> str:
+    """Assert `name` is ALREADY a bare filename component; return it unchanged.
+
+    The LOOKUP half of the pair whose other half, `evidence_slug`, is the CREATE half.
+    Reduction belongs at create time only: `propose_evidence` reduces the user's
+    `--name` and files the entry under the result, so from that moment the entry's
+    identity IS its on-disk basename, and re-deriving a slug at lookup time can only
+    disagree with what is actually there. Measured on the real user path, where
+    hand-editing the vault is a first-class workflow: a hand-added
+    `_inbox/My Entry.md` is listed by `... list --pending` as `My Entry`, and
+    re-slugging that title looked for `my-entry.md` -- so the entry was listed,
+    unmatchable by `--id`, and permanently unverifiable behind a raw
+    `FileNotFoundError` (#164 whole-branch review, IMPORTANT 2).
+
+    Containment used to be a SIDE EFFECT of that reduction (`_SLUG_SAFE`'s alphabet
+    cannot express a separator, so no reduced slug could escape the inbox). Dropping
+    the reduction here therefore has to keep the property EXPLICITLY, which is all this
+    function is: `os.path.basename(name) != name` is true of exactly the values that
+    would escape `os.path.join(inbox, ...)` on the platform actually running -- `../x`,
+    `a/b`, an absolute path, and, under `ntpath` (which IS `os.path` on Windows), a
+    drive-relative `C:x`.
+
+    That single check is the whole guard, deliberately. Every name `os.listdir` can
+    hand back is a bare component by construction, so any STRICTER rule would refuse a
+    name the listing had just displayed -- reopening the listed-but-unverifiable bug
+    above instead of closing it. So a backslash on POSIX and a leading dot stay
+    ordinary filename characters here, and `.`/`..` are accepted because they do not
+    escape either: the caller appends `.md`, so `..` names `...md`, still inside the
+    inbox.
+    """
+    if os.path.basename(name) != name:
+        raise ValueError(
+            f"evidence entry name {name!r} is not a bare filename component -- an "
+            f"entry is looked up by the name it is filed under, never by a path")
+    return name
+
+
+def _evidence_entry_path(base: str, filename: str) -> str:
+    """Join one evidence entry onto its directory, refusing a symlinked entry FILE.
+
+    `_evidence_dir` closes the DIRECTORY half of this class (every component from the
+    vault down); this is the other half, and it is a distinct harm rather than a
+    thoroughness point. Measured on the real store: an `_inbox/alpha.md` that is a
+    symlink to a file OUTSIDE the vault was read through, `verify_evidence` stamped its
+    content and wrote it into the citable directory, and the `os.unlink` removed only
+    the LINK -- so the foreign file survived and this is content INJECTION into the
+    corpus the hard fabrication gate cites, where the directory case was deletion.
+
+    Every route to an entry's bytes goes through here -- the shared `_evidence_entries`
+    listing (so the CITABLE read is bound too, not just the inbox: a symlinked entry in
+    the kind directory feeds `cv/bundle.py` foreign content with no promotion involved),
+    `read_pending_evidence_text`, and `verify_evidence`'s source -- for exactly the
+    reason `_evidence_dir`'s own docstring records: a guard is shared only by living
+    where every caller must pass through it.
+
+    Refuse, never resolve, matching the directory guard: `os.path.realpath` would make
+    the link structurally invisible, and a store cannot tell a link the user built on
+    purpose from one a sync client left behind. The recovery is the same one sentence
+    the message carries -- move the real file into the vault.
+
+    `os.path.islink`, so a DANGLING link refuses here too. That is deliberate: it
+    inspects the entry itself via lstat, and a dangling link is precisely the state a
+    sync client leaves when its target moves, which a `_read` would otherwise surface as
+    a bare FileNotFoundError naming a path the user cannot act on.
+
+    The shipped callers all pass `f"{...}.md"`, so `filename` carries its extension;
+    this function does not append one, because `_evidence_entries` gets its names from
+    `os.listdir` and re-deriving them would reopen the listed-but-unmatchable bug
+    `_evidence_component` records.
+    """
+    path = os.path.join(base, filename)
+    if os.path.islink(path):
+        raise OSError(
+            f"evidence entry {path!r} is a symlink; refusing to read an entry from "
+            f"behind it, or to promote content from outside the vault into the "
+            f"citable set -- move the real file into the vault")
+    return path
+
+
+def _refuse_citation_shaped_body(body: str) -> None:
+    """Refuse a body line shaped like a bundle citation code, or return.
+
+    `cv/validate.py`'s bundle parse is `nums[cur] = set(...)`, an ASSIGNMENT rather than
+    a union, so such a line REBINDS that id's permitted numbers: a fabricated figure
+    beside it clears the hard gate, and the entry's genuine metric is reported INVENTED.
+    A NARROWING, not a close -- the close is #174's signature change on validate().
+
+    Its OWN function because BOTH writes into the citable set need it and only one had
+    it. `propose_evidence` (through `_render_evidence_note`) refused such a body;
+    `verify_evidence` did not, and an entry can reach promotion without ever passing
+    through propose -- a human dropping a file into `_inbox/` is a first-class workflow
+    for this tool. Measured (#164 review, M1): a hand-placed body of
+    `[NC1] delivered 987 things` verified True and landed citable, rebinding NC1's
+    numbers in the bundle the gate reads.
+    """
+    for line in (body or "").splitlines():
+        if _ID_SHAPED.match(line.strip()):
+            raise ValueError(
+                f"body line {line.strip()!r} is shaped like a bundle citation code; "
+                f"such a line rebinds that id's permitted numbers in the CV "
+                f"fabrication gate")
+
+
+def _render_evidence_note(spec, fields: dict, body: str) -> str:
+    """Assemble an entry, refusing anything that would not survive being read back.
+
+    Three guards, each closing a class rather than an enumerated vector:
+
+    1. Unknown keys are rejected BY NAME. The round-trip below cannot catch them --
+       it compares value fidelity, and {'verified': '2099-01-01'} round-trips equal
+       to itself.
+    2. The leading fence is ALWAYS emitted, even for a kind whose fields are all
+       blank, so a body opening with its own `---` cannot become the parsed
+       frontmatter (_FM_RE is \\A-anchored and non-greedy).
+    3. The WHOLE assembled note is re-parsed with the same readers every consumer
+       uses, and must yield exactly the fields written. This is what catches a
+       newline inside a VALUE, which _parse_fm_spaced turns into a new key.
+       onboard/plan.py's _render_candidate/FrontmatterRoundTripError is the same
+       pattern; it validates the whole note, and so does this.
+
+    Plus a NARROWING (not a close), shared with `verify_evidence` rather than owned
+    here: `_refuse_citation_shaped_body` rejects a body line shaped like a bundle
+    citation code, because cv/validate.py rebinds an id's permitted numbers by
+    assignment. The close is #174.
+    """
+    unknown = sorted(set(fields) - set(spec.fields))
+    if unknown:
+        raise ValueError(
+            f"unknown evidence field(s) {', '.join(unknown)}; this kind accepts only "
+            f"{', '.join(spec.fields)}")
+    _refuse_citation_shaped_body(body)
+    want = {k: str(fields.get(k, "")) for k in spec.fields}
+    inner = "\n".join(f"{k}: {v}" for k, v in want.items())
+    note = f"---\n{inner}\n---\n{body or ''}"
+    got = _parse_fm_spaced(_split_frontmatter(note)[0])
+    if got != want:
+        raise ValueError(
+            f"evidence frontmatter does not round-trip: wrote {want}, read back {got} "
+            f"-- a field value probably contains a newline or a colon at line start")
+    return note
 
 
 def _reraise(exc: OSError) -> None:
@@ -1204,50 +1416,340 @@ class Vault:
         return _cas_write(ref, transform)
 
     # ── cv sub-app reads/writes ──────────────────────────────────────────────
-    def read_experience_entries(self, verified_only: bool = True) -> list[dict]:
-        """Experience Library entries as dicts. `_inbox/` (agent-authored candidates)
-        is never read. verified_only keeps entries carrying a truthy `verified:` field."""
-        base = os.path.join(self.dir, _EXP_SUBDIR)
+    def _kind(self, kind: str):
+        """The EvidenceKind for `kind`, or a raise naming the valid ones.
+
+        Fail loudly at construction, the same rule _select_backend follows. A typo'd
+        kind returning [] would buy the `skipped-gate` misreport described in
+        read_experience_entries' docstring, paid for with a real backend call.
+        """
+        try:
+            return EVIDENCE_KINDS[kind]
+        except KeyError:
+            raise ValueError(
+                f"unknown evidence kind {kind!r}; valid kinds are "
+                f"{', '.join(sorted(EVIDENCE_KINDS))}") from None
+
+    def _evidence_dir(self, kind: str, *, inbox: bool = False) -> str:
+        """Resolve one evidence directory, refusing a symlinked one on EVERY path.
+
+        The refusal lives HERE, in the one resolver every read and every write already
+        goes through, rather than in a caller's body. It used to sit in
+        `propose_evidence`, and that asymmetry was reproducible harm, not a tidiness
+        point: with `_inbox -> <somewhere outside the vault>`, `propose_evidence`
+        refused, `read_pending_evidence` listed the foreign directory's entries anyway,
+        and `verify_evidence` promoted one and then `os.unlink`ed the source -- deleting
+        a file outside the vault. Measured end to end (#164 whole-branch review, H1):
+        propose refused, the pending listing showed `['alpha']`, verify returned True,
+        and the victim file was gone.
+
+        EVERY component below `self.dir` is checked, outermost first -- not an
+        enumerated list of the levels someone happened to think of. That distinction is
+        this guard's whole history: it began as a check on `_inbox` alone, review found
+        the identical harm through a symlinked KIND directory (`_inbox` is then an
+        ordinary subdirectory of a foreign tree, so `os.path.islink` on it is False),
+        the check grew a second named level, and review then found the identical harm
+        one level further out again. Measured on `Job Applications -> <outside the
+        vault>` -- the first component of every kind's relpath, and the one level a
+        two-name check did not reach: `read_pending_evidence` listed `['alpha']`, `verify_evidence`
+        returned True, and its `os.unlink` deleted a file outside the vault. Walking the
+        components subsumes both named levels and every future one, so a fourth kind or
+        a deeper relpath needs no edit here.
+
+        Outermost first, and the reason only bites when MORE THAN ONE component is a
+        link -- a symlinked ancestor with a symlinked `_inbox` nested inside the foreign
+        tree. The message carries exactly one instruction ("move the real folder into
+        the vault"), and moving the inner folder changes nothing while the ancestor
+        still points away, so the outermost link is the only one that instruction can
+        act on. With a single link anywhere the two directions agree, which is why the
+        test that pins this nests two -- measured, reversing the walk against a
+        one-link fixture left the whole suite green.
+
+        `self.dir` ITSELF is deliberately not probed. It is the vault directory the user
+        named -- an env var, a config key, or `--vault` -- so a symlink there is the
+        user pointing this tool at their own Obsidian folder, not a path escaping a
+        boundary they set. The boundary this guard defends is "inside the vault the user
+        named", and the vault root is that boundary rather than something within it.
+
+        islink, never realpath: resolving would make the symlink structurally invisible
+        (`_inbox -> ..` would put every proposal straight into the citable directory
+        with nothing said), which is the mirror of the reason `_write_folder` already
+        refuses a symlinked lead write folder. And it runs BEFORE any `os.makedirs`
+        by construction now -- a caller cannot name the directory without passing
+        through this check first -- rather than by a caller remembering the order.
+
+        ACCEPTED RESIDUAL, stated rather than implied: this is a probe, not a lock. A
+        symlink swapped in AFTER the walk and before `verify_evidence`'s `os.unlink`
+        still escapes (it needs byte-identical content to survive the compare-and-set
+        first). That is the same accepted class as `_cas_write`'s own compare -> replace
+        micro-window, and for the same reason -- no portable stdlib call resolves a path
+        and operates on it atomically. Closing the ROUTINE case is the claim; a store
+        cannot defend against a filesystem being rearranged underneath it mid-call.
+        """
+        spec = self._kind(kind)
+        # This reproduces `_doc_path`'s split-and-rejoin one component at a time, rather
+        # than calling it and probing the result, because the guard needs every
+        # INTERMEDIATE path and that method only returns the last one. The registry's
+        # relpath is the contract's "/"-separated DOCUMENT KEY (#164), so splitting on
+        # "/" and re-joining with os.path.join is what makes it resolve on Windows too;
+        # a raw os.path.join on the key happens to work on POSIX and never does there.
+        components = spec.relpath.split("/") + ([INBOX_SUBDIR] if inbox else [])
+        path = self.dir
+        for component in components:
+            path = os.path.join(path, component)
+            if os.path.islink(path):
+                raise OSError(
+                    f"evidence directory {path!r} is a symlink; refusing to write "
+                    f"through it, or to read an entry from behind it -- move the real "
+                    f"folder into the vault")
+        return path
+
+    def _evidence_entries(self, kind: str, base: str) -> list[dict]:
+        """Every `.md` DIRECTLY in `base`, as entry dicts.
+
+        `os.listdir` is flat, so `_inbox/` -- a subdirectory -- is never descended into
+        and its entries are invisible here. That is the mechanism, and it is pinned by
+        test_verified_only_filters_and_an_inbox_entry_is_invisible_at_both_settings.
+        If this ever becomes a recursive walk, it needs a _PRIVATE_SUBDIRS-style prune
+        by name, exactly like the lead scan gained at #1 -- without one, every
+        unverified proposal becomes citable.
+
+        `_is_dir`, not os.path.isdir: an unreadable directory must be loud, never read
+        as empty.
+        """
+        spec = self._kind(kind)
+        # Which frontmatter key fills each text floor key, for THIS kind. Derived from
+        # the registry rather than the four hardcoded `fm.get("Company", ...)` lookups
+        # this used to carry: those were an identity mapping on title-cased names, and
+        # `skills`' own field names collide with none of them -- so `best_for` was the
+        # empty string for every skill and cv/bundle.py's rank() scored a `platform`
+        # skill zero against the keyword `platform` (#164 review, M3). See
+        # `EvidenceKind.floor_map` for what each kind maps and, for `skills`, what it
+        # deliberately does NOT.
+        sources = spec.floor_sources()
         out = []
-        # `_is_dir`, not os.path.isdir -- the FOURTH consumer of that rule, and it is right
-        # here for the same reason as the three under leads_dir even though this is a
-        # different directory: os.path.isdir swallows EVERY OSError, so a library it cannot
-        # STAT reads as an absent one. Only FileNotFoundError is absent (an install before
-        # the user has written a single entry: the common case, and not an error).
-        #
-        # This probe was the ONLY fail-open left in this method, measured: with the library
-        # itself at mode 000 `os.listdir` below already raises PermissionError, so the loud
-        # answer was already there for that case. The silent one needs the VAULT ROOT to be
-        # unstatable, which makes `os.stat(base)` -- not `listdir` -- the call that fails,
-        # and os.path.isdir turned that into `return []`.
-        #
-        # What that costs is not a clobber, and the honest version is narrower than "an
-        # unreadable directory read as empty is a wrong answer": these entries are the ONLY
-        # citable evidence the hard fabrication gate recognises, so an empty read leaves a
-        # bundle with no ids and every WORK bullet violates it -- measured, `BAD CITATION`
-        # for a bullet that cites and `UNCITED BULLET` for one that does not, the two arms of
-        # cv/validate.py's WORK check. The CV is therefore never rendered -- it fails CLOSED.
-        # The harm is that a permissions problem is reported to the user as `skipped-gate`, a
-        # fabrication verdict against their composer, and only after paying for a dossier
-        # fetch and a full compose.
         if not _is_dir(base):
             return out
         for name in sorted(os.listdir(base)):
             if not name.endswith(".md"):
-                continue  # skips the _inbox/ subdir
-            path = os.path.join(base, name)
+                continue
+            # Refuses a symlinked entry FILE, the other half of the class
+            # `_evidence_dir` closes for directories -- see `_evidence_entry_path`.
+            # Reached from the CITABLE listing as well as the pending one, because a
+            # symlinked entry sitting in the kind directory feeds the fabrication gate
+            # content from outside the vault without any promotion happening at all.
+            path = _evidence_entry_path(base, name)
             inner, body = _split_frontmatter(_read(path))
             fm = _parse_fm_spaced(inner)
-            entry = {
+            out.append({
                 "path": path, "title": name[:-3],
-                "company": fm.get("Company", ""), "category": fm.get("Category", ""),
-                "best_for": fm.get("Best For", ""), "metrics": fm.get("Metrics", ""),
-                "verified": fm.get("verified") or None, "body": body.strip(),
-            }
-            if verified_only and not entry["verified"]:
-                continue
-            out.append(entry)
+                **{floor: fm.get(key, "") for floor, key in sources.items()},
+                "verified": fm.get(VERIFIED_KEY) or None, "body": body.strip(),
+                # The keys above are a FLOOR, kept so cv/bundle.py's rank() and
+                # assign_codes work on every kind unchanged. `fields` carries the kind's
+                # OWN frontmatter under its own names, which is where a field with no
+                # floor analogue (skills' Proficiency/Evidence/Signal Value) stays
+                # reachable.
+                "fields": {k: fm.get(k, "") for k in spec.fields},
+            })
         return out
+
+    def read_evidence(self, kind: str, verified_only: bool = True) -> list[dict]:
+        """See Store.read_evidence."""
+        entries = self._evidence_entries(kind, self._evidence_dir(kind))
+        return [e for e in entries if e["verified"]] if verified_only else entries
+
+    def read_pending_evidence(self, kind: str) -> list[dict]:
+        """See Store.read_pending_evidence. No verified filter, deliberately.
+
+        An `_inbox/` entry CAN carry the key -- a human hand-placing one is a first-class
+        workflow for this tool -- and filtering on it would make that entry vanish from
+        `<kind> list --pending`, from the queue `verify` offers, and from `doctor`'s
+        pending count ALL AT ONCE, while it sits in `_inbox/` doing nothing and NOT
+        citable (`read_evidence` cannot see `_inbox/` at all). Invisible in every place
+        that could report it is the silent-inert state this reader exists to surface.
+
+        This used to name "a crash between verify's stamp and its unlink" as how such an
+        entry arises. Measured (a simulated crash immediately after the citable write):
+        that is NOT a path to it -- `verify_evidence` stamps the DESTINATION copy and
+        never writes to the source, so the inbox copy survives a crash exactly as it was,
+        unstamped, and this method reports it with or without a filter. The hand-placed
+        entry above is the reachable case, which is what the test pins."""
+        return self._evidence_entries(kind, self._evidence_dir(kind, inbox=True))
+
+    def read_pending_evidence_text(self, kind: str, name) -> str:
+        """See Store.read_pending_evidence_text.
+
+        A FRESH read on every call -- `_read`, not a value cached from the listing --
+        because this is what `verify_evidence`'s compare-and-set is handed, and a
+        snapshot taken when the queue was built is stale by construction (the same
+        reason `update_fields`' `require_status` re-reads rather than trusting the
+        enumerated LeadNote). Reached through `_evidence_component`, so the read side
+        keeps the same containment the write side has and a `name` naming a path
+        refuses here too instead of only at promotion time.
+        """
+        return _read(_evidence_entry_path(self._evidence_dir(kind, inbox=True),
+                                          f"{_evidence_component(name)}.md"))
+
+    def propose_evidence(self, kind: str, *, name, fields, body: str = "") -> str:
+        """See Store.propose_evidence. This store's opaque handle IS the written path,
+        the same way `write_document`'s is -- but the CONTRACT promises only a non-empty
+        opaque handle, so no contract-bound caller may treat it as a path.
+
+        NEVER stamps VERIFIED_KEY -- `_render_evidence_note` rejects an undeclared field
+        key BY NAME, which is what actually holds that, since `fields` is a caller-supplied
+        mapping -- and always lands under INBOX_SUBDIR, which `read_evidence` cannot see.
+        Exclusive create, so a taken name refuses rather than overwriting a proposal
+        already there -- and a name already taken in the CITABLE set refuses too, see below.
+        """
+        spec = self._kind(kind)
+        slug = evidence_slug(name)
+        text = _render_evidence_note(spec, dict(fields or {}), body)
+        # The symlink refusal is in `_evidence_dir` itself, not here: it must bind the
+        # READ and VERIFY paths too, and a guard in this body did not (see that method's
+        # own docstring for the file-deleted-outside-the-vault probe). It still runs
+        # before the makedirs below -- now by construction rather than by ordering.
+        inbox = self._evidence_dir(kind, inbox=True)
+        # A name already taken in the CITABLE set is refused HERE, at propose time, where
+        # the user is typing the name and can pick another. This used to probe the inbox
+        # ALONE, so `add alpha` after `alpha` had been verified succeeded, and the clash
+        # surfaced later, from inside an interactive `verify`, as the promotion's
+        # exclusive create raising a bare FileExistsError (#164 review, H2).
+        #
+        # `lexists`, not `exists`: a DANGLING symlink at that name still makes the
+        # promotion's exclusive create fail, so reporting the name free would only defer
+        # the identical clash. This is a probe, not a lock -- the exclusive create below
+        # and `verify_evidence`'s own are what actually hold the property under a race;
+        # this only moves the ordinary case to where it is actionable.
+        if os.path.lexists(os.path.join(self._evidence_dir(kind), f"{slug}.md")):
+            raise FileExistsError(
+                f"a verified {kind} entry is already named {slug!r}; pick another name, "
+                f"or edit that entry in the vault directly")
+        os.makedirs(inbox, exist_ok=True)
+        path = os.path.join(inbox, f"{slug}.md")
+        try:
+            _write(path, text, exclusive=True)
+        except FileExistsError:
+            # NAMED, rather than the bare `[Errno 17] File exists: <path>` that an
+            # exclusive open() raises -- the caller (a CLI handler, the init wizard)
+            # prints this message verbatim, and an errno names neither the entry nor
+            # anything to do about it.
+            raise FileExistsError(f"{slug!r} is already proposed") from None
+        return path
+
+    def verify_evidence(self, kind: str, name, *, today: str, reviewed: str) -> bool:
+        """See Store.verify_evidence. True promoted, False abstained.
+
+        `name` is the entry's ON-DISK identity -- the `title` read_pending_evidence
+        reported -- and is CHECKED here rather than re-reduced; `_evidence_component`
+        records the bug that distinction fixes and the containment it keeps. The
+        promoted copy therefore keeps that same basename, so a human who filed
+        `My Entry.md` by hand finds `My Entry.md` in the citable directory afterwards
+        rather than a renamed note they did not create.
+
+        NOT _reserve_and_move. That primitive moves "whatever `src` names at that
+        instant", which is right for merge_cluster (a note moves wholesale, any content
+        is fine) and wrong here: a human approved SPECIFIC BYTES, and carrying an edit
+        made after that approval would put unreviewed content into the citable set.
+
+        Order matters and is measured:
+          1. RESOLVE the source through `_evidence_component` and `_evidence_entry_path`,
+             so a `name` that is not a bare component, a symlinked directory anywhere below
+             the vault root, and a symlinked entry FILE all refuse before anything is read
+             -- and therefore before step 5 could `os.unlink` through one of them. (This
+             list used to start at 2, with no step 1 anywhere; the code always had one.)
+          2. re-read and compare against `reviewed` -- compare-and-set, the discipline
+             update_fields' require_status uses, so a human promotes what they saw.
+          3. stamp.
+          4. exclusive create at the destination. A taken name refuses HERE, before the
+             source is touched, so a routine clash cannot strand a stamped inbox entry.
+             The entry therefore never exists in the verified directory unstamped.
+          5. unlink the source ONLY while it still matches. This resembles the
+             os.link+os.unlink shape _reserve_and_move's docstring records as rejected on
+             #23, and the difference is the harm: #23's rejection was that a concurrent
+             save landing between the two is DELETED. Here it is KEPT (in the inbox, and
+             reported), so the residual is a duplicate, not a loss.
+        """
+        name = _evidence_component(name)
+        # `_evidence_entry_path`, not a raw join: a symlinked source is promoted content
+        # from outside the vault, and the unlink below would remove only the link. The
+        # refusal has to be HERE and not merely on the listing, for the same reason the
+        # directory guard sits in the resolver -- an entry reaches this method by name,
+        # and a caller who never listed the inbox never passes the listing's copy.
+        src = _evidence_entry_path(self._evidence_dir(kind, inbox=True), f"{name}.md")
+        current = _read(src)  # FileNotFoundError propagates: no such pending entry
+        if current != reviewed:
+            return False
+        inner, body = _split_frontmatter(current)
+        # Checked HERE too, not only at propose time: this is the moment an entry
+        # becomes citable, and an entry can reach it without ever having gone through
+        # propose_evidence (see `_refuse_citation_shaped_body` for the measured
+        # hand-placed case). Positioned AFTER the compare-and-set, so an entry edited
+        # since review is still reported as the abstention it is rather than as this
+        # refusal -- the two need different answers from the human.
+        _refuse_citation_shaped_body(body)
+        stamped = f"---\n{_set_fm(inner or '', VERIFIED_KEY, today)}\n---\n{body}"
+        # _evidence_dir(kind), not a second self._doc_path(spec.relpath) spelling of the
+        # same directory: two spellings of one path is the exact hazard Task 1's _EXP_SUBDIR
+        # existed to remove, and the concrete cost is that a guard living in _evidence_dir --
+        # the symlink refusal IS one now -- would silently not cover this write path if it
+        # kept its own copy of the path expression. That refusal used to sit in
+        # propose_evidence's body instead, which is why sharing the path EXPRESSION was not
+        # enough on its own: this method reached the same directory and none of the guard.
+        dest_dir = self._evidence_dir(kind)
+        os.makedirs(dest_dir, exist_ok=True)
+        _write(os.path.join(dest_dir, f"{name}.md"), stamped, exclusive=True)
+        # Everything past the citable write is CLEANUP, and the promotion has already
+        # happened: the approved bytes are stamped and in the citable directory, and this
+        # method's contract is `True` for exactly that. So a source that is GONE by the time
+        # this runs -- vanished between the write above and the read below, or between the
+        # read and the unlink -- is the end state a successful promotion produces, not a
+        # failure. Unguarded, the FileNotFoundError propagated into
+        # `Sluice.verify_evidence_interactive`'s per-item `except (OSError, ValueError)`,
+        # and the user was told `not promoted: <title> -- it is no longer in the inbox` and
+        # given exit 1 for an entry that IS citable with the bytes they approved (round-2
+        # review, L2). Reporting a completed promotion as a refusal is the reassuring-in-
+        # reverse direction: the natural response is to re-add the entry, which then clashes
+        # with the one already there.
+        #
+        # FileNotFoundError ONLY, and only around the cleanup: an unreadable-but-present
+        # source (PermissionError) or a source that turned into a directory is a real
+        # surprise the caller must still hear about, and the compare-and-set above -- the
+        # part that decides whether anything becomes citable at all -- is deliberately
+        # outside this.
+        try:
+            if _read(src) == current:
+                os.unlink(src)
+            else:
+                _log.warning(
+                    "evidence %s/%s was edited after it was approved; it is now verified AND "
+                    "still present in the inbox -- review the inbox copy and delete it by hand",
+                    kind, name)
+        except FileNotFoundError:
+            pass
+        return True
+
+    def read_experience_entries(self, verified_only: bool = True) -> list[dict]:
+        """See Store.read_experience_entries. A delegate, so there is ONE implementation
+        rather than two that can drift. Kept as its own member because a Protocol member
+        is a required member and this one has a live consumer (cv/engine.py), a
+        conformance row, and entries in two hand-listed test literals. `Vault.preflight`
+        (#164) reads `read_evidence` directly across all three kinds instead of through
+        this delegate -- this method's own name is experience-specific, and looping it
+        alongside `skills`/`stories` would need a per-kind dispatch this delegate exists
+        to avoid needing.
+
+        Experience Library entries are the hard fabrication gate's ONLY citable
+        evidence, so an empty read here is not merely "no results": the bundle has
+        no ids, every WORK bullet violates cv/validate.py's WORK check (`BAD
+        CITATION` for a bullet that cites, `UNCITED BULLET` for one that does not),
+        and the CV is never rendered -- it fails CLOSED. A quiet [] from an
+        unreadable directory would report THAT to the user as `skipped-gate`, a
+        fabrication verdict against their composer, only after paying for a dossier
+        fetch and a full compose. `_evidence_entries`' `_is_dir` probe is what keeps
+        that path loud instead of silently reading the library as empty.
+        """
+        return self.read_evidence("experience", verified_only=verified_only)
 
     def _doc_path(self, rel: str) -> str:
         """Translate a store-contract DOCUMENT KEY into a filesystem path.
@@ -1362,10 +1864,20 @@ class Vault:
         built against): doctor is a preflight meant to run often and cheaply, not
         a second `leads` pass, and nothing a lead-by-lead scan would answer here
         that `read_leads` itself does not already answer for every OTHER command
-        that needs it. `read_experience_entries` is the one exception -- the
-        Experience Library is two orders of magnitude smaller and its entries are
-        the fabrication gate's only citable evidence, so a zero-verified count is
-        exactly the kind of thing worth surfacing before a compose is attempted.
+        that needs it. The three evidence corpora (`read_evidence`/
+        `read_pending_evidence`, #164) are the exception -- each is two orders of
+        magnitude smaller than `leads_dir`, and their counts answer two things a
+        compose depends on: `<kind>_verified` (only verified entries are citable
+        by the fabrication gate, so zero is exactly the kind of thing worth
+        surfacing before a compose is attempted) and `<kind>_pending` (a
+        propose-only write leaves an entry sitting in `_inbox/`, doing nothing,
+        until a human runs `job-sluice <kind> verify` -- a silent-inert state
+        with no other signal anywhere). Iterates `EVIDENCE_KINDS` rather than
+        naming the three kinds here, so a fourth kind needs no edit at this call
+        site. A kind whose directories could not be read reports
+        `<kind>_error` (the OSError's own text) INSTEAD of that triple, never a
+        zero count -- see the loop's own comment for the isolation this buys and
+        for why the classification of that fact belongs to `core/doctor.py`.
 
         `candidate_name_present`/`candidate_contact_present` (#133/#107) are the
         two DERIVED facts `read_candidate_profile()` reduces to via `full_name`/
@@ -1385,14 +1897,60 @@ class Vault:
             baseline_exists = False
         else:
             baseline_exists = True
-        entries = self.read_experience_entries(verified_only=False)
+        # `experience_total`/`experience_verified` keep their pre-#164 names: doctor
+        # already consumes them by name, and a parallel `experience_entries` key
+        # would leave two sources for the same fact -- the drift shape this codebase
+        # removes on sight. `skills`/`stories` are new kinds, so they get the
+        # identical pair under their own names, plus `<kind>_pending` for all three:
+        # a captured-but-unreviewed entry is exactly the silent-inert state `doctor`
+        # exists to surface (see its own module docstring and classify_store).
+        # Iterates EVIDENCE_KINDS rather than naming the three kinds here, so a
+        # fourth kind added to the registry needs no edit at this call site.
+        counts = {}
+        for kind in EVIDENCE_KINDS:
+            # PER-KIND isolation, the shape `Sluice.verify_evidence_interactive`'s review
+            # loop already uses. One corpus that cannot be read must not take the other
+            # rows down with it: measured (round-2 review, H2) with `STAR Stories`
+            # symlinked out of the vault, the OSError `_evidence_dir` correctly raises
+            # unwound past this loop and out of `preflight` entirely, so `Sluice.doctor`'s
+            # catch-all printed a single `store | preflight | DEAD` row and NOTHING else --
+            # no baseline row, no Judging Profile row, and no `Candidate Profile | dead |
+            # blocks: cv`. A user whose `cv run` says `skipped-config` runs `doctor` to
+            # find out why and was told only about a corpus nothing reads.
+            #
+            # The FAILURE is a fact like the counts are; `core/doctor.py:classify_store`
+            # is what turns it into a row, so classification stays there. The count keys
+            # for this kind are deliberately NOT set: a `0` a consumer could read as "the
+            # corpus is empty" is the quiet wrong default this codebase engineers out, and
+            # `<kind>_error` has no such reading.
+            #
+            # `(OSError, ValueError)`, not `OSError` alone. This shipped as `OSError` alone
+            # under a comment claiming the only ValueError these two methods raise is
+            # `_kind`'s unknown-kind guard, which indeed cannot fire (this loop's `kind`
+            # comes from `EVIDENCE_KINDS` itself) -- but that was not the only one.
+            # `_evidence_entries` reads every entry through `_read`, which opens with
+            # `encoding="utf-8"` and no `errors=`, so an entry file that is not valid UTF-8
+            # raises UnicodeDecodeError, a ValueError SUBCLASS and not an OSError. The vault
+            # is a directory a human and a sync client both write into, so that is an
+            # ordinary state of the world here, not an internal invariant failure. Measured
+            # on the real store: one such file unwound past this loop and out of `preflight`
+            # entirely, producing the exact lone `store | preflight | DEAD` row the paragraph
+            # above records -- this guard failing in the way it was written to prevent.
+            try:
+                every = self.read_evidence(kind, verified_only=False)
+                pending = self.read_pending_evidence(kind)
+            except (OSError, ValueError) as exc:
+                counts[f"{kind}_error"] = str(exc)
+                continue
+            counts[f"{kind}_total"] = len(every)
+            counts[f"{kind}_verified"] = sum(1 for e in every if e.get("verified"))
+            counts[f"{kind}_pending"] = len(pending)
         profile = self.read_candidate_profile()
         return {
             "vault_exists": True,
             "baseline_exists": baseline_exists,
             "criteria_present": bool(self.read_criteria().strip()),
-            "experience_total": len(entries),
-            "experience_verified": sum(1 for e in entries if e.get("verified")),
+            **counts,
             "candidate_name_present": bool(full_name(profile).strip()),
             "candidate_contact_present": bool(contact_block(profile).strip()),
         }

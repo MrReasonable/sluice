@@ -19,7 +19,8 @@ that a green tick over an untested store is worse than no tick at all.
 from sluice.core.protocols import CANDIDATE_PROFILE_RELPATH
 
 
-def _seed_vault(store, *, experience=(), criteria="", conflicted_status=None, candidate=None):
+def _seed_vault(store, *, experience=(), criteria="", conflicted_status=None,
+                candidate=None, evidence=()):
     """Seed the markdown vault by writing the files it reads.
 
     This knows the vault's layout, which is fine: it is the VAULT's seeder. The contract
@@ -57,6 +58,37 @@ def _seed_vault(store, *, experience=(), criteria="", conflicted_status=None, ca
         # to the Store contract: it only ever does what a real Store write can do.
         lines = "\n".join(f"{k}: {v}" for k, v in candidate.items())
         store.write_document(CANDIDATE_PROFILE_RELPATH, f"---\n{lines}\n---\n")
+
+    for item in evidence:
+        # Every WRITE goes through the store's own propose_evidence/verify_evidence,
+        # not through writing files directly: a seeder that knows the layout can drift
+        # from the reader, which is exactly how the `Employer:` vs `Company:` mismatch
+        # above went unnoticed for so long. It is also the ONLY way to reach the
+        # verified set at all -- there is no write primitive that skips the inbox.
+        store.propose_evidence(item["kind"], name=item["name"],
+                               fields=item.get("fields", {}), body=item.get("body", ""))
+        if not item.get("verified"):
+            continue
+        # verify_evidence is compare-and-set: it promotes only the EXACT bytes a human
+        # is shown, so the seeder must read back what propose_evidence actually wrote
+        # rather than reconstruct it. Matched by `title`, not by re-deriving the slug
+        # here -- a second spelling of _evidence_slug's reduction would drift from the
+        # real one exactly the way the layout-knowledge this docstring warns about
+        # already has. This assumes `item["name"]` already IS its own slug (e.g.
+        # "alpha"); a seeded name needing real reduction (spaces, mixed case) would not
+        # be found by this match and is not something today's callers need.
+        #
+        # The read-back is a STORE call now. It used to reach through the entry's `path`
+        # key with a raw filesystem `open()`, which worked only because the sole
+        # registered store backs `path` with a real file -- a seeder in the
+        # store-AGNOSTIC suite quietly requiring a filesystem of every store it
+        # certifies. `read_pending_evidence_text` is the contract member for exactly
+        # this, and `path` is no longer a required key at all (#164 review, H3).
+        pending = store.read_pending_evidence(item["kind"])
+        [proposed] = [p for p in pending if p["title"] == item["name"]]
+        reviewed = store.read_pending_evidence_text(item["kind"], proposed["title"])
+        store.verify_evidence(item["kind"], item["name"], today="2026-01-01",
+                              reviewed=reviewed)
 
 
 SEEDERS = {
