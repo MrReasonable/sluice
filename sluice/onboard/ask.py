@@ -175,6 +175,16 @@ class TtyAsker:
         raw = self._read()
         return raw.strip() if raw != "" else ""
 
+    def confirm(self, prompt: str) -> bool:
+        """A y/N question. Anything but an explicit yes is NO.
+
+        Default-no is load-bearing where this is used: `job-sluice <kind> verify` is
+        the one operation that grants citability to the CV fabrication gate, and an
+        empty line, an EOF or a mistyped answer must never promote an entry.
+        """
+        self._say(prompt)
+        return (self._read() or "").strip().lower() in ("y", "yes")
+
     def ask_url(self, prompt):
         """Re-asked on a parse failure. A mistyped board URL that is silently skipped is a source
         the user believes is configured and is not."""
@@ -220,6 +230,11 @@ class NoInputAsker:
 
     def ask_text_plain(self, prompt):
         return ""
+
+    def confirm(self, prompt: str) -> bool:
+        """Never yes. Nothing is prompted for and nothing is inferred, and a flag-only
+        run must not be able to promote an entry to citable."""
+        return False
 
     def ask_url(self, prompt):
         return None

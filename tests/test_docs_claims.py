@@ -18,6 +18,7 @@ import re
 import pytest
 
 from sluice.cli import _build_parser
+from sluice.core.protocols import EVIDENCE_KINDS
 
 # What a user reads. Same shape as tests/test_no_copy_instruction.py's `_SHIPPED_PROSE`: docs
 # under superpowers/ are deliberately excluded there and here, for the same reason -- they are
@@ -92,16 +93,62 @@ def _claimed_pairs(text: str) -> set:
 def test_the_command_tree_walk_is_not_vacuous():
     """SCOPE guard, ahead of everything below: a broken walk (e.g. `_build_parser` changing
     shape so `_SubParsersAction` is never found) would make every assertion below pass over an
-    empty tree. Pin real structure, not just non-emptiness -- 10 known top-level groups and a
-    floor on the total subcommand count across them.
+    empty tree. Pin real structure, not just non-emptiness -- 13 known top-level groups (#164
+    added `experience`/`skills`/`stories`, one loop over EVIDENCE_KINDS, to the prior 10) and an
+    EXACT total subcommand count, not merely a floor.
+
+    The prior `>= 15` floor was itself the bug this file exists to catch: the real count moved
+    from 20 to 29 across #164 and the floor caught none of it (Task 7 review, MINOR 4) -- a
+    floor that trails reality by 14 asserts nothing. `20` (the ten pre-#164 groups' own
+    subcommand counts) is pinned as a literal because it does NOT grow on its own; the evidence
+    contribution is DERIVED from EVIDENCE_KINDS (3 subcommands -- add/list/verify -- per kind)
+    so a future fourth kind needs no edit here.
     """
     tree = _command_tree()
     assert set(tree) == {
-        "ingest", "triage", "cv", "apply", "track", "leads", "health", "mcp", "init", "doctor"}, (
+        "ingest", "triage", "cv", "apply", "track", "leads", "health", "mcp", "init", "doctor",
+        "experience", "skills", "stories"}, (
         f"the walk found {sorted(tree)} -- a group was added, renamed, or removed; if that is "
         f"intentional, docs/USAGE.md and this set both need updating")
     total_subs = sum(len(v) for v in tree.values() if v is not None)
-    assert total_subs >= 15, f"only {total_subs} subcommands enumerated -- the walk is broken"
+    expected = 20 + 3 * len(EVIDENCE_KINDS)
+    assert total_subs == expected, (
+        f"expected {expected} subcommands (20 pre-#164 + 3 per evidence kind), found "
+        f"{total_subs} -- the walk is broken, or a group's own subcommand count changed and "
+        f"this needs updating")
+
+
+# English number words for the prose sweep below. This is a fixed VOCABULARY (spellings of
+# small integers never drift the way a business-domain hand-list does), not a registry that
+# needs to grow in lockstep with the product -- it only needs headroom past however many
+# top-level groups this project plausibly reaches, so twenty is ample rather than exact.
+_NUMBER_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+    "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+    "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
+}
+
+
+def test_the_top_level_group_count_prose_matches_the_real_tree():
+    """docs/USAGE.md opens with a spelled-out count ("Thirteen top-level command groups") that
+    #164's review flagged as an unguarded claim of exactly the kind this whole file exists to
+    catch (MINOR 5): nothing checked it against the code, so it would go stale silently the
+    next time a group is added or removed -- precisely the CHANGELOG-renderer-default shape
+    this module's own docstring names as its reason for existing.
+    """
+    tree = _command_tree()
+    text = open("docs/USAGE.md", encoding="utf-8").read()
+    m = re.search(r"\b([A-Za-z]+) top-level command groups\b", text)
+    assert m is not None, (
+        "docs/USAGE.md's top-level-group-count sentence is missing or reworded -- update this "
+        "sweep's pattern, or restore a spelled-out count sentence")
+    word = m.group(1).lower()
+    assert word in _NUMBER_WORDS, (
+        f"docs/USAGE.md's group count is spelled {word!r}, which this sweep does not "
+        f"recognize as a number word -- widen _NUMBER_WORDS")
+    assert _NUMBER_WORDS[word] == len(tree), (
+        f"docs/USAGE.md says {word!r} top-level command groups, but the real parser tree has "
+        f"{len(tree)} -- update the prose")
 
 
 def test_every_documented_command_claim_is_real():

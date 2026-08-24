@@ -48,6 +48,14 @@ _NOT_PROSE = {
     # other rendered artefact, so there is no transitive-coverage argument here, only the
     # vocabulary-table one.
     ("sluice.onboard.plan", "_CANDIDATE_KEY_BY_ANSWER"),
+    # `EVIDENCE_KINDS` (core/protocols.py) is a registry of relpaths and frontmatter FIELD NAMES --
+    # "Company", "Proficiency", "Signal Value" and the like -- same shape as
+    # `_CANDIDATE_FIELD_ORDER` above: identifiers a store reads as keys, never prose a user reads
+    # as guidance. It is imported at module scope into both evidence modules (`commands.py` needs
+    # it to derive `add`'s per-kind flags; `wizard.py` needs it to loop the capture prompts over
+    # every kind), so `vars()` sees it as a local name in each and both tuples are listed here.
+    ("sluice.evidence.commands", "EVIDENCE_KINDS"),
+    ("sluice.evidence.wizard", "EVIDENCE_KINDS"),
 }
 
 # The one place the sweep's own fixture values live, so the rendered arm exercises the WALKED
@@ -272,6 +280,7 @@ def shipped_prose(tmp_path=None):
     so a consumer of this function sees the same surfaces the exemplar sweep does rather than a
     subset that silently omits two `cmd_init` branches.
     """
+    import sluice.evidence.wizard as wizard_mod
     import sluice.onboard.ask as ask_mod
     import sluice.onboard.plan as plan_mod
     from sluice.onboard.questions import catalogue
@@ -292,15 +301,55 @@ def shipped_prose(tmp_path=None):
         out.append((f"ask._PROFILE_QUESTIONS[{key}]", prompt))
     for key, prompt in ask_mod._CANDIDATE_PROMPTS:
         out.append((f"ask._CANDIDATE_PROMPTS[{key}]", prompt))
+    # `sluice/evidence/wizard.py`'s own docstring names this: every prompt it shows a user is a
+    # module-level constant (Task 8 review, FIX 3) precisely so this roster -- not a driven
+    # transcript, the same shape as `ask._CANDIDATE_PROMPTS` above -- can reach it. Listed directly
+    # rather than driven because `collect_evidence` is gated on `asker.interactive`, and there is
+    # no rendered artefact for a terminal-only prompt to land in.
+    #
+    # `sluice/evidence/commands.py`'s user-facing print()/error messages are NOT here, and
+    # widening `_package_modules()` to discover that module does not change that: those messages
+    # are in-body f-strings, the same shape wizard.py's prompts were in before the Task 8 fix
+    # above, so there is no module-level constant for this sweep to find. They are no longer
+    # UNSWEPT, though (#164 review, L2): they are swept WHERE THEY RUN, by
+    # `test_no_command_message_names_a_taxonomy_word` in tests/test_evidence_cli.py, which drives
+    # all nine commands through `main` under capsys and runs `expresses_a_preference` over the
+    # real output. That is `tests/functional/test_init.py`'s
+    # `test_the_commands_own_report_names_no_exemplar` precedent, and it is the better fit for
+    # status output than hoisting would be: it also covers the INTERPOLATED halves (a store error
+    # message, an entry title, a kind name) that no constant roster can see.
+    #
+    # That same test also sweeps the ONE user-facing prompt in `sluice/core/app.py`
+    # (`verify_evidence_interactive`'s `verify this entry? [y/N]`), which this roster does not
+    # reach either and which was undisclosed until the round-2 review found it: `core/` is
+    # outside `_package_modules()`'s walk entirely, and widening the walk there would sweep a
+    # module of orchestration strings rather than prompts. It is driven instead -- the patched
+    # `confirm` records what it was SHOWN and the sweep runs over that text -- which is the same
+    # where-it-runs answer, applied to the operation that grants citability.
+    out.append(("wizard._INTRO", wizard_mod._INTRO))
+    out.append(("wizard._CAPTURE_PROMPT", wizard_mod._CAPTURE_PROMPT))
+    out.append(("wizard._NAME_PROMPT", wizard_mod._NAME_PROMPT))
+    out.append(("wizard._FIELD_PROMPT", wizard_mod._FIELD_PROMPT))
+    out.append(("wizard._BODY_PROMPT_DEFAULT", wizard_mod._BODY_PROMPT_DEFAULT))
+    for kind, prompt in wizard_mod._BODY_PROMPT_BY_KIND.items():
+        out.append((f"wizard._BODY_PROMPT_BY_KIND[{kind}]", prompt))
+    out.append(("wizard._ADD_ANOTHER_PROMPT", wizard_mod._ADD_ANOTHER_PROMPT))
+    out.append(("wizard._NOT_CAPTURED_PROMPT", wizard_mod._NOT_CAPTURED_PROMPT))
     return out
 
 
 def _package_modules():
-    """Every module in `sluice.onboard`, DISCOVERED. A hand-list meant a sixth module would ship
-    entirely unswept -- the same enumeration failure this file exists to close."""
+    """Every module in `sluice.onboard` AND `sluice.evidence`, DISCOVERED. A hand-list meant a
+    sixth module would ship entirely unswept -- the same enumeration failure this file exists to
+    close -- and hand-adding `sluice.evidence.wizard` as a single named entry point would
+    reintroduce that exact regime for a whole second package rather than one module."""
+    import sluice.evidence
     import sluice.onboard
-    return [importlib.import_module(f"sluice.onboard.{m.name}")
-            for m in pkgutil.iter_modules(sluice.onboard.__path__)]
+    mods = []
+    for pkg in (sluice.onboard, sluice.evidence):
+        mods += [importlib.import_module(f"{pkg.__name__}.{m.name}")
+                 for m in pkgutil.iter_modules(pkg.__path__)]
+    return mods
 
 
 def _declared_string_constants():

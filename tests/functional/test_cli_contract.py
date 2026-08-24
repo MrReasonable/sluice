@@ -12,20 +12,30 @@ through to a default. Each reads correctly at both ends; only the wiring between
 absent, and nothing fails when it is. So a machine checks it.
 
 A read is `args.X` or `getattr(args, "X", ...)` with a constant name, in the handler OR
-in any module-level `sluice.cli` helper the handler passes `args` to (the one real case
-at HEAD is `cmd_run -> _selected(args, ...)`; the transitive follow is witnessed in the
-test suite by mutating the read inside `_selected`). A dynamic `getattr(args, <var>)` is
-deliberately NOT resolved -- it counts as unread, so the sweep fails closed, which is the
-right direction for exactly the murkiness #7 targets.
+in any module-level helper -- in the handler's OWN module -- that it passes `args` to
+(the one real case at HEAD inside `sluice.cli` itself is `cmd_run -> _selected(args,
+...)`; the transitive follow is witnessed in the test suite by mutating the read inside
+`_selected`). A dynamic `getattr(args, <var>)` is deliberately NOT resolved -- it counts
+as unread, so the sweep fails closed, which is the right direction for exactly the
+murkiness #7 targets.
+
+A handler need not live IN `sluice.cli` -- #164's evidence commands dispatch from
+`sluice/evidence/commands.py`, imported lazily inside `_build_parser`, the same way
+every other store-touching command's real work is imported lazily inside its own
+function. `_module_funcs` below resolves each leaf's OWN module via `inspect.getmodule`
+on the real function OBJECT `_build_parser` wired up, rather than a hand list of "the
+modules a handler is allowed to live in" -- so a third command package later needs no
+edit here, the same ENUMERATE-don't-hand-list discipline the rest of this sweep follows.
 """
 import argparse
 import ast
 import inspect
 
-import sluice.cli as cli_mod
 from sluice.cli import _build_parser
+from sluice.core.protocols import EVIDENCE_KINDS
+from sluice.evidence.commands import field_dest
 
-# ── the single opt-out, justified ────────────────────────────────────────────
+# ── the opt-outs, each justified ─────────────────────────────────────────────
 # `--all` is the explicit spelling of the default all-sources path: `_selected`
 # reaches "every source" when args.source is falsy, and never reads args.all. It
 # is genuinely unread by the handler -- but NOT a silent-degrade, because it is
@@ -35,13 +45,37 @@ from sluice.cli import _build_parser
 OPT_OUT = {
     ("ingest run", "all"): "explicit form of the default; mutually exclusive with --source",
 }
+# Every per-kind `add` field flag (#164) is genuinely read at runtime, just not via a
+# form this sweep can prove: `cmd_evidence_add` reads them through
+# `getattr(args, field_dest(f))` inside a loop over `EvidenceKind.fields`, and `f` is a
+# variable, not an `ast.Constant` -- exactly the dynamic-getattr shape the module
+# docstring says is deliberately left unresolved. DERIVED from the same registry the
+# flags themselves are derived from (never hand-listed field by field, kind by kind),
+# so a new kind or a new field on an existing kind needs no new line here -- only a
+# genuinely un-derivable exemption belongs in the literal dict above.
+OPT_OUT.update({
+    (f"{kind} add", field_dest(field)):
+        "read via a dynamic getattr(args, field_dest(f)) loop over EvidenceKind.fields "
+        "(#164) -- the sweep only resolves a literal-constant getattr, by design"
+    for kind, spec in EVIDENCE_KINDS.items()
+    for field in spec.fields
+})
 
-# The AST of sluice.cli, parsed once: name -> FunctionDef for every module-level def.
-_FUNCS = {
-    n.name: n
-    for n in ast.parse(inspect.getsource(cli_mod)).body
-    if isinstance(n, ast.FunctionDef)
-}
+# name -> FunctionDef for one module's own top-level defs, parsed once and cached.
+# Keyed by module (not by name alone) so two command modules may each define a
+# same-named private helper without colliding -- unlike the single hand-list this
+# replaced, which only ever had one module to parse and so never had to consider it.
+_MODULE_FUNCS_CACHE: dict = {}
+
+
+def _module_funcs(module):
+    if module not in _MODULE_FUNCS_CACHE:
+        _MODULE_FUNCS_CACHE[module] = {
+            n.name: n
+            for n in ast.parse(inspect.getsource(module)).body
+            if isinstance(n, ast.FunctionDef)
+        }
+    return _MODULE_FUNCS_CACHE[module]
 
 
 def _iter_leaves(parser, path=()):
@@ -101,25 +135,34 @@ def _reads_and_forwards(func_node, arg_name):
     return reads, forwards
 
 
-def _all_reads(handler_name):
-    """Every dest the handler reads, transitively through module-level helpers it
-    forwards `args` to. Guards against cycles via a visited set."""
-    entry = _FUNCS[handler_name]
+def _all_reads(handler):
+    """Every dest `handler` reads, transitively through module-level helpers -- in
+    handler's OWN module -- that it forwards `args` to. Guards against cycles via a
+    visited set.
+
+    Takes the real function OBJECT, not its bare name: `inspect.getmodule` is what
+    resolves the RIGHT source to parse (`sluice.cli` for most handlers, a command
+    package like `sluice.evidence.commands` for #164's), so a name string alone would
+    be ambiguous the moment two modules each define a function of the same name.
+    """
+    module = inspect.getmodule(handler)
+    funcs = _module_funcs(module)
+    entry = funcs[handler.__name__]
     # The handler receives (args, config) positionally; its first param is the Namespace.
     reads, seen = set(), set()
-    stack = [(handler_name, entry.args.args[0].arg)]
+    stack = [(handler.__name__, entry.args.args[0].arg)]
     while stack:
         fname, aname = stack.pop()
         if (fname, aname) in seen:
             continue
         seen.add((fname, aname))
-        node = _FUNCS.get(fname)
+        node = funcs.get(fname)
         if node is None:  # a non-cli callee (Sluice, print, ...) -- nothing to follow
             continue
         direct, forwards = _reads_and_forwards(node, aname)
         reads |= direct
         for callee, pos in forwards:
-            callee_node = _FUNCS.get(callee)
+            callee_node = funcs.get(callee)
             if callee_node is not None and pos < len(callee_node.args.args):
                 stack.append((callee, callee_node.args.args[pos].arg))
     return reads
@@ -129,11 +172,12 @@ def test_every_declared_dest_is_read_by_its_handler():
     dead = []
     for path, leaf in _iter_leaves(_build_parser()):
         label = " ".join(path)
-        handler = leaf._defaults["func"].__name__
+        handler = leaf._defaults["func"]
         opted = {dest for (lbl, dest) in OPT_OUT if lbl == label}
         unread = _declared_dests(leaf) - _all_reads(handler) - opted
         if unread:
-            dead.append(f"  {label} ({handler}): declared but never read: {sorted(unread)}")
+            dead.append(
+                f"  {label} ({handler.__name__}): declared but never read: {sorted(unread)}")
     assert not dead, (
         "dead flags -- declared in argparse but never read by the handler that "
         "dispatches to them (add a read, or an OPT_OUT entry with justification):\n"
@@ -153,6 +197,6 @@ def test_opt_out_entries_are_real_and_genuinely_unread():
             stale.append(f"  {label} {dest}: no such command")
         elif dest not in _declared_dests(leaf):
             stale.append(f"  {label} {dest}: not a declared dest")
-        elif dest in _all_reads(leaf._defaults["func"].__name__):
+        elif dest in _all_reads(leaf._defaults["func"]):
             stale.append(f"  {label} {dest}: IS read now -- drop it from OPT_OUT")
     assert not stale, "stale opt-out entries:\n" + "\n".join(stale)

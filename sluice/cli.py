@@ -35,6 +35,7 @@ from sluice.core.config import load_config
 from sluice.core.health import HealthStore
 from sluice.core.log import get_logger, notify
 from sluice.core.paths import resolve
+from sluice.core.protocols import EVIDENCE_KINDS
 from sluice.ingest import sources as registry
 
 _log = get_logger("cli")
@@ -1187,7 +1188,14 @@ def cmd_init(args, config, *, asker=None) -> int:
     # No mkdir here: `read_criteria` returns "" for a store that does not exist yet, so the
     # directory is still created inside the write block below, where an OSError is REPORTED rather
     # than raised uncaught -- and an abandoned interview leaves no empty vault behind.
-    store = Sluice(dataclasses.replace(config, vault_dir=vault_dir)).store()
+    # Kept as its own variable (not just `.store()`) so the wizard call far below reuses
+    # this EXACT instance rather than building a second one from `config` bare -- the bug
+    # a bare `Sluice(config)` there would reintroduce (Task 8 review, CRITICAL 1): `config`
+    # (the function parameter) may carry a different, often blank, vault_dir than the one
+    # this run just resolved, so entries would seed the wrong vault, or none at all,
+    # silently.
+    sluice_app = Sluice(dataclasses.replace(config, vault_dir=vault_dir))
+    store = sluice_app.store()
     profile_exists = bool(store.read_criteria())
 
     # Computed INDEPENDENTLY of profile_exists and of config_exists, and computed HERE because it
@@ -1217,6 +1225,17 @@ def cmd_init(args, config, *, asker=None) -> int:
     # the same seam.
     candidate_exists = has_any_declared(store.read_candidate_profile())
     candidate_dest = os.path.join(vault_dir, CANDIDATE_PROFILE_RELPATH)
+
+    # The evidence wizard's OWN gate (#164, Task 8 review R13). Its only reader is the
+    # `if interactive and corpus_empty:` block at the bottom of this function, so it is
+    # COMPUTED there too -- inside the `if interactive:` block below -- rather than here
+    # beside `candidate_exists`. That is not tidiness: it is six store reads whose result a
+    # `--no-input` run cannot consult, and one of them ABORTED onboarding outright once
+    # `Vault._evidence_dir` grew its symlink refusal (round-2 review, H1) -- measured against
+    # `origin/main` on identical fixtures, which exits 0 and writes the config plus the
+    # Judging Profile where this wrote nothing at all, on the first run and on the
+    # idempotent re-run alike.
+    corpus_empty = False
     candidate_answers = {}
     # DISPLAY ONLY, and a deliberate compromise. The write and the existence probe both go through
     # the seam; this join exists because the two arms that do NOT get a handle -- an abstain
@@ -1237,6 +1256,12 @@ def cmd_init(args, config, *, asker=None) -> int:
     # preference questions above. Gating those and not this left a second interactive run still
     # asking for board ids, search labels and URLs -- then discarding all of it, rc 0, no report.
     # Same failure the .init-scaffold rescue exists to prevent for the profile.
+    # Declared ABOVE the interviews, not below them, purely so the corpus probe at the end of
+    # the `if interactive:` block can report its own failure into the same list every other
+    # write in this function reports into. Nothing between here and the write section touches
+    # any of the three.
+    written, skipped, failed = [], [], []
+
     if interactive:
         # Each interview is gated on the artefact IT writes. `collect_sources` feeds only
         # `plan.config_text`, so it is skipped when the config exists; `collect_profile` feeds only
@@ -1255,8 +1280,56 @@ def cmd_init(args, config, *, asker=None) -> int:
         # interview the user still needed because it happened to sit inside a sibling's `if`.
         if not candidate_exists:
             candidate_answers = collect_candidate(asker)
-
-    written, skipped, failed = [], [], []
+        # `not candidate_exists` was tried first as the wizard's gate and is wrong:
+        # `candidate_exists` is True on the very FIRST `init` any user who already has a
+        # Candidate Profile note runs -- the entire pre-1.0.0 installed base -- so that gate
+        # would have hidden the wizard from them permanently, a silent feature-off worse than
+        # the re-offer it was meant to prevent. `cmd_init`'s own pattern, stated throughout
+        # this function, is that each interview is gated on the ARTEFACT IT WRITES, never on a
+        # sibling's: the artefact this interview writes is the evidence corpus, so this reads
+        # it directly, through the SAME `sluice_app` the wizard call below reuses, rather than
+        # through a proxy like `candidate_exists`. Checked across BOTH `pending` and `verified`
+        # -- a kind with only unverified entries (the ordinary post-wizard state) must still
+        # count as "seeded", or every run before the user gets around to `verify` would
+        # re-offer the same capture loop. `init` never overwrites an artefact (never-clobber),
+        # so re-offering while the corpus is genuinely empty is harmless -- it can only ever
+        # ADD entries, the same property every other interview in this command already relies
+        # on.
+        try:
+            corpus_empty = not any(
+                sluice_app.list_evidence(kind=kind, pending=True)
+                or sluice_app.list_evidence(kind=kind, pending=False)
+                for kind in EVIDENCE_KINDS
+            )
+        except (OSError, ValueError) as exc:
+            # The same posture the three `except OSError` handlers below take, and for the
+            # reason `main`'s own `except ValueError` records: a traceback here "blocked
+            # hardest the one command that would have written them a correct config".
+            # `Vault._evidence_dir` refuses a symlinked evidence directory -- correctly, and
+            # that refusal is not weakened here -- but a user whose vault has one still needs
+            # the config and the Judging Profile this run was about to write. `corpus_empty`
+            # stays False, so the capture step is skipped rather than offered against a corpus
+            # this run could not read. Skipping it is what makes `collect_evidence`'s own
+            # per-item isolation unreachable from HERE for this cause: with the wizard never
+            # offered, nobody types a name only to be told every single entry was refused.
+            #
+            # `(OSError, ValueError)`, matching `sluice/evidence/commands.py`'s three
+            # handlers rather than the narrower `OSError` this shipped with. The reader
+            # reached here raises BOTH: `Vault._evidence_entries` opens each entry through
+            # `_read`'s `encoding="utf-8"`, so an entry file that is not valid UTF-8 raises
+            # UnicodeDecodeError -- a ValueError subclass. Under the narrow spelling that
+            # escaped to `main`'s own `except ValueError`, which exits 2 having written
+            # NEITHER the config nor the Judging Profile: a mis-encoded byte in one evidence
+            # note cost the user the entire command, which is precisely the harm the
+            # paragraph above says this arm exists to prevent.
+            #
+            # `any` SHORT-CIRCUITS, so a vault whose first kind already has entries never
+            # reaches a broken later one and this arm does not fire. That is correct for the
+            # question this probe asks ("is the corpus empty") and deliberately not a
+            # diagnostic: `job-sluice doctor` reports an unreadable corpus unconditionally,
+            # one row per kind, which is the command for that.
+            failed.append(f"{vault_dir}: could not read the evidence corpus, so the capture "
+                          f"step was skipped -- {exc}")
 
     # `_render_candidate` (onboard/plan.py) raises FrontmatterRoundTripError rather than ever
     # returning a value that would corrupt on the way back in -- deliberately uncaught THERE, so the
@@ -1446,6 +1519,30 @@ def cmd_init(args, config, *, asker=None) -> int:
         print(f"  exists  {path}  (left alone)")
     for line in failed:
         print(f"  FAILED  {line}", file=sys.stderr)
+
+    # Seeds the evidence corpus (#164), gated like the profile/candidate interviews
+    # above: `if interactive:`, the captured local, not a fresh `asker.interactive`
+    # read -- this is an ordinary once-per-run step, not the FrontmatterRoundTripError
+    # retry loop above that specifically needs a live re-read to be reachable by a test
+    # asker. `and corpus_empty`: computed once, at the end of that same `if interactive:`
+    # block, over the SAME `sluice_app` reused here (see that comment for why the gate
+    # is the corpus itself and not `candidate_exists`). `collect_evidence` writes only
+    # into `_inbox/`, unverified; nothing it does can make an entry citable, so it never
+    # touches `written`/`skipped`/`failed` above -- it reports itself, in its own line
+    # shape, once those did.
+    if interactive and corpus_empty:
+        from sluice.evidence.commands import verify_outcome
+        from sluice.evidence.wizard import collect_evidence
+
+        collected = collect_evidence(asker, sluice_app)
+        for kind, names in collected.items():
+            # `verify_outcome`, not a literal "to make them citable": the gate reads
+            # `experience` alone until #165, and this line claimed otherwise for every
+            # kind (#164 review, M2). One helper, so the places that say what `verify`
+            # buys cannot disagree with each other or with the registry.
+            outcome = verify_outcome(EVIDENCE_KINDS[kind], subject="them")
+            print(f"{kind}: proposed {len(names)} entr{'y' if len(names) == 1 else 'ies'} "
+                 f"-- run `job-sluice {kind} verify` to {outcome}")
 
     # Reported from what is ON DISK now, not from the pre-flight intent: when the vault write
     # failed, `vault_created` is still True and the old wording announced a directory that does
@@ -1772,6 +1869,38 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="actually rename the notes this would otherwise only report")
     rn.add_argument("--json", action="store_true", help="machine-readable report")
     rn.set_defaults(func=cmd_leads_rename)
+
+    # Nine parsers from ONE loop over the registry, so the CLI's three groups cannot
+    # drift from the store's three kinds (#164) and a fourth store later is one entry.
+    from sluice.evidence.commands import (cmd_evidence_add, cmd_evidence_list,
+                                          cmd_evidence_verify, field_flag)
+    for kind, spec in EVIDENCE_KINDS.items():
+        group = top.add_parser(kind, help=f"capture and verify {kind} evidence")
+        sub = group.add_subparsers(dest=f"{kind}_cmd", required=True)
+
+        add = sub.add_parser("add", help=f"propose a new {kind} entry (unverified)")
+        add.add_argument("--name", required=True,
+                         help="short identifier for this entry; becomes its filename")
+        for field in spec.fields:
+            add.add_argument(field_flag(field), default="",
+                             help=f"the entry's {field} field")
+        add.add_argument("--body", default="", help="free-text body")
+        add.add_argument("--body-file", default="",
+                         help="read the body from a file, or '-' for stdin")
+        add.set_defaults(func=cmd_evidence_add, kind=kind)
+
+        ls = sub.add_parser("list", help=f"list verified {kind} entries")
+        ls.add_argument("--pending", action="store_true",
+                        help="list proposed, not-yet-verified entries instead")
+        ls.set_defaults(func=cmd_evidence_list, kind=kind)
+
+        # No --all and no --yes, deliberately: this is the only operation that grants
+        # citability to the CV fabrication gate. --id FILTERS which entries are
+        # offered for review; it never answers for you.
+        vf = sub.add_parser("verify", help=f"review and promote pending {kind} entries")
+        vf.add_argument("--id", default=None, metavar="NAME",
+                        help="offer only this entry for review")
+        vf.set_defaults(func=cmd_evidence_verify, kind=kind)
 
     health = top.add_parser("health", help="per-source baseline + retire state")
     health.add_argument(
