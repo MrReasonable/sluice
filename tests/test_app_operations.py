@@ -4,6 +4,7 @@ import os
 from sluice.apply.engine import PrepResult
 from sluice.core.app import Sluice
 from sluice.core.config import Config
+from sluice.core.protocols import Store
 from tests.harness.config import FIXTURE_ADDR
 
 
@@ -500,3 +501,439 @@ def test_ingest_dry_run_writes_nothing(tmp_path, monkeypatch):
     assert report.written == {"created": 1, "updated": 0, "skipped": 0}
     assert out.getvalue() != ""  # JSON lines were written to out
     assert not os.path.exists(os.path.join(str(tmp_path), "Job Applications", "Job Leads"))
+
+
+def test_the_facade_method_names_stay_disjoint_from_the_store_member_names():
+    """tests/test_mcpserver.py's isolation sweep matches a CALL by attribute name
+    only. A facade method sharing a Store write method's name would be swept as a
+    direct store write the moment mcpserver.py called it -- so add_evidence,
+    list_evidence and verify_evidence_interactive must never collide with
+    propose_evidence/read_evidence/read_pending_evidence/verify_evidence, the way
+    create_lead/sign_off_cv already differ from upsert/sign_off."""
+    store_members = {n for n in vars(Store) if not n.startswith("_")}
+    # Enumerate, don't hand-list (this repo's standing rule) -- but a derivation
+    # that silently finds nothing certifies nothing either, the same "all([]) is
+    # True" trap CLAUDE.md names for a negative sweep. Guard the derivation itself.
+    assert store_members, (
+        "Store protocol introspection found no members -- the derivation above is "
+        "broken, not the protocol; this guard would silently pass vacuously")
+    facade = {"add_evidence", "list_evidence", "verify_evidence_interactive"}
+    assert facade & store_members == set()
+    # Bind the hand-listed literal to something REAL: deleting or renaming any of
+    # the three facade methods must fail this test, not merely leave it agreeing
+    # with itself. Without this, the whole test passed before the methods existed
+    # (caught in review) and would pass again after they were removed.
+    assert all(hasattr(Sluice, n) for n in facade)
+
+
+def test_verify_interactive_promotes_only_what_the_human_accepts(tmp_path, monkeypatch):
+    class _Asker:
+        interactive = True
+
+        def __init__(self, answers):
+            self.answers, self.shown = list(answers), []
+
+        def confirm(self, prompt):
+            self.shown.append(prompt)
+            return self.answers.pop(0)
+
+    # VAULT_DIR, not Config(vault_dir=...): stores/vault.py's _make reads the env
+    # var AHEAD of the config field (test_vault_dir_env_var_beats_the_config_key),
+    # and conftest's autouse fixture already exports VAULT_DIR for every test --
+    # so a Config(vault_dir=...) argument here would be silently overridden and
+    # read as isolation it does not actually provide. This is the idiom every
+    # other test in this file already uses (see test_normalize_statuses_dry_run_
+    # on_empty_vault above).
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    s = Sluice(Config())
+    s.add_evidence(kind="skills", name="alpha", fields={"Proficiency": "P"})
+    s.add_evidence(kind="skills", name="beta", fields={"Proficiency": "Q"})
+    asker = _Asker([True, False])
+    report = s.verify_evidence_interactive(kind="skills", asker=asker, today="2026-08-22")
+    assert report["promoted"] == ["alpha"]
+    assert report["skipped"] == ["beta"]
+    assert len(asker.shown) == 2
+    # `only` was never passed here, so `not_found` (#164, Ruling R11) must stay empty
+    # -- it names a MISMATCH, not merely "the report doesn't mention this title".
+    assert report["not_found"] == []
+
+
+def test_verify_interactive_promotes_nothing_without_a_terminal(tmp_path, monkeypatch):
+    class _NoInput:
+        """Mirrors Task 7's real NoInputAsker shape: interactive=False AND a
+        confirm() that exists and answers False. The gate's ONE unique effect is
+        that the human is never asked at all -- confirm_calls stays 0 -- so the
+        fake must be ABLE to answer, and record whether it was asked, or a
+        mutant that deletes the `if not report["interactive"]` gate and instead
+        falls through into the loop produces a BYTE-IDENTICAL report (every
+        pending entry ends up "skipped" either way) and survives. A fake with no
+        confirm() at all only pins that this fake's SHAPE is exercised, not that
+        the human is never prompted -- proven by executing exactly that mutant
+        against this test with the two fakes side by side (see the fix report).
+        """
+        interactive = False
+
+        def __init__(self):
+            self.shown = []
+
+        def confirm(self, prompt):
+            self.shown.append(prompt)
+            return False
+
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    s = Sluice(Config())
+    s.add_evidence(kind="skills", name="alpha", fields={"Proficiency": "P"})
+    asker = _NoInput()
+    report = s.verify_evidence_interactive(kind="skills", asker=asker, today="2026-08-22")
+    assert report["interactive"] is False and report["promoted"] == []
+    # The load-bearing assertion: the human is never asked at all under a
+    # non-interactive asker, not merely that nothing ends up promoted.
+    assert asker.shown == []
+    assert len(s.list_evidence(kind="skills", pending=True)) == 1
+    assert report["not_found"] == []  # no `only` was passed -- there's nothing to miss
+
+
+def test_verify_interactive_not_found_is_reported_even_without_a_terminal(tmp_path, monkeypatch):
+    """Ruling R11 (#164): `not_found` is decided by the `only` FILTER, before
+    `report["interactive"]` is even consulted -- a non-interactive asker must not
+    swallow the "you named an id that isn't pending" signal the way it swallows
+    promotion itself. Mirrors the class above's `_NoInput` fake so the same
+    non-interactive shape is exercised here."""
+    class _NoInput:
+        interactive = False
+
+        def __init__(self):
+            self.shown = []
+
+        def confirm(self, prompt):
+            self.shown.append(prompt)
+            return False
+
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    s = Sluice(Config())
+    s.add_evidence(kind="skills", name="alpha", fields={"Proficiency": "P"})
+    asker = _NoInput()
+    report = s.verify_evidence_interactive(kind="skills", asker=asker, only="ghost",
+                                           today="2026-08-22")
+    assert report["not_found"] == ["ghost"]
+    assert report["skipped"] == []  # "ghost" never existed to BE skipped
+    assert asker.shown == []
+
+
+def test_verify_interactive_only_filters_without_ever_auto_promoting(tmp_path, monkeypatch):
+    """`only` FILTERS which pending entries are offered for review; it must never
+    act as an auto-yes. Pins three things: only the named entry is offered (the
+    other is never shown to the asker at all); the un-offered entry is left
+    untouched in the inbox; and the offered entry still requires a real confirm
+    to be promoted -- declining it leaves it pending, not auto-verified."""
+    class _Asker:
+        interactive = True
+
+        def __init__(self, answer):
+            self.answer, self.shown = answer, []
+
+        def confirm(self, prompt):
+            self.shown.append(prompt)
+            return self.answer
+
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    s = Sluice(Config())
+    s.add_evidence(kind="skills", name="alpha", fields={"Proficiency": "P"})
+    s.add_evidence(kind="skills", name="beta", fields={"Proficiency": "Q"})
+
+    # only="alpha": beta must never be offered, and must survive untouched.
+    asker = _Asker(True)
+    report = s.verify_evidence_interactive(kind="skills", asker=asker, only="alpha",
+                                           today="2026-08-22")
+    assert report["promoted"] == ["alpha"]
+    assert len(asker.shown) == 1  # beta was never shown to the asker
+    pending_titles = {e["title"] for e in s.list_evidence(kind="skills", pending=True)}
+    assert pending_titles == {"beta"}  # untouched, still in the inbox
+    assert report["not_found"] == []  # "alpha" DID match -- not a not-found case
+
+    # only="beta", declined: not an auto-yes -- it stays pending.
+    asker2 = _Asker(False)
+    report2 = s.verify_evidence_interactive(kind="skills", asker=asker2, only="beta",
+                                            today="2026-08-22")
+    assert report2["promoted"] == []
+    assert report2["skipped"] == ["beta"]
+    assert report2["not_found"] == []  # "beta" matched and was offered -- just declined
+    assert {e["title"] for e in s.list_evidence(kind="skills", pending=True)} == {"beta"}
+
+    # A NAME THAT MATCHES NOTHING (Ruling R11, #164): the filtered queue is empty, but
+    # the report is no longer indistinguishable from "nothing was pending at all" --
+    # `not_found` names the id, which is what lets a caller print "no pending entry
+    # matching 'ghost'" instead of a silent, all-empty success report.
+    asker3 = _Asker(True)
+    report3 = s.verify_evidence_interactive(kind="skills", asker=asker3, only="ghost",
+                                            today="2026-08-22")
+    assert report3 == {"promoted": [], "skipped": [], "unchanged": [], "failed": [],
+                       "not_found": ["ghost"], "interactive": True}
+    assert asker3.shown == []
+
+
+def test_verify_interactive_only_accepts_a_name_not_only_its_reduced_slug(tmp_path, monkeypatch):
+    """Task 7 review, IMPORTANT 3: `only` is documented (and typed by a user) as the
+    same NAME `add --name` took, but a pending entry's `title` is already the REDUCED
+    slug `propose_evidence` filed it under -- so before this fix, a name containing
+    spaces or mixed case could never match its own stored entry, and `--id "Beta
+    Thing"` after `add --name "Beta Thing"` silently reported not_found. Proposed
+    exactly the way a real --name value would be typed; `only` is given in that same
+    un-reduced shape, not pre-slugified by the test."""
+    class _Asker:
+        interactive = True
+
+        def __init__(self):
+            self.shown = []
+
+        def confirm(self, prompt):
+            self.shown.append(prompt)
+            return True
+
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    s = Sluice(Config())
+    s.add_evidence(kind="skills", name="Beta Thing", fields={"Proficiency": "P"})
+    asker = _Asker()
+    report = s.verify_evidence_interactive(kind="skills", asker=asker, only="Beta Thing",
+                                           today="2026-08-22")
+    assert report["promoted"] == ["beta-thing"]  # the slug propose_evidence actually filed it at
+    assert report["not_found"] == []
+    assert len(asker.shown) == 1
+
+
+def test_verify_interactive_only_matches_the_title_list_pending_actually_displays(tmp_path,
+                                                                                  monkeypatch):
+    """#164 whole-branch review, IMPORTANT 2 -- the facade half.
+
+    `... list --pending` prints `entry["title"]`, the entry's real basename. For an entry
+    a human dropped into `_inbox/` themselves -- a first-class workflow for this tool --
+    that title is whatever they named the file, and NO reduction of it produces the
+    stored value: before this fix `--id "My Entry"` reduced to `my-entry`, matched
+    nothing, and reported `not_found` against a title the very same command had just
+    displayed. So the filter now matches the title verbatim as well as reduced.
+
+    Asserted through the same facade the CLI calls, and all the way to a promotion, so a
+    filter that matched but a lookup that then re-reduced (the store-side half of the
+    same bug) still fails here.
+    """
+    class _Asker:
+        interactive = True
+
+        def __init__(self):
+            self.shown = []
+
+        def confirm(self, prompt):
+            self.shown.append(prompt)
+            return True
+
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    s = Sluice(Config())
+    inbox = os.path.join(str(tmp_path), "Job Applications", "Skills Inventory", "_inbox")
+    os.makedirs(inbox)
+    with open(os.path.join(inbox, "My Entry.md"), "w", encoding="utf-8") as fh:
+        fh.write("---\nProficiency: P\n---\nBody text.\n")
+    displayed = [e["title"] for e in s.list_evidence(kind="skills", pending=True)]
+    assert displayed == ["My Entry"], "precondition: this is what `list --pending` prints"
+
+    asker = _Asker()
+    report = s.verify_evidence_interactive(kind="skills", asker=asker, only="My Entry",
+                                           today="2026-08-22")
+    assert report["not_found"] == [], "--id did not match the title the listing displays"
+    assert report["promoted"] == ["My Entry"]
+    assert len(asker.shown) == 1
+    assert [e["title"] for e in s.list_evidence(kind="skills")] == ["My Entry"]
+
+
+def test_verify_interactive_isolates_a_failing_entry_and_still_offers_the_rest(tmp_path,
+                                                                                monkeypatch):
+    """#164 review, H2 -- the starvation this closes, reproduced at the facade.
+
+    Measured before per-item isolation, with pending ['alpha', 'mike', 'november'] and
+    `alpha` already taken in the citable set: `verify_evidence`'s exclusive create raised
+    FileExistsError, it unwound past this loop, `report` was discarded whole, and
+    `november` was never offered. Every later run aborted at the same entry, so the ONE
+    path to citability starved permanently and `cv run` kept reporting `skipped-gate` --
+    the fabrication verdict this feature exists to prevent.
+
+    Three assertions, and each fails a different way against the old behaviour: the two
+    healthy entries reach the human AND are promoted (the batch continued); the failing
+    one is reported by NAME with a reason (the report survived); and the reason is words,
+    not `[Errno 17]` (what actually reached the terminal before).
+    """
+    class _Asker:
+        interactive = True
+
+        def __init__(self):
+            self.shown = []
+
+        def confirm(self, prompt):
+            self.shown.append(prompt)
+            return True
+
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    s = Sluice(Config())
+    base = os.path.join(str(tmp_path), "Job Applications", "Experience Library")
+    os.makedirs(os.path.join(base, "_inbox"))
+    # `alpha` verified already, and a same-named entry hand-dropped into the inbox --
+    # both by hand, because `add` now refuses that clash up front (H2b). A human editing
+    # the vault is a first-class workflow here, so this state is genuinely reachable.
+    with open(os.path.join(base, "alpha.md"), "w", encoding="utf-8") as fh:
+        fh.write("---\nCompany: Alpha\nverified: 2026-01-01\n---\nAlready citable.\n")
+    with open(os.path.join(base, "_inbox", "alpha.md"), "w", encoding="utf-8") as fh:
+        fh.write("---\nCompany: Alpha\n---\nA clashing proposal.\n")
+    s.add_evidence(kind="experience", name="mike", fields={"Company": "Beta"})
+    s.add_evidence(kind="experience", name="november", fields={"Company": "Gamma"})
+
+    asker = _Asker()
+    report = s.verify_evidence_interactive(kind="experience", asker=asker,
+                                           today="2026-08-22")
+
+    assert report["promoted"] == ["mike", "november"], "the batch aborted at the failure"
+    assert len(asker.shown) == 3, "an entry after the failing one was never offered"
+    assert [t for t, _ in report["failed"]] == ["alpha"]
+    [(_, reason)] = report["failed"]
+    assert "already exists" in reason
+    assert "Errno" not in reason, "an errno reached the caller instead of a named reason"
+
+
+def test_list_evidence_excludes_an_unverified_entry_from_the_citable_listing(tmp_path,
+                                                                              monkeypatch):
+    """#164 review, H5. `Sluice.list_evidence(pending=False)` passes
+    `verified_only=True` to the store, and flipping that flag to False survived every
+    test in the suite: the only unverified entries any fixture had sat in `_inbox/`,
+    which `read_evidence` cannot see at EITHER setting, so the flag was asserted by
+    location rather than by the filter it names.
+
+    An unverified `.md` sitting directly in the kind directory is not exotic -- it is
+    the ordinary state of a note a human wrote in Obsidian and has not run `verify`
+    over, and `verify_evidence` is the only thing that ever stamps the key. What this
+    flag decides is what the MCP `list_evidence` tool reports to an LLM as citable, so
+    a flipped flag hands a composer entries the CV fabrication gate would reject and
+    calls them evidence.
+
+    Asserted BOTH ways round, because a filter that returns nothing at all would
+    satisfy the exclusion half alone.
+    """
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    s = Sluice(Config())
+    base = os.path.join(str(tmp_path), "Job Applications", "Skills Inventory")
+    os.makedirs(base)
+    with open(os.path.join(base, "citable.md"), "w", encoding="utf-8") as fh:
+        fh.write("---\nProficiency: P\nverified: 2026-01-01\n---\nReviewed.\n")
+    with open(os.path.join(base, "hand-written.md"), "w", encoding="utf-8") as fh:
+        fh.write("---\nProficiency: Q\n---\nNever run through verify.\n")
+
+    titles = [e["title"] for e in s.list_evidence(kind="skills")]
+    assert titles == ["citable"], "an unverified entry was listed as citable"
+
+
+def test_verify_interactive_abstains_when_the_entry_is_edited_while_it_is_being_reviewed(
+        tmp_path, monkeypatch):
+    """#164 review, H4 -- the review-then-promote compare-and-set, driven end to end.
+
+    Nothing in the suite ever produced a non-empty `report["unchanged"]` before this,
+    so the whole abstention arm above the store was inert: re-deriving `reviewed` AT the
+    store call -- which is exactly the bug the CAS exists to prevent, since it would
+    promote whatever is on disk NOW rather than what the human approved -- survived
+    mutation with the suite green.
+
+    The arm is reachable on the real path, not a contrivance: the human sits inside
+    `asker.confirm` reading the entry while Obsidian is free to save over it, which is
+    what this asker does. `docs/ARCHITECTURE.md` records the same threat model for
+    `_cas_write` (#16): the primary writer sluice races is a human in their editor.
+
+    Both halves are asserted. `unchanged` naming the entry is the report half; the entry
+    still sitting in the inbox, unstamped, is the half that would catch a promotion that
+    reported the abstention and wrote anyway.
+    """
+    class _EditingAsker:
+        """Answers yes -- but rewrites the entry first, the way an editor saving over it
+        mid-review would."""
+        interactive = True
+
+        def __init__(self, target):
+            self.target, self.shown = target, []
+
+        def confirm(self, prompt):
+            self.shown.append(prompt)
+            with open(self.target, "a", encoding="utf-8") as fh:
+                fh.write("\nan edit made while the human was reading\n")
+            return True
+
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    s = Sluice(Config())
+    s.add_evidence(kind="skills", name="alpha", fields={"Proficiency": "P"})
+    inbox = os.path.join(str(tmp_path), "Job Applications", "Skills Inventory", "_inbox")
+
+    asker = _EditingAsker(os.path.join(inbox, "alpha.md"))
+    report = s.verify_evidence_interactive(kind="skills", asker=asker, today="2026-08-22")
+
+    assert report["unchanged"] == ["alpha"], "the abstention was not reported"
+    assert report["promoted"] == [] and report["failed"] == []
+    assert s.list_evidence(kind="skills") == [], "unreviewed content became citable"
+    assert [e["title"] for e in s.list_evidence(kind="skills", pending=True)] == ["alpha"]
+
+
+def test_verify_interactive_isolates_an_entry_that_vanished_mid_review(tmp_path, monkeypatch):
+    """The READ half of the same isolation, and it needs its own row: the entry text is
+    fetched OUTSIDE the `verify_evidence` call, so an isolation wrapped around the store
+    call alone would leave this arm aborting the batch exactly as before.
+
+    The deletion happens from inside `confirm` -- i.e. while the human is sitting at the
+    prompt for the PREVIOUS entry -- because that is the only way this state is reachable:
+    `read_pending_evidence` reads every entry's body to build the listing, so an entry
+    already unreadable when the queue was built fails the whole listing instead (which is
+    correct, and is `test_verify_names_an_unreadable_pending_entry_instead_of_crashing`'s
+    territory). Deleting a note in Obsidian mid-review is the real-world shape of this.
+    """
+    class _DeletingAsker:
+        """Answers yes, and deletes `victim` the first time it is asked."""
+        interactive = True
+
+        def __init__(self, victim):
+            self.victim, self.shown = victim, []
+
+        def confirm(self, prompt):
+            self.shown.append(prompt)
+            if os.path.exists(self.victim):
+                os.unlink(self.victim)
+            return True
+
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    s = Sluice(Config())
+    s.add_evidence(kind="skills", name="alpha", fields={"Proficiency": "P"})
+    s.add_evidence(kind="skills", name="bravo", fields={"Proficiency": "Q"})
+    inbox = os.path.join(str(tmp_path), "Job Applications", "Skills Inventory", "_inbox")
+
+    asker = _DeletingAsker(os.path.join(inbox, "bravo.md"))
+    report = s.verify_evidence_interactive(kind="skills", asker=asker, today="2026-08-22")
+
+    assert report["promoted"] == ["alpha"], "the batch aborted on the vanished entry"
+    assert [t for t, _ in report["failed"]] == ["bravo"]
+    [(_, reason)] = report["failed"]
+    assert "no longer in the inbox" in reason
+    assert "Errno" not in reason
+    # The human is never asked about an entry whose bytes could not be read -- confirming
+    # content nobody could be shown is what the compare-and-set exists to prevent.
+    assert len(asker.shown) == 1
+
+
+def test_verify_interactive_only_still_reports_not_found_for_an_unreducible_value(tmp_path,
+                                                                                 monkeypatch):
+    """The fallback half of the same fix: a value that reduces to nothing at all (here,
+    pure punctuation) must not raise `evidence_slug`'s ValueError out of this filter --
+    it degrades to comparing the raw value, which simply matches nothing, the same
+    `not_found` outcome as any other non-matching id."""
+    class _Asker:
+        interactive = True
+
+        def confirm(self, prompt):
+            return True
+
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    s = Sluice(Config())
+    s.add_evidence(kind="skills", name="alpha", fields={"Proficiency": "P"})
+    report = s.verify_evidence_interactive(kind="skills", asker=_Asker(), only="###",
+                                           today="2026-08-22")
+    assert report["not_found"] == ["###"]
+    assert report["promoted"] == []

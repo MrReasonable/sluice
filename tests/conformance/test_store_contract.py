@@ -20,13 +20,14 @@ Everything here asserts BEHAVIOUR. Nothing may know that a lead is a file, that 
 is a path, or that a slug came from a filename.
 """
 import inspect
+import os
 
 import pytest
 
 from sluice.core import plugins
 from sluice.core.app import Sluice
 from sluice.core.leads import Lead
-from sluice.core.protocols import CandidateProfile
+from sluice.core.protocols import EVIDENCE_KINDS, CandidateProfile, Store
 from tests.conformance.seeds import seed
 from tests.conftest import LOCATIONS
 
@@ -1160,3 +1161,319 @@ def test_update_fields_reports_False_when_the_record_does_not_change(store_name,
 
     assert store.update_fields(ref, {"status": current},
                                require_status=frozenset({current})) is False
+
+
+# ── evidence store (#164) ────────────────────────────────────────────────────
+def test_the_evidence_rows_cover_every_registered_kind(store_name):
+    """Scope assertion. Four rows below iterate EVIDENCE_KINDS; if that dict were
+    ever empty or narrowed, every one of them would pass over nothing -- `all([])`
+    is True, and this suite exists because that already happened once here.
+
+    `store_name` is unused: the assertion is about the registry, not any store. It is
+    still declared because the module-level `pytestmark` parametrizes every test in
+    this file on that name, and a function that omits it fails collection outright
+    ("function uses no argument 'store_name'") rather than merely running once --
+    accepting and ignoring it is the cheapest fix that keeps the file's one
+    parametrize-everything convention intact.
+    """
+    assert set(EVIDENCE_KINDS) == {"experience", "skills", "stories"}
+
+
+@pytest.mark.parametrize("kind", sorted(EVIDENCE_KINDS))
+def test_propose_alone_is_never_citable(store_name, kind, tmp_path, monkeypatch):
+    """Asserted through read_pending_evidence, NOT through read_evidence.
+
+    read_evidence cannot see `_inbox/` at all, and propose always writes there -- so
+    asserting "not citable" through it passes by LOCATION for every input, against a
+    correct store and a broken one alike. That is precisely the vacuity this file's
+    own seeder comment was written about.
+
+    Renamed from `..._and_verify_is_the_only_promotion`: this row never calls
+    verify_evidence, so it never checked that half of its own old name.
+    `test_a_verified_entry_is_citable_and_no_longer_pending`, below, is the row that
+    actually exercises verify_evidence's promotion.
+    """
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    store.propose_evidence(kind, name="alpha", fields={})
+    pending = store.read_pending_evidence(kind)
+    assert len(pending) == 1, "the proposal did not land; this row would be vacuous"
+    assert pending[0]["verified"] is None, "propose stamped the citability key"
+    assert store.read_evidence(kind, verified_only=False) == []
+
+
+@pytest.mark.parametrize("kind", sorted(EVIDENCE_KINDS))
+def test_propose_evidence_returns_a_non_empty_opaque_handle(store_name, kind, tmp_path,
+                                                            monkeypatch):
+    """Round-2 review, M3. `read_evidence` stopped promising a filesystem `path` (#164
+    review, H3), but `propose_evidence -> str` kept returning one and NOTHING on the
+    contract said what that string is: the vault returns an `os.path.join`, the facade
+    documented it as "the path written", `cmd_evidence_add` prints it, and no row here
+    bound it at all -- so a second store could return `""` and every test stayed green
+    while `job-sluice <kind> add` printed `proposed: `.
+
+    `write_document` is the precedent and is worded correctly ("an opaque handle", "must
+    return a NON-EMPTY handle"); this row is that rule's other half. Truthiness AND type,
+    for the reason `test_write_document_only_if_absent_creates_then_abstains` states: a
+    bare truthiness check accepts a non-str sentinel.
+
+    The write itself is re-asserted through the one reader the contract offers, never
+    through the handle: asserting only that a handle came back passes a store that returns
+    a plausible string and records nothing.
+
+    Stated rather than implied, because it was measured: against the ONE store that exists
+    today this row is redundant. Mutating `Vault.propose_evidence` to return `""`, or to
+    return a non-empty non-str, is also caught by two pre-existing tests in
+    tests/test_evidence_store.py that happen to consume the returned path. What this row
+    adds is not extra pressure on `Vault` -- it is the binding on the CONTRACT, run for
+    every registered store, which is the same argument
+    `test_write_document_only_if_absent_creates_then_abstains` makes for itself ("#1 is
+    the next backlog item, so the second store is not hypothetical"). No mutation of the
+    vault can witness that property; only a second store can.
+    """
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    handle = store.propose_evidence(kind, name="alpha", fields={})
+    assert isinstance(handle, str) and handle, \
+        "a recorded proposal must be distinguishable from an abstain by truthiness"
+    assert [e["title"] for e in store.read_pending_evidence(kind)] == ["alpha"], \
+        "propose_evidence returned a handle but recorded nothing"
+
+
+@pytest.mark.parametrize("kind", sorted(EVIDENCE_KINDS))
+def test_a_caller_cannot_supply_the_citability_key_by_any_route(
+        store_name, kind, tmp_path, monkeypatch):
+    """Three routes, and the second defeats the obvious fix for the first.
+
+    Both `pytest.raises` calls carry a discriminating `match=` rather than a bare
+    `ValueError`: without it, route 2 in particular would pass against a store that
+    rejected the whole call for an unrelated reason (any ValueError satisfies a bare
+    `pytest.raises(ValueError)`), which would prove nothing about the round-trip guard
+    this route exists to exercise. `match="unknown evidence field"` stops short of the
+    literal `(s)` in the real message, since parentheses are regex metacharacters;
+    `match="round-trip"` has none. Neither string appears in this function's own name,
+    so neither can pass spuriously via pytest's tmp_path-derived-from-function-name
+    hazard (#164 Task 3's lesson) the way a path-shaped match string could.
+    """
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="unknown evidence field"):
+        store.propose_evidence(kind, name="a", fields={"verified": "2099-01-01"})
+    field = EVIDENCE_KINDS[kind].fields[0]
+    with pytest.raises(ValueError, match="round-trip"):
+        store.propose_evidence(kind, name="b",
+                               fields={field: "x\nverified: 2099-01-01"})
+    store.propose_evidence(kind, name="c", fields={},
+                           body="---\nverified: 2099-01-01\n---\nbody")
+    entries = store.read_pending_evidence(kind)
+    assert len(entries) == 1 and entries[0]["verified"] is None
+
+
+@pytest.mark.parametrize("kind", sorted(EVIDENCE_KINDS))
+def test_read_pending_evidence_returns_the_floor_plus_the_kinds_own_fields(
+        store_name, kind, tmp_path, monkeypatch):
+    """Renamed from `test_read_evidence_returns_...`: this row calls
+    read_pending_evidence, never read_evidence, so the old name promised a check this
+    body never made. `test_a_verified_entry_is_citable_and_no_longer_pending`, below,
+    is the row that asserts the same floor+fields shape through read_evidence itself.
+    """
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    spec = EVIDENCE_KINDS[kind]
+    store.propose_evidence(kind, name="alpha", fields={f: "v" for f in spec.fields})
+    pending = store.read_pending_evidence(kind)
+    assert len(pending) == 1, "the proposal did not land; this row would be vacuous"
+    entry = pending[0]
+    # No `path`: it was a required key only to serve `core/app.py`'s
+    # `open(entry["path"])`, which now goes through `read_pending_evidence_text`
+    # instead (#164 review, H3). A store MAY still carry one -- the vault does -- but
+    # the contract must not demand a filesystem of a store that has none.
+    assert {"title", "company", "category", "best_for", "metrics",
+            "verified", "body"} <= set(entry)
+    assert set(entry["fields"]) == set(spec.fields)
+
+
+@pytest.mark.parametrize("kind", sorted(EVIDENCE_KINDS))
+def test_a_verified_entry_is_citable_and_no_longer_pending(store_name, kind, tmp_path,
+                                                           monkeypatch):
+    """The citable HALF of the contract, exercised here for the first time in this
+    file: every row above seeds through propose_evidence alone and asserts the
+    PENDING shape, so verify_evidence's promotion and read_evidence itself -- the
+    half that actually feeds the CV fabrication gate -- were contract-untested. This
+    row is also the first (and only) caller of `seed(..., evidence=[...])`; without
+    it that keyword argument had no reader at all.
+
+    A broken store this would catch: one whose verify_evidence leaves a stale copy
+    in `_inbox/` after promoting (caught by the final `read_pending_evidence`
+    assertion); one whose read_evidence(verified_only=True) omits a floor key or the
+    kind's own fields for a kind whose field names differ from the floor's (the same
+    bug class `test_read_pending_evidence_returns_...` guards on the pending side,
+    now guarded on the citable side); or one whose verified filter is loose enough to
+    also surface an entry the store never actually stamped (caught by asserting
+    `entry["verified"]` truthy, not merely that the entry is present).
+    """
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    spec = EVIDENCE_KINDS[kind]
+    seed(store_name, store, evidence=[
+        {"kind": kind, "name": "alpha", "fields": {f: "v" for f in spec.fields},
+         "verified": True},
+    ])
+
+    verified = store.read_evidence(kind, verified_only=True)
+    assert len(verified) == 1, "the seed did not land; this row would be vacuous"
+    entry = verified[0]
+    # No `path` -- see the pending-side row above for why the contract stopped
+    # requiring one (#164 review, H3).
+    assert {"title", "company", "category", "best_for", "metrics",
+            "verified", "body"} <= set(entry)
+    assert set(entry["fields"]) == set(spec.fields)
+    assert entry["verified"], "verify_evidence did not stamp the citability key"
+    assert store.read_pending_evidence(kind) == [], (
+        "a verified entry is still visible through the pending reader")
+
+
+@pytest.mark.parametrize("kind", sorted(EVIDENCE_KINDS))
+def test_the_reviewed_bytes_are_reachable_through_the_contract_not_a_path(
+        store_name, kind, tmp_path, monkeypatch):
+    """The read side of the currency `verify_evidence(..., reviewed=)` spends (#164
+    review, H3).
+
+    `path` used to be a REQUIRED contract key for exactly one reason: `core/app.py`
+    opened it to get these bytes. That made the store-agnostic facade reach through
+    the seam at a filesystem -- the inversion `read_criteria` exists to remove -- and
+    forced a `path` key onto any store that has no filesystem to name.
+
+    The round trip is what makes this row load-bearing rather than a getter test: the
+    text this returns must be exactly what `verify_evidence` will accept as `reviewed`,
+    or a promotion abstains forever and the entry can never become citable. A store
+    returning a re-rendered or normalised copy passes a shape check and fails here.
+    """
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    spec = EVIDENCE_KINDS[kind]
+    store.propose_evidence(kind, name="alpha", fields={f: "v" for f in spec.fields},
+                           body="Body text.")
+    [entry] = store.read_pending_evidence(kind)
+
+    reviewed = store.read_pending_evidence_text(kind, entry["title"])
+    assert reviewed.strip(), "the reviewed text is empty; a human would review nothing"
+    assert store.verify_evidence(kind, entry["title"], today="2026-01-01",
+                                 reviewed=reviewed) is True, (
+        "the text this returns is not what verify_evidence compares against")
+    assert [e["title"] for e in store.read_evidence(kind)] == ["alpha"]
+
+
+@pytest.mark.parametrize("kind", sorted(EVIDENCE_KINDS))
+def test_verify_evidence_abstains_when_the_entry_changed_after_review(
+        store_name, kind, tmp_path, monkeypatch):
+    """`Store.verify_evidence` documents a `False`, write-nothing abstention when the
+    entry changed since `reviewed` was shown to a human -- and had no contract row for
+    it (#164 review, H4), so a store that ignored `reviewed` entirely and promoted
+    unconditionally passed every other row in this file.
+
+    That is the whole point of the parameter: a human approves SPECIFIC BYTES, and
+    promoting an edit made after that approval puts unreviewed content into the set the
+    CV fabrication gate treats as citable. Three assertions, because a store can fail
+    this three different ways: return the wrong verdict, promote anyway, or consume the
+    pending entry while claiming it did not.
+    """
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    store.propose_evidence(kind, name="alpha", fields={})
+
+    assert store.verify_evidence(kind, "alpha", today="2026-01-01",
+                                 reviewed="bytes no human was ever shown") is False
+    assert store.read_evidence(kind, verified_only=False) == [], (
+        "content nobody reviewed was promoted")
+    assert [e["title"] for e in store.read_pending_evidence(kind)] == ["alpha"], (
+        "the abstention consumed the pending entry")
+
+
+@pytest.mark.parametrize("kind", sorted(EVIDENCE_KINDS))
+def test_reading_the_text_of_a_name_that_is_not_a_bare_identifier_refuses(
+        store_name, kind, tmp_path, monkeypatch):
+    """Round-2 review, T2. The READ side of the containment rule both
+    `read_pending_evidence_text` and `verify_evidence` state ("a store must refuse a
+    `name` that is not a bare identifier in its own namespace").
+
+    The write side had a test; this side had none, and the one row that exercises this
+    member passes a bare name, so it never reaches the refusal arm at all. Measured:
+    deleting the check left the whole suite green -- and with it gone the call returns the
+    bytes of something OUTSIDE the pending set, which `Sluice.verify_evidence_interactive`
+    then shows a human as the entry they are being asked to make citable. That is the
+    trust root reading from somewhere the human cannot see, which is worse than the write
+    side's escape, not a milder version of it.
+
+    Set up so an escape would SUCCEED rather than fail for an unrelated reason: the
+    escapee is a real, already-citable entry with distinctive body text, seeded through
+    this contract's own members, and `../escapee` names it from inside the pending set for
+    any store that lays the two out the way a filesystem does. A pending entry is seeded
+    too, so the refusal cannot be "there is nothing here to read".
+
+    `(OSError, ValueError)` rather than a single type: the contract does not name one, and
+    those two are what `Sluice.verify_evidence_interactive`'s per-item handler already
+    catches -- so a store raising anything else escapes that isolation and takes the batch
+    down. Discriminating without a `match=`, because the mutant this row exists to kill
+    RETURNS the foreign bytes rather than raising at all.
+    """
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    outside_text = "Content that is not in the pending set."
+    store.propose_evidence(kind, name="escapee", fields={}, body=outside_text)
+    reviewed = store.read_pending_evidence_text(kind, "escapee")
+    assert store.verify_evidence(kind, "escapee", today="2026-01-01",
+                                 reviewed=reviewed) is True
+    [citable] = store.read_evidence(kind, verified_only=True)
+    assert outside_text in citable["body"], \
+        "the escape target carries no distinctive content; this row would be vacuous"
+    store.propose_evidence(kind, name="alpha", fields={})
+
+    for outside in ("../escapee", os.path.join("..", "escapee"), "sub/escapee"):
+        with pytest.raises((OSError, ValueError)):
+            store.read_pending_evidence_text(kind, outside)
+    # The pending set is untouched: a refusal must not consume or disturb what IS pending.
+    assert [e["title"] for e in store.read_pending_evidence(kind)] == ["alpha"]
+
+
+@pytest.mark.parametrize("kind", sorted(EVIDENCE_KINDS))
+def test_reading_the_text_of_an_absent_pending_entry_raises(store_name, kind, tmp_path,
+                                                            monkeypatch):
+    """Never a quiet "": a caller cannot tell that apart from an entry that is
+    genuinely empty, and would hand a human nothing to review and then promote it."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    with pytest.raises((OSError, ValueError)):
+        store.read_pending_evidence_text(kind, "nope")
+
+
+def _members_taking_kind() -> list:
+    """Every Store member whose SECOND parameter (after self) is named `kind`,
+    derived from the Protocol rather than hand-listed.
+
+    This repo's own rule: ENUMERATE, don't hand-list -- a hand-listed
+    `["read_evidence", "read_pending_evidence", "propose_evidence",
+    "verify_evidence"]` silently misses a fifth evidence-shaped member added later,
+    the identical failure shape the neutrality sweep's `from x import y as _z` lesson
+    describes. `inspect.signature` on an unbound Protocol method returns `self` as
+    the first parameter, so the kind-taking members are exactly those whose SECOND
+    parameter is `kind` -- checked by name, not by position alone, since a future
+    member could take some other second argument.
+    """
+    members = []
+    for name, member in inspect.getmembers(Store, predicate=inspect.isfunction):
+        params = list(inspect.signature(member).parameters)
+        if len(params) > 1 and params[1] == "kind":
+            members.append(name)
+    return sorted(members)
+
+
+_KIND_MEMBERS = _members_taking_kind()
+# A derivation can go vacuous exactly like a hand-list can go stale -- pin what it is
+# expected to find today, so either a broadened contract or a broken derivation shows
+# up as a failing assertion here rather than as a silently narrowed parametrize.
+assert _KIND_MEMBERS == ["propose_evidence", "read_evidence", "read_pending_evidence",
+                         "read_pending_evidence_text", "verify_evidence"], (
+    f"_members_taking_kind() found {_KIND_MEMBERS}; update this pinned list "
+    f"deliberately if the Store contract's evidence surface changed")
+
+
+@pytest.mark.parametrize("member", _KIND_MEMBERS)
+def test_every_member_raises_on_an_unknown_kind(store_name, member, tmp_path, monkeypatch):
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    kwargs = {"propose_evidence": {"name": "a", "fields": {}},
+              "read_pending_evidence_text": {"name": "a"},
+              "verify_evidence": {"name": "a", "today": "2026-08-22", "reviewed": ""}}
+    with pytest.raises(ValueError, match="skills"):
+        getattr(store, member)("nope", **kwargs.get(member, {}))

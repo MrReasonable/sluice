@@ -1,8 +1,17 @@
 """The adapter contracts: Store, Fetcher, Renderer.
 
-Interface only, no logic. These are what an implementation must satisfy to be
-registered under a seam, and what `tests/conformance/` asserts against every
-registered implementation.
+These are what an implementation must satisfy to be registered under a seam, and what
+`tests/conformance/` asserts against every registered implementation.
+
+The PROTOCOLS carry no logic -- every method body below is `...`, and that stays true:
+a default implementation here would be a behaviour a store inherits without passing the
+conformance suite for it. What this module does own alongside them is the shared,
+implementation-independent DATA every store is written against, and that is not inert:
+`EvidenceKind.__post_init__` validates a `floor_map` and raises, `floor_sources()` merges
+one over `FLOOR_FIELD_SOURCES`, and the three `EVIDENCE_KINDS` entries run that validator
+at import time -- deliberately, so a bad registry edit fails the build rather than
+producing empty floor keys at runtime. (This docstring used to say "interface only, no
+logic", which stopped being true when that validator landed.)
 
 The important one is `Store`. Never-clobber and never-regress used to be properties of
 `core/vault.py` -- of one implementation. Once the store is pluggable they cannot live
@@ -29,6 +38,141 @@ CRITERIA_RELPATH = "Job Applications/Judging Profile.md"
 CANDIDATE_PROFILE_RELPATH = "Job Applications/Candidate Profile.md"
 """The candidate's own identity and application-form data. Like CRITERIA_RELPATH
 this is an opaque DOCUMENT KEY, not a path -- nothing here may assume a filesystem."""
+
+
+FLOOR_FIELD_SOURCES = {
+    "company": "Company",
+    "category": "Category",
+    "best_for": "Best For",
+    "metrics": "Metrics",
+}
+"""Which frontmatter key fills each of `read_evidence`'s four TEXT floor keys, by
+default: an identity mapping on the title-cased name. A kind whose own field names
+differ overrides individual entries through `EvidenceKind.floor_map`.
+
+`title`, `verified` and `body` are not here -- none of them comes from a user-named
+frontmatter field (the first is the entry's identity, the second is store-managed, the
+third is everything after the fence)."""
+
+
+@dataclass(frozen=True)
+class EvidenceKind:
+    """One evidence store: where it lives, and the frontmatter fields a USER supplies.
+
+    THREE of the four attributes bind a store: `relpath` is the document key its entries
+    live under, `fields` is the set it must accept and no more, and `floor_map` decides
+    which of those fills each text floor key `read_evidence` promises. `cited_by_gate`
+    binds NO store at all -- it is a fact about `cv/engine.py`, published here because
+    this is the one registry every user-facing message keys its wording on, and a store
+    implementer may (and should) ignore it entirely. It is stated rather than left to be
+    inferred because it sits on the Store contract's own data with nothing else marking
+    it off-limits.
+
+    `fields` is deliberately the user-facing set only. The store-managed `verified`
+    key is NOT here: `cli.py` derives `add`'s flags from this tuple, so listing it
+    would generate a `--verified` flag, and a flag that grants citability is exactly
+    what an agent shelling out to the CLI would pass. See the spec's decision 2.
+
+    `cited_by_gate` says whether the CV fabrication gate actually READS this corpus
+    today. It exists because `doctor` and the `add` handler both told a user that
+    verifying an entry of ANY kind made it "citable by the CV fabrication gate", while
+    `cv/engine.py` reads `experience` alone -- `skills` and `stories` wait on #165
+    (#164 review, M2). Over-claiming here is the worst direction to be wrong in: a user
+    reads it as "my skills are feeding my CVs" and stops looking. #165 flips a boolean
+    rather than editing prose in three places, and
+    `test_cited_by_gate_names_exactly_the_kinds_the_cv_engine_reads` derives the true
+    set from `cv/engine.py`'s own source, so the flag cannot silently go stale in either
+    direction.
+
+    `floor_map` overrides, per floor key, which of THIS kind's frontmatter keys fills
+    it -- `(floor_key, frontmatter_key)` pairs, merged over `FLOOR_FIELD_SOURCES`.
+    A tuple rather than a dict so `frozen=True` keeps giving these a working `__hash__`.
+
+    It exists because the floor is otherwise an identity mapping on title-cased names,
+    and `skills`' four fields collide with NONE of them: measured (#164 review, M3), a
+    skills entry whose own `Domain` was `platform` scored ZERO in `cv/bundle.py`'s
+    `rank()` against the keyword `platform`, because `rank` reads `best_for`/`category`/
+    `title` and the first two were empty strings. That is rework #165 walks straight
+    into, and it is cheap to fix now, while no user has a vault to migrate.
+    """
+    relpath: str
+    fields: tuple
+    cited_by_gate: bool = False
+    floor_map: tuple = ()
+
+    def __post_init__(self):
+        """Refuse a `floor_map` entry naming a floor key that is not a floor key, or a
+        frontmatter key this kind does not declare. Fail loudly at construction, the rule
+        `_select_backend` and `Vault._kind` already follow.
+
+        Both halves close a class rather than an enumerated vector, and neither is
+        reachable from a config file today -- every `EvidenceKind` is shipped code -- so
+        this is a guard against the NEXT edit to that literal, in the shape this codebase
+        uses for a quiet wrong default.
+
+        The floor-key half: `Vault._evidence_entries` builds each entry dict by spreading
+        `floor_sources()` in among literal `path`/`title`/`verified`/`body` keys. Measured
+        against the real store, a `floor_map` naming `title` or `path` OVERWROTE them, and
+        `verified` -- the key that decides citability -- survived only because the spread
+        happens to sit ABOVE it in that dict literal, so a tidy-up reorder would have let a
+        user-supplied frontmatter value grant citability. Restricting the floor key to
+        `FLOOR_FIELD_SOURCES`' own four names makes the floor disjoint from every literal
+        key, so the literal's ORDER stops being load-bearing at all.
+
+        The frontmatter-key half: `floor_sources()` feeds `fm.get(key, "")`, so a typo'd
+        key yields `""` for every entry with nothing red anywhere -- exactly the shape of
+        the zero-score bug (#164 review, M3) the `floor_map` was added to fix, silently
+        re-opened. `fields` is the kind's own declared set, so it is the only honest
+        spelling to check against.
+        """
+        for floor, key in self.floor_map:
+            if floor not in FLOOR_FIELD_SOURCES:
+                raise ValueError(
+                    f"floor_map key {floor!r} is not a text floor key; valid floor keys "
+                    f"are {', '.join(sorted(FLOOR_FIELD_SOURCES))}")
+            if key not in self.fields:
+                raise ValueError(
+                    f"floor_map maps {floor!r} onto frontmatter key {key!r}, which this "
+                    f"kind does not declare; its fields are {', '.join(self.fields)}")
+
+    def floor_sources(self) -> dict:
+        """`FLOOR_FIELD_SOURCES` with this kind's own overrides applied. One place, so
+        a store cannot spell the merge differently from the next one."""
+        return {**FLOOR_FIELD_SOURCES, **dict(self.floor_map)}
+
+
+EVIDENCE_KINDS = {
+    # The one kind cv/engine.py reads today (`read_experience_entries`), hence the only
+    # one anything may call citable. `skills`/`stories` default to False until #165.
+    "experience": EvidenceKind("Job Applications/Experience Library",
+                               ("Company", "Category", "Best For", "Metrics"),
+                               cited_by_gate=True),
+    # `Domain` IS this kind's keyword axis -- what `Best For` is for the other two, and
+    # exactly what `cv/bundle.py`'s rank() scores on. Without the mapping the floor's
+    # `best_for` was the empty string for every skill, so a skills entry in domain
+    # `platform` scored ZERO against the JD keyword `platform` (#164 review, M3).
+    #
+    # ONLY `best_for` is mapped, deliberately. `Proficiency` is a LEVEL, not a
+    # classification, so filling `category` with it would make a JD's ordinary
+    # vocabulary rank skills by how good the user says they are at them. `Evidence` and
+    # `Signal Value` are prose, not figures, and `metrics` feeds the gate's numeric
+    # allowlist. And nothing fills `company`: it is rendered to the composer as
+    # `(<company>)`, so putting a domain there would show a technology in the slot
+    # labelled employer -- fabrication pressure aimed at the gate that exists to prevent
+    # it. A companyless entry takes `_prefix`'s documented `XX` fallback and is still
+    # uniquely sequenced (XX1, XX2, ...), which is that fallback working as designed.
+    # The three unmapped fields stay reachable by name in the entry's `fields` dict.
+    "skills": EvidenceKind("Job Applications/Skills Inventory",
+                           ("Proficiency", "Domain", "Evidence", "Signal Value"),
+                           floor_map=(("best_for", "Domain"),)),
+    # STAR reuses `Best For` rather than inventing a keyword field: cv/bundle.py's
+    # rank() scores on best_for/category/title, so #165 gets that ranker unchanged.
+    # Situation/Task/Action/Result live in the BODY -- _parse_fm_spaced is line-based,
+    # so a multi-line frontmatter value does not round-trip (its continuation lines
+    # are re-read as further keys).
+    "stories": EvidenceKind("Job Applications/STAR Stories",
+                            ("Company", "Best For")),
+}
 
 
 class VaultConflict(RuntimeError):
@@ -281,7 +425,8 @@ class Store(Protocol):
     so a "harmless" preflight probe would silently disable it for every later run this
     process makes. `Vault.preflight` therefore only `stat`s paths and reads documents
     through the store's own existing read methods (`read_baseline`, `read_criteria`,
-    `read_experience_entries`, `read_candidate_profile`), never opens a store's OWN
+    `read_evidence`/`read_pending_evidence` per kind, `read_candidate_profile` -- it does
+    NOT go through `read_experience_entries`, whose name is experience-specific), never opens a store's OWN
     internal state file (a SQLite-backed store's preflight must not connect to its
     database), and never walks the full lead scan set -- doctor is a preflight users
     run often and cheaply, not a second `leads` pass."""
@@ -479,7 +624,124 @@ class Store(Protocol):
         VaultConflict (#16)."""
         ...
 
-    def read_experience_entries(self, verified_only: bool = True) -> list: ...
+    def read_evidence(self, kind: str, verified_only: bool = True) -> list:
+        """Entries for one EVIDENCE_KINDS kind. Raises ValueError on an unknown kind,
+        naming the valid ones -- never a quiet [], which the caller cannot distinguish
+        from an empty store and which the fabrication gate reports as `skipped-gate`.
+
+        Returns dicts carrying at least `title`, `company`, `category`, `best_for`,
+        `metrics`, `verified`, `body` (the floor cv/bundle.py's ranker needs on every
+        kind) plus `fields`, the kind's own frontmatter under its own names. Which of a
+        kind's fields fills each of the four TEXT floor keys is `FLOOR_FIELD_SOURCES`
+        merged with that kind's `floor_map` -- not an identity mapping the store invents
+        for itself, and not every field: one with no floor analogue is reachable only
+        through `fields`.
+
+        A filesystem `path` is deliberately NOT among them. It used to be, and the
+        facade opened it (#164 review, H3) -- a store-agnostic caller reaching through
+        the seam at a filesystem, the exact inversion `read_criteria` was introduced to
+        remove, and a key a SQL- or API-backed store has nothing to put in. Everything
+        this returns is an opaque handle; `read_pending_evidence_text` below is how a
+        caller gets bytes. A store MAY still carry extra keys of its own (the vault
+        does carry `path`), but no contract-bound caller may read one."""
+        ...
+
+    def read_pending_evidence(self, kind: str) -> list:
+        """Everything in the pending set. Same dict shape as read_evidence.
+
+        These are NEVER citable: the fabrication gate reads read_evidence only, and a
+        store must keep the two sets disjoint rather than filtering one out of the other.
+
+        Which is why this returns the pending set WHOLE and must not filter it on the
+        citability key. An entry that carries that key while still being pending is
+        reachable -- for the vault, by a human placing one there, which this tool treats
+        as a first-class workflow -- and it is exactly the entry a human needs to see: it
+        is inert, it is not citable, and the ONLY places that could report it are this
+        reader's three consumers (`<kind> list --pending`, the queue `verify` offers, and
+        doctor's pending count). Filtering here hides it from all three at once."""
+        ...
+
+    def read_pending_evidence_text(self, kind: str, name) -> str:
+        """The exact stored text of ONE pending entry, freshly read.
+
+        The READ side of the currency `verify_evidence(..., reviewed=)` already spends:
+        a human is shown these bytes and approves them, and the promotion compares
+        against them. Freshness is load-bearing, not incidental -- the value must be
+        read at review time, never carried over from the listing that built the queue,
+        or the compare-and-set would compare against a snapshot that is stale by
+        construction and abstain on nothing.
+
+        `name` is the entry's OWN identity as read_pending_evidence reports it (its
+        `title`), on the same terms as verify_evidence's: a store must refuse a `name`
+        that is not a bare identifier in its own namespace. Raises when there is no such
+        pending entry -- never a quiet "", which a caller cannot tell from an entry that
+        is genuinely empty and would hand a human nothing to review."""
+        ...
+
+    def propose_evidence(self, kind: str, *, name, fields, body: str = "") -> str:
+        """Record a PROPOSED entry, returning an opaque handle to it.
+
+        Never citable, and the OBLIGATION is on the store rather than on the signature:
+        `fields` is a caller-supplied mapping, so a store MUST reject a key it does not
+        declare BY NAME -- `verified` among them -- rather than passing the mapping
+        through to whatever it writes. (This paragraph used to say the signature "has no
+        parameter that could carry it", which is simply false: `fields` is exactly such a
+        parameter, and a store could satisfy that sentence to the letter while writing
+        `verified` straight into its record. `Vault` implements the real rule in
+        `_render_evidence_note`; `tests/conformance/test_store_contract.py`'s
+        `test_a_caller_cannot_supply_the_citability_key_by_any_route` is what binds it.)
+        A store must also write the entry somewhere `read_evidence` cannot see it, so a
+        proposal is invisible to the fabrication gate until `verify_evidence` promotes it.
+
+        Refuses rather than overwrites when the name is already proposed, and refuses a
+        name already taken in the VERIFIED set: the clash is the same one
+        verify_evidence would hit, and refusing it at propose time is where a human can
+        still pick a different name. Both refusals are FileExistsError carrying a
+        message a caller may print verbatim, never a bare errno. Raises on a name that
+        does not reduce to a usable identifier, on a field key the kind does not
+        declare, and on content that would not survive being read back.
+
+        The handle is OPAQUE, on the same terms as `write_document`'s: a caller may show
+        it to a user (`job-sluice <kind> add` prints it) and may test it for truthiness,
+        and may do nothing else with it -- in particular it is not promised to be a
+        filesystem path, exactly as `read_evidence`'s dicts no longer promise a `path`
+        key. The vault's handle IS a path; a SQL- or API-backed store has none to give.
+        The complementary requirement, because a successful propose must be
+        distinguishable from an abstain the way `write_document`'s is: a store that
+        recorded the entry must return a NON-EMPTY handle."""
+        ...
+
+    def verify_evidence(self, kind: str, name, *, today: str, reviewed: str) -> bool:
+        """Promote a proposed entry to citable, stamping it as verified.
+
+        `name` is the entry's OWN identity as read_pending_evidence reports it (its
+        `title`), NOT the raw name propose_evidence was called with. A store reduces a
+        user-supplied name at PROPOSE time, so re-deriving that reduction here could
+        only disagree with what the store actually filed -- measured, it made an entry
+        whose identity did not survive the round trip (one added by hand, which this
+        tool treats as a first-class workflow) listable and permanently unverifiable.
+        A store must still refuse a `name` that is not a bare identifier in its own
+        namespace, so no caller can reach outside the pending set.
+
+        The ONLY way an entry becomes citable by the CV fabrication gate. Returns
+        False, writing nothing, when the entry changed since `reviewed` was shown to
+        a human -- promoting an edit made after approval would make unreviewed
+        content citable. Raises when the name is already taken in the verified set,
+        before mutating anything."""
+        ...
+
+    def read_experience_entries(self, verified_only: bool = True) -> list:
+        """`read_evidence("experience")` under a second, required name.
+
+        EXPIRES AT #165. It predates the kind registry and survives only because
+        `cv/engine.py` still calls it; #165 rewrites that caller to read the corpora it
+        composes from by kind. When it does, DELETE this member rather than inheriting
+        it -- a Protocol member is a REQUIRED member, so every future store has to
+        implement a second spelling of a call it already implements, for one caller that
+        will no longer exist. Its conformance row and its two hand-listed test literals go
+        with it. Nothing in the contract depends on the name; `Vault` implements it as a
+        one-line delegate precisely so there is nothing to migrate."""
+        ...
 
     def read_baseline(self) -> str:
         """The baseline CV. Where it lives is the store's business, configured on the

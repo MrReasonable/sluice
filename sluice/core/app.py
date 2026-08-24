@@ -50,6 +50,32 @@ def _today() -> str:
     return date.today().isoformat()
 
 
+def _evidence_failure_reason(exc: BaseException) -> str:
+    """Why ONE evidence entry could not be promoted, in words a human can act on.
+
+    NAMED, never an errno. Before per-item isolation existed, a name already taken in
+    the citable set reached the terminal as the whole of
+    `experience verify: [Errno 17] File exists: <path>` -- which names neither the
+    entry that failed nor anything to do about it, and which this repo's "fail loudly,
+    but say what to do" posture rules out (#164 review, H2).
+
+    `FileExistsError` before `OSError` because it IS one; `ValueError` carries the
+    store's own already-human-worded guard messages (an entry name that is not a bare
+    filename component, an unknown kind), so it is passed through rather than
+    re-worded into something less specific. The final arm prefers `strerror`
+    ("Permission denied") over `str(exc)`, which prepends the `[Errno N]` this
+    function exists to keep off the terminal.
+    """
+    if isinstance(exc, FileExistsError):
+        return ("a verified entry of that name already exists -- rename this one, or "
+                "delete the inbox copy if it duplicates the verified entry")
+    if isinstance(exc, FileNotFoundError):
+        return "it is no longer in the inbox -- it was moved or deleted mid-review"
+    if isinstance(exc, ValueError):
+        return str(exc)
+    return getattr(exc, "strerror", None) or str(exc)
+
+
 @dataclass
 class StaleLead:
     """One lead #9 considers stale, as the report sees it. `refused` is set when the lead
@@ -1544,6 +1570,154 @@ class Sluice:
                                  outcome="refused_signoff_hold", note_appended=False)
         return DismissResult(slug=note.slug, status=fresh_status, outcome="unchanged",
                              note_appended=False)
+
+    def add_evidence(self, *, kind: str, name: str, fields: dict, body: str = "") -> str:
+        """Propose one evidence entry (#164). Returns the store's opaque handle for it --
+        non-empty on success, and safe to show a user; NOT promised to be a path (the
+        vault's happens to be one), on the same terms as `Store.write_document`'s.
+
+        Named add_evidence rather than propose_evidence deliberately: the isolation
+        sweep in tests/test_mcpserver.py matches a CALL by attribute name, so a facade
+        method sharing a Store write method's name would be swept as a direct store
+        write the moment mcpserver.py called it -- the same reason create_lead differs
+        from upsert and sign_off_cv differs from sign_off.
+
+        Never citable on its own, and the mechanism is the STORE's obligation, not this
+        signature's: `fields` is a caller-supplied mapping and could carry `verified`
+        (this docstring used to claim otherwise), so what holds the property is
+        `Store.propose_evidence`'s requirement to reject an undeclared field key by name
+        -- `_render_evidence_note` in the one store that exists -- plus its requirement to
+        write where `read_evidence` cannot see it."""
+        return self.store().propose_evidence(kind, name=name, fields=fields, body=body)
+
+    def list_evidence(self, *, kind: str, pending: bool = False) -> list:
+        """Citable entries for one EVIDENCE_KINDS kind (default), or -- pending=True --
+        the not-yet-verified queue verify_evidence_interactive offers for review.
+        Named distinctly from Store.read_evidence/read_pending_evidence for the same
+        isolation-sweep reason add_evidence is."""
+        store = self.store()
+        return (store.read_pending_evidence(kind) if pending
+                else store.read_evidence(kind, verified_only=True))
+
+    def verify_evidence_interactive(self, *, kind: str, asker, only: str | None = None,
+                                    today: str | None = None) -> dict:
+        """Offer each pending entry for review and promote the ones a human accepts.
+
+        Interactive by construction. There is no --all and no --yes anywhere in this
+        feature: this is the ONE operation that grants citability to the CV
+        fabrication gate, and a bulk flag is the `--verified` hole one level up that
+        EVIDENCE_KIND's own docstring already refuses to expose. `only` FILTERS which
+        pending entries are offered for review -- it narrows the queue, it never
+        auto-approves what it narrows to.
+
+        A non-matching `only` is reported, not silently absorbed: `report["not_found"]`
+        holds `[only]` whenever `only` was given and matched no pending entry, so the
+        caller can tell "you named an id that isn't pending" apart from "nothing is
+        pending at all" -- the two would otherwise be the identical all-empty report,
+        which is exactly the quiet-wrong-default class this codebase engineers out
+        everywhere else (empty-config-abstains, a retired config key raising by name
+        rather than falling through). It is populated regardless of `asker.interactive`:
+        the filter itself decided nothing matched before interactivity is even
+        consulted, so a non-interactive asker still gets the same signal.
+
+        `only` matches on EITHER the title verbatim or the title's reduced form, and
+        needs both. Verbatim first, because `--id` has to match what `... list
+        --pending` DISPLAYS, which is `entry["title"]` -- the entry's real basename, and
+        for a hand-added `_inbox/My Entry.md` that is `My Entry`, which no reduction
+        produces (#164 whole-branch review, IMPORTANT 2). Reduced as well, because for
+        an entry created through `... add` the title is the slug `propose_evidence`
+        filed it under, while `only` is documented (and typed by a user) as the same
+        NAME `--name` took -- so `--id "Beta Thing"` has to find `beta-thing` (#164
+        Task 7 review, IMPORTANT 3). `evidence_slug` is idempotent, so a user typing
+        an already-reduced slug is served by both arms alike. A value that does not
+        reduce at all (all punctuation, say) keeps only the verbatim arm, which simply
+        matches nothing -- rather than letting evidence_slug's ValueError escape this
+        filter.
+
+        Under a non-interactive asker nothing is promoted -- `report["interactive"]`
+        is False and every pending entry (post-`only`-filter) is reported `skipped`,
+        which is what a caller prints. Gated on the asker's CLASS ATTRIBUTE
+        (`asker.interactive`) rather than sys.stdin.isatty(), for the reason
+        onboard/ask.py:99-102 records: deriving it independently made the interactive
+        half unreachable under pytest, where isatty() is always False.
+
+        `reviewed` is the EXACT text `Store.read_pending_evidence_text` just returned
+        and this loop just showed the human -- never re-derived -- so
+        Store.verify_evidence's compare-and-set compares against what they actually
+        read, not a reconstruction of it. It goes through that contract member rather
+        than `open(entry["path"])`, which is what this loop used to do: `path` was a
+        required contract key purely to serve this one `open`, and a store-agnostic
+        facade reaching through the seam at a filesystem is the inversion `read_criteria`
+        was introduced to remove (#164 review, H3). The read stays FRESH either way --
+        the contract requires that of the member, for the compare-and-set's sake.
+
+        `report["failed"]` holds `(title, reason)` pairs for entries that could not be
+        read or promoted. One failing entry never aborts the batch: see the loop's own
+        comment for the measured starvation that isolation closes.
+
+        The `verify this entry? [y/N]` prompt below is the one user-facing string this
+        module shows anybody, and `tests/onboard_prose.py`'s roster does not reach it --
+        that sweep walks `sluice.onboard` and `sluice.evidence`, never `sluice.core`. It is
+        covered instead by `test_no_command_message_names_a_taxonomy_word`
+        (tests/test_evidence_cli.py), which drives a real interactive `verify` and sweeps
+        what the asker was SHOWN, the same where-it-runs answer `evidence/commands.py`'s
+        own messages get. Witnessed: a taxonomy word planted in that f-string is caught by
+        that test and by nothing else in the suite.
+        """
+        from sluice.core.vault import evidence_slug
+
+        store = self.store()
+        # `self._today` is a zero-arg CALLABLE (see staleness() above), not a string:
+        # `today or clock()` must call it, mirroring the one other place this class
+        # resolves its injected clock.
+        clock = self._today or _today
+        today = today or clock()
+        report = {"promoted": [], "skipped": [], "unchanged": [], "not_found": [],
+                 "failed": [],
+                 "interactive": bool(getattr(asker, "interactive", False))}
+        pending = store.read_pending_evidence(kind)
+        if only:
+            try:
+                reduced = evidence_slug(only)
+            except ValueError:
+                reduced = None  # cannot reduce at all -- the verbatim arm alone applies
+            pending = [e for e in pending
+                       if e["title"] == only or e["title"] == reduced]
+            if not pending:
+                report["not_found"] = [only]
+        if not report["interactive"]:
+            report["skipped"] = [e["title"] for e in pending]
+            return report
+        for entry in pending:
+            # PER-ITEM isolation, the shape sluice/evidence/wizard.py's capture loop
+            # already uses: one entry that cannot be read or promoted must not abort the
+            # batch. Measured before this (#164 review, H2) with pending
+            # ['alpha', 'mike', 'november'] and a name already taken in the citable set:
+            # the FileExistsError unwound past this loop and discarded `report` whole, so
+            # the user saw one bare `[Errno 17] File exists: <path>` and exit 1, whatever
+            # had already been promoted this run went unreported, `november` was never
+            # offered at all -- and EVERY later run aborted at the same entry, so the one
+            # path to citability starved permanently and `cv run` kept reporting
+            # `skipped-gate`, the fabrication verdict this feature exists to prevent.
+            try:
+                reviewed = store.read_pending_evidence_text(kind, entry["title"])
+            except (OSError, ValueError) as e:
+                report["failed"].append((entry["title"], _evidence_failure_reason(e)))
+                continue
+            if not asker.confirm(f"{reviewed}\nverify this entry? [y/N] "):
+                report["skipped"].append(entry["title"])
+                continue
+            try:
+                promoted = store.verify_evidence(kind, entry["title"], today=today,
+                                                 reviewed=reviewed)
+            except (OSError, ValueError) as e:
+                report["failed"].append((entry["title"], _evidence_failure_reason(e)))
+                continue
+            if promoted:
+                report["promoted"].append(entry["title"])
+            else:
+                report["unchanged"].append(entry["title"])
+        return report
 
     def create_lead(self, *, title: str, company: str, url: str, location: str = "",
                     salary: str = "", job_type: str = "", source: str = "manual"
