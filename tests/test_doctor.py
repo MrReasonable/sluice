@@ -1503,3 +1503,316 @@ def test_the_dossier_buckets_are_cumulative_and_do_not_partition_total(monkeypat
     assert "3 under 800 chars" in detail    # blank + tiny + shortish
     # The identity the docstring now states, and the one it used to state.
     assert 1 + 3 < 5, "unreadable + under_800 must be strictly less than total here"
+
+
+def test_preflight_reports_pending_and_verified_counts_without_duplicating_the_existing_keys(tmp_path):
+    """`experience_total`/`experience_verified` already exist and are consumed at
+    core/doctor.py's classify_store (the Experience Library row). Adding parallel
+    keys for the same two facts would leave two sources for one fact -- the exact
+    drift shape this codebase removes on sight. `skills`/`stories` get the new
+    `<kind>_pending` key too, and (being new kinds) their own `_total`/`_verified`.
+
+    The corpus is MIXED on purpose (#164 review, H6). This row used to assert
+    `skills_verified == 0` in a state where `skills_total` was also 0, so the two
+    numbers were indistinguishable and `sum(1 for e in every if e.get("verified"))`
+    mutated to `len(every)` survived -- meaning `doctor` could have printed
+    "3 verified / 3 total" over a corpus with ONE citable entry, the reassuring
+    direction to be wrong in, on the number a user checks before composing. Two
+    verified entries and one unverified make `total` and `verified` differ, so only a
+    real per-entry count satisfies both.
+    """
+    from sluice.core.vault import Vault
+
+    v = Vault(str(tmp_path))
+    base = os.path.join(str(tmp_path), "Job Applications", "Skills Inventory")
+    os.makedirs(base)
+    for name in ("citable-one", "citable-two"):
+        with open(os.path.join(base, f"{name}.md"), "w", encoding="utf-8") as fh:
+            fh.write("---\nProficiency: P\nverified: 2026-01-01\n---\nReviewed.\n")
+    with open(os.path.join(base, "hand-written.md"), "w", encoding="utf-8") as fh:
+        fh.write("---\nProficiency: Q\n---\nNever run through verify.\n")
+    v.propose_evidence("skills", name="alpha", fields={})
+
+    facts = v.preflight()
+    assert facts["skills_pending"] == 1
+    assert facts["skills_total"] == 3, "the unverified entry is not counted in the total"
+    assert facts["skills_verified"] == 2, "the count is not per-entry"
+    assert facts["experience_pending"] == 0
+    assert facts["experience_total"] == 0 and facts["experience_verified"] == 0
+    assert "experience_entries" not in facts, "a duplicate of the existing key"
+
+
+def test_doctor_prints_the_two_evidence_counts_it_was_given_rather_than_one_twice(tmp_path):
+    """The classify_store half of the row above (#164 review, H6). A preflight that
+    counts correctly buys nothing if the message that renders it reads the wrong key,
+    and "N verified / N total" over a corpus with one citable entry is a fabrication-
+    gate reassurance a user acts on. Seeded so the two numbers differ, and asserted on
+    the rendered string, which is what a user actually reads.
+    """
+    from sluice.core.vault import Vault
+
+    v = Vault(str(tmp_path))
+    base = os.path.join(str(tmp_path), "Job Applications", "Skills Inventory")
+    os.makedirs(base)
+    for name in ("citable-one", "citable-two"):
+        with open(os.path.join(base, f"{name}.md"), "w", encoding="utf-8") as fh:
+            fh.write("---\nProficiency: P\nverified: 2026-01-01\n---\nReviewed.\n")
+    with open(os.path.join(base, "hand-written.md"), "w", encoding="utf-8") as fh:
+        fh.write("---\nProficiency: Q\n---\nNever run through verify.\n")
+
+    [row] = [r for r in classify_store(v.preflight()) if r.subject == "Skills Inventory"]
+    assert "2 verified / 3 total" in row.detail
+
+
+def test_doctor_claims_citability_only_for_the_corpus_the_gate_actually_reads(tmp_path):
+    """#164 review, M2. Every kind's row said "only verified entries are citable by the
+    CV fabrication gate", while `cv/engine.py` reads `experience` alone -- so a user was
+    told their Skills Inventory was feeding their CVs when nothing reads it until #165.
+    Wrong in the reassuring direction, which is the direction people stop looking in.
+
+    Derived from `EvidenceKind.cited_by_gate` rather than asserting on the two kind
+    names, so #165's boolean flip carries this row with it instead of failing it. Both
+    branches are asserted, because a message that claimed citability for NOTHING would
+    satisfy the negative half on its own.
+    """
+    from sluice.core.protocols import EVIDENCE_KINDS
+    from sluice.core.vault import Vault
+
+    rows = {r.subject: r.detail for r in classify_store(Vault(str(tmp_path)).preflight())}
+    cited = [k for k, s in EVIDENCE_KINDS.items() if s.cited_by_gate]
+    assert cited, "no kind is flagged cited_by_gate -- the positive half is vacuous"
+    for kind, spec in EVIDENCE_KINDS.items():
+        detail = rows[spec.relpath.rsplit("/", 1)[-1]]
+        if spec.cited_by_gate:
+            assert "are citable by the CV fabrication gate" in detail, kind
+        else:
+            assert "does not read this corpus yet" in detail, kind
+            assert "are citable by the CV fabrication gate" not in detail, kind
+
+
+def test_doctor_reports_a_notice_naming_the_command_that_makes_entries_citable(tmp_path):
+    """A pending count with nowhere pointing at it is noise, not a notice -- the
+    whole reason this row exists is to name the command that resolves the silent-
+    inert state a propose-only write introduces (see core/doctor.py's docstring)."""
+    from sluice.core.vault import Vault
+
+    v = Vault(str(tmp_path))
+    v.propose_evidence("skills", name="alpha", fields={})
+    rows = classify_store(v.preflight())
+    pending = [r for r in rows if "skills" in r.subject.lower()]
+    assert pending, "no row for the skills store"
+    assert any("verify" in r.detail for r in pending), \
+        "the notice does not name the action that resolves it"
+
+
+def _symlink_a_kind_out_of_the_vault(tmp_path, kind):
+    """Point one evidence kind's directory at a real directory OUTSIDE the vault.
+
+    `Vault._evidence_dir` refuses to read or write through it, correctly -- the rows
+    below are about `preflight` and `classify_store` surviving that refusal per kind, never
+    about softening it. The relpath comes from the registry, so a renamed or fourth kind
+    cannot leave this fixture building a directory nothing resolves to.
+    """
+    from sluice.core.protocols import EVIDENCE_KINDS
+
+    outside = tmp_path / "outside-the-vault"
+    outside.mkdir()
+    link = (tmp_path / "vault").joinpath(*EVIDENCE_KINDS[kind].relpath.split("/"))
+    link.parent.mkdir(parents=True, exist_ok=True)
+    os.symlink(str(outside), str(link))
+
+
+def test_one_unreadable_evidence_kind_does_not_erase_every_other_store_fact(tmp_path):
+    """Round-2 review, H2. `Vault.preflight`'s per-kind loop had no isolation, so the
+    OSError `_evidence_dir` correctly raises for a symlinked evidence directory unwound
+    past the loop and out of `preflight` entirely -- and `Sluice.doctor`'s catch-all then
+    emitted a lone `store | preflight | DEAD` row.
+
+    Measured with `STAR Stories` symlinked. `_evidence_dir` arrived with #164, so before it
+    the symlink is a stray directory nothing reads and `doctor` prints four store rows,
+    including `Candidate Profile | dead | blocks: cv`; this branch printed one. So a user
+    whose `cv run` says `skipped-config` runs `doctor` to find out why is told only about a
+    corpus nothing reads -- on the single command that exists to diagnose exactly this.
+
+    Asserted on the FACTS, at the `preflight` layer: the broken kind reports `<kind>_error`
+    and no count triple (a `0` would read as "the corpus is empty", which is the quiet
+    wrong default this codebase engineers out), and every other kind still reports its own.
+    """
+    from sluice.core.protocols import EVIDENCE_KINDS
+    from sluice.core.vault import Vault
+
+    _symlink_a_kind_out_of_the_vault(tmp_path, "stories")
+    v = Vault(str(tmp_path / "vault"))
+    v.propose_evidence("skills", name="alpha", fields={})
+
+    facts = v.preflight()
+    assert "is a symlink" in facts["stories_error"]
+    for key in ("stories_total", "stories_verified", "stories_pending"):
+        assert key not in facts, f"{key} would read as an empty corpus, not an unreadable one"
+    # Every OTHER kind still answers -- the isolation is per kind, not "give up quietly".
+    for kind in EVIDENCE_KINDS:
+        if kind == "stories":
+            continue
+        assert f"{kind}_error" not in facts
+        assert facts[f"{kind}_total"] == 0
+    assert facts["skills_pending"] == 1, "a readable kind lost its count to its neighbour"
+    # The facts a `cv run` refusal is diagnosed from are still there at all.
+    assert facts["vault_exists"] is True
+    assert "candidate_name_present" in facts and "baseline_exists" in facts
+
+
+def test_an_unreadable_evidence_corpus_takes_its_own_row_and_leaves_the_others_standing(
+        tmp_path):
+    """The `classify_store` half of the row above: facts in `preflight`, classification
+    here, the split `core/doctor.py`'s own docstring already states.
+
+    DEAD rather than NOTICE, because NOTICE never reaches the exit code (see
+    `DoctorReport.exit_code`) and a directory the store cannot read at all is a fault the
+    user must act on, not a posture. `blocks` is asserted on the UNCITED kind here:
+    nothing composes off `skills`/`stories` until #165, so naming a sub-app would be the
+    over-claim `EvidenceKind.cited_by_gate` exists to prevent.
+    """
+    from sluice.core.protocols import EVIDENCE_KINDS
+    from sluice.core.vault import Vault
+
+    _symlink_a_kind_out_of_the_vault(tmp_path, "stories")
+    rows = classify_store(Vault(str(tmp_path / "vault")).preflight())
+    by_subject = {r.subject: r for r in rows}
+
+    broken = by_subject[EVIDENCE_KINDS["stories"].relpath.rsplit("/", 1)[-1]]
+    assert broken.state == DEAD
+    assert "cannot be read" in broken.detail and "is a symlink" in broken.detail
+    assert broken.blocks == (), "nothing composes off stories until #165"
+    # Every other store row survives -- the whole point of the isolation.
+    for subject in ("baseline_rel", "Judging Profile", "Candidate Profile",
+                    EVIDENCE_KINDS["experience"].relpath.rsplit("/", 1)[-1],
+                    EVIDENCE_KINDS["skills"].relpath.rsplit("/", 1)[-1]):
+        assert subject in by_subject, f"{subject} was erased by an unrelated corpus"
+    assert by_subject["Candidate Profile"].state == DEAD, \
+        "the row a `cv run` skipped-config refusal is diagnosed from"
+
+
+def test_an_unreadable_cited_corpus_names_cv_as_what_it_blocks(tmp_path):
+    """The other half of the `blocks` split above, so a fix hardcoding `()` or `("cv",)`
+    for every kind cannot satisfy both rows. Keyed on `cited_by_gate`, so #165's boolean
+    flip carries these rather than failing them."""
+    from sluice.core.protocols import EVIDENCE_KINDS
+    from sluice.core.vault import Vault
+
+    cited = [k for k, s in EVIDENCE_KINDS.items() if s.cited_by_gate]
+    assert cited, "no kind is flagged cited_by_gate -- this row would be vacuous"
+    kind = cited[0]
+    _symlink_a_kind_out_of_the_vault(tmp_path, kind)
+    v = Vault(str(tmp_path / "vault"))
+    # The measurement behind the claim: the gate's own reader RAISES rather than
+    # returning [], so `cv/engine.py` cannot build a bundle at all.
+    with pytest.raises(OSError, match="is a symlink"):
+        v.read_experience_entries(verified_only=True)
+
+    row = _one(classify_store(v.preflight()),
+               EVIDENCE_KINDS[kind].relpath.rsplit("/", 1)[-1])
+    assert row.state == DEAD
+    assert row.blocks == ("cv",)
+
+
+def test_doctor_reports_an_unreadable_corpus_through_the_real_wiring(tmp_path, monkeypatch):
+    """End to end through `Sluice.doctor`, not just the two pure halves: the lone
+    `store | preflight | DEAD` row this replaces came from `Sluice.doctor`'s catch-all
+    around the hook, so the row proving that catch-all is no longer reached has to run
+    that wiring.
+    """
+    from sluice.core.config import Config
+    from sluice.core.protocols import EVIDENCE_KINDS
+
+    _symlink_a_kind_out_of_the_vault(tmp_path, "stories")
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path / "vault"))
+    # Restore the REAL store resolution: this file's autouse `_harmless_components`
+    # fixture hands `Sluice.doctor` a bare sentinel with no `preflight` at all, which is
+    # the documented "cannot say" shape -- so without this the row below would assert over
+    # an empty component list and pass against any implementation whatsoever.
+    monkeypatch.setattr(Sluice, "store", _REAL_STORE)
+    report = Sluice(Config(vault_dir=str(tmp_path / "vault"))).doctor(offline=True)
+    store_rows = [c for c in report.components if c.component == "store"]
+
+    assert [r for r in store_rows if r.subject == "preflight"] == [], \
+        "the whole-method catch-all fired; per-kind isolation did not"
+    subjects = {r.subject for r in store_rows}
+    assert {spec.relpath.rsplit("/", 1)[-1] for spec in EVIDENCE_KINDS.values()} <= subjects
+    assert "Candidate Profile" in subjects and "baseline_rel" in subjects
+
+
+def _mis_encode_an_evidence_entry(tmp_path, kind):
+    """Write one entry file under `kind` whose bytes are NOT valid UTF-8.
+
+    The other exception hierarchy `preflight`'s per-kind guard has to survive, and the
+    reason it is a separate fixture from `_symlink_a_kind_out_of_the_vault` rather than a
+    parameter on it: `Vault._evidence_entries` reads every entry through `_read`, which
+    opens with `encoding="utf-8"` and no `errors=`, so a hand-edited or sync-mangled entry
+    raises UnicodeDecodeError -- a ValueError SUBCLASS, not an OSError. A guard catching
+    only OSError is green under every symlink row above and still fails here.
+
+    Real bytes on disk, never a monkeypatched `_read`: a patched reader would prove only
+    that the guard catches whatever the test chose to raise at it. Relpath from the
+    registry, so a renamed or fourth kind cannot leave this fixture writing somewhere
+    nothing reads.
+    """
+    from sluice.core.protocols import EVIDENCE_KINDS
+
+    entry = (tmp_path / "vault").joinpath(
+        *EVIDENCE_KINDS[kind].relpath.split("/")) / "alpha.md"
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    entry.write_bytes(b"---\nCompany: \xff\xfe\n---\nbody\n")
+    return entry
+
+
+def test_a_mis_encoded_evidence_entry_is_isolated_per_kind_like_an_unreadable_directory(
+        tmp_path):
+    """`preflight`'s per-kind guard shipped as `except OSError` alone, under a comment
+    asserting the only ValueError its two callees raise is `_kind`'s unknown-kind guard
+    (which indeed cannot fire here). That was false: `_read`'s `encoding="utf-8"` makes a
+    mis-encoded entry file raise UnicodeDecodeError, a ValueError subclass.
+
+    Measured on the narrow spelling with this exact fixture: the exception unwound past the
+    loop and out of `preflight` entirely -- the failure mode the paragraph beside that guard
+    records for the symlinked case, and the one the guard was added to stop. So this row is
+    the SECOND hierarchy, asserted the same way its symlinked sibling is: the broken kind
+    reports `<kind>_error` and no count triple, and every other kind still answers.
+    """
+    from sluice.core.protocols import EVIDENCE_KINDS
+    from sluice.core.vault import Vault
+
+    _mis_encode_an_evidence_entry(tmp_path, "experience")
+    v = Vault(str(tmp_path / "vault"))
+    v.propose_evidence("skills", name="alpha", fields={})
+
+    facts = v.preflight()
+    # The decoder's own words, so a DIFFERENT failure reaching the same arm cannot satisfy
+    # this row -- the `is a symlink` assertion's counterpart, one hierarchy over.
+    assert "utf-8" in facts["experience_error"] and "decode" in facts["experience_error"]
+    for key in ("experience_total", "experience_verified", "experience_pending"):
+        assert key not in facts, f"{key} would read as an empty corpus, not an unreadable one"
+    for kind in EVIDENCE_KINDS:
+        if kind == "experience":
+            continue
+        assert f"{kind}_error" not in facts
+    assert facts["skills_pending"] == 1, "a readable kind lost its count to its neighbour"
+    assert facts["vault_exists"] is True
+    assert "candidate_name_present" in facts and "baseline_exists" in facts
+
+
+def test_a_mis_encoded_evidence_entry_takes_its_own_dead_row(tmp_path):
+    """The `classify_store` half, so the fact this guard now records is asserted to reach a
+    user as a row rather than only as a dict key -- the same split the symlinked pair above
+    uses, and the same DEAD state for the same reason (a NOTICE never reaches the exit
+    code)."""
+    from sluice.core.protocols import EVIDENCE_KINDS
+    from sluice.core.vault import Vault
+
+    _mis_encode_an_evidence_entry(tmp_path, "experience")
+    rows = classify_store(Vault(str(tmp_path / "vault")).preflight())
+    row = _one(rows, EVIDENCE_KINDS["experience"].relpath.rsplit("/", 1)[-1])
+    assert row.state == DEAD
+    assert "cannot be read" in row.detail and "decode" in row.detail
+    # Every other store row survives -- the isolation is per kind, not "give up quietly".
+    subjects = {r.subject for r in rows}
+    assert {"Candidate Profile", "baseline_rel", "Judging Profile"} <= subjects

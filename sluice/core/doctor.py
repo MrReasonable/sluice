@@ -33,6 +33,7 @@ from sluice.core.camofox import profile_dir as camofox_profile_dir
 # The bucket boundaries this module LABELS and DossierCache.census COUNTS with -- one
 # home, so a moved boundary cannot leave the label asserting the old number.
 from sluice.core.dossier import JD_LENGTH_BUCKETS as _JD_LENGTH_BUCKETS
+from sluice.core.protocols import EVIDENCE_KINDS
 
 # Four states, as bare strings so callers (cli formatter, exit_code) and tests
 # share one vocabulary without importing an enum. NOTICE is not a severity --
@@ -316,10 +317,21 @@ def classify_store(facts: dict | None) -> list:
     same way. A missing Judging Profile is DEGRADED, not dead --
     `core/criteria.py` ships a documented neutral fallback that states only
     "nothing is configured" and never invents an opinion, so triage still
-    runs; it just judges nothing preferentially until the profile exists. The
-    experience library count is a NOTICE: zero verified entries means every CV
-    bullet would fail the fabrication gate's citation check, which is worth
-    knowing before a compose, not a defect in the store.
+    runs; it just judges nothing preferentially until the profile exists. Each of
+    the three evidence corpora (#164: Experience Library, Skills Inventory, STAR
+    Stories) gets its own NOTICE row. For a corpus the gate actually READS
+    (`EvidenceKind.cited_by_gate` -- `experience` alone today), zero verified
+    entries means every CV bullet citing it would fail the fabrication gate's
+    citation check, which is worth knowing before a compose, not a defect in the
+    store; the other two say so rather than claiming a citability they do not have
+    until #165 lands. In both cases a non-zero
+    PENDING count is the same tier again, because propose-only writes leave
+    entries sitting in `_inbox/`, doing nothing, until a human runs `job-sluice
+    <kind> verify`; the message names that exact command; a count nobody can
+    act on is noise, not a notice. A kind `preflight` reports a `<kind>_error`
+    for instead of a count triple takes its own DEAD row carrying that text --
+    per-kind, so one unreadable corpus costs exactly its own row and every other
+    store row survives (round-2 review, H2).
 
     Candidate Profile (#133/#107) is DEAD, not degraded, on either half-declared
     shape -- a name with no contact, a contact with no name, or neither -- because
@@ -352,12 +364,60 @@ def classify_store(facts: dict | None) -> list:
             "(no preferential judgement) until you write one"))
     else:
         out.append(ComponentCheck("store", "Judging Profile", OK, "found"))
-    verified = facts.get("experience_verified", 0)
-    total = facts.get("experience_total", 0)
-    out.append(ComponentCheck(
-        "store", "Experience Library", NOTICE,
-        f"{verified} verified / {total} total entries -- only verified entries "
-        f"are citable by the CV fabrication gate"))
+    # Iterates EVIDENCE_KINDS rather than a hand-listed (kind, label) tuple, so a
+    # fourth kind registered there needs no edit here. The label is the store's
+    # own relpath basename ("Job Applications/Skills Inventory" -> "Skills
+    # Inventory") rather than a second, hand-maintained name -- EvidenceKind
+    # carries no display label of its own, and inventing a second name for the
+    # same directory is exactly the two-sources-for-one-fact shape this file's
+    # own docstring (and CLAUDE.md) calls out elsewhere.
+    for kind, spec in EVIDENCE_KINDS.items():
+        label = spec.relpath.rsplit("/", 1)[-1]
+        error = facts.get(f"{kind}_error")
+        if error:
+            # DEAD, not NOTICE: the counts row below is informational, but this one says
+            # the store could not read the corpus AT ALL, and the three commands that
+            # manage it (`job-sluice <kind> add|list|verify`) fail the same way until the
+            # user acts. NOTICE never reaches the exit code (see DoctorReport.exit_code),
+            # which would make a genuinely broken directory exit 0 -- the quiet direction
+            # this codebase refuses to fail in.
+            #
+            # `blocks` is set only for a corpus the gate actually READS. Measured with
+            # `Job Applications/Experience Library` symlinked out of the vault:
+            # `read_experience_entries` RAISES rather than returning [], so `cv/engine.py`'s
+            # `run_one` never builds a bundle and `run_batch`'s per-lead catch-all records
+            # `error` for every lead -- the same "cv run cannot compose" cost the
+            # `baseline_rel` row above already names. For `skills`/`stories` nothing
+            # composes off the corpus yet (#165), so naming a sub-app there would be the
+            # same over-claim `EvidenceKind.cited_by_gate` exists to prevent.
+            out.append(ComponentCheck(
+                "store", label, DEAD, f"cannot be read -- {error}",
+                blocks=("cv",) if spec.cited_by_gate else ()))
+            continue
+        verified = facts.get(f"{kind}_verified", 0)
+        total = facts.get(f"{kind}_total", 0)
+        pending = facts.get(f"{kind}_pending", 0)
+        # Keyed on the registry's own `cited_by_gate`, not printed for every kind:
+        # `cv/engine.py` reads `experience` alone, so telling a user that verifying a
+        # skill made it "citable by the CV fabrication gate" was simply false, and
+        # false in the reassuring direction -- they read it as "my skills are feeding
+        # my CVs" and stop looking (#164 review, M2). The verify row below still
+        # applies to every kind: `verify` is the trust root regardless of who reads
+        # the result, and an entry stuck in `_inbox/` is inert either way.
+        if spec.cited_by_gate:
+            detail = (f"{verified} verified / {total} total entries -- only verified "
+                      f"entries are citable by the CV fabrication gate")
+        else:
+            detail = (f"{verified} verified / {total} total entries -- reviewed, but "
+                      f"the CV fabrication gate does not read this corpus yet (#165)")
+        if pending:
+            # The failure mode propose-only writes introduce: entries captured,
+            # sitting in `_inbox/`, doing nothing, with no other signal anywhere
+            # that a human needs to review them. Naming the exact command is the
+            # whole value of this row -- a count nobody can act on is just noise.
+            detail += (f"; {pending} proposed and awaiting review "
+                       f"(job-sluice {kind} verify)")
+        out.append(ComponentCheck("store", label, NOTICE, detail))
     if not (facts.get("candidate_name_present") and facts.get("candidate_contact_present")):
         out.append(ComponentCheck(
             "store", "Candidate Profile", DEAD,
