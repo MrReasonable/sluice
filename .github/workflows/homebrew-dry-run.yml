@@ -1,0 +1,76 @@
+name: Homebrew dry run
+
+# Proves the WHOLE chain -- render, update-python-resources, audit, install, test, push --
+# against the currently released version, before a real release depends on it. The `pypi` job
+# had the same unproven-mechanism problem in PR 3 and it was closed the same way, by
+# `testpypi.yml`.
+#
+# It also BOOTSTRAPS the tap: the tap is empty, and `brew update-python-resources` edits a
+# formula rather than creating one, so the first run is what writes Formula/job-sluice.rb. This
+# workflow always sets PUSH_TARGET: auto (see homebrew_verify.sh), which pushes the tap's
+# default branch on that first, bootstrapping run and a bump-VERSION scratch branch on every
+# run after -- so a repeat dry run never becomes the tree of record a real release owns. The
+# release job, by contrast, always sets PUSH_TARGET: default: it must land on the tap's default
+# branch every time, since `brew install` resolves a tap's default branch and nothing merges a
+# scratch branch. One inferred (file-existence) observable could not serve both callers -- a
+# first bump landing on an unmerged scratch branch was the actual failure mode -- which is why
+# PUSH_TARGET is explicit and required rather than inferred.
+#
+# `workflow_dispatch` only fires for a file already on the default branch, which is why this
+# runs AFTER the PR merges rather than as part of its gate.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dry-run:
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Refuse to bump the tap from a non-default branch
+        if: github.ref_name != github.event.repository.default_branch
+        run: |
+          echo "::error::Dispatch this workflow from the default branch -- it pushes to a public tap, so an unmerged branch must not become the tree of record."
+          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve the current released version
+        id: version
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, urllib.request
+          with urllib.request.urlopen("https://pypi.org/pypi/job-sluice/json", timeout=60) as r:
+              print("version=" + json.load(r)["info"]["version"])
+          PY
+      # NO token in this step's environment -- see homebrew_verify.sh's header for why.
+      - name: Render, resource-fill, audit, install and test the formula
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          # The SAME fact the App-token step below mints against (`owner:`), passed once here
+          # rather than hardcoded a second time in the shell scripts -- see homebrew_verify.sh's
+          # TAP_OWNER comment.
+          TAP_OWNER: ${{ github.repository_owner }}
+          # Bootstraps the default branch on this run's first-ever invocation, a scratch
+          # branch every time after. See this file's header and homebrew_verify.sh's
+          # PUSH_TARGET comment.
+          PUSH_TARGET: auto
+        run: bash .github/scripts/homebrew_verify.sh
+      # Minted only AFTER the untrusted build above has already run, and used by nothing but
+      # the push step immediately below.
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: tap-token
+        with:
+          app-id: ${{ secrets.RELEASE_PLEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: homebrew-tap
+          permission-contents: write
+      - name: Commit and push the verified formula
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAP_TOKEN: ${{ steps.tap-token.outputs.token }}
+        run: bash .github/scripts/homebrew_push.sh
