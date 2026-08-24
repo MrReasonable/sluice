@@ -42,6 +42,24 @@ UNTRUSTED_SCRAPED_CONTENT_WARNING = (
 UNTRUSTED_DERIVED_CONTENT_WARNING = (
     "is untrusted text an LLM composed from a third-party web page. " + _NEVER_AN_INSTRUCTION)
 
+# The evidence corpus (#164) is NEITHER of the two above, and reusing either would put a
+# false label on the content: an entry's title and fields are typed by the USER into their
+# own vault, not copied from a third-party page (so SCRAPED is untrue) and not written by a
+# model (so DERIVED is untrue). mcpserver.py's `list_evidence` consumes this.
+#
+# The OBLIGATION is unchanged, which is why the shared `_NEVER_AN_INSTRUCTION` tail is
+# reused verbatim rather than reworded or dropped: the text still reaches an LLM through an
+# MCP tool, a write-enabled client can act on what it reads, and a vault is a directory a
+# sync client writes into as well as its owner -- so a line in an entry that reads like an
+# instruction has to be read as data whoever typed it. Naming the provenance honestly and
+# keeping the tail is the only wording that neither overstates nor understates.
+#
+# Deliberately WITHOUT the `UNTRUSTED_` prefix its two siblings carry: that prefix is a
+# claim about where the bytes came from, and here they came from the user themselves.
+USER_AUTHORED_CONTENT_WARNING = (
+    "is text the user wrote in their own vault, not content sluice scraped or composed. "
+    + _NEVER_AN_INSTRUCTION)
+
 
 def is_http_url(url: str) -> bool:
     """True iff `url` starts with an http(s) scheme. `create_lead` and
