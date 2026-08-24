@@ -17,14 +17,17 @@ deliberately-malformed `Foo\\Bar Ltd` injection fixtures are all legitimate and 
 a rule. A guard that fires on ~40 good fixtures gets suppressed, and a suppressed guard
 guards nothing.
 
-SCOPE, stated honestly. This sweeps four ENUMERATED positions that carry a lead identity:
-frontmatter `company:`, lead-note filenames, `lead_slug=` kwargs, and the first positional
-argument of the `_note`/`_lead`/`_vault_with`/`_shortlist_with` helpers. That last position
-holds a company in some modules and a slug in others — the same helper name has different
-signatures per file — which is why the roster is named for IDENTITIES rather than companies:
-a leaked employer name could land in either shape, so both are swept and neither is filtered
-out. A name written into some other shape — prose in a comment, a docstring, an unusual
-helper — is NOT covered; the email-domain guard below is the broader net.
+SCOPE, stated honestly. This sweeps five ENUMERATED positions that carry a lead identity:
+frontmatter `company:`, lead-note filenames, `lead_slug=` kwargs, the first positional
+argument of the `_note`/`_lead`/`_vault_with`/`_shortlist_with` helpers, and (#164) an evidence-
+corpus `Company:` — in frontmatter or in a `fields={"Company": ...}` dict/kwarg, since the
+evidence store's fixtures use both and the quoted-key shape hid from the frontmatter-only pattern
+entirely. The fourth of those (the identity-first helper) holds a company
+in some modules and a slug in others — the same helper name has different signatures per file
+— which is why the roster is named for IDENTITIES rather than companies: a leaked employer
+name could land in either shape, so both are swept and neither is filtered out. A name written
+into some other shape — prose in a comment, a docstring, an unusual helper — is NOT covered;
+the email-domain guard below is the broader net.
 
 CV-BODY EMPLOYER LINES are the concrete instance of that gap worth naming, because #167 added
 several and none of the four collectors reaches them: a CV fixture is a block of prose, and the
@@ -45,11 +48,12 @@ value rosters for the enumerable keys (`location`, `company`), and a per-source 
 everything else, because `title` is free text that the boards append the posting's location
 to and no roster can enumerate it.
 
-A FIFTH collector, added for #133/#107, sweeps a different category entirely: the
+The equal-opportunities collector, added for #133/#107, sweeps a different category entirely: the
 equal-opportunities/protected-characteristic fields (`sluice/apply/packet.py`'s `_WARNED_KEYS`
 -- ethnicity, religion, disability, gender identity and similar special-category personal
-data). SCOPE, stated with the same honesty as the four collectors above: it matches FOUR
-fixture shapes a warned-field value can appear in -- a double- or single-quoted dict-literal
+data). SCOPE, stated with the same honesty as the four identity collectors that existed above
+it at the time it was added: it matches FOUR fixture shapes a warned-field value can appear
+in -- a double- or single-quoted dict-literal
 key (`"ethnicity": "..."` / `'ethnicity': '...'`), a double- or single-quoted constructor
 kwarg (`ethnicity="..."` / `ethnicity='...'`), and YAML frontmatter, quoted or bare
 (`ethnicity: "..."` / `ethnicity: ...`) -- the last of which is the shape the PRODUCTION
@@ -84,7 +88,7 @@ EO-monitoring age band by shape, sitting in a candidate-note frontmatter positio
 outside `_EO_FIELDS` for the same structural reason -- `age_range` is not a `CandidateProfile`
 field at all, so no key-name check could ever see it.
 
-A SIXTH collector closes what this docstring previously recorded as an accepted gap
+The candidate-identity collector closes what this docstring previously recorded as an accepted gap
 (CodeRabbit, PR #161): the person-data POSITIONS the candidate profile introduces -- the
 candidate's own name, contact channels, postal address and the free-text identity fields
 beside them. The authoritative list is `_PERSON_DATA_FIELDS` and is deliberately NOT
@@ -112,6 +116,28 @@ SOURCE rather than fixture data (see `_NOT_A_FIXTURE_VALUE`), and it reduced a L
 fixture to the single character `x` by reusing `_identity_of`, whose path-splitting is correct
 for a lead identity and wrong for a candidate one (see `_candidate_value_of`). Both are noted
 here because a sweep whose filters are invisible is a sweep nobody can judge the scope of.
+
+The evidence `Company:` collector (#164) joins `_IDENTITY_COLLECTORS` itself, not the
+dedicated-check group the equal-opportunities and candidate-identity collectors belong to:
+an evidence-corpus `Company` names a lead's employer the same way the lead-note
+`company:` collector above does, so it belongs on the SAME roster, not a new one. It cannot reuse that existing pattern, though -- the evidence store's field name
+is capitalised (`Company`, `EVIDENCE_KINDS["experience"].fields`, not the lead note's lowercase
+`company`) and its reader, `core/vault.py`'s `_parse_fm_spaced`, makes quoting OPTIONAL where
+the lead-note reader requires it, so a bare `Company: Alpha` is a real fixture this collector
+must see and the lowercase-and-quoted pattern above cannot. Both axes are independent: fixing
+only the case or only the quoting would still miss the shape this store's own tests actually
+write. It covers THREE fixture shapes, not one: frontmatter packed into a Python string literal
+(`"---\nCompany: Alpha\n..."`), and the dict/kwarg form `fields={"Company": "Alpha"}` in either
+quote style -- the second of which the frontmatter-only version measured `[]` against, because a
+quoted key puts a `"` between `Company` and its colon so the literal `Company:` never appears
+(#164 review, M6). The bare form is bounded to the next quote, backtick, backslash or real
+newline by a LOOKAHEAD rather than by `$` under `re.M`: every frontmatter fixture for this key
+packs several lines into one Python string literal joined by an escaped `\n` (two characters,
+not an actual newline), so a same-physical-line value never reaches a `$` the way the lead-note
+collector's one-key-per-line fixtures do -- measured, an end-of-line-anchored version matched
+none of them. The two quoted forms are self-terminating and are deliberately outside that
+lookahead, which no real dict literal could satisfy. See the collector's own comment,
+immediately above its definition, for the false positives the same measurements found and closed.
 """
 import dataclasses
 import itertools
@@ -228,6 +254,74 @@ _IDENTITY_COLLECTORS = (
     # read the roster of.
     ("identity-first helper",
      re.compile(r'(?<![A-Za-z0-9])_(?:note|lead|vault_with|shortlist_with)\("([^"\n]*)"')),
+    # Evidence-corpus frontmatter (#164) is a DIFFERENT shape from the lead frontmatter
+    # `frontmatter company:` above on two independent axes, so that collector cannot see it:
+    # the key is capitalised (`Company:`, matching `EVIDENCE_KINDS["experience"].fields`,
+    # not the lowercase lead-note `company:` key), and `_parse_fm_spaced` -- the reader this
+    # shape actually feeds (core/vault.py) -- makes quoting OPTIONAL, so a bare
+    # `Company: Alpha` is as real a fixture as a quoted `Company: "Alpha"`.
+    #
+    # This is NOT `company:\s*"([^"]*)"` with the case flipped and the quotes made optional
+    # -- that shape was tried first and measured to match NOTHING real. Every actual fixture
+    # (`tests/test_evidence_store.py`) packs several frontmatter keys into ONE Python string
+    # literal joined by an ESCAPED `\n` -- two literal characters, backslash then `n`, not a
+    # real newline -- so `Company: Alpha\nverified: ...` is entirely one physical SOURCE
+    # line. A pattern anchored on `$` (even under re.M) then has to reach that physical
+    # line's true end, which is past the closing quote and often a trailing `)` or `,` --
+    # never immediately after "Alpha". So the terminator here is a LOOKAHEAD for the next
+    # boundary character -- a real quote, a backtick, a backslash (the start of that same
+    # `\n` escape, or of `\\`), or an actual newline -- rather than a match-and-consume `$`.
+    # Measured against the real corpus: this reads `Alpha`/`Beta`/`Gamma`
+    # (tests/test_evidence_store.py) and `Example Foundry`/`Example Systems`/`X`
+    # (tests/test_core_vault_cv.py, both bare and double-quoted) cleanly, with no fixture
+    # rewritten to make it so.
+    #
+    # A THIRD shape carries the same fact and was missed entirely (#164 review, M6): the
+    # kwarg/dict-literal `fields={"Company": "Alpha", ...}`, which is what
+    # `tests/test_mcpserver.py` itself writes for its evidence fixtures. Measured, the
+    # frontmatter-only pattern matched `[]` against it -- the key is QUOTED there, so
+    # `Company` and `:` are separated by a `"` and a literal `Company:` never appears.
+    # The key's quotes are therefore optional on both sides, and the VALUE now covers all
+    # three spellings in ONE capture group (double-quoted, single-quoted, bare), the same
+    # way `_EO_VALUE` below does and for the identical reason: `findall` returns one
+    # string per match, so `_identity_of`'s wrapping-quote strip is where "was this
+    # quoted" gets separated from the text. Single quotes are live style here -- ruff's
+    # configured rule set has no `Q` rules -- so `'Company': 'Beta Ltd'` is a real shape,
+    # not a hypothetical one.
+    #
+    # The LOOKAHEAD terminator sits inside the BARE alternative only. The two quoted
+    # alternatives are self-terminating, and applying the lookahead to them would refuse
+    # every real dict literal: after `"Alpha"` the next character is a `,` or a `}`,
+    # neither of which is a boundary the bare form's lookahead accepts.
+    #
+    # Excluding `{` from EVERY alternative (and hence from what the lookahead can stop
+    # short of matching) closes a second measured hole: an f-string interpolation whose
+    # own value is itself quoted, `f'Company: "{e["company"]}"'` (tests/harness/config.py),
+    # nests a SECOND `"` inside the outer one, which stops a naive capture at `{e[` --
+    # short of the inner closing `"`, so the whole `{...}` never appears in the captured
+    # text and `_is_source_text`'s balanced-brace check (which needs both delimiters) has
+    # nothing to recognise as an interpolation. Excluding `{` altogether means the capture
+    # cannot start past that character at all, so this line now matches nothing instead of
+    # leaking `{e[` as a bogus identity. The quoted alternatives exclude it too, and had
+    # to be measured for it separately: `"[^"\n]+"` happily matched the `"{e["` on that
+    # same line and put `{e[` straight back into the roster.
+    #
+    # The captured value's FIRST character must be non-whitespace for a similar reason: a
+    # GREEDY `\s*` before the optional quote backtracks into the capture group when the
+    # straightforward parse fails, and on that same harness/config.py line it backtracked
+    # into matching a single space (`"?` giving back the real quote it had consumed, `\s*`
+    # giving back the one space it had consumed, leaving the space free for the capture
+    # group to claim, followed immediately by a real quote the lookahead is happy to
+    # stop at) -- a bogus one-character identity `" "`, measured, not hypothetical. A plain
+    # `\s*` glued onto a class that ALLOWS its first char to be whitespace cannot tell
+    # "there is no real value here" apart from "the value legitimately starts after some
+    # whitespace"; splitting the class so the first captured character must be non-blank
+    # closes that without a possessive quantifier (no other regex in this file uses one).
+    # None of the real fixtures need a leading space inside the value, and `Example Foundry`
+    # / `Example Systems` still keep their INTERNAL space via the wider class that follows.
+    ("evidence Company: (frontmatter or dict/kwarg)",
+     re.compile(r"""["']?Company["']?\s*:\s*("[^"{\n]+"|'[^'{\n]+'"""
+                r"""|[^\s"'`{\\\n][^"'`{\\\n]*?(?=["'`\\\n]|\s*$))""", re.M)),
 )
 
 # Derived from the packet's own warned-field classification (sluice/apply/packet.py's
@@ -464,10 +558,16 @@ def _is_source_text(value) -> bool:
     was handled everywhere (CodeRabbit, PR #161).
 
     Measured across `tests/` when this was unified: only the candidate collector had a
-    LIVE instance (`f"Author-email: MrReasonable <{...}>"`, an f-string's own source). The
-    other five collect no mid-string interpolation today, so applying the predicate to
-    them changes nothing now and closes the same latent hole -- which is the point, since
-    the alternative is four sites drifting apart again.
+    LIVE instance (`f"Author-email: MrReasonable <{...}>"`, an f-string's own source).
+    Every OTHER collector collects no mid-string interpolation today, so applying the
+    predicate to them changes nothing now and closes the same latent hole -- which is the
+    point, since the alternative is those sites drifting apart again.
+
+    No count here, deliberately: this docstring said "the other five" while there were
+    six, one collector after the list grew (#164 review, L1). A number in prose beside a
+    growing tuple is a drift surface with nothing to hold it -- and `_COLLECTORS` is
+    right there for anyone who wants the total, pinned by
+    `test_the_collector_split_this_file_documents_is_the_split_it_has`.
     """
     return not value or bool(_INTERPOLATION.search(value))
 
@@ -512,7 +612,7 @@ _COLLECTORS = _IDENTITY_COLLECTORS + (
 )
 # `test_every_collector_actually_finds_fixtures` below parametrizes over the FULL
 # `_COLLECTORS` tuple, so the equal-opportunities collector gets that anti-vacuity check
-# for free -- exactly the same reasoning that motivates it for the four identity
+# for free -- exactly the same reasoning that motivates it for the five identity
 # collectors. The two roster-completeness tests further down (`_all_fixture_identities`
 # and its two callers) deliberately read `_IDENTITY_COLLECTORS`, NOT `_COLLECTORS`: they
 # police `_REVIEWED_FIXTURE_IDENTITIES`, a roster documented above as being about LEAD
@@ -543,6 +643,58 @@ def _all_fixture_identities():
     return names
 
 
+def test_the_evidence_company_collector_sees_every_shape_it_claims_to():
+    """#164 review, M6. The collector was frontmatter-only, so it matched `[]` against
+    `fields={"Company": "Alpha"}` -- the shape `tests/test_mcpserver.py` itself writes
+    for its evidence fixtures, and the shape any test driving `Sluice.add_evidence` or
+    the store's `propose_evidence` naturally reaches for. A quoted key puts a `"`
+    between `Company` and its colon, so the literal `Company:` never appears at all.
+
+    Every shape the collector's own comment claims is exercised here, on synthetic
+    strings rather than on whatever the repo happens to contain today: the ones it must
+    SEE, and the ones it must NOT report. `test_every_collector_actually_finds_fixtures`
+    covers the "finds something real at all" half; this covers WHICH shapes, where a
+    silent regression to any one of them just looks like a quiet corpus.
+
+    The strings below are written as the collector sees them -- fragments of Python
+    SOURCE. `\\n` inside them is two characters, backslash then `n`, exactly as it is in
+    the real fixtures (`tests/test_core_vault_cv.py`), because a frontmatter fixture is
+    a Python string literal packing several lines onto one physical source line. This
+    file is `_SELF`, the one file `_test_sources()` excludes, so none of these values
+    reaches `_REVIEWED_FIXTURE_IDENTITIES`.
+    """
+    [(_, pattern)] = [c for c in _IDENTITY_COLLECTORS if c[0].startswith("evidence ")]
+    # Shape -> (source text, the EXACT identity the collector must pull from it). A
+    # merely-truthy check (`found and all(found)`) is satisfied by an over-greedy
+    # capture too -- e.g. a lookahead that swallows past the frontmatter's next line
+    # would collect `Alpha\\nverified: 2026-01-01` instead of `Alpha` and still pass a
+    # non-empty check, while corrupting every identity `_REVIEWED_FIXTURE_IDENTITIES`
+    # is built from. Asserting the precise value closes that.
+    seen = {
+        'frontmatter, bare': ('Company: Alpha\\nverified: 2026-01-01', 'Alpha'),
+        'frontmatter, quoted': (
+            'Company: "Example Foundry"\\nverified: 2026-07-01', 'Example Foundry'),
+        'dict/kwarg, double': (
+            'fields={"Company": "Example Systems", "Best For": "x"}', 'Example Systems'),
+        'dict/kwarg, single': (
+            "fields={'Company': 'Example Telemetry'}", 'Example Telemetry'),
+    }
+    for shape, (text, expected) in seen.items():
+        found = [_identity_of(v) for v in pattern.findall(text)]
+        assert found == [expected], f"{shape} was not collected as {expected!r}: {text!r} -> {found!r}"
+
+    unseen = {
+        # An f-string interpolation whose own value is quoted: excluding `{` from every
+        # alternative is what stops `{e[` reaching the roster as a bogus identity.
+        'f-string interpolation': 'f\'Company: "{e["company"]}"\'',
+        'bare template': 'f"Company: {company}"',
+    }
+    for shape, text in unseen.items():
+        leaked = [v for v in (_identity_of(m) for m in pattern.findall(text))
+                  if v and not _is_source_text(v)]
+        assert not leaked, f"{shape} leaked {leaked!r} as a fixture identity"
+
+
 @pytest.mark.parametrize("label,pattern", _COLLECTORS, ids=[c[0] for c in _COLLECTORS])
 def test_every_collector_actually_finds_fixtures(label, pattern):
     """A collector that matches nothing makes EVERY check built on it VACUOUSLY green.
@@ -554,7 +706,7 @@ def test_every_collector_actually_finds_fixtures(label, pattern):
     repo happens to have.
 
     Where each collector's result GOES differs, and the split is what the counts below
-    describe. The four `_IDENTITY_COLLECTORS` feed `_all_fixture_identities()` and the
+    describe. The five `_IDENTITY_COLLECTORS` feed `_all_fixture_identities()` and the
     `_REVIEWED_FIXTURE_IDENTITIES` roster checks. The other two feed their own dedicated
     checks instead: "equal-opportunities values" feeds a token-SHAPE check
     (`test_every_equal_opportunities_fixture_value_is_an_obvious_synthetic_token`) and
@@ -587,13 +739,13 @@ def test_the_collector_split_this_file_documents_is_the_split_it_has():
     versus their own dedicated checks -- is the part the docstring actually explains, and a
     total alone would stay green if a collector moved from one group to the other.
     """
-    assert len(_COLLECTORS) == 6, (
+    assert len(_COLLECTORS) == 7, (
         f"{len(_COLLECTORS)} collectors, but the docstring of "
-        "test_every_collector_actually_finds_fixtures describes six -- update the prose "
+        "test_every_collector_actually_finds_fixtures describes seven -- update the prose "
         "and this number together")
-    assert len(_IDENTITY_COLLECTORS) == 4, (
+    assert len(_IDENTITY_COLLECTORS) == 5, (
         f"{len(_IDENTITY_COLLECTORS)} collectors feed the employer roster, but that same "
-        "docstring says four -- a collector moved between the two groups, so the prose "
+        "docstring says five -- a collector moved between the two groups, so the prose "
         "explaining the split is now wrong")
 
 
@@ -1046,7 +1198,7 @@ def test_the_two_equal_opportunities_patterns_find_the_same_values():
 # fixtures ever were, and it is the ONE file `_test_sources()` excludes (`p.name != _SELF`),
 # so no sweep in this repo would ever see it.
 #
-# Captured payloads need their own machinery rather than a fifth regex on `.py` text: the
+# Captured payloads need their own machinery rather than another regex on `.py` text: the
 # values are JSON, and the board's DOM jams company and location into one node with no
 # separator ('Example Telemetry EdgePalmerburgh ZZ9Z'), which is a legitimate fixture and a
 # entry in an IDENTITY roster. So the two halves keep separate rosters and separate reasons.
