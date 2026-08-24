@@ -1,6 +1,7 @@
-"""MCP registration contract (#105, extended by #131): `tools/list` reflects the real
-tools -- the original four under the default write=False, all nine (plus the five
-write tools) under write=True -- names, and schemas that never leak the injected
+"""MCP registration contract (#105, extended by #131, extended again by #164):
+`tools/list` reflects the real tools -- the read-only tools (list_leads, get_lead,
+doctor, health, list_evidence) under the default write=False, plus the five write
+tools under write=True -- names, and schemas that never leak the injected
 `sluice` parameter (the property decision #4's nested-closure shape in
 sluice/mcpserver.py exists to guarantee) -- and a real `call_tool(...)` round-trips
 through the SDK's own dispatch into the real functions, including one full
@@ -18,6 +19,7 @@ import json
 
 from sluice.core.config import Config
 from sluice.core.leads import Lead
+from sluice.core.protocols import EVIDENCE_KINDS
 from sluice.core.vault import Vault
 from sluice.mcpserver import build_server
 
@@ -31,7 +33,7 @@ def test_tools_list_names_and_schemas_never_leak_sluice():
 
     result = asyncio.run(_run())
     by_name = {t.name: t for t in result.tools}
-    assert set(by_name) == {"list_leads", "get_lead", "doctor", "health"}
+    assert set(by_name) == {"list_leads", "get_lead", "doctor", "health", "list_evidence"}
     for tool in by_name.values():
         props = tool.input_schema.get("properties", {})
         assert "sluice" not in props, (
@@ -40,6 +42,7 @@ def test_tools_list_names_and_schemas_never_leak_sluice():
     assert set(by_name["get_lead"].input_schema["properties"]) == {"lead"}
     assert set(by_name["doctor"].input_schema["properties"]) == {"offline"}
     assert by_name["health"].input_schema.get("properties", {}) == {}
+    assert set(by_name["list_evidence"].input_schema["properties"]) == {"kind", "pending"}
 
 
 def test_call_tool_round_trips_through_the_real_dispatch():
@@ -163,6 +166,57 @@ def test_call_tool_round_trips_doctor_with_real_arguments():
     assert "checks" in payload
 
 
+def test_call_tool_round_trips_list_evidence_with_real_arguments(tmp_path):
+    """Evidence entries are user-authored, not scraped -- unlike leads -- but still
+    reach an LLM through this tool, so a non-empty response carries a `content_warning`
+    of its own, in wording that names that provenance rather than borrowing the scraped
+    or derived one. Asserted HERE and not only in tests/test_mcpserver.py because the
+    tool's own docstring does NOT travel with a result: what an MCP client actually
+    receives is this payload, so the round trip through the SDK's real dispatch is the
+    layer that proves the warning reaches it. Task 9's absence sweep
+    (tests/test_mcpserver.py) is what pins there is no write or verify tool alongside
+    it. Seeds one verified skills entry directly on disk,
+    mirroring tests/test_evidence_store.py's own `_seed` helper, rather than
+    round-tripping through propose_evidence/verify_evidence's CAS machinery, which
+    this test has no need to exercise."""
+    base = tmp_path / "vault"
+    base_dir = base / EVIDENCE_KINDS["skills"].relpath
+    base_dir.mkdir(parents=True)
+    (base_dir / "alpha.md").write_text(
+        "---\nProficiency: P\nDomain: D\nEvidence: E\nSignal Value: S\n"
+        "verified: 2026-01-01\n---\nBody text.\n", encoding="utf-8")
+
+    import sluice.mcpserver as mcpserver_mod
+    from sluice.core.leads import (
+        UNTRUSTED_DERIVED_CONTENT_WARNING,
+        UNTRUSTED_SCRAPED_CONTENT_WARNING,
+    )
+
+    async def _run():
+        from mcp import Client
+        server = build_server(Config(vault_dir=str(base)))
+        async with Client(server, raise_exceptions=True) as client:
+            return await client.call_tool("list_evidence", {"kind": "skills"})
+
+    result = asyncio.run(_run())
+    assert result.is_error is False
+    payload = json.loads(result.content[0].text)
+    assert payload == {
+        "kind": "skills", "pending": False, "count": 1,
+        "entries": [{"title": "alpha", "verified": "2026-01-01",
+                     "fields": {"Proficiency": "P", "Domain": "D",
+                                "Evidence": "E", "Signal Value": "S"}}],
+        "content_warning": mcpserver_mod._LIST_EVIDENCE_CONTENT_WARNING,
+    }
+    # The shared tail, spelled out the same way the list_leads and get_lead round trips
+    # above spell theirs: it is the clause a reworded warning would quietly drop.
+    assert "whatever it says about itself" in payload["content_warning"]
+    # And the provenance is named honestly rather than borrowed: an entry the user typed
+    # is neither scraped nor LLM-composed, so neither of the other two warnings may appear.
+    assert UNTRUSTED_SCRAPED_CONTENT_WARNING not in payload["content_warning"]
+    assert UNTRUSTED_DERIVED_CONTENT_WARNING not in payload["content_warning"]
+
+
 def test_call_tool_reports_a_real_sdk_error_for_a_tool_level_exception(tmp_path):
     """A tool-level exception (list_leads raising ValueError for an unknown status)
     must degrade to a proper SDK-level tool error, never crash the server."""
@@ -182,7 +236,7 @@ def test_call_tool_cv_run_reports_a_real_sdk_error_for_an_invalid_backend(tmp_pa
     translation (sluice/mcpserver.py, decision 14): the SAME degrade-to-is_error
     contract must hold through the real dispatch, not just at the direct-call layer
     tests/test_mcpserver.py already covers. `cv_run`'s `backend` is schema-typed as an
-    `enum` (pinned above in test_tools_list_under_write_true_returns_all_nine_with_exact_
+    `enum` (pinned above in test_tools_list_under_write_true_returns_every_tool_with_exact_
     schemas, which is where 'every valid choice is accepted' is already covered without
     duplicating that set here) -- this proves an invalid value past that schema still
     reaches Sluice.backend's own role guard and comes back as a proper tool error either
@@ -266,7 +320,7 @@ def test_call_tool_cv_run_round_trips_slop_and_voice_flags_through_real_json(
 # write tool's dispatch and a concurrency sanity check both work end-to-end through
 # the real SDK, not just via the direct-call unit tests in tests/test_mcpserver.py.
 
-def test_tools_list_under_default_write_false_returns_exactly_the_original_four():
+def test_tools_list_under_default_write_false_returns_exactly_the_original_read_tools():
     async def _run():
         from mcp import Client
         server = build_server(Config())   # write defaults to False
@@ -275,12 +329,12 @@ def test_tools_list_under_default_write_false_returns_exactly_the_original_four(
 
     result = asyncio.run(_run())
     names = {t.name for t in result.tools}
-    assert names == {"list_leads", "get_lead", "doctor", "health"}, (
+    assert names == {"list_leads", "get_lead", "doctor", "health", "list_evidence"}, (
         "the five write tools must be genuinely ABSENT from tools/list under the "
         "default (no --write) registration, not merely refusing at call time")
 
 
-def test_tools_list_under_write_true_returns_all_nine_with_exact_schemas():
+def test_tools_list_under_write_true_returns_every_tool_with_exact_schemas():
     async def _run():
         from mcp import Client
         server = build_server(Config(), write=True)
@@ -290,7 +344,7 @@ def test_tools_list_under_write_true_returns_all_nine_with_exact_schemas():
     result = asyncio.run(_run())
     by_name = {t.name: t for t in result.tools}
     assert set(by_name) == {
-        "list_leads", "get_lead", "doctor", "health",
+        "list_leads", "get_lead", "doctor", "health", "list_evidence",
         "dismiss_lead", "apply_record", "cv_run", "cv_signoff", "create_lead",
     }
     for tool in by_name.values():
