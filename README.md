@@ -318,8 +318,8 @@ stream each command writes to: [`docs/USAGE.md`](https://github.com/MrReasonable
 ## MCP server
 
 `job-sluice mcp serve` runs sluice as a Model Context Protocol server over stdio, so
-an agent (Claude Code or otherwise) can call `list_leads`/`get_lead`/`doctor`/`health`
-directly instead of shelling out to the CLI and parsing its stdout. Read-only by
+an agent (Claude Code or otherwise) can call `list_leads`/`get_lead`/`doctor`/`health`/
+`list_evidence` directly instead of shelling out to the CLI and parsing its stdout. Read-only by
 default -- see [`docs/ARCHITECTURE.md`](https://github.com/MrReasonable/sluice/blob/main/docs/ARCHITECTURE.md)'s surface/adapter section. Needs `pip install -e '.[mcp]'`.
 
 Pass `--write` to also register five write-capable tools -- `dismiss_lead`,

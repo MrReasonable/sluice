@@ -245,9 +245,22 @@ actually answers, not just that a key is present.
 - **`degraded`, Judging Profile absent**: `triage` falls back to the shipped neutral default,
   which states only that nothing is configured and prefers `research` over a confident
   verdict. Not fatal, just under-informed — fill in `Job Applications/Judging Profile.md`.
-- **`notice`, Experience Library counts**: informational only — `<verified> verified / <total>
-  total`. Zero verified entries means every CV fails the fabrication gate (no citable source
-  material), which is a `cv run` failure, not a `doctor` one.
+- **`notice`, Experience Library / Skills Inventory / STAR Stories counts** (#164): one row per
+  evidence corpus, informational only — `<verified> verified / <total> total entries`. Zero
+  verified `experience` entries means every CV fails the fabrication gate (no citable source
+  material), which is a `cv run` failure, not a `doctor` one; `skills`/`stories` are not yet
+  read by any composer, so an empty one is not itself a blocker today. A non-zero PENDING
+  count also gets `; <pending> proposed and awaiting review (job-sluice <kind> verify)` — an entry
+  `<kind> add` captured sits in `_inbox/` doing nothing until a human runs that command.
+- **`dead`, an evidence corpus that cannot be read**: `<Corpus> | dead | cannot be read — …`,
+  one row per affected kind and only for that kind. The usual cause is a symlinked directory:
+  the store refuses to read or write through one anywhere below the vault root, because
+  promoting an entry from behind it would make content from outside your vault citable — and
+  `verify`'s cleanup would then delete a file outside your vault. Move the real folder into the
+  vault. Only the `experience` row names `blocks: cv`; nothing composes off `skills`/`stories`
+  yet. An interactive `job-sluice init` reports the same cause as a `FAILED` line, still writes
+  your config and Judging Profile, and skips the capture step rather than offering it against a
+  corpus it could not read; `--no-input` never reads the corpus at all.
 - **A command refuses citing a relocated state file** (`seen.db`, `track-seen.db`,
   `sluice_health.json`, and friends): see "Upgrading from a pre-XDG install" in
   `docs/CONFIGURATION.md` — the fix is the printed `mv` command, not a config change. This is

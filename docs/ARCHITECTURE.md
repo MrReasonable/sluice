@@ -647,10 +647,16 @@ or a `Camofox()`, builds a backend, or duplicates the triage/compose/prep/record
 track wiring itself. `cli.py` is now a thin shell over `Sluice` -- each command
 builds one, calls one method, and formats the result for the terminal -- so a surface
 built today has nothing left in `cli.py` worth forking. `sluice/mcpserver.py` (#105,
-extended #131) is the first one: a Model Context Protocol server exposing four
-read-only tools (`list_leads`, `get_lead`, `doctor`, `health`) always, and five
-write-capable tools (`dismiss_lead`, `apply_record`, `cv_run`, `cv_signoff`,
-`create_lead`) under `--write`. Every write tool is a thin translation layer over
+extended #131, extended again #164) is the first one: a Model Context Protocol
+server exposing the read-only tools (`list_leads`, `get_lead`, `doctor`, `health`,
+`list_evidence`) always, and five write-capable tools (`dismiss_lead`,
+`apply_record`, `cv_run`, `cv_signoff`, `create_lead`) under `--write`.
+`list_evidence` has no write/verify counterpart at any privilege level: an evidence
+body reaches `cv/validate.py`'s fabrication-gate bundle verbatim, and `nums[cur] =
+set(...)` there is an ASSIGNMENT, not a union, so an LLM-authored body shaped like a
+citation code could rebind another entry's permitted numbers -- exposing a write
+tool would hand that bypass to whatever calls this MCP server (deferred to #175,
+blocked on #174). Every write tool is a thin translation layer over
 exactly one `Sluice` write method -- `sluice/mcpserver.py` itself contains no store
 write (AST-enforced) -- so a write tool can never become a second, undocumented
 write path for an invariant `Sluice`'s own methods already hold.
@@ -1164,11 +1170,11 @@ them they cover all four such decisions in that tree. `_is_dir` — which `_scan
 `read_leads` and `normalize_all_statuses` each ask whether `leads_dir` exists at all —
 answers False only to `FileNotFoundError` and lets a `PermissionError` out.
 `_is_note_file`, `_locate`'s per-candidate probe, answers FOUND only for a regular file
-and absent only for `FileNotFoundError`/`NotADirectoryError`. `_is_dir` has one more
-caller, outside that tree and bound by the same rule for a different reason:
-`read_experience_entries`, below.
+and absent only for `FileNotFoundError`/`NotADirectoryError`. `_is_dir` has further
+callers outside that tree, bound by the same rule for their own reasons — the evidence
+read and `preflight`, both below.
 
-Each of the four `_is_dir` callers had to be converted separately, and
+Each `_is_dir` caller had to be converted separately, and
 `normalize_all_statuses` was the last of the three under `leads_dir` —
 worth stating because it is the one that WRITES, so its silent empty read was reported
 back to the CLI as a successful sweep that canonicalized nothing. Its `os.path.isdir`
@@ -1184,11 +1190,59 @@ gone. Measured against a live `applied` note with a url-identical archived twin:
 `merged_away`, recorded, `last_seen` frozen, and the only log line said the lead had
 been merged away.
 
-The fourth `_is_dir` caller sits outside the lead tree. `read_experience_entries`
-probes the *Experience Library*, which no scan walks and which no write path is keyed
-on, so its harm is not a re-created lead and it took the rule on its own merits: these
-entries are the ONLY citable evidence the hard fabrication gate recognises, so an empty
-read leaves a bundle with no ids and every WORK bullet violates it — measured,
+The `_is_dir` callers outside the lead tree take the rule for their own reasons.
+`_evidence_entries` — the single probe behind `read_evidence`, `read_pending_evidence`
+and `read_experience_entries` alike — probes an evidence directory (the *Experience
+Library*, for the read the fabrication gate depends on), which no scan walks. A write path IS keyed on it now
+(#164): `propose_evidence` lands an unverified proposal in its `_inbox/` subdirectory,
+and `verify_evidence` promotes one into the directory itself -- both through the same
+`_evidence_dir` RESOLVER this read uses, which is where the symlink refusal lives, so
+every read and every write is bound by it alike. That sentence used to claim a shared
+path *expression* was enough to keep "a guard added to one side" from going missing on
+the other, and a probe falsified it: the refusal actually sat in `propose_evidence`'s
+own body, so a symlinked `_inbox/` refused the write, listed the foreign directory's
+entries through `read_pending_evidence` anyway, and let `verify_evidence` promote one
+and then `os.unlink` the source — deleting a file outside the vault (#164 review, H1).
+Sharing the path expression shares only the path; a guard is shared only by living in
+the resolver, which is now where it lives.
+
+**What that refusal covers, stated so the boundary is not guessed at.**
+`_evidence_dir` walks EVERY path component below the vault directory — each component
+of the kind's relpath, plus `_inbox` when the inbox is being resolved — and raises on
+the first `os.path.islink`, outermost first. It is a walk rather than a list of named
+levels because the list was wrong twice: a check on `_inbox` alone missed a symlinked
+KIND directory (`_inbox` beneath it is an ordinary subdirectory of a foreign tree, so
+`islink` is False), and a check naming both missed a symlinked ANCESTOR — measured on
+`vault/Job Applications ->` outside, the first component of every kind's relpath: the
+pending listing showed `['alpha']`, `verify_evidence` returned True, and its `os.unlink`
+deleted a file outside the vault. Outermost first, which only bites when more than one
+component is a link (a symlinked ancestor with a symlinked `_inbox` nested inside the
+foreign tree): the message carries one instruction, "move the real folder into the
+vault", and moving the inner folder changes nothing while the ancestor still points
+away. With a single link the two directions agree — measured, reversing the walk against
+a one-link fixture left the whole suite green, which is why the test that pins the order
+nests two. The vault directory ITSELF is not probed: it is the path the user named
+(`--vault`, a config key, an env var), so a symlink there is the boundary rather than an
+escape from it.
+`_evidence_entry_path` is the other half of the same class, at the ENTRY FILE, and the
+harm is the mirror image — injection rather than deletion. Measured: an `_inbox/x.md`
+symlinked to a file outside the vault was read through, promoted into the citable
+directory carrying the foreign body, and the `os.unlink` removed only the LINK, so the
+foreign file survived. It binds the citable listing too, not just the inbox, since a
+symlinked entry sitting in the kind directory feeds `cv/bundle.py` content from outside
+the vault with no promotion involved at all. Both refuse rather than resolve, for the
+`islink`-never-`realpath` reason `_write_folder` already states.
+Both are probes, not locks: a symlink swapped in AFTER the walk and before
+`verify_evidence`'s `os.unlink` still escapes (it must carry byte-identical content to
+survive the compare-and-set first). That is the same accepted residual class as
+`_cas_write`'s own compare → replace micro-window — no portable stdlib call resolves a
+path and operates on it atomically — and closing the ROUTINE case is the whole claim.
+
+Back to `_is_dir`: the harm a quiet `[]` does here is still not a re-created LEAD --
+those two writers manage evidence entries, not lead notes -- so `_evidence_entries` took
+that rule on its own merits: these entries are the ONLY citable evidence the hard fabrication gate
+recognises, so an empty read leaves a bundle with no ids and every WORK bullet
+violates it — measured,
 `BAD CITATION` for a bullet that cites and `UNCITED BULLET` for one that does not.
 The CV is therefore never rendered — it fails CLOSED — and what it costs is that a
 permissions problem reaches the user as `skipped-gate`, a fabrication verdict against
@@ -1196,6 +1250,15 @@ their composer, after a dossier fetch and a full compose have been paid for. The
 case needs the VAULT ROOT to be unstatable, since with the library itself at mode 000
 `os.listdir` already raises: `os.stat(base)` is then the call that fails, and
 `os.path.isdir` turned that into `return []`.
+
+`Vault.preflight` probes the vault root the same way (that probe predates #164 —
+this paragraph tagged it with that issue and was wrong), and the reason is the
+diagnosis rather than the data: `job-sluice doctor` reports FACTS, so a `vault_exists`
+that swallowed a `PermissionError` would hand `classify_store` a False and print
+`vault directory does not exist` — a DEAD verdict naming the wrong cause, on the one
+command a user runs *because* something is already wrong. Propagating instead lands it
+in `Sluice.doctor`'s own broad handler around the hook, as a DEAD `store`/`preflight`
+row carrying the real error text — so the permissions problem is what the user reads.
 
 `os.walk` does **not** follow symlinks, and that default is kept: following would let
 a link loop spin the walk and let a link out of the vault pull arbitrary directories
@@ -1292,6 +1355,35 @@ Four points in the config are the seams for pluggable adapters.
   keeps the clean, digest-less name (zero migration); only the collider is
   suffixed. This is a vault filename concern, not a Store property — a store
   with real keys distinguishes those rows without it.
+  Its evidence surface is `read_evidence`, `read_pending_evidence`,
+  `read_pending_evidence_text`, `propose_evidence` and `verify_evidence` — the five
+  #164 added — AND `read_experience_entries`, which predates it and which `Vault`
+  implements as a delegate to `read_evidence("experience")` so the two cannot drift.
+  Naming the first five alone would be #164's diff rather than the surface, and the
+  one it leaves out is the member `cv/engine.py` actually calls
+  (`vault.read_experience_entries(verified_only=True)`), so the gate's own path
+  would be the part missing. That sixth member EXPIRES AT #165: it is a second
+  required spelling of `read_evidence("experience")`, kept for the one caller #165
+  rewrites to read per kind. When that lands, delete it from the `Protocol` rather
+  than inheriting it — a Protocol member is a required member, so leaving it makes
+  every future store implement a second name for a call it already implements, for a
+  caller that no longer exists. Its conformance row goes with it. A filesystem
+  `path` is no longer part of what the two readers PROMISE: that key was
+  required once, purely so `core/app.py` could `open()` it for the bytes a
+  human reviews, which made the store-agnostic facade reach through the seam
+  at a filesystem and forced a `path` on stores that have none. The `vault`
+  store still carries one in its own dicts and `core/protocols.py` says so
+  outright — a store MAY carry extra keys; what changed is that no
+  contract-bound caller may read one, which is the part a second store
+  depends on.
+  `read_pending_evidence_text` is the contract member for those bytes, and it
+  must be a FRESH read, because it is what `verify_evidence`'s compare-and-set
+  is handed. Which of a kind's own frontmatter fields fills each of the four
+  TEXT floor keys (`company`/`category`/`best_for`/`metrics`) is
+  `FLOOR_FIELD_SOURCES` merged with that kind's `floor_map`, not an identity
+  mapping a store invents: `skills` names its keyword axis `Domain`, and
+  without the override `cv/bundle.py`'s `rank()` scored a `platform` skill
+  zero against the keyword `platform`.
   This seam has a second, OPTIONAL member too: `preflight() -> dict`, the same
   shape as the renderer seam's `precheck` below (undeclared on the `Protocol`
   for the identical reason -- an optional member must stay optional to
@@ -1299,11 +1391,23 @@ Four points in the config are the seams for pluggable adapters.
   an implementation that omits it reports nothing for that component rather
   than being treated as broken. `Vault.preflight` returns FACTS only (does the
   vault directory exist, is the baseline CV readable, is a Judging Profile
-  present, how many Experience Library entries are verified, and -- #133/#107
-  -- is a candidate name declared and is a contact block declared, read via
-  `full_name(profile)`/`contact_block(profile)` off `read_candidate_profile()`)
-  -- never verdicts, which stay in `core/doctor.py` alongside the backend
-  classification rules. It is read-only by contract: stats paths and reuses
+  present, a `<kind>_total`/`<kind>_verified`/`<kind>_pending` triple for each
+  of the three evidence corpora (#164: `experience` -- the pre-#164
+  `experience_total`/`experience_verified` names kept as-is since `doctor`
+  already consumes them by name -- `skills` and `stories`, iterated off
+  `EVIDENCE_KINDS` rather than hand-listed so a fourth kind needs no edit
+  here either), and -- #133/#107 -- is a candidate name declared and is a
+  contact block declared, read via `full_name(profile)`/`contact_block(profile)`
+  off `read_candidate_profile()`) -- never verdicts, which stay in
+  `core/doctor.py` alongside the backend
+  classification rules. That per-kind loop is ISOLATED: a kind whose
+  directories cannot be read reports `<kind>_error` (the OSError's text)
+  INSTEAD of its count triple, never a zero, and `classify_store` gives it its
+  own DEAD row. Without that isolation one symlinked evidence directory
+  unwound out of `preflight` entirely and `Sluice.doctor`'s catch-all printed a
+  single `store | preflight | dead` row — measured, four store rows including
+  `Candidate Profile | dead | blocks: cv` became one, on the command a user
+  runs *because* something is already wrong. It is read-only by contract: stats paths and reuses
   this store's own read methods, never opens anything that does not already
   exist, so it cannot disarm the #81 relocation notice above.
 - **renderer**: `sluice/renderers/`, selected by `cv.renderer:` (default
@@ -1381,18 +1485,19 @@ classifies each as `ok`/`degraded`/`dead`, then does the same for a second table
 component checks -- the renderer (does `cv.renderer` actually construct, catching a
 missing `render` extra or WeasyPrint's native libraries before the dossier fetch and
 LLM spend rather than after), the store's on-disk artefacts (the vault directory,
-the baseline CV, the Judging Profile, Experience Library entry counts, and -- #133/#107
--- the Candidate Profile note's own declared name/contact, checked here rather than as
-a separate identity-fields row, via the Store seam's OPTIONAL `preflight()` hook),
-track's Google adapter, the Camofox profile an ingest run will drive, the current
-posture (abstaining or active) of every list-typed preference gate, and the shared
-dossier cache's cached-JD length distribution (#169) -- how many entries are empty, how
-many under 200 characters, how many under 800, and how many are unreadable outright (a
-broken cache file -- an interrupted write, a bad disk -- kept as its own bucket rather
-than folded into "empty", since that is a storage fault, not evidence the fetch itself
-produced nothing), always reported as a fact rather than a threshold verdict, since
-`min_jd_chars` ships at `0` (the near-empty band off) and a count against that floor
-would be identically zero at the shipped default. A legacy
+the baseline CV, the Judging Profile, a verified/pending NOTICE row for each of the
+three evidence corpora (#164: Experience Library, Skills Inventory, STAR Stories),
+and -- #133/#107 -- the Candidate Profile note's own declared name/contact, checked
+here rather than as a separate identity-fields row, via the Store seam's OPTIONAL
+`preflight()` hook), track's Google adapter, the Camofox profile an ingest run will
+drive, the current posture (abstaining or active) of every list-typed preference gate,
+and the shared dossier cache's cached-JD length distribution (#169) -- how many entries
+are empty, how many under 200 characters, how many under 800, and how many are
+unreadable outright (a broken cache file -- an interrupted write, a bad disk -- kept as
+its own bucket rather than folded into "empty", since that is a storage fault, not
+evidence the fetch itself produced nothing), always reported as a fact rather than a
+threshold verdict, since `min_jd_chars` ships at `0` (the near-empty band off) and a
+count against that floor would be identically zero at the shipped default. A legacy
 `cv.name`/`cv.contact` still set in `sluice.yaml` is a THIRD, separate failure mode: it
 makes `load_cv_config()` raise, which `Sluice.doctor` catches ahead of the
 deliberately-guarded `self.renderer()`/`self.store()` constructions below it (triage's config
