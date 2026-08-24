@@ -38,6 +38,7 @@ from pathlib import Path
 ROOT = Path(__file__).parent.parent
 RELEASE_PLEASE = ROOT / ".github" / "workflows" / "release-please.yml"
 TESTPYPI = ROOT / ".github" / "workflows" / "testpypi.yml"
+HOMEBREW_DRY_RUN = ROOT / ".github" / "workflows" / "homebrew-dry-run.yml"
 
 
 def _text(path: Path) -> str:
@@ -89,6 +90,29 @@ def _step_containing(path: Path, job: str, needle: str) -> str:
     return matches[0]
 
 
+def _step_own_directive_keys(path: Path, job: str, needle: str) -> set[str]:
+    """The top-level directive keys (`name`, `uses`, `env`, `run`, `if`, ...) the step
+    containing `needle` declares on ITSELF, from `_step_containing`'s comment-stripped output.
+
+    Matched at the step's own two possible indents -- either the `- key:` that opens the step
+    (six spaces plus the dash-space) or a bare `key:` one level in (eight spaces) -- and no
+    deeper, so a key nested inside `env:`/`with:` (`VERSION:`, `TAP_TOKEN:`, ...) is never
+    mistaken for a step-level directive.
+
+    This is the ALLOW-LIST mechanism #104 IMPORTANT-2 calls for, in place of a substring
+    probe for `if: always()`: a blocklist keyed on that one literal is wrong in both
+    directions here. `if: always()` already appears in this repo's own workflow commentary
+    (release-please.yml's header prose explains what it is normally FOR), so a substring probe
+    would need comment-stripping just to avoid a false positive there -- and even
+    comment-stripped, `${{ always() }}`, `!cancelled()` and `success() || failure()` all name a
+    step-level `if:` key that a two-item blocklist keyed on the literal string `always()` never
+    sees. Keying on the parsed DIRECTIVE NAME (`if`) rather than any particular VALUE closes
+    every spelling at once.
+    """
+    step = _step_containing(path, job, needle)
+    return set(re.findall(r"^(?: {6}- | {8})([a-z_-]+):", step, re.MULTILINE))
+
+
 def _job_names(path: Path) -> list[str]:
     """Every job key in `path`, in file order, comment-stripped.
 
@@ -120,8 +144,9 @@ def _job_names(path: Path) -> list[str]:
 # roster is what makes the per-job equality pins exhaustive in combination rather than merely
 # individually correct.
 _RELEASE_PLEASE_JOBS = ["release-please", "build", "linux-packages", "attest", "pypi",
-                        "release-assets", "docker", "attest-image"]
+                        "release-assets", "docker", "attest-image", "homebrew"]
 _TESTPYPI_JOBS = ["testpypi"]
+_HOMEBREW_DRY_RUN_JOBS = ["dry-run"]
 
 _ROSTER_MESSAGE = (
     "Every other permissions guard in this file is keyed on a job NAME, so a job absent from "
@@ -148,6 +173,16 @@ def test_release_please_declares_exactly_the_jobs_this_file_pins():
 def test_testpypi_declares_exactly_the_jobs_this_file_pins():
     found = _job_names(TESTPYPI)
     assert found == _TESTPYPI_JOBS, _roster_failure(TESTPYPI, _TESTPYPI_JOBS, found)
+
+
+def test_homebrew_dry_run_declares_exactly_the_jobs_this_file_pins():
+    """homebrew-dry-run.yml is the file holding the cross-repo write token (see
+    `test_the_homebrew_dry_run_has_no_elevated_permissions`'s docstring), and until this pin
+    existed nothing enumerated its job roster at all -- the same blind spot `_ROSTER_MESSAGE`
+    describes for the other two files, unclosed here."""
+    found = _job_names(HOMEBREW_DRY_RUN)
+    assert found == _HOMEBREW_DRY_RUN_JOBS, _roster_failure(
+        HOMEBREW_DRY_RUN, _HOMEBREW_DRY_RUN_JOBS, found)
 
 
 def test_release_please_job_exposes_the_release_created_output():
@@ -958,9 +993,28 @@ def test_testpypi_skips_existing():
 
 
 def test_testpypi_refuses_a_non_default_branch():
+    """Step-scoped, and -- added alongside the homebrew-dry-run.yml equivalent, which found
+    this same gap -- ORDER-checked too: presence of the refusal text in the right step is not
+    enough on its own, since a MOVE of the whole step to the end of `steps:` (after the actual
+    `pypa/gh-action-pypi-publish` upload) leaves that step-scoped assertion green while the
+    guard runs after the publish it was meant to prevent. Index order over the comment-stripped
+    job block is the same idiom
+    `test_the_homebrew_release_job_verifies_before_minting_a_token_before_pushing` uses for the
+    workflow this design is modelled on -- the pre-split `test_the_homebrew_bump_verifies_
+    before_it_pushes` this cross-reference used to name indexed a single SCRIPT body instead,
+    and was deleted when #104 IMPORTANT-3 split that script in two.
+    """
     step = _step_containing(TESTPYPI, "testpypi", "Refuse to publish a non-default branch")
     assert "if: github.ref_name != github.event.repository.default_branch" in step
     assert "exit 1" in step
+
+    directives = _job_directives(TESTPYPI, "testpypi")
+    refusal = directives.index("Refuse to publish a non-default branch")
+    publish = directives.index("pypa/gh-action-pypi-publish")
+    assert refusal < publish, (
+        "the branch-refusal step must PRECEDE the step that publishes to TestPyPI -- a refusal "
+        "that runs after the publish has already fired guards nothing"
+    )
 
 
 def test_the_version_stamp_fails_loudly_when_it_matches_nothing():
@@ -1451,10 +1505,11 @@ def test_attest_image_names_both_the_subject_name_and_the_pushed_digest():
 
 
 _MODULE_HELPER_NAMES = {
-    "_text", "_job_directives", "_step_containing", "_permissions_block",
-    "_workflow_wide_directives", "_post_checkout_run_steps", "_run_commands",
-    "_publish_action_ref", "_python_version", "_job_names", "_artifact_retention_days",
-    "_roster_failure", "_run_block_scalar", "_channel_table_rows", "_artifact_names",
+    "_text", "_job_directives", "_step_containing", "_step_own_directive_keys",
+    "_permissions_block", "_workflow_wide_directives", "_post_checkout_run_steps",
+    "_run_commands", "_publish_action_ref", "_python_version", "_job_names",
+    "_artifact_retention_days", "_roster_failure", "_run_block_scalar", "_channel_table_rows",
+    "_artifact_names",
 }
 
 
@@ -1506,7 +1561,8 @@ _CHANNEL_STATUSES = {"shipped", "planned"}
 
 # Which roster jobs PUBLISH something a user can install from, and the label the table gives
 # each. The other five jobs build, sign or upload -- they produce no channel of their own.
-_CHANNEL_JOBS = {"pypi": "PyPI", "docker": "Docker", "linux-packages": "deb / rpm"}
+_CHANNEL_JOBS = {"pypi": "PyPI", "docker": "Docker", "linux-packages": "deb / rpm",
+                 "homebrew": "Homebrew"}
 _NON_CHANNEL_JOBS = {"release-please", "build", "attest", "release-assets", "attest-image"}
 
 
@@ -1599,3 +1655,479 @@ def test_readme_marks_shipped_exactly_the_channels_the_release_workflow_produces
         f"{sorted(shipped - set(_CHANNEL_JOBS.values()))}; built but not claimed: "
         f"{sorted(set(_CHANNEL_JOBS.values()) - shipped)}."
     )
+
+
+def test_the_homebrew_job_has_no_elevated_permissions():
+    """Every job in this file carries an exact `_permissions_block` equality pin -- a property
+    `attest-image`'s own comment asserts and uses to argue that no future job can hold a
+    registry credential and an OIDC identity together. A roster entry WITHOUT this pin is
+    worse than useless: `_ROSTER_MESSAGE` says extending the list alone restores the blind
+    spot it exists to close.
+
+    `contents: read` and nothing else. The cross-repo write is a SCOPED APP TOKEN for a
+    different repository, which is why `release-assets` remains the only holder of
+    `contents: write` on this workflow's GITHUB_TOKEN.
+    """
+    assert _permissions_block(RELEASE_PLEASE, "homebrew") == (
+        "    permissions:\n      contents: read"
+    )
+
+
+def test_the_homebrew_job_is_gated_on_release_created():
+    """`homebrew` was the only one of the eight roster jobs downstream of `release-please`
+    without this pin -- `build`, `attest`, `linux-packages`, `pypi`, `release-assets`, `docker`
+    and `attest-image` each have their own copy above. The workflow's `if:` line was already
+    correct; nothing in this file asserted it, so deleting it left the whole suite green."""
+    assert (
+        "if: success() && needs.release-please.outputs.release_created == 'true'"
+        in _job_directives(RELEASE_PLEASE, "homebrew")
+    )
+
+
+def test_the_homebrew_job_runs_on_macos():
+    """Not a preference. The payoff -- WeasyPrint resolving cairo/pango with no
+    DYLD_FALLBACK_LIBRARY_PATH -- comes from Homebrew's CPython patching ctypes' dyld
+    fallback, a macOS mechanism. A Linux runner would verify nothing this channel is for."""
+    assert "runs-on: macos-latest" in _job_directives(RELEASE_PLEASE, "homebrew")
+
+
+def test_the_homebrew_job_waits_for_the_pypi_upload():
+    """The formula's `url` is a PyPI sdist; it cannot resolve before that upload lands. This
+    is the workflow's first cross-channel dependency and it is load-bearing, not stylistic."""
+    directives = _job_directives(RELEASE_PLEASE, "homebrew")
+    assert re.search(r"needs:\s*\[release-please,\s*pypi\]", directives), directives
+
+
+def test_the_homebrew_release_job_verifies_before_minting_a_token_before_pushing():
+    """THE GATE, restated across the two-script split (#104 IMPORTANT-3) that replaced the
+    single homebrew_bump.sh: a cross-repo `contents: write` token for the tap must not be live
+    while `brew install --build-from-source` runs the pip/PEP 517 build backend of every one of
+    the ~45 resource sdists in the closure. Asserted by INDEX ORDER over the WORKFLOW's steps
+    -- verify, THEN the token mint, THEN push -- the same idiom an earlier, single-script
+    version of this test used for offsets inside one file, now applied one level up because the
+    ordering it protects moved from within a script to between workflow steps.
+
+    Comment-stripped via `_job_directives`, so a comment mentioning a step's command ahead of
+    its real position cannot satisfy this.
+    """
+    directives = _job_directives(RELEASE_PLEASE, "homebrew")
+    verify = directives.index("bash .github/scripts/homebrew_verify.sh")
+    mint = directives.index("actions/create-github-app-token")
+    push = directives.index("bash .github/scripts/homebrew_push.sh")
+    assert verify < mint < push, (
+        f"the homebrew job must render/audit/install/test the formula BEFORE minting the tap "
+        f"token, and mint the token BEFORE pushing; got offsets verify={verify}, mint={mint}, "
+        f"push={push}. A token minted earlier is live in the environment of the untrusted "
+        f"`brew install --build-from-source` step -- exactly the exposure the split closes."
+    )
+
+
+def test_the_homebrew_dry_run_verifies_before_minting_a_token_before_pushing():
+    """The dry run's own copy of the ordering pin above -- it drives the identical two scripts
+    (see `test_the_homebrew_dry_run_drives_the_same_verify_and_push_scripts_as_the_release_job`
+    below), so an ordering bug here is the same token exposure on the file that ALSO holds the
+    cross-repo write token during a manually-dispatched run."""
+    directives = _job_directives(HOMEBREW_DRY_RUN, "dry-run")
+    verify = directives.index("bash .github/scripts/homebrew_verify.sh")
+    mint = directives.index("actions/create-github-app-token")
+    push = directives.index("bash .github/scripts/homebrew_push.sh")
+    assert verify < mint < push, (
+        f"the dry-run job must render/audit/install/test the formula BEFORE minting the tap "
+        f"token, and mint the token BEFORE pushing; got offsets verify={verify}, mint={mint}, "
+        f"push={push}."
+    )
+
+
+def test_the_homebrew_verify_script_updates_audits_installs_and_tests_in_order():
+    """THE GATE, restated over the SCRIPT bodies -- a DIFFERENT layer from the two
+    workflow-step-order pins immediately above, and not a substitute for them. Those pins
+    assert only that the WORKFLOW's verify STEP precedes its push STEP; a verify step that
+    runs and reports success having done nothing (its `brew install`/`brew test` lines
+    deleted) still precedes the push step, so that pair alone would stay green while the
+    property this whole channel rests on -- 'nothing is ever pushed to the tap that was not
+    just installed and tested' -- silently stops holding. This is the split's own replacement
+    for the pre-split `test_the_homebrew_bump_verifies_before_it_pushes`, which indexed the
+    single homebrew_bump.sh script the same way before #104 IMPORTANT-3 split it in two.
+
+    Verified by execution, each via a `cp`-backed delete-then-restore (never `git checkout`,
+    per CLAUDE.md's mutation-testing section): deleting the `brew test ...` line from
+    homebrew_verify.sh, and separately deleting the `brew install --build-from-source ...`
+    line, both left the full suite green before this test existed.
+
+    Comment-stripped before the offsets are computed -- the same idiom
+    `test_the_homebrew_verify_script_bypasses_the_release_cooldown` already applies to this
+    file -- so a comment mentioning one of these commands ahead of its real position cannot
+    invert the measured order with nothing about the script's actual behaviour changed.
+    """
+    script = (ROOT / ".github" / "scripts" / "homebrew_verify.sh").read_text()
+    body = "\n".join(ln for ln in script.splitlines() if not ln.lstrip().startswith("#"))
+    update = body.index("brew update-python-resources")
+    audit = body.index("brew audit --strict --online")
+    install = body.index("brew install --build-from-source")
+    test = body.index("brew test ")
+    assert update < audit < install < test, (
+        f"homebrew_verify.sh must update-python-resources, THEN audit, THEN install, THEN "
+        f"test the formula, in that order; got offsets update={update}, audit={audit}, "
+        f"install={install}, test={test}. A formula pushed after skipping any of these steps "
+        f"is exactly the deb/rpm failure this channel exists not to repeat."
+    )
+
+
+def test_the_homebrew_verify_script_reseats_the_tap_checkout_before_rendering():
+    """The tap CHECKOUT, not just the branch NAME -- a different property from
+    `test_the_homebrew_verify_script_updates_audits_installs_and_tests_in_order` above and not
+    covered by it.
+
+    The clone guard deliberately tolerates a PRE-EXISTING tap checkout (this job's own prior
+    run, or a prior dry run's), which can be sitting on a `bump-X.Y.Z` scratch commit. Without
+    the fetch-and-reseat pair pinned here, homebrew_push.sh's own `checkout -B "$TARGET_BRANCH"`
+    resets that branch to whatever local HEAD happens to be -- so on PUSH_TARGET=default it
+    would reset the tap's REAL default branch onto a leftover scratch commit, and push.sh's
+    fast-forward push accepts it. A dry run's history silently becomes the tree of record:
+    the exact orphan-branch harm PUSH_TARGET exists to prevent, reached through the base COMMIT
+    rather than the branch NAME.
+
+    Verified by execution, via a `cp`-backed delete-then-restore (never `git checkout`, per
+    CLAUDE.md's mutation-testing section): deleting BOTH reseat lines from homebrew_verify.sh
+    left the full suite green before this test existed.
+
+    Both lines are pinned, not just the checkout: `checkout -B ... "origin/$DEFAULT_BRANCH"`
+    against a stale remote-tracking ref reseats onto an old tip, so the fetch is half the
+    property. The ORDER against the render step matters too -- reseating AFTER the formula is
+    written would check out over the rendered file (or abort), so the render must come last.
+
+    Comment-stripped before the offsets are computed, the same idiom as the sibling order pin
+    above, so a comment naming one of these commands ahead of its real position cannot invert
+    the measured order with nothing about the script's actual behaviour changed.
+    """
+    script = (ROOT / ".github" / "scripts" / "homebrew_verify.sh").read_text()
+    body = "\n".join(ln for ln in script.splitlines() if not ln.lstrip().startswith("#"))
+    fetch = 'fetch origin "$DEFAULT_BRANCH"'
+    reseat = 'checkout -B "$DEFAULT_BRANCH" "origin/$DEFAULT_BRANCH"'
+    render_call = 'python3 - "$SDIST_URL"'
+    for needle in (fetch, reseat, render_call):
+        assert needle in body, (
+            f"homebrew_verify.sh no longer contains {needle!r}. Without the fetch/reseat pair "
+            f"the tap checkout can still be sitting on a prior run's scratch commit when "
+            f"homebrew_push.sh resets the default branch onto it -- a dry run's history "
+            f"becoming the tree of record, with the job reporting green."
+        )
+    fetch_at = body.index(fetch)
+    reseat_at = body.index(reseat)
+    render_at = body.index(render_call)
+    assert fetch_at < reseat_at < render_at, (
+        f"homebrew_verify.sh must fetch the tap's default branch, THEN reseat the checkout on "
+        f"origin/$DEFAULT_BRANCH, THEN render the formula; got offsets fetch={fetch_at}, "
+        f"reseat={reseat_at}, render={render_at}. A reseat after the render checks out over "
+        f"the file just written; a reseat that never happens leaves push.sh resetting the "
+        f"tap's default branch onto a leftover scratch commit."
+    )
+
+
+def test_the_homebrew_push_script_actually_pushes():
+    """The other half of the same gate, on the OTHER script: a push step that runs to
+    completion without ever invoking `git push` reports success while the tap never changes
+    at all -- the channel becomes a silent no-op, indistinguishable from a real release in the
+    job's own logs.
+
+    Verified by execution: replacing BOTH `git -C "$TAP_DIR" push ...` invocations below
+    (the fast-forward-only push for the default branch, and the --force-with-lease push for a
+    scratch branch) with `:` left the full suite green before this test existed -- and so
+    would neutering only ONE of the two, which is why this counts rather than merely checking
+    `in`.
+
+    Comment-stripped, same idiom as the sibling script's pin above.
+    """
+    script = (ROOT / ".github" / "scripts" / "homebrew_push.sh").read_text()
+    body = "\n".join(ln for ln in script.splitlines() if not ln.lstrip().startswith("#"))
+    pushes = re.findall(r'git -C "\$TAP_DIR" push\b[^\n]*', body)
+    assert len(pushes) == 2, (
+        f"homebrew_push.sh must contain exactly two real `git -C \"$TAP_DIR\" push ...` "
+        f"invocations -- the fast-forward-only push for the default branch and the "
+        f"--force-with-lease push for a scratch branch. Found {len(pushes)}: {pushes}. A "
+        f"push replaced with `:` (or deleted) reports success while never updating the tap."
+    )
+
+
+def test_the_homebrew_release_verify_step_carries_no_token_and_targets_the_default_branch():
+    """The token must not be reachable from the step that runs the untrusted build -- checked
+    directly on that step's OWN `env:`, not merely on step order above, since order alone would
+    not catch a future edit that widened the verify step's env to include TAP_TOKEN anyway.
+    PUSH_TARGET: default is the other half of #104 CRITICAL-2: the release job must ALWAYS land
+    on the tap's default branch, never the `auto` bootstrap-or-scratch behaviour the dry run
+    uses -- `brew install` resolves a tap's default branch, and nothing merges a scratch
+    bump-X.Y.Z branch.
+    """
+    step = _step_containing(RELEASE_PLEASE, "homebrew", "homebrew_verify.sh")
+    assert "TAP_TOKEN" not in step, (
+        "the verify step's env carries TAP_TOKEN -- it runs "
+        "`brew install --build-from-source`, which executes every resource sdist's build "
+        "backend, and a live cross-repo write token there is exactly the exposure #104 "
+        "IMPORTANT-3 closes"
+    )
+    assert re.search(r"^\s*PUSH_TARGET: default\s*$", step, re.MULTILINE), (
+        f"the release job's verify step must set PUSH_TARGET: default exactly. Step:\n{step}"
+    )
+
+
+def test_the_homebrew_release_push_step_carries_the_token():
+    step = _step_containing(RELEASE_PLEASE, "homebrew", "homebrew_push.sh")
+    assert "TAP_TOKEN: ${{ steps.tap-token.outputs.token }}" in step, (
+        f"the release job's push step no longer receives TAP_TOKEN from the minted App "
+        f"token. Step:\n{step}"
+    )
+
+
+# #104 IMPORTANT-2. The two workflow-step-order pins near the top of this section (verify <
+# mint < push) hold the property "never push an unverified formula" only TOGETHER with one
+# unstated GitHub Actions convention: a step carrying no `if:` runs only when every prior step
+# in the job succeeded. `if: always()` (or any other spelling that names `always()`,
+# `cancelled()` or an OR of status functions) on the push step defeats that silently -- Actions
+# then executes it even after a failed verify step, and every order-only pin in this file stays
+# green regardless, because it never inspects whether a step is conditioned to run on failure.
+# An ALLOW-LIST of the push step's OWN directive keys is what closes this: see
+# `_step_own_directive_keys`'s docstring for why a blocklist keyed on `always()` is wrong in
+# both directions on these two files specifically.
+_PUSH_STEP_ALLOWED_KEYS = {"name", "env", "run"}
+
+
+def test_the_homebrew_release_push_step_carries_no_if_key():
+    """Verified by execution: adding `if: ${{ always() }}` to this step left the full suite
+    (before this test existed) green, including both workflow-step-order pins above."""
+    keys = _step_own_directive_keys(RELEASE_PLEASE, "homebrew", "homebrew_push.sh")
+    assert keys, "found no directive keys at all on the push step; the matcher is broken"
+    assert keys <= _PUSH_STEP_ALLOWED_KEYS, (
+        f"the release job's push step carries unexpected directive key(s) "
+        f"{sorted(keys - _PUSH_STEP_ALLOWED_KEYS)}. An `if:` key here in particular would let "
+        f"the step run even after a failed verify step, silently defeating 'never push an "
+        f"unverified formula'. Keys found: {sorted(keys)}"
+    )
+
+
+def test_the_homebrew_dry_run_verify_step_carries_no_token_and_targets_auto():
+    """The dry run's copy of the same two-part pin above, with the OTHER value: PUSH_TARGET:
+    auto is what lets this workflow's first-ever run bootstrap the tap's default branch and
+    every later run land on a scratch branch instead -- see homebrew_verify.sh's own
+    PUSH_TARGET comment for why one caller needs `default` and the other needs `auto`."""
+    step = _step_containing(HOMEBREW_DRY_RUN, "dry-run", "homebrew_verify.sh")
+    assert "TAP_TOKEN" not in step, (
+        "the dry run's verify step carries TAP_TOKEN -- see the release job's identical "
+        "guard for why that must never happen"
+    )
+    assert re.search(r"^\s*PUSH_TARGET: auto\s*$", step, re.MULTILINE), (
+        f"the dry run's verify step must set PUSH_TARGET: auto exactly. Step:\n{step}"
+    )
+
+
+def test_the_homebrew_dry_run_push_step_carries_the_token():
+    step = _step_containing(HOMEBREW_DRY_RUN, "dry-run", "homebrew_push.sh")
+    assert "TAP_TOKEN: ${{ steps.tap-token.outputs.token }}" in step, (
+        f"the dry run's push step no longer receives TAP_TOKEN from the minted App token. "
+        f"Step:\n{step}"
+    )
+
+
+def test_the_homebrew_dry_run_push_step_carries_no_if_key():
+    """The dry run's copy of the release job's identical pin above -- this is the file holding
+    the cross-repo write token during a manually-dispatched run, so the same silent-defeat
+    shape applies here too. Verified by execution: adding `if: ${{ always() }}` to this step
+    left the full suite (before this test existed) green."""
+    keys = _step_own_directive_keys(HOMEBREW_DRY_RUN, "dry-run", "homebrew_push.sh")
+    assert keys, "found no directive keys at all on the push step; the matcher is broken"
+    assert keys <= _PUSH_STEP_ALLOWED_KEYS, (
+        f"the dry run's push step carries unexpected directive key(s) "
+        f"{sorted(keys - _PUSH_STEP_ALLOWED_KEYS)}. An `if:` key here in particular would "
+        f"silently defeat 'never push an unverified formula'. Keys found: {sorted(keys)}"
+    )
+
+
+# Both workflows' verify steps, in one loop: the value and the reason are identical in each,
+# and a pin that covered only one would leave the other free to drift back to a hardcoded owner.
+_VERIFY_STEP_OWNERS = ((RELEASE_PLEASE, "homebrew"), (HOMEBREW_DRY_RUN, "dry-run"))
+
+
+def test_both_homebrew_verify_steps_pass_the_repository_owner():
+    """TAP_OWNER is the ONE derivation of the tap's owner. homebrew_verify.sh lower-cases the
+    value this step supplies and exports it via $GITHUB_ENV, so homebrew_push.sh reads the same
+    normalised string rather than repeating the transform -- and both scripts compute TAP_DIR
+    from it identically. Before that, each script carried its own hardcoded, independently
+    lower-cased owner literal, unrelated to the `owner:` the App-token step mints against: two
+    derivations of one fact, which can silently disagree.
+
+    Unpinned, deleting this `env:` key leaves the suite green while both scripts die on
+    `: "${TAP_OWNER:?}"` -- loud at runtime, but only once a release is already half-published,
+    and every sibling wiring fact on these steps (PUSH_TARGET, TAP_TOKEN's absence, step order,
+    the push step's no-`if:` allow-list) is pinned here already.
+
+    Pinned to `${{ github.repository_owner }}` specifically, not merely to the key's presence:
+    that is the same expression the create-github-app-token step passes as `owner:`, and a
+    literal owner here would re-open the two-derivations drift this key exists to close.
+    """
+    assert _VERIFY_STEP_OWNERS, "the roster is empty; the loop below would pass vacuously"
+    for path, job in _VERIFY_STEP_OWNERS:
+        step = _step_containing(path, job, "homebrew_verify.sh")
+        assert re.search(r"^\s*TAP_OWNER: \$\{\{ github\.repository_owner \}\}\s*$",
+                         step, re.MULTILINE), (
+            f"{path.name}'s `{job}` verify step must pass "
+            f"TAP_OWNER: ${{{{ github.repository_owner }}}} -- the same fact the App-token step "
+            f"mints against, derived once rather than hardcoded a second time inside the shell "
+            f"scripts. Step:\n{step}"
+        )
+
+
+def test_the_homebrew_verify_script_fails_loudly_on_an_invalid_push_target():
+    """This project's rule is 'fail loudly at construction; never fall through to a default'.
+    PUSH_TARGET replaced an INFERRED observable (whether Formula/job-sluice.rb exists in the
+    tap) that could not tell the release job and the dry run apart -- see homebrew_verify.sh's
+    own header comment for the incident that motivated this. An invalid or unset value must
+    fail before any of the expensive render/audit/install/test work below it runs, and must
+    NAME the two valid values.
+
+    Executed for real, not merely grepped -- the same idiom
+    `test_the_stamp_proof_actually_refuses_a_dist_the_stamp_never_reached` (in this same file)
+    uses to run a workflow step's own script body rather than trust that its text implies its
+    behaviour. An empty PATH keeps this hermetic: the case statement this test pins is ordinary
+    bash builtins (`case`, `echo`, `exit`) and sits before the script's first external command,
+    so a failure here proves the guard fires at that point rather than later against network or
+    `brew`.
+    """
+    script = ROOT / ".github" / "scripts" / "homebrew_verify.sh"
+    bash = shutil.which("bash")
+    assert bash, "bash is required to execute the script this test pins"
+
+    for push_target in (None, "bogus", "Default", "AUTO"):
+        env = {"VERSION": "1.2.3", "PATH": ""}
+        if push_target is not None:
+            env["PUSH_TARGET"] = push_target
+        proc = subprocess.run(
+            [bash, str(script)], env=env, capture_output=True, text=True, timeout=30,
+        )
+        output = proc.stdout + proc.stderr
+        assert proc.returncode != 0, (
+            f"PUSH_TARGET={push_target!r} was accepted; the script must fail on anything "
+            f"other than exactly 'default' or 'auto'. Output: {output!r}"
+        )
+        assert "default" in output and "auto" in output, (
+            f"the failure for PUSH_TARGET={push_target!r} does not name both valid values "
+            f"('default', 'auto'): {output!r}"
+        )
+
+
+def test_the_homebrew_verify_script_bypasses_the_release_cooldown():
+    """This job runs minutes after the PyPI upload, and `brew update-python-resources` otherwise
+    refuses a package that new. Homebrew honours the flag for non-official taps only -- ours is
+    non-official, so it applies. Without it the job fails at EVERY release.
+
+    Comment-stripped before the assertion: the script's own explanatory comment above the real
+    command contains this exact flag literal, so grepping the raw text would stay green even if
+    the flag were deleted from the actual `brew update-python-resources` invocation.
+    """
+    script = (ROOT / ".github" / "scripts" / "homebrew_verify.sh").read_text()
+    body = "\n".join(ln for ln in script.splitlines() if not ln.lstrip().startswith("#"))
+    assert "--ignore-main-package-cooldown" in body
+
+
+def test_the_homebrew_scripts_never_use_tap_new():
+    """`brew tap-new` unconditionally writes .github/dependabot.yml and three workflows -- only
+    `git init` is behind --no-git (dev-cmd/tap-new.rb:95-99). One runs `brew bump --open-pr`
+    daily, which would be a SECOND automated writer of a formula this design declares
+    machine-owned. Independently, an App token scoped `contents: write` cannot push anything
+    under .github/workflows/, so such a bootstrap would fail at the push regardless. Both
+    scripts are checked -- `tap-new` would only ever make sense in the verify half, but a
+    forbidden-pattern sweep that only looked at one file after a split is the exact "enumerate
+    both ends" gap CLAUDE.md names."""
+    for name in ("homebrew_verify.sh", "homebrew_push.sh"):
+        script = (ROOT / ".github" / "scripts" / name).read_text()
+        body = "\n".join(ln for ln in script.splitlines() if not ln.lstrip().startswith("#"))
+        assert "tap-new" not in body, f"{name} must never call `brew tap-new`"
+
+
+def test_the_homebrew_dry_run_refuses_a_non_default_branch():
+    """It pushes to a PUBLIC tap, so an unmerged branch must not become the tree of record.
+    `testpypi.yml` carries the identical guard for the identical reason.
+
+    Step-SCOPED via `_step_containing`, the same helper `test_testpypi_refuses_a_non_default_branch`
+    uses -- a whole-file substring probe is close to meaningless here: it stays green even after
+    RELOCATING the entire refusal step to the end of `steps:`, after the checkout, the version
+    resolve, the verify step, the token mint and the push itself, at which point the guard is
+    inert because the push has already happened.
+
+    Order is the second half, asserted separately by INDEX over the comment-stripped job block
+    -- the same idiom the ordering tests above use. Presence of the right text in the right
+    step is not enough on its own: the refusal step's own name must come BEFORE the step that
+    invokes homebrew_verify.sh, or a relocation-to-the-end mutation (a MOVE, not a delete)
+    passes the step-scoped assertions above while still letting the push run unguarded.
+    """
+    step = _step_containing(HOMEBREW_DRY_RUN, "dry-run", "Refuse to bump the tap")
+    assert "if: github.ref_name != github.event.repository.default_branch" in step
+    assert "exit 1" in step
+
+    directives = _job_directives(HOMEBREW_DRY_RUN, "dry-run")
+    refusal = directives.index("Refuse to bump the tap from a non-default branch")
+    verify = directives.index("bash .github/scripts/homebrew_verify.sh")
+    assert refusal < verify, (
+        "the branch-refusal step must PRECEDE the step that invokes homebrew_verify.sh -- a "
+        "refusal that runs after the render/audit/install/test (and eventual push) has "
+        "already fired guards nothing"
+    )
+
+
+def test_the_homebrew_dry_run_has_no_elevated_permissions():
+    """This is the file holding the cross-repo write token, and NOTHING forces it to be pinned:
+    no test globs .github/workflows, so a fourth workflow file is invisible to the suite unless
+    someone writes its pins deliberately."""
+    assert _permissions_block(HOMEBREW_DRY_RUN, "dry-run") == (
+        "    permissions:\n      contents: read"
+    )
+
+
+def test_the_homebrew_dry_run_triggers_only_on_workflow_dispatch():
+    """A `push:` trigger added alongside `workflow_dispatch:` keeps every OTHER test in this
+    module green -- this workflow pushes to a PUBLIC tap, so an auto-fire trigger is worse here
+    than in `testpypi.yml`, which it is modelled on. Reuses that file's own `on:`-bounding
+    logic rather than reinventing it: see `test_testpypi_triggers_only_on_workflow_dispatch`'s
+    docstring for why the region must be bounded at the next ZERO-indent key -- `permissions:`
+    sits at zero indent too, and its own `contents:` child sits at the same two-space indent as
+    a trigger, so an unbounded slice would count `contents` as a second trigger even on this
+    exact, CORRECT file.
+    """
+    block = _workflow_wide_directives(HOMEBREW_DRY_RUN)
+    on_match = re.search(r"^on:", block, re.MULTILINE)
+    assert on_match, "homebrew-dry-run.yml has no top-level `on:` key"
+    rest = block[on_match.start() :]
+    end = re.search(r"\n[a-z]", rest)
+    on_block = rest[: end.start()] if end else rest
+    triggers = re.findall(r"\n  ([a-z_]+):", on_block)
+    assert triggers == ["workflow_dispatch"]
+
+
+def test_the_homebrew_dry_run_workflow_wide_permissions_are_read_only():
+    """Only the job-level block was pinned by the first cut of this file -- an elevation at the
+    workflow-wide `permissions:` combined with a job that stopped overriding it would go
+    unseen. Exactly the slicing `test_testpypi_workflow_wide_permissions_are_read_only` uses,
+    pointed at this file instead."""
+    block = _workflow_wide_directives(HOMEBREW_DRY_RUN)
+    idx = block.index("\npermissions:\n")
+    perm_block = block[idx + 1 :]
+    assert perm_block == "permissions:\n  contents: read", (
+        f"homebrew-dry-run.yml's workflow-wide permissions must be EXACTLY `contents: read`. "
+        f"Got: {perm_block!r}"
+    )
+
+
+def test_the_homebrew_dry_run_drives_the_same_verify_and_push_scripts_as_the_release_job():
+    """Two scripts, two callers each. A dry run exercising a DIFFERENT path from the release
+    job would prove nothing about the release job -- which is the entire purpose of running
+    it. Both invocations are checked for both scripts: after the #104 IMPORTANT-3 split, a
+    drift where only ONE of the pair stayed shared would leave half the chain unproven by the
+    dry run while still reading as "the same script, two callers"."""
+    for invocation in (
+        "bash .github/scripts/homebrew_verify.sh",
+        "bash .github/scripts/homebrew_push.sh",
+    ):
+        assert invocation in _text(HOMEBREW_DRY_RUN), (
+            f"{invocation!r} is missing from homebrew-dry-run.yml"
+        )
+        assert invocation in _job_directives(RELEASE_PLEASE, "homebrew"), (
+            f"{invocation!r} is missing from release-please.yml's homebrew job"
+        )
