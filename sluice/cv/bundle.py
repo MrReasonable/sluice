@@ -56,6 +56,28 @@ def rank(entries: list[dict], jd_keywords: list[str]) -> list[dict]:
     return sorted(entries, key=score, reverse=True)
 
 
+# The skills-shaped negative, DERIVED rather than hand-typed (#165). `cv.negatives` is a
+# prose shadow of the Skills Inventory and drifts from it; this line names no skill, so it
+# cannot go stale. It names all THREE permitted sources, matching compose._RULES exactly:
+# an omitted source here reads to the composer as a source it must not use, and this line
+# sits in the most strongly worded block in the prompt. It does NOT, on its own, stop a
+# stale CONFIGURED negative disagreeing with the inventory -- `core/doctor.py`'s
+# classify_negatives_vs_skills is what makes that disagreement visible.
+#
+# Named `_PROMPT` so tests/test_prompt_neutrality.py's discovery reaches it: that sweep
+# finds `*build*prompt*` functions and PROMPT-named constants, and this is shipped,
+# model-facing text going into the most strongly worded block of the prompt. Outside the
+# sweep it is clean today and unguarded tomorrow.
+#
+# It is NOT stored on the bundle. `bundle["negatives"]` is read by BOTH renderers, and this
+# string contains the literal "SKILLS INVENTORY" -- so storing it there hands the ADVISORY
+# auditor a sentence naming a source it cannot see, which is the D11 widening arriving as
+# prose rather than as a section. `render_composer_bundle` passes it as `extra`.
+_DERIVED_NEGATIVE_PROMPT = ("claim no technology, language, framework or tool that is not "
+                            "named in the BASELINE CV, the VERIFIED EXPERIENCE ENTRIES or "
+                            "the SKILLS INVENTORY above")
+
+
 def build_bundle(entries, baseline, negatives, jd_keywords, prefix_map,
                  skills=()) -> dict:
     ranked = rank(entries, jd_keywords)
@@ -226,7 +248,8 @@ def render_composer_bundle(bundle: dict) -> str:
     for sk in bundle["skills"]:
         framing += _framing_lines(sk)
     framing.append("")
-    return "\n".join(_source_section(bundle) + framing + _negatives_section(bundle))
+    return "\n".join(_source_section(bundle) + framing
+                     + _negatives_section(bundle, extra=(_DERIVED_NEGATIVE_PROMPT,)))
 
 
 class BundleSources(NamedTuple):

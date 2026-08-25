@@ -368,3 +368,55 @@ def test_an_empty_inventory_emits_no_header_at_all():
     empty = _bundle_with_skills(skills=())
     assert "SKILLS INVENTORY" not in B.render_composer_bundle(empty)
     assert B.render_composer_bundle(empty) == B.render_bundle(empty)
+
+
+def test_the_derived_constraint_never_reaches_the_auditors_bundle():
+    """THE reason it is passed as `extra` rather than stored on the bundle. It contains
+    the literal string "SKILLS INVENTORY", so storing it in bundle["negatives"] -- which
+    BOTH renderers read -- hands the auditor a sentence naming a source it cannot see,
+    and the D11 widening arrives as prose instead of as a section."""
+    b = B.build_bundle(FROZEN_ENTRIES, FROZEN_BASELINE, ["never claim 91 users"],
+                       [], FROZEN_PREFIX_MAP, skills=[_SKILL])
+    assert B._DERIVED_NEGATIVE_PROMPT not in b["negatives"]
+    assert "SKILLS INVENTORY" not in B.render_bundle(b)
+    assert B._DERIVED_NEGATIVE_PROMPT in B.render_composer_bundle(b)
+
+
+def test_the_derived_constraint_appears_only_with_a_non_empty_inventory():
+    assert B._DERIVED_NEGATIVE_PROMPT not in B.render_composer_bundle(
+        _bundle_with_skills(skills=()))
+
+
+def test_configured_negatives_survive_alongside_the_derived_one():
+    """cv.negatives stays: an inventory cannot express a negative that is not about skills
+    at all ('never claim a security clearance'). Both must reach the composer."""
+    b = B.build_bundle(FROZEN_ENTRIES, FROZEN_BASELINE, ["never claim 91 users"],
+                       [], FROZEN_PREFIX_MAP, skills=[_SKILL])
+    composer = B.render_composer_bundle(b)
+    assert B._DERIVED_NEGATIVE_PROMPT in composer
+    assert "never claim 91 users" in composer
+
+
+def test_the_derived_constraint_permits_every_source_the_prompt_permits():
+    """It sits in the most strongly worded block in the prompt, so a source it forgets is
+    a source the composer drops. compose._RULES permits the BASELINE CV and the VERIFIED
+    EXPERIENCE ENTRIES; the SKILLS INVENTORY is named because it is visible and must be
+    excluded from the CLAIM set without being excluded from the emphasis set."""
+    for source in ("SKILLS INVENTORY", "VERIFIED EXPERIENCE ENTRIES", "BASELINE CV"):
+        assert source in B._DERIVED_NEGATIVE_PROMPT, source
+
+
+def test_the_derived_constraint_names_no_skill_and_so_cannot_go_stale():
+    """A cross-reference, not a generated roster: a roster would duplicate the SKILLS
+    section immediately above it and grow without bound."""
+    assert "Example Cloud" not in B._DERIVED_NEGATIVE_PROMPT
+    assert "platform" not in B._DERIVED_NEGATIVE_PROMPT
+
+
+def test_the_derived_constraint_reaches_no_number_pool():
+    """#31: the negatives block is shown to the model and is deliberately not citable.
+    The derived line is prose in that block and must inherit that exactly."""
+    s = B.bundle_sources(B.build_bundle(FROZEN_ENTRIES, FROZEN_BASELINE,
+                                        ["never claim 91 users"], [], FROZEN_PREFIX_MAP,
+                                        skills=[_SKILL]))
+    assert "91" not in s.baseline and all("91" not in n for n in s.nums.values())
