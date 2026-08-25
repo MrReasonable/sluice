@@ -1,6 +1,12 @@
-"""TheOrg (theorg.com). RETIRED 2026-07-07: /jobs/<role> now 404s
-(site alive, job-search path changed; low-value org-chart board). Registered
-disabled; recheck for the new jobs URL if worth reviving. Declarative extractor JS + an example search (override via config).
+"""TheOrg (theorg.com). RETIRED 2026-07-07, retirement UPHELD 2026-08-25 on new grounds.
+
+The original note said `/jobs/<role>` 404s, and inferred the board was gone. Re-probed
+2026-08-25: the 404 is real, but the SITE is alive and has rebranded to Orgio. Job
+search still exists, advertised as "Job Discovery" at `/job-discovery` -- but that path
+is a marketing page behind Log in / Sign up, not a listing surface. So this stays
+disabled because reviving it needs an ACCOUNT, not a new URL. That is a different
+decision from the one the old note implied, and it should be taken deliberately.
+Declarative extractor JS + an example search (override via config).
 """
 from sluice.ingest.base import BrowserListSource
 from sluice.ingest.sources import register

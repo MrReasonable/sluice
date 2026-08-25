@@ -1,6 +1,10 @@
-"""B-Work (b-work.io). RETIRED 2026-07-07: b-work.io returns HTTP 500 (server
-down / dead domain). Registered disabled so it's excluded from runs but revivable
-if the site returns. Declarative extractor JS + an example search (override via config).
+"""B-Work (b-work.io). RETIRED 2026-07-07, retirement CONFIRMED 2026-08-25.
+
+The original note recorded an HTTP 500. Re-probed 2026-08-25, the domain no longer
+resolves at all -- `b-work.io` has no A record (NXDOMAIN), so nothing is listening
+to return a status code. This is one of only two of the five 2026-07-07 retirements
+that a probe upheld; the others had merely moved. Registered disabled but revivable
+if the domain ever comes back. Declarative extractor JS + an example search (override via config).
 """
 from sluice.ingest.base import BrowserListSource
 from sluice.ingest.sources import register
