@@ -34,6 +34,7 @@ from sluice.core.camofox import profile_dir as camofox_profile_dir
 # home, so a moved boundary cannot leave the label asserting the old number.
 from sluice.core.dossier import JD_LENGTH_BUCKETS as _JD_LENGTH_BUCKETS
 from sluice.core.protocols import EVIDENCE_KINDS
+from sluice.core.stem import stem_all
 
 # Four states, as bare strings so callers (cli formatter, exit_code) and tests
 # share one vocabulary without importing an enum. NOTICE is not a severity --
@@ -612,6 +613,54 @@ def classify_dossier_cache(counts: dict) -> ComponentCheck:
     return ComponentCheck(
         "dossier-cache", "cached JDs", NOTICE,
         f"{total} cached; {counts.get('unreadable', 0)} unreadable, {lengths}")
+
+
+def classify_negatives_vs_skills(negatives: list, skills: list) -> list:
+    """One NOTICE per configured `cv.negatives` entry naming a skill the verified Skills
+    Inventory actually holds (#165).
+
+    `cv.negatives` is prose asserting which technologies the candidate does and does not
+    work in, maintained by hand and separately from the inventory that already answers
+    that. The bundle's derived cross-reference (`cv/bundle.py:_DERIVED_NEGATIVE_PROMPT`)
+    cannot stop the two disagreeing -- it names nothing, so it adds a third voice rather
+    than replacing the stale one. This is what makes the disagreement visible.
+
+    Matches on `best_for` ONLY -- the floor key `EVIDENCE_KINDS["skills"]` maps onto
+    `Domain`, the kind's classification axis. The entry TITLE is excluded: it is a name the
+    user chose, so matching its stems makes an ordinary word in it ('skill', 'example')
+    fire a NOTICE about nothing. The NEGATIVE side is not similarly filtered, and that
+    asymmetry is accepted rather than hidden: a stopword list is the wrong shape for a
+    NOTICE-only advisory, and a loose sentence that happens to contain the inventory's own
+    domain word is still a contradiction worth looking at.
+
+    The row NAMES THE INDEX and the overlap SIZE, never the configured text or the matched
+    terms. A DoctorReport is returned whole to MCP clients (`sluice/mcpserver.py`), and
+    `classify_gate` below reports this same key as a COUNT for exactly that reason;
+    echoing the user's own preference prose into a diagnostic would make it a disclosure
+    surface.
+
+    NOTICE, never DEGRADED, so it cannot affect the exit code: `--strict` in a cron job
+    failing because a negative overlaps an inventory is the 672ad2a class aimed at the
+    tool's own exit status. Same posture `classify_gate` takes.
+
+    Abstains on either empty input, and on an inventory whose entries declare no domain at
+    all -- an install with nothing to contradict must report nothing.
+    """
+    if not negatives or not skills:
+        return []
+    terms = set().union(*(stem_all(e.get("best_for", "")) for e in skills))
+    if not terms:
+        return []
+    out = []
+    for i, neg in enumerate(negatives):
+        overlap = stem_all(neg) & terms
+        if overlap:
+            out.append(ComponentCheck(
+                "gates", f"cv.negatives[{i}]", NOTICE,
+                f"contradicts the verified Skills Inventory on {len(overlap)} term(s) -- "
+                f"the composer is told both. Compare this line against `job-sluice skills "
+                f"list`; remove the line, or remove the skill."))
+    return out
 
 
 def classify_gate(owner: str, name: str, value: list) -> ComponentCheck:
