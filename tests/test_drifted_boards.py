@@ -53,7 +53,10 @@ def test_escape_city_url_follows_the_redirect_the_retirement_note_recorded():
     src = _src("escape_city")
     for _, u in src.searches_spec:
         parts = urlparse(u)
-        assert (parts.hostname or "").lower().endswith("escapethecity.org")
+        # Exact hosts, not endswith: "evilescapethecity.org" ends with the domain too,
+        # which is the same CodeQL finding as the hackajob assertion above.
+        assert (parts.hostname or "").lower() in {"escapethecity.org",
+                                                  "www.escapethecity.org"}
         assert parts.path.startswith("/search/jobs"), \
             "escape_city must use the path the 302 points at"
         assert not parts.path.startswith("/opportunities")
