@@ -285,8 +285,8 @@ _MISSING_RENDER_LIBS = (
     "cause. If it names jinja2/weasyprint, `pip install 'job-sluice[render]'`; if the "
     "install already has that extra, WeasyPrint additionally needs its native "
     "libraries (cairo, pango, gdk-pixbuf), which are not a Python dependency (see "
-    "README.md's Rendering section for the platform-specific install + the "
-    "DYLD_FALLBACK_LIBRARY_PATH note on macOS)."
+    "https://github.com/MrReasonable/sluice/blob/main/docs/INSTALL.md#system-libraries-for-pdf-rendering "
+    "for the platform-specific install + the DYLD_FALLBACK_LIBRARY_PATH note on macOS)."
 )
 
 
