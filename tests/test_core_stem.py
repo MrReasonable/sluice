@@ -54,6 +54,22 @@ def test_every_corpus_row_is_two_lowercase_words():
     assert not bad, f"non-word rows in the corpus: {bad[:5]}"
 
 
+def test_the_data_directory_holds_only_what_this_file_reads():
+    """SCOPE for the DIRECTORY, not just the file. `tests/fixtures/` already asserts
+    `every_file == files` for exactly this reason -- a second file added there later sits
+    in no roster, no digest and no shape check, which is #27's own shape one level down.
+    `tests/data/` is new with this corpus and needs the same closure: the identity sweep in
+    tests/test_fixture_name_neutrality.py walks `*.py` only, and `_CORPUS_DIR` is
+    `tests/fixtures`, so nothing else enumerates this directory at all.
+
+    A file added here must either be read (and guarded) by a test, or moved out."""
+    every = sorted(p.name for p in _CORPUS.parent.iterdir() if p.is_file())
+    assert every == ["porter_vocabulary.txt"], (
+        "files under tests/data/ that no guard reads:\n  "
+        + "\n  ".join(f for f in every if f != "porter_vocabulary.txt")
+        + "\n\nEither guard them from a test, or move them out of tests/data/.")
+
+
 def test_stem_matches_porters_published_vocabulary():
     wrong = [(w, e, stem(w)) for w, e in _rows() if stem(w) != e]
     assert not wrong, f"{len(wrong)} disagreements with the reference, e.g. {wrong[:5]}"

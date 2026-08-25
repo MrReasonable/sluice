@@ -2012,8 +2012,10 @@ class Sluice:
         guard's own comment at the call site) -- a table computed off an
         invented default would be the "quiet wrong default" bug class this
         codebase engineers out, aimed at its own diagnostic tool. Only the
-        three checks that actually read `cv_cfg` -- cv's own backend targets,
-        the renderer, and cv's row in the gate-posture sweep -- are skipped;
+        FOUR checks that actually read `cv_cfg` -- cv's own backend targets,
+        the renderer, cv's row in the gate-posture sweep, and (#165) the
+        negatives-vs-Skills-Inventory cross-check, which sits inside the STORE
+        branch but is gated on the same condition -- are skipped;
         the store (including the Candidate Profile row that replaced the old
         cv_cfg-based identity check, #133/#107), track/Google, camofox and
         every other sub-app's gate rows are unrelated to `cv_cfg` and still
@@ -2129,7 +2131,8 @@ class Sluice:
             components.append(_doctor.ComponentCheck(
                 "cv-config", "cv:", _doctor.DEAD,
                 f"{cv_config_error} -- cv's backend targets, the renderer, "
-                f"and cv's gate-posture row are skipped this run "
+                f"cv's gate-posture row and the negatives-vs-Skills-Inventory "
+                f"cross-check are skipped this run "
                 f"until this is fixed", blocks=("cv",)))
 
         if cv_cfg is not None:

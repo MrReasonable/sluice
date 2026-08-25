@@ -91,9 +91,9 @@ def test_add_promises_citability_only_for_the_corpus_the_gate_reads(tmp_path, mo
     """#164 review, M2 -- the `add` handler's half of the same over-claim.
 
     Every kind's confirmation line said "run `job-sluice <kind> verify` to make it
-    citable", while `cv/engine.py` reads `experience` alone until #165. Keyed on
+    citable", while the gate LICENSES `experience` alone. Keyed on
     `EvidenceKind.cited_by_gate` and swept over the whole registry, so no kind can be
-    fixed while its siblings keep the false line -- and so #165's boolean flip carries
+    fixed while its siblings keep the false line -- and so a flag change carries
     this row rather than failing it.
     """
     monkeypatch.setenv("VAULT_DIR", str(tmp_path))

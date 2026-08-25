@@ -6,7 +6,6 @@ employer-completeness gate is always satisfiable from cited entries."""
 import re
 from typing import NamedTuple
 
-from sluice.core.stem import stem as _stem
 from sluice.core.stem import stem_all as _stem_all
 
 
@@ -46,8 +45,19 @@ def rank(entries: list[dict], jd_keywords: list[str]) -> list[dict]:
 
     The haystack stays `best_for`/`category`/`title` and deliberately excludes `body`:
     matching into free prose lets a long entry out-score a precise one on volume alone.
+
+    BOTH sides go through `_stem_all`, which tokenises before stemming. Stemming each
+    keyword WHOLE (`_stem(k)`) is not the same operation: `_stem("machine learning")` is
+    `"machine learn"`, a single string that no tokenised haystack can ever contain, so a
+    multi-word keyword scored ZERO -- measured, the entry that answered it ranked last of
+    seven while entries matching an unrelated keyword scored 1. That is the SAME
+    two-vocabularies-nobody-normalised defect this function was rewritten to fix, one
+    level down. Today's only production caller (`cv/engine.py:_jd_keywords`) yields single
+    `[a-z]{4,}` words, for which the two spellings are provably identical, so this is
+    reachability-hardening rather than a live bug fix -- but `rank` is reachable with any
+    keyword list, and the two sides agreeing BY CONSTRUCTION is the property worth having.
     """
-    wanted = {_stem(k) for k in jd_keywords}
+    wanted = _stem_all(" ".join(jd_keywords))
 
     def score(e):
         hay = f"{e.get('best_for','')} {e.get('category','')} {e.get('title','')}"
@@ -58,24 +68,35 @@ def rank(entries: list[dict], jd_keywords: list[str]) -> list[dict]:
 
 # The skills-shaped negative, DERIVED rather than hand-typed (#165). `cv.negatives` is a
 # prose shadow of the Skills Inventory and drifts from it; this line names no skill, so it
-# cannot go stale. It names all THREE permitted sources, matching compose._RULES exactly:
-# an omitted source here reads to the composer as a source it must not use, and this line
-# sits in the most strongly worded block in the prompt. It does NOT, on its own, stop a
-# stale CONFIGURED negative disagreeing with the inventory -- `core/doctor.py`'s
-# classify_negatives_vs_skills is what makes that disagreement visible.
+# cannot go stale. It does NOT, on its own, stop a stale CONFIGURED negative disagreeing
+# with the inventory -- `core/doctor.py`'s classify_negatives_vs_skills is what makes that
+# disagreement visible.
+#
+# It names the TWO CLAIM sources and deliberately NOT the SKILLS INVENTORY, which is the
+# whole point of the section being framing. An earlier revision listed all three, on the
+# reasoning that a source omitted from the most strongly worded block of the prompt reads
+# to the composer as a source it must not use. That reasoning is right for a source and
+# wrong here: naming a technology IS a claim, so permitting one that appears only in the
+# framing section is exactly what `compose._RULES` forbids two lines above ("never
+# introduce a claim that rests on it alone: every fact in the CV must still come from the
+# BASELINE CV or a VERIFIED EXPERIENCE ENTRY"). The two must agree, and
+# `test_the_derived_constraint_names_the_same_claim_sources_as_the_prompt_rule` is what
+# holds them together -- it reads the real `_RULES` rather than restating it.
 #
 # Named `_PROMPT` so tests/test_prompt_neutrality.py's discovery reaches it: that sweep
 # finds `*build*prompt*` functions and PROMPT-named constants, and this is shipped,
-# model-facing text going into the most strongly worded block of the prompt. Outside the
-# sweep it is clean today and unguarded tomorrow.
+# model-facing text. It is also listed in that file's `_KNOWN_PROMPTS`, so a rename cannot
+# silently drop it from the sweep -- discovery alone has no falsifier.
 #
-# It is NOT stored on the bundle. `bundle["negatives"]` is read by BOTH renderers, and this
-# string contains the literal "SKILLS INVENTORY" -- so storing it there hands the ADVISORY
-# auditor a sentence naming a source it cannot see, which is the D11 widening arriving as
-# prose rather than as a section. `render_composer_bundle` passes it as `extra`.
+# It is NOT stored on the bundle, and `extra` is not a convenience. `bundle["negatives"]`
+# is read by BOTH renderers, and this constraint is about the COMPOSER's task; the auditor
+# is not composing. It used to matter more literally still: while this string named the
+# SKILLS INVENTORY, storing it on the bundle handed the ADVISORY auditor a sentence naming
+# a source it cannot see -- the D11 widening arriving as prose rather than as a section,
+# measured before it was fixed.
 _DERIVED_NEGATIVE_PROMPT = ("claim no technology, language, framework or tool that is not "
-                            "named in the BASELINE CV, the VERIFIED EXPERIENCE ENTRIES or "
-                            "the SKILLS INVENTORY above")
+                            "named in the BASELINE CV or the VERIFIED EXPERIENCE ENTRIES "
+                            "above")
 
 
 def build_bundle(entries, baseline, negatives, jd_keywords, prefix_map,
@@ -107,7 +128,8 @@ def _entry_block(entry: dict) -> list[str]:
     `test_the_allowlist_still_matches_the_frozen_prompt` (tests/test_cv_bundle.py) both go
     red, because the caution line lands in `FROZEN_BUNDLE_TEXT`'s co-variant comparison
     but the frozen reference does not carry it. Presentation that must not become a
-    source belongs in `render_bundle`, not here.
+    source belongs in `_source_section`/`render_composer_bundle`, not here -- and note it
+    must go in the one the intended AUDIENCE reads: `render_bundle` is the auditor's.
 
     That enforcement is a RATCHET, not an impossibility, and the honest limit is this: it
     catches a widening only against the FROZEN literal. Re-capture `FROZEN_BUNDLE_TEXT`
@@ -119,7 +141,7 @@ def _entry_block(entry: dict) -> list[str]:
     against that literal, never against the world.
 
     Excludes the inter-entry blank line for the same reason: it is presentation, carries
-    no digits, and `render_bundle` owns it.
+    no digits, and `_source_section` owns it.
     """
     lines = [f"[{entry['id']}] ({entry.get('company','')}) {entry.get('title','')} "
              f"| metrics={entry.get('metrics','')}"]
@@ -281,7 +303,8 @@ def bundle_sources(bundle: dict) -> BundleSources:
     lines that entry contributed to the prompt, via the shared `_entry_block`. Nothing
     here parses the rendered text, so nothing here can invent an id.
 
-    `bundle["negatives"]` is read by NOTHING. #31 established that exclusion by where the
+    `bundle["negatives"]` is read by NOTHING HERE -- `_negatives_section` renders it into
+    both prompts, but no digit of it reaches this derivation. #31 established that exclusion by where the
     negatives happened to land in the text, which failed at zero entries -- with no ids
     the negatives fell through into the baseline pool and a do-not-say figure was
     profile-permitted (measured). It is now a property of the derivation.

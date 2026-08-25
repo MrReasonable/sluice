@@ -1241,8 +1241,8 @@ gone. Measured against a live `applied` note with a url-identical archived twin:
 been merged away.
 
 The `_is_dir` callers outside the lead tree take the rule for their own reasons.
-`_evidence_entries` — the single probe behind `read_evidence`, `read_pending_evidence`
-and `read_experience_entries` alike — probes an evidence directory (the *Experience
+`_evidence_entries` — the single probe behind both `read_evidence` and
+`read_pending_evidence` — probes an evidence directory (the *Experience
 Library*, for the read the fabrication gate depends on), which no scan walks. A write path IS keyed on it now
 (#164): `propose_evidence` lands an unverified proposal in its `_inbox/` subdirectory,
 and `verify_evidence` promotes one into the directory itself -- both through the same
@@ -1551,14 +1551,19 @@ deliberately-guarded `self.renderer()`/`self.store()` constructions below it (tr
 loads first, unguarded -- it has no cv-shaped legacy-key hazard of its own) and turns into one
 DEAD `cv-config` row naming the real error, rather than a traceback out of the one command a
 user runs because something -- possibly that very config -- is wrong; only the three checks
-that actually read `cv_cfg` (cv's own backend targets, the renderer, and cv's row in the
-gate-posture sweep) are skipped, and the report is otherwise full -- the store's Candidate
+that actually read `cv_cfg` (cv's own backend targets, the renderer, cv's row in the
+gate-posture sweep, and #165's negatives-vs-Skills-Inventory cross-check, which sits inside
+the store branch but is gated on the same condition) are skipped, and the report is
+otherwise full -- the store's Candidate
 Profile row, track/Google, camofox and every other sub-app's gate rows are unrelated to
 `cv_cfg` and still run. Backend
 classification is role-aware -- a keyless fallback degrades (the sanctioned
 primary-only path, exit 0), while a keyed-but-broken backend is `dead` regardless of
 role, the silently-non-functional fallback the tool exists to catch. Component
-classification adds a fourth state, `notice`, for the gate-posture rows: it NEVER
+classification adds a fourth state, `notice`, for the gate-posture rows -- and, since
+#165, for the `cv.negatives[i]` rows reporting a configured negative that contradicts the
+verified Skills Inventory, which name an INDEX and an overlap COUNT rather than the
+user's own text, since a report is returned whole to MCP clients. It NEVER
 affects `exit_code`, under `--strict` or otherwise, because an abstaining gate (an
 unconfigured preference simply passes every lead through) is the shipped default and
 legitimate -- grading it as a failure would be the 672ad2a class of bug (see Invariants)

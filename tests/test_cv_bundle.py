@@ -155,7 +155,7 @@ Cut latency to 47 ms.
   shipped 72 things
 
 === NEGATIVE CONSTRAINTS (must NOT appear) ===
-- claim no technology, language, framework or tool that is not named in the BASELINE CV, the VERIFIED EXPERIENCE ENTRIES or the SKILLS INVENTORY above
+- claim no technology, language, framework or tool that is not named in the BASELINE CV or the VERIFIED EXPERIENCE ENTRIES above
 - never claim 91 users
 - never claim 92 uptime"""
 
@@ -350,6 +350,30 @@ def test_ranking_orders_and_never_excludes():
     assert len(B.rank(entries, ["documenting"])) == 2
 
 
+def test_a_multi_word_keyword_matches_the_entry_that_answers_it():
+    """Both sides must go through the SAME tokenise-then-stem operation. Stemming a
+    keyword WHOLE gives `_stem("machine learning") == "machine learn"`, which no tokenised
+    haystack can contain -- measured, the entry answering it ranked LAST of seven while
+    entries matching an unrelated keyword scored 1.
+
+    Not reachable from `cv/engine.py:_jd_keywords`, which yields single `[a-z]{4,}` words;
+    this pins `rank`'s own contract, since it is reachable with any keyword list."""
+    entries = ([_rank_entry("delivery", f"unrelated-{i}") for i in range(3)]
+               + [_rank_entry("machine learning", "THE-RIGHT-ONE")]
+               + [_rank_entry("delivery", f"unrelated-{i}") for i in range(3, 6)])
+    ranked = B.rank(entries, ["machine learning", "delivery"])
+    assert ranked[0]["title"] == "THE-RIGHT-ONE", [e["title"] for e in ranked]
+
+
+def test_single_word_keywords_are_unaffected_by_the_tokenising():
+    """The production path. Whole-string stemming and tokenised stemming agree exactly on
+    single alphabetic words, so this change cannot have moved any real ranking."""
+    from sluice.core.stem import stem, stem_all
+
+    for kws in (["documenting"], ["documenting", "delivery"], []):
+        assert {stem(k) for k in kws} == stem_all(" ".join(kws)), kws
+
+
 def test_the_substring_false_positives_are_gone():
     """`"java" in "javascript"` is True, so the old ranker scored a JavaScript entry on a
     Java keyword. Stems do not relate them."""
@@ -414,6 +438,60 @@ def test_the_skills_section_carries_the_four_fields_and_the_body():
         assert fragment in text, fragment
 
 
+def test_the_framing_reads_the_kinds_own_declared_fields():
+    """`_framing_lines` hard-codes four frontmatter names, and nothing tied them to the
+    registry that declares them. A coordinated rename in `EVIDENCE_KINDS["skills"].fields`
+    would degrade the section to bare `- title` lines and stay green, because every other
+    framing test hand-builds the `fields` dict with the same four literals it is checking.
+
+    Asserts the SET, not a subset: a field dropped from either side is what this catches."""
+    from sluice.core.protocols import EVIDENCE_KINDS
+
+    declared = set(EVIDENCE_KINDS["skills"].fields)
+    assert declared == {"Proficiency", "Domain", "Evidence", "Signal Value"}, (
+        "the skills kind's fields changed; sluice/cv/bundle.py:_framing_lines reads them "
+        "by name and must change with them")
+    # Every declared field, given a distinct value, must reach the rendered section.
+    marked = {k: f"value-for-{k.lower().replace(' ', '-')}" for k in declared}
+    text = B.render_composer_bundle(_bundle_with_skills(
+        skills=({"title": "Example Data Skill", "best_for": "", "body": "",
+                 "fields": marked},)))
+    for key, value in marked.items():
+        assert value in text, f"{key} is declared by the registry but never rendered"
+
+
+def test_a_real_vault_read_renders_through_the_composer_bundle(tmp_path):
+    """The round trip nothing else covers: every other framing test hand-builds the entry
+    dict that `Vault.read_evidence` is supposed to produce, so a change to the store's
+    shape (the `fields` key, the floor mapping) would leave them all green while the real
+    path rendered nothing."""
+    import os
+
+    from sluice.core.vault import Vault
+
+    sk = tmp_path / "Job Applications" / "Skills Inventory"
+    os.makedirs(sk)
+    (sk / "Example Data Skill.md").write_text(
+        "---\nProficiency: 71 years\nDomain: platform\nEvidence: shipped 72 things\n"
+        "Signal Value: depth\nverified: 2026-08-25\n---\nBody prose.\n", encoding="utf-8")
+    entries = Vault(str(tmp_path)).read_evidence("skills", verified_only=True)
+    assert entries, "the store returned nothing; the rest of this test would be vacuous"
+
+    text = B.render_composer_bundle(B.build_bundle(
+        FROZEN_ENTRIES, FROZEN_BASELINE, FROZEN_NEGATIVES, [], FROZEN_PREFIX_MAP,
+        skills=entries))
+    for fragment in ("Example Data Skill", "proficiency=71 years", "domain=platform",
+                     "signal=depth", "shipped 72 things", "Body prose."):
+        assert fragment in text, fragment
+    # ...and the store's own figures are still licensed nowhere.
+    sources = B.bundle_sources(B.build_bundle(
+        FROZEN_ENTRIES, FROZEN_BASELINE, FROZEN_NEGATIVES, [], FROZEN_PREFIX_MAP,
+        skills=entries))
+    for sentinel in ("71", "72"):
+        assert sentinel not in sources.baseline
+        assert all(sentinel not in n for n in sources.nums.values())
+
+
 def test_an_empty_inventory_emits_no_header_at_all():
     """Not an empty header: that asserts to the model that the candidate has no skills,
     which is a negative claim it may act on. Empty means abstain."""
@@ -432,6 +510,7 @@ def test_the_derived_constraint_never_reaches_the_auditors_bundle():
     assert B._DERIVED_NEGATIVE_PROMPT not in b["negatives"]
     assert "SKILLS INVENTORY" not in B.render_bundle(b)
     assert B._DERIVED_NEGATIVE_PROMPT in B.render_composer_bundle(b)
+    assert B._DERIVED_NEGATIVE_PROMPT not in B.render_bundle(b)
 
 
 def test_the_derived_constraint_appears_only_with_a_non_empty_inventory():
@@ -449,13 +528,31 @@ def test_configured_negatives_survive_alongside_the_derived_one():
     assert "never claim 91 users" in composer
 
 
-def test_the_derived_constraint_permits_every_source_the_prompt_permits():
-    """It sits in the most strongly worded block in the prompt, so a source it forgets is
-    a source the composer drops. compose._RULES permits the BASELINE CV and the VERIFIED
-    EXPERIENCE ENTRIES; the SKILLS INVENTORY is named because it is visible and must be
-    excluded from the CLAIM set without being excluded from the emphasis set."""
-    for source in ("SKILLS INVENTORY", "VERIFIED EXPERIENCE ENTRIES", "BASELINE CV"):
+def test_the_derived_constraint_names_the_same_claim_sources_as_the_prompt_rule():
+    """Both strings land in the SAME prompt, so a source named by one and not the other is
+    a contradiction the composer can only resolve by guessing.
+
+    An earlier revision listed the SKILLS INVENTORY here too, reasoning that a source
+    omitted from the most strongly worded block reads as a source the composer must not
+    use. That is right for a source and wrong for framing: naming a technology IS a claim,
+    so permitting one that appears only in the framing section is exactly what the CV rule
+    forbids. Both guard tests were blind to it -- one asserted only the two, and this one
+    asserted the three while its own docstring argued skills must be excluded from the
+    CLAIM set.
+
+    Reads the REAL `_RULES` rather than restating it, so the two cannot drift apart again
+    without this reddening."""
+    from sluice.cv.compose import _RULES
+
+    for source in ("VERIFIED EXPERIENCE ENTRIES", "BASELINE CV"):
         assert source in B._DERIVED_NEGATIVE_PROMPT, source
+    assert "SKILLS INVENTORY" not in B._DERIVED_NEGATIVE_PROMPT, (
+        "the derived negative permits a technology named only in the framing section, "
+        "which compose._RULES forbids in the same prompt")
+    # The CV rule states the claim sources in the singular; the derived line in the plural.
+    assert "BASELINE CV or a VERIFIED EXPERIENCE ENTRY" in _RULES, (
+        "compose._RULES no longer states the two claim sources in the shape this test "
+        "compares against -- re-read it and re-establish the agreement deliberately")
 
 
 def test_the_derived_constraint_names_no_skill_and_so_cannot_go_stale():

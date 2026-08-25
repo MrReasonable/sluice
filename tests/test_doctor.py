@@ -1684,7 +1684,9 @@ def test_an_unreadable_evidence_corpus_takes_its_own_row_and_leaves_the_others_s
     DEAD rather than NOTICE, because NOTICE never reaches the exit code (see
     `DoctorReport.exit_code`) and a directory the store cannot read at all is a fault the
     user must act on, not a posture. `blocks` is asserted on the UNCITED kind here:
-    nothing composes off `skills`/`stories` until #165, so naming a sub-app would be the
+    an unreadable `skills` corpus DEGRADES rather than blocking `cv` (#165: cv/engine.py
+    catches it and composes without the framing) and nothing reads `stories` at all, so
+    naming a sub-app for either would be the
     over-claim `EvidenceKind.cited_by_gate` exists to prevent.
     """
     from sluice.core.protocols import EVIDENCE_KINDS
@@ -1697,7 +1699,7 @@ def test_an_unreadable_evidence_corpus_takes_its_own_row_and_leaves_the_others_s
     broken = by_subject[EVIDENCE_KINDS["stories"].relpath.rsplit("/", 1)[-1]]
     assert broken.state == DEAD
     assert "cannot be read" in broken.detail and "is a symlink" in broken.detail
-    assert broken.blocks == (), "nothing composes off stories until #165"
+    assert broken.blocks == (), "nothing reads stories, so it blocks no sub-app"
     # Every other store row survives -- the whole point of the isolation.
     for subject in ("baseline_rel", "Judging Profile", "Candidate Profile",
                     EVIDENCE_KINDS["experience"].relpath.rsplit("/", 1)[-1],
@@ -1709,7 +1711,7 @@ def test_an_unreadable_evidence_corpus_takes_its_own_row_and_leaves_the_others_s
 
 def test_an_unreadable_cited_corpus_names_cv_as_what_it_blocks(tmp_path):
     """The other half of the `blocks` split above, so a fix hardcoding `()` or `("cv",)`
-    for every kind cannot satisfy both rows. Keyed on `cited_by_gate`, so #165's boolean
+    for every kind cannot satisfy both rows. Keyed on `cited_by_gate`, so a flag
     flip carries these rather than failing them."""
     from sluice.core.protocols import EVIDENCE_KINDS
     from sluice.core.vault import Vault
@@ -1900,6 +1902,11 @@ def test_the_report_names_no_configured_value():
     rows = classify_negatives_vs_skills([neg], [{"best_for": "documentation"}])
     assert neg not in rows[0].detail
     assert "documenting" not in rows[0].detail
+    # The STEMS too, not just the words as the user typed them: the leak this guards
+    # against is `{sorted(overlap)}` in place of `{len(overlap)}`, which would print
+    # ['document'] -- a form neither the raw line nor the raw word check can see.
+    assert "document" not in rows[0].detail
+    assert "[" not in rows[0].detail, "the row renders a term list rather than a count"
     assert rows[0].subject == "cv.negatives[0]"
 
 
@@ -1914,9 +1921,27 @@ def test_an_empty_negatives_list_abstains():
 
 
 def test_an_inventory_with_no_domains_abstains():
-    """A skill whose Domain is blank contributes no terms. Without this arm the union
-    below would be over an empty sequence."""
+    """A skill whose Domain is blank contributes no terms, so there is nothing to
+    contradict. This is genuinely an equivalent mutant of the `not skills` guard above --
+    deleting either one leaves this green -- and it is kept because the two states are
+    different for a READER: "you have no inventory" and "your inventory declares no
+    domains" are different things to be told, and a later change that makes the second
+    report something would land here."""
     assert classify_negatives_vs_skills(["never claim anything"], [{"best_for": ""}]) == []
+
+
+def test_a_stopword_in_a_domain_does_not_manufacture_a_contradiction():
+    """Measured before the length floor existed: a Domain reading "Data and analytics for
+    the platform" contributes the stem `the`, so EVERY negative containing the word "the"
+    reported a contradiction. NOTICE-tier, so it cost no lead -- but a row that fires on
+    everything is one a user learns to ignore, which is the whole value of the check."""
+    assert classify_negatives_vs_skills(
+        ["no mention of the finance sector"],
+        [{"best_for": "Data and analytics for the platform"}]) == []
+    # ...while a real overlap in the same inventory still reports.
+    assert classify_negatives_vs_skills(
+        ["never claim analytics work"],
+        [{"best_for": "Data and analytics for the platform"}])
 
 
 def test_a_negative_about_something_not_in_the_inventory_is_not_reported():
