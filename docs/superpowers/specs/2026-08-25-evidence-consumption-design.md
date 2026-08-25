@@ -349,6 +349,36 @@ Keeping the engine on the delegate and only ADDING `read_evidence("skills")` was
 rejected: it leaves one kind read through a legacy delegate and the other through the registry,
 and it leaves `protocols.py:736` asserting something false.
 
+### D11 -- the ADVISORY audit is handed the bundle WITHOUT the framing section
+
+Found by plan review, and it is the most consequential thing this design missed. Neither the spec
+nor the plan mentioned `cv/audit.py` at all.
+
+`cv/engine.py:653` calls `run_audit(backend, cv_text, bundle_text)` with the SAME text built for the
+composer, and `build_audit_prompt` opens "SOURCE BUNDLE is the ONLY truth". So emitting skills into
+`bundle_text` silently widens what the #60 advisory audit treats as support. A CV claim resting on a
+skills line alone is judged `unsupported` today -- which, with `cv.require_signoff` shipped True,
+WITHHOLDS the send-ready `tailored_cv` pointer until a human signs off. After D1 it would be judged
+`supported` and served unsigned.
+
+D3 says a claim resting on skills alone is exactly what must not happen. So D1, unmitigated,
+disarms the only layer that could catch the failure D3 defines. That is the wrong direction on the
+one gate that exists for qualitative fabrication.
+
+**The audit gets the source bundle; the composer gets the source bundle plus framing.**
+`render_bundle` grows a keyword-only `include_framing=True`, and the audit call site passes
+`include_framing=False`. Nothing about the audit changes: it sees exactly the text it sees today,
+so a skills-only claim stays `unsupported` and stays held.
+
+**Rejected: adding a framing rule to `build_audit_prompt` instead.** It leaves the auditor reasoning
+about a distinction stated in prose, when the same outcome is available by not showing it the
+section at all. Not showing it is exact; a prompt instruction is a request.
+
+The residual is a possible FALSE `unsupported`: the composer legitimately takes VOCABULARY from a
+skills entry (that is what framing is for), and the auditor never sees that vocabulary. It fails in
+the safe direction -- a sign-off hold a human clears, never an unsigned CV -- and the audit is
+advisory and never blocks rendering either way.
+
 ## Behaviour changes a user will notice
 
 1. **Ranking order changes for everyone.** Today's substring match relates `java`/`javascript`
@@ -469,3 +499,20 @@ Behaviour, not coverage. Each names the defect it would catch.
   grepping a source file) and D10 (`read_experience_entries` retires here, by #164's own
   instruction). D9 is the one to review hardest: it is the only place this change could quietly
   tell a user something false about what the fabrication gate reads.
+- **r6** -- five-reviewer `/review-plan` round: 49 findings, 0 Critical, 21 High. Eight were raised
+  independently by two or more reviewers, which is the strongest signal the round produced. The
+  design-level ones are recorded above as D11 (the advisory audit, missed entirely) and here:
+  - The derived negative in D6 omitted the BASELINE CV, contradicting D3's own prompt rule and
+    instructing the composer to drop every technology named only in the user's real CV.
+  - D5's catch was specified as `except OSError`, but a non-UTF-8 entry raises `UnicodeDecodeError`,
+    a `ValueError`. It would escape `run_one` and make `run_batch` record `error` for EVERY lead --
+    the exact outcome D5 exists to prevent. `Vault.preflight` shipped this same mistake and now
+    catches `(OSError, ValueError)`; this follows it.
+  - The plan's proposed oracle test for D2 was inert: it fed `_oracle` the output of
+    `render_bundle`, the self-certifying spelling `_oracle`'s own docstring forbids. Measured by a
+    reviewer: 3 of 3 co-variant `_entry_block` deletion mutants survive it. Deleted rather than
+    repaired -- re-freezing the literal with skills present (D-freeze) makes the EXISTING test cover
+    the case for free.
+  - `CvResult.skills_unreadable` had no reader, which is the "computed and discarded" defect #167
+    opened over, in the docstring of the very dataclass it joins. It now mirrors `dossier_failed`'s
+    reader set.

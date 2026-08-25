@@ -4,39 +4,34 @@
 
 **Goal:** Put the user's verified Skills Inventory in front of the CV composer as a fourth, non-citable bundle section; derive the skills-shaped negative constraint instead of hand-typing it; and stop `bundle.rank()` missing an entry because the ad said "documenting" and the entry said "documentation".
 
-**Architecture:** `cv/bundle.py` grows a `skills` parameter whose lines `render_bundle` owns and `bundle_sources` never sees, so non-citability is structural. `sluice/core/stem.py` adds a Porter stemmer that `rank()` and a new `doctor` check both use. `cv/engine.py` switches to reading evidence BY KIND, which retires the `read_experience_entries` delegate and splits `EvidenceKind.cited_by_gate` into two flags that this change makes non-equivalent for the first time.
+**Architecture:** `cv/bundle.py` grows a `skills` parameter whose lines `render_bundle` owns and `bundle_sources` never sees, so non-citability is structural. The ADVISORY audit is handed the bundle without that section, so it keeps judging against exactly the sources it judges against today. `sluice/core/stem.py` adds a Porter stemmer that `rank()` and a new `doctor` check both use. `cv/engine.py` switches to reading evidence BY KIND, which retires the `read_experience_entries` delegate and splits `EvidenceKind.cited_by_gate` into two flags this change makes non-equivalent.
 
-**Tech Stack:** Python 3.12+, standard library only inside `sluice/` (see Global Constraints). pytest. No new runtime dependency.
+**Tech Stack:** Python 3.12+, standard library only inside `sluice/`. pytest. No new runtime dependency.
 
-**Spec:** `docs/superpowers/specs/2026-08-25-evidence-consumption-design.md` — read it first; the plan argues from it and does not repeat its reasoning.
+**Spec:** `docs/superpowers/specs/2026-08-25-evidence-consumption-design.md` — read it first, D1-D11. This plan is revision 2, after a five-reviewer `/review-plan` round returned 49 findings (0 Critical, 21 High).
 
 ## Global Constraints
 
-- **`sluice/` is standard-library only.** No new runtime dependency. The stemmer is hand-written for this reason.
-- **Neutrality:** no employer names, role preferences, locations, contact details, hostnames or absolute paths in `sluice/` or `tests/`. Fixtures stay synthetic. `tests/data/porter_vocabulary.txt` is the one verbatim third-party file and is measured clean (pure ASCII, `^[a-z]+$` per line, zero `/Users/` or `/home/` shapes).
-- **Conventional commits.** `release-please` reads the subjects. Use `feat(cv)`, `fix(cv)`, `test(cv)`, `docs(cv)`, `refactor(core)`.
-- **Never widen `cv/validate.py`.** Skills must license numbers in NEITHER pool.
-- **`_entry_block`'s rule is inviolate:** every line it returns is a source for that entry. Skills lines belong in `render_bundle`, never in `_entry_block`.
-- **Run before mutation testing:** `python -m compileall -q -f --invalidation-mode checked-hash sluice tests scripts`
-- **Interpreter:** call `.venv/bin/python` explicitly, never a bare `python` shim.
+- **`sluice/` is standard-library only.** The stemmer is hand-written for this reason.
+- **Neutrality:** no employer names, role preferences, locations, contact details, hostnames or absolute paths in `sluice/` or `tests/`. **Every `Example <Word>` literal in a `test_cv_*.py` module is swept by `_CV_IDENTITY_RE` (`tests/test_fixture_name_neutrality.py:1492`) and must already be on `_REVIEWED_FIXTURE_IDENTITIES` (:199).** This plan therefore reuses only rostered identities — `Example Cloud`, `Example Data`, `Example Candidate`, `Example Co`, `Example Foundry`. Do NOT add roster entries, and do NOT widen `_CV_IDENTITY_EXEMPT`: that ratchet exists to force a human call, and sidestepping it is the weakening it guards against.
+- **Conventional commits** on every commit, `wip:` included — release-please reads the subjects.
+- **Never widen `cv/validate.py`.** Skills license numbers in NEITHER pool.
+- **`_entry_block`'s rule is inviolate:** every line it returns is a source for that entry. The framing lines are NOT a `_block` and must never be folded into one.
+- **Run before mutation testing:** `.venv/bin/python -m compileall -q -f --invalidation-mode checked-hash sluice tests scripts`
+- **Never mutate the repo to witness a mutant** — copy the function to `/tmp` and mutate the copy. A `git checkout` restore has wiped uncommitted work here before.
+- **Interpreter:** `.venv/bin/python` explicitly, never a bare `python` shim.
 - **Edit `.rulesync/rules/CLAUDE.md`, never `CLAUDE.md`** (generated), then `npm ci --ignore-scripts && npm run rulesync`.
 
----
+## Task order is load-bearing
 
-## File Structure
+Revision 1 put the engine change before the registry change and before the fake-store migration, which left **76 tests red across 4 files** at two intermediate commits while both steps claimed "expect PASS". Four reviewers found it independently. The order below has no red commit:
 
-| File | Responsibility |
-|---|---|
-| `sluice/core/stem.py` (create) | Porter stemmer + `tokens()`. Pure, no imports from `sluice`. |
-| `tests/data/porter_vocabulary.txt` (create) | Verbatim `word stem` corpus, 23,531 rows, with a provenance header. |
-| `tests/test_core_stem.py` (create) | Corpus equality + the must-not-conflate pairs. |
-| `sluice/cv/bundle.py` (modify) | `skills` param, `_skills_block`, derived negative, stemmed `rank`. |
-| `sluice/cv/compose.py` (modify) | One new CV RULE. |
-| `sluice/cv/engine.py` (modify) | Read evidence by kind; catch a broken skills corpus. |
-| `sluice/core/protocols.py` (modify) | Split the flag; delete `read_experience_entries`. |
-| `sluice/core/vault.py` (modify) | Delete the delegate. |
-| `sluice/core/doctor.py` (modify) | `classify_negatives_vs_skills`; correct the `#165` messages. |
-| `sluice/core/app.py` (modify) | Wire the new check into `Sluice.doctor()`. |
+```
+1 stemmer -> 2 rank -> 3 skills section -> 4 derived negative -> 5 re-freeze -> 6 prompt rule
+  -> 7 REGISTRY flag split (no engine dependency)
+  -> 8 ENGINE by-kind read + fake-store migration + audit split   (one commit, green)
+  -> 9 flag derivation tests -> 10 retire the delegate -> 11 doctor -> 12 docs
+```
 
 ---
 
@@ -53,35 +48,46 @@
 
 - [ ] **Step 1: Build the corpus fixture**
 
-The two source files are fetched once and joined into one `word stem` file so a row cannot drift from its expectation.
+Revision 1's block began `cd /tmp` and never returned, so it wrote to `/tmp/tests/data/` and Step 7's `git add` failed on pathspec — found by three reviewers. This version resolves the repo root explicitly and never relies on the working directory.
 
 ```bash
-cd /tmp && curl -sSL -o voc.txt https://tartarus.org/martin/PorterStemmer/voc.txt \
-  && curl -sSL -o out.txt https://tartarus.org/martin/PorterStemmer/output.txt
-test "$(wc -l < voc.txt)" = "$(wc -l < out.txt)" || { echo "LENGTH MISMATCH"; exit 1; }
-grep -qE '/(Users|home)/' voc.txt out.txt && { echo "HOME PATH IN CORPUS"; exit 1; }
-mkdir -p tests/data
+repo="$(git rev-parse --show-toplevel)"
+tmp="$(mktemp -d)"
+# -f so an HTTP error page is not silently saved AS the corpus.
+curl -fsSL -o "$tmp/voc.txt" https://tartarus.org/martin/PorterStemmer/voc.txt
+curl -fsSL -o "$tmp/out.txt" https://tartarus.org/martin/PorterStemmer/output.txt
+test "$(wc -l < "$tmp/voc.txt")" = "$(wc -l < "$tmp/out.txt")" || { echo "LENGTH MISMATCH"; exit 1; }
+# Row shape, checked at BUILD time as well as asserted in the suite: one lowercase
+# alphabetic word per line. This is what forecloses an email, URL, path or capitalised
+# identity entering tests/ inside a 353KB file nobody will read.
+grep -nvE '^[a-z]+$' "$tmp/voc.txt" && { echo "NON-WORD ROW IN voc.txt"; exit 1; }
+grep -nvE '^[a-z]*$' "$tmp/out.txt" && { echo "NON-WORD ROW IN output.txt"; exit 1; }
+mkdir -p "$repo/tests/data"
 { echo "# Porter stemmer test vocabulary -- VERBATIM third-party corpus, do not edit."
   echo "# Source: https://tartarus.org/martin/PorterStemmer/ (voc.txt + output.txt)"
-  echo "# Author: Martin Porter. Captured 2026-08-25. The page licenses the algorithm"
+  echo "# Author: Martin Porter. Captured 2026-08-25. That page licenses the algorithm"
   echo "# encodings 'free of charge for any purpose'; it states no separate terms for"
   echo "# these test files, and we redistribute them on the reading that they share it."
   echo "# NOT a sluice fixture: no neutrality sweep may 'clean' a word here. The corpus"
   echo "# is worth something only while it is byte-identical to the reference."
   echo "# Format: <word> <expected stem>, one pair per line."
-  paste -d' ' voc.txt out.txt; } > tests/data/porter_vocabulary.txt
-wc -l tests/data/porter_vocabulary.txt   # expect 23538 (23531 + 7 header lines)
+  paste -d' ' "$tmp/voc.txt" "$tmp/out.txt"; } > "$repo/tests/data/porter_vocabulary.txt"
+wc -l "$repo/tests/data/porter_vocabulary.txt"      # expect 23539 (23531 rows + 8 header lines)
+shasum -a 256 "$repo/tests/data/porter_vocabulary.txt"   # record this for Step 2's digest pin
 ```
+
+The header is EIGHT `echo` lines, not seven. Revision 1 said 23538; three reviewers counted 23539.
 
 - [ ] **Step 2: Write the failing test**
 
-`tests/test_core_stem.py`:
+`tests/test_core_stem.py`. Three guards, each closing a different way this could certify nothing.
 
 ```python
-"""The stemmer is certified against Martin Porter's own published vocabulary rather
-than against examples chosen here. A table of cases the author picked certifies
-nothing -- see the spec's D7 and the 42-mutant study behind it."""
+"""The stemmer is certified against Martin Porter's own published vocabulary rather than
+against examples chosen here. A table of cases the author picked certifies nothing."""
+import hashlib
 import pathlib
+import re
 
 import pytest
 
@@ -89,22 +95,42 @@ from sluice.core.stem import stem, stem_all, tokens
 
 _CORPUS = pathlib.Path(__file__).resolve().parent / "data" / "porter_vocabulary.txt"
 
+# Paste the Step 1 shasum here. Without it, regenerating the expected-stem column FROM
+# `stem()` makes the equality below assert that the code equals itself -- forever, inside
+# a 353KB diff nobody reads. Same ratchet as `_REVIEWED_CORPUS_DIGESTS` in
+# tests/test_fixture_name_neutrality.py. Updating it is the deliberate act.
+_CORPUS_SHA256 = "<paste from Step 1>"
+
 
 def _rows():
     out = []
     for line in _CORPUS.read_text(encoding="utf-8").splitlines():
         if line.startswith("#") or not line.strip():
             continue
-        word, expected = line.split()
+        word, expected = line.split(" ", 1)
         out.append((word, expected))
     return out
 
 
+def test_the_corpus_is_the_reference_corpus_unmodified():
+    assert hashlib.sha256(_CORPUS.read_bytes()).hexdigest() == _CORPUS_SHA256, (
+        "tests/data/porter_vocabulary.txt has changed. It is a VERBATIM third-party "
+        "corpus; if you regenerated its stem column from stem(), the equality test "
+        "below now certifies that the code equals itself.")
+
+
 def test_the_corpus_is_present_and_whole():
-    """Scope, not violations. A corpus that failed to load leaves the equality below
+    """SCOPE, not violations. A corpus that failed to load leaves every assertion over it
     iterating an empty list -- green forever, this repo's `all([])` trap."""
-    rows = _rows()
-    assert len(rows) == 23531, f"expected Porter's full vocabulary, got {len(rows)} rows"
+    assert len(_rows()) == 23531
+
+
+def test_every_corpus_row_is_two_lowercase_words():
+    """Structural neutrality, asserted rather than measured once at authoring time. One
+    line forecloses any email, URL, absolute path or capitalised identity entering tests/
+    through this file, with no blocklist to maintain."""
+    bad = [r for r in _rows() if not re.fullmatch(r"[a-z]+ [a-z]*", " ".join(r))]
+    assert not bad, f"non-word rows in the corpus: {bad[:5]}"
 
 
 def test_stem_matches_porters_published_vocabulary():
@@ -147,7 +173,7 @@ Expected: collection error, `ModuleNotFoundError: No module named 'sluice.core.s
 
 - [ ] **Step 4: Implement the stemmer**
 
-`sluice/core/stem.py`. The two departures from the 1980 paper in `_STEP2` are load-bearing and measured: a faithful reading of the paper scores 99.932% on the reference corpus, and all 16 failures (`apology`, `assembly`, `horribly`, ...) are these.
+`sluice/core/stem.py`:
 
 ```python
 # sluice/core/stem.py
@@ -160,12 +186,12 @@ threshold tried had false positives AND misses. See the spec's D7.
 
 Certified against Martin Porter's published 23,531-word vocabulary at 100.0000%
 (tests/data/porter_vocabulary.txt). That corpus buys a ONE-TIME validation of this
-implementation against the reference, not drift detection of the reference itself.
+implementation against the reference; it is not drift detection of the reference.
 
-Consumers: `cv/bundle.py:rank` and `core/doctor.py:classify_negatives_vs_skills`.
-Deliberately NOT `core/relevance.py`, whose keep/drop lists are a user-specified
-ingest gate applied before dedup -- widening that match silently changes which leads
-are discarded, the 672ad2a failure.
+Consumers: `cv/bundle.py:rank` and `core/doctor.py`. Deliberately NOT
+`core/relevance.py`, whose keep/drop lists are a user-specified ingest gate applied
+before dedup -- widening that match silently changes which leads are discarded, the
+672ad2a failure.
 """
 import re
 
@@ -219,7 +245,7 @@ def _cvc(w):
 # Two entries here are the REFERENCE IMPLEMENTATION's documented departures from the
 # 1980 paper, not transcription slips: `bli -> ble` stands in place of the paper's
 # `abli -> able`, and `logi -> log` is absent from the paper entirely. Measured: without
-# them agreement with the published vocabulary is 99.932%, and every one of the 16
+# them, agreement with the published vocabulary is 99.932%, and every one of the 16
 # failures is one of these two (`apology`, `assembly`, `horribly`, `possibly`, ...).
 _STEP2 = [("ational", "ate"), ("tional", "tion"), ("enci", "ence"), ("anci", "ance"),
           ("izer", "ize"), ("bli", "ble"), ("alli", "al"), ("entli", "ent"),
@@ -234,7 +260,7 @@ _STEP4 = ["al", "ance", "ence", "er", "ic", "able", "ible", "ant", "ement",
 
 
 def stem(word):
-    """The Porter stem of one word. Lowercases; returns words of 2 letters or fewer
+    """The Porter stem of one word. Lowercases; words of 2 letters or fewer are returned
     unchanged, as the algorithm specifies."""
     w = word.lower()
     if len(w) <= 2:
@@ -290,8 +316,8 @@ def stem(word):
 
 
 def tokens(text):
-    """Lowercased alphabetic runs. The tokeniser both sides of a match must share --
-    a keyword stemmed against an unstemmed haystack matches nothing."""
+    """Lowercased alphabetic runs. The tokeniser both sides of a match must share -- a
+    keyword stemmed against an unstemmed haystack matches nothing."""
     return _WORD_RE.findall((text or "").lower())
 
 
@@ -303,29 +329,42 @@ def stem_all(text):
 - [ ] **Step 5: Run the tests**
 
 Run: `.venv/bin/python -m pytest tests/test_core_stem.py -q`
-Expected: PASS, including `test_stem_matches_porters_published_vocabulary` (23,531 rows, ~70 ms).
+Expected: PASS. Paste the Step 1 `shasum` into `_CORPUS_SHA256` first, or
+`test_the_corpus_is_the_reference_corpus_unmodified` fails on the placeholder.
 
 - [ ] **Step 6: Witness that the corpus test is load-bearing**
 
-Mutate by DELETING, never adding. Commit first — a mutation witness that restores via `git checkout` wipes uncommitted work.
+Mutate by DELETING, in a `/tmp` COPY. Never mutate the repo — a `git checkout` restore has wiped uncommitted work here before, and `sed -i ''` is the BSD spelling that silently creates a backup file named `-e` on GNU sed.
 
 ```bash
-git add -A && git commit -q -m "wip: stemmer" # temporary; amended in Step 7
-.venv/bin/python -m compileall -q -f --invalidation-mode checked-hash sluice tests scripts
-# Delete the `logi -> log` rule -- witnessed by exactly ONE word in 23,531 (`apology`).
-sed -i '' 's/^          ("logi", "log")\]/          ]/' sluice/core/stem.py
-.venv/bin/python -m pytest tests/test_core_stem.py -q   # MUST fail
-git checkout sluice/core/stem.py
-.venv/bin/python -m pytest tests/test_core_stem.py -q   # green again
+mkdir -p /tmp/stemwitness && cp sluice/core/stem.py /tmp/stemwitness/mutant.py
+# Delete the `logi -> log` rule: witnessed by exactly ONE word in 23,531 (`apology`).
+.venv/bin/python - <<'EOF'
+import pathlib
+p = pathlib.Path("/tmp/stemwitness/mutant.py"); s = p.read_text()
+old = '''          ("logi", "log")]'''
+assert old in s, "anchor missed -- the witness would report a false SURVIVED"
+p.write_text(s.replace(old, "          ]"))
+EOF
+.venv/bin/python - <<'EOF'
+import sys, pathlib, re
+sys.path.insert(0, "/tmp/stemwitness")
+import mutant
+rows = [l.split(" ", 1) for l in pathlib.Path("tests/data/porter_vocabulary.txt")
+        .read_text().splitlines() if not l.startswith("#") and l.strip()]
+bad = [(w, e) for w, e in rows if mutant.stem(w) != e]
+print(f"mutant disagreements: {len(bad)} -> {'KILLED' if bad else 'SURVIVED (BAD)'}")
+EOF
+rm -rf /tmp/stemwitness
 ```
 
-Expected: the mutant is KILLED. If it survives, the corpus did not load — check Step 1's row count before believing any later result.
+Expected: **KILLED** (at least one disagreement). `SURVIVED` means the corpus did not load — check Step 1's row count before believing any later result.
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add sluice/core/stem.py tests/test_core_stem.py tests/data/porter_vocabulary.txt
-git commit -q --amend -m "feat(core): add a Porter stemmer for keyword matching (#165)"
+git commit -q -m "feat(core): add a Porter stemmer for keyword matching (#165)"
 ```
 
 ---
@@ -337,7 +376,7 @@ git commit -q --amend -m "feat(core): add a Porter stemmer for keyword matching 
 - Test: `tests/test_cv_bundle.py`
 
 **Interfaces:**
-- Consumes: `sluice.core.stem.stem_all`, `sluice.core.stem.stem` (Task 1).
+- Consumes: `sluice.core.stem.stem`, `sluice.core.stem.stem_all` (Task 1).
 - Produces: `rank(entries, jd_keywords)` — unchanged signature, stem-based scoring.
 
 - [ ] **Step 1: Write the failing test**
@@ -352,9 +391,9 @@ def _rank_entry(best_for, title):
 
 def test_a_word_form_mismatch_no_longer_buries_the_right_entry():
     """#165's comment. The ad's top requirement was 'documenting'; the one entry that
-    evidenced it said 'documentation'. `"documenting" in "documentation"` is False, so
-    it scored zero and ranked BELOW every unrelated entry that happened to match a
-    different ad word. Measured before the fix: position 6 of 7."""
+    evidenced it said 'documentation'. `"documenting" in "documentation"` is False, so it
+    scored zero and ranked BELOW every unrelated entry that matched a different ad word.
+    Measured before the fix: position 6 of 7."""
     entries = ([_rank_entry("delivery planning", f"unrelated-{i}") for i in range(3)]
                + [_rank_entry("documentation", "THE-RIGHT-ONE")]
                + [_rank_entry("delivery planning", f"unrelated-{i}") for i in range(3, 6)])
@@ -369,8 +408,8 @@ def test_ranking_orders_and_never_excludes():
 
 
 def test_the_substring_false_positives_are_gone():
-    """`"java" in "javascript"` is True, so the old ranker scored a JavaScript entry on
-    a Java keyword. Stems do not relate them."""
+    """`"java" in "javascript"` is True, so the old ranker scored a JavaScript entry on a
+    Java keyword. Stems do not relate them."""
     entries = [_rank_entry("javascript", "js"), _rank_entry("java", "java")]
     assert B.rank(entries, ["java"])[0]["title"] == "java"
 ```
@@ -388,14 +427,13 @@ Replace `rank` in `sluice/cv/bundle.py`:
 def rank(entries: list[dict], jd_keywords: list[str]) -> list[dict]:
     """Order entries by how many JD keywords their classification fields answer.
 
-    Matching is on STEMS, both sides, so "documenting", "documentation" and
-    "documented" all rank the same entry (#165). Before this it was raw substring
-    containment, which missed every inflection AND related words it should not
-    ("java" in "javascript" is True).
+    Matching is on STEMS, both sides, so "documenting", "documentation" and "documented"
+    all rank the same entry (#165). Before this it was raw substring containment, which
+    missed every inflection AND related words it should not ("java" in "javascript").
 
     Orders, never excludes: the FULL verified set is emitted either way, so a ranking
-    change can never lose evidence -- only move it. It DOES change which `[id]` an
-    entry receives, since `assign_codes` runs after this.
+    change can never lose evidence -- only move it. It DOES change which `[id]` an entry
+    receives, since `assign_codes` runs after this.
 
     The haystack stays `best_for`/`category`/`title` and deliberately excludes `body`:
     matching into free prose lets a long entry out-score a precise one on volume.
@@ -409,7 +447,7 @@ def rank(entries: list[dict], jd_keywords: list[str]) -> list[dict]:
     return sorted(entries, key=score, reverse=True)
 ```
 
-and add the import at the top of `sluice/cv/bundle.py`:
+and add at the top of `sluice/cv/bundle.py`:
 
 ```python
 from sluice.core.stem import stem as _stem, stem_all as _stem_all
@@ -418,7 +456,7 @@ from sluice.core.stem import stem as _stem, stem_all as _stem_all
 - [ ] **Step 4: Run the full bundle suite**
 
 Run: `.venv/bin/python -m pytest tests/test_cv_bundle.py -q`
-Expected: PASS, **including the two frozen tests**. Measured: `_frozen_bundle()` passes `jd_keywords=[]`, so every score is 0, the stable sort preserves order, and the frozen literal is untouched by this task. If a frozen test reddens here, the ranker changed something it should not have — do not re-freeze to fix it.
+Expected: PASS, **including both frozen tests**. Measured: `_frozen_bundle()` passes `jd_keywords=[]`, so every score is 0, the stable sort preserves order, and the frozen literal is untouched by this task. If a frozen test reddens here, the ranker changed something it should not have — do not re-freeze to fix it.
 
 - [ ] **Step 5: Commit**
 
@@ -432,17 +470,21 @@ git commit -q -m "fix(cv): rank evidence on stems, not raw substrings (#165)"
 ### Task 3: Skills as a fourth, non-citable bundle section
 
 **Files:**
-- Modify: `sluice/cv/bundle.py` (`build_bundle`, `render_bundle`, new `_skills_block`)
+- Modify: `sluice/cv/bundle.py` (`build_bundle`, `render_bundle`, new `_framing_lines`)
 - Test: `tests/test_cv_bundle.py`
 
 **Interfaces:**
 - Consumes: Task 2's `rank`.
-- Produces: `build_bundle(entries, baseline, negatives, jd_keywords, prefix_map, skills=())` and `bundle["skills"]`.
+- Produces: `build_bundle(entries, baseline, negatives, jd_keywords, prefix_map, skills=())`, `bundle["skills"]`, and `render_bundle(bundle, *, include_framing=True)`.
+
+**Naming note.** The helper is `_framing_lines`, NOT `_skills_block`. `cv/bundle.py` has already established `_<x>_block(...) -> list[str]` as meaning *every line returned is a SOURCE for the fabrication gate* — that is `_entry_block`'s and `_baseline_block`'s stated contract. A third `_block` whose lines are deliberately NOT sources invites exactly the mistake this feature must not make.
 
 - [ ] **Step 1: Write the failing tests**
 
+Fixture identities are `Example Cloud` (rostered at `test_fixture_name_neutrality.py:203`) — do not invent new ones.
+
 ```python
-_SKILL = {"title": "Example Platform Skill", "best_for": "platform documentation",
+_SKILL = {"title": "Example Cloud Skill", "best_for": "platform documentation",
           "company": "", "category": "", "metrics": "", "body": "Body prose.",
           "fields": {"Proficiency": "8 years", "Domain": "platform documentation",
                      "Evidence": "shipped 62 things", "Signal Value": "depth not breadth"}}
@@ -454,15 +496,15 @@ def _bundle_with_skills(skills=(_SKILL,)):
 
 
 def test_a_skills_digit_is_licensed_in_neither_pool():
-    """THE load-bearing test of this feature, and it compares against NO frozen literal
-    -- so re-capturing FROZEN_BUNDLE_TEXT cannot bring it back into sync. `8` and `62`
-    are the skill's own figures; neither may become a permitted number anywhere."""
+    """THE load-bearing test of this feature, and it compares against NO frozen literal --
+    so re-capturing FROZEN_BUNDLE_TEXT cannot bring it back into sync. `8` and `62` are
+    the skill's own figures; neither may become a permitted number anywhere."""
     s = B.bundle_sources(_bundle_with_skills())
     assert "62" not in s.baseline
     assert all("62" not in n for n in s.nums.values())
     assert all("8" not in n for n in s.nums.values()), (
-        "a skills digit reached an entry's allowlist -- the skills block has been "
-        "moved into _entry_block, which licenses it for that entry")
+        "a skills digit reached an entry's allowlist -- the framing lines have been "
+        "folded into _entry_block, which licenses them for that entry")
 
 
 def test_the_skills_section_renders_after_the_entries_and_before_the_negatives():
@@ -473,28 +515,33 @@ def test_the_skills_section_renders_after_the_entries_and_before_the_negatives()
 
 def test_the_skills_section_carries_the_four_fields_and_the_body():
     text = B.render_bundle(_bundle_with_skills())
-    assert "Example Platform Skill" in text
-    assert "proficiency=8 years" in text
-    assert "signal=depth not breadth" in text
-    assert "shipped 62 things" in text
-    assert "Body prose." in text
+    for fragment in ("Example Cloud Skill", "proficiency=8 years",
+                     "signal=depth not breadth", "shipped 62 things", "Body prose."):
+        assert fragment in text, fragment
 
 
 def test_an_empty_inventory_emits_no_header_at_all():
-    """Not an empty header: that asserts to the model that the candidate has no
-    skills, which is a negative claim it may act on. Empty means abstain."""
+    """Not an empty header: that asserts to the model that the candidate has no skills,
+    which is a negative claim it may act on. Empty means abstain."""
     assert "SKILLS INVENTORY" not in B.render_bundle(_bundle_with_skills(skills=()))
 
 
-def test_the_pre_174_oracle_still_agrees_when_skills_are_present():
-    """`_oracle` is the pre-#174 text parser kept as a co-variant detector. With the
-    section after the last [id], its `=== header ===` reset drops skills lines into
-    neither pool, so the two derivations still agree. Emitted BEFORE the entries they
-    would fall into `baseline` (measured: 61, 62, 8 leak)."""
+def test_include_framing_false_omits_the_section_but_keeps_every_source():
+    """D11: the ADVISORY audit is handed this spelling, so it keeps judging against
+    exactly the sources it judges against today. Every non-framing line must survive --
+    asserting only the absence would pass for a function that returned ''."""
     b = _bundle_with_skills()
-    text = B.render_bundle(b)
-    assert B.bundle_sources(b) == B.BundleSources(*_oracle(text))
+    text = B.render_bundle(b, include_framing=False)
+    assert "SKILLS INVENTORY" not in text
+    assert "Example Cloud Skill" not in text
+    for fragment in ("=== BASELINE CV", "[AL1]", "[BE1]", "[AL2]",
+                     "=== VERIFIED EXPERIENCE ENTRIES", "=== NEGATIVE CONSTRAINTS"):
+        assert fragment in text, fragment
+    assert text == B.render_bundle(B.build_bundle(
+        FROZEN_ENTRIES, FROZEN_BASELINE, FROZEN_NEGATIVES, [], FROZEN_PREFIX_MAP))
 ```
+
+**Revision 1 also proposed `test_the_pre_174_oracle_still_agrees_when_skills_are_present`. It is DELETED, not fixed.** It fed `_oracle(B.render_bundle(b))`, the self-certifying spelling `_oracle`'s own docstring forbids; a reviewer measured 3 of 3 co-variant `_entry_block` deletion mutants (`drop_title`, `drop_company`, `drop_body`) surviving it. Task 5 re-freezes the literal *with* skills present, so the EXISTING `test_the_allowlist_still_matches_the_frozen_prompt` covers the skills case correctly and for free.
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -503,35 +550,24 @@ Expected: FAIL — `build_bundle() got an unexpected keyword argument 'skills'`.
 
 - [ ] **Step 3: Implement**
 
-In `sluice/cv/bundle.py`, change `build_bundle` and `render_bundle` and add `_skills_block`:
+In `sluice/cv/bundle.py`:
 
 ```python
-def build_bundle(entries, baseline, negatives, jd_keywords, prefix_map,
-                 skills=()) -> dict:
-    ranked = rank(entries, jd_keywords)
-    return {"baseline": baseline, "entries": assign_codes(ranked, prefix_map),
-            "negatives": list(negatives),
-            # Ranked by the same JD keywords, so the most relevant framing leads --
-            # but NOT code-assigned: an [id] is what makes a thing citable, and the
-            # whole point of this section is that it is not. Defaults to () so every
-            # existing caller and test constructs a bundle unchanged.
-            "skills": rank(list(skills), jd_keywords)}
+def _framing_lines(skill: dict) -> list[str]:
+    """The lines ONE skills entry contributes to the COMPOSER's prompt.
 
-
-def _skills_block(skill: dict) -> list[str]:
-    """The lines ONE skills entry contributes to the rendered prompt.
-
-    Deliberately NOT a sibling of `_entry_block`, despite the shape. `_entry_block`'s
-    rule is that every line it returns is a SOURCE for that entry, and `bundle_sources`
-    harvests digits from it. Nothing harvests from this: `bundle_sources` walks
-    `bundle["entries"]` and never touches `bundle["skills"]`, which is what makes a
-    skills figure licensed nowhere (#165). Moving this into `_entry_block` -- or
-    teaching `bundle_sources` to read it -- licenses every skills digit at once, and
+    Deliberately NOT named `_skills_block`. In this module `_entry_block` and
+    `_baseline_block` carry a stated contract -- every line returned is a SOURCE the
+    fabrication gate may license -- and these lines are the opposite of that. Nothing
+    harvests from here: `bundle_sources` walks `bundle["entries"]` and never touches
+    `bundle["skills"]`, which is what makes a skills figure licensed nowhere (#165).
+    Folding these into `_entry_block`, or teaching `bundle_sources` to read them,
+    licenses every skills digit at once;
     `test_a_skills_digit_is_licensed_in_neither_pool` is what catches that.
 
     Reads `fields` by the kind's own frontmatter names rather than the floor keys:
-    `EVIDENCE_KINDS["skills"]` maps only `best_for <- Domain`, so Proficiency,
-    Evidence and Signal Value have no floor analogue and are reachable only here.
+    `EVIDENCE_KINDS["skills"]` maps only `best_for <- Domain`, so Proficiency, Evidence
+    and Signal Value have no floor analogue and are reachable only here.
     """
     f = skill.get("fields") or {}
     head = f"- {skill.get('title','')}"
@@ -547,7 +583,32 @@ def _skills_block(skill: dict) -> list[str]:
     return lines
 ```
 
-and in `render_bundle`, insert between the entry loop and the negatives header:
+Change `build_bundle`'s signature to `(entries, baseline, negatives, jd_keywords, prefix_map, skills=())` and add to its returned dict:
+
+```python
+            # Ranked by the same JD keywords so the most relevant framing leads -- but
+            # NOT code-assigned: an [id] is what makes a thing citable, and the whole
+            # point of this section is that it is not. Defaults to () so every existing
+            # caller and test constructs a bundle unchanged.
+            "skills": rank(list(skills), jd_keywords),
+```
+
+And in `render_bundle`, add the keyword-only parameter and the section:
+
+```python
+def render_bundle(bundle: dict, *, include_framing: bool = True) -> str:
+    ...
+    `include_framing=False` omits the SKILLS INVENTORY section and changes nothing else.
+    That spelling exists for ONE caller: the #60 ADVISORY audit (`cv/engine.py`, via
+    `cv/audit.py`), whose prompt opens "SOURCE BUNDLE is the ONLY truth". Handing the
+    auditor the framing section would make a CV claim resting on a skills line alone read
+    as SUPPORTED -- where today it is `unsupported` and, at the shipped
+    `cv.require_signoff: true`, withholds the send-ready pointer until a human signs off.
+    The spec's D3 says such a claim is illegitimate, so widening the auditor's source set
+    would disarm the one layer that catches it (spec D11).
+```
+
+then, between the entry loop and the negatives header:
 
 ```python
     # After the entries it frames, before the hard "must NOT appear" list. Placement is
@@ -555,10 +616,10 @@ and in `render_bundle`, insert between the entry loop and the negatives header:
     # tests/test_cv_bundle.py folds these digits into `baseline` and disagrees with
     # `bundle_sources`. Omitted ENTIRELY when empty -- an empty header would assert to
     # the model that the candidate holds no skills.
-    if bundle.get("skills"):
+    if include_framing and bundle.get("skills"):
         lines += ["=== SKILLS INVENTORY (framing only; NOT citable, introduces no facts) ==="]
         for sk in bundle["skills"]:
-            lines += _skills_block(sk)
+            lines += _framing_lines(sk)
         lines.append("")
     lines += ["=== NEGATIVE CONSTRAINTS (must NOT appear) ==="]
 ```
@@ -566,15 +627,15 @@ and in `render_bundle`, insert between the entry loop and the negatives header:
 - [ ] **Step 4: Run**
 
 Run: `.venv/bin/python -m pytest tests/test_cv_bundle.py -q`
-Expected: the five new tests PASS. `test_the_rendered_prompt_has_not_drifted` and `test_the_allowlist_still_matches_the_frozen_prompt` still PASS, because `_frozen_bundle()` passes no `skills` and the section is omitted when empty.
+Expected: PASS. Both frozen tests still pass, because `_frozen_bundle()` passes no `skills` yet and the section is omitted when empty.
 
-- [ ] **Step 5: Witness the non-citability test**
+- [ ] **Step 5: Witness the non-citability test in a /tmp copy**
 
 ```bash
-.venv/bin/python -m compileall -q -f --invalidation-mode checked-hash sluice tests scripts
+mkdir -p /tmp/bundlewitness && cp sluice/cv/bundle.py /tmp/bundlewitness/mutant.py
 ```
 
-Temporarily MOVE the skills lines into the harvested set by adding `bundle["skills"]` handling to `bundle_sources` — this is the mutation the guard exists for. Confirm `test_a_skills_digit_is_licensed_in_neither_pool` FAILS, then revert with `git checkout sluice/cv/bundle.py` and re-run.
+In the COPY only, MOVE the framing lines into the harvested set (make `bundle_sources` also walk `bundle["skills"]`) — the mutation the guard exists for. Import the copy in a throwaway script and assert a skills digit now appears in `nums`. Confirm it would fail `test_a_skills_digit_is_licensed_in_neither_pool`, then `rm -rf /tmp/bundlewitness`. **Do not mutate `sluice/cv/bundle.py`.**
 
 - [ ] **Step 6: Commit**
 
@@ -588,25 +649,17 @@ git commit -q -m "feat(cv): emit the Skills Inventory as a non-citable bundle se
 ### Task 4: The derived negative constraint
 
 **Files:**
-- Modify: `sluice/cv/bundle.py` (`build_bundle`)
+- Modify: `sluice/cv/bundle.py` (`build_bundle`, new `_DERIVED_NEGATIVE`)
 - Test: `tests/test_cv_bundle.py`
-
-**Interfaces:**
-- Consumes: Task 3's `bundle["skills"]`.
-- Produces: `bundle["negatives"]` with the derived line first when the inventory is non-empty.
 
 - [ ] **Step 1: Write the failing test**
 
+Revision 1's line omitted the BASELINE CV, which contradicts Task 6's own prompt rule and would tell the composer to drop every technology named only in the user's real CV. The three sources must match D3 exactly.
+
 ```python
-_DERIVED = ("claim no technology, language, framework or tool that is not named in "
-            "the SKILLS INVENTORY or the VERIFIED EXPERIENCE ENTRIES above")
-
-
 def test_the_derived_constraint_appears_only_with_a_non_empty_inventory():
-    with_skills = _bundle_with_skills()
-    without = _bundle_with_skills(skills=())
-    assert with_skills["negatives"][0] == _DERIVED
-    assert _DERIVED not in without["negatives"]
+    assert _bundle_with_skills()["negatives"][0] == B._DERIVED_NEGATIVE
+    assert B._DERIVED_NEGATIVE not in _bundle_with_skills(skills=())["negatives"]
 
 
 def test_configured_negatives_survive_alongside_the_derived_one():
@@ -614,48 +667,57 @@ def test_configured_negatives_survive_alongside_the_derived_one():
     skills at all ('never claim a security clearance')."""
     b = B.build_bundle(FROZEN_ENTRIES, FROZEN_BASELINE, ["never claim 91 users"],
                        [], FROZEN_PREFIX_MAP, skills=[_SKILL])
-    assert b["negatives"] == [_DERIVED, "never claim 91 users"]
+    assert b["negatives"] == [B._DERIVED_NEGATIVE, "never claim 91 users"]
 
 
-def test_the_derived_constraint_names_nothing_and_so_cannot_go_stale():
-    """It is a cross-reference, not a generated roster. A roster would duplicate the
-    SKILLS section immediately above it and grow without bound."""
-    assert "Example Platform Skill" not in _DERIVED
-    assert "platform" not in _DERIVED
+def test_the_derived_constraint_permits_every_source_the_prompt_permits():
+    """It sits in the most strongly worded block in the prompt, so a source it forgets is
+    a source the composer drops. compose._RULES permits the BASELINE CV and the VERIFIED
+    EXPERIENCE ENTRIES; the SKILLS INVENTORY is named because it is visible and must be
+    excluded from the CLAIM set without being excluded from the emphasis set."""
+    for source in ("SKILLS INVENTORY", "VERIFIED EXPERIENCE ENTRIES", "BASELINE CV"):
+        assert source in B._DERIVED_NEGATIVE, source
+
+
+def test_the_derived_constraint_names_no_skill_and_so_cannot_go_stale():
+    """A cross-reference, not a generated roster: a roster would duplicate the SKILLS
+    section immediately above it and grow without bound."""
+    assert "Example Cloud" not in B._DERIVED_NEGATIVE
+    assert "platform" not in B._DERIVED_NEGATIVE
+
+
+def test_the_derived_constraint_reaches_no_number_pool():
+    """#31: the negatives block is shown to the model and is deliberately not citable.
+    The derived line is prose in that block and must inherit that exactly."""
+    s = B.bundle_sources(B.build_bundle(FROZEN_ENTRIES, FROZEN_BASELINE,
+                                        ["never claim 91 users"], [], FROZEN_PREFIX_MAP,
+                                        skills=[_SKILL]))
+    assert "91" not in s.baseline and all("91" not in n for n in s.nums.values())
 ```
 
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `.venv/bin/python -m pytest tests/test_cv_bundle.py -k derived -q`
-Expected: FAIL — `negatives[0]` is the configured string, not the derived one.
+Expected: FAIL — `module 'sluice.cv.bundle' has no attribute '_DERIVED_NEGATIVE'`.
 
 - [ ] **Step 3: Implement**
 
-In `build_bundle`, replace the `negatives` line:
+Add above `build_bundle`:
 
 ```python
-    ranked_skills = rank(list(skills), jd_keywords)
-    # Derived rather than hand-typed (#165). `cv.negatives` is a prose shadow of the
-    # Skills Inventory and drifts from it; this line names NOTHING, so it cannot go
-    # stale, and it is conditional on the inventory existing so an unconfigured install
-    # gains no constraint it cannot satisfy. It does not, on its own, stop a stale
-    # CONFIGURED negative disagreeing with the inventory -- `core/doctor.py`'s
-    # classify_negatives_vs_skills is what makes that disagreement visible.
-    derived = [_DERIVED_NEGATIVE] if ranked_skills else []
-    return {"baseline": baseline, "entries": assign_codes(ranked, prefix_map),
-            "negatives": derived + list(negatives),
-            "skills": ranked_skills}
+# The skills-shaped negative, DERIVED rather than hand-typed (#165). `cv.negatives` is a
+# prose shadow of the Skills Inventory and drifts from it; this line names no skill, so it
+# cannot go stale. It names all THREE permitted sources, matching compose._RULES exactly:
+# an omitted source here reads to the composer as a source it must not use, and this line
+# sits in the most strongly worded block in the prompt. It does NOT, on its own, stop a
+# stale CONFIGURED negative disagreeing with the inventory -- `core/doctor.py`'s
+# classify_negatives_vs_skills is what makes that disagreement visible.
+_DERIVED_NEGATIVE = ("claim no technology, language, framework or tool that is not named "
+                     "in the BASELINE CV, the VERIFIED EXPERIENCE ENTRIES or the SKILLS "
+                     "INVENTORY above")
 ```
 
-and add the module constant above `build_bundle`:
-
-```python
-# Exported so tests and `core/doctor.py` compare against ONE spelling rather than two
-# literals that can drift.
-_DERIVED_NEGATIVE = ("claim no technology, language, framework or tool that is not "
-                     "named in the SKILLS INVENTORY or the VERIFIED EXPERIENCE "
-                     "ENTRIES above")
-```
+and in `build_bundle`, replace the `negatives` value with `derived + list(negatives)` where `derived = [_DERIVED_NEGATIVE] if ranked_skills else []` (binding `ranked_skills = rank(list(skills), jd_keywords)` once and reusing it for the `"skills"` key).
 
 - [ ] **Step 4: Run and commit**
 
@@ -671,14 +733,16 @@ git commit -q -m "feat(cv): derive the skills negative constraint instead of typ
 ### Task 5: Re-freeze `FROZEN_BUNDLE_TEXT` — its own commit, readable diff
 
 **Files:**
-- Modify: `tests/test_cv_bundle.py` (`FROZEN_BUNDLE_TEXT`, `_frozen_bundle`)
+- Modify: `tests/test_cv_bundle.py` (`FROZEN_SKILLS`, `_frozen_bundle`, `FROZEN_BUNDLE_TEXT`, the sentinel test)
 
 This task exists ONLY so the freeze diff is reviewable in isolation. `_entry_block`'s docstring is explicit that re-capturing is how a widening launders through green: both frozen tests move with the mutant and stay green. A human reading THIS diff is the control.
 
 - [ ] **Step 1: Give `_frozen_bundle` a skills entry**
 
+`Example Data` is rostered (`test_fixture_name_neutrality.py:204`). Sentinels `71`/`72` collide with nothing in the existing literal (which uses 21/22, 31-38, 41-47, 51-53, 91-92) — verify that before capturing.
+
 ```python
-FROZEN_SKILLS = [{"title": "Example Frozen Skill", "best_for": "platform", "body": "",
+FROZEN_SKILLS = [{"title": "Example Data Skill", "best_for": "platform", "body": "",
                   "fields": {"Proficiency": "71 years", "Domain": "platform",
                              "Evidence": "shipped 72 things", "Signal Value": "depth"}}]
 
@@ -688,8 +752,6 @@ def _frozen_bundle():
                           negatives=FROZEN_NEGATIVES, jd_keywords=[],
                           prefix_map=FROZEN_PREFIX_MAP, skills=FROZEN_SKILLS)
 ```
-
-The sentinels `71` and `72` are chosen to collide with nothing already in the literal (which uses 21/22, 31-38, 41-47, 51-53, 91-92).
 
 - [ ] **Step 2: Regenerate the literal and READ THE DIFF**
 
@@ -702,11 +764,7 @@ print(B.render_bundle(T._frozen_bundle()))
 "
 ```
 
-Paste the output into `FROZEN_BUNDLE_TEXT`, then:
-
-```bash
-git diff tests/test_cv_bundle.py
-```
+Paste the output into `FROZEN_BUNDLE_TEXT`, then `git diff tests/test_cv_bundle.py`.
 
 **Read it.** The ONLY additions must be the derived negative line, the `=== SKILLS INVENTORY ... ===` header and its one entry. If any existing entry line changed, a source was widened or narrowed — stop and investigate rather than accepting the capture.
 
@@ -715,16 +773,17 @@ git diff tests/test_cv_bundle.py
 Append to `test_bundle_sources_sentinels_hold_independent_of_the_frozen_literal`:
 
 ```python
-    # The skills sentinels must be absent from EVERY pool. This assertion compares
-    # against no literal, so re-freezing cannot bring it back into sync -- it is the
-    # one check a re-capture cannot silently move.
-    assert "71" not in s.baseline and all("71" not in n for n in s.nums.values())
-    assert "72" not in s.baseline and all("72" not in n for n in s.nums.values())
+    # The skills sentinels must be absent from EVERY pool. This assertion compares against
+    # no literal, so re-freezing cannot bring it back into sync -- it is the one check a
+    # re-capture cannot silently move.
+    for sentinel in ("71", "72"):
+        assert sentinel not in s.baseline
+        assert all(sentinel not in n for n in s.nums.values())
 ```
 
 - [ ] **Step 4: Run and commit alone**
 
-Run: `.venv/bin/python -m pytest tests/test_cv_bundle.py -q` — expect PASS.
+Run: `.venv/bin/python -m pytest tests/test_cv_bundle.py -q` — expect PASS, including `test_the_allowlist_still_matches_the_frozen_prompt`, which now covers the skills-present case against the frozen literal (the correct, non-self-certifying oracle).
 
 ```bash
 git add tests/test_cv_bundle.py
@@ -741,15 +800,28 @@ git commit -q -m "test(cv): re-freeze the bundle prompt for the skills section (
 
 - [ ] **Step 1: Write the failing test**
 
+Use the module's existing `_NAME` fixture (`Example Candidate`, rostered) — do not introduce a new identity literal.
+
 ```python
 def test_the_prompt_forbids_quoting_a_number_from_the_skills_section():
-    """Without this the model is told the bundle is 'the ONLY permitted source' and
-    shown `Proficiency: 8 years`, which it will reasonably use -- earning INVENTED
-    PROFILE METRIC and, if the retry repeats it, a skipped lead. The trap is ours to
-    close (#165, spec D3)."""
-    prompt = C.build_prompt("BUNDLE", "JD", "Example Co", "Role", name="Example Name")
+    """Without this the model is told the bundle is 'the ONLY permitted source' and shown
+    `Proficiency: 8 years`, which it will reasonably use -- earning INVENTED PROFILE
+    METRIC and, if the retry repeats it, a skipped lead. The trap is ours to close
+    (#165, spec D3)."""
+    prompt = C.build_prompt("BUNDLE", "JD", "Example Co", "Role", name=_NAME)
     assert "SKILLS INVENTORY" in prompt
     assert "never quote a number from it" in prompt
+
+
+def test_the_prompt_permits_the_same_three_sources_the_derived_negative_does():
+    """The derived negative (cv/bundle.py:_DERIVED_NEGATIVE) and this rule appear in the
+    same prompt. A source named by one and not the other is a contradiction the composer
+    resolves by dropping content."""
+    from sluice.cv.bundle import _DERIVED_NEGATIVE
+    prompt = C.build_prompt("BUNDLE", "JD", "Example Co", "Role", name=_NAME)
+    for source in ("BASELINE CV", "VERIFIED EXPERIENCE ENTRY"):
+        assert source in prompt, source
+    assert "BASELINE CV" in _DERIVED_NEGATIVE
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -766,8 +838,8 @@ Add to `_RULES` in `sluice/cv/compose.py`, immediately after the "Every WORK EXP
 
 - [ ] **Step 4: Run the whole compose suite and commit**
 
-Run: `.venv/bin/python -m pytest tests/test_cv_compose.py -q`
-Expected: PASS, including `test_the_prompt_names_exactly_the_phrases_the_gate_enforces` (this rule adds no slop stems).
+Run: `.venv/bin/python -m pytest tests/test_cv_compose.py tests/test_prompt_neutrality.py -q`
+Expected: PASS, including `test_the_prompt_names_exactly_the_phrases_the_gate_enforces` (this rule adds no `slop._PHRASES` stem) and the prompt-neutrality sweep.
 
 ```bash
 git add sluice/cv/compose.py tests/test_cv_compose.py
@@ -776,22 +848,150 @@ git commit -q -m "feat(cv): tell the composer the skills section is framing, not
 
 ---
 
-### Task 7: Engine reads evidence BY KIND, and a broken corpus never bins a lead
+### Task 7: Split the registry flag — BEFORE the engine change
 
 **Files:**
-- Modify: `sluice/cv/engine.py:284-288` and `CvResult` (around line 95)
-- Test: `tests/test_cv_engine.py`
+- Modify: `sluice/core/protocols.py` (`EvidenceKind`: docstring at :62 and :76-97, the field, `__post_init__`, the registry at :144-176)
+- Modify: `sluice/core/doctor.py:385-412`
+- Test: `tests/test_evidence_store.py`
 
-**Interfaces:**
-- Consumes: `Store.read_evidence(kind, verified_only)`; Task 3's `build_bundle(..., skills=...)`.
-- Produces: `CvResult.skills_unreadable: bool`.
+**Why this task is FIRST, and why it is split from Task 9.** `EvidenceKind.cited_by_gate` means *"the CV fabrication gate READS this corpus"*, and `test_cited_by_gate_names_exactly_the_kinds_the_cv_engine_reads` derives the true set by grepping `cv/engine.py`. Revision 1 changed the engine first, which left that test RED at an intermediate commit while claiming PASS. The registry half depends on nothing in the engine, so it lands first and the tree stays green throughout.
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Write the failing test**
 
 ```python
+def test_every_cited_kind_is_also_read_by_the_composer():
+    """The gate cannot cite a corpus the composer never put in the bundle. Pinned in
+    __post_init__ as well: a registry invariant enforced only by a test is one a new
+    EvidenceKind constructed anywhere else does not have to satisfy."""
+    for kind, spec in EVIDENCE_KINDS.items():
+        if spec.cited_by_gate:
+            assert spec.read_by_composer, f"{kind} is cited but never composed from"
+
+
+def test_a_cited_kind_that_is_not_composed_from_is_refused_at_construction():
+    with pytest.raises(ValueError, match="cited_by_gate"):
+        EvidenceKind("X", ("A",), cited_by_gate=True, read_by_composer=False)
+
+
+def test_the_registry_flags_are_what_this_change_intends():
+    """SCOPE: pins all three kinds, so a kind silently dropped from the registry or a
+    flag flipped in either direction reddens here rather than passing vacuously."""
+    assert {k: (s.read_by_composer, s.cited_by_gate) for k, s in EVIDENCE_KINDS.items()} \
+        == {"experience": (True, True), "skills": (True, False), "stories": (False, False)}
+```
+
+- [ ] **Step 2: Run to verify it fails**
+
+Run: `.venv/bin/python -m pytest tests/test_evidence_store.py -k "read_by_composer or cited_kind or registry_flags" -q`
+Expected: FAIL — `EvidenceKind.__init__() got an unexpected keyword argument 'read_by_composer'`.
+
+- [ ] **Step 3: Implement**
+
+Add the field to `EvidenceKind` beside `cited_by_gate`:
+
+```python
+    # Whether cv/engine.py puts this corpus in the COMPOSER's bundle at all. SPLIT from
+    # `cited_by_gate` at #165, which made the two non-equivalent for the first time:
+    # `skills` reaches the prompt as a FRAMING section whose digits `bundle_sources`
+    # licenses nowhere, and which the ADVISORY audit is deliberately not shown (spec D11).
+    # #164 wrote one flag because "read" and "cited" then coincided; collapsing them again
+    # would make `doctor` tell a user their skills are citable, the over-claim
+    # `cited_by_gate` was introduced to prevent.
+    read_by_composer: bool = False
+```
+
+Add to `__post_init__`, beside the existing `floor_map` guards:
+
+```python
+        # Fail loudly at construction, this module's house rule. The gate can only license
+        # content the composer actually put in the bundle, so the reverse combination is
+        # incoherent rather than merely unused -- and a registry invariant pinned only by a
+        # test is one that a kind constructed anywhere else never has to satisfy.
+        if self.cited_by_gate and not self.read_by_composer:
+            raise ValueError(
+                "cited_by_gate=True requires read_by_composer=True: the fabrication gate "
+                "cannot license a corpus the composer never emits into the bundle")
+```
+
+Set the registry: `experience` gains `read_by_composer=True` (keeping `cited_by_gate=True`); `skills` gains `read_by_composer=True` only; `stories` gains neither.
+
+Correct the now-false prose at `protocols.py:62` (which says "THREE of the four attributes"), `:76-86` (the `cited_by_gate` paragraph), `:95` ("rework #165 walks straight into") and `:146` ("default to False until #165").
+
+In `core/doctor.py`, give `classify_store` a third arm — "citable" and "nothing reads this corpus yet" are now BOTH false for `skills`:
+
+```python
+        if spec.cited_by_gate:
+            detail = (f"{verified} verified / {total} total entries -- only verified "
+                      f"entries are citable by the CV fabrication gate")
+        elif spec.read_by_composer:
+            # True for `skills` since #165: the composer is shown them as FRAMING, the
+            # gate licenses no figure from them, and the advisory audit is not shown them
+            # at all (spec D11). "citable" here would be the #164 M2 over-claim; "nothing
+            # reads this corpus" is now simply false.
+            detail = (f"{verified} verified / {total} total entries -- shown to the CV "
+                      f"composer as framing; not a citable source for the gate")
+        else:
+            detail = (f"{verified} verified / {total} total entries -- reviewed, but "
+                      f"nothing reads this corpus yet")
+```
+
+Leave `blocks=("cv",)` at `:391` keyed on `cited_by_gate`: after Task 8 an unreadable skills corpus no longer blocks `cv`, so widening it to `read_by_composer` would over-claim in the other direction. Correct that comment's `(#165)` reference and the module docstring's "until #165 lands" at `:327`.
+
+- [ ] **Step 4: Run and commit**
+
+Run: `.venv/bin/python -m pytest tests/test_evidence_store.py tests/test_doctor.py -q`
+Expected: PASS. `test_cited_by_gate_names_exactly_the_kinds_the_cv_engine_reads` still passes — the engine has not changed yet, and `cited_by_gate` is still `{experience}`.
+
+```bash
+git add sluice/core/protocols.py sluice/core/doctor.py tests/test_evidence_store.py
+git commit -q -m "refactor(core): split read_by_composer from cited_by_gate (#165)"
+```
+
+---
+
+### Task 8: Engine reads evidence BY KIND — one green commit
+
+**Files:**
+- Modify: `sluice/cv/engine.py` (`CvResult`, the bundle build at :284-288, the audit call at :653, every later `CvResult(...)`)
+- Modify: `sluice/cli.py:752-758,773-779`, `sluice/mcpserver.py:420`
+- Modify: `tests/test_cv_engine.py:38` (`FakeVault`), `tests/test_app_operations.py:290`, `tests/test_mcpserver.py:779,831`
+- Test: `tests/test_cv_engine.py`
+
+**The fake-store migration is IN this task, not deferred.** Four reviewers found that revision 1 left 76 tests red across 4 files by switching the engine here and renaming the fakes in Task 10. `FakeVault` is constructed 58 times in `test_cv_engine.py` alone.
+
+- [ ] **Step 1: Migrate the fake stores FIRST, so the suite never goes red**
+
+In `tests/test_cv_engine.py:38`, `tests/test_app_operations.py:290` and `tests/test_mcpserver.py:779,831`, replace `read_experience_entries` with the by-kind spelling. Keep the old method as a delegate for this one commit so the tree is green either side of the engine edit:
+
+```python
+    def read_evidence(self, kind, verified_only=True):
+        # Task 10 deletes read_experience_entries entirely; until then both spellings
+        # answer, so this commit is green before AND after the engine switch below.
+        return self._entries if kind == "experience" else []
+    def read_experience_entries(self, verified_only=True): return self._entries
+```
+
+- [ ] **Step 2: Write the failing tests**
+
+`FakeBackend(cv_out, audit_out=...)` takes a **string**, not a list, and has **no** `.prompts` — revision 1 got both wrong and three reviewers caught it. Prompt-recording tests define a local backend (see `TwoShotBackend`, `tests/test_cv_engine.py:220`). `StalenessPolicy`'s field is `ttl_days`, not `lead_ttl_days`, and it needs `today=` or it abstains.
+
+```python
+class RecordingBackend:
+    """Records every prompt. Mirrors FakeBackend's routing: compose prompts carry
+    'SOURCE BUNDLE' and not 'auditing'; audit prompts carry both."""
+    def __init__(self, cv_out=None):
+        self.last_backend = "primary"; self.prompts = []; self.audit_prompts = []
+        self.cv_out = cv_out if cv_out is not None else CLEAN_CV
+    def complete(self, prompt):
+        if "SOURCE BUNDLE" in prompt and "auditing" not in prompt:
+            self.prompts.append(prompt); return self.cv_out
+        self.audit_prompts.append(prompt); return "supported\tx\tSF1"
+
+
 class SkillsVault(FakeVault):
-    """FakeVault plus the by-kind read Task 7 introduces. `skills_error` makes the
-    skills corpus raise the way a symlinked directory really does."""
+    """FakeVault plus a skills corpus. `skills_error` makes the read raise the way a
+    symlinked directory or a non-UTF-8 entry really does."""
     def __init__(self, entries, *, skills=(), skills_error=None, **kw):
         super().__init__(entries, **kw)
         self._skills, self._skills_error = list(skills), skills_error
@@ -805,145 +1005,206 @@ class SkillsVault(FakeVault):
         return self._entries
 
 
-def _shortlist_note():
-    return Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
+_SKILL_ENTRY = {"title": "Example Cloud Skill", "best_for": "platform", "body": "",
+                "fields": {"Proficiency": "8 years", "Domain": "platform",
+                           "Evidence": "shipped things", "Signal Value": "depth"}}
 
 
-def test_an_unreadable_skills_corpus_composes_without_it_and_says_so():
+def _shortlist_note(**fm):
+    return Note({"status": "shortlist", "company": "Example Foundry",
+                 "role": "Analyst", **fm})
+
+
+def test_a_skill_reaches_the_composers_prompt():
+    """The whole point of the issue: the corpus was inert. Asserts on the PROMPT the
+    backend received, never on an internal."""
+    be = RecordingBackend()
+    run_one(_shortlist_note(), SkillsVault(ENTRIES, skills=[_SKILL_ENTRY]), _cfg(), be,
+            FakeCache(), renderer=FakeRenderer())
+    assert "SKILLS INVENTORY" in be.prompts[0]
+    assert "Example Cloud Skill" in be.prompts[0]
+
+
+def test_the_advisory_audit_is_never_shown_the_framing_section():
+    """spec D11. cv/audit.py's prompt opens 'SOURCE BUNDLE is the ONLY truth', so a CV
+    claim resting on a skills line alone would read as SUPPORTED and be served unsigned --
+    where today it is `unsupported` and, at the shipped cv.require_signoff, withheld until
+    a human signs off. This is the assertion that keeps the #60 hold armed."""
+    be = RecordingBackend()
+    run_one(_shortlist_note(), SkillsVault(ENTRIES, skills=[_SKILL_ENTRY]), _cfg(), be,
+            FakeCache(), renderer=FakeRenderer())
+    assert be.audit_prompts, "the audit never ran; this test would pass vacuously"
+    assert "SKILLS INVENTORY" not in be.audit_prompts[0]
+    assert "Example Cloud Skill" not in be.audit_prompts[0]
+    # ...but the real sources must still be there, or this passes for an empty bundle.
+    assert "VERIFIED EXPERIENCE ENTRIES" in be.audit_prompts[0]
+
+
+@pytest.mark.parametrize("err", [
+    OSError("evidence directory is a symlink"),
+    # A non-UTF-8 entry. `_read` opens with encoding='utf-8', so this is a ValueError,
+    # NOT an OSError -- the exact shortfall Vault.preflight already shipped and fixed
+    # (core/vault.py:1950-1968). Catching OSError alone lets it escape run_one, and
+    # run_batch then records `error` for EVERY lead: the outcome this guard exists to
+    # prevent, caused by the guard.
+    UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+])
+def test_an_unreadable_skills_corpus_composes_without_it_and_says_so(err):
     """A framing-only corpus may never cost a lead (#167's rule, one layer out). The
-    experience read is deliberately NOT wrapped: it is the gate's only citable
-    evidence, and a bundle with no ids fails every bullet anyway."""
-    v = SkillsVault(ENTRIES, skills_error=OSError("evidence directory is a symlink"))
-    r = run_one(_shortlist_note(), v, _cfg(), FakeBackend([CLEAN_CV]), FakeCache(),
+    experience read is deliberately NOT wrapped: it is the gate's only citable evidence,
+    and a bundle with no ids fails every bullet anyway."""
+    v = SkillsVault(ENTRIES, skills_error=err)
+    r = run_one(_shortlist_note(), v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(),
                 renderer=FakeRenderer())
     assert r.status == "rendered", "a broken framing corpus binned the lead"
     assert r.skills_unreadable is True
 
 
+def test_an_unreadable_experience_corpus_still_fails_loudly():
+    """The other half of the same decision, and the arm a naive 'wrap the evidence reads'
+    would silently swallow. Without this, moving the experience read inside the try is
+    green everywhere."""
+    class ExperienceError(SkillsVault):
+        def read_evidence(self, kind, verified_only=True):
+            if kind == "experience":
+                raise OSError("experience library is a symlink")
+            return []
+    with pytest.raises(OSError):
+        run_one(_shortlist_note(), ExperienceError(ENTRIES), _cfg(),
+                FakeBackend(CLEAN_CV), FakeCache(), renderer=FakeRenderer())
+
+
 def test_skills_reach_the_bundle_verified_only():
-    """An `_inbox/` skill must never reach the composer: `verified:` is the trust root,
-    and a propose-only write is exactly what has not been reviewed yet."""
+    """An `_inbox/` skill must never reach the composer: `verified:` is the trust root."""
     v = SkillsVault(ENTRIES, skills=[])
-    run_one(_shortlist_note(), v, _cfg(), FakeBackend([CLEAN_CV]), FakeCache(),
+    run_one(_shortlist_note(), v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(),
             renderer=FakeRenderer())
     assert ("skills", True) in v.reads
 
 
-def test_a_skill_reaches_the_composers_prompt():
-    """The whole point of the issue: the corpus was inert, and this is what proves it
-    is not. Asserts on the PROMPT the backend received, never on an internal."""
-    be = FakeBackend([CLEAN_CV])
-    v = SkillsVault(ENTRIES, skills=[
-        {"title": "Example Platform Skill", "best_for": "platform", "body": "",
-         "fields": {"Proficiency": "8 years", "Domain": "platform",
-                    "Evidence": "shipped things", "Signal Value": "depth"}}])
-    run_one(_shortlist_note(), v, _cfg(), be, FakeCache(), renderer=FakeRenderer())
-    assert "SKILLS INVENTORY" in be.prompts[0]
-    assert "Example Platform Skill" in be.prompts[0]
-
-
-def test_a_refused_lead_never_reads_the_skills_corpus():
+def test_a_refused_lead_never_reads_any_evidence_corpus():
     """`skipped-stale` returns at engine.py:208, before the bundle build at :286, so a
-    broken corpus costs nothing on a lead that was never going to compose. This guards
-    the PLACEMENT, which is what makes that true: hoisting the read above the guards
-    would spend a vault read on every refused lead and could raise before the refusal."""
+    broken corpus costs nothing on a lead that was never going to compose. This guards the
+    PLACEMENT: hoisting the read above the guards would spend a vault read on every
+    refused lead and could raise before the refusal."""
     v = SkillsVault(ENTRIES, skills_error=OSError("would raise if reached"))
-    note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst",
-                 "last_seen": "2000-01-01"})
-    r = run_one(note, v, _cfg(), FakeBackend([CLEAN_CV]), FakeCache(),
-                renderer=FakeRenderer(), policy=StalenessPolicy(lead_ttl_days=1))
+    r = run_one(_shortlist_note(last_seen="2000-01-01"), v, _cfg(),
+                FakeBackend(CLEAN_CV), FakeCache(), renderer=FakeRenderer(),
+                policy=StalenessPolicy(ttl_days=1, today="2026-08-25"))
     assert r.status == "skipped-stale"
     assert v.reads == [], f"a refused lead touched the evidence corpora: {v.reads}"
 ```
 
-`ENTRIES`, `CLEAN_CV`, `FakeBackend`, `FakeCache`, `FakeRenderer` and `_cfg()` all already exist in `tests/test_cv_engine.py`; reuse them rather than inventing a harness. Confirm `FakeBackend`'s constructor and its `.prompts` attribute (line 142) and `StalenessPolicy`'s real parameter name before running these.
+- [ ] **Step 3: Run to verify they fail**
 
-- [ ] **Step 2: Run to verify they fail**
-
-Run: `.venv/bin/python -m pytest tests/test_cv_engine.py -k skills -q`
+Run: `.venv/bin/python -m pytest tests/test_cv_engine.py -k "skill or advisory_audit or refused_lead" -q`
 Expected: FAIL — `CvResult` has no `skills_unreadable`.
 
-- [ ] **Step 3: Implement**
+- [ ] **Step 4: Implement**
 
 Add to `CvResult` beside `dossier_failed`:
 
 ```python
-    # #165: the Skills Inventory could not be READ (a symlinked corpus, an unreadable
-    # entry) and the CV was composed without its framing section. Visibility, never
-    # control flow -- the exact shape `dossier_failed` above established. A missing
-    # corpus is NOT this: `read_evidence` returns [] for one, which is the abstain
-    # case and entirely normal.
+    # #165: the Skills Inventory could not be READ (a symlinked corpus, a non-UTF-8 entry)
+    # and the CV was composed without its framing section. Visibility, never control flow
+    # -- the shape `dossier_failed` above established, and it carries the same obligation:
+    # a field with no reader is the "computed and discarded" defect #167 opened over. Read
+    # by cli.py's per-result line and blind-count summary, and by mcpserver.py's cv_run.
+    # A MISSING corpus is NOT this: `read_evidence` returns [] for one, the abstain case.
     skills_unreadable: bool = False
 ```
 
-Replace `engine.py:284-288`:
+Replace `engine.py:284-288` (four lines, keeping `bundle_text`):
 
 ```python
         entries = vault.read_evidence("experience", verified_only=True)
         baseline = vault.read_baseline()
         # A broken SKILLS corpus must not cost a lead. `read_evidence` returns [] for a
-        # MISSING directory, so the only way here is genuine breakage -- which `doctor`
-        # already reports per-kind as DEAD. Letting it propagate would put a
-        # framing-only corpus inside the same try as the experience read and fail every
-        # lead in the batch; #167's rule is that a thing which only affects tailoring
-        # QUALITY may never bin a lead.
+        # MISSING directory, so reaching here means genuine breakage -- which `doctor`
+        # already reports per-kind as DEAD. Letting it propagate would put a framing-only
+        # corpus inside the same try as the experience read and fail every lead in the
+        # batch; #167's rule is that a thing affecting only tailoring QUALITY may never bin
+        # a lead. The experience read above is deliberately NOT wrapped: it is the gate's
+        # only citable evidence.
+        #
+        # `(OSError, ValueError)`, not OSError alone: `_read` opens with encoding='utf-8',
+        # so a non-UTF-8 entry raises UnicodeDecodeError -- a ValueError. Catching OSError
+        # alone lets it escape run_one, and run_batch then records `error` for EVERY lead,
+        # which is precisely the outcome this guard exists to prevent. Vault.preflight
+        # shipped that same shortfall and now catches both (core/vault.py:1950-1968).
         skills_unreadable = False
         try:
             skills = vault.read_evidence("skills", verified_only=True)
-        except OSError as e:
+        except (OSError, ValueError) as e:
             _log.warning("skills inventory for %s unreadable, composing without it: %s",
                          note.ref, e)
             skills, skills_unreadable = [], True
         b = _bundle.build_bundle(entries, baseline, cvcfg.negatives,
                                  _jd_keywords(role, jd), cvcfg.prefix_map, skills=skills)
+        bundle_text = _bundle.render_bundle(b)
+        # The ADVISORY audit gets the SOURCE bundle only (spec D11). Bound here beside
+        # `bundle_text` for the same reason `sources` is: all three derive from one `b`,
+        # and adjacency is what stops a later edit rebuilding one and leaving another
+        # stale.
+        audit_bundle_text = _bundle.render_bundle(b, include_framing=False)
 ```
 
-Then thread `skills_unreadable=skills_unreadable` into every `CvResult(...)` constructed after this point in `run_one` (the `skipped-gate`, `dry-run`, `needs-signoff`, `skipped-has-cv` and `rendered` returns).
+At `engine.py:653`, pass the audit its own text: `run_audit(backend, cv_text, audit_bundle_text)`.
 
-- [ ] **Step 4: Run and commit**
+Thread `skills_unreadable=skills_unreadable` into every `CvResult(...)` constructed after this point in `run_one`.
 
-Run: `.venv/bin/python -m pytest tests/test_cv_engine.py -q` — expect PASS.
+Give it readers, mirroring `dossier_failed` exactly:
+- `sluice/cli.py:756` — add `skills_unreadable={r.skills_unreadable}` to the per-result line.
+- `sluice/cli.py:777` — beside the `blind` summary, add a count and a line: `f"cv: {n} CV(s) composed without the Skills Inventory (corpus unreadable)"`.
+- `sluice/mcpserver.py:420` — add `"skills_unreadable": r.skills_unreadable` to the dict.
+
+- [ ] **Step 5: Run the FULL suite**
+
+Run: `.venv/bin/python -m pytest -q`
+Expected: PASS. This is the commit revision 1 got wrong; running the whole suite (not just `test_cv_engine.py`) is what proves the fake-store migration in Step 1 was complete.
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add sluice/cv/engine.py tests/test_cv_engine.py
+git add sluice/cv/engine.py sluice/cli.py sluice/mcpserver.py tests/test_cv_engine.py \
+        tests/test_app_operations.py tests/test_mcpserver.py
 git commit -q -m "feat(cv): compose from the Skills Inventory, degrading if it is unreadable (#165)"
 ```
 
 ---
 
-### Task 8: Split `cited_by_gate`, which this change makes non-equivalent for the first time
+### Task 9: Derive the two flags from what the code actually does
 
 **Files:**
-- Modify: `sluice/core/protocols.py:76-86,144-176`
-- Modify: `sluice/core/doctor.py:385-412`
-- Test: `tests/test_evidence_store.py:133-165`
+- Modify: `tests/test_evidence_store.py:133-165`
 
-**Why this task exists.** `EvidenceKind.cited_by_gate` means *"the CV fabrication gate READS this corpus"*, and `test_cited_by_gate_names_exactly_the_kinds_the_cv_engine_reads` derives the true set by grepping `cv/engine.py` for `read_evidence("<kind>")`. #164 wrote both on the assumption that *engine reads it* ⟺ *gate cites it*. Task 7 breaks that equivalence deliberately: the engine now reads `skills`, and the gate does NOT cite them. Flipping the flag to True would make `doctor` tell a user their skills are "citable by the CV fabrication gate" — false, and false in the reassuring direction #164 names as the worst.
-
-- [ ] **Step 1: Write the failing test — derived from EXECUTION, not source-grepping**
-
-Replace `test_cited_by_gate_names_exactly_the_kinds_the_cv_engine_reads` with two tests:
+- [ ] **Step 1: Replace the source-grep test with two derivations**
 
 ```python
 def test_read_by_composer_names_exactly_the_kinds_the_cv_engine_reads():
-    """Unchanged in mechanism from #164's version, retargeted at the new flag."""
+    """#164's mechanism, retargeted at the flag it actually answers."""
     src = (pathlib.Path(__file__).resolve().parents[1] / "sluice" / "cv" / "engine.py"
            ).read_text(encoding="utf-8")
     reached = set(re.findall(r"""read_evidence\(\s*["']([a-z]+)["']""", src))
     assert reached, ("the sweep found no evidence read in sluice/cv/engine.py -- the "
-                     "matcher is broken, not the engine")
+                     "matcher is broken, not the engine; without this the equality below "
+                     "would compare two empty sets and pass vacuously")
     assert reached == {k for k, s in EVIDENCE_KINDS.items() if s.read_by_composer}
 
 
 def test_cited_by_gate_is_exactly_what_bundle_sources_actually_licenses():
     """#164 derived this by grepping the engine, on the assumption that a corpus the
-    engine READS is a corpus the gate CITES. #165 breaks that: skills reach the prompt
-    and are licensed nowhere. So derive it by EXECUTION instead -- build a bundle
-    carrying one entry per kind with a distinct sentinel digit and ask
-    `bundle_sources` which sentinels it licensed. A source grep cannot answer this;
-    only running the derivation can."""
+    engine READS is a corpus the gate CITES. #165 breaks that: skills reach the prompt and
+    are licensed nowhere. So derive it by EXECUTION -- give each kind a distinct sentinel
+    digit, build a real bundle, and ask `bundle_sources` which sentinels it licensed. A
+    source grep cannot answer this; only running the derivation can.
+
+    SCOPE: `sentinels` must cover every kind flagged `read_by_composer`, or a kind added
+    later is silently outside the comparison and this passes vacuously."""
     from sluice.cv import bundle as B
     sentinels = {"experience": "8801", "skills": "8802"}
+    assert set(sentinels) == {k for k, s in EVIDENCE_KINDS.items() if s.read_by_composer}, (
+        "a read_by_composer kind has no sentinel here, so it is outside this comparison")
     b = B.build_bundle(
         [{"title": "t", "company": "Example Co", "best_for": "", "category": "",
           "metrics": sentinels["experience"], "body": ""}],
@@ -951,80 +1212,34 @@ def test_cited_by_gate_is_exactly_what_bundle_sources_actually_licenses():
         skills=[{"title": "s", "best_for": "", "body": "",
                  "fields": {"Domain": "", "Proficiency": sentinels["skills"],
                             "Evidence": "", "Signal Value": ""}}])
-    s = B.bundle_sources(b)
-    licensed = set().union(*s.nums.values(), s.baseline)
+    sources = B.bundle_sources(b)
+    licensed = set().union(*sources.nums.values(), sources.baseline)
+    assert sentinels["experience"] in licensed, (
+        "the experience sentinel was not licensed -- the fixture is wrong, and the "
+        "equality below would pass for the wrong reason")
     actually_cited = {k for k, digit in sentinels.items() if digit in licensed}
-    assert actually_cited == {k for k, sp in EVIDENCE_KINDS.items() if sp.cited_by_gate}
-
-
-def test_every_cited_kind_is_also_read_by_the_composer():
-    """The gate cannot cite a corpus the composer never put in the bundle."""
-    for kind, spec in EVIDENCE_KINDS.items():
-        if spec.cited_by_gate:
-            assert spec.read_by_composer, f"{kind} is cited but never composed from"
+    assert actually_cited == {k for k, s in EVIDENCE_KINDS.items() if s.cited_by_gate}
 ```
 
-- [ ] **Step 2: Run to verify they fail**
+- [ ] **Step 2: Run and commit**
 
-Run: `.venv/bin/python -m pytest tests/test_evidence_store.py -k "read_by_composer or cited_by_gate" -q`
-Expected: FAIL — `EvidenceKind` has no `read_by_composer`.
-
-- [ ] **Step 3: Implement**
-
-In `sluice/core/protocols.py`, add the field to `EvidenceKind` beside `cited_by_gate`:
-
-```python
-    # Whether cv/engine.py puts this corpus in the composer's bundle at all. SPLIT from
-    # `cited_by_gate` at #165, which made the two non-equivalent for the first time:
-    # `skills` reaches the prompt as a FRAMING section whose digits `bundle_sources`
-    # licenses nowhere. #164 wrote one flag because "read" and "cited" then coincided;
-    # collapsing them again would make `doctor` tell a user their skills are citable,
-    # which is the over-claim `cited_by_gate` was introduced to prevent.
-    read_by_composer: bool = False
-```
-
-Set the registry entries: `experience` gets `read_by_composer=True, cited_by_gate=True`; `skills` gets `read_by_composer=True` (leaving `cited_by_gate` False); `stories` gets neither. Update the `#165` prose at `protocols.py:79-81`, `:95` and `:146` so it no longer says these kinds are waiting.
-
-In `sluice/core/doctor.py`, correct both messages. At `:412`, key the "not read" wording on `read_by_composer` rather than `cited_by_gate`, and give a read-but-not-cited corpus its own accurate sentence:
-
-```python
-        if spec.cited_by_gate:
-            detail = (f"{verified} verified / {total} total entries -- only verified "
-                      f"entries are citable by the CV fabrication gate")
-        elif spec.read_by_composer:
-            # True after #165 for `skills`: the composer is shown them as framing, and
-            # the gate licenses no figure from them. Saying "citable" here would be the
-            # #164 M2 over-claim; saying "not read" would now be simply false.
-            detail = (f"{verified} verified / {total} total entries -- shown to the CV "
-                      f"composer as framing; not a citable source for the gate")
-        else:
-            detail = (f"{verified} verified / {total} total entries -- reviewed, but "
-                      f"nothing reads this corpus yet")
-```
-
-At `:391`, `blocks=("cv",)` must stay keyed on `cited_by_gate`: an unreadable skills corpus no longer blocks `cv` (Task 7 degrades instead), so widening it to `read_by_composer` would over-claim in the other direction.
-
-- [ ] **Step 4: Run and commit**
-
-Run: `.venv/bin/python -m pytest tests/test_evidence_store.py tests/test_doctor.py -q` — expect PASS.
+Run: `.venv/bin/python -m pytest tests/test_evidence_store.py -q` — expect PASS (the engine now reads both kinds, and the registry from Task 7 already flags them correctly).
 
 ```bash
-git add sluice/core/protocols.py sluice/core/doctor.py tests/test_evidence_store.py
-git commit -q -m "refactor(core): split read_by_composer from cited_by_gate (#165)"
+git add tests/test_evidence_store.py
+git commit -q -m "test(core): derive cited_by_gate by execution, not by grepping (#165)"
 ```
 
 ---
 
-### Task 9: Retire `read_experience_entries`
+### Task 10: Retire `read_experience_entries`
 
 **Files:**
-- Modify: `sluice/core/protocols.py:732-744` (delete the member)
-- Modify: `sluice/core/vault.py:1756-1775` (delete the delegate)
+- Modify: `sluice/core/protocols.py:732-744` (delete the member), `sluice/core/vault.py:1756-1775` (delete the delegate), `sluice/core/doctor.py:387` (a comment reference)
 - Modify: `tests/conformance/test_store_contract.py:345-380`, `tests/conformance/seeds.py:4`
-- Modify: `tests/test_mcpserver.py:768,779,831,1271,1277`, `tests/test_cv_engine.py:38,1673`, `tests/test_app_operations.py:290`, `tests/test_core_vault_cv.py:34,46,66,70,80`, `tests/test_doctor.py:1710`, `tests/test_evidence_store.py:155-158,181`
-- Modify: `sluice/core/doctor.py:387`
+- Modify: `tests/test_mcpserver.py:1271,1277`, `tests/test_cv_engine.py`, `tests/test_app_operations.py`, `tests/test_core_vault_cv.py:34,46,66,70,80`, `tests/test_doctor.py:1710`, `tests/test_evidence_store.py:155-158,181`
 
-Its own docstring says **"EXPIRES AT #165 ... DELETE this member rather than inheriting it"**: a Protocol member is a REQUIRED member, so every future store would implement a second spelling of a call it already implements, for a caller that no longer exists (Task 7 removed it).
+Its own docstring says **"EXPIRES AT #165 … DELETE this member rather than inheriting it"**: a Protocol member is a REQUIRED member, so keeping it means every future store implements a second spelling for a caller that no longer exists.
 
 - [ ] **Step 1: Confirm there is no production caller left**
 
@@ -1032,15 +1247,15 @@ Its own docstring says **"EXPIRES AT #165 ... DELETE this member rather than inh
 grep -rn "read_experience_entries" sluice/ --exclude-dir=__pycache__
 ```
 
-Expected: only `core/protocols.py`, `core/vault.py`, and the comment at `core/doctor.py:387`. If `cv/engine.py` still appears, Task 7 is incomplete — stop.
+Expected: only `core/protocols.py`, `core/vault.py`, and the comment at `core/doctor.py:387`. If `cv/engine.py` appears, Task 8 is incomplete — stop.
 
-- [ ] **Step 2: Delete the Protocol member and the Vault delegate**
+- [ ] **Step 2: Delete the member, the delegate, and the temporary fake delegates**
 
-Remove `read_experience_entries` from `sluice/core/protocols.py` and `sluice/core/vault.py` entirely. In `core/doctor.py:387`, replace the reference in the comment with `read_evidence("experience", ...)`, keeping the measured claim it records (a symlinked Experience Library raises rather than returning `[]`).
+Remove it from `core/protocols.py` and `core/vault.py`, and remove the one-commit delegate Task 8 Step 1 added to the three fake stores. In `core/doctor.py:387`, replace the reference with `read_evidence("experience", ...)`, keeping the measured claim it records (a symlinked Experience Library raises rather than returning `[]`).
 
-- [ ] **Step 3: Retarget every test**
+- [ ] **Step 3: Retarget the tests**
 
-Rename the conformance row to `test_read_evidence_honours_verified_only` and call `store.read_evidence("experience", verified_only=...)`. In `tests/test_mcpserver.py:1277`, replace `"read_experience_entries"` with `"read_evidence"` in the store-method roster. In the fake stores (`test_cv_engine.py:38`, `test_app_operations.py:290`, `test_mcpserver.py:779,831`), replace the method with `read_evidence(self, kind, verified_only=True)`. In `tests/test_evidence_store.py:155-158`, delete the `if "read_experience_entries(" in src` branch — the engine now names every kind as a string, which is the whole point.
+In `tests/test_mcpserver.py`, **remove** `"read_experience_entries"` from `_STORE_READ_METHODS` (:1277) and from the prose list at :1271 — do NOT replace it with `"read_evidence"`, which is already in that frozenset. Rename the conformance row to `test_read_evidence_honours_verified_only` and call `store.read_evidence("experience", verified_only=...)`; update its reference in `tests/conformance/seeds.py:4`. In `tests/test_evidence_store.py:155-158`, delete the `if "read_experience_entries(" in src` branch — the engine now names every kind as a string, which is the point.
 
 - [ ] **Step 4: Run the FULL suite**
 
@@ -1056,33 +1271,25 @@ git commit -q -m "refactor(core): retire read_experience_entries for read_eviden
 
 ---
 
-### Task 10: `doctor` reports a negative that contradicts the inventory
+### Task 11: `doctor` reports a negative that contradicts the inventory
 
 **Files:**
-- Modify: `sluice/core/doctor.py` (new `classify_negatives_vs_skills`)
-- Modify: `sluice/core/app.py:2171-2178` (wire it in)
+- Modify: `sluice/core/doctor.py` (new `skill_terms`, `classify_negatives_vs_skills`)
+- Modify: `sluice/core/app.py:2171-2178`
 - Test: `tests/test_doctor.py`
-
-**Interfaces:**
-- Consumes: `sluice.core.stem.stem_all` (Task 1); `Store.read_evidence("skills")`.
-- Produces: `classify_negatives_vs_skills(negatives: list, skill_terms: set) -> list`.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 def test_a_negative_naming_a_held_skill_is_reported():
-    """#165: cv.negatives is a hand-typed shadow of the Skills Inventory and drifts.
-    A derived bundle line cannot stop the two disagreeing -- only making the
-    disagreement visible can."""
-    rows = D.classify_negatives_vs_skills(
-        ["never claim documenting experience"], {"document", "platform"})
-    assert len(rows) == 1
-    assert rows[0].state == D.NOTICE
+    rows = D.classify_negatives_vs_skills(["never claim documenting experience"],
+                                          {"document", "platform"})
+    assert len(rows) == 1 and rows[0].state == D.NOTICE
     assert "documenting" in rows[0].detail
 
 
 def test_an_empty_inventory_abstains():
-    """Empty-config-abstains. An install with no Skills Inventory must not have every
+    """Empty-config-abstains: an install with no Skills Inventory must not have every
     negative reported as a contradiction."""
     assert D.classify_negatives_vs_skills(["never claim anything"], set()) == []
 
@@ -1092,50 +1299,74 @@ def test_an_empty_negatives_list_abstains():
 
 
 def test_a_negative_about_something_not_in_the_inventory_is_not_reported():
-    assert D.classify_negatives_vs_skills(
-        ["never claim a security clearance"], {"document"}) == []
+    assert D.classify_negatives_vs_skills(["never claim a security clearance"],
+                                          {"document"}) == []
 
 
 def test_the_match_survives_a_word_form_difference():
-    """The whole reason this shares the stemmer: a negative saying 'documenting' and a
-    skill whose Domain says 'documentation' are the same disagreement."""
-    assert D.classify_negatives_vs_skills(["no documenting"], {stem("documentation")})
+    """Why this shares the stemmer: a negative saying 'documenting' and a skill whose
+    Domain says 'documentation' are the same disagreement."""
+    assert D.classify_negatives_vs_skills(["no documenting"], D.skill_terms(
+        [{"best_for": "documentation", "title": "x"}]))
+
+
+def test_skill_terms_reads_the_domain_and_not_the_entry_title():
+    """The title is a NAME the user chose ('Example Cloud Skill'), so unioning its stems
+    makes any negative containing an ordinary word like 'skills' fire a false NOTICE.
+    `Domain` (the best_for floor) is the classification axis and the only honest side."""
+    terms = D.skill_terms([{"best_for": "platform", "title": "Example Cloud Skill"}])
+    assert "platform" in terms
+    assert not terms & {"exampl", "cloud", "skill"}
 ```
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `.venv/bin/python -m pytest tests/test_doctor.py -k negatives_vs_skills -q` — expect FAIL.
+Run: `.venv/bin/python -m pytest tests/test_doctor.py -k "negatives_vs_skills or skill_terms" -q` — expect FAIL.
 
 - [ ] **Step 3: Implement**
 
+In `core/doctor.py`, with `from sluice.core.stem import stem_all` at the top:
+
 ```python
-def classify_negatives_vs_skills(negatives: list, skill_terms: set) -> list:
-    """One NOTICE per configured `cv.negatives` string that names a skill the verified
-    Skills Inventory actually holds (#165).
+def skill_terms(entries: list) -> set:
+    """The comparable stem set for a verified Skills Inventory read.
 
-    `cv.negatives` is prose asserting which technologies the candidate does and does
-    not work in, maintained by hand and separately from the inventory that already
-    answers that. The bundle's derived cross-reference cannot stop the two disagreeing
-    -- it names nothing, so it adds a third voice rather than replacing the stale one.
-    This is what makes the disagreement visible.
+    `best_for` ONLY -- the floor key `EVIDENCE_KINDS["skills"]` maps onto `Domain`, which
+    is the kind's classification axis. The entry TITLE is deliberately excluded: it is a
+    name the user chose, so unioning its stems makes an ordinary word in it ('skill',
+    'example') match any negative containing that word and fire a NOTICE about nothing.
+    A false contradiction report is worse than a missed one here -- the whole value of
+    this check is that a row means something.
 
-    NOTICE, never DEGRADED: a contradiction is a fact worth knowing before a compose,
-    and it must never affect the exit code -- `--strict` in a cron job failing because
-    somebody's negative overlaps their inventory is the 672ad2a class aimed at the
-    tool's own exit status. Same posture `classify_gate` already takes.
-
-    Abstains on either empty input, which is the empty-config-abstains rule: an install
-    with no inventory has nothing to contradict.
-
-    Matching is on STEMS via `core/stem.py`, so a negative saying "documenting" and a
-    skill whose Domain says "documentation" are recognised as the same disagreement --
-    the word-form defect this issue also fixes in `bundle.rank()`.
+    Here rather than at the call site so `core/app.py` -- an orchestrator -- need not know
+    that matching is stemmed at all, and so a second caller cannot spell it differently.
     """
-    if not negatives or not skill_terms:
+    return set().union(*(stem_all(e.get("best_for", "")) for e in entries)) if entries \
+        else set()
+
+
+def classify_negatives_vs_skills(negatives: list, skill_terms_: set) -> list:
+    """One NOTICE per configured `cv.negatives` string naming a skill the verified Skills
+    Inventory actually holds (#165).
+
+    `cv.negatives` is prose asserting which technologies the candidate does and does not
+    work in, maintained by hand and separately from the inventory that already answers
+    that. The bundle's derived cross-reference cannot stop the two disagreeing -- it names
+    nothing, so it adds a third voice rather than replacing the stale one. This is what
+    makes the disagreement visible.
+
+    NOTICE, never DEGRADED: a contradiction is worth knowing before a compose and must
+    never affect the exit code -- `--strict` in a cron job failing because a negative
+    overlaps an inventory is the 672ad2a class aimed at the tool's own exit status. Same
+    posture `classify_gate` already takes.
+
+    Abstains on either empty input: an install with no inventory has nothing to contradict.
+    """
+    if not negatives or not skill_terms_:
         return []
     out = []
     for neg in negatives:
-        overlap = stem_all(neg) & skill_terms
+        overlap = stem_all(neg) & skill_terms_
         if overlap:
             out.append(ComponentCheck(
                 "gates", "cv.negatives", NOTICE,
@@ -1145,50 +1376,34 @@ def classify_negatives_vs_skills(negatives: list, skill_terms: set) -> list:
     return out
 ```
 
-with `from sluice.core.stem import stem_all` at the top of `core/doctor.py`, plus the
-term-derivation helper beside it, so `core/app.py` never imports the stemmer and its
-consumers stay the two modules the spec names:
-
-```python
-def skill_terms(entries: list) -> set:
-    """The comparable stem set for a verified Skills Inventory read.
-
-    Here rather than at the call site so `core/app.py` -- an orchestrator -- does not
-    have to know that matching is stemmed at all, and so the derivation cannot be
-    spelled differently by a second caller later. `best_for` is the floor key
-    `EVIDENCE_KINDS["skills"]` maps onto `Domain`; `title` is the skill's own name.
-    """
-    terms = set()
-    for e in entries or []:
-        terms |= stem_all(e.get("best_for", ""))
-        terms |= stem_all(e.get("title", ""))
-    return terms
-```
-
 - [ ] **Step 4: Wire it into `Sluice.doctor()`**
 
-In `sluice/core/app.py`, inside the existing `else:` branch after `classify_store`:
+In `sluice/core/app.py`, inside the existing `else:` branch after `classify_store`. No new import — everything goes through `_doctor`. The `except` is narrowed to the store read: a bug in the pure classifier must not be swallowed at DEBUG.
 
 ```python
                 # #165. Needs BOTH the store and cv_cfg, which is why it lives here and
-                # not in `Vault.preflight()` -- whose docstring commits it to counts
-                # rather than content, and which is a Store-seam member every
-                # implementation would have to grow.
+                # not in `Vault.preflight()` -- whose docstring commits it to counts rather
+                # than content, and which is a Store-seam member every implementation would
+                # have to grow.
                 if cv_cfg is not None:
                     try:
-                        components.extend(_doctor.classify_negatives_vs_skills(
-                            cv_cfg.negatives,
-                            _doctor.skill_terms(
-                                store.read_evidence("skills", verified_only=True))))
+                        skills = store.read_evidence("skills", verified_only=True)
                     except Exception as e:  # noqa: BLE001 -- an unreadable corpus is
-                        # already reported DEAD by classify_store above; this check
-                        # must not turn that into a crash of the diagnostic tool.
-                        _log.debug("negatives/skills cross-check skipped: %s", e)
+                        # already reported DEAD by classify_store above (when the store
+                        # implements the optional preflight hook; when it does not, this
+                        # log line is the only signal, which is why it is WARNING).
+                        _log.warning("skills read for the negatives cross-check "
+                                     "failed: %s", e)
+                    else:
+                        # Deliberately OUTSIDE the try: these two are pure, and a bug in
+                        # them must surface, not be logged and dropped.
+                        components.extend(_doctor.classify_negatives_vs_skills(
+                            cv_cfg.negatives, _doctor.skill_terms(skills)))
 ```
 
 - [ ] **Step 5: Run and commit**
 
-Run: `.venv/bin/python -m pytest tests/test_doctor.py -q` — expect PASS.
+Run: `.venv/bin/python -m pytest tests/test_doctor.py tests/test_app_operations.py -q` — expect PASS.
 
 ```bash
 git add sluice/core/doctor.py sluice/core/app.py tests/test_doctor.py
@@ -1197,24 +1412,20 @@ git commit -q -m "feat(doctor): report a negative that contradicts the Skills In
 
 ---
 
-### Task 11: Documentation
+### Task 12: Documentation — every `#165` claim this change falsifies
+
+Revision 1 assigned three prose sites and its own final-verification grep would have failed. The full set, enumerated by `grep -rn "#165" sluice/ docs/`:
 
 **Files:**
-- Modify: `docs/ARCHITECTURE.md`, `docs/CONFIGURATION.md`, `sluice.yaml.example`, `.rulesync/rules/CLAUDE.md`
+- `sluice/cli.py:1540` · `sluice/evidence/wizard.py:38,40` · `sluice/evidence/commands.py:29,33` — all say the gate reads `experience` alone "until #165". Now `skills` is read by the composer and still not cited; reword to the two-flag distinction rather than deleting the caveat.
+- `docs/ARCHITECTURE.md:1232,1397,1401-1403` — `read_experience_entries` in TWO places plus the "EXPIRES AT #165" sixth-member paragraph. Also add the four bundle sections and state that `bundle_sources` walks `bundle["entries"]` alone.
+- `docs/USAGE.md:330,344,373,442` — four claims that nothing consumes the corpora until #165.
+- `docs/CONFIGURATION.md` and `sluice.yaml.example` — **note the whole `cv:` block ships COMMENTED (`sluice.yaml.example:169`), so there is no live `cv.negatives` key.** Add the commented key with its explanation rather than assuming one exists.
+- `.rulesync/rules/CLAUDE.md` — the CV-gate paragraph: four bundle sections, skills license numbers in neither pool, the audit's separate source set (D11), and the two `EvidenceKind` flags.
 
-- [ ] **Step 1: `docs/ARCHITECTURE.md`**
+- [ ] **Step 1: Edit each file above.** Edit `.rulesync/rules/CLAUDE.md`, never `CLAUDE.md`.
 
-In the CV section, describe the four bundle sections and state that `bundle_sources` walks `bundle["entries"]` alone, which is what makes skills non-citable. In the evidence paragraph, record that `skills` is now `read_by_composer` but not `cited_by_gate`, and that `read_experience_entries` is gone.
-
-- [ ] **Step 2: `docs/CONFIGURATION.md` and `sluice.yaml.example`**
-
-Under `cv.negatives`, state that a skills-shaped negative is now redundant with the Skills Inventory, that the bundle derives the cross-reference automatically, and that `doctor` reports a contradiction. Keep the key documented — it still carries negatives no inventory can express.
-
-- [ ] **Step 3: `.rulesync/rules/CLAUDE.md`**
-
-Update the CV-gate paragraph: the bundle has four sections; skills license numbers in neither pool; `EvidenceKind` carries two flags and what each means. **Edit `.rulesync/rules/CLAUDE.md`, never `CLAUDE.md`.**
-
-- [ ] **Step 4: Regenerate and verify no drift**
+- [ ] **Step 2: Regenerate and verify no drift**
 
 ```bash
 npm ci --ignore-scripts && npm run rulesync
@@ -1222,7 +1433,7 @@ git status --short          # CLAUDE.md/AGENTS.md are gitignored; expect no trac
 .venv/bin/python -m pytest -q
 ```
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
 git add docs/ sluice.yaml.example .rulesync/
@@ -1234,8 +1445,8 @@ git commit -q -m "docs(cv): describe the fourth bundle section and the two evide
 ## Final verification
 
 - [ ] `.venv/bin/python -m pytest -q` — full suite green
-- [ ] `ruff check sluice tests scripts` — clean (install the CI pin: `pip install ruff==0.15.21`)
-- [ ] `.venv/bin/python -m pytest --cov` — coverage reports, does not gate
-- [ ] `grep -rn "until #165\|#165 lands\|EXPIRES AT #165\|wait on #165" sluice/ docs/` — returns nothing
-- [ ] `git log --oneline origin/main..HEAD` — the re-freeze (Task 5) is its own commit
+- [ ] `ruff check sluice tests scripts` — clean (`pip install ruff==0.15.21`, the CI pin)
+- [ ] `grep -rn "#165" sluice/ docs/ --exclude-dir=__pycache__ | grep -v superpowers` — **every remaining hit must describe what the code does NOW**, not what waits on #165. Revision 1's grep pattern missed four sites; read the hits rather than trusting an empty result.
+- [ ] `git log --oneline origin/main..HEAD` — the re-freeze (Task 5) is its own commit, and no commit message is a non-Conventional subject
+- [ ] Every commit is green: `git rebase --exec '.venv/bin/python -m pytest -q' origin/main`
 - [ ] Run `/review-pr` BEFORE pushing. CodeRabbit is the scarce resource (~1/hour, adaptive); the local specialist team is free and parallel.
