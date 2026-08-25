@@ -465,7 +465,8 @@ def test_only_if_absent_lets_exactly_ONE_concurrent_caller_claim_the_create(
     # ROUNDS, not one pass. Measured: a single race caught a deliberately racy exists()-then-write
     # store only 89 times in 400, so a second implementer would have seen a green suite on ~78% of
     # runs while shipping a writer that clobbers the user's Judging Profile. Fifty rounds takes the
-    # miss probability to effectively zero and still runs in well under a second.
+    # miss probability to effectively zero and stays cheap -- each round is a few file operations,
+    # not an external call.
     for round_no in range(50):
         store = _make_store(store_name, tmp_path / f"r{round_no}", monkeypatch)
         claimed, barrier = [], threading.Barrier(2)

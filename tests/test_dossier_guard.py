@@ -358,7 +358,7 @@ def test_the_allowlist_admits_a_private_host(tmp_path, role):
 
 
 def test_dossier_blocked_carries_no_host_or_url(tmp_path, role):
-    """cv/engine.py:70 logs str(e) verbatim -- the #67 leak shape."""
+    """cv/engine.py:268 logs str(e) verbatim -- the #67 leak shape."""
     tab = _Tab()
     cache = _cache(tmp_path, tab, resolve=lambda h: ["127.0.0.1"])
     with pytest.raises(urlguard.DossierBlocked) as ei:
@@ -396,7 +396,7 @@ def _triage_run(tmp_path, monkeypatch, role, *, resolve, landed="https://jobs.in
     import os
     from sluice.triage import engine as tengine
     vault_dir = tmp_path / "vault"
-    # "Job Leads", not "Leads" -- core/vault.py:29 is
+    # "Job Leads", not "Leads" -- core/vault.py:54 is
     # _LEADS_SUBDIR = os.path.join("Job Applications", "Job Leads").
     # The wrong path loads ZERO leads, which makes both assertions below pass
     # vacuously and the Step 4 mutant redden with AND without the mutation.
@@ -448,7 +448,7 @@ def test_the_positive_control_does_move_the_lead(tmp_path, monkeypatch, role):
 def test_the_cv_consumer_proceeds_with_an_empty_jd(role, monkeypatch):
     """Raising is NOT behaviourally different for cv -- record that honestly.
 
-    cv/engine.py:66-70 catches Exception, logs, and PROCEEDS with jd = "". So for
+    cv/engine.py:267-269 catches Exception, logs, and PROCEEDS with jd = "". So for
     this consumer a raise and a returned empty dossier are indistinguishable: a CV
     is still composed and the fabrication gate still runs. The raise-vs-return
     argument rests entirely on the TRIAGE side (above). Stating it here stops a
