@@ -2186,7 +2186,8 @@ class Sluice:
         google_available, google_import_error = probe_availability()
         components.append(_doctor.classify_track_google(
             available=google_available, import_error=google_import_error,
-            token_present=os.path.exists(track_cfg.token_path)))
+            token_present=os.path.exists(track_cfg.token_path),
+            token_path=track_cfg.token_path))
 
         # Which browser profile an ingest run will drive. Read from the environment, never by
         # constructing a client: `Camofox.__init__` warns on the same misconfiguration this
