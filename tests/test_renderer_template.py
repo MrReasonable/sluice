@@ -759,5 +759,13 @@ def test_a_missing_system_library_raises_naming_both_fixes(monkeypatch):
     assert "cairo" in msg and "pango" in msg, (
         "the message does not name the SYSTEM libraries, which is the half a user with "
         f"the extra already installed needs: {msg}")
-    assert "README" in msg, "the message does not point at the documented macOS step"
+    # The WHOLE url, path and anchor included. This first required the literal "README" -- a file
+    # that exists in a CHECKOUT and on no packaged install, so it was pinning the defect -- and was
+    # then briefly relaxed to the repo prefix, which any github.com/MrReasonable/sluice URL
+    # satisfies, including the repository root. That checked reachability and nothing else.
+    # tests/test_doc_links_from_code.py separately proves this anchor resolves to a real heading.
+    assert ("https://github.com/MrReasonable/sluice/blob/main/"
+            "docs/INSTALL.md#system-libraries-for-pdf-rendering") in msg, (
+        "the message does not point at the documented macOS step with a url a reader can follow "
+        f"to the right SECTION -- this is printed to a user's terminal, not a contributor's: {msg}")
     assert isinstance(ei.value.__cause__, OSError)
