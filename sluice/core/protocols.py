@@ -119,7 +119,7 @@ class EvidenceKind:
         frontmatter key this kind does not declare. Fail loudly at construction, the rule
         `_select_backend` and `Vault._kind` already follow.
 
-        Both halves close a class rather than an enumerated vector, and neither is
+        All three close a class rather than an enumerated vector, and none is
         reachable from a config file today -- every `EvidenceKind` is shipped code -- so
         this is a guard against the NEXT edit to that literal, in the shape this codebase
         uses for a quiet wrong default.
@@ -668,7 +668,22 @@ class Store(Protocol):
         remove, and a key a SQL- or API-backed store has nothing to put in. Everything
         this returns is an opaque handle; `read_pending_evidence_text` below is how a
         caller gets bytes. A store MAY still carry extra keys of its own (the vault
-        does carry `path`), but no contract-bound caller may read one."""
+        does carry `path`), but no contract-bound caller may read one.
+
+        ABSENT and UNREADABLE are different outcomes, and callers discriminate on it. A
+        corpus that simply does not exist yet returns `[]` -- the abstain case, and the
+        state of every install before its first `job-sluice <kind> add`. A corpus that
+        exists and cannot be READ (permissions, a symlink out of the store, an entry whose
+        bytes are not valid UTF-8) RAISES. `cv/engine.py` relies on exactly this: it
+        catches `(OSError, ValueError)` around the `skills` read, composes without the
+        framing section, and stamps `CvResult.skills_unreadable` -- so a store that raised
+        for an absent corpus would tell a user with no Skills Inventory yet that their
+        corpus is unreadable, on every lead of every run. `experience` is deliberately NOT
+        wrapped there, being the gate's only citable evidence.
+
+        `tests/conformance/test_store_contract.py::test_an_absent_corpus_reads_as_empty`
+        binds this per kind, because a docstring alone is what the vault happened to do
+        rather than what the seam requires."""
         ...
 
     def read_pending_evidence(self, kind: str) -> list:
@@ -737,7 +752,7 @@ class Store(Protocol):
         ...
 
     def verify_evidence(self, kind: str, name, *, today: str, reviewed: str) -> bool:
-        """Promote a proposed entry to citable, stamping it as verified.
+        """Promote a proposed entry into the VERIFIED corpus, stamping it as verified.
 
         `name` is the entry's OWN identity as read_pending_evidence reports it (its
         `title`), NOT the raw name propose_evidence was called with. A store reduces a
@@ -748,11 +763,20 @@ class Store(Protocol):
         A store must still refuse a `name` that is not a bare identifier in its own
         namespace, so no caller can reach outside the pending set.
 
-        The ONLY way an entry becomes citable by the CV fabrication gate. Returns
-        False, writing nothing, when the entry changed since `reviewed` was shown to
-        a human -- promoting an edit made after approval would make unreviewed
-        content citable. Raises when the name is already taken in the verified set,
-        before mutating anything."""
+        Verification is NECESSARY for citability and not SUFFICIENT for it, and the
+        difference is per kind. This call is the only way an entry becomes verified, and
+        for a `cited_by_gate` kind that is also the only way it becomes citable by the CV
+        fabrication gate. For a kind that is NOT `cited_by_gate` -- `skills` since #165,
+        which the composer is shown as framing and the gate licenses nothing from --
+        verifying an entry never makes it citable at all. A store implementer reading
+        "promote to citable" would be entitled to treat a verified skill as
+        citation-authorised evidence, which is the #164 M2 over-claim restated as a
+        contract.
+
+        Returns False, writing nothing, when the entry changed since `reviewed` was shown
+        to a human -- promoting an edit made after approval would make unreviewed content
+        verified, and for a citable kind that means citable. Raises when the name is
+        already taken in the verified set, before mutating anything."""
         ...
 
     def read_baseline(self) -> str:

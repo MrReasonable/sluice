@@ -619,6 +619,12 @@ def classify_dossier_cache(counts: dict) -> ComponentCheck:
         f"{total} cached; {counts.get('unreadable', 0)} unreadable, {lengths}")
 
 
+# Matches `cv/engine.py:_jd_keywords`' own `[a-z]{4,}`, so the two places that reduce prose
+# to comparable keywords agree on what is too short to carry meaning. A LENGTH floor, not a
+# stopword list -- see classify_negatives_vs_skills for the measured case it closes.
+_MIN_TERM_LEN = 4
+
+
 def classify_negatives_vs_skills(negatives: list, skills: list) -> list:
     """One NOTICE per configured `cv.negatives` entry naming a skill the verified Skills
     Inventory actually holds (#165).
@@ -632,10 +638,20 @@ def classify_negatives_vs_skills(negatives: list, skills: list) -> list:
     Matches on `best_for` ONLY -- the floor key `EVIDENCE_KINDS["skills"]` maps onto
     `Domain`, the kind's classification axis. The entry TITLE is excluded: it is a name the
     user chose, so matching its stems makes an ordinary word in it ('skill', 'example')
-    fire a NOTICE about nothing. The NEGATIVE side is not similarly filtered, and that
-    asymmetry is accepted rather than hidden: a stopword list is the wrong shape for a
-    NOTICE-only advisory, and a loose sentence that happens to contain the inventory's own
-    domain word is still a contradiction worth looking at.
+    fire a NOTICE about nothing.
+
+    Both sides are then floored at `_MIN_TERM_LEN` characters. A `Domain` reading "Data and
+    analytics for the platform" otherwise contributes the stem `the`, and every negative
+    containing the word "the" reports a contradiction -- measured, and NOT covered by the
+    asymmetry this docstring used to claim was accepted. The floor is 4 to match
+    `cv/engine.py:_jd_keywords`' own `[a-z]{4,}` extraction, so the two places in this
+    codebase that turn prose into comparable keywords agree on what is too short to mean
+    anything. It is a LENGTH rule, not a vocabulary: no stopword list ships, which is the
+    thing this repo declines to do.
+
+    Above the floor the NEGATIVE side stays unfiltered, and that asymmetry IS accepted: a
+    loose sentence that happens to contain the inventory's own domain word is still a
+    contradiction worth looking at.
 
     The row NAMES THE INDEX and the overlap SIZE, never the configured text or the matched
     terms. A DoctorReport is returned whole to MCP clients (`sluice/mcpserver.py`), and
@@ -652,12 +668,13 @@ def classify_negatives_vs_skills(negatives: list, skills: list) -> list:
     """
     if not negatives or not skills:
         return []
-    terms = set().union(*(stem_all(e.get("best_for", "")) for e in skills))
+    terms = {t for e in skills for t in stem_all(e.get("best_for", ""))
+             if len(t) >= _MIN_TERM_LEN}
     if not terms:
         return []
     out = []
     for i, neg in enumerate(negatives):
-        overlap = stem_all(neg) & terms
+        overlap = {t for t in stem_all(neg) if len(t) >= _MIN_TERM_LEN} & terms
         if overlap:
             out.append(ComponentCheck(
                 "gates", f"cv.negatives[{i}]", NOTICE,

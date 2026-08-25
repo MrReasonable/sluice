@@ -342,6 +342,23 @@ def test_read_baseline_takes_no_path_argument_and_reads_the_baseline(store_name,
     assert store.read_baseline() == "BASELINE TEXT"
 
 
+def test_an_absent_corpus_reads_as_empty(store_name, tmp_path, monkeypatch):
+    """ABSENT abstains; UNREADABLE raises. `cv/engine.py` discriminates on exactly this --
+    it catches `(OSError, ValueError)` around the `skills` read and composes without the
+    framing section -- so a store that RAISED for a corpus that simply does not exist yet
+    would tell a user with no Skills Inventory that their corpus is unreadable, on every
+    lead of every run. That is the state of every install before its first
+    `job-sluice <kind> add`, so it is the common case, not an edge one.
+
+    Per kind, off the registry, so a fourth kind is bound by this without an edit here.
+    """
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    for kind in EVIDENCE_KINDS:
+        assert store.read_evidence(kind, verified_only=True) == [], kind
+        assert store.read_evidence(kind, verified_only=False) == [], kind
+        assert store.read_pending_evidence(kind) == [], kind
+
+
 def test_read_evidence_honours_verified_only(store_name, tmp_path, monkeypatch):
     """This is the FABRICATION GATE'S GROUND TRUTH.
 

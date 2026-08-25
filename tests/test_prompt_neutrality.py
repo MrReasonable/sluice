@@ -139,6 +139,7 @@ _KNOWN_PROMPTS = frozenset({
     "sluice.triage.resolve._RESOLVE_PROMPT_TAIL",
     "sluice.track.classify.build_prompt",
     "sluice.core.doctor.PROBE_PROMPT",
+    "sluice.cv.bundle._DERIVED_NEGATIVE_PROMPT",
     "sluice.onboard.ask._CANDIDATE_PROMPTS",
     "sluice.onboard.plan._PROFILE_PROMPTS",
 })

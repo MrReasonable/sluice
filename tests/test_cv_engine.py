@@ -2817,6 +2817,29 @@ def test_skills_reach_the_bundle_verified_only(monkeypatch):
     assert ("skills", True) in v.reads
 
 
+def test_a_readable_skills_corpus_leaves_the_flag_FALSE(monkeypatch):
+    """The positive control, and without it the flag is unfalsifiable in the direction that
+    matters: flipping the initialiser to `skills_unreadable = True` leaves the whole suite
+    green, because the only other assertion on this field is in the ERROR case, where True
+    is the expected value either way. `dossier_failed`, the shape this copies, has exactly
+    such a paired control (tests/test_dossier_guard.py)."""
+    _served(monkeypatch)
+    r = run_one(_skills_note(), SkillsVault(ENTRIES, skills=[_SKILL_ENTRY]), _cfg(),
+                FakeBackend(CLEAN_CV), FakeCache(), renderer=FakeRenderer())
+    assert r.status == "rendered"
+    assert r.skills_unreadable is False
+
+
+def test_a_missing_skills_corpus_is_not_reported_as_unreadable(monkeypatch):
+    """`read_evidence` returns [] for a MISSING directory, which is the abstain case and
+    entirely normal -- an install that simply has no Skills Inventory yet must not be told
+    on every lead that its corpus is unreadable."""
+    _served(monkeypatch)
+    r = run_one(_skills_note(), SkillsVault(ENTRIES, skills=[]), _cfg(),
+                FakeBackend(CLEAN_CV), FakeCache(), renderer=FakeRenderer())
+    assert r.skills_unreadable is False
+
+
 def test_a_refused_lead_never_reads_any_evidence_corpus():
     """`skipped-stale` returns before the bundle build, so a broken corpus costs nothing on
     a lead that was never going to compose. Guards the PLACEMENT: hoisting the read above
