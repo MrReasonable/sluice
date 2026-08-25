@@ -50,7 +50,10 @@ _FORBIDDEN_FORMULAE = ("click", "brotli", "zopfli", "protobuf", "httpx")
 
 # WeasyPrint's native tree. `pango` pulls cairo, glib and harfbuzz transitively; mirrors
 # homebrew-core's own weasyprint formula rather than guessing a wider set.
-_NATIVE_FORMULAE = ("pango",)
+# `libyaml` is required by `brew audit` once the resource tree carries pyyaml: its C
+# extension links against it, and the audit says so by name ("Add `depends_on` lines above
+# for \"libyaml\"") rather than leaving it to fail at build time.
+_NATIVE_FORMULAE = ("pango", "libyaml")
 
 # THE PAYOFF MECHANISM, and the single most load-bearing line this file emits. Homebrew's
 # CPython patches Lib/ctypes/macholib/dyld.py to put HOMEBREW_PREFIX/lib at the head of
@@ -95,7 +98,13 @@ def render(*, sdist_url: str, sha256: str) -> str:
     "fail loudly at construction" rule exists: a parameter nothing reads invites a caller to
     believe passing it does something.
     """
-    depends = [_PYTHON_FORMULA, *_NATIVE_FORMULAE, *_IMPORTABLE_CORE_FORMULAE]
+    # SORTED, because `brew audit --strict` runs RuboCop and FormulaAudit/DependencyOrder
+    # requires alphabetical `depends_on`. Measured: emitting `python@3.14` first drew five
+    # separate "should be put before" errors on the first real dispatch. Sorting here rather
+    # than reordering the tuples keeps each tuple grouped by MEANING (interpreter, native
+    # libraries, importable core formulae) for a human, while the emitted file is ordered
+    # for the auditor.
+    depends = sorted([_PYTHON_FORMULA, *_NATIVE_FORMULAE, *_IMPORTABLE_CORE_FORMULAE])
     # Fail loudly at construction (CLAUDE.md) rather than emit a formula that would only be
     # caught later by `brew audit`/`brew install`, or not at all: homebrew-core ships DIFFERENT
     # software under each of these names -- see `_FORBIDDEN_FORMULAE`'s comment above.
@@ -133,7 +142,7 @@ def render(*, sdist_url: str, sha256: str) -> str:
 {depends_lines}
   uses_from_macos "libffi"
 
-  pypi_packages package_name: "job-sluice[{extras}]",
+  pypi_packages package_name:     "job-sluice[{extras}]",
                 exclude_packages: %w[{excludes}]
 
   def install
@@ -150,7 +159,11 @@ def render(*, sdist_url: str, sha256: str) -> str:
     # SLUICE_CONFIG and VAULT_DIR while this very comment already stated the general
     # principle -- two reviewers independently caught the gap, and CLAUDE.md's "hand-listed
     # names lose" lesson applies here exactly as it does to a Python AST sweep.
-    ENV.keys.each do |k|
+    # `to_h` snapshots before iterating. Measured on this Ruby, deleting from ENV during a
+    # bare `each_key` is fine -- but depending on a collection's mutation-during-iteration
+    # semantics is a hazard worth not taking, and the snapshot costs one allocation. `each_key`
+    # rather than `keys.each` because `brew audit --strict` runs Style/HashEachMethods.
+    ENV.to_h.each_key do |k|
       ENV.delete(k) if k.match?(/\\A(SLUICE|CAMOFOX)_/)
     end
     # Explicitly-named path variables outside that prefix shape -- never hand-guessed, and

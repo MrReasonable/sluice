@@ -88,7 +88,12 @@ def test_the_formula_declares_exactly_the_shipped_extras():
 _EXPECTED_IMPORTABLE = {"cffi", "cryptography", "pillow", "pydantic", "rpds-py"}
 # Emitted as `depends_on` but NOT excluded: the interpreter and the native tree are not Python
 # packages, so `exclude_packages` has nothing to say about them.
-_EXPECTED_NON_PACKAGE_DEPENDS = {"pango"}
+# Emitted as `depends_on` but NOT excluded: these are native libraries, not Python
+# packages, so `exclude_packages` has nothing to say about them. `libyaml` joined when
+# `brew audit` named it for pyyaml's C extension -- restated here BY HAND, which is the
+# point: a new native dependency must be a deliberate edit in this file, not something
+# that follows the renderer automatically.
+_EXPECTED_NON_PACKAGE_DEPENDS = {"pango", "libyaml"}
 
 
 def _depends_on(formula: str) -> set[str]:
@@ -176,6 +181,30 @@ def test_the_formula_depends_on_a_brewed_python():
         f"the formula depends on python@{major}.{minor}, which pyproject.toml declares no "
         f"classifier for. Supported: {sorted(supported)}"
     )
+
+
+def test_the_depends_on_lines_are_alphabetical():
+    """`brew audit --strict` runs RuboCop, and FormulaAudit/DependencyOrder requires
+    alphabetical `depends_on`. That auditor only runs on a macOS runner at dispatch or
+    release time, so without this pin the first feedback is a failed job -- measured: the
+    first real dispatch drew five separate "should be put before" errors at once.
+
+    Compares the rendered lines against their own sort rather than against a literal list,
+    because the ORDER is the property; the membership is pinned by the tests above.
+    """
+    lines = [ln for ln in render(**FIXTURE).splitlines() if ln.strip().startswith("depends_on ")]
+    assert lines, "no depends_on lines rendered; this check would pass vacuously"
+    assert lines == sorted(lines), (
+        "`depends_on` must be alphabetical for FormulaAudit/DependencyOrder. Got:\n"
+        + "\n".join(lines)
+    )
+
+
+def test_the_formula_depends_on_libyaml_for_pyyaml():
+    """`brew update-python-resources` puts pyyaml in the resource tree, and its C extension
+    links against libyaml -- `brew audit` names the missing dependency explicitly rather than
+    letting the build fail later. Pinned here because the audit is macOS-only."""
+    assert 'depends_on "libyaml"' in render(**FIXTURE)
 
 
 def test_no_forbidden_formula_is_depended_on():
