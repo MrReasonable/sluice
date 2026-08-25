@@ -6,6 +6,9 @@ employer-completeness gate is always satisfiable from cited entries."""
 import re
 from typing import NamedTuple
 
+from sluice.core.stem import stem as _stem
+from sluice.core.stem import stem_all as _stem_all
+
 
 def _prefix(company: str, prefix_map: dict) -> str:
     """Two-uppercase-letter company prefix. Coerces ANY source (a prefix_map
@@ -28,11 +31,27 @@ def assign_codes(entries: list[dict], prefix_map: dict) -> list[dict]:
 
 
 def rank(entries: list[dict], jd_keywords: list[str]) -> list[dict]:
-    kw = [k.lower() for k in jd_keywords]
+    """Order entries by how many JD keywords their classification fields answer.
+
+    Matching is on STEMS, both sides (#165), so "documenting", "documentation" and
+    "documented" all rank the same entry. Before this it was raw substring containment,
+    which missed every inflection -- measured on a real posting, an entry that directly
+    evidenced the ad's most-emphasised requirement scored ZERO and ranked below dozens of
+    unrelated ones, because the ad said "documenting" and the entry said "documentation".
+    It also related words it should not: `"java" in "javascript"` is True.
+
+    Orders, never excludes. The FULL verified set is emitted either way, so a ranking
+    change can never lose evidence -- only move it. It DOES change which `[id]` an entry
+    receives, since `assign_codes` runs after this.
+
+    The haystack stays `best_for`/`category`/`title` and deliberately excludes `body`:
+    matching into free prose lets a long entry out-score a precise one on volume alone.
+    """
+    wanted = {_stem(k) for k in jd_keywords}
 
     def score(e):
-        hay = f"{e.get('best_for','')} {e.get('category','')} {e.get('title','')}".lower()
-        return sum(k in hay for k in kw)
+        hay = f"{e.get('best_for','')} {e.get('category','')} {e.get('title','')}"
+        return len(wanted & _stem_all(hay))
 
     return sorted(entries, key=score, reverse=True)
 

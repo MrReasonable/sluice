@@ -266,3 +266,40 @@ def test_a_duplicate_id_raises_naming_the_id_and_not_the_entry():
     assert "AL1" in str(ei.value)
     assert "secret body text" not in str(ei.value)
     assert "Example Alpha" not in str(ei.value)
+
+
+# ── #165: ranking survives word forms ────────────────────────────────────────
+def _rank_entry(best_for, title):
+    return {"title": title, "company": "Example Co", "best_for": best_for,
+            "category": "", "metrics": "", "body": ""}
+
+
+def test_a_word_form_mismatch_no_longer_buries_the_right_entry():
+    """#165's comment. The ad's top requirement was 'documenting'; the one entry that
+    evidenced it said 'documentation'. `"documenting" in "documentation"` is False, so it
+    scored zero and ranked BELOW every unrelated entry that matched a different ad word.
+
+    The scores are the point. With competitors on "delivery planning" and two of three
+    keywords matching them, the competitors score 2 and the right entry 1 -- so it stays
+    last AFTER the fix too, and the test proves nothing in either direction. Measured with
+    the real stemmer, these values give competitor (old 1, new 1) and right entry
+    (old 0, new 2): position 6 of 7 before, 0 of 7 after.
+    """
+    entries = ([_rank_entry("delivery", f"unrelated-{i}") for i in range(3)]
+               + [_rank_entry("documentation deliveries", "THE-RIGHT-ONE")]
+               + [_rank_entry("delivery", f"unrelated-{i}") for i in range(3, 6)])
+    ranked = B.rank(entries, ["documenting", "delivery"])
+    assert ranked[0]["title"] == "THE-RIGHT-ONE", [e["title"] for e in ranked]
+
+
+def test_ranking_orders_and_never_excludes():
+    """The property the whole bundle rests on: JD keywords reorder, never filter."""
+    entries = [_rank_entry("documentation", "a"), _rank_entry("nothing relevant", "b")]
+    assert len(B.rank(entries, ["documenting"])) == 2
+
+
+def test_the_substring_false_positives_are_gone():
+    """`"java" in "javascript"` is True, so the old ranker scored a JavaScript entry on a
+    Java keyword. Stems do not relate them."""
+    entries = [_rank_entry("javascript", "js"), _rank_entry("java", "java")]
+    assert B.rank(entries, ["java"])[0]["title"] == "java"
