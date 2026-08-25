@@ -303,3 +303,68 @@ def test_the_substring_false_positives_are_gone():
     Java keyword. Stems do not relate them."""
     entries = [_rank_entry("javascript", "js"), _rank_entry("java", "java")]
     assert B.rank(entries, ["java"])[0]["title"] == "java"
+
+
+# ── #165: the Skills Inventory as a fourth, non-citable section ──────────────
+_SKILL = {"title": "Example Cloud Skill", "best_for": "platform documentation",
+          "company": "", "category": "", "metrics": "", "body": "Body prose.",
+          "fields": {"Proficiency": "8 years", "Domain": "platform documentation",
+                     "Evidence": "shipped 62 things", "Signal Value": "depth not breadth"}}
+
+
+def _bundle_with_skills(skills=(_SKILL,)):
+    return B.build_bundle(FROZEN_ENTRIES, FROZEN_BASELINE, FROZEN_NEGATIVES,
+                          [], FROZEN_PREFIX_MAP, skills=list(skills))
+
+
+def test_a_skills_digit_is_licensed_in_neither_pool():
+    """THE load-bearing test of this feature, and it compares against NO frozen literal --
+    so re-capturing FROZEN_BUNDLE_TEXT cannot bring it back into sync. `8` and `62` are
+    the skill's own figures; neither may become a permitted number anywhere."""
+    s = B.bundle_sources(_bundle_with_skills())
+    assert "62" not in s.baseline
+    assert all("62" not in n for n in s.nums.values())
+    assert all("8" not in n for n in s.nums.values()), (
+        "a skills digit reached an entry's allowlist -- the framing lines have been "
+        "folded into _entry_block, which licenses them for that entry")
+
+
+def test_render_bundle_is_unchanged_by_a_skills_key():
+    """D11, and the strongest form of it: the ADVISORY audit keeps calling `render_bundle`,
+    so the guarantee is that this function does not notice `bundle["skills"]` at all.
+    Compared against a bundle built WITHOUT skills -- asserting only the absence of the
+    header would pass for a function that returned ''."""
+    without = B.render_bundle(B.build_bundle(
+        FROZEN_ENTRIES, FROZEN_BASELINE, FROZEN_NEGATIVES, [], FROZEN_PREFIX_MAP))
+    assert B.render_bundle(_bundle_with_skills()) == without
+
+
+def test_the_composer_bundle_is_the_source_bundle_plus_framing():
+    """The other half: everything `render_bundle` emits must survive into the composer's
+    text, or a source has been lost rather than a section added."""
+    composer = B.render_composer_bundle(_bundle_with_skills())
+    for fragment in ("=== BASELINE CV", "[AL1]", "[BE1]", "[AL2]",
+                     "=== VERIFIED EXPERIENCE ENTRIES", "=== NEGATIVE CONSTRAINTS",
+                     "=== SKILLS INVENTORY"):
+        assert fragment in composer, fragment
+
+
+def test_the_skills_section_renders_after_the_entries_and_before_the_negatives():
+    text = B.render_composer_bundle(_bundle_with_skills())
+    assert text.index("[AL2]") < text.index("=== SKILLS INVENTORY") \
+           < text.index("=== NEGATIVE CONSTRAINTS")
+
+
+def test_the_skills_section_carries_the_four_fields_and_the_body():
+    text = B.render_composer_bundle(_bundle_with_skills())
+    for fragment in ("Example Cloud Skill", "proficiency=8 years",
+                     "signal=depth not breadth", "shipped 62 things", "Body prose."):
+        assert fragment in text, fragment
+
+
+def test_an_empty_inventory_emits_no_header_at_all():
+    """Not an empty header: that asserts to the model that the candidate has no skills,
+    which is a negative claim it may act on. Empty means abstain."""
+    empty = _bundle_with_skills(skills=())
+    assert "SKILLS INVENTORY" not in B.render_composer_bundle(empty)
+    assert B.render_composer_bundle(empty) == B.render_bundle(empty)
