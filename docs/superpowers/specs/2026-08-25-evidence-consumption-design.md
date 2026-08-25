@@ -60,7 +60,11 @@ right entry has to BEAT scoring competitors, so the probe must bury it among the
 
 ### D1 -- Skills are a fourth section, and non-citability is structural rather than parsed
 
-`build_bundle` grows a `skills` parameter and a `bundle["skills"]` key. `render_bundle` emits:
+`build_bundle` grows a `skills` parameter and a `bundle["skills"]` key. A NEW
+`render_composer_bundle` emits the section below; `render_bundle` -- the auditor's renderer --
+never does, and D11 is why. That split arrived after this decision was first written, and D1 said
+`render_bundle` until then: left uncorrected, the design record would direct a future change at
+the one renderer that must never carry framing.
 
 ```
 === SKILLS INVENTORY (framing only; NOT citable, introduces no facts) ===
@@ -80,7 +84,7 @@ sources: BundleSources(nums={'EX1': frozenset({'31','32','33','34','37'})}, base
 '999'/'998' licensed anywhere? False
 ```
 
-This is presentation, so `render_bundle` owns it. `_entry_block`'s standing rule -- *every line
+This is presentation, so `render_composer_bundle` owns it (D11). `_entry_block`'s standing rule -- *every line
 this function returns is a source for that entry, and nothing else is* -- is untouched, and must
 stay untouched: a maintainer who "tidies" the skills block into `_entry_block` licenses every
 skills digit for every entry at once.
@@ -151,7 +155,7 @@ model an unusable number, and it mangles real content -- `Python 3`, `OAuth2`, `
 
 A missing Skills Inventory directory reads as `[]` without raising (measured), so the common
 "user has not populated it" case needs no special handling. When `bundle["skills"]` is empty,
-`render_bundle` emits no header at all: an empty `=== SKILLS INVENTORY ===` asserts to the model
+`render_composer_bundle` emits no header at all: an empty `=== SKILLS INVENTORY ===` asserts to the model
 that the candidate has no skills, which is a negative claim it may act on.
 
 No `cv.skills_in_bundle` knob. Populating the inventory IS the opt-in, and a flag whose only job
@@ -365,10 +369,19 @@ D3 says a claim resting on skills alone is exactly what must not happen. So D1, 
 disarms the only layer that could catch the failure D3 defines. That is the wrong direction on the
 one gate that exists for qualitative fabrication.
 
-**The audit gets the source bundle; the composer gets the source bundle plus framing.**
-`render_bundle` grows a keyword-only `include_framing=True`, and the audit call site passes
-`include_framing=False`. Nothing about the audit changes: it sees exactly the text it sees today,
-so a skills-only claim stays `unsupported` and stays held.
+**The audit keeps calling `render_bundle`, unchanged. The composer calls a new
+`render_composer_bundle`.** The framing section and the derived negative below are emitted by that
+one, and by nothing else. The audit call site is not edited at all, which is the strongest available
+form of "it sees exactly the text it sees today".
+
+**Rejected: a keyword-only `include_framing=True` on `render_bundle`.** That was revision 2's
+design, and plan review round 2 falsified it twice over. It defaults toward WIDENING -- a third
+caller who forgets the kwarg gets the framing and treats a skills line as support, re-arming this
+exact failure -- and, measured, it did not even work: `_DERIVED_NEGATIVE` contains the literal
+string `SKILLS INVENTORY` and lands in `bundle["negatives"]`, which rendered under BOTH spellings.
+The auditor was handed a sentence naming a permitted source it could not see, so the re-widening
+arrived as PROSE, the very route this decision rejects below. Two separate reviewers measured it.
+A second function has no default to get wrong.
 
 **Rejected: adding a framing rule to `build_audit_prompt` instead.** It leaves the auditor reasoning
 about a distinction stated in prose, when the same outcome is available by not showing it the
@@ -516,3 +529,9 @@ Behaviour, not coverage. Each names the defect it would catch.
   - `CvResult.skills_unreadable` had no reader, which is the "computed and discarded" defect #167
     opened over, in the docstring of the very dataclass it joins. It now mirrors `dossier_failed`'s
     reader set.
+- **r7** -- second five-reviewer round: 44 findings, 0 Critical, 15 High. **All four cross-cutting
+  High clusters were defects in r6's own fixes**, which is this repo's documented escalation
+  pattern rather than a surprise. The design-level one is recorded in D11 above: the
+  `include_framing` boolean both defaulted toward widening AND failed to achieve what it was for,
+  because the derived negative names the section by name. `render_composer_bundle` replaces it, and
+  the derived negative moves into that function so it cannot reach the auditor at all.
