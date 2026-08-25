@@ -1,6 +1,8 @@
 # tests/test_cv_bundle.py
 import re
 
+import pytest
+
 from sluice.cv import bundle as B
 
 # An explicit map is REQUIRED for any fixture using more than one `Example ...`
@@ -17,6 +19,59 @@ ENTRIES = [
     {"title": "Was CTO", "company": "Example Telemetry", "best_for": "leadership",
      "category": "leadership", "metrics": "15", "body": "Led 15 people."},
 ]
+
+# The bundle prompt as it stood BEFORE #174's refactor, frozen as a literal.
+#
+# This is the reference for `tests/test_cv_bundle.py`'s two assertions, and it is
+# load-bearing that it is a LITERAL rather than something recomputed: a reference derived
+# from `render_bundle` moves with any mutation of `render_bundle`, which is exactly how
+# this spec's revision 2 shipped three tests that killed nothing (measured -- see the
+# design doc's D10). Captured from the shipped implementation at the commit that precedes
+# the refactor.
+#
+# Every entry field carries a distinct sentinel digit, INCLUDING `best_for` and `category`,
+# which `render_bundle` does not emit -- so the equality below asserts their exclusion
+# rather than merely failing to mention it. The third entry has no body, covering
+# `_entry_block`'s one-line arm.
+#
+# Updating this literal is a DELIBERATE act: it means the prompt the model sees has
+# changed. Re-capture it, read the diff, and say in the commit message why the prompt moved.
+
+FROZEN_ENTRIES = [
+    {"company": "Example Alpha 31", "title": "Staff Engineer, 32 teams",
+     "metrics": "33 34", "best_for": "leadership 35", "category": "platform 36",
+     "body": "Ran 37 services.\nOwned 38 dashboards."},
+    {"company": "Example Beta 41", "title": "Principal Engineer",
+     "metrics": "43", "best_for": "delivery 45", "category": "data 46",
+     "body": "Cut latency to 47 ms."},
+    {"company": "Example Alpha 51", "title": "Engineer", "metrics": "53",
+     "best_for": "", "category": "", "body": ""},
+]
+FROZEN_BASELINE = "Baseline names 21 and 22."
+FROZEN_NEGATIVES = ["never claim 91 users", "never claim 92 uptime"]
+FROZEN_PREFIX_MAP = {"Example Alpha 31": "AL", "Example Beta 41": "BE",
+                      "Example Alpha 51": "AL"}   # keys are the FULL company strings:
+# `_prefix` does `prefix_map.get(company) or company`, so a key that is a PREFIX of the
+# company falls through to deriving "EX" from the name and every id collides into one
+# sequence. Measured. tests/test_cv_bundle.py:8-12 already documents this trap.
+
+FROZEN_BUNDLE_TEXT = """\
+=== BASELINE CV (authoritative for dates/employers/certs) ===
+Baseline names 21 and 22.
+
+=== VERIFIED EXPERIENCE ENTRIES (the ONLY permitted source; cite by [id]) ===
+[AL1] (Example Alpha 31) Staff Engineer, 32 teams | metrics=33 34
+Ran 37 services.
+Owned 38 dashboards.
+
+[BE1] (Example Beta 41) Principal Engineer | metrics=43
+Cut latency to 47 ms.
+
+[AL2] (Example Alpha 51) Engineer | metrics=53
+
+=== NEGATIVE CONSTRAINTS (must NOT appear) ===
+- never claim 91 users
+- never claim 92 uptime"""
 
 def test_codes_are_short_company_prefixed_and_sequenced():
     coded = B.assign_codes(ENTRIES, PREFIX)
@@ -70,3 +125,144 @@ def test_prefix_map_override_is_coerced_to_two_letters():
         {"Foo": "X", "Bar": "ABC"})
     ids = [e["id"] for e in coded]
     assert all(re.match(r"^[A-Z]{2}[0-9]+$", i) for i in ids), ids
+
+def _frozen_bundle():
+    return B.build_bundle(entries=FROZEN_ENTRIES, baseline=FROZEN_BASELINE,
+                          negatives=FROZEN_NEGATIVES, jd_keywords=[],
+                          prefix_map=FROZEN_PREFIX_MAP)
+
+
+def test_the_rendered_prompt_has_not_drifted():
+    """`render_bundle`'s output IS the prompt two live LLM calls see (cv/engine.py:326
+    compose, :653 audit). The pre-#174 text is frozen at the top of this file, so a refactor
+    that changes presentation without changing any digit -- reordering fields, renaming
+    `metrics=`, dropping the inter-entry blank line -- is caught here rather than shipping
+    a silently different prompt. The existing substring pin below cannot see any of those.
+
+    Updating the literal is the deliberate act; failing this test is not a reason to
+    weaken it."""
+    assert B.render_bundle(_frozen_bundle()) == FROZEN_BUNDLE_TEXT
+
+
+def _oracle(bundle_text):
+    """`_bundle_ids_and_nums` as it stood in sluice/cv/validate.py before #174 deleted it.
+
+    Transcribed from `git show f1c4e7f:sluice/cv/validate.py` lines 52-77. Two changes
+    from that transcription, both non-substantive: `nums` values are frozen to
+    `frozenset` to compare against `BundleSources`, and the pre-change function's third
+    return value, `ids` (a dict of id -> the full matched line, assigned in the same
+    branch as `nums`), is dropped -- its key set is provably identical to `nums`'s, since
+    both are written together in that one `if m:` branch and nothing later adds to either
+    independently, so keeping it here would add nothing this test can observe. Every
+    predicate -- both regexes, the `continue`, the three branches -- is byte-for-byte the
+    pre-change code.
+
+    Deriving this reference by reading the NEW code would assert that the code equals
+    itself and certify nothing. Feeding it `render_bundle(b)` would do the same one level
+    out, because `render_bundle` is itself under test here: measured, `drop_title`,
+    `drop_company` and `emit_best_for` ALL SURVIVE that spelling, since both sides of the
+    equality move with the mutant. It is fed the FROZEN literal for that reason.
+    """
+    section_re = re.compile(r"^\s*={3,}[^=].*[^=]={3,}\s*$")
+    id_re = re.compile(r"^\[([A-Z]{2}\d+)\]")
+    nums, baseline = {}, set()
+    cur, seen_id = None, False
+    for line in bundle_text.splitlines():
+        if section_re.match(line):
+            cur = None
+            continue
+        m = id_re.match(line)
+        if m:
+            seen_id, cur = True, m.group(1)
+            nums[cur] = set(re.findall(r"\d+", line[m.end():]))
+        elif cur:
+            nums[cur] |= set(re.findall(r"\d+", line))
+        elif not seen_id:
+            baseline |= set(re.findall(r"\d+", line))
+    return {k: frozenset(v) for k, v in nums.items()}, frozenset(baseline)
+
+
+def test_the_allowlist_still_matches_the_frozen_prompt():
+    """The co-variant detector, and the reason the reference is a frozen literal.
+
+    `_entry_block` feeds BOTH the prompt and the allowlist, so deleting a field from it
+    removes that field from both and any render-vs-sources comparison still agrees --
+    measured across 24 scenarios, killed by nothing. Comparing against text captured
+    BEFORE the refactor is what makes the loss visible: the frozen literal still contains
+    the digits, the new derivation no longer yields them, and the equality breaks.
+
+    The corpus is CLEAN on purpose. On POISONED input (an `[XX9]`-shaped line inside an
+    entry body or the baseline) the two are deliberately UNEQUAL -- that inequality is
+    the entire point of #174, and a future reader must not "repair" this by widening the
+    corpus.
+    """
+    b = _frozen_bundle()
+    assert B.bundle_sources(b) == B.BundleSources(*_oracle(FROZEN_BUNDLE_TEXT))
+
+
+def test_ids_is_derived_from_nums():
+    b = _frozen_bundle()
+    s = B.bundle_sources(b)
+    assert set(s.ids) == set(s.nums)
+    assert set(s.ids) == {"AL1", "BE1", "AL2"}
+
+
+def test_bundle_sources_sentinels_hold_independent_of_the_frozen_literal():
+    """The two tests above compare against FROZEN_BUNDLE_TEXT, and that literal's own
+    header comment invites re-capturing it after a deliberate change -- which is exactly
+    what lets a NARROWING launder through unnoticed. Measured: drop `title` from
+    `_entry_block` and re-capture the literal to match (recomputed via `render_bundle`
+    under that same mutation), and BOTH `test_the_rendered_prompt_has_not_drifted` and
+    `test_the_allowlist_still_matches_the_frozen_prompt` stay green -- only the older
+    substring pin (`test_render_bundle_has_codes_and_negatives_and_bodies`, which asserts
+    presentation, not the allowlist) reddens.
+
+    This test compares against no literal at all, so there is nothing to bring back into
+    sync by re-freezing: it asserts the sentinel digits directly against
+    `bundle_sources(b)`, keyed to which FIELD each digit came from.
+    """
+    b = _frozen_bundle()
+    s = B.bundle_sources(b)
+    # AL1: every field's own sentinel digit must be present -- company (31), title (32),
+    # metrics (33, 34), body (37, 38). Losing '32' alone is what a dropped `title` field
+    # would cost; the other five are the OTHER fields' distinct sentinels.
+    assert {"31", "32", "33", "34", "37", "38"} <= s.nums["AL1"]
+    # best_for (35) and category (36) must be ABSENT: render_bundle never emits either
+    # field, and bundle_sources harvests exactly what render_bundle emits.
+    assert not ({"35", "36"} & s.nums["AL1"])
+    # BE1: company (41), metrics (43), body (47). Its title ("Principal Engineer") has no
+    # digit of its own, so this entry cannot witness title's presence -- AL1's '32' above
+    # is what does.
+    assert {"41", "43", "47"} <= s.nums["BE1"]
+    assert not ({"45", "46"} & s.nums["BE1"])
+    # AL2: no body, best_for or category -- only company (51) and metrics (53). Equality,
+    # not containment, since there is nothing else this entry could admit.
+    assert s.nums["AL2"] == frozenset({"51", "53"})
+    # baseline: 21 and 22, never the negatives' 91/92.
+    assert s.baseline == frozenset({"21", "22"})
+    # The negatives sentinels (91, 92) must be absent from EVERY entry's allowlist too,
+    # not merely excluded from baseline.
+    all_nums = set().union(*s.nums.values())
+    assert not ({"91", "92"} & all_nums)
+
+
+def test_a_duplicate_id_raises_naming_the_id_and_not_the_entry():
+    """`assign_codes` cannot produce a duplicate, so this is unreachable from
+    `build_bundle`. It earns its lines because `bundle_sources` takes an untyped dict and
+    #164 is about to give bundle contents a non-human author -- and because the failure it
+    prevents is one entry's allowlist silently replacing another's, which is #174's own
+    defect shape one layer up.
+
+    The message must name the ID and no part of the ENTRY: an entry carries the user's
+    company, title, metrics and body, and cv/engine.py:795 logs a failed run with %s.
+    """
+    b = {"baseline": "", "negatives": [],
+         "entries": [{"id": "AL1", "company": "Example Alpha", "title": "A",
+                      "metrics": "1", "body": "secret body text"},
+                     {"id": "AL1", "company": "Example Beta", "title": "B",
+                      "metrics": "2", "body": "other secret"}]}
+    with pytest.raises(ValueError) as ei:
+        B.bundle_sources(b)
+    assert "AL1" in str(ei.value)
+    assert "secret body text" not in str(ei.value)
+    assert "Example Alpha" not in str(ei.value)
