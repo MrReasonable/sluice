@@ -31,7 +31,7 @@ A one-shot skill: invoke it on a PR, and it drives the PR to green and merges it
 - **`rulesync`**: `npm ci --ignore-scripts` then `npm run rulesync`, asserting the regeneration wrote every output it should (`scripts/guard_rulesync_drift.py`, a count-based check -- a clean `git status` alone cannot see a dropped hook command), that the emitted `.claude/settings.json` still carries the no-bypass hook, and that the tree is clean afterward. This is the drift gate: it fails whenever `.rulesync/` and its generated outputs (`CLAUDE.md`, `AGENTS.md`, `.claude/`, ...) have come apart.
 - **`ci-success`**: the aggregate gate. It requires all three of the above to succeed.
 
-The local bar is identical and takes seconds. The suite runs in well under a second and is fully offline:
+The local bar is identical and is quick. The suite is fast and fully offline:
 
 ```bash
 ruff check sluice tests scripts
@@ -279,7 +279,7 @@ For each failed gate, fetch the failure log via the `detailsUrl`. Classify:
 
 - **Lint failure** (`ruff check sluice tests scripts`): reproduce locally, then let ruff fix what it can with `ruff check --fix sluice tests scripts` and hand-fix the rest. Re-run `ruff check sluice tests scripts` until clean. Commit as a fixup to the most recent commit that introduced the offending code. If it fails in CI but passes locally, your ruff is a different version: CI pins `0.15.21`.
 - **Workflow-lint failure** (zizmor over `.github/workflows/`): fix the workflow properly. Pin actions by SHA, keep `persist-credentials: false`, keep permissions least-privilege. Never add a blanket ignore to silence it.
-- **Test failure** (`python -m pytest`): read the output and fix the code, not the test, unless the test is genuinely wrong. The suite is offline and takes about 1.5 seconds, so there is no excuse for pushing a speculative fix. Reproduce locally first.
+- **Test failure** (`python -m pytest`): read the output and fix the code, not the test, unless the test is genuinely wrong. The suite is offline and fast, so there is no excuse for pushing a speculative fix. Reproduce locally first.
 - **Test failure on one Python version only** (3.12, 3.13 or 3.14): a version-conditional bug, not a flake. Reproduce against that interpreter before you touch anything.
 - **Guard-test failure** (`tests/test_sluice_neutral_defaults.py`): do not "fix" the test. The guard is telling you the diff has baked a personal preference into shipped code. Fix the code, or escalate.
 - **Security scan failure**: NEVER suppress it, and fix the underlying issue instead.
@@ -362,7 +362,7 @@ if ! git rebase "origin/$base"; then
   exit 2
 fi
 
-# Re-run the local bar after the rebase. ~2 seconds, and it catches the case where the base
+# Re-run the local bar after the rebase -- it's quick, and it catches the case where the base
 # moved under you and the branch is now semantically stale though it merged textually.
 ruff check sluice tests scripts && python -m pytest || {
   echo "local gates fail after rebase onto origin/$base, escalating" >&2
@@ -487,4 +487,4 @@ When you reject, **always** reply on the thread with a one-sentence rationale. C
 - **Run on a branch you trust.** This skill makes commits on your behalf and pushes them. Open a draft PR first if you want a manual checkpoint.
 - **Watch the first iteration in real time.** Once you have seen how it handles this repo's common failure modes, you can trust it to run unattended.
 - **Cap iterations conservatively.** Five is enough for a legitimate fix loop. More than that means something is structurally wrong: an unresolved design question, a version-conditional bug, or a finding you keep half-fixing.
-- **The local bar is 2 seconds.** There is never a good reason to discover a lint or test failure in CI. Run `ruff check sluice tests scripts && python -m pytest` before every push.
+- **The local bar is quick.** There is never a good reason to discover a lint or test failure in CI. Run `ruff check sluice tests scripts && python -m pytest` before every push.

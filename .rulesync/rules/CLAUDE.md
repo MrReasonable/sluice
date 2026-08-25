@@ -24,7 +24,7 @@ that drops the flag sends a human down an install path CI deliberately does not 
 pip install -e ".[test]"        # pytest, pytest-cov, faker (see Neutrality), jinja2 (see the
                                  # renderer seam below), setuptools + build (tests/test_packaging.py
                                  # builds a real wheel offline)
-python -m pytest                # fast (well under a second), fully offline: no Camofox, no network
+python -m pytest                # fast, fully offline: no Camofox, no network
 python -m pytest tests/test_triage_engine.py            # one file
 python -m pytest tests/test_triage_engine.py -k judge   # one test
 ruff check sluice tests scripts         # NB: ruff is NOT in [test]; pip install ruff==0.15.21 (the CI pin)
@@ -417,15 +417,31 @@ and must agree on the floor.
 
 **The CV fabrication gate is hard.** `cv/validate.py` is pure and deterministic: every WORK bullet
 must cite a real bundle `[id]` and every number in a bullet must appear in a cited entry; the PROFILE
-prose (which has no per-bullet citations) has a bundle-wide numeric floor — a figure present nowhere in
-the bundle is a violation, citations stripped with render's exact `_CITE_RE` — and — enforced
+prose (which has no per-bullet citations) has a source-set-wide numeric floor — a figure present
+nowhere in the source set (the baseline plus every entry, never the NEGATIVE CONSTRAINTS the bundle
+also carries) is a violation, citations stripped with render's exact `_CITE_RE` — and — enforced
 beside it in `cv/engine.py`, since `validate` returns `[]` rather than complaining — a composed
 CV missing the exact `WORK EXPERIENCE`/`PROFILE` headers fails closed, since the section-keyed
 checks would otherwise silently not run. That verdict, together with `cv/engine.py`'s own inline STRUCTURAL
 guards beside it (the header checks just named, plus the three name/contact-block anchors described
 below), `cv/slop.py`'s unscoped HARD tier (an em dash or a literal `--`), and the renderer's own
 optional `precheck`, form the HARD gate: a non-empty finding list blocks rendering, and a lead with no
-attempt that ever cleared it is skipped — a CV is never rendered ungated. The SCOPED STYLE tier
+attempt that ever cleared it is skipped — a CV is never rendered ungated. The gate is HANDED its
+source set rather than recovering it: `validate`'s second parameter is `cv/bundle.py`'s
+`BundleSources`, built by `bundle_sources(bundle)` from `build_bundle`'s own structured entries,
+never by re-parsing the rendered bundle TEXT (#174) — so no line of user free text can mint or
+rebind a citable `[id]`. That closed three live holes: a later body line shaped like an EARLIER
+real code used to REBIND that entry's allowlist, so a fabricated figure passed while the entry's
+own genuine metric was reported invented; an `[XX9]`-shaped line anywhere in the BASELINE minted a
+fully citable entry of its own; and, at zero entries, the NEGATIVE CONSTRAINTS block fell through
+into the PROFILE pool so a do-not-say figure was profile-permitted. That closure has a price: `cv/bundle.py`'s
+`_entry_block` now feeds BOTH the rendered prompt and the gate's allowlist, so a change to how an
+entry is presented to the model is also a change to what the gate permits — deliberate, since it is
+what removes the three holes above, but the two can no longer be varied independently. It also
+re-admits two narrow PROFILE-pool widenings the old positional parse excluded as a side effect of
+its own bugs: a `=== 2020 Highlights ===`-shaped BASELINE line now permits its digits in PROFILE
+prose, and an id-shaped baseline line's own digit (the `9` of a stray `[ZZ9]`) does too — see
+`docs/ARCHITECTURE.md` for the mechanism. The SCOPED STYLE tier
 (#167) has TWO halves and neither blocks: `cv/slop.py`'s ~40 AI-tell stems and the opt-in
 model-judged `cv/voice.py` check (`cv.voice_check`). The scoping is a property of the TIER, so it
 covers both — `cv/engine.py` matches the stems against, and shows the model, exactly the
@@ -588,7 +604,7 @@ at the feature that exists to prevent fabrication. Widen the parser, never `cv/v
 
 `tests/test_cv_parse.py`'s implication sweep is the standing check, and **its coverage is narrower
 than the rule** — read this before concluding a case is already swept. It asserts
-`validate(cv, bundle) == [] ⇒ parse_cv(cv) does not raise` with the antecedent COMPUTED from the
+`validate(cv, sources) == [] ⇒ parse_cv(cv) does not raise` with the antecedent COMPUTED from the
 real gate per row, over one alphabet: separator × terminal token × start-month width, applied to the
 FIRST role's date range in one fixture. So it covers `parts[0]` of one meta line and nothing else.
 Known un-swept axis, measured: a FOUR-field meta line
