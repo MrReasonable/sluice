@@ -417,7 +417,8 @@ def cv_run(sluice: Sluice, lead: str, backend: _BackendRole = "auto") -> dict:
         notes = [n for n in sluice.store().read_leads({"shortlist"}) if slug_matches(n, lead)]
         return {"outcome": "ambiguous", "candidates": sorted(n.slug for n in notes)}
     r = results[0]
-    out = {"outcome": r.status, "served": r.served, "dossier_failed": r.dossier_failed}
+    out = {"outcome": r.status, "served": r.served, "dossier_failed": r.dossier_failed,
+           "skills_unreadable": r.skills_unreadable}
     if r.violations:
         out["violations"] = r.violations
     if r.audit_flags:

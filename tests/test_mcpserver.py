@@ -776,6 +776,8 @@ def test_cv_run_tool_skipped_needs_signoff_for_a_lead_already_holding_pending_cv
     class _MinimalCvStore:
         def read_leads(self, statuses=None):
             return [note]
+        def read_evidence(self, kind, verified_only=True):
+            return []
         def read_experience_entries(self, verified_only=True):
             return []
         def read_baseline(self):
@@ -828,6 +830,8 @@ def test_cv_run_tool_skipped_selection_for_a_non_shortlist_lead(monkeypatch):
             if statuses and note.fm.get("status") not in statuses:
                 return []
             return [note]
+        def read_evidence(self, kind, verified_only=True):
+            return []
         def read_experience_entries(self, verified_only=True):
             return []
         def read_baseline(self):

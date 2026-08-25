@@ -132,21 +132,13 @@ def test_the_citability_key_is_written_in_exactly_one_function():
         f"exactly one writer, and a second one is a new trust root, not a convenience")
 
 
-def test_cited_by_gate_names_exactly_the_kinds_the_cv_engine_reads():
-    """#164 review, M2. `doctor` and the `add` handler both told a user that verifying
-    an entry of ANY kind made it "citable by the CV fabrication gate", while
-    `cv/engine.py` reads `experience` alone -- `skills`/`stories` wait on #165. A flag
-    on the registry means #165 flips a boolean instead of editing prose in three files,
-    but a hand-set boolean can go stale in exactly the way the prose did.
-
-    So the true set is DERIVED from `cv/engine.py`'s own source rather than restated
-    here: whichever kinds that module actually reads must be exactly the flagged ones.
-    When #165 adds a `read_evidence("skills", ...)` there, this row goes red until the
-    flag follows -- which is the whole point.
+def test_read_by_composer_names_exactly_the_kinds_the_cv_engine_reads():
+    """#164's mechanism, retargeted at the flag it actually answers. Whichever kinds
+    `cv/engine.py` reads must be exactly the ones flagged `read_by_composer`.
 
     The scope assertion is load-bearing, not decoration: a matcher that found NOTHING
-    would leave the equality below comparing two empty sets, green forever -- this
-    repo's own `all([])` trap, one layer up.
+    would leave the equality below comparing two empty sets, green forever -- this repo's
+    own `all([])` trap, one layer up.
     """
     import pathlib
     import re
@@ -154,17 +146,46 @@ def test_cited_by_gate_names_exactly_the_kinds_the_cv_engine_reads():
     src = (pathlib.Path(__file__).resolve().parents[1] / "sluice" / "cv" / "engine.py"
            ).read_text(encoding="utf-8")
     reached = set(re.findall(r"""read_evidence\(\s*["']([a-z]+)["']""", src))
-    # `read_experience_entries` is the experience-specific delegate (core/vault.py), so
-    # a call to it reaches `experience` without naming the kind as a string anywhere.
-    if "read_experience_entries(" in src:
-        reached.add("experience")
     assert reached, ("the sweep found no evidence read in sluice/cv/engine.py -- the "
-                     "matcher is broken, not the engine; without this the equality "
-                     "below would compare two empty sets and pass vacuously")
-    assert reached == {k for k, spec in EVIDENCE_KINDS.items() if spec.cited_by_gate}, (
+                     "matcher is broken, not the engine; without this the equality below "
+                     "would compare two empty sets and pass vacuously")
+    assert reached == {k for k, spec in EVIDENCE_KINDS.items() if spec.read_by_composer}, (
         f"cv/engine.py reads {sorted(reached)}, but EVIDENCE_KINDS flags "
-        f"{sorted(k for k, s in EVIDENCE_KINDS.items() if s.cited_by_gate)} as "
-        f"cited_by_gate -- every user-facing 'citable' message is keyed on that flag")
+        f"{sorted(k for k, s in EVIDENCE_KINDS.items() if s.read_by_composer)} as "
+        f"read_by_composer")
+
+
+def test_cited_by_gate_is_exactly_what_bundle_sources_actually_licenses():
+    """#164 derived this by grepping the engine, on the assumption that a corpus the engine
+    READS is a corpus the gate CITES. #165 broke that assumption on purpose: skills reach
+    the composer's prompt and are licensed nowhere.
+
+    So derive it by EXECUTION instead. Give each read kind a distinct sentinel digit, build
+    a real bundle, and ask `bundle_sources` which sentinels it licensed. A source grep
+    cannot answer this -- citability is decided by `bundle_sources`, which walks
+    `bundle["entries"]` and knows nothing about kinds -- and this oracle cannot go stale,
+    because it IS the mechanism.
+    """
+    from sluice.cv import bundle as B
+
+    sentinels = {"experience": "8801", "skills": "8802"}
+    assert set(sentinels) == {k for k, s in EVIDENCE_KINDS.items() if s.read_by_composer}, (
+        "a read_by_composer kind has no sentinel here, so it sits outside this comparison "
+        "entirely and the equality below cannot see it")
+    b = B.build_bundle(
+        [{"title": "t", "company": "Example Co", "best_for": "", "category": "",
+          "metrics": sentinels["experience"], "body": ""}],
+        "baseline", [], [], {},
+        skills=[{"title": "s", "best_for": "", "body": "",
+                 "fields": {"Domain": "", "Proficiency": sentinels["skills"],
+                            "Evidence": "", "Signal Value": ""}}])
+    sources = B.bundle_sources(b)
+    licensed = set().union(*sources.nums.values(), sources.baseline)
+    assert sentinels["experience"] in licensed, (
+        "the experience sentinel was not licensed -- the fixture is wrong, and the "
+        "equality below would pass for the wrong reason")
+    assert {k for k, d in sentinels.items() if d in licensed} \
+        == {k for k, s in EVIDENCE_KINDS.items() if s.cited_by_gate}
 
 
 _EIGHT = {"path", "title", "company", "category", "best_for", "metrics", "verified", "body"}
@@ -1029,4 +1050,4 @@ def test_the_registry_flags_are_what_this_change_intends():
     """SCOPE: pins all three kinds, so a kind silently dropped from the registry or a flag
     flipped in either direction reddens here rather than passing vacuously."""
     assert {k: (s.read_by_composer, s.cited_by_gate) for k, s in EVIDENCE_KINDS.items()} \
-        == {"experience": (True, True), "skills": (False, False), "stories": (False, False)}
+        == {"experience": (True, True), "skills": (True, False), "stories": (False, False)}

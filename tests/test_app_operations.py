@@ -287,6 +287,10 @@ class _PrecheckStore:
     def read_leads(self, statuses=None):
         return [self._note]
 
+    def read_evidence(self, kind, verified_only=True):
+        from tests.test_cv_engine import ENTRIES
+        return ENTRIES if kind == "experience" else []
+
     def read_experience_entries(self, verified_only=True):
         from tests.test_cv_engine import ENTRIES
         return ENTRIES
