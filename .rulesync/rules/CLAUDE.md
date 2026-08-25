@@ -419,7 +419,9 @@ and must agree on the floor.
 must cite a real bundle `[id]` and every number in a bullet must appear in a cited entry; the PROFILE
 prose (which has no per-bullet citations) has a source-set-wide numeric floor — a figure present
 nowhere in the source set (the baseline plus every entry, never the NEGATIVE CONSTRAINTS the bundle
-also carries) is a violation, citations stripped with render's exact `_CITE_RE` — and — enforced
+also carries, and never the SKILLS INVENTORY framing section #165 added — `bundle_sources` walks
+`bundle["entries"]` alone, so a skills figure is licensed in neither pool, and `compose.py`'s rules
+tell the model so) is a violation, citations stripped with render's exact `_CITE_RE` — and — enforced
 beside it in `cv/engine.py`, since `validate` returns `[]` rather than complaining — a composed
 CV missing the exact `WORK EXPERIENCE`/`PROFILE` headers fails closed, since the section-keyed
 checks would otherwise silently not run. That verdict, together with `cv/engine.py`'s own inline STRUCTURAL
@@ -489,10 +491,14 @@ discipline `update_fields`' `require_status` uses, and reachable in practice, si
 at a prompt while their editor is free to save. Two things follow. The `verified:` key is
 STORE-MANAGED, so a new evidence field must never be one a caller supplies; and a second promotion
 path — a bulk verifier, an MCP write tool, a `--yes` — is not a convenience but a new trust root,
-and would need the whole set of refusals above rebuilt around it. `EvidenceKind.cited_by_gate` says
-which corpora the gate actually reads today (`experience` alone; `skills`/`stories` at #165), and
-every user-facing message that says what `verify` buys is keyed on it rather than asserting
-citability for all three.
+and would need the whole set of refusals above rebuilt around it. `EvidenceKind` carries TWO flags since #165, because
+the questions stopped having one answer: `read_by_composer` says the corpus reaches the composer's
+prompt, `cited_by_gate` says the fabrication gate may LICENSE its content. `experience` is both,
+`skills` is the first only (shown as framing, licensed by nothing), `stories` is neither, and
+`__post_init__` refuses `cited_by_gate` without `read_by_composer` since the gate cannot license
+what the composer never emitted. Every user-facing message that says what `verify` buys is keyed on
+`cited_by_gate` rather than asserting citability for all three -- keying it on the wrong flag
+re-creates the over-claim the flag exists to prevent.
 
 **Where that boundary STOPS, stated rather than implied: a human editing their own vault.** The
 vault is the user's Obsidian directory and hand-editing it is a first-class workflow here, so a

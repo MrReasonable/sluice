@@ -34,10 +34,11 @@ output interpolates values no roster of constants could see.
 from sluice.core.protocols import EVIDENCE_KINDS
 
 # "unless", not "until": "until" states that review is SUFFICIENT to make an entry
-# usable by the gate, and for `skills`/`stories` it is not -- `cv/engine.py` reads
-# `experience` alone until #165 (#164 review, M2, the same over-claim as doctor's and
-# `add`'s). "unless" states the necessary condition, which is true of every kind and
-# stays true when #165 lands.
+# usable by the gate, and for `skills`/`stories` it is not -- the gate LICENSES
+# `experience` alone (#164 review, M2, the same over-claim as doctor's and `add`'s).
+# "unless" states the necessary condition, which is true of every kind. It survived
+# #165 unchanged, which is the point of having written it that way: `skills` became
+# composer-visible without becoming citable, and this sentence needed no edit.
 _INTRO = ("These are long-tail corpora meant to grow -- capture a handful now and add "
           "more any time with `job-sluice {kind} add`. Nothing here is used by the CV "
           "gate unless you review it with `job-sluice {kind} verify`.")
