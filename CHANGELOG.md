@@ -40,6 +40,48 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.0.0](https://github.com/MrReasonable/sluice/compare/v1.2.0...v2.0.0) (2026-08-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* **config:** a config file that gives a scalar for a list or mapping key now refuses to load instead of silently mis-configuring the gate it feeds. A working `relevance_keep: engineer` stops the run until it is written `[engineer]`. Nobody noticed it was broken because it kept a superset; the fix is one edit and the message gives both spellings.
+
+### Features
+
+* **cv:** derive the gate's source set from the bundle structure ([#174](https://github.com/MrReasonable/sluice/issues/174)) ([5edaa35](https://github.com/MrReasonable/sluice/commit/5edaa355df13183916eba7f29cade7ed24e39465))
+* **evidence:** add the capture commands and the init wizard steps ([#164](https://github.com/MrReasonable/sluice/issues/164)) ([8858ca2](https://github.com/MrReasonable/sluice/commit/8858ca21192d9abd1145ba4a04bf5591f33f49b2))
+* **evidence:** add the evidence store surface and the Sluice facade ([#164](https://github.com/MrReasonable/sluice/issues/164)) ([16a7af2](https://github.com/MrReasonable/sluice/commit/16a7af2d505c57853411c1c379f69e69123e61ca))
+* **evidence:** report the three corpora through doctor ([#164](https://github.com/MrReasonable/sluice/issues/164)) ([0274625](https://github.com/MrReasonable/sluice/commit/0274625aa461172cc03069e6ddc97c487af2b56b))
+* **mcp:** expose evidence entries read-only ([#164](https://github.com/MrReasonable/sluice/issues/164)) ([83badc8](https://github.com/MrReasonable/sluice/commit/83badc84d6e9346930c1909ab2bb9f53d65f13d5))
+* **packaging:** bump a Homebrew tap formula on release ([#104](https://github.com/MrReasonable/sluice/issues/104)) ([daa3f49](https://github.com/MrReasonable/sluice/commit/daa3f49c62572d14f342125978d7100e3be32027))
+* **packaging:** render the Homebrew formula from release metadata ([#104](https://github.com/MrReasonable/sluice/issues/104)) ([9b6ff1c](https://github.com/MrReasonable/sluice/commit/9b6ff1c657f933f88b49dfc48867891e1b7245b3))
+
+
+### Bug Fixes
+
+* **config:** refuse a scalar where a list or mapping is required ([#176](https://github.com/MrReasonable/sluice/issues/176)) ([08d4d4a](https://github.com/MrReasonable/sluice/commit/08d4d4a06ec639086cbff5680a0bb69ad1fc13c4))
+* **config:** stop the refusal instructing the bug it refuses ([#176](https://github.com/MrReasonable/sluice/issues/176) review) ([9e4d17a](https://github.com/MrReasonable/sluice/commit/9e4d17a964e666a6701cc2c468ef9f38bebb5e3a))
+* **cv:** enforce the premise the migration rests on ([#181](https://github.com/MrReasonable/sluice/issues/181) review) ([21920c7](https://github.com/MrReasonable/sluice/commit/21920c7c868f66820ee809c22e3a73d7fb2f022b))
+* **cv:** hand the fabrication gate its true source set ([#174](https://github.com/MrReasonable/sluice/issues/174)) ([de1e774](https://github.com/MrReasonable/sluice/commit/de1e774323a3307c656627efe86fe37f11c81915))
+* **cv:** migrate a renamed slop stem instead of breaking the config ([#181](https://github.com/MrReasonable/sluice/issues/181)) ([33a6a5a](https://github.com/MrReasonable/sluice/commit/33a6a5a51fdc6d20732378a5e81a636d6b48c15e))
+* **cv:** repoint [#164](https://github.com/MrReasonable/sluice/issues/164)'s write-side guard now that the id parse is gone ([908acf8](https://github.com/MrReasonable/sluice/commit/908acf826a380bb576adf6564eedb97f701fe9ca))
+* **packaging:** make the Homebrew scripts run under macOS bash 3.2 ([#104](https://github.com/MrReasonable/sluice/issues/104)) ([0db9aaa](https://github.com/MrReasonable/sluice/commit/0db9aaa68b9ce6f0240043f48d82f8fcb6523d35))
+* **packaging:** satisfy brew audit --strict on the rendered formula ([#104](https://github.com/MrReasonable/sluice/issues/104)) ([f9d8969](https://github.com/MrReasonable/sluice/commit/f9d896955e33bf8de91eef0de8547e8b6dbee140))
+
+
+### Documentation
+
+* **cv:** spec and plan handing the gate its true source set ([#174](https://github.com/MrReasonable/sluice/issues/174)) ([bb46695](https://github.com/MrReasonable/sluice/commit/bb46695cb31a22be5dbf375a5e992b1641cfb022))
+* **cv:** state that the gate is handed its source set ([#174](https://github.com/MrReasonable/sluice/issues/174)) ([b3e439f](https://github.com/MrReasonable/sluice/commit/b3e439f331c3422a25b140395c8387349ecfd5f8))
+* **evidence:** design and plan the evidence corpus capture path ([#164](https://github.com/MrReasonable/sluice/issues/164)) ([63385e2](https://github.com/MrReasonable/sluice/commit/63385e248108297c8c168b07c69c9c8d843562e6))
+* **evidence:** record the capture surface and the citability invariant ([#164](https://github.com/MrReasonable/sluice/issues/164)) ([09c564b](https://github.com/MrReasonable/sluice/commit/09c564b441bcad1eb93abd1d45b9586bdee8dcfb))
+* label the diagnostic block in the [#176](https://github.com/MrReasonable/sluice/issues/176) troubleshooting entry ([4a1aa95](https://github.com/MrReasonable/sluice/commit/4a1aa95684d901a9470e46c584ee0cd14b28fe0d))
+* **packaging:** correct the macOS loader-path claim for the tap ([#104](https://github.com/MrReasonable/sluice/issues/104)) ([f266768](https://github.com/MrReasonable/sluice/commit/f2667683d9bcdfd6cfc1ae29cf3536317e0487ae))
+* **packaging:** design and plan the Homebrew tap channel ([#104](https://github.com/MrReasonable/sluice/issues/104)) ([da796d1](https://github.com/MrReasonable/sluice/commit/da796d179622ca870d7df51e968ddaadc08be7f2))
+* repoint drifted citations and drop the stale suite-duration claims ([95fc8c6](https://github.com/MrReasonable/sluice/commit/95fc8c62f9530dcf4c4c1f6cb3b19cbb84442327))
+* **troubleshooting:** split the target_locations example into parseable blocks ([5bdb720](https://github.com/MrReasonable/sluice/commit/5bdb7203128c2f6c35b427b429e581d409cc8a31))
+
 ## [1.2.0](https://github.com/MrReasonable/sluice/compare/v1.1.0...v1.2.0) (2026-08-23)
 
 
