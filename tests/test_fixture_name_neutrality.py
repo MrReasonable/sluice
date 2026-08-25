@@ -192,9 +192,14 @@ _SELF = Path(__file__).name
 # and several are not employers at all (`Example Candidate`, `Example Location`,
 # `Example Cert`, `Example University`, `Example Decoy` name a person, a place, a
 # certificate, a school and a deliberate fabrication-gate decoy).
+# `Example Alpha` (task 8, #174): reached only once the CV module set below stopped being a
+# hand-list and started covering `test_onboard_questions.py` -- a placeholder employer
+# probing the employers gate's case-sensitivity, same `Example <Word>` construction as the
+# rest of this roster. Owner's ruling, 2026-08-24: invented.
 _REVIEWED_FIXTURE_IDENTITIES = frozenset({
     "A", "A-B", "Acme", "Alpha", "Aye", "B", "Beavni", "Bee", "Beta", "C", "Conflicted",
-    "D", "Delta", "E", "Epsilon", "Example", "Example Analytics", "Example Beta",
+    "D", "Delta", "E", "Epsilon", "Example", "Example Alpha", "Example Analytics",
+    "Example Beta",
     "Example Candidate", "Example Cartography", "Example Cert", "Example Cloud",
     "Example Co", "Example Data", "Example Decoy", "Example Leverage",
     "Example Location", "Example Robotics", "Example Scrum", "Example University",
@@ -1464,14 +1469,20 @@ def test_every_captured_fixture_matches_its_reviewed_digest():
 
 # ── CV-body employer lines (#167): a NARROW ratchet for the gap named in the docstring ──
 
-_CV_TEST_MODULES = ("test_cv_engine.py", "test_cv_slop.py", "test_cv_compose.py",
-                    "test_cv_validate.py", "test_cv_parse.py", "test_cv_voice.py",
-                    # A CV-domain module whose name does not start `test_cv_` (#181).
-                    # It holds no identity today, so adding it is inert -- which is
-                    # the point: a hand-list is only safe while somebody remembers
-                    # it, and the convention that would have caught this one
-                    # ("test_cv_*.py") does not match the file.
-                    "test_slop_phrase_retirement.py")
+# CV-domain modules whose FILENAME does not start `test_cv_`, so the glob below cannot
+# find them. Hand-listed of necessity -- but this is now the only hand-list, and it holds
+# the exceptions rather than the rule, which is the part that kept going stale.
+_CV_MODULES_NOT_MATCHING_THE_CONVENTION = (
+    "test_slop_phrase_retirement.py",     # #181
+    "test_renderer_template.py",          # CV-body employer/education identities
+    "test_onboard_questions.py",          # an employer fixture probing the gate
+)
+
+# Derived, not enumerated (#174). Twice a CV module was added and nobody remembered to
+# list it, the second time being the module this very change put new fixtures in.
+_CV_TEST_MODULES = tuple(sorted(
+    {p.name for p in _TESTS_DIR.glob("test_cv_*.py")}
+    | set(_CV_MODULES_NOT_MATCHING_THE_CONVENTION)))
 
 # `Example <Word>` literals only. Weaker than the four positional collectors ON PURPOSE and
 # stated as such above: this can ratchet a name that already LOOKS synthetic, which is not
@@ -1479,6 +1490,14 @@ _CV_TEST_MODULES = ("test_cv_engine.py", "test_cv_slop.py", "test_cv_compose.py"
 # body prose, where no positional collector reaches them, and an unreviewed value there was
 # previously invisible to every check in this file.
 _CV_IDENTITY_RE = re.compile(r"\bExample [A-Z][A-Za-z]+")
+
+# `_REVIEWED_FIXTURE_IDENTITIES` is about LEAD identities -- employers a fixture names.
+# `Example Sans` is a font FAMILY in a @font-face fixture, beside genuine faces like
+# "DejaVu Sans"; it names no firm, and rostering it would make the roster mean something
+# wider than it says. Exempted by name, not by pattern, so a real employer that happened
+# to end in "Sans" would still force the human call. Same shape as CLAUDE.md's cairo/pango
+# carve-out from the place-name sweep. (Owner's ruling, 2026-08-24.)
+_CV_IDENTITY_EXEMPT = frozenset({"Example Sans"})
 
 
 def _cv_fixture_identities():
@@ -1489,6 +1508,31 @@ def _cv_fixture_identities():
             continue
         found |= set(_CV_IDENTITY_RE.findall(path.read_text(encoding="utf-8")))
     return found
+
+
+def test_the_cv_module_set_is_derived_and_not_hand_listed():
+    """A hand-list is only safe while somebody remembers it, and twice now nobody did:
+    `test_slop_phrase_retirement.py` at #181, and `test_cv_bundle.py` at #174 -- the very
+    module the second one put new fixtures in. Deriving the set closes the class.
+
+    Asserts the SCOPE, not the result: a glob that matches nothing satisfies every
+    assertion over it, and for a negative guard like this one finding nothing IS the
+    success case, so the count is the only thing that can catch a broken sweep.
+
+    Pinned as TWO floors, not one. A single floor over the TOTAL (glob matches plus the
+    three hand-listed exceptions) is satisfied even if the glob silently lost three
+    modules, as long as the total still happened to clear 13 -- which it does today by
+    coincidence (13 glob matches + 3 exceptions = 16, and a glob narrowed to exactly 10
+    would still pass a bare `>= 13` total check). Pinning the glob's OWN count separately
+    closes that: a narrowed glob now reds on its own floor before the total is even
+    checked, independent of how many hand-listed exceptions happen to make up the rest.
+    """
+    glob_matched = {p.name for p in _TESTS_DIR.glob("test_cv_*.py")}
+    assert len(glob_matched) >= 13, sorted(glob_matched)
+    assert len(_CV_TEST_MODULES) >= len(glob_matched) + len(_CV_MODULES_NOT_MATCHING_THE_CONVENTION)
+    assert "test_cv_bundle.py" in _CV_TEST_MODULES
+    for extra in _CV_MODULES_NOT_MATCHING_THE_CONVENTION:
+        assert extra in _CV_TEST_MODULES, extra
 
 
 def test_the_cv_identity_collector_actually_finds_fixtures():
@@ -1508,7 +1552,8 @@ def test_cv_fixture_identities_are_on_the_reviewed_roster():
     to look. That is exactly what the roster exists to prevent, just at a position the
     four positional collectors do not reach.
     """
-    unreviewed = sorted(_cv_fixture_identities() - _REVIEWED_FIXTURE_IDENTITIES)
+    unreviewed = sorted(_cv_fixture_identities()
+                        - _REVIEWED_FIXTURE_IDENTITIES - _CV_IDENTITY_EXEMPT)
     assert unreviewed == [], (
         "these CV-fixture identities are not on _REVIEWED_FIXTURE_IDENTITIES: "
         f"{unreviewed}. Confirm each names no real firm, then add it to the roster.")
