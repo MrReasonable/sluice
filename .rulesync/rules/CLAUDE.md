@@ -830,5 +830,14 @@ consistently engineers out; see `_select_backend`'s guard in `cli.py`.
   hand-written file instead of a generated one. `docs/ARCHITECTURE.md` is the living technical
   description (module-by-module, the seams, the store contract); `docs/USAGE.md` is the CLI
   reference; `docs/CONFIGURATION.md` is the config-key reference; `docs/TROUBLESHOOTING.md` is
-  fixes for specific failures. `docs/superpowers/specs/` and `.../plans/` are historical design
+  fixes for specific failures; `docs/INSTALL.md` is the per-channel install guide (#104). That
+  last one is the doc whose claims rot fastest, and what IS pinned about it is worth knowing
+  precisely, because the gap is narrower than "nothing" and wider than "it is covered". Guarded:
+  every published channel has install instructions and INSTALL's two method tables agree
+  (`test_docs_claims.py`); its credential table matches `core/app.py`'s real provider->env map;
+  every doc URL a `sluice/` runtime string prints, and every anchored link between shipped docs,
+  resolves to a real heading (`test_doc_links_from_code.py`). NOT guarded, and this is the part
+  that matters: nothing runs a COMMAND in that file against the channel serving it. A wrong
+  `pip`/`brew`/`docker` invocation, a flag that no longer exists, an argument order that has
+  changed -- all ship green. So a command added or changed there must be RUN, not reasoned about. `docs/superpowers/specs/` and `.../plans/` are historical design
   documents once implemented -- not maintained, and the code wins on any disagreement.
