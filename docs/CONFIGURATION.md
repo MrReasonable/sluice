@@ -217,6 +217,12 @@ locally or over SSH (`claude_max_host`/`claude_max_path`, or `compose_host`/
 `compose_claude_path` under `cv:`). A keyless *fallback* backend is a sanctioned degrade
 (`doctor` reports it `degraded`, `--strict` fails on it); a keyless *primary* backend is `dead`.
 
+**Under the container image** those three XDG roots are pre-set to `/app/config`, `/app/state`
+and `/app/cache`, spelled absolutely because a relative `XDG_*` value is ignored with a warning,
+and the working directory is `/work`. They are the bind-mount points `docker-compose.yml` uses —
+see [`docs/INSTALL.md`](INSTALL.md#docker), and read that compose file's own comments before a
+first real run.
+
 A leading `~` in an explicitly-set path (env var or config key) is expanded. `cv:`'s five
 working directories (`render_home`, `output_dir`, `served_dir`, plus `apply:`'s
 `camofox_upload_dir`/`camofox_cv_dir`) and the `render_script` path are the deliberate

@@ -104,8 +104,8 @@ most of that work is now done rather than planned:
 - **Fetch/browser adapter** — the seam shipped
   (`core/protocols.py: Fetcher`, `sluice/fetchers/camofox.py`), with one
   production implementation: Camofox. Same status as the store seam.
-- **Docs and CI** — this file, `docs/ARCHITECTURE.md`, `docs/USAGE.md`,
-  `docs/CONFIGURATION.md`, `docs/TROUBLESHOOTING.md`, `CONTRIBUTING.md`,
+- **Docs and CI** — this file, `docs/INSTALL.md`, `docs/ARCHITECTURE.md`,
+  `docs/USAGE.md`, `docs/CONFIGURATION.md`, `docs/TROUBLESHOOTING.md`, `CONTRIBUTING.md`,
   `SECURITY.md`; CI runs lint, a 3-Python-version test matrix, and a
   rulesync-drift gate (`.github/workflows/ci.yml`), and release-please cuts
   versioned releases from Conventional Commits.
@@ -123,7 +123,7 @@ has needed one yet). Install-channel status is tracked in the table under
 | PyPI | shipped | `pip install job-sluice` |
 | Docker | shipped | `docker run --rm ghcr.io/mrreasonable/job-sluice --help` |
 | deb / rpm | shipped | download from the [latest release](https://github.com/MrReasonable/sluice/releases/latest), then `apt install ./job-sluice_*_all.deb` or `dnf install ./job-sluice-*.noarch.rpm` |
-| Homebrew | shipped | `brew install MrReasonable/tap/job-sluice` — resolves once the tap holds its first formula, see below |
+| Homebrew | shipped | `brew install MrReasonable/tap/job-sluice` |
 
 That table is the single place this repository states which channels exist. Prose elsewhere
 links here rather than restating it, and `tests/test_release_publish_wiring.py` fails the
@@ -136,12 +136,14 @@ suite could notice. [#104](https://github.com/MrReasonable/sluice/issues/104) is
 issue for this table's channels; a future channel starts here as *planned* and only becomes
 *shipped* once its release job lands.
 
-The Homebrew row carries a qualifier the others do not need. A tap is a separate repository, so
-unlike PyPI, GHCR and the release assets — which the release workflow writes into infrastructure
-that already exists — its first formula has to be created before `brew install` can resolve
-anything. That happens on the first run of the `homebrew` job or of the `Homebrew dry run`
-workflow, whichever comes first. The row is *shipped* in this table's sense from the moment the
-job lands; the command starts working when the tap is populated.
+Per-channel instructions — extras, the system libraries PDF rendering needs, Camofox, backend
+credentials, and how to pin an older release — are in
+[`docs/INSTALL.md`](https://github.com/MrReasonable/sluice/blob/main/docs/INSTALL.md).
+
+Use the **fully-qualified** name in the Homebrew command above. Homebrew 6 requires explicit trust
+for non-official taps, and installing a fully-qualified formula is what grants trust to that one
+item, tapping and installing in a single step; installing by short name needs `brew tap` and
+`brew trust --formula` first. `docs/INSTALL.md` spells both forms out.
 
 From a checkout:
 
@@ -302,8 +304,10 @@ for what a `dead`/`degraded` line means and how to fix it. In outline:
   full set of `CAMOFOX_*` variables. `track` and a non-`--offline` `doctor` still
   reach the network for their own reasons; see the genuinely-offline command
   list in `CHANGELOG.md`.
-- **A Google OAuth token** for `track`, obtained on first `track run` via an
-  interactive consent flow (needs `pip install -e '.[google]'`).
+- **A Google OAuth token** for `track`, which you produce yourself and place at
+  `track.token_path`: sluice reads and refreshes that credential but never runs
+  the consent flow itself. Needs the `google` extra; [`docs/INSTALL.md`](https://github.com/MrReasonable/sluice/blob/main/docs/INSTALL.md#google-access-for-track)
+  has the scopes and the procedure.
 
 ## Commands
 
