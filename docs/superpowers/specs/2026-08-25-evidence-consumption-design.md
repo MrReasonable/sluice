@@ -302,6 +302,53 @@ project once.
 would let a long entry out-score a precise one on volume alone. Both are separable changes, and
 neither is needed for the property #165 asks for.
 
+### D9 -- `cited_by_gate` splits in two, because this change makes it ambiguous
+
+Found while planning, not while designing, and it is the sharpest thing in this change.
+
+`EvidenceKind.cited_by_gate` (#164) means "the CV fabrication gate READS this corpus", and
+`test_cited_by_gate_names_exactly_the_kinds_the_cv_engine_reads` derives the true set by
+grepping `cv/engine.py` for `read_evidence("<kind>")`. Both were written when *the engine reads
+it* and *the gate cites it* were the same statement.
+
+D1 makes them different statements on purpose: the engine reads `skills`, and the gate licenses
+nothing from them. So the existing test goes red, and the two ways out are both wrong. Flipping
+`skills.cited_by_gate = True` makes `doctor` tell a user that verifying a skill made it "citable
+by the CV fabrication gate" -- false, and false in the reassuring direction #164 explicitly names
+as the worst one ("a user reads it as 'my skills are feeding my CVs' and stops looking"). Leaving
+it False leaves a red test asserting something that is no longer true.
+
+So the flag splits. `read_by_composer` says the corpus reaches the prompt; `cited_by_gate` says
+the gate licenses its content. `experience` is both, `skills` is the first only, `stories` is
+neither.
+
+The derivation has to change with it, and this is the part worth getting right. `read_by_composer`
+keeps #164's source grep, which still answers exactly the question it asks. `cited_by_gate` cannot
+be answered by grepping anything -- citability is decided by `bundle_sources`, which walks
+`bundle["entries"]` and knows nothing about kinds. It is derived by EXECUTION instead: build a
+bundle carrying one entry per kind, each with a distinct sentinel digit, run `bundle_sources`, and
+ask which sentinels it licensed. That oracle cannot go stale, because it IS the mechanism.
+
+`classify_store`'s message gains a third arm for the read-but-not-cited case, since "citable" and
+"nothing reads this corpus yet" are now both false for `skills`. Its `blocks=("cv",)` stays keyed
+on `cited_by_gate`: after D5 an unreadable skills corpus no longer blocks `cv`, so widening that
+to `read_by_composer` would over-claim in the other direction.
+
+### D10 -- `read_experience_entries` is retired here, because #164 said it expires here
+
+Its own Protocol docstring: *"EXPIRES AT #165. It predates the kind registry and survives only
+because `cv/engine.py` still calls it; #165 rewrites that caller to read the corpora it composes
+from by kind. When it does, DELETE this member rather than inheriting it."* D1 is that rewrite.
+
+A Protocol member is a REQUIRED member, so keeping it means every future store implements a second
+spelling of a call it already implements, for a caller that no longer exists. Its conformance row
+and its hand-listed test literals go with it -- eight test files, which is why the plan gives it
+its own task rather than folding it into the engine change.
+
+Keeping the engine on the delegate and only ADDING `read_evidence("skills")` was considered and
+rejected: it leaves one kind read through a legacy delegate and the other through the registry,
+and it leaves `protocols.py:736` asserting something false.
+
 ## Behaviour changes a user will notice
 
 1. **Ranking order changes for everyone.** Today's substring match relates `java`/`javascript`
@@ -416,3 +463,9 @@ Behaviour, not coverage. Each names the defect it would catch.
     assumed: `skipped-selection`/`skipped-needs-signoff`/`skipped-stale`/`skipped-config` all
     return at `cv/engine.py:187-240`, and the bundle build is at :286. True by placement, which
     is exactly why the test guards the placement.
+- **r5** -- planning found two requirements this design had missed, both of them consequences of
+  D1 that #164 had already written down and this spec had not read closely enough. Added as D9
+  (`cited_by_gate` splits, and `cited_by_gate` must be derived by execution rather than by
+  grepping a source file) and D10 (`read_experience_entries` retires here, by #164's own
+  instruction). D9 is the one to review hardest: it is the only place this change could quietly
+  tell a user something false about what the fabrication gate reads.
