@@ -73,7 +73,9 @@ def test_every_shipped_kind_passes_its_own_construction_guard():
         "no shipped kind uses floor_map -- the guard's mapped arm is unexercised"
     for kind, spec in EVIDENCE_KINDS.items():
         rebuilt = EvidenceKind(spec.relpath, spec.fields,
-                               cited_by_gate=spec.cited_by_gate, floor_map=spec.floor_map)
+                               cited_by_gate=spec.cited_by_gate,
+                               read_by_composer=spec.read_by_composer,
+                               floor_map=spec.floor_map)
         assert rebuilt == spec, kind
 
 
@@ -1012,3 +1014,19 @@ def test_a_pending_entry_carrying_the_citability_key_is_still_reported_as_pendin
     assert v.read_evidence("skills", verified_only=True) == [], \
         "an _inbox/ entry became citable merely by carrying the key"
     assert v.preflight()["skills_pending"] == 1
+
+
+def test_a_cited_kind_that_is_not_composed_from_is_refused_at_construction():
+    """#165 split `cited_by_gate` into two flags, and this is the invariant that keeps the
+    pair coherent: the fabrication gate can only license content the composer actually put
+    in the bundle. In `__post_init__` rather than only a test, because a registry invariant
+    pinned by a test alone is one a kind constructed anywhere else never has to satisfy."""
+    with pytest.raises(ValueError, match="cited_by_gate"):
+        EvidenceKind("X", ("A",), cited_by_gate=True, read_by_composer=False)
+
+
+def test_the_registry_flags_are_what_this_change_intends():
+    """SCOPE: pins all three kinds, so a kind silently dropped from the registry or a flag
+    flipped in either direction reddens here rather than passing vacuously."""
+    assert {k: (s.read_by_composer, s.cited_by_gate) for k, s in EVIDENCE_KINDS.items()} \
+        == {"experience": (True, True), "skills": (False, False), "stories": (False, False)}
