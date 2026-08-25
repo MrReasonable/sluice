@@ -2027,6 +2027,63 @@ def test_the_homebrew_verify_script_bypasses_the_release_cooldown():
     assert "--ignore-main-package-cooldown" in body
 
 
+# bash 4.0-only constructs. macOS ships bash 3.2.57 -- the last GPLv2 release -- and Apple has
+# never shipped a newer one, so a `macos-latest` runner executes these scripts under 3.2. Both
+# workflows invoke them as `bash <path>`, which BYPASSES the `#!/usr/bin/env bash` shebang and
+# uses /bin/bash, so a Homebrew bash 5 on a developer's machine does not save it either.
+#
+# THIS GUARD EXISTS BECAUSE NEITHER TOOL WE ALREADY RUN CATCHES IT, measured not assumed:
+# `/bin/bash -n` under 3.2 PARSES `${VAR,,}` without complaint (it fails at expansion time, not
+# parse time), and `shellcheck` reports nothing even at `--severity=style`, since it targets a
+# modern bash by default. So `${TAP_OWNER,,}` passed local lint, passed CI, passed a
+# five-specialist review and a CodeRabbit round, and died on the first real dispatch with
+# `bad substitution` -- before the token was minted, which is the part that went right.
+#
+# Each row carries its remedy: a guard that only says "no" sends the next author hunting for
+# the answer this comment already has.
+_BASH4_ONLY = (
+    (r"\$\{[A-Za-z_][A-Za-z0-9_]*\^\^?\}", "${VAR^^}/${VAR^}", "tr '[:lower:]' '[:upper:]'"),
+    (r"\$\{[A-Za-z_][A-Za-z0-9_]*,,?\}", "${VAR,,}/${VAR,}", "tr '[:upper:]' '[:lower:]'"),
+    (r"\bdeclare\s+-A\b", "declare -A", "parallel arrays, or a temp file"),
+    (r"\blocal\s+-A\b", "local -A", "parallel arrays, or a temp file"),
+    (r"\bmapfile\b", "mapfile", "while IFS= read -r"),
+    (r"\breadarray\b", "readarray", "while IFS= read -r"),
+    (r"&>>", "&>>", ">>file 2>&1"),
+    (r"\[\[\s+-v\s", "[[ -v VAR ]]", '[ -n "${VAR+x}" ]'),
+    (r"\bcoproc\b", "coproc", "a fifo, or restructure"),
+)
+
+_MACOS_SHELL_SCRIPTS = ("homebrew_push.sh", "homebrew_verify.sh")
+
+
+def test_the_homebrew_scripts_use_no_bash_4_only_constructs():
+    """Every script a macos-latest runner executes must parse AND EXPAND under bash 3.2.
+
+    SCOPE FIRST: a glob matching nothing would make the loop below vacuously true, and this
+    guard would report success having checked no file at all.
+    """
+    scripts_dir = ROOT / ".github" / "scripts"
+    found = tuple(sorted(p.name for p in scripts_dir.glob("homebrew_*.sh")))
+    assert found == _MACOS_SHELL_SCRIPTS, (
+        f"the bash-3.2 sweep enumerated {list(found)}, expected {list(_MACOS_SHELL_SCRIPTS)}. "
+        f"A script added beside these would run on macOS unswept."
+    )
+    for name in _MACOS_SHELL_SCRIPTS:
+        # Comments may DISCUSS these constructs -- the block above does -- so strip whole-line
+        # comments first, the same way this file's order pins do.
+        body = "\n".join(
+            ln for ln in (scripts_dir / name).read_text().splitlines()
+            if not ln.lstrip().startswith("#")
+        )
+        for pattern, construct, remedy in _BASH4_ONLY:
+            hit = re.search(pattern, body)
+            assert hit is None, (
+                f"{name} uses {construct}, which macOS bash 3.2 cannot expand: found "
+                f"{hit.group(0)!r}. Use {remedy} instead. Neither `bash -n` nor shellcheck "
+                f"catches this -- both were measured against it -- so this sweep is the guard."
+            )
+
+
 def test_the_homebrew_scripts_never_use_tap_new():
     """`brew tap-new` unconditionally writes .github/dependabot.yml and three workflows -- only
     `git init` is behind --no-git (dev-cmd/tap-new.rb:95-99). One runs `brew bump --open-pr`

@@ -76,7 +76,11 @@ esac
 # lower-case here is Homebrew's own convention for a tap's local directory name, applied in
 # bash rather than in the YAML (GitHub Actions expressions have no built-in case-folding
 # function) so this stays the ONE place the value is transformed.
-TAP_OWNER="${TAP_OWNER,,}"
+# `${VAR,,}` is a bash 4.0 expansion and macOS ships bash 3.2 (the last GPLv2 release),
+# so it is a `bad substitution` on the very runner this job requires. The workflow invokes
+# this file as `bash <path>`, which bypasses the shebang and uses /bin/bash -- measured on
+# a real macos-latest runner and reproduced locally on 3.2.57. `tr` is POSIX and portable.
+TAP_OWNER="$(printf '%s' "$TAP_OWNER" | tr '[:upper:]' '[:lower:]')"
 # FIXED derivation, computed identically in homebrew_push.sh -- see this file's header.
 TAP_DIR="$(brew --repository)/Library/Taps/${TAP_OWNER}/homebrew-tap"
 FORMULA_REL="Formula/job-sluice.rb"
@@ -181,7 +185,7 @@ fi
 # run). Crossing the value explicitly is simpler than depending on that ordering, and two
 # independent derivations of one fact can silently drift -- see push.sh's own header comment for
 # the fuller history. TAP_OWNER crosses too, ALREADY LOWER-CASED, so push.sh reads the one value
-# this script already normalised rather than repeating its own `${TAP_OWNER,,}` transform on the
+# this script already normalised rather than repeating its own lower-casing transform on the
 # workflow's raw `github.repository_owner` -- one transform, one place.
 {
   echo "TARGET_BRANCH=${TARGET_BRANCH}"
