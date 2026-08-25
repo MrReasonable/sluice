@@ -23,14 +23,14 @@ contributor down an install path CI doesn't take.
 ## Running the checks
 
 ```bash
-python -m pytest                        # full suite; hermetic, no network, sub-second
+python -m pytest                        # full suite; fast and fully hermetic, no network
 python -m pytest tests/test_x.py -k y   # one file / one test
 ruff check sluice tests scripts         # pip install ruff==0.15.21 -- the exact CI pin; ruff is NOT in [test]
 python -m pytest --cov                  # the coverage report CI publishes; REPORTS, does not gate (see below)
 ```
 
 Everything above is fully offline — no Camofox, no live backend, no vault required. The
-suite runs in well under a second, so there's no reason to run a subset while iterating; run
+suite is fast and fully hermetic, so there's no reason to run a subset while iterating; run
 all of it. `run_tests.sh` is the same thing via `.venv/bin/python`, if you keep a local venv.
 
 **Why coverage has no threshold.** `[tool.coverage.report]` in `pyproject.toml` sets

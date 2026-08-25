@@ -389,7 +389,35 @@ whichever neighbour it was written next to:
    anchors, #99), the renderer's own optional `precheck`, and
    `cv/slop.py`'s `check_hard` (an em dash or a literal `--`, unscoped over
    the whole document) -- BLOCKS: a lead with no attempt that ever cleared
-   it is skipped rather than rendered ungated. The STYLE tier
+   it is skipped rather than rendered ungated. The gate is handed its source
+   set rather than recovering it: `cv/validate.py`'s second parameter is a
+   `cv/bundle.py` `BundleSources`, built by `bundle_sources(bundle)` from
+   `build_bundle`'s own structured entries, not by re-parsing the rendered
+   bundle text (#174) -- so no line of user free text can mint or rebind a
+   citable `[id]`. That closed three live holes: a later body line shaped
+   like an earlier real code used to rebind that entry's allowlist, so a
+   fabricated figure passed while the entry's own genuine metric was
+   reported invented; an `[XX9]`-shaped line anywhere in the baseline minted
+   a fully citable entry of its own; and, at zero entries, the NEGATIVE
+   CONSTRAINTS block fell through into the PROFILE pool so a do-not-say
+   figure was profile-permitted. That closure has a price, deliberately
+   accepted: `_entry_block` (`cv/bundle.py`) now feeds BOTH the rendered
+   prompt and the gate's allowlist, so a change to how an entry is
+   PRESENTED to the model is also a change to what the gate PERMITS -- the
+   two can no longer drift apart, which is the fix, but they also can no
+   longer be varied independently. It also re-admits two narrow PROFILE-pool
+   widenings the old positional parse excluded as a side effect of its own
+   bugs rather than by design: a `=== 2020 Highlights ===`-shaped line
+   inside the BASELINE now permits its digits in PROFILE prose (the old
+   parser's section-header check matched it first and `continue`d, so 2020
+   never reached the baseline pool at all), and an id-shaped baseline
+   line's own digit -- e.g. the `9` of a stray `[ZZ9]` token -- likewise
+   (the old parser sliced the id token off before harvesting digits for the
+   entry it minted, and by then `seen_id` was already true, so the digit
+   never reached the baseline pool either way). Both are consequences of
+   `bundle_sources` harvesting the baseline block by a single unscoped
+   `\d+` sweep with no positional or shape parse at all, which is also
+   exactly what removes the three holes above. The STYLE tier
    (`cv/slop.py`'s `check_phrases`, ~40 case-insensitive AI-tell stems)
    never blocks; it is also SCOPED, unlike the hard tier --
    `cv/validate.py`'s `section_spans` (the gate's own line split, extracted
@@ -651,12 +679,21 @@ extended #131, extended again #164) is the first one: a Model Context Protocol
 server exposing the read-only tools (`list_leads`, `get_lead`, `doctor`, `health`,
 `list_evidence`) always, and five write-capable tools (`dismiss_lead`,
 `apply_record`, `cv_run`, `cv_signoff`, `create_lead`) under `--write`.
-`list_evidence` has no write/verify counterpart at any privilege level: an evidence
-body reaches `cv/validate.py`'s fabrication-gate bundle verbatim, and `nums[cur] =
-set(...)` there is an ASSIGNMENT, not a union, so an LLM-authored body shaped like a
-citation code could rebind another entry's permitted numbers -- exposing a write
-tool would hand that bypass to whatever calls this MCP server (deferred to #175,
-blocked on #174). Every write tool is a thin translation layer over
+`list_evidence` has no write/verify counterpart at any privilege level. The original
+reason no longer holds and is recorded because the deferral outlived it: an evidence
+body reaches `cv/validate.py`'s fabrication-gate bundle verbatim, and while that gate
+recovered its ids by parsing the rendered bundle, `nums[cur] = set(...)` was an
+ASSIGNMENT rather than a union -- so an LLM-authored body shaped like a citation code
+REBOUND another entry's permitted numbers, and exposing a write tool would have handed
+that bypass to whatever calls this MCP server. #174 deleted that parse: the gate is
+handed a structural `BundleSources` and no body line can mint or rebind an id, so the
+blocker that deferral named is cleared and #175 is free to proceed on its own merits.
+
+What survives is smaller. `bundle_sources` harvests every digit in an entry's own
+block, so a citation-shaped token in a body still contributes ITS digits to that entry
+-- the residual #174's design accepts, and the one
+`core/vault.py`'s `_refuse_citation_shaped_body` refuses outright on both evidence
+write paths. That guard, not the gate, is what an eventual write tool would rely on. Every write tool is a thin translation layer over
 exactly one `Sluice` write method -- `sluice/mcpserver.py` itself contains no store
 write (AST-enforced) -- so a write tool can never become a second, undocumented
 write path for an invariant `Sluice`'s own methods already hold.
