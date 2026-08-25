@@ -59,7 +59,7 @@ third is everything after the fence)."""
 class EvidenceKind:
     """One evidence store: where it lives, and the frontmatter fields a USER supplies.
 
-    THREE of the four attributes bind a store: `relpath` is the document key its entries
+    THREE of the five attributes bind a store: `relpath` is the document key its entries
     live under, `fields` is the set it must accept and no more, and `floor_map` decides
     which of those fills each text floor key `read_evidence` promises. `cited_by_gate`
     binds NO store at all -- it is a fact about `cv/engine.py`, published here because
@@ -73,16 +73,22 @@ class EvidenceKind:
     would generate a `--verified` flag, and a flag that grants citability is exactly
     what an agent shelling out to the CLI would pass. See the spec's decision 2.
 
-    `cited_by_gate` says whether the CV fabrication gate actually READS this corpus
-    today. It exists because `doctor` and the `add` handler both told a user that
-    verifying an entry of ANY kind made it "citable by the CV fabrication gate", while
-    `cv/engine.py` reads `experience` alone -- `skills` and `stories` wait on #165
-    (#164 review, M2). Over-claiming here is the worst direction to be wrong in: a user
-    reads it as "my skills are feeding my CVs" and stops looking. #165 flips a boolean
-    rather than editing prose in three places, and
-    `test_cited_by_gate_names_exactly_the_kinds_the_cv_engine_reads` derives the true
-    set from `cv/engine.py`'s own source, so the flag cannot silently go stale in either
-    direction.
+    `cited_by_gate` says whether the CV fabrication gate may LICENSE this corpus's content;
+    `read_by_composer` says whether the composer is handed it at all. It exists because
+    `doctor` and the `add` handler both told a user that verifying an entry of ANY kind
+    made it "citable by the CV fabrication gate", while `cv/engine.py` read `experience`
+    alone (#164 review, M2). Over-claiming here is the worst direction to be wrong in: a
+    user reads it as "my skills are feeding my CVs" and stops looking.
+
+    #164 wrote ONE flag because the two questions then had one answer. #165 made them
+    different questions: `skills` reaches the prompt as framing and is licensed nowhere.
+    Each is derived rather than hand-asserted, and DIFFERENTLY, because only one of them
+    can be answered by reading source. `read_by_composer` is derived by grepping
+    `cv/engine.py` for `read_evidence("<kind>")`. `cited_by_gate` cannot be -- citability
+    is decided by `cv/bundle.py:bundle_sources`, which walks `bundle["entries"]` and knows
+    nothing about kinds -- so it is derived by EXECUTION: build a bundle carrying one entry
+    per kind with a distinct sentinel digit and ask which sentinels were licensed. See
+    tests/test_evidence_store.py.
 
     `floor_map` overrides, per floor key, which of THIS kind's frontmatter keys fills
     it -- `(floor_key, frontmatter_key)` pairs, merged over `FLOOR_FIELD_SOURCES`.
@@ -92,12 +98,20 @@ class EvidenceKind:
     and `skills`' four fields collide with NONE of them: measured (#164 review, M3), a
     skills entry whose own `Domain` was `platform` scored ZERO in `cv/bundle.py`'s
     `rank()` against the keyword `platform`, because `rank` reads `best_for`/`category`/
-    `title` and the first two were empty strings. That is rework #165 walks straight
-    into, and it is cheap to fix now, while no user has a vault to migrate.
+    `title` and the first two were empty strings. #165 is what made that reachable, and
+    the mapping was already in place when it landed.
     """
     relpath: str
     fields: tuple
     cited_by_gate: bool = False
+    # Whether cv/engine.py puts this corpus in the COMPOSER's bundle at all. SPLIT from
+    # `cited_by_gate` at #165, which made the two non-equivalent for the first time:
+    # `skills` reaches the prompt as a FRAMING section whose digits `bundle_sources`
+    # licenses nowhere, and which the #60 ADVISORY audit is deliberately not shown either
+    # (cv/bundle.py's two renderers). #164 wrote ONE flag because "read" and "cited" then
+    # coincided; collapsing them again would make `doctor` tell a user their skills are
+    # citable, which is the over-claim `cited_by_gate` was introduced to prevent.
+    read_by_composer: bool = False
     floor_map: tuple = ()
 
     def __post_init__(self):
@@ -125,6 +139,13 @@ class EvidenceKind:
         re-opened. `fields` is the kind's own declared set, so it is the only honest
         spelling to check against.
         """
+        # Fail loudly at construction, this module's house rule. The gate can only license
+        # content the composer actually put in the bundle, so the reverse combination is
+        # incoherent rather than merely unused.
+        if self.cited_by_gate and not self.read_by_composer:
+            raise ValueError(
+                "cited_by_gate=True requires read_by_composer=True: the fabrication gate "
+                "cannot license a corpus the composer never emits into the bundle")
         for floor, key in self.floor_map:
             if floor not in FLOOR_FIELD_SOURCES:
                 raise ValueError(
@@ -142,11 +163,13 @@ class EvidenceKind:
 
 
 EVIDENCE_KINDS = {
-    # The one kind cv/engine.py reads today (`read_experience_entries`), hence the only
-    # one anything may call citable. `skills`/`stories` default to False until #165.
+    # The one kind the fabrication gate licenses, and -- until the next commit -- the only
+    # one the composer is handed at all. TWO flags since #165: `read_by_composer` says the
+    # corpus reaches the prompt, `cited_by_gate` says the gate may license its content.
+    # They coincide here and diverge for `skills`.
     "experience": EvidenceKind("Job Applications/Experience Library",
                                ("Company", "Category", "Best For", "Metrics"),
-                               cited_by_gate=True),
+                               cited_by_gate=True, read_by_composer=True),
     # `Domain` IS this kind's keyword axis -- what `Best For` is for the other two, and
     # exactly what `cv/bundle.py`'s rank() scores on. Without the mapping the floor's
     # `best_for` was the empty string for every skill, so a skills entry in domain
@@ -166,7 +189,8 @@ EVIDENCE_KINDS = {
                            ("Proficiency", "Domain", "Evidence", "Signal Value"),
                            floor_map=(("best_for", "Domain"),)),
     # STAR reuses `Best For` rather than inventing a keyword field: cv/bundle.py's
-    # rank() scores on best_for/category/title, so #165 gets that ranker unchanged.
+    # rank() scores on best_for/category/title, so a future consumer gets that ranker
+    # unchanged (#195).
     # Situation/Task/Action/Result live in the BODY -- _parse_fm_spaced is line-based,
     # so a multi-line frontmatter value does not round-trip (its continuation lines
     # are re-read as further keys).
