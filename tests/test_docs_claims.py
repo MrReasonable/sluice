@@ -875,3 +875,135 @@ def test_the_missing_subcommand_pattern_is_falsified_by_a_prefixed_form_and_spar
 
     leaf_hit = _GROUP_FLAG_WITHOUT_SUBCOMMAND.search("job-sluice doctor --offline")
     assert leaf_hit and tree[leaf_hit.group(1)] is None
+
+
+# ── the backend-credential table in docs/INSTALL.md (#104 PR 7) ──────────────────────────────
+#
+# WHY THIS EXISTS. `docs/INSTALL.md`'s "Backend credentials" section names one environment
+# variable per provider, and `docs/CONFIGURATION.md` names them again. That is a second copy of a
+# mapping the code owns (`sluice/core/app.py`'s `_PROVIDER_ENV`), and a review flagged it as the
+# same duplication class this branch had already fixed once for the PDF prerequisites.
+#
+# Linking instead of duplicating was the suggested remedy, and it is the weaker one: a link stops
+# the copy growing but does nothing about the copy that already exists, which drifts the day a
+# provider is added or an env var renamed. This repo's own rule is to REMOVE the drift surface --
+# derive it, or assert it beside the prose -- so the table is pinned to the code instead.
+#
+# `claude-max` is deliberately absent from `_PROVIDER_ENV` (a flat-rate CLI shell-out with no
+# credentials to resolve, per `_provider_creds`), and the doc says exactly that, so the comparison
+# is against the KEYED providers only.
+# Relative, matching this module's own convention (`glob.glob("docs/*.md")` above) rather than
+# introducing a second path idiom in one file.
+_INSTALL_MD = "docs/INSTALL.md"
+_CREDS_ROW = re.compile(r"^\|\s*`(?P<provider>[\w-]+)`\s*\|\s*(?P<needs>.+?)\s*\|\s*$", re.M)
+
+
+def _install_credential_rows():
+    """{provider: needs-cell} from INSTALL.md's Backend credentials table."""
+    with open(_INSTALL_MD, encoding="utf-8") as f:
+        text = f.read()
+    start = text.index("## Backend credentials")
+    end = text.index("##", start + 3)
+    return {m.group("provider"): m.group("needs")
+            for m in _CREDS_ROW.finditer(text[start:end])}
+
+
+def test_the_install_guide_credential_table_matches_the_real_provider_env_map():
+    """Every keyed provider appears with its real variable, and no invented provider appears.
+
+    BOTH directions, because each fails differently: a provider missing from the doc leaves a
+    user unable to configure it, while a provider named in the doc but absent from the code sends
+    them to set a variable nothing reads.
+    """
+    from sluice.core.app import _PROVIDER_ENV
+
+    rows = _install_credential_rows()
+    assert rows, "the Backend credentials table was not found or did not parse"
+    assert "claude-max" in rows, "the keyless provider row vanished from the table"
+    assert "no API key" in rows["claude-max"], rows["claude-max"]
+
+    documented = set(rows) - {"claude-max"}
+    assert documented == set(_PROVIDER_ENV), (
+        f"docs/INSTALL.md documents {sorted(documented)} but sluice/core/app.py's _PROVIDER_ENV "
+        f"has {sorted(_PROVIDER_ENV)}")
+    for provider, (key_var, _base_url) in _PROVIDER_ENV.items():
+        assert key_var in rows[provider], (
+            f"the {provider} row does not name {key_var}: {rows[provider]!r}")
+
+
+# ── docs/INSTALL.md's channel coverage (#104 PR 7) ───────────────────────────────────────────
+#
+# README's channel table is the SINGLE place this repo states which channels exist, and
+# `tests/test_release_publish_wiring.py` already pins it against the release workflow's job
+# roster in both directions. Nothing connected that to the install guide, so a channel could ship
+# -- job, table row, published artefact -- with no instructions telling anyone how to install it.
+#
+# A review suggested asserting that INSTALL's channel names EQUAL README's rows. They do not, and
+# should not: README enumerates PUBLISHING channels while INSTALL enumerates INSTALL METHODS, and
+# uv, pipx and pip are three methods against the one PyPI channel. `From source` is a method with
+# no published channel behind it at all. Asserting a false equality would have forced one of the
+# two documents to stop saying what it means, so the mapping is declared instead -- and asserted
+# in both directions, so it cannot quietly go stale either.
+_CHANNEL_TO_INSTALL_SECTIONS = {
+    "PyPI": ("uv", "pipx", "pip"),
+    "Docker": ("Docker",),
+    "deb / rpm": ("deb / rpm",),
+    "Homebrew": ("Homebrew (macOS)",),
+}
+
+_INSTALL_H2 = re.compile(r"^## (?P<title>.+?)\s*$", re.M)
+_README_CHANNEL_ROW = re.compile(r"^\|\s*(?P<channel>[^|]+?)\s*\|\s*(?:shipped|planned)\s*\|", re.M)
+
+
+def _readme_channels():
+    with open("README.md", encoding="utf-8") as f:
+        text = f.read()
+    marker = "<!-- channel-status -->"
+    return {m.group("channel") for m in _README_CHANNEL_ROW.finditer(text[text.index(marker):])}
+
+
+def _install_sections():
+    with open(_INSTALL_MD, encoding="utf-8") as f:
+        return {m.group("title") for m in _INSTALL_H2.finditer(f.read())}
+
+
+def test_every_published_channel_has_install_instructions():
+    """A channel can ship -- job, README row, real artefact -- with nobody told how to install it.
+
+    Both directions. A README channel absent from the mapping means a channel shipped and this
+    guard was never taught about it; a mapped section absent from INSTALL means the instructions
+    were renamed or deleted out from under a live channel.
+    """
+    channels = _readme_channels()
+    assert channels, "README's channel table did not parse -- the sweep is vacuous"
+    assert channels == set(_CHANNEL_TO_INSTALL_SECTIONS), (
+        f"README lists {sorted(channels)} but this guard maps "
+        f"{sorted(_CHANNEL_TO_INSTALL_SECTIONS)}. A new channel needs a docs/INSTALL.md section "
+        f"and an entry here; a removed one needs both taken out.")
+
+    sections = _install_sections()
+    for channel, expected in _CHANNEL_TO_INSTALL_SECTIONS.items():
+        missing = [s for s in expected if s not in sections]
+        assert not missing, f"docs/INSTALL.md has no section {missing} for the {channel} channel"
+
+
+def test_the_install_guide_enumerates_the_same_methods_in_both_of_its_tables():
+    """Upgrading and Pinning are two lists of the same thing, maintained independently.
+
+    Adding a method to one and not the other is exactly the drift a reader cannot see: each table
+    looks complete on its own. Compared as SETS, since the two deliberately differ in order.
+    """
+    with open(_INSTALL_MD, encoding="utf-8") as f:
+        text = f.read()
+
+    def rows(heading, nxt):
+        block = text[text.index(heading):text.index(nxt)]
+        return {m.group(1).strip() for m in re.finditer(r"^\|\s*([^|]+?)\s*\|", block, re.M)
+                if m.group(1).strip() not in ("Channel", "---")}
+
+    upgrading = rows("## Upgrading", "## Pinning an older version")
+    pinning = rows("## Pinning an older version", "## Checking the install")
+    assert len(upgrading) >= 6, f"the Upgrading table did not parse: {upgrading}"
+    assert upgrading == pinning, (
+        f"Upgrading and Pinning disagree: only in Upgrading {sorted(upgrading - pinning)}, "
+        f"only in Pinning {sorted(pinning - upgrading)}")
