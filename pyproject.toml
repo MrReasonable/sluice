@@ -40,7 +40,7 @@ requires-python = ">=3.12"
 # next breaking change", it would mean "expires on 1 January", and it would block exactly
 # the timezone-data updates this dependency exists to deliver. A floor is the only
 # meaningful constraint here.
-dependencies = ["pyyaml>=6.0.3,<7", "tzdata>=2026.3"]
+dependencies = ["pyyaml>=6,<7", "tzdata>=2026.3"]
 # PEP 639 SPDX license expression -- the modern, non-deprecated form. setuptools >=77 (this
 # repo pins >=83 in [build-system] and the test extra) HARD-ERRORS at build time
 # (setuptools.errors.InvalidConfigError, confirmed by a real build attempt -- not merely a
@@ -88,16 +88,32 @@ keywords = ["job-search", "job-hunting", "cli", "cv", "resume", "automation"]
 job-sluice = "sluice.cli:main"
 
 [project.optional-dependencies]
-render = ["weasyprint>=69.0,<70", "jinja2>=3.1.6,<4"]
-# DO NOT floor on a release younger than 24 hours. `brew update-python-resources`
-# resolves this tree with `--uploaded-prior-to=P1D`, and Homebrew's
-# `--ignore-main-package-cooldown` exempts only job-sluice itself, never its
-# dependencies -- so a floor the resolver cannot see yet fails the `homebrew` release
-# job outright. Measured: 2.0.0 shipped with `google-auth>=2.57.0` written about an
-# hour after 2.57.0 was published, and the job could only see 2.56.3. Nothing here can
-# check that automatically -- upload dates need the network and this suite is offline
-# and hermetic by design -- so it is a rule for whoever writes the floor.
-google = ["google-api-python-client>=2.199.0,<3", "google-auth>=2.57.0,<3"]
+render = ["weasyprint>=69,<70", "jinja2>=3,<4"]
+# FLOOR AT THE MAJOR BOUNDARY. THE CEILING IS WHAT DEPENDABOT TRACKS, NOT THE FLOOR.
+#
+# These constraints were introduced to give Dependabot something to update, and the floors were
+# set to whatever was current that evening. That does not do the job: job-sluice is a LIBRARY,
+# and Dependabot's documented default for libraries is `widen` -- it edits a requirement only
+# when a new release falls OUTSIDE the range. `>=2.56.0,<3` already admits 2.57.0, so there is
+# nothing to widen and Dependabot never touches it. The `<3` CEILING is the whole mechanism: a
+# 3.0.0 release falls outside, and that is what raises the PR.
+#
+# A too-new floor is not merely useless, it is harmful twice. This package installs beside
+# whatever else a user has, so flooring on a release published hours ago forces an upgrade on
+# them for no reason -- the same argument this file already makes against exact pins. And
+# `brew update-python-resources` resolves the Homebrew resource tree with
+# `--uploaded-prior-to=P1D`, while `--ignore-main-package-cooldown` exempts only job-sluice
+# itself and never its dependencies: a floor younger than a day is INVISIBLE to that resolver
+# and fails the `homebrew` release job outright. Measured -- 2.0.0 shipped with
+# `google-auth>=2.57.0` written about an hour after 2.57.0 was published, and the job could
+# only see 2.56.3. A major-boundary floor is years old and cannot reproduce that by
+# construction, which is better than a rule someone has to remember.
+#
+# So: floor at the major unless a SPECIFIC version is required, and say why when it is. The one
+# such exception here is `mcp`, documented at its own line. None of these floors carries test
+# backing anyway -- CI installs `[test]`, and `render`/`google`/`mcp`/`completion` are separate
+# extras exercised through fakes -- which is a further reason to claim the least we can.
+google = ["google-api-python-client>=2,<3", "google-auth>=2,<3"]
 # Shell completion (zsh, bash, tcsh, fish). Same shape as `render`/`google`: a bare install
 # never needs it, `sluice/cli.py` guards the import (`try/except ImportError`), and
 # `argcomplete.autocomplete(parser)` is itself a no-op unless a shell's completion hook has
@@ -106,7 +122,7 @@ google = ["google-api-python-client>=2.199.0,<3", "google-auth>=2.57.0,<3"]
 # argcomplete's `.completer` callbacks complete REAL values -- actual registered source ids,
 # actual status tokens -- by reading the live argparse tree, so there is no generated file to
 # keep in sync and no drift-detection machinery needed at all.
-completion = ["argcomplete>=3.7.2,<4"]
+completion = ["argcomplete>=3,<4"]
 # `job-sluice mcp serve`'s only dependency (sluice/mcpserver.py:build_server(), the
 # ONE place `mcp` is imported -- see .rulesync/rules/CLAUDE.md's stdlib-only
 # exception list). Pinned at >=2.0.0: that release renamed the high-level server
