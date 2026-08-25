@@ -9,7 +9,8 @@ import pytest
 from sluice.core.doctor import (
     DEAD, DEGRADED, NOTICE, OK, BackendCheck, BackendTarget, ComponentCheck,
     DoctorReport, RoleUse, classify, classify_dossier_cache, classify_gate,
-    classify_renderer, classify_store, classify_track_google, enumerate_targets,
+    classify_negatives_vs_skills, classify_renderer, classify_store,
+    classify_track_google, enumerate_targets,
     format_roles, list_typed_fields,
 )
 
@@ -1881,3 +1882,104 @@ def test_doctor_passes_the_RESOLVED_token_path_through_to_the_google_row(monkeyp
     assert google, f"no missing-token row: {[c.subject for c in rep.components]}"
     assert str(tmp_path) in google[0].detail, (
         f"the row does not name the resolved token path: {google[0].detail}")
+
+
+# ── #165: a configured negative that contradicts the verified Skills Inventory ──
+def test_a_negative_naming_a_held_skill_is_reported():
+    rows = classify_negatives_vs_skills(["never claim documenting experience"],
+                                        [{"best_for": "documentation"}])
+    assert len(rows) == 1 and rows[0].state == NOTICE
+
+
+def test_the_report_names_no_configured_value():
+    """A DoctorReport is returned whole to MCP clients (sluice/mcpserver.py), and
+    `classify_gate` reports this SAME config key as a COUNT for that reason. Echoing the
+    user's own preference prose into a diagnostic makes it a disclosure surface, so the
+    row must LOCATE the line, never quote it."""
+    neg = "never claim documenting experience"
+    rows = classify_negatives_vs_skills([neg], [{"best_for": "documentation"}])
+    assert neg not in rows[0].detail
+    assert "documenting" not in rows[0].detail
+    assert rows[0].subject == "cv.negatives[0]"
+
+
+def test_an_empty_inventory_abstains():
+    """Empty-config-abstains: an install with no Skills Inventory has nothing to
+    contradict, and must not have every negative reported."""
+    assert classify_negatives_vs_skills(["never claim anything"], []) == []
+
+
+def test_an_empty_negatives_list_abstains():
+    assert classify_negatives_vs_skills([], [{"best_for": "documentation"}]) == []
+
+
+def test_an_inventory_with_no_domains_abstains():
+    """A skill whose Domain is blank contributes no terms. Without this arm the union
+    below would be over an empty sequence."""
+    assert classify_negatives_vs_skills(["never claim anything"], [{"best_for": ""}]) == []
+
+
+def test_a_negative_about_something_not_in_the_inventory_is_not_reported():
+    assert classify_negatives_vs_skills(["never claim a security clearance"],
+                                        [{"best_for": "documentation"}]) == []
+
+
+def test_the_match_survives_a_word_form_difference():
+    """Why this shares the stemmer: a negative saying 'documenting' and a skill whose
+    Domain says 'documentation' are the same disagreement."""
+    assert classify_negatives_vs_skills(["no documenting"], [{"best_for": "documentation"}])
+
+
+def test_the_entry_title_is_not_a_matchable_term():
+    """The title is a NAME the user chose, so matching its stems makes any negative
+    containing an ordinary word like 'skills' fire a NOTICE about nothing. A false
+    contradiction report is worse than a missed one here: the whole value of the row is
+    that it means something."""
+    assert classify_negatives_vs_skills(
+        ["never claim these skills"],
+        [{"best_for": "platform", "title": "Example Cloud Skill"}]) == []
+
+
+def test_the_row_never_affects_the_exit_code():
+    """NOTICE, never DEGRADED. `--strict` in a cron job failing because a negative
+    overlaps an inventory is the 672ad2a class aimed at the tool's own exit status."""
+    rows = classify_negatives_vs_skills(["no documenting"], [{"best_for": "documentation"}])
+    assert DoctorReport(checks=[], components=rows).exit_code(strict=True) == 0
+
+
+def test_the_negatives_cross_check_runs_through_the_real_wiring(tmp_path, monkeypatch):
+    """Every other test of this check calls the pure classifier directly, so the smallest
+    DELETION in production code -- removing the call site in `Sluice.doctor` -- leaves them
+    all green. This is the one that reddens.
+
+    Follows `test_doctor_reports_an_unreadable_corpus_through_the_real_wiring`'s idiom,
+    including restoring the REAL store: this file's autouse `_harmless_components` fixture
+    hands `Sluice.doctor` a sentinel with no evidence reads at all.
+    """
+    import os
+
+    from sluice.core.config import Config
+
+    vault = tmp_path / "vault"
+    sk = vault / "Job Applications" / "Skills Inventory"
+    os.makedirs(sk, exist_ok=True)
+    (sk / "Example Cloud Skill.md").write_text(
+        "---\nProficiency: 8 years\nDomain: documentation\nEvidence: e\n"
+        "Signal Value: depth\nverified: 2026-08-25\n---\nBody.\n", encoding="utf-8")
+    monkeypatch.setenv("VAULT_DIR", str(vault))
+    monkeypatch.setattr(Sluice, "store", _REAL_STORE)
+    monkeypatch.setattr(
+        "sluice.cv.config.load_cv_config",
+        lambda *a, **k: __import__("sluice.cv.config", fromlist=["CvConfig"]).CvConfig(
+            negatives=["never claim documenting experience"]))
+
+    report = Sluice(Config(vault_dir=str(vault))).doctor(offline=True)
+    rows = [c for c in report.components if c.subject.startswith("cv.negatives[")]
+    assert rows, ("Sluice.doctor did not run the negatives cross-check -- the pure "
+                  "classifier's own tests cannot see this")
+    assert rows[0].state == NOTICE
+    # Exit-code neutrality is asserted on the rows themselves in
+    # test_the_row_never_affects_the_exit_code. Asserting it on THIS report would conflate
+    # the NOTICE with the genuinely DEAD rows a bare tmp vault produces (no baseline CV, no
+    # Candidate Profile), which is a different claim and one that would fail for the right
+    # reasons.

@@ -2176,6 +2176,22 @@ class Sluice:
                     # broken preflight must be reported, not crash doctor itself.
                     components.append(_doctor.ComponentCheck(
                         "store", "preflight", _doctor.DEAD, str(e)))
+            # #165. Needs BOTH the store and cv_cfg, which is why it lives here and not in
+            # `Vault.preflight()` -- whose docstring commits it to COUNTS rather than
+            # content, and which is a Store-seam member every implementation would have to
+            # grow. The `except` covers only the store READ; the classifier below is pure
+            # and sits outside it, so a bug in it surfaces rather than being logged away.
+            if cv_cfg is not None:
+                try:
+                    _skills = store.read_evidence("skills", verified_only=True)
+                except Exception as e:  # noqa: BLE001 -- an unreadable corpus is already
+                    # reported DEAD by classify_store above WHEN the store implements the
+                    # optional preflight hook; when it does not, this line is the only
+                    # signal, which is why it is WARNING rather than DEBUG.
+                    _log.warning("skills read for the negatives cross-check failed: %s", e)
+                else:
+                    components.extend(_doctor.classify_negatives_vs_skills(
+                        cv_cfg.negatives, _skills))
 
         # Track/Google: probed through track.google_client's own helper rather
         # than importing the google libs here a second time -- that module is
