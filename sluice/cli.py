@@ -986,9 +986,11 @@ def cmd_track_run(args, config) -> int:
         # sidecar after a path migration) therefore silently declined to advance the watermark
         # on every run, widening the Gmail window without bound, while the digest looked
         # entirely normal and the command exited 0.
-        print("  WARNING: the dead-letter store could not be written, so the lastrun "
-              "watermark is being HELD. Every run will re-query a widening window until "
-              "this is fixed.", file=sys.stderr)
+        print("  WARNING: the lastrun watermark is being HELD, so every run will re-query a "
+              "widening window until this is fixed. Either the message fetch failed (see the "
+              "failures above -- an ABSENT google token lands here; an unparseable one is a "
+              "reauth failure instead and exits 1) or the "
+              "dead-letter store could not be written.", file=sys.stderr)
     if rep.search_truncated:
         # The Gmail search capped out, so this run never saw some matching messages -- and
         # because Gmail returns newest-first, the ones it missed are the OLDEST.

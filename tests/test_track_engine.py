@@ -5,6 +5,7 @@ from sluice.core.vault import Vault
 from sluice.track.config import TrackConfig
 from sluice.track import engine as E
 from sluice.track.deadletter import DeadLetterDb, Entry
+import sluice.track.google_client as gc
 from tests.test_track_google_client import FakeGoogleClient
 
 
@@ -1233,3 +1234,89 @@ def test_an_AUTH_failure_fetching_the_message_list_still_reports_reauth():
                 now_iso="2026-07-10T12:00:00+00:00")
     assert rep.auth_error is True
     assert rep.failures == [], "a reauth is its own report, not a per-message failure"
+
+
+def _google_stubs(monkeypatch, on_open):
+    """Stub the lazily-imported google modules so `_creds` runs for real.
+
+    `sluice/` is stdlib-only bar the lazily-imported google client, and CI installs neither, so
+    the libraries are absent here. Same shape as tests/test_track_google_client.py's own stubs.
+    """
+    import sys
+    import types
+    cred_mod = types.ModuleType("google.oauth2.credentials")
+    cred_mod.Credentials = types.SimpleNamespace(from_authorized_user_file=on_open)
+    req_mod = types.ModuleType("google.auth.transport.requests")
+    req_mod.Request = lambda: None
+    # `_svc` does `from googleapiclient.discovery import build` BEFORE evaluating `self._creds()`
+    # as an argument, so the import must succeed for the credential arm to be reached at all.
+    # `build` is stubbed to raise: reaching it would mean `_creds` returned, which no arm of this
+    # test intends, and a silent success there would be a false green.
+    disc_mod = types.ModuleType("googleapiclient.discovery")
+    def _unreachable(*a, **k):
+        raise AssertionError("build() reached -- _creds returned instead of raising")
+    disc_mod.build = _unreachable
+    api_mod = types.ModuleType("googleapiclient")
+    api_mod.discovery = disc_mod
+    for name, mod in (("google", types.ModuleType("google")),
+                      ("google.oauth2", types.ModuleType("google.oauth2")),
+                      ("google.auth", types.ModuleType("google.auth")),
+                      ("google.auth.transport", types.ModuleType("google.auth.transport")),
+                      ("google.oauth2.credentials", cred_mod),
+                      ("google.auth.transport.requests", req_mod),
+                      ("googleapiclient", api_mod),
+                      ("googleapiclient.discovery", disc_mod)):
+        monkeypatch.setitem(sys.modules, name, mod)
+
+
+def test_a_missing_google_token_is_a_failure_row_not_a_reauth_and_not_a_prompt(tmp_path, monkeypatch):
+    """The FIRST-RUN path docs/INSTALL.md sends a new user down, through the REAL client.
+
+    Driven with `RealGoogleClient` rather than a fake, and that is the whole point of the test. A
+    fake raising `FileNotFoundError` from `search_messages` substitutes for exactly the component
+    whose behaviour is under test: measured, such a version never executed `_creds` at all, so the
+    mutation with real user harm -- deleting `except OSError: raise`, which turns a missing file
+    into a reauth demand -- left it green. Here the token path simply does not exist, the lazily
+    imported `Credentials.from_authorized_user_file` raises as the real one does, and `_creds`'s
+    OSError arm is on the executed path.
+
+    Three properties, none obvious from either half alone:
+
+    `auth_error` stays False, so `cmd_track_run` exits 0 rather than printing "google reauth
+    needed". A missing token is not a refused refresh, and that remedy -- delete the token and
+    start again -- is nonsense when there is no token. This is the arm that distinguishes it from
+    a CORRUPT token, which is a dead credential and does report reauth.
+
+    `deadletter_error` is True, so the lastrun watermark is HELD: nothing was read, and advancing
+    it would silently skip whatever arrived while the credential was missing.
+
+    A failure row names the cause, because a run reporting nothing is indistinguishable from a
+    quiet inbox. sluice never prompts for consent here -- it has no consent flow at all, which is
+    why producing the token is documented as the user's own step (see
+    tests/test_no_false_consent_flow_claim.py).
+
+    WHAT THIS ADDS over its siblings, stated rather than implied: each property above is
+    separately pinned elsewhere -- `test_an_unreadable_token_FILE_is_not_reported_as_reauth`
+    covers `_creds`'s OSError arm in isolation, and the transport test beside this one covers the
+    engine's generic arm (`ConnectionError` is itself an `OSError`, which is why both are killed
+    by the same mutations). There is no mutation only this test catches. What it holds that
+    neither does is the COMPOSITION for this exception type: that an absent token reaches a user
+    as exit 0 with a named failure and a held watermark, which is the sequence the install guide
+    describes and the one a first run actually produces.
+    """
+    missing = tmp_path / "google_token.json"
+
+    def _absent(path):
+        raise FileNotFoundError(2, "No such file or directory", str(missing))
+
+    _google_stubs(monkeypatch, _absent)
+    v, _ = _vault("applied")
+    dl = DeadLetterDb(_dl().path)
+    seen = set()
+    rep = E.run(v, TrackConfig(), gc.RealGoogleClient(str(missing)), FakeBackend("{}"),
+                seen=seen, deadletter=dl, now_iso="2026-07-10T12:00:00+00:00")
+
+    assert rep.auth_error is False, "a missing token must not be reported as a reauth failure"
+    assert rep.deadletter_error is True, "the watermark must be held -- nothing was read"
+    assert len(rep.failures) == 1, f"the cause must be named, not swallowed: {rep.failures}"
+    assert "FileNotFoundError" in rep.failures[0].cause
