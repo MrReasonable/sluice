@@ -69,6 +69,31 @@ reviews:
         positions. The exception permits these names, it does not prefer them:
         a test that does not care which adapter it is talking about should
         still use a synthetic id. Every other real company name stays flagged.
+
+        A SECOND exception, for the same public-integration-surface reason and
+        with the same limits: a value a test exists to ASSERT must appear in
+        that test literally. A guard's falsify partner and a drift pin are
+        worthless if the value is synthetic — the pattern can be broken for
+        every real spelling while the row stays green, which is the failure
+        mode this suite is built to prevent. Three concrete cases, all of them
+        checked against real behaviour rather than argued for: this
+        repository's OWN url, where a test pins a value the project publishes
+        (`tests/test_packaging.py` on `[project.urls]`,
+        `tests/test_doc_links_from_code.py` on the urls `sluice/` prints to a
+        user's terminal); the PUBLIC API of a dependency this project ships an
+        extra for (`InstalledAppFlow`, `run_local_server` from
+        `google-auth-oauthlib`); and that dependency's DOCUMENTED endpoint
+        hosts (`accounts.google.com`, `oauth2.googleapis.com`) and scope urls,
+        which `docs/INSTALL.md` states in prose for the same reason.
+
+        The limits are what make it an exception rather than a licence.
+        Substituting a synthetic value must be shown to break the test —
+        measured, not assumed — otherwise use one. None of this reaches a lead,
+        employer or candidate identity, where `Example <Word>` still applies.
+        And none of it admits a THIRD party's url, a private host, or an
+        absolute path: `tests/test_no_leaked_files.py` sweeps every tracked
+        file for those with an empty pathspec, and that guard is the authority,
+        not this paragraph.
   tools:
     gitleaks:
       enabled: true
