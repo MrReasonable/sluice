@@ -41,6 +41,19 @@ updates:
       - /.github
     schedule:
       interval: weekly
+    # A dependency FLOOR that names a release younger than 24 hours makes the Homebrew
+    # channel unresolvable: `brew update-python-resources` resolves the resource tree with
+    # `--uploaded-prior-to=P1D`, and `--ignore-main-package-cooldown` exempts only OUR OWN
+    # package -- its own help says "its dependencies still respect the cooldown". So the
+    # `homebrew` job fails until that release ages out.
+    #
+    # Dependabot is NOT how that happened for 2.0.0 (a hand-written floor was), and it
+    # already applies a DEFAULT 3-day cooldown to version updates -- comfortably longer than
+    # Homebrew's day. This block is therefore not a fix for a live bug: it makes that
+    # implicit default explicit and larger, so the margin survives a change to GitHub's
+    # default. Security updates are exempt by design and are not delayed by this.
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: chore
       include: scope

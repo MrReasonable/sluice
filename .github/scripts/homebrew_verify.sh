@@ -208,8 +208,65 @@ PY
 # --ignore-main-package-cooldown is REQUIRED, not optional: this job runs minutes after the
 # PyPI upload and the resolver otherwise refuses a package that new. Homebrew honours the flag
 # for non-official taps only, which ours is.
-brew update-python-resources --version "$VERSION" --ignore-main-package-cooldown \
-  "${TAP_OWNER}/tap/job-sluice"
+#
+# IT COVERS OUR OWN PACKAGE AND NOTHING ELSE. Homebrew resolves the resource tree with
+# `--uploaded-prior-to=P1D`, and the flag's own help says "its dependencies still respect the
+# cooldown". So a DEPENDENCY FLOOR naming a release younger than a day makes the formula
+# unresolvable until that release ages out -- and Homebrew reports it as the unhelpfully
+# generic "Unable to determine dependencies ... Please update the resources manually", naming
+# neither the cooldown nor the offending package.
+#
+# That is not hypothetical: 2.0.0's release failed exactly here, because pyproject floored
+# `google-auth>=2.57.0` about an hour after 2.57.0 was published, so the resolver could only
+# see 2.56.3. Diagnosing it took reproducing Homebrew's pip invocation by hand. The wrapper
+# below re-runs that same resolution WITHOUT the cooldown: if it then succeeds, the cooldown
+# is the cause and the message says so, names the recovery, and exits.
+if ! brew update-python-resources --version "$VERSION" --ignore-main-package-cooldown \
+  "${TAP_OWNER}/tap/job-sluice"; then
+  echo "::group::diagnosing the resource-resolution failure"
+  # EVERY lookup below is guarded, and that is not defensive habit: this block runs under
+  # `set -euo pipefail`, where an assignment whose command substitution fails takes the whole
+  # script down at that line -- measured, not assumed. So an unguarded lookup would kill the
+  # diagnostic BEFORE either `::error::` printed, leave `::group::` unclosed so the log folds
+  # shut, and produce exactly the silent failure this block exists to replace. A diagnostic
+  # that can fail to diagnose is worse than none, because it looks like it ran.
+  diag_fail() {
+    echo "::endgroup::"
+    echo "::error::resource resolution failed, and the cooldown diagnostic could not run: $1. Read Homebrew's own output above; it is the only evidence available for this failure."
+    exit 1
+  }
+  if ! sdist_url="$(python3 - "$VERSION" <<'PYEOF'
+import json, sys, urllib.request
+v = sys.argv[1]
+with urllib.request.urlopen(f"https://pypi.org/pypi/job-sluice/{v}/json", timeout=60) as r:
+    print(next(u["url"] for u in json.load(r)["urls"] if u["packagetype"] == "sdist"))
+PYEOF
+)" || [ -z "$sdist_url" ]; then
+    diag_fail "could not fetch ${VERSION}'s sdist URL from the PyPI JSON API"
+  fi
+  # Derived from the formula just rendered, not restated here: one source, no drift.
+  if ! EXTRAS="$(grep -oE 'job-sluice\[[a-z,]+\]' "$TAP_DIR/$FORMULA_REL" | head -1 | sed 's/.*\[//;s/\]//')" \
+     || [ -z "$EXTRAS" ]; then
+    diag_fail "could not read the extras from the rendered formula at $FORMULA_REL"
+  fi
+  if ! brew_prefix="$(brew --prefix python@3.14)" || [ -z "$brew_prefix" ]; then
+    diag_fail "could not locate the brewed python@3.14 prefix"
+  fi
+  brew_py="${brew_prefix}/libexec/bin/python"
+  [ -x "$brew_py" ] || brew_py="${brew_prefix}/bin/python3.14"
+  if [ ! -x "$brew_py" ]; then
+    diag_fail "no executable python under ${brew_prefix}"
+  fi
+  if "$brew_py" -m pip install -q --disable-pip-version-check --dry-run --ignore-installed \
+      --report=/dev/null "job-sluice[${EXTRAS}] @ ${sdist_url}"; then
+    echo "::endgroup::"
+    echo "::error::resource resolution failed ONLY under Homebrew's dependency cooldown. The same resolution succeeds without it, so a dependency floor in pyproject.toml names a release less than 24h old and the resolver cannot see it yet. This is not a code defect and needs no fix: re-run THIS job (not the dry run, which would push a scratch branch) once that release has aged past 24 hours. The pip error above names the package and the versions it could see."
+  else
+    echo "::endgroup::"
+    echo "::error::resource resolution failed with AND without Homebrew's dependency cooldown, so the cooldown is not the cause. Read the pip output above."
+  fi
+  exit 1
+fi
 brew audit --strict --online "${TAP_OWNER}/tap/job-sluice"
 brew install --build-from-source "${TAP_OWNER}/tap/job-sluice"
 brew test "${TAP_OWNER}/tap/job-sluice"
