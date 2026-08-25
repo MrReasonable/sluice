@@ -602,9 +602,12 @@ def test_a_body_opening_with_its_own_fence_cannot_become_the_frontmatter(tmp_pat
 
 
 def test_a_body_line_shaped_like_a_citation_code_is_refused(tmp_path):
-    """cv/validate.py:66 is `nums[cur] = ...`, an ASSIGNMENT, so such a line rebinds
-    another entry's permitted numbers and a fabricated figure clears the hard gate.
-    A NARROWING, not a close -- the close is #174's signature change on validate()."""
+    """Written when `cv/validate.py` recovered ids by parsing the rendered bundle text
+    (`nums[cur] = ...`, an ASSIGNMENT), so such a line REBOUND another entry's permitted
+    numbers and a fabricated figure cleared the hard gate. #174 has since deleted that
+    parse entirely -- the gate is handed its source set structurally now, so there is
+    nothing left to rebind that way. The guard stays for the smaller residual #174's
+    design accepts instead; see core/vault.py's `_refuse_citation_shaped_body`."""
     v = Vault(str(tmp_path))
     with pytest.raises(ValueError, match="citation code"):
         v.propose_evidence("experience", name="alpha", fields={},
@@ -616,10 +619,12 @@ def test_verify_refuses_a_hand_placed_body_line_shaped_like_a_citation_code(tmp_
 
     The guard used to live only in `_render_evidence_note`, i.e. only on the `propose`
     path. An entry a human dropped into `_inbox/` themselves never goes through propose,
-    and hand-editing the vault is a first-class workflow here -- so measured, an entry
-    whose body was `[NC1] delivered 987 things` verified True and landed CITABLE, and
-    `cv/validate.py`'s `nums[cur] = set(...)` then rebound NC1's permitted numbers in the
-    bundle the hard gate reads.
+    and hand-editing the vault is a first-class workflow here -- so measured (at the
+    time), an entry whose body was `[NC1] delivered 987 things` verified True and landed
+    CITABLE, and `cv/validate.py`'s then-parser (`nums[cur] = set(...)`) rebound NC1's
+    permitted numbers in the bundle the hard gate read. #174 has since deleted that
+    parser; the guard's current reason is narrower -- see core/vault.py's
+    `_refuse_citation_shaped_body`.
 
     Asserting the citable set is empty afterwards is the load-bearing half: a refusal
     raised after the destination write would satisfy `pytest.raises` and still have made
@@ -699,24 +704,50 @@ def test_a_taken_inbox_name_refuses_with_a_named_message_not_an_errno(tmp_path):
     assert "Errno" not in str(caught.value), "the raw errno reached the caller"
 
 
-def test_id_shaped_pattern_matches_validate_id_re_pattern():
-    """`vault._ID_SHAPED` is a deliberate LOCAL COPY of `cv.validate._ID_RE` -- core/ must not
-    import cv/, so it cannot be the SAME object. But the two must stay textually EQUAL:
-    a comment here used to claim a drift 'fails open only in the direction of refusing
-    more, never less', which is false in general -- WIDENING _ID_RE (say, to a third
-    prefix letter) without widening this copy would make propose_evidence's guard
-    refuse LESS than the gate actually parses as a citation code, which is the direction
-    that matters. Mirrors cv/validate.py's own
-    test_profile_strip_matches_render_citation_shape precedent for the identical reason:
-    a comment cannot enforce an equality a test can."""
+def test_id_shaped_matches_every_generated_code():
+    """`vault._ID_SHAPED` is a deliberate LOCAL COPY of the bundle citation shape -- core/
+    must not import cv/, so it cannot be the same object -- and this pins it against the
+    thing that DEFINES that shape.
+
+    It used to pin textual equality with `cv.validate._ID_RE`, the regex the gate used to
+    parse ids out of the rendered bundle. #174 deleted that regex: the gate is handed its
+    ids structurally now, so there is no counterpart pattern left to compare against.
+
+    The source of truth moved to the GENERATOR, and pinning against generated output is
+    strictly stronger than the regex-to-regex equality it replaces: it fails if
+    `_prefix`/`assign_codes` change the shape they emit for ANY reason, not only if
+    somebody edits a regex. The direction that matters is unchanged -- this guard must
+    match at least every code the generator can produce, or an authored body line could
+    carry a token the bundle will later treat as a real entry's code.
+
+    The company names below are deliberately awkward (punctuation, digits, one-letter,
+    non-ASCII, empty) because `_prefix` coerces ALL of them to exactly two A-Z letters --
+    that coercion is what makes a single pattern sufficient, and it is what would break
+    silently if the generator ever stopped coercing.
+
+    Witnessed against five mutations of `_ID_SHAPED`: a three-letter prefix, a one-letter
+    prefix, widening to accept lowercase, and making the sequence number optional all go
+    RED here. Dropping the leading `^` does NOT, and that is an equivalent mutant rather
+    than a hole: every caller uses `.match()`, which anchors at position 0 on its own, so
+    the `^` is decorative for this pattern. Recorded so a later mutation round reads that
+    survivor as expected rather than as evidence this test is inert.
+    """
     from sluice.core.vault import _ID_SHAPED
-    from sluice.cv.validate import _ID_RE
-    assert _ID_SHAPED.pattern == _ID_RE.pattern
-    assert _ID_SHAPED.flags == _ID_RE.flags
-    for s in ("[AL1] delivered 4200 units", "[al1] lowercase does not count",
-              "[ABC1] three-letter prefix does not count", "no code here",
-              "[AL123456] many digits"):
-        assert bool(_ID_SHAPED.match(s)) == bool(_ID_RE.match(s)), s
+    from sluice.cv.bundle import assign_codes
+
+    companies = ["Example Alpha", "example beta", "7 Digits Ltd", "Ω-Only", "X", "",
+                 "Punctuation!!! Co", "Example Alpha"]
+    coded = assign_codes([{"company": c} for c in companies], {})
+    assert len(coded) == len(companies), "assign_codes dropped an entry"
+    for e in coded:
+        assert _ID_SHAPED.match(f"[{e['id']}] delivered 4200 units"), e["id"]
+
+    # ...and it must NOT match the near-misses, or the guard refuses bodies it should
+    # accept and a legitimate entry becomes unwritable.
+    for s in ("[al1] lowercase does not count", "[ABC1] three-letter prefix does not count",
+              "[A1] one-letter prefix does not count", "[AL] no sequence number",
+              "no code here", " [AL1] leading space is not line-initial"):
+        assert not _ID_SHAPED.match(s), s
 
 
 def _pending_text(v, kind, slug):
