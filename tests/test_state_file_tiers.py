@@ -143,9 +143,14 @@ def test_a_locked_database_is_not_reported_as_corruption(tmp_path, monkeypatch):
         db.close()
 
     # `timeout=0` on the READER, patched in for this row only. `SeenDb.load` calls
-    # `sqlite3.connect` untimed, so it inherits the 5s default busy timeout and this test
-    # alone cost 5.2s -- a third of a suite CLAUDE.md documents as sub-second. The lock is
-    # acquired INSIDE the try, so a SQLITE_BUSY on the way in cannot leak the connection.
+    # `sqlite3.connect` untimed, so it inherits sqlite3's 5s default busy timeout: BEFORE
+    # this patch existed, the locked load below blocked for that timeout and this test
+    # alone cost 5.2s. The patch is what removed that cost -- the measurement PREDATES it
+    # and does not describe the test as it runs now, which fails the connect immediately.
+    # Stated as a fact about THIS test rather than as a fraction of the suite's runtime,
+    # which CLAUDE.md deliberately quotes no bound for (a quoted duration is a drift
+    # surface, not a fact worth pinning in prose). The lock is acquired INSIDE the try, so
+    # a SQLITE_BUSY on the way in cannot leak the connection.
     real_connect = sqlite3.connect
     monkeypatch.setattr(sqlite3, "connect",
                         lambda *a, **k: real_connect(*a, **{**k, "timeout": 0}))

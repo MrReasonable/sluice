@@ -36,9 +36,9 @@ class _PagedList:
 
     # A hard call bound. `list_next` finds its position with `self.pages.index(response)`,
     # and 10_000 identical zero-item pages all compare equal, so the index is always 0 --
-    # deleting the page cap under test gives an INFINITE LOOP, not a failure. In a sub-second
-    # suite that reads as wedged CI rather than as a caught regression, which is the one
-    # outcome a mutation witness must never produce.
+    # deleting the page cap under test gives an INFINITE LOOP, not a failure. In a suite that
+    # is otherwise fast, that reads as wedged CI rather than as a caught regression, which
+    # is the one outcome a mutation witness must never produce.
     _MAX_CALLS = 400
 
     def __init__(self, pages, item_key):
