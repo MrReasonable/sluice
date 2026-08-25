@@ -40,6 +40,14 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.0.1](https://github.com/MrReasonable/sluice/compare/v2.0.0...v2.0.1) (2026-08-25)
+
+
+### Bug Fixes
+
+* **deps:** floor at the major boundary, since the ceiling is what Dependabot tracks ([d5c68da](https://github.com/MrReasonable/sluice/commit/d5c68dad2f53bf7c8de24296590409455c090bc0))
+* **packaging:** diagnose the Homebrew dependency-cooldown failure ([#104](https://github.com/MrReasonable/sluice/issues/104)) ([db7d7ed](https://github.com/MrReasonable/sluice/commit/db7d7edeba38d474d5801334301f36ac93c14c73))
+
 ## [2.0.0](https://github.com/MrReasonable/sluice/compare/v1.2.0...v2.0.0) (2026-08-25)
 
 
