@@ -753,7 +753,8 @@ def cmd_cv_run(args, config) -> int:
         print(f"cv: {r.status} {r.lead} served={r.served} "
               f"violations={len(r.violations)} audit_flags={len(r.audit_flags)} "
               f"slop={len(r.slop)} voice_flags={len(r.voice_flags)} "
-              f"dossier_failed={r.dossier_failed}",
+              f"dossier_failed={r.dossier_failed} "
+              f"skills_unreadable={r.skills_unreadable}",
               file=sys.stderr)
         # slop (cv/slop.py's deterministic linter, both tiers) and voice_flags (the
         # opt-in model-judged voice check) are the two signals #167 opened over: each
@@ -777,6 +778,13 @@ def cmd_cv_run(args, config) -> int:
     blind = sum(1 for r in results if r.dossier_failed)
     if blind:
         print(f"cv: {blind} CV(s) composed blind (dossier fetch failed)", file=sys.stderr)
+    # #165, the same shape one line down: a broken Skills Inventory degrades rather than
+    # binning the lead, so `status: rendered` would otherwise be indistinguishable from a
+    # CV genuinely framed by the candidate's own skills.
+    unframed = sum(1 for r in results if r.skills_unreadable)
+    if unframed:
+        print(f"cv: {unframed} CV(s) composed without the Skills Inventory "
+              f"(corpus unreadable -- run `job-sluice doctor`)", file=sys.stderr)
     rendered = [r for r in results if r.status == "rendered"]
     if rendered:
         _notify_reporting("job-sluice cv: " + "; ".join(

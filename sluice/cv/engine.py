@@ -103,6 +103,18 @@ class CvResult:
     # visibility: without it, "status: rendered" is indistinguishable from a CV genuinely
     # tailored to a real job description.
     dossier_failed: bool = False
+    # #165: the Skills Inventory could not be READ (a symlinked corpus, a non-UTF-8 entry)
+    # and the CV was composed without its framing section. Visibility, never control flow --
+    # the shape `dossier_failed` above established, and it carries the same obligation: a
+    # field with no reader is the "computed and discarded" defect #167 opened over. Read by
+    # cli.py's per-result line and its summary count, and by mcpserver.py's cv_run.
+    #
+    # A MISSING corpus is NOT this: `read_evidence` returns [] for one, which is the abstain
+    # case and entirely normal. Deliberately NOT stamped onto the exception the way
+    # `dossier_failed` is -- that stamp exists so run_batch can report the flag for a lead
+    # that RAISED, and the only raise this flag could survive happens after it is already
+    # set, at which point the lead is reported `error` and the framing is not the story.
+    skills_unreadable: bool = False
 
 
 def _slug(company: str, role: str) -> str:
@@ -281,11 +293,35 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
     # reads it back via `getattr(..., False)`, which also covers an exception from a
     # path that predates #18 and so never carries the attribute.
     try:
-        entries = vault.read_experience_entries(verified_only=True)
+        entries = vault.read_evidence("experience", verified_only=True)
         baseline = vault.read_baseline()
+        # A broken SKILLS corpus must not cost a lead (#165). `read_evidence` returns [] for
+        # a MISSING directory, so reaching this handler means genuine breakage -- which
+        # `doctor` already reports per-kind as DEAD. Letting it propagate would put a
+        # framing-only corpus inside the same try as the experience read and fail every lead
+        # in the batch; #167's rule is that a thing affecting only tailoring QUALITY may
+        # never bin a lead. The experience read above is deliberately NOT wrapped: it is the
+        # gate's only citable evidence, and a bundle with no ids fails every bullet anyway.
+        #
+        # `(OSError, ValueError)`, not OSError alone: `_read` opens with encoding='utf-8', so
+        # a non-UTF-8 entry raises UnicodeDecodeError -- a ValueError. Catching OSError alone
+        # lets it escape run_one, and run_batch then records `error` for EVERY lead, which is
+        # precisely the outcome this guard exists to prevent. `Vault.preflight` shipped that
+        # same shortfall and now catches both.
+        skills_unreadable = False
+        try:
+            skills = vault.read_evidence("skills", verified_only=True)
+        except (OSError, ValueError) as e:
+            _log.warning("skills inventory for %s unreadable, composing without it: %s",
+                         note.ref, e)
+            skills, skills_unreadable = [], True
         b = _bundle.build_bundle(entries, baseline, cvcfg.negatives,
-                                 _jd_keywords(role, jd), cvcfg.prefix_map)
-        bundle_text = _bundle.render_bundle(b)
+                                 _jd_keywords(role, jd), cvcfg.prefix_map, skills=skills)
+        # The COMPOSER's text. The #60 ADVISORY audit gets `render_bundle` instead, bound
+        # below -- spec D11, and the reason those are two functions rather than one with a
+        # flag: there is no default for a future caller to get wrong.
+        bundle_text = _bundle.render_composer_bundle(b)
+        audit_bundle_text = _bundle.render_bundle(b)
         # Bound HERE, beside `bundle_text` and BEFORE the retry loop, not inlined at the
         # `_validate` call: both are derived from the same `b`, and adjacency is what stops
         # a later edit rebuilding one from a different bundle and leaving the other stale.
@@ -624,7 +660,8 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
                             slop=[f"SLOP {lbl}: {snip}" for _ln, lbl, snip in slop_err]
                                  + style_msgs,
                             voice_flags=voice_flags, backend=backend_used,
-                            dossier_failed=dossier_failed)
+                            dossier_failed=dossier_failed,
+                            skills_unreadable=skills_unreadable)
         # REBIND, before ANYTHING below reads `cv_text`. It is bound to the LAST attempt,
         # which on the sequence [attempt 1 hard-clean, attempt 2 hard-dirty] is a draft
         # that never cleared the gate. Everything past this line reads it -- `run_audit`
@@ -650,7 +687,7 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
         # timeout here must not prevent a CV that already passed the HARD gate from
         # rendering -- swallow and log, never propagate.
         try:
-            _report, audit_flags = run_audit(backend, cv_text, bundle_text)
+            _report, audit_flags = run_audit(backend, cv_text, audit_bundle_text)
         except Exception as e:
             _log.warning("advisory audit failed for %s: %s", note.ref, e)
             audit_flags = []
@@ -663,7 +700,8 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
             # empty by construction on this path (see `slop`'s own field comment).
             return CvResult(note.ref, "dry-run", slop=style_msgs, voice_flags=voice_flags,
                             audit_flags=audit_flags, backend=backend_used,
-                            dossier_failed=dossier_failed)
+                            dossier_failed=dossier_failed,
+                            skills_unreadable=skills_unreadable)
 
         from sluice.cv import render as _render
         out_dir = f"{cvcfg.output_dir}/{_slug(company, role)}"
@@ -724,10 +762,12 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
             if not held:
                 return CvResult(note.ref, "skipped-has-cv", slop=style_msgs,
                                 voice_flags=voice_flags, audit_flags=audit_flags,
-                                backend=backend_used, dossier_failed=dossier_failed)
+                                backend=backend_used, dossier_failed=dossier_failed,
+                                skills_unreadable=skills_unreadable)
             return CvResult(note.ref, "needs-signoff", slop=style_msgs,
                             voice_flags=voice_flags, audit_flags=audit_flags,
-                            served=served, backend=backend_used, dossier_failed=dossier_failed)
+                            served=served, backend=backend_used, dossier_failed=dossier_failed,
+                                skills_unreadable=skills_unreadable)
         if served:
             wrote = vault.set_tailored_cv(
                 note.ref, f"{served} ({date.today().isoformat()})",
@@ -738,10 +778,12 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
                 # only the note pointer is withheld. See #16 cv long-window.
                 return CvResult(note.ref, "skipped-has-cv", slop=style_msgs,
                                 voice_flags=voice_flags, audit_flags=audit_flags,
-                                backend=backend_used, dossier_failed=dossier_failed)
+                                backend=backend_used, dossier_failed=dossier_failed,
+                                skills_unreadable=skills_unreadable)
         return CvResult(note.ref, "rendered", slop=style_msgs, voice_flags=voice_flags,
                         audit_flags=audit_flags, served=served, backend=backend_used,
-                        dossier_failed=dossier_failed)
+                        dossier_failed=dossier_failed,
+                        skills_unreadable=skills_unreadable)
     except Exception as e:
         e.dossier_failed = dossier_failed
         raise

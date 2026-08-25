@@ -407,9 +407,16 @@ def classify_store(facts: dict | None) -> list:
         if spec.cited_by_gate:
             detail = (f"{verified} verified / {total} total entries -- only verified "
                       f"entries are citable by the CV fabrication gate")
+        elif spec.read_by_composer:
+            # True for `skills` since #165: the composer is SHOWN them as framing, the gate
+            # licenses no figure from them, and the #60 advisory audit is not shown them at
+            # all (cv/bundle.py's two renderers). "citable" here would be the #164 M2
+            # over-claim; "nothing reads this corpus" is now simply false.
+            detail = (f"{verified} verified / {total} total entries -- shown to the CV "
+                      f"composer as framing; not a citable source for the gate")
         else:
             detail = (f"{verified} verified / {total} total entries -- reviewed, but "
-                      f"the CV fabrication gate does not read this corpus yet (#165)")
+                      f"nothing reads this corpus yet")
         if pending:
             # The failure mode propose-only writes introduce: entries captured,
             # sitting in `_inbox/`, doing nothing, with no other signal anywhere

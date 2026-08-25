@@ -187,6 +187,7 @@ EVIDENCE_KINDS = {
     # The three unmapped fields stay reachable by name in the entry's `fields` dict.
     "skills": EvidenceKind("Job Applications/Skills Inventory",
                            ("Proficiency", "Domain", "Evidence", "Signal Value"),
+                           read_by_composer=True,
                            floor_map=(("best_for", "Domain"),)),
     # STAR reuses `Best For` rather than inventing a keyword field: cv/bundle.py's
     # rank() scores on best_for/category/title, so a future consumer gets that ranker

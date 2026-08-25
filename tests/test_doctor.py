@@ -1567,26 +1567,40 @@ def test_doctor_prints_the_two_evidence_counts_it_was_given_rather_than_one_twic
 def test_doctor_claims_citability_only_for_the_corpus_the_gate_actually_reads(tmp_path):
     """#164 review, M2. Every kind's row said "only verified entries are citable by the
     CV fabrication gate", while `cv/engine.py` reads `experience` alone -- so a user was
-    told their Skills Inventory was feeding their CVs when nothing reads it until #165.
+    told their Skills Inventory was citable when nothing licensed it.
     Wrong in the reassuring direction, which is the direction people stop looking in.
 
-    Derived from `EvidenceKind.cited_by_gate` rather than asserting on the two kind
-    names, so #165's boolean flip carries this row with it instead of failing it. Both
-    branches are asserted, because a message that claimed citability for NOTHING would
-    satisfy the negative half on its own.
+    Derived from the registry flags rather than asserting on kind names, so a flag change
+    carries this row with it instead of failing it. All THREE branches are asserted,
+    because a message that claimed citability for NOTHING would satisfy the negative half
+    on its own.
+
+    Three branches since #165, not two: `skills` is now READ by the composer as framing
+    while remaining uncitable, so both "citable" and "nothing reads this corpus" are false
+    for it. That middle state is the whole point of splitting the flag -- collapsing it
+    back into either neighbour re-creates the #164 M2 over-claim in one direction or a
+    plain falsehood in the other.
     """
     from sluice.core.protocols import EVIDENCE_KINDS
     from sluice.core.vault import Vault
 
     rows = {r.subject: r.detail for r in classify_store(Vault(str(tmp_path)).preflight())}
-    cited = [k for k, s in EVIDENCE_KINDS.items() if s.cited_by_gate]
-    assert cited, "no kind is flagged cited_by_gate -- the positive half is vacuous"
+    assert any(s.cited_by_gate for s in EVIDENCE_KINDS.values()), \
+        "no kind is flagged cited_by_gate -- the citable half is vacuous"
+    assert any(s.read_by_composer and not s.cited_by_gate
+               for s in EVIDENCE_KINDS.values()), \
+        "no kind is framing-only -- the middle branch below is unexercised"
+    assert any(not s.read_by_composer for s in EVIDENCE_KINDS.values()), \
+        "every kind is read -- the unread half is vacuous"
     for kind, spec in EVIDENCE_KINDS.items():
         detail = rows[spec.relpath.rsplit("/", 1)[-1]]
         if spec.cited_by_gate:
             assert "are citable by the CV fabrication gate" in detail, kind
+        elif spec.read_by_composer:
+            assert "shown to the CV composer as framing" in detail, kind
+            assert "are citable by the CV fabrication gate" not in detail, kind
         else:
-            assert "does not read this corpus yet" in detail, kind
+            assert "nothing reads this corpus yet" in detail, kind
             assert "are citable by the CV fabrication gate" not in detail, kind
 
 

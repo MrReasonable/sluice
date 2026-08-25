@@ -35,6 +35,10 @@ class FakeVault:
     def __init__(self, entries, notes=None, candidate=DEFAULT_CANDIDATE):
         self._entries = entries; self._notes = notes or []; self.written = {}; self.fields = {}
         self._candidate = candidate
+    def read_evidence(self, kind, verified_only=True):
+        # A later commit deletes read_experience_entries entirely; until then both
+        # spellings answer, so this commit is green before AND after the engine switch.
+        return self._entries if kind == "experience" else []
     def read_experience_entries(self, verified_only=True): return self._entries
     # #107: cv/engine.py's identity gate is MUST-support (Store.read_candidate_profile),
     # not reached through getattr -- so every test that expects run_one to proceed past
@@ -2698,3 +2702,132 @@ def test_a_poisoned_entry_body_cannot_launder_a_fabricated_figure_through_run_on
     assert rend.rendered == [], (
         "a fabricated figure laundered through a poisoned entry body must never "
         "reach the renderer")
+
+
+# ── #165: the Skills Inventory reaches the composer ──────────────────────────
+class RecordingBackend:
+    """Records every prompt. Mirrors FakeBackend's routing: compose prompts carry
+    'SOURCE BUNDLE' and not 'auditing'; audit prompts carry both."""
+    def __init__(self, cv_out=None):
+        self.last_backend = "primary"; self.prompts = []; self.audit_prompts = []
+        self.cv_out = cv_out if cv_out is not None else CLEAN_CV
+
+    def complete(self, prompt):
+        if "SOURCE BUNDLE" in prompt and "auditing" not in prompt:
+            self.prompts.append(prompt)
+            return self.cv_out
+        self.audit_prompts.append(prompt)
+        return "supported\tx\tSF1"
+
+
+class SkillsVault(FakeVault):
+    """FakeVault plus a skills corpus. `skills_error` makes the read raise the way a
+    symlinked directory or a non-UTF-8 entry really does."""
+    def __init__(self, entries, *, skills=(), skills_error=None, **kw):
+        super().__init__(entries, **kw)
+        self._skills, self._skills_error = list(skills), skills_error
+        self.reads = []
+
+    def read_evidence(self, kind, verified_only=True):
+        self.reads.append((kind, verified_only))
+        if kind == "skills":
+            if self._skills_error:
+                raise self._skills_error
+            return self._skills
+        return self._entries
+
+
+_SKILL_ENTRY = {"title": "Example Cloud Skill", "best_for": "platform", "body": "",
+                "fields": {"Proficiency": "8 years", "Domain": "platform",
+                           "Evidence": "shipped things", "Signal Value": "depth"}}
+
+
+def _skills_note(**fm):
+    return Note({"status": "shortlist", "company": "Example Foundry",
+                 "role": "Analyst", **fm})
+
+
+def test_a_skill_reaches_the_composers_prompt(monkeypatch):
+    """The whole point of #165: the corpus was inert. Asserts on the PROMPT the backend
+    received, never on an internal."""
+    _served(monkeypatch)
+    be = RecordingBackend()
+    run_one(_skills_note(), SkillsVault(ENTRIES, skills=[_SKILL_ENTRY]), _cfg(), be,
+            FakeCache(), renderer=FakeRenderer())
+    assert "=== SKILLS INVENTORY" in be.prompts[0]
+    assert "Example Cloud Skill" in be.prompts[0]
+
+
+def test_the_advisory_audit_is_never_shown_the_framing_section(monkeypatch):
+    """#165 D11. cv/audit.py's prompt opens 'SOURCE BUNDLE is the ONLY truth', so a CV
+    claim resting on a skills line alone would read as SUPPORTED and be served unsigned --
+    where today it is `unsupported` and, at the shipped cv.require_signoff, withheld until
+    a human signs off. This assertion is what keeps the #60 hold armed.
+
+    Asserts the bare words as well as the header: the derived negative NAMES the section,
+    and an earlier design let that sentence ride bundle["negatives"] into the auditor's
+    text. Asserting the header alone would not have caught it."""
+    _served(monkeypatch)
+    be = RecordingBackend()
+    run_one(_skills_note(), SkillsVault(ENTRIES, skills=[_SKILL_ENTRY]), _cfg(), be,
+            FakeCache(), renderer=FakeRenderer())
+    assert be.audit_prompts, "the audit never ran; this test would pass vacuously"
+    assert "=== SKILLS INVENTORY" not in be.audit_prompts[0]
+    assert "SKILLS INVENTORY" not in be.audit_prompts[0]
+    assert "Example Cloud Skill" not in be.audit_prompts[0]
+    assert "VERIFIED EXPERIENCE ENTRIES" in be.audit_prompts[0]
+
+
+@pytest.mark.parametrize("err", [
+    OSError("evidence directory is a symlink"),
+    # A non-UTF-8 entry. `_read` opens with encoding='utf-8', so this is a ValueError, NOT
+    # an OSError -- the exact shortfall Vault.preflight already shipped and fixed
+    # (core/vault.py). Catching OSError alone lets it escape run_one, and run_batch then
+    # records `error` for EVERY lead: the outcome this guard exists to prevent, caused by
+    # the guard.
+    UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+])
+def test_an_unreadable_skills_corpus_composes_without_it_and_says_so(monkeypatch, err):
+    """A framing-only corpus may never cost a lead (#167's rule, one layer out)."""
+    _served(monkeypatch)
+    v = SkillsVault(ENTRIES, skills_error=err)
+    r = run_one(_skills_note(), v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(),
+                renderer=FakeRenderer())
+    assert r.status == "rendered", "a broken framing corpus binned the lead"
+    assert r.skills_unreadable is True
+
+
+def test_an_unreadable_experience_corpus_still_fails_loudly():
+    """The other half of the same decision, and the arm a naive 'wrap the evidence reads'
+    would silently swallow. Without this, moving the experience read inside the try is
+    green everywhere."""
+    class ExperienceError(SkillsVault):
+        def read_evidence(self, kind, verified_only=True):
+            if kind == "experience":
+                raise OSError("experience library is a symlink")
+            return []
+    with pytest.raises(OSError):
+        run_one(_skills_note(), ExperienceError(ENTRIES), _cfg(),
+                FakeBackend(CLEAN_CV), FakeCache(), renderer=FakeRenderer())
+
+
+def test_skills_reach_the_bundle_verified_only(monkeypatch):
+    """An `_inbox/` skill must never reach the composer: `verified:` is the trust root."""
+    _served(monkeypatch)
+    v = SkillsVault(ENTRIES, skills=[])
+    run_one(_skills_note(), v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(),
+            renderer=FakeRenderer())
+    assert ("skills", True) in v.reads
+
+
+def test_a_refused_lead_never_reads_any_evidence_corpus():
+    """`skipped-stale` returns before the bundle build, so a broken corpus costs nothing on
+    a lead that was never going to compose. Guards the PLACEMENT: hoisting the read above
+    the guards would spend a vault read on every refused lead and could raise before the
+    refusal."""
+    v = SkillsVault(ENTRIES, skills_error=OSError("would raise if reached"))
+    r = run_one(_skills_note(last_seen="2000-01-01"), v, _cfg(),
+                FakeBackend(CLEAN_CV), FakeCache(), renderer=FakeRenderer(),
+                policy=StalenessPolicy(ttl_days=1, today="2026-08-25"))
+    assert r.status == "skipped-stale"
+    assert v.reads == [], f"a refused lead touched the evidence corpora: {v.reads}"
