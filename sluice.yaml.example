@@ -232,6 +232,15 @@ triage:
 #   # one contact field to clear the gate.
 #   employers: [Employer A, Employer B]   # empty skips the per-employer gate
 #   fabrication_decoys: [Some Other Company]
+#   # Free-text constraints prepended to the bundle's NEGATIVE CONSTRAINTS block. With a
+#   # non-empty Skills Inventory the bundle already derives its own cross-reference
+#   # ("claim no technology ... not named in the BASELINE CV, the VERIFIED EXPERIENCE
+#   # ENTRIES or the SKILLS INVENTORY above"), so a line here restating which technologies
+#   # you work in is a hand-typed shadow of that file and will drift from it -- `job-sluice
+#   # doctor` reports any line that names a skill the inventory actually holds. What this
+#   # key is still FOR is the negatives an inventory cannot express:
+#   negatives:
+#     - never claim a certification the Experience Library does not evidence
 #   served_prefix: CV
 #   compose_host: <your-claude-host>       # empty runs compose_claude_path locally
 #   compose_claude_path: claude

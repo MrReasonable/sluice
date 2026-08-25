@@ -94,7 +94,7 @@ the Candidate Profile section that follows this table.
 | `fabrication_decoys` | `[]` | known-hallucination strings — a hard fail if any appear in the composed CV |
 | `served_prefix` | `"CV"` | must match `apply.served_prefix` |
 | `prefix_map` | `{}` | |
-| `negatives` | `[]` | |
+| `negatives` | `[]` | free-text constraints prepended to the bundle's NEGATIVE CONSTRAINTS block. Since #165 a skills-shaped negative is largely redundant: with a non-empty Skills Inventory the bundle derives its own cross-reference, and `job-sluice doctor` reports any line here that names a skill the inventory holds. Keep it for the negatives an inventory cannot express ("never claim a certification the Experience Library does not evidence") |
 | `ttl_days` | `7` | dossier cache TTL for cv |
 | `require_signoff` | `true` | a safety valve, not a preference — ships **on**; an `unsupported` audit claim withholds the send-ready pointer until `job-sluice cv signoff`. Rejects non-bool values (see `lead_ttl_days` above for why) |
 | `voice_check` | `false` | opt-in (#167): whether the model-judged voice check runs at all, gating a **new LLM call** — off by default so an unconfigured install never starts spending the moment it upgrades, the `company_resolve_llm` precedent. The deterministic phrase matches reach the composer's retry either way, so leaving this off does not make the underlying fix inert. Rejects non-bool values, same reasoning as `lead_ttl_days` above |

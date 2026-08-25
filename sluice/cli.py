@@ -1546,10 +1546,11 @@ def cmd_init(args, config, *, asker=None) -> int:
 
         collected = collect_evidence(asker, sluice_app)
         for kind, names in collected.items():
-            # `verify_outcome`, not a literal "to make them citable": the gate reads
-            # `experience` alone until #165, and this line claimed otherwise for every
-            # kind (#164 review, M2). One helper, so the places that say what `verify`
-            # buys cannot disagree with each other or with the registry.
+            # `verify_outcome`, not a literal "to make them citable": the gate LICENSES
+            # `experience` alone, and this line claimed otherwise for every kind (#164
+            # review, M2). Since #165 `skills` is a third case again -- read by the
+            # composer as framing, licensed by nothing -- which is exactly why the helper
+            # is keyed on the registry rather than on prose here.
             outcome = verify_outcome(EVIDENCE_KINDS[kind], subject="them")
             print(f"{kind}: proposed {len(names)} entr{'y' if len(names) == 1 else 'ies'} "
                  f"-- run `job-sluice {kind} verify` to {outcome}")

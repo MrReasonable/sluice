@@ -394,7 +394,20 @@ whichever neighbour it was written next to:
    `cv/bundle.py` `BundleSources`, built by `bundle_sources(bundle)` from
    `build_bundle`'s own structured entries, not by re-parsing the rendered
    bundle text (#174) -- so no line of user free text can mint or rebind a
-   citable `[id]`. That closed three live holes: a later body line shaped
+   citable `[id]`. Since #165 the bundle has FOUR sections and TWO renderers:
+   `render_bundle` emits the baseline, the verified entries and the negative
+   constraints, and `render_composer_bundle` adds a SKILLS INVENTORY framing
+   section plus one derived negative on top of it. Only the composer sees the
+   second; the #60 advisory audit keeps calling `render_bundle`, because its
+   prompt opens "SOURCE BUNDLE is the ONLY truth" and a claim resting on a
+   skills line alone must stay `unsupported` and stay held for sign-off.
+   Non-citability is structural rather than parsed: `bundle_sources` walks
+   `bundle["entries"]` and never touches `bundle["skills"]`, so a skills figure
+   is licensed in neither the per-entry allowlist nor the wider PROFILE pool.
+   Two flags on `EvidenceKind` carry the distinction the single old one cannot:
+   `read_by_composer` (the corpus reaches the prompt) and `cited_by_gate` (the
+   gate may license its content), and `__post_init__` refuses the incoherent
+   combination. That closed three live holes: a later body line shaped
    like an earlier real code used to rebind that entry's allowlist, so a
    fabricated figure passed while the entry's own genuine metric was
    reported invented; an `[XX9]`-shaped line anywhere in the baseline minted
@@ -1393,18 +1406,15 @@ Four points in the config are the seams for pluggable adapters.
   suffixed. This is a vault filename concern, not a Store property — a store
   with real keys distinguishes those rows without it.
   Its evidence surface is `read_evidence`, `read_pending_evidence`,
-  `read_pending_evidence_text`, `propose_evidence` and `verify_evidence` — the five
-  #164 added — AND `read_experience_entries`, which predates it and which `Vault`
-  implements as a delegate to `read_evidence("experience")` so the two cannot drift.
-  Naming the first five alone would be #164's diff rather than the surface, and the
-  one it leaves out is the member `cv/engine.py` actually calls
-  (`vault.read_experience_entries(verified_only=True)`), so the gate's own path
-  would be the part missing. That sixth member EXPIRES AT #165: it is a second
-  required spelling of `read_evidence("experience")`, kept for the one caller #165
-  rewrites to read per kind. When that lands, delete it from the `Protocol` rather
-  than inheriting it — a Protocol member is a required member, so leaving it makes
-  every future store implement a second name for a call it already implements, for a
-  caller that no longer exists. Its conformance row goes with it. A filesystem
+  `read_pending_evidence_text`, `propose_evidence` and `verify_evidence` — five
+  members, all added by #164. There used to be a sixth, `read_experience_entries`,
+  a second required spelling of `read_evidence("experience")` kept for the one
+  caller (`cv/engine.py`) that had not yet been rewritten to read per kind. #165
+  rewrote that caller and DELETED the member, as its own docstring scheduled: a
+  Protocol member is a required member, so leaving it would make every future store
+  implement a second name for a call it already implements, for a caller that no
+  longer exists. Its conformance row was renamed onto `read_evidence` rather than
+  dropped, so the seam is still bound by a contract test. A filesystem
   `path` is no longer part of what the two readers PROMISE: that key was
   required once, purely so `core/app.py` could `open()` it for the bytes a
   human reviews, which made the store-agnostic facade reach through the seam

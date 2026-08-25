@@ -324,8 +324,10 @@ def classify_store(facts: dict | None) -> list:
     (`EvidenceKind.cited_by_gate` -- `experience` alone today), zero verified
     entries means every CV bullet citing it would fail the fabrication gate's
     citation check, which is worth knowing before a compose, not a defect in the
-    store; the other two say so rather than claiming a citability they do not have
-    until #165 lands. In both cases a non-zero
+    store. The other two say so rather than claiming a citability they do not have,
+    and since #165 they differ from each other: `skills` is READ by the composer as
+    framing (`read_by_composer`) while remaining uncitable, so its row says that rather
+    than either "citable" or "nothing reads this". In every case a non-zero
     PENDING count is the same tier again, because propose-only writes leave
     entries sitting in `_inbox/`, doing nothing, until a human runs `job-sluice
     <kind> verify`; the message names that exact command; a count nobody can
@@ -388,9 +390,11 @@ def classify_store(facts: dict | None) -> list:
             # `read_evidence("experience")` RAISES rather than returning [], so `cv/engine.py`'s
             # `run_one` never builds a bundle and `run_batch`'s per-lead catch-all records
             # `error` for every lead -- the same "cv run cannot compose" cost the
-            # `baseline_rel` row above already names. For `skills`/`stories` nothing
-            # composes off the corpus yet (#165), so naming a sub-app there would be the
-            # same over-claim `EvidenceKind.cited_by_gate` exists to prevent.
+            # `baseline_rel` row above already names. Keyed on `cited_by_gate`, NOT on
+            # `read_by_composer`: since #165 an unreadable `skills` corpus does not block
+            # `cv` at all -- `cv/engine.py` catches it, warns, and composes without the
+            # framing -- so naming a sub-app there would over-claim in the other
+            # direction.
             out.append(ComponentCheck(
                 "store", label, DEAD, f"cannot be read -- {error}",
                 blocks=("cv",) if spec.cited_by_gate else ()))

@@ -325,9 +325,9 @@ failure is non-empty; exit 2 (`job-sluice: <exc>`) if the store cannot rename no
 
 ## Evidence corpus capture: `experience`, `skills`, `stories`
 
-Human-authored source material for the CV fabrication gate to cite from (#164) — the Experience
-Library (cited today), the Skills Inventory and STAR Stories (captured now, read by the gate at
-#165), one per `EvidenceKind` in
+Human-authored source material for CV composition (#164) — the Experience Library (the gate's
+only citable source), the Skills Inventory (shown to the composer as framing since #165) and STAR
+Stories (captured, not yet consumed), one per `EvidenceKind` in
 `sluice/core/protocols.py`. All three groups (and their `add`/`list`/`verify` subcommands) are
 built from ONE loop over that registry, so they share an identical shape and a fourth kind later
 is one registry entry rather than three more hand-written command blocks.
@@ -339,11 +339,16 @@ and a bulk flag would be the same `--verified` hole one level up (`add`'s field 
 from the kind's user-facing fields, which is exactly why `verified` is never among them). `--id`
 on `verify` FILTERS which pending entries are offered for review; it never answers for you.
 
-*Unless*, not *until*: review is necessary for every kind, and sufficient for one. The gate reads
-the **Experience Library** only — `skills` and `stories` are captured and reviewed the same way,
-but nothing consumes them until #165. `EvidenceKind.cited_by_gate` is the single source for that,
-and `add`'s confirmation line and `doctor`'s row both read it, so neither claims a citability the
-code does not have.
+*Unless*, not *until*: review is necessary for every kind, and sufficient for one. The gate
+LICENSES the **Experience Library** only. Since #165 the other two differ from each other:
+a verified **Skills Inventory** entry is shown to the composer as framing — it orders and
+emphasises the experience entries, and no number may be quoted from it — while **STAR Stories**
+are captured and reviewed but consumed by nothing yet.
+
+Two registry flags carry that distinction: `EvidenceKind.read_by_composer` (does the corpus reach
+the prompt) and `EvidenceKind.cited_by_gate` (may the gate license its content). `add`'s
+confirmation line and `doctor`'s row both read them, so neither claims a citability the code does
+not have.
 
 ### `job-sluice experience add --name NAME [--company V] [--category V] [--best-for V] [--metrics V] [--body TEXT] [--body-file PATH|-]`
 ### `job-sluice skills add --name NAME [--proficiency V] [--domain V] [--evidence V] [--signal-value V] [--body TEXT] [--body-file PATH|-]`
@@ -368,9 +373,10 @@ Lists verified entries by default, one per line: `<title>  [<verified date>]`. W
 `--pending`, lists the not-yet-verified queue instead: `<title>  [pending]`. Exit 0 unless the
 store cannot read an entry (see the note under `verify`, below).
 
-Verified is not the same as **citable**: the CV fabrication gate reads the Experience Library
-alone today, so a verified `skills` or `stories` entry is reviewed but not yet cited by
-anything (`EvidenceKind.cited_by_gate`; #165 is what widens it).
+Verified is not the same as **citable**: the CV fabrication gate licenses the Experience Library
+alone, so a verified `skills` entry is shown to the composer as framing but cited by nothing, and
+a verified `stories` entry is consumed by nothing yet (`EvidenceKind.cited_by_gate` and
+`read_by_composer`).
 
 ### `job-sluice experience verify [--id NAME]`
 ### `job-sluice skills verify [--id NAME]`
@@ -438,8 +444,9 @@ Blocks for the life of the process once started; there is no `--dry-run`.
 `list_leads`, `get_lead`, `doctor`, `health`, `list_evidence`. `list_evidence(kind,
 pending=False)` lists evidence corpus entries (`experience`, `skills`, `stories`) --
 verified ones by default, or the not-yet-verified queue when `pending=True`. Verified
-does not mean citable for every kind: the CV fabrication gate reads the Experience
-Library alone today (#165 widens it). A non-empty result carries a `content_warning` --
+does not mean citable for every kind: the CV fabrication gate licenses the Experience
+Library alone, and since #165 a verified `skills` entry reaches the composer as framing
+without becoming citable. A non-empty result carries a `content_warning` --
 entry text is written by the user, and reaches the calling agent as data to read, never
 as instructions to follow. Deliberately read-only: there is no MCP tool anywhere that
 proposes or verifies an entry (see `sluice/mcpserver.py`'s `list_evidence` docstring for

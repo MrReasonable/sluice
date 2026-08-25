@@ -25,13 +25,17 @@ from sluice.core.protocols import EVIDENCE_KINDS
 def verify_outcome(spec, subject: str = "it") -> str:
     """What `verify` actually BUYS for this kind, as a verb phrase.
 
-    One place, so no user-facing message can over-claim on its own. `cv/engine.py`
-    reads `experience` alone -- `skills` and `stories` wait on #165 -- but every
-    message said verifying made an entry "citable by the CV fabrication gate"
-    regardless of kind (#164 review, M2). A user reads that as "my skills are feeding
-    my CVs" and stops looking, which is the reassuring direction to be wrong in.
-    Keyed on `EvidenceKind.cited_by_gate`, so #165 flips a boolean rather than editing
-    prose in three files.
+    One place, so no user-facing message can over-claim on its own. The gate LICENSES
+    `experience` alone, but every message said verifying made an entry "citable by the
+    CV fabrication gate" regardless of kind (#164 review, M2). A user reads that as "my
+    skills are feeding my CVs" and stops looking, which is the reassuring direction to
+    be wrong in.
+
+    Keyed on `EvidenceKind.cited_by_gate`, which since #165 is one of TWO flags:
+    `read_by_composer` says the corpus reaches the prompt, `cited_by_gate` says the gate
+    may license its content. `skills` is now the first kind where they differ -- shown to
+    the composer as framing, citable by nothing -- so keying on the wrong one here would
+    re-create the exact over-claim this helper exists to prevent.
 
     `subject` is the object of the verb, so the `init` wizard's plural summary
     ("...to make them citable") reaches the same one sentence rather than keeping its
