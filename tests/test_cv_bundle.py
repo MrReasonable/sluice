@@ -126,22 +126,68 @@ def test_prefix_map_override_is_coerced_to_two_letters():
     ids = [e["id"] for e in coded]
     assert all(re.match(r"^[A-Z]{2}[0-9]+$", i) for i in ids), ids
 
+# `Example Data` is on _REVIEWED_FIXTURE_IDENTITIES. The sentinels 71/72 collide with
+# nothing already in FROZEN_BUNDLE_TEXT (which uses 21/22, 31-38, 41-47, 51-53, 91-92).
+FROZEN_SKILLS = [{"title": "Example Data Skill", "best_for": "platform", "body": "",
+                  "fields": {"Proficiency": "71 years", "Domain": "platform",
+                             "Evidence": "shipped 72 things", "Signal Value": "depth"}}]
+
+# The COMPOSER's prompt, which `render_bundle`'s freeze does not cover any more: since
+# #165 the two audiences get different text, and this is the one the compose call
+# receives. Frozen for the same reason the other is -- a refactor that changes
+# presentation without changing any digit is otherwise invisible.
+FROZEN_COMPOSER_BUNDLE_TEXT = """\
+=== BASELINE CV (authoritative for dates/employers/certs) ===
+Baseline names 21 and 22.
+
+=== VERIFIED EXPERIENCE ENTRIES (the ONLY permitted source; cite by [id]) ===
+[AL1] (Example Alpha 31) Staff Engineer, 32 teams | metrics=33 34
+Ran 37 services.
+Owned 38 dashboards.
+
+[BE1] (Example Beta 41) Principal Engineer | metrics=43
+Cut latency to 47 ms.
+
+[AL2] (Example Alpha 51) Engineer | metrics=53
+
+=== SKILLS INVENTORY (framing only; NOT citable, introduces no facts) ===
+- Example Data Skill | proficiency=71 years | domain=platform | signal=depth
+  shipped 72 things
+
+=== NEGATIVE CONSTRAINTS (must NOT appear) ===
+- claim no technology, language, framework or tool that is not named in the BASELINE CV, the VERIFIED EXPERIENCE ENTRIES or the SKILLS INVENTORY above
+- never claim 91 users
+- never claim 92 uptime"""
+
+
 def _frozen_bundle():
     return B.build_bundle(entries=FROZEN_ENTRIES, baseline=FROZEN_BASELINE,
                           negatives=FROZEN_NEGATIVES, jd_keywords=[],
-                          prefix_map=FROZEN_PREFIX_MAP)
+                          prefix_map=FROZEN_PREFIX_MAP, skills=FROZEN_SKILLS)
 
 
 def test_the_rendered_prompt_has_not_drifted():
-    """`render_bundle`'s output IS the prompt two live LLM calls see (cv/engine.py:326
-    compose, :653 audit). The pre-#174 text is frozen at the top of this file, so a refactor
-    that changes presentation without changing any digit -- reordering fields, renaming
-    `metrics=`, dropping the inter-entry blank line -- is caught here rather than shipping
-    a silently different prompt. The existing substring pin below cannot see any of those.
+    """`render_bundle`'s output IS the prompt the #60 ADVISORY audit sees
+    (cv/engine.py:653). It used to be the compose prompt too; since #165 the composer gets
+    `render_composer_bundle` and is frozen separately below. The pre-#174 text is frozen at
+    the top of this file, so a refactor that changes presentation without changing any
+    digit -- reordering fields, renaming `metrics=`, dropping the inter-entry blank line --
+    is caught here rather than shipping a silently different prompt.
+
+    Note `_frozen_bundle()` now CARRIES skills, and this literal is byte-identical to the
+    one that predates them. That is D11 pinned at its strongest: the auditor's text is not
+    merely free of a SKILLS header, it is unchanged from before the feature existed.
 
     Updating the literal is the deliberate act; failing this test is not a reason to
     weaken it."""
     assert B.render_bundle(_frozen_bundle()) == FROZEN_BUNDLE_TEXT
+
+
+def test_the_composer_prompt_has_not_drifted():
+    """The other live LLM call. Same rule, same reason: this exact text is what
+    cv/engine.py hands compose(), and a presentation change that moves no digit is
+    invisible to every other assertion in this file."""
+    assert B.render_composer_bundle(_frozen_bundle()) == FROZEN_COMPOSER_BUNDLE_TEXT
 
 
 def _oracle(bundle_text):
@@ -227,6 +273,12 @@ def test_bundle_sources_sentinels_hold_independent_of_the_frozen_literal():
     # metrics (33, 34), body (37, 38). Losing '32' alone is what a dropped `title` field
     # would cost; the other five are the OTHER fields' distinct sentinels.
     assert {"31", "32", "33", "34", "37", "38"} <= s.nums["AL1"]
+    # The skills sentinels must be absent from EVERY pool. This assertion compares against
+    # no literal, so re-freezing cannot bring it back into sync -- it is the one check a
+    # re-capture cannot silently move (#165).
+    for sentinel in ("71", "72"):
+        assert sentinel not in s.baseline
+        assert all(sentinel not in n for n in s.nums.values())
     # best_for (35) and category (36) must be ABSENT: render_bundle never emits either
     # field, and bundle_sources harvests exactly what render_bundle emits.
     assert not ({"35", "36"} & s.nums["AL1"])
