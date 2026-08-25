@@ -322,3 +322,24 @@ def test_cv_prompt_expresses_no_role_or_culture_preference():
     ]
     leaked = [t for t in forbidden if t in rules]
     assert not leaked, f"the shipped CV prompt names a job/culture preference: {leaked}"
+
+
+def test_the_prompt_forbids_quoting_a_number_from_the_skills_section():
+    """#165, D3. Without this the model is told the bundle is 'the ONLY permitted source'
+    and shown `Proficiency: 8 years`, which it will reasonably use -- earning INVENTED
+    PROFILE METRIC and, if the retry repeats it, a skipped lead. The trap is ours to
+    close, because we are the ones putting an unusable number in front of it."""
+    prompt = C.build_prompt("BUNDLE", "JD", "Example Co", "Role", name=_NAME)
+    assert "SKILLS INVENTORY" in prompt
+    assert "never quote a number from it" in prompt
+
+
+def test_the_prompt_permits_the_same_sources_the_derived_negative_does():
+    """The derived negative (cv/bundle.py:_DERIVED_NEGATIVE_PROMPT) and this rule appear in
+    the SAME prompt. A source named by one and not the other is a contradiction the
+    composer can only resolve by dropping content."""
+    from sluice.cv.bundle import _DERIVED_NEGATIVE_PROMPT
+    prompt = C.build_prompt("BUNDLE", "JD", "Example Co", "Role", name=_NAME)
+    for source in ("BASELINE CV", "VERIFIED EXPERIENCE ENTRY"):
+        assert source in prompt, source
+    assert "BASELINE CV" in _DERIVED_NEGATIVE_PROMPT
