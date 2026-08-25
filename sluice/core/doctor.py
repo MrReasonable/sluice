@@ -429,7 +429,7 @@ def classify_store(facts: dict | None) -> list:
 
 
 def classify_track_google(*, available: bool, import_error: str | None,
-                           token_present: bool) -> ComponentCheck:
+                           token_present: bool, token_path: str = "") -> ComponentCheck:
     """`track run` reconciles Gmail + Calendar over `sluice/track/google_client.py`,
     which lazy-imports the google client libraries so the rest of sluice stays
     importable without them (`sluice/` is stdlib-only except for the three
@@ -442,10 +442,18 @@ def classify_track_google(*, available: bool, import_error: str | None,
             f"not importable ({import_error}) -- track run cannot reconcile "
             f"Gmail/Calendar; pip install 'job-sluice[google]'")
     if not token_present:
+        # The RESOLVED path, not the config key's name. `track.token_path` resolves through a
+        # config key then an XDG root, so telling someone their token is missing without saying
+        # from where leaves them to guess which of those applied -- and this row's whole job is
+        # to be actionable. Defaulted rather than required so the ~existing direct callers in the
+        # suite keep working; the caller that matters passes it.
+        where = f" at {token_path}" if token_path else " at track.token_path"
         return ComponentCheck(
             "track", "google_token.json", DEGRADED,
-            "google libs are importable but no token file exists yet -- the "
-            "first `track run` will need an interactive OAuth consent")
+            f"google libs are importable but no token file exists yet{where} -- "
+            "`track run` cannot reach Gmail/Calendar until one does. sluice does not run "
+            "the OAuth consent flow itself; see https://github.com/MrReasonable/sluice/"
+            "blob/main/docs/INSTALL.md#google-access-for-track for how to produce the token")
     return ComponentCheck("track", "google", OK, "libs importable, token present")
 
 

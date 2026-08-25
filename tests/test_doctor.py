@@ -1816,3 +1816,54 @@ def test_a_mis_encoded_evidence_entry_takes_its_own_dead_row(tmp_path):
     # Every other store row survives -- the isolation is per kind, not "give up quietly".
     subjects = {r.subject for r in rows}
     assert {"Candidate Profile", "baseline_rel", "Judging Profile"} <= subjects
+
+
+def test_the_missing_token_row_names_where_the_token_must_go():
+    """A diagnostic that says a file is missing without saying WHERE is not actionable.
+
+    `track.token_path` resolves through a config key and then an XDG root, so the location is not
+    something a reader can infer -- and this row exists to tell them what to do next. The path
+    reaches the classifier from `Sluice.doctor`, which was already computing `os.path.exists()`
+    on it and discarding the value.
+
+    The fallback arm is pinned too: the parameter is defaulted so direct constructions keep
+    working, and a default that silently produced an empty `at ` would read as a bug.
+    """
+    c = classify_track_google(available=True, import_error=None, token_present=False,
+                              token_path="/state/sluice/google_token.json")
+    assert c.state == DEGRADED
+    assert "/state/sluice/google_token.json" in c.detail
+
+    bare = classify_track_google(available=True, import_error=None, token_present=False)
+    assert "track.token_path" in bare.detail, bare.detail
+    assert "at  " not in bare.detail, f"empty path left a dangling 'at': {bare.detail}"
+
+
+def test_a_present_token_says_nothing_about_the_path():
+    """Anti-over-reach: the OK arm must not start leaking a filesystem path into normal output."""
+    c = classify_track_google(available=True, import_error=None, token_present=True,
+                              token_path="/state/sluice/google_token.json")
+    assert c.state == OK
+    assert "/state/sluice" not in c.detail
+
+
+def test_doctor_passes_the_RESOLVED_token_path_through_to_the_google_row(monkeypatch, tmp_path):
+    """The CALL SITE, not the helper -- which is the whole point of this test.
+
+    A first version of this pinned `classify_track_google` directly, and measured, that left the
+    caller free to stop passing the path entirely: deleting `token_path=track_cfg.token_path`
+    from `Sluice.doctor` kept every assertion green while the row silently reverted to naming the
+    config key instead of a location. That is this repo's recorded "testing the helper reproduces
+    the defect one level up" failure (#170), so the check has to run the real wiring.
+
+    `SLUICE_STATE`-rooted rather than a literal: the path must be the one the config RESOLVED, so
+    a test naming its own string would pass against a caller that hardcoded anything at all.
+    """
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setattr("sluice.track.google_client.probe_availability", lambda: (True, None))
+
+    rep = Sluice().doctor(offline=True, probe=lambda b: None)
+    google = [c for c in rep.components if c.subject == "google_token.json"]
+    assert google, f"no missing-token row: {[c.subject for c in rep.components]}"
+    assert str(tmp_path) in google[0].detail, (
+        f"the row does not name the resolved token path: {google[0].detail}")
