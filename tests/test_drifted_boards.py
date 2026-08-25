@@ -6,6 +6,8 @@ These are cheap string assertions on purpose -- the extractors themselves need a
 live DOM, so what is pinned here is the part that silently rotted: which host we
 ask, which selector we ask for, and whether a board is switched on at all.
 """
+from urllib.parse import urlparse
+
 import pytest
 
 from sluice.ingest import sources
@@ -38,16 +40,23 @@ def test_hackajob_is_enabled_and_points_at_the_live_domain():
     urls = [u for _, u in src.searches_spec]
     assert urls, "hackajob must ship an example search"
     for u in urls:
-        assert "hackajob.com" in u, f"stale .co domain in {u!r}"
-        assert "hackajob.co/" not in u
+        # Parsed, not substring-matched: `"hackajob.com" in url` also passes for
+        # https://evil.example/?x=hackajob.com, which is why CodeQL rejects that
+        # shape (py/incomplete-url-substring-sanitization). Comparing the parsed
+        # host also pins the registrable domain rather than any host ending in it.
+        host = (urlparse(u).hostname or "").lower()
+        assert host == "hackajob.com", f"expected hackajob.com, got {host!r} in {u!r}"
 
 
 def test_escape_city_url_follows_the_redirect_the_retirement_note_recorded():
     """The 2026-07-07 note wrote down the new path (/search/jobs) and retired it anyway."""
     src = _src("escape_city")
     for _, u in src.searches_spec:
-        assert "/search/jobs" in u, "escape_city must use the path the 302 points at"
-        assert "/opportunities" not in u
+        parts = urlparse(u)
+        assert (parts.hostname or "").lower().endswith("escapethecity.org")
+        assert parts.path.startswith("/search/jobs"), \
+            "escape_city must use the path the 302 points at"
+        assert not parts.path.startswith("/opportunities")
 
 
 @pytest.mark.parametrize("source_id", ["escape_city", "bwork", "theorg"])
