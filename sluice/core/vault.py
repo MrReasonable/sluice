@@ -143,16 +143,25 @@ def _parse_fm_spaced(inner: str | None) -> dict:
 
 _SLUG_SAFE = re.compile(r"\A[a-z0-9][a-z0-9-]*\Z")
 
-# The _ID_RE shape from cv/validate.py:38, kept as its own copy rather than imported:
-# core/ must not depend on cv/. The two patterns must stay EQUAL, not merely "at least
-# as wide" -- a claim this comment used to make and which is false in general: WIDENING
-# _ID_RE (say, to a third prefix letter) without widening this one would make this guard
-# refuse LESS than the gate actually parses as a citation code, reopening the exact hole
-# the guard above exists to close. test_id_shaped_pattern_matches_validate_id_re_pattern
-# (tests/test_evidence_store.py) pins the two patterns textually equal so a drift in
-# EITHER file is caught, mirroring cv/validate.py's own
-# test_profile_strip_matches_render_citation_shape precedent for the identical reason:
-# a comment cannot enforce an equality a test can.
+# The shape of a bundle citation code, kept as its own copy rather than imported:
+# core/ must not depend on cv/.
+#
+# This used to mirror `cv/validate.py`'s `_ID_RE`, and was pinned textually equal to it,
+# because that regex was how the gate decided which ids EXISTED -- it parsed them out of
+# the rendered bundle text. #174 deleted it: the gate is now handed its ids structurally
+# (`cv/bundle.py`'s `bundle_sources`), so there is no pattern in cv/ left to be equal to.
+#
+# The source of truth is now the GENERATOR, `cv/bundle.py`'s `assign_codes`/`_prefix`:
+# `_prefix` coerces any company to exactly two A-Z letters, and `assign_codes` appends a
+# per-prefix sequence number. `test_id_shaped_matches_every_generated_code`
+# (tests/test_evidence_store.py) pins this pattern against ids that generator actually
+# EMITS rather than against another regex -- strictly stronger than the equality it
+# replaces, because it also fails if the generator's shape changes without any regex
+# being edited.
+#
+# The direction that matters is unchanged: this must match AT LEAST every code the
+# generator can produce. Refusing less than that lets an authored body line carry a
+# token the bundle will later treat as a real entry's code.
 _ID_SHAPED = re.compile(r"^\[([A-Z]{2}\d+)\]")
 
 
@@ -282,24 +291,37 @@ def _evidence_entry_path(base: str, filename: str) -> str:
 def _refuse_citation_shaped_body(body: str) -> None:
     """Refuse a body line shaped like a bundle citation code, or return.
 
-    `cv/validate.py`'s bundle parse is `nums[cur] = set(...)`, an ASSIGNMENT rather than
-    a union, so such a line REBINDS that id's permitted numbers: a fabricated figure
-    beside it clears the hard gate, and the entry's genuine metric is reported INVENTED.
-    A NARROWING, not a close -- the close is #174's signature change on validate().
+    Written when `cv/validate.py` recovered ids by parsing the rendered bundle text with
+    `nums[cur] = set(...)` -- an ASSIGNMENT, not a union -- so such a line REBOUND that
+    id's permitted numbers: a fabricated figure beside it cleared the hard gate while the
+    entry's genuine metric was reported INVENTED. This was the write-side narrowing; #174
+    was named as the close, and #174 has since LANDED. The gate no longer parses, so that
+    bypass is gone and this function is no longer what stands between a body line and a
+    rebound allowlist.
+
+    It still earns its place, for a smaller and now-accurate reason. `bundle_sources`
+    harvests every digit in an entry's own block, and a citation-shaped token in a body
+    contributes ITS digits to that entry: a body reading `[NC1] delivered 987 things`
+    puts `1` (from `NC1`) into that entry's permitted set. #174's design records that as
+    an accepted residual, because closing it in the gate would need a second
+    citation-stripping regex that must agree with the renderer's. On the WRITE path there
+    is no such cost -- refusing the line outright is exact -- so this closes for authored
+    evidence what the gate documents as residual. It does not reach a note a human edits
+    in place; the residual stands there.
 
     Its OWN function because BOTH writes into the citable set need it and only one had
     it. `propose_evidence` (through `_render_evidence_note`) refused such a body;
     `verify_evidence` did not, and an entry can reach promotion without ever passing
     through propose -- a human dropping a file into `_inbox/` is a first-class workflow
     for this tool. Measured (#164 review, M1): a hand-placed body of
-    `[NC1] delivered 987 things` verified True and landed citable, rebinding NC1's
-    numbers in the bundle the gate reads.
+    `[NC1] delivered 987 things` verified True and landed citable, and at that time
+    rebound NC1's numbers in the bundle the gate read.
     """
     for line in (body or "").splitlines():
         if _ID_SHAPED.match(line.strip()):
             raise ValueError(
                 f"body line {line.strip()!r} is shaped like a bundle citation code; "
-                f"such a line rebinds that id's permitted numbers in the CV "
+                f"its digits would join this entry's permitted numbers in the CV "
                 f"fabrication gate")
 
 
@@ -320,10 +342,12 @@ def _render_evidence_note(spec, fields: dict, body: str) -> str:
        onboard/plan.py's _render_candidate/FrontmatterRoundTripError is the same
        pattern; it validates the whole note, and so does this.
 
-    Plus a NARROWING (not a close), shared with `verify_evidence` rather than owned
-    here: `_refuse_citation_shaped_body` rejects a body line shaped like a bundle
-    citation code, because cv/validate.py rebinds an id's permitted numbers by
-    assignment. The close is #174.
+    Plus a fourth guard, shared with `verify_evidence` rather than owned here:
+    `_refuse_citation_shaped_body` rejects a body line shaped like a bundle citation
+    code. It was written as a narrowing of the parse bypass #174 has since closed; what
+    it closes NOW is that such a token's own digits would join this entry's permitted
+    numbers -- the residual #174's design accepts in the gate and this path can refuse
+    outright. See that function's docstring.
     """
     unknown = sorted(set(fields) - set(spec.fields))
     if unknown:
