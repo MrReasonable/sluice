@@ -1445,7 +1445,7 @@ class Vault:
 
         Fail loudly at construction, the same rule _select_backend follows. A typo'd
         kind returning [] would buy the `skipped-gate` misreport described in
-        read_experience_entries' docstring, paid for with a real backend call.
+        read_evidence's contract, paid for with a real backend call.
         """
         try:
             return EVIDENCE_KINDS[kind]
@@ -1753,28 +1753,6 @@ class Vault:
             pass
         return True
 
-    def read_experience_entries(self, verified_only: bool = True) -> list[dict]:
-        """See Store.read_experience_entries. A delegate, so there is ONE implementation
-        rather than two that can drift. Kept as its own member because a Protocol member
-        is a required member and this one has a live consumer (cv/engine.py), a
-        conformance row, and entries in two hand-listed test literals. `Vault.preflight`
-        (#164) reads `read_evidence` directly across all three kinds instead of through
-        this delegate -- this method's own name is experience-specific, and looping it
-        alongside `skills`/`stories` would need a per-kind dispatch this delegate exists
-        to avoid needing.
-
-        Experience Library entries are the hard fabrication gate's ONLY citable
-        evidence, so an empty read here is not merely "no results": the bundle has
-        no ids, every WORK bullet violates cv/validate.py's WORK check (`BAD
-        CITATION` for a bullet that cites, `UNCITED BULLET` for one that does not),
-        and the CV is never rendered -- it fails CLOSED. A quiet [] from an
-        unreadable directory would report THAT to the user as `skipped-gate`, a
-        fabrication verdict against their composer, only after paying for a dossier
-        fetch and a full compose. `_evidence_entries`' `_is_dir` probe is what keeps
-        that path loud instead of silently reading the library as empty.
-        """
-        return self.read_evidence("experience", verified_only=verified_only)
-
     def _doc_path(self, rel: str) -> str:
         """Translate a store-contract DOCUMENT KEY into a filesystem path.
 
@@ -1802,7 +1780,7 @@ class Vault:
         `_fm_dict` and builds a CandidateProfile from the known keys, ignoring
         anything else present.
 
-        `_fm_dict`, not `_parse_fm_spaced` (which read_experience_entries uses):
+        `_fm_dict`, not `_parse_fm_spaced` (which `_evidence_entries` uses):
         this note is machine-written and machine-read, and its keys are all
         lowercase-with-underscores by construction. That is a CHOICE, and it has a
         cost -- `_fm_dict`'s key regex is [A-Za-z0-9_]+, so a key it cannot match

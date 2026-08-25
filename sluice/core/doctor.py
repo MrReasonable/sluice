@@ -384,7 +384,7 @@ def classify_store(facts: dict | None) -> list:
             #
             # `blocks` is set only for a corpus the gate actually READS. Measured with
             # `Job Applications/Experience Library` symlinked out of the vault:
-            # `read_experience_entries` RAISES rather than returning [], so `cv/engine.py`'s
+            # `read_evidence("experience")` RAISES rather than returning [], so `cv/engine.py`'s
             # `run_one` never builds a bundle and `run_batch`'s per-lead catch-all records
             # `error` for every lead -- the same "cv run cannot compose" cost the
             # `baseline_rel` row above already names. For `skills`/`stories` nothing

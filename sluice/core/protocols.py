@@ -451,7 +451,7 @@ class Store(Protocol):
     process makes. `Vault.preflight` therefore only `stat`s paths and reads documents
     through the store's own existing read methods (`read_baseline`, `read_criteria`,
     `read_evidence`/`read_pending_evidence` per kind, `read_candidate_profile` -- it does
-    NOT go through `read_experience_entries`, whose name is experience-specific), never opens a store's OWN
+    NOT go through a kind-specific spelling), never opens a store's OWN
     internal state file (a SQLite-backed store's preflight must not connect to its
     database), and never walks the full lead scan set -- doctor is a preflight users
     run often and cheaply, not a second `leads` pass."""
@@ -753,19 +753,6 @@ class Store(Protocol):
         a human -- promoting an edit made after approval would make unreviewed
         content citable. Raises when the name is already taken in the verified set,
         before mutating anything."""
-        ...
-
-    def read_experience_entries(self, verified_only: bool = True) -> list:
-        """`read_evidence("experience")` under a second, required name.
-
-        EXPIRES AT #165. It predates the kind registry and survives only because
-        `cv/engine.py` still calls it; #165 rewrites that caller to read the corpora it
-        composes from by kind. When it does, DELETE this member rather than inheriting
-        it -- a Protocol member is a REQUIRED member, so every future store has to
-        implement a second spelling of a call it already implements, for one caller that
-        will no longer exist. Its conformance row and its two hand-listed test literals go
-        with it. Nothing in the contract depends on the name; `Vault` implements it as a
-        one-line delegate precisely so there is nothing to migrate."""
         ...
 
     def read_baseline(self) -> str:

@@ -31,7 +31,7 @@ def test_read_experience_verified_only_skips_unverified_and_inbox():
         ("good", 'Company: "Example Foundry"\nBest For: "leadership"\nMetrics: "3 8"\nverified: 2026-07-01', "Grew team 3 to 8."),
         ("bad", 'Company: "Example Systems"\nBest For: "leadership"', "130-person programme."),
     ])
-    entries = v.read_experience_entries(verified_only=True)
+    entries = v.read_evidence("experience", verified_only=True)
     titles = [e["title"] for e in entries]
     assert titles == ["good"]
     assert entries[0]["company"] == "Example Foundry"
@@ -43,7 +43,7 @@ def test_read_experience_parses_block_list_category():
     v, _ = _vault_with([
         ("blocklist", 'Company: "Example Foundry"\nCategory:\n  - Process\n  - Leadership\nverified: 2026-07-01', "Body."),
     ])
-    e = v.read_experience_entries(verified_only=True)[0]
+    e = v.read_evidence("experience", verified_only=True)[0]
     assert e["category"] and "Process" in e["category"] and "Leadership" in e["category"]
 
 @_UNREADABLE_DIR
@@ -63,11 +63,11 @@ def test_read_experience_does_not_read_an_unstatable_library_as_empty():
     v, root = _vault_with([
         ("good", 'Company: "Example Foundry"\nverified: 2026-07-01', "Grew team 3 to 8."),
     ])
-    assert len(v.read_experience_entries()) == 1        # mirror harm: the readable case
+    assert len(v.read_evidence("experience")) == 1        # mirror harm: the readable case
     os.chmod(pathlib.Path(root, "Job Applications"), 0o000)
     try:
         with pytest.raises(OSError):
-            v.read_experience_entries()
+            v.read_evidence("experience")
     finally:
         os.chmod(pathlib.Path(root, "Job Applications"), 0o755)
 
@@ -77,7 +77,7 @@ def test_read_experience_reads_a_vault_with_no_library_as_empty():
     absent: an install before the user has written a single entry is the common case, not an
     error, and `cv run` must not raise on it."""
     root = tempfile.mkdtemp()
-    assert Vault(root).read_experience_entries() == []
+    assert Vault(root).read_evidence("experience") == []
 
 
 def test_read_baseline():

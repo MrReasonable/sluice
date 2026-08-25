@@ -1,7 +1,7 @@
 """Per-store seeding for the conformance suite.
 
 The first two versions of the contract suite had tests that passed VACUOUSLY: they
-asserted on data that was never created. `test_read_experience_entries_honours_verified_only`
+asserted on data that was never created. `test_read_evidence_honours_verified_only`
 ran against a store with no experience entries at all, so `verified == []` and
 `every == []`, and `all([])` is True. A store that ignored `verified_only` entirely --
 feeding unverified, agent-authored material into the bundle the fabrication gate validates

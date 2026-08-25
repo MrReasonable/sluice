@@ -342,7 +342,7 @@ def test_read_baseline_takes_no_path_argument_and_reads_the_baseline(store_name,
     assert store.read_baseline() == "BASELINE TEXT"
 
 
-def test_read_experience_entries_honours_verified_only(store_name, tmp_path, monkeypatch):
+def test_read_evidence_honours_verified_only(store_name, tmp_path, monkeypatch):
     """This is the FABRICATION GATE'S GROUND TRUTH.
 
     `validate()` checks every CV bullet against the bundle built from these entries. A
@@ -362,8 +362,8 @@ def test_read_experience_entries_honours_verified_only(store_name, tmp_path, mon
         {"id": "SF2", "verified": False, "body": "Unverified draft. Cut costs 40%."},
     ])
 
-    verified = store.read_experience_entries(verified_only=True)
-    every = store.read_experience_entries(verified_only=False)
+    verified = store.read_evidence("experience", verified_only=True)
+    every = store.read_evidence("experience", verified_only=False)
 
     assert len(every) == 2, "the seeder did not land; this test would pass vacuously"
     assert len(verified) == 1, \
@@ -372,7 +372,7 @@ def test_read_experience_entries_honours_verified_only(store_name, tmp_path, mon
     assert all(e.get("verified") for e in verified)
     assert {e["title"] for e in verified} == {"SF1"}
     # The employer must survive the round trip. It did not: the seeder wrote an
-    # `Employer:` key while `read_experience_entries` reads `Company:`, so every
+    # `Employer:` key while `read_evidence` reads `Company:`, so every
     # entry came back with company="" and the seeder's employer argument was dead
     # on arrival. Nothing asserted it, so nothing noticed -- the same vacuity this
     # test's own docstring was written about. The bundle cites entries by company,
