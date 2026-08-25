@@ -56,10 +56,16 @@ def rank(entries: list[dict], jd_keywords: list[str]) -> list[dict]:
     return sorted(entries, key=score, reverse=True)
 
 
-def build_bundle(entries, baseline, negatives, jd_keywords, prefix_map) -> dict:
+def build_bundle(entries, baseline, negatives, jd_keywords, prefix_map,
+                 skills=()) -> dict:
     ranked = rank(entries, jd_keywords)
     return {"baseline": baseline, "entries": assign_codes(ranked, prefix_map),
-            "negatives": list(negatives)}
+            "negatives": list(negatives),
+            # Ranked by the same JD keywords so the most relevant framing leads -- but NOT
+            # code-assigned: an [id] is what makes a thing citable, and the whole point of
+            # this section is that it is not (#165). Defaults to () so every existing
+            # caller and test constructs a bundle unchanged.
+            "skills": rank(list(skills), jd_keywords)}
 
 
 def _entry_block(entry: dict) -> list[str]:
@@ -115,19 +121,37 @@ def _baseline_block(bundle: dict) -> list[str]:
     return [bundle["baseline"]]
 
 
-def render_bundle(bundle: dict) -> str:
-    """Render the bundle as the prompt text the model actually sees.
+def _framing_lines(skill: dict) -> list[str]:
+    """The lines ONE skills entry contributes to the COMPOSER's prompt (#165).
 
-    The `[id]` codes and the `=== SECTION ===` headers used to be a parsing contract with
-    `cv/validate.py`, which recovered the citable ids from this text. It no longer does
-    (#174): ids and entry boundaries come from `build_bundle`'s structure via
-    `bundle_sources`, so no line of user free text can mint or rebind one. The headers
-    are now presentation only, and this function owns ALL of them -- the two builders
-    above own only source lines.
+    Deliberately NOT named `_skills_block`. In this module `_entry_block` and
+    `_baseline_block` carry a stated contract -- every line returned is a SOURCE the
+    fabrication gate may license -- and these lines are the opposite of that. Nothing
+    harvests from here: `bundle_sources` walks `bundle["entries"]` and never touches
+    `bundle["skills"]`, which is what makes a skills figure licensed nowhere. Folding
+    these into `_entry_block`, or teaching `bundle_sources` to read them, licenses every
+    skills digit at once; `test_a_skills_digit_is_licensed_in_neither_pool` catches that.
 
-    `tests/test_cv_bundle.py::test_the_rendered_prompt_has_not_drifted` pins this
-    function's exact output, because it is the prompt two live LLM calls receive.
+    Reads `fields` by the kind's own frontmatter names rather than the floor keys:
+    `EVIDENCE_KINDS["skills"]` maps only `best_for <- Domain`, so Proficiency, Evidence
+    and Signal Value have no floor analogue and are reachable only here.
     """
+    f = skill.get("fields") or {}
+    head = f"- {skill.get('title','')}"
+    for label, key in (("proficiency", "Proficiency"), ("domain", "Domain"),
+                       ("signal", "Signal Value")):
+        if f.get(key):
+            head += f" | {label}={f[key]}"
+    lines = [head]
+    if f.get("Evidence"):
+        lines.append(f"  {f['Evidence']}")
+    if skill.get("body"):
+        lines.append(f"  {skill['body']}")
+    return lines
+
+
+def _source_section(bundle: dict) -> list[str]:
+    """Everything up to and including the last entry: the lines BOTH audiences see."""
     lines = ["=== BASELINE CV (authoritative for dates/employers/certs) ==="]
     lines += _baseline_block(bundle)
     lines += ["",
@@ -135,9 +159,74 @@ def render_bundle(bundle: dict) -> str:
     for e in bundle["entries"]:
         lines += _entry_block(e)
         lines.append("")
-    lines += ["=== NEGATIVE CONSTRAINTS (must NOT appear) ==="]
-    lines += [f"- {n}" for n in bundle["negatives"]]
-    return "\n".join(lines)
+    return lines
+
+
+def _negatives_section(bundle: dict, extra: tuple = ()) -> list[str]:
+    """The NEGATIVE CONSTRAINTS block.
+
+    `extra` is prepended and is NOT part of `bundle["negatives"]`, so a constraint meant
+    for one audience cannot reach the other by riding shared state. That is not
+    hypothetical: the derived skills constraint (#165) NAMES the SKILLS INVENTORY
+    section, and stored on the bundle it was rendered to the advisory auditor too --
+    handing it a sentence naming a source it cannot see.
+    """
+    return (["=== NEGATIVE CONSTRAINTS (must NOT appear) ==="]
+            + [f"- {n}" for n in list(extra) + list(bundle["negatives"])])
+
+
+def render_bundle(bundle: dict) -> str:
+    """Render the SOURCE bundle: the prompt text the ADVISORY audit sees.
+
+    The `[id]` codes and the `=== SECTION ===` headers used to be a parsing contract with
+    `cv/validate.py`, which recovered the citable ids from this text. It no longer does
+    (#174): ids and entry boundaries come from `build_bundle`'s structure via
+    `bundle_sources`, so no line of user free text can mint or rebind one. The headers
+    are now presentation only, and the section builders own ALL of them -- `_entry_block`
+    and `_baseline_block` own only source lines.
+
+    This function does NOT emit `bundle["skills"]`, and that omission is load-bearing
+    rather than incidental -- see `render_composer_bundle` (#165, D11).
+
+    `tests/test_cv_bundle.py::test_the_rendered_prompt_has_not_drifted` pins this
+    function's exact output, because it is the prompt a live LLM call receives.
+    """
+    return "\n".join(_source_section(bundle) + _negatives_section(bundle))
+
+
+def render_composer_bundle(bundle: dict) -> str:
+    """`render_bundle` plus the framing the COMPOSER gets and the auditor must not see.
+
+    A separate function rather than a flag on `render_bundle`. There are two consumers of
+    a rendered bundle and they want opposite things: `cv/engine.py`'s compose call, and
+    the #60 ADVISORY audit (via `cv/audit.py`), whose prompt opens "SOURCE BUNDLE is the
+    ONLY truth". Showing the auditor the framing section would make a CV claim resting on
+    a skills line alone read as SUPPORTED -- where today it is `unsupported` and, at the
+    shipped `cv.require_signoff: true`, withholds the send-ready pointer until a human
+    signs off. #165's D3 calls such a claim illegitimate, so widening the auditor's source
+    set disarms the one layer that catches it.
+
+    A keyword flag was the first design and was rejected twice over: its default widened
+    (a caller who forgets it gets the framing), and it did not even work, because the
+    derived negative NAMES the section and rode `bundle["negatives"]` into both spellings.
+    A second function has no default to get wrong, and leaves the audit call site
+    unedited, which is the strongest available form of "the auditor sees what it sees
+    today".
+
+    Framing goes AFTER the entries it frames and BEFORE the hard "must NOT appear" list.
+    Placement is measured, not stylistic: emitted BEFORE the entries, the pre-#174 oracle
+    in tests/test_cv_bundle.py folds these digits into `baseline` and disagrees with
+    `bundle_sources`. Omitted ENTIRELY when the inventory is empty -- an empty header
+    would assert to the model that the candidate holds no skills, a negative claim it may
+    act on.
+    """
+    if not bundle.get("skills"):
+        return render_bundle(bundle)
+    framing = ["=== SKILLS INVENTORY (framing only; NOT citable, introduces no facts) ==="]
+    for sk in bundle["skills"]:
+        framing += _framing_lines(sk)
+    framing.append("")
+    return "\n".join(_source_section(bundle) + framing + _negatives_section(bundle))
 
 
 class BundleSources(NamedTuple):
