@@ -53,7 +53,10 @@ _ATS_RELAY_DOMAINS = {
 _JOB_BOARD_DOMAINS = {
     "80000hours.org": "eighty_k", "b-work.io": "bwork", "bayt.com": "bayt",
     "cord.com": "cord", "cwjobs.co.uk": "cwjobs", "escapethecity.org": "escape_city",
-    "google.com": "google", "gulftalent.com": "gulftalent", "hackajob.co": "hackajob",
+    "google.com": "google", "gulftalent.com": "gulftalent",
+    # Both spellings: hackajob moved .co -> .com, and the old domain still
+    # resolves as a redirect, so a receipt can arrive bearing either.
+    "hackajob.co": "hackajob", "hackajob.com": "hackajob",
     "hired.com": "hired", "indeed.com": "indeed", "jobserve.com": "jobserve",
     "linkedin.com": "linkedin", "naukrigulf.com": "naukrigulf", "reed.co.uk": "reed",
     "remoteok.com": "remoteok", "theorg.com": "theorg", "totaljobs.com": "totaljobs",
