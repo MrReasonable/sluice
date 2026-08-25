@@ -171,10 +171,15 @@ class RunReport:
     results: list = field(default_factory=list)
     open_proposals: list = field(default_factory=list)  # every currently-open dead-letter Entry
     auth_error: bool = False
-    deadletter_error: bool = False  # a dead-letter WRITE raised this run; app.py must hold
-                                     # the lastrun watermark so the un-persisted message
-                                     # re-queries next run instead of aging out of Gmail's
-                                     # advancing `after:` window (#49's write-path silent loss)
+    deadletter_error: bool = False  # this run must NOT advance the lastrun watermark. Two
+                                     # causes, and the name records only the first: a
+                                     # dead-letter WRITE raised, or the message FETCH failed
+                                     # (see the search-path arm below, which sets this so an
+                                     # outage cannot skip whatever arrived during it). Either
+                                     # way app.py holds the watermark, so the un-persisted
+                                     # message re-queries next run instead of aging out of
+                                     # Gmail's advancing `after:` window (#49's write-path
+                                     # silent loss). `cmd_track_run`'s warning names both.
 
 
 def _dl_write(rep, op):
