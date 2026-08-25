@@ -201,7 +201,7 @@ def _seed(root, kind, name, inner, body="Body text.", inbox=False):
 
 
 def test_an_unknown_kind_raises_and_lists_the_valid_names(tmp_path):
-    """Not a quiet []. read_experience_entries' own docstring records the harm of an
+    """Not a quiet []. `read_evidence`'s contract records the harm of an
     empty evidence read: the bundle has no ids, every WORK bullet violates the gate,
     and the user is told `skipped-gate` -- a fabrication verdict against their
     composer -- after paying for a dossier fetch and a full compose."""

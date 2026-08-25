@@ -291,10 +291,6 @@ class _PrecheckStore:
         from tests.test_cv_engine import ENTRIES
         return ENTRIES if kind == "experience" else []
 
-    def read_experience_entries(self, verified_only=True):
-        from tests.test_cv_engine import ENTRIES
-        return ENTRIES
-
     def read_baseline(self):
         return "BASELINE"
 

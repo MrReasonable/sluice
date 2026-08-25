@@ -765,7 +765,7 @@ def test_cv_run_tool_skipped_needs_signoff_for_a_lead_already_holding_pending_cv
     """The single most important test in this slice (Testing item 6): proves the
     #60 latch survives the MCP path unweakened. run_one checks pending_cv BEFORE
     any dossier fetch or compose (verified directly, sluice/cv/engine.py:195), so
-    a minimal store carrying just read_leads/read_experience_entries/read_baseline
+    a minimal store carrying just read_leads/read_evidence/read_baseline
     is enough -- the fabrication gate never reaches far enough to need more."""
     from tests.test_cv_engine import FakeCache, Note, _cfg
 
@@ -777,8 +777,6 @@ def test_cv_run_tool_skipped_needs_signoff_for_a_lead_already_holding_pending_cv
         def read_leads(self, statuses=None):
             return [note]
         def read_evidence(self, kind, verified_only=True):
-            return []
-        def read_experience_entries(self, verified_only=True):
             return []
         def read_baseline(self):
             return "BASELINE"
@@ -831,8 +829,6 @@ def test_cv_run_tool_skipped_selection_for_a_non_shortlist_lead(monkeypatch):
                 return []
             return [note]
         def read_evidence(self, kind, verified_only=True):
-            return []
-        def read_experience_entries(self, verified_only=True):
             return []
         def read_baseline(self):
             return "BASELINE"
@@ -1272,13 +1268,13 @@ _ISOLATION_ALLOWED_MODULES = frozenset({
 # previous version's comment already claimed this and the literal set happened to
 # agree, but a future write method added to Store would silently miss this sweep
 # with no test failure to say so. Its read-only members (read_leads,
-# read_experience_entries, read_baseline, read_criteria, read_candidate_profile,
+# read_baseline, read_criteria, read_candidate_profile,
 # read_evidence, read_pending_evidence, read_pending_evidence_text; the optional
 # preflight hook, which is never declared in the class body at all) are excluded by
 # name, since a read reaching this deep is exactly what the module-allow-list above
 # already permits via Sluice's own store() access.
 _STORE_READ_METHODS = frozenset({
-    "read_leads", "read_experience_entries", "read_baseline", "read_criteria",
+    "read_leads", "read_baseline", "read_criteria",
     "read_candidate_profile", "read_evidence", "read_pending_evidence",
     "read_pending_evidence_text",
 })

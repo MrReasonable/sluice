@@ -1721,7 +1721,7 @@ def test_an_unreadable_cited_corpus_names_cv_as_what_it_blocks(tmp_path):
     # The measurement behind the claim: the gate's own reader RAISES rather than
     # returning [], so `cv/engine.py` cannot build a bundle at all.
     with pytest.raises(OSError, match="is a symlink"):
-        v.read_experience_entries(verified_only=True)
+        v.read_evidence("experience", verified_only=True)
 
     row = _one(classify_store(v.preflight()),
                EVIDENCE_KINDS[kind].relpath.rsplit("/", 1)[-1])

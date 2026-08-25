@@ -36,10 +36,7 @@ class FakeVault:
         self._entries = entries; self._notes = notes or []; self.written = {}; self.fields = {}
         self._candidate = candidate
     def read_evidence(self, kind, verified_only=True):
-        # A later commit deletes read_experience_entries entirely; until then both
-        # spellings answer, so this commit is green before AND after the engine switch.
         return self._entries if kind == "experience" else []
-    def read_experience_entries(self, verified_only=True): return self._entries
     # #107: cv/engine.py's identity gate is MUST-support (Store.read_candidate_profile),
     # not reached through getattr -- so every test that expects run_one to proceed past
     # it needs this to answer, not raise. `candidate` is a constructor param (not a
@@ -1009,7 +1006,7 @@ def _vault_with_candidate(tmp_path, overrides):
     so without this, run_one's `vault.read_baseline()` call would raise before ever
     reaching compose, which would break test_a_fully_declared_identity_reaches_the_
     backend (the one case here that DOES need to reach it). No Experience Library
-    entry is written: read_experience_entries abstains to [] on a missing library
+    entry is written: read_evidence abstains to [] on a missing library
     (the ordinary "no entries yet" case, tests/harness/config.py's own comment on
     _seed_vault makes the same choice), and this helper only needs the backend to be
     CALLED, never a CV that clears the fabrication gate.
@@ -1674,7 +1671,7 @@ def test_the_fake_vault_conforms_to_the_real_store_signature():
     from sluice.core.vault import Vault
 
     fake = FakeVault([])
-    for name in ("read_experience_entries", "read_baseline", "read_leads", "set_tailored_cv",
+    for name in ("read_evidence", "read_baseline", "read_leads", "set_tailored_cv",
                  "read_candidate_profile"):
         real_sig = inspect.signature(getattr(Vault, name))
         fake_sig = inspect.signature(getattr(FakeVault, name))
