@@ -286,6 +286,12 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
         b = _bundle.build_bundle(entries, baseline, cvcfg.negatives,
                                  _jd_keywords(role, jd), cvcfg.prefix_map)
         bundle_text = _bundle.render_bundle(b)
+        # Bound HERE, beside `bundle_text` and BEFORE the retry loop, not inlined at the
+        # `_validate` call: both are derived from the same `b`, and adjacency is what stops
+        # a later edit rebuilding one from a different bundle and leaving the other stale.
+        # Before the loop because `bundle_sources` raises on a malformed bundle, and a
+        # fault knowable here must not cost an LLM compose first.
+        sources = _bundle.bundle_sources(b)
 
         retry_msgs, cv_text, violations, slop_err = None, "", [], []
         # The last attempt that cleared the HARD gate, as `(cv_text, style_msgs,
@@ -343,7 +349,7 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
                 _log.warning("cv retry compose for %s failed (%s); shipping the retained "
                              "hard-clean draft", note.ref, e)
                 break
-            violations = _validate(cv_text, bundle_text, employers=cvcfg.employers,
+            violations = _validate(cv_text, sources, employers=cvcfg.employers,
                                    fabrication_decoys=cvcfg.fabrication_decoys)
             # Fail-closed: validate()'s per-bullet citation checks only run inside the
             # section keyed on a case-insensitive "WORK EXPERIENCE" header (validate()

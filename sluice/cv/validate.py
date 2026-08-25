@@ -1,7 +1,8 @@
 # sluice/cv/validate.py
-"""Deterministic citation/fabrication gate. Pure: validate(cv_text, bundle_text) ->
-[violations]. A non-empty list HARD-blocks rendering. Every WORK bullet must cite a
-real bundle [id]; every number in a bullet must appear in a cited entry.
+"""Deterministic citation/fabrication gate. Pure: validate(cv_text, sources) ->
+[violations], where `sources` is a `cv.bundle.BundleSources` (#174) rather than the
+rendered bundle text. A non-empty list HARD-blocks rendering. Every WORK bullet must
+cite a real bundle [id]; every number in a bullet must appear in a cited entry.
 
 `employers` and `fabrication_decoys` are supplied by the caller (from CvConfig, see
 cv/config.py) rather than hardcoded here: an empty `employers` list skips the
@@ -11,39 +12,7 @@ known-hallucination-string check. Configure both via the `cv:` block of
 sluice.yaml for the same behavior a fixed list gave before."""
 import re
 
-# render_bundle emits `=== SECTION ===` headers; NEGATIVE CONSTRAINTS is the one that
-# lands AFTER the last [id]. Without a reset its lines fall through to `elif cur` and
-# union the do-not-say numbers into the last-ranked entry's allowlist -- so the one
-# guard aimed at those figures stops firing on exactly them. The `[^=]` guards require
-# a non-'=' character inside each delimiter, so a bare setext underline (`======`) in a
-# pasted entry body does not reset. A body line genuinely shaped like a section header
-# still would, and that fails CLOSED: the entry's later numbers drop and a legitimate
-# bullet is flagged INVENTED METRIC -- visible and fixable, never a silent pass. (#31)
-_SECTION_RE = re.compile(r"^\s*={3,}[^=].*[^=]={3,}\s*$")
-
-# assign_codes/_prefix guarantee exactly two A-Z letters plus a sequence number, so
-# anchoring to that shape costs nothing real and closes a second widening: `body` and
-# `baseline` are user free text spliced into the bundle verbatim, and an unanchored
-# bracket match turned a line like `[2019] Rebuilt the pipeline to 250 nodes` into a
-# citable id owning 250 -- a bullet could cite a YEAR and carry a fabricated figure
-# past the gate. Fails CLOSED: a bullet citing an id this rejects is now an unknown
-# citation, which is already a BAD CITATION violation. cv/render.py's _CITE_RE has
-# assumed this same shape all along, so this aligns the parser with the strip step.
-# NB this NARROWS the free-text bypass rather than closing it. A body line shaped
-# like a real code is still read as one, and if it matches an EARLIER entry's code
-# it OVERWRITES that entry's numbers (`nums[cur] = ...` below, not `|=`) -- so the
-# fabricated figure passes AND the entry's genuine metric is reported INVENTED.
-# Both halves are pre-existing, measured, and pinned by tests rather than assumed;
-# the real close is handing validate() the true id list, a signature change. (#174 --
-# NOT #31, which this line used to cite: #31 is closed, and was the NEGATIVES-block
-# reset above, a different defect. `core/vault.py`'s `_refuse_citation_shaped_body`
-# narrows the same bypass from the write side and cites #174; the two now name one
-# issue. "The write side" is BOTH evidence writes -- propose AND verify. It used to be
-# propose alone, which was not the narrowing this comment claimed: an entry hand-placed
-# in `_inbox/` never passes through propose, and one carrying `[NC1] delivered 987
-# things` verified cleanly and landed citable (#164 review, M1). The comment was widened
-# by widening the GUARD, not by narrowing the claim.)
-_ID_RE = re.compile(r"^\[([A-Z]{2}\d+)\]")
+from sluice.cv.bundle import BundleSources
 
 # The PROFILE is prose, not bullets, so its citation strip must match what the
 # RENDERER delivers, not the WORK-bullet strip. render.strip_citations removes only
@@ -51,38 +20,14 @@ _ID_RE = re.compile(r"^\[([A-Z]{2}\d+)\]")
 # into the PDF and the profile check must see and check it. This pattern is
 # byte-identical to render._CITE_RE (render.py:10); test_profile_strip_matches_render_
 # citation_shape pins that equality, because a comment cannot enforce it and a drift
-# silently reopens a fabricated-number-ships fail-open. Deliberately DISTINCT from
-# _ID_RE: _ID_RE parses bundle-GENERATED codes (uppercase via _prefix); _CITE_RE
-# mirrors render's LENIENT strip of whatever the model emitted ([A-Za-z]). (#30)
+# silently reopens a fabricated-number-ships fail-open.
+#
+# This is now the ONLY regex in this module that touches a citation code. Until #174
+# there was a second one, `_ID_RE`, which parsed the bundle text to decide which ids
+# existed -- and could therefore be fooled by a line of user free text. Ids now arrive
+# structurally in `BundleSources`. This one is unrelated to that: it mirrors render's
+# LENIENT strip of whatever the MODEL emitted ([A-Za-z]), not any generated code. (#30)
 _CITE_RE = re.compile(r"\s*\[[A-Za-z]{2}[0-9]+\]")
-
-
-def _bundle_ids_and_nums(bundle_text):
-    ids, nums, baseline = {}, {}, set()
-    cur = None
-    seen_id = False
-    for line in bundle_text.splitlines():
-        if _SECTION_RE.match(line):
-            cur = None                      # this entry's lines have ended
-            continue
-        m = _ID_RE.match(line)
-        if m:
-            seen_id = True
-            cur = m.group(1)
-            ids[cur] = line
-            after = line[m.end():]          # exclude the id token itself
-            nums[cur] = set(re.findall(r"\d+", after))
-        elif cur:
-            nums[cur] |= set(re.findall(r"\d+", line))
-        elif not seen_id:
-            # Numbers before the first [id] are the BASELINE block -- a permitted
-            # SOURCE for the PROFILE (an aggregate summary) but NOT for a WORK bullet,
-            # which must trace to its specific cited entry. Negatives are NOT captured
-            # here: they land after the last [id] (seen_id True, cur cleared by their
-            # === header ===), so they fall into neither pool and stay excluded -- the
-            # same exclusion #31 established for bullets. (#30)
-            baseline |= set(re.findall(r"\d+", line))
-    return ids, nums, baseline
 
 
 def section_spans(cv_text):
@@ -144,9 +89,20 @@ def section_spans(cv_text):
     return profile, work
 
 
-def validate(cv_text, bundle_text, employers=None, fabrication_decoys=None):
+def validate(cv_text, sources, employers=None, fabrication_decoys=None):
+    if not isinstance(sources, BundleSources):
+        # Fail loudly at construction. The old second parameter was the rendered bundle
+        # TEXT; the position is unchanged, so a stale caller would otherwise reach
+        # `sources.nums` and raise AttributeError from inside the gate, which reads as a
+        # gate bug rather than a call-site one.
+        #
+        # The type ONLY, never the value: the stale argument is the user's whole CV source
+        # corpus and cv/engine.py:795 logs this exception with %s.
+        raise TypeError(
+            f"validate() takes a BundleSources, not {type(sources).__name__} -- build it "
+            "with cv.bundle.bundle_sources(bundle)")
     v = []
-    ids, nums, baseline = _bundle_ids_and_nums(bundle_text)
+    ids, nums, baseline = sources.ids, sources.nums, sources.baseline
     for decoy in (fabrication_decoys or []):
         if decoy.lower() in cv_text.lower():
             v.append(f"FABRICATED: contains '{decoy}'")

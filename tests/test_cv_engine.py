@@ -3,7 +3,7 @@ import os
 
 import pytest
 
-from sluice.cv.bundle import build_bundle, render_bundle
+from sluice.cv.bundle import build_bundle, bundle_sources
 from sluice.cv.engine import run_one, run_batch
 from sluice.cv.validate import validate
 from sluice.core.backends import BackendError, FallbackBackend, OpenAiCompatibleBackend
@@ -194,10 +194,10 @@ def test_the_unparseable_fixture_still_passes_the_gate():
     the GATE does not. If this fixture ever stops clearing the gate they would pass for
     the wrong reason -- the same trap test_clean_cv_is_actually_clean exists to close."""
     assert "Example Location A Staff Engineer" in UNPARSEABLE_CV, "the replace no-opped"
-    bundle_text = render_bundle(build_bundle(
+    sources = bundle_sources(build_bundle(
         entries=ENTRIES, baseline="BASELINE", negatives=[],
         jd_keywords=[], prefix_map={"Example Foundry": "EF"}))
-    assert validate(UNPARSEABLE_CV, bundle_text) == []
+    assert validate(UNPARSEABLE_CV, sources) == []
 
 
 def test_a_parse_failure_feeds_the_retry_not_the_bin(monkeypatch):
@@ -380,7 +380,7 @@ def test_the_preamble_fixtures_are_gate_clean_and_misparse():
     from sluice.cv.parse import parse_cv
     from sluice.cv.slop import check_text
 
-    bundle_text = render_bundle(build_bundle(
+    sources = bundle_sources(build_bundle(
         entries=ENTRIES, baseline="BASELINE", negatives=[],
         jd_keywords=[], prefix_map={"Example Foundry": "EF"}))
 
@@ -411,7 +411,7 @@ def test_the_preamble_fixtures_are_gate_clean_and_misparse():
          "a contact line differing from the declared one in both case and spacing"),
     ]:
         assert marker in fixture, f"the replace no-opped ({why})"
-        assert validate(fixture, bundle_text) == [], (
+        assert validate(fixture, sources) == [], (
             f"fixture no longer gate-clean ({why}) -- the #99 tests below would "
             f"pass for the wrong reason")
         assert check_text(fixture)[0] == [], f"fixture no longer slop-clean ({why})"
@@ -443,10 +443,10 @@ def test_the_publications_fixture_passes_the_gate():
     this stops being gate-clean, the test below reports skipped-gate for a reason that
     has nothing to do with the seam and passes for the wrong reason."""
     assert "PUBLICATIONS" in PUBLICATIONS_CV, "the replace no-opped"
-    bundle_text = render_bundle(build_bundle(
+    sources = bundle_sources(build_bundle(
         entries=ENTRIES, baseline="BASELINE", negatives=[],
         jd_keywords=[], prefix_map={"Example Foundry": "EF"}))
-    assert validate(PUBLICATIONS_CV, bundle_text) == []
+    assert validate(PUBLICATIONS_CV, sources) == []
 
 
 @pytest.mark.parametrize("cv_text,why", [
@@ -652,10 +652,10 @@ def test_clean_cv_is_actually_clean():
     # Measured: breaking its first start year fails 5 tests loudly but leaves 3
     # of these passing on a false premise. State the premise instead of implying
     # it, because a fixture regeneration is exactly when it would quietly break.
-    bundle_text = render_bundle(build_bundle(
+    sources = bundle_sources(build_bundle(
         entries=ENTRIES, baseline="BASELINE", negatives=[],
         jd_keywords=[], prefix_map={"Example Foundry": "EF"}))
-    assert validate(CLEAN_CV, bundle_text) == []
+    assert validate(CLEAN_CV, sources) == []
 
 
 def test_application_owned_lead_is_refused():
@@ -1899,7 +1899,7 @@ def test_the_sequence_fixtures_are_the_tiers_they_claim():
     from sluice.cv.slop import check_hard, check_phrases
     from sluice.cv.validate import section_spans
 
-    bundle_text = render_bundle(build_bundle(
+    sources = bundle_sources(build_bundle(
         entries=ENTRIES, baseline="BASELINE", negatives=[],
         jd_keywords=[], prefix_map={"Example Foundry": "EF"}))
 
@@ -1918,7 +1918,7 @@ def test_the_sequence_fixtures_are_the_tiers_they_claim():
         ("doubled-profile", DOUBLED_PROFILE_CV, False, True),
         ("no-scoped-prose", NO_SCOPED_PROSE_CV, False, False),
     ]:
-        assert validate(text, bundle_text) == [], f"{name} is no longer gate-clean"
+        assert validate(text, sources) == [], f"{name} is no longer gate-clean"
         assert bool(check_hard(text)) is hard, f"{name}'s HARD tier drifted"
         assert bool(_style(text)) is style, f"{name}'s STYLE tier drifted"
 
@@ -2628,3 +2628,73 @@ def test_a_voice_finding_alone_can_trigger_the_style_hold(monkeypatch):
     assert "tailored_cv" not in note.fm
     claims = json.loads(note.fm["needs_signoff"])
     assert any(c.startswith("style\t") and "press release" in c for c in claims), claims
+
+
+# #174: an entry body whose first line is shaped like ANOTHER entry's [id] code used
+# to rebind that entry's permitted numbers, because validate() used to recover ids by
+# re-parsing the rendered bundle TEXT rather than reading the bundle's own structure.
+# Shared by the two tests below: the first pins validate()'s own contract directly
+# (cheap, no engine); the second drives the identical scenario through run_one, which
+# is where a user actually experiences the harm -- a review round on this task found
+# that only the first existed, under a docstring claiming the second's coverage.
+POISONED_ENTRIES = [
+    {"company": "Example Foundry", "title": "EM", "metrics": "12",
+     "best_for": "", "category": "", "body": ""},
+    {"company": "Example Foundry", "title": "Lead", "metrics": "7",
+     "best_for": "", "category": "", "body": "[EF1] fabricated 4200 units"},
+]
+
+
+def test_a_poisoned_entry_body_cannot_launder_a_fabricated_figure_at_validate():
+    """#174, validate()-level: the narrow unit pin.
+
+    Both directions of the original defect went wrong at once: the fabricated figure
+    cleared the HARD gate with zero violations, and the poisoned entry's own genuine
+    metric was reported INVENTED. See
+    test_a_poisoned_entry_body_cannot_launder_a_fabricated_figure_through_run_one
+    immediately below for the end-to-end version of this same scenario.
+    """
+    sources = bundle_sources(build_bundle(
+        entries=POISONED_ENTRIES, baseline="BASELINE", negatives=[],
+        jd_keywords=[], prefix_map={"Example Foundry": "EF"}))
+    cv = CLEAN_CV.replace("- Grew team from 3 to 8 [EF1]",
+                          "- Delivered 4200 units [EF1]")
+    assert "4200" in cv, "the replace no-opped"
+    assert any("INVENTED METRIC" in v for v in validate(cv, sources))
+    # ...and the poisoned entry's real metric is still its own.
+    assert "12" in sources.nums["EF1"]
+
+
+def test_a_poisoned_entry_body_cannot_launder_a_fabricated_figure_through_run_one():
+    """#174, pinned where the user experiences it -- through run_one's real gate call,
+    not only at validate() in isolation.
+
+    Drives the engine with a vault whose Experience Library holds the poisoned pair
+    above and a backend that composes a CV citing the fabricated figure against the
+    FIRST entry's id. That is the exact shape #174 exploited: before the fix, validate()
+    recovered citable ids by re-parsing the rendered bundle TEXT, so the second entry's
+    body -- a line shaped like "[EF1] ..." -- rebound EF1's permitted numbers to include
+    the fabricated one, and a CV citing [EF1] for a number only the poisoned body
+    supplied cleared the HARD gate with zero violations and got rendered.
+
+    Asserts the lead is never rendered (status reflects a blocked gate, and the
+    renderer is never invoked), not merely that validate() reports a violation in
+    isolation -- the failure mode #174 describes is a CV that reaches a user's disk.
+    """
+    poisoned_cv = "\n".join([
+        "+1 555 0100", "JANE ROE", "", "PROFILE", "I build reliable systems.", "",
+        "WORK EXPERIENCE", "",
+        "Example Systems", "02/2023\u2013present | Example Location A | Staff Engineer",
+        "- Delivered 4200 units [EF1]", "",
+        "CERTIFICATES", "- Example Scrum Master", "EDUCATION", "- Uni",
+    ])
+    vault = FakeVault(POISONED_ENTRIES)
+    rend = FakeRenderer()
+    be = FakeBackend(poisoned_cv)
+    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
+                vault, _cfg(), be, FakeCache(), renderer=rend)
+    assert r.status == "skipped-gate"
+    assert any("INVENTED METRIC" in x for x in r.violations), r.violations
+    assert rend.rendered == [], (
+        "a fabricated figure laundered through a poisoned entry body must never "
+        "reach the renderer")

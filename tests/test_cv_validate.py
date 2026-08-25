@@ -3,7 +3,7 @@ import random
 
 import pytest
 
-from sluice.cv.bundle import build_bundle, render_bundle
+from sluice.cv.bundle import build_bundle, bundle_sources
 from sluice.cv.validate import section_spans, validate
 
 # Sample employer roster / decoy list a caller (CvConfig.employers /
@@ -13,13 +13,12 @@ EMPLOYERS = ["Example Systems", "Example Analytics", "Example Robotics",
              "Example Cartography"]
 FABRICATION_DECOYS = ["Example Decoy"]
 
-# Built through the real renderer rather than by hand. The hand-written version
-# this replaces had no `=== ... ===` headers, no entry bodies, no baseline and no
-# negatives -- so validate() had never once been exercised against the text
-# render_bundle actually produces, which is how a defect in the contract between
-# them survived the whole suite. Ids are EF1/ET1/ET2 (assign_codes sequences per
-# prefix from 1); `jd_keywords=[]` and an explicit prefix_map are both required to
-# make them deterministic, because build_bundle ranks before it assigns codes.
+# Built through the real bundle pipeline rather than by hand, so validate() is
+# exercised against the same BundleSources build_bundle's callers actually produce
+# rather than a hand-assembled stand-in that could quietly drift from it. Ids are
+# EF1/ET1/ET2 (assign_codes sequences per prefix from 1); `jd_keywords=[]` and an
+# explicit prefix_map are both required to make them deterministic, because
+# build_bundle ranks before it assigns codes.
 _LEGACY_ENTRIES = [
     {"company": "Example Foundry", "title": "EM", "metrics": "3 8",
      "best_for": "", "category": ""},
@@ -28,7 +27,7 @@ _LEGACY_ENTRIES = [
     {"company": "Example Telemetry", "title": "Lead", "metrics": "15",
      "best_for": "", "category": ""},
 ]
-BUNDLE = render_bundle(build_bundle(
+BUNDLE = bundle_sources(build_bundle(
     entries=_LEGACY_ENTRIES, baseline="Baseline prose.",
     negatives=["never claim 400 users"], jd_keywords=[],
     prefix_map={"Example Foundry": "EF", "Example Telemetry": "ET"}))
@@ -67,7 +66,8 @@ def test_employer_and_decoy_gates_are_off_by_default():
 
 def test_id_digits_not_counted_as_metric():
     # The `1` in [ET1] is part of the citation CODE, not a metric of that entry --
-    # `_bundle_ids_and_nums` scans only the text AFTER the id token for that reason.
+    # `bundle_sources` slices the leading `[{id}] ` token off by LENGTH before
+    # scanning for digits, for that reason (cv/bundle.py's `block[0][len(eid) + 2:]`).
     #
     # The first assertion below is the one this test shipped with, and it was
     # INERT: a digit-free bullet leaves bullet_nums empty, so `invented` is empty
@@ -152,7 +152,7 @@ def _bundle(entries=None, baseline="Baseline prose, no digits.", negatives=None)
     # With no keywords every entry scores 0 and the (stable) sort preserves order,
     # giving ES1 then EA1 -- so EA1 is the last-ranked entry the negatives block
     # would otherwise be attributed to.
-    return render_bundle(build_bundle(
+    return bundle_sources(build_bundle(
         entries=_ENTRIES if entries is None else entries,
         baseline=baseline,
         negatives=[] if negatives is None else negatives,
@@ -180,9 +180,18 @@ def _cv_with_profile(profile, *bullets):
 
 
 def test_negatives_block_does_not_widen_the_last_entrys_allowlist():
-    # render_bundle appends the negatives AFTER the last [id]. Attributing them to
-    # that entry lets a bullet cite it and carry a figure that exists ONLY in the
-    # do-not-say list -- the one class of number the negatives exist to suppress.
+    # The exclusion is now STRUCTURAL, not positional: `bundle_sources` builds each
+    # entry's allowlist only from that entry's own `_entry_block` lines and never
+    # reads `bundle["negatives"]` at all (cv/bundle.py's own docstring states this).
+    # There is no longer a text position a negative could occupy that would
+    # attribute it to an entry. That is NOT "no deletion mutant at all" -- deleting
+    # validate()'s INVENTED-METRIC arm outright turns this test red like any other
+    # INVENTED-METRIC assertion. The narrower, true claim: no mutant SPECIFIC to the
+    # negatives exclusion survives, because re-widening it needs a line ADDED to
+    # `bundle_sources` (reading `bundle["negatives"]`) -- an ADD-shaped mutant, which
+    # this suite's mutation discipline (move-or-delete only, CLAUDE.md) forbids.
+    # Kept as a regression pin on the OUTCOME: a bullet citing EA1 must still never
+    # carry 500 (present only in the negatives list) past the gate.
     b = _bundle(negatives=["never claim 500 users"])
     v = validate(_work_cv("- Scaled the platform to 500 users [EA1]"), b)
     assert any("INVENTED METRIC" in x for x in v), v
@@ -197,14 +206,6 @@ def test_a_body_sourced_number_stays_permitted():
     assert validate(_work_cv("- Ran 42 services [ES1]"), b) == []
 
 
-def test_a_setext_underline_in_a_body_does_not_end_the_entry():
-    # `======` is a markdown setext-H1 underline and is plausible in a pasted
-    # entry body. It is not a section header, so it must not end the entry and
-    # strand the numbers that follow it.
-    e = [dict(_ENTRIES[0], body="Highlights\n======\nCut latency to 250 ms"), _ENTRIES[1]]
-    assert validate(_work_cv("- Cut latency to 250 ms [ES1]"), _bundle(entries=e)) == []
-
-
 def test_baseline_numbers_are_not_permitted_in_a_bullet():
     # Pins today's behaviour rather than changing it: the baseline block precedes
     # the first [id], so its numbers are attributed to no entry. Permitting them
@@ -216,48 +217,130 @@ def test_baseline_numbers_are_not_permitted_in_a_bullet():
 
 def test_a_bracket_led_body_line_is_not_a_citable_id():
     # `body` and `baseline` are user free text spliced into the bundle verbatim.
-    # An unanchored bracket match turned any bracket-led line into a citable id,
-    # so a bullet could cite a YEAR and inherit whatever numbers followed it.
+    # An unanchored bracket match used to turn any bracket-led line into a citable
+    # id, so a bullet could cite a YEAR and inherit whatever numbers followed it.
+    # #174 closes the id half of that by construction: citable ids now come from
+    # `assign_codes`' real output (BundleSources.ids), never from re-scanning
+    # rendered text, so a body line can never mint one no matter its shape -- this
+    # test's own [2019] citation (not even id-shaped) is refused as a BAD CITATION
+    # regardless of what `body` contains. That does not make this test inert:
+    # measured, deleting validate()'s BAD-CITATION arm (the `c not in ids` check
+    # and its `v.append`) turns it red. It is no longer the SOLE witness on that
+    # arm, though -- the sibling below, `..._is_not_a_citable_id`, cites the
+    # id-shaped but nonexistent [QQ7] and dies on the identical mutation, because
+    # both citations fail the same structural membership check once ids stop
+    # being recovered from text: whether a rejected citation happens to look
+    # id-shaped no longer changes which code path rejects it. Kept anyway as the
+    # narrower pin -- a non-id-shaped bracket is the exact shape the original #31
+    # defect exploited, and that history is worth keeping visible even though the
+    # coverage now overlaps a sibling.
     e = [dict(_ENTRIES[0], body="[2019] Rebuilt the pipeline to 250 nodes"), _ENTRIES[1]]
     v = validate(_work_cv("- Ran 250 nodes [2019]"), _bundle(entries=e))
     assert any("BAD CITATION" in x for x in v), v
 
 
-def test_a_bracket_led_body_lines_numbers_join_the_enclosing_entry():
-    # The other half: refusing to treat it as an id must not DISCARD its numbers.
-    # The line is part of the entry's body, so 250 belongs to that entry.
-    e = [dict(_ENTRIES[0], body="[2019] Rebuilt the pipeline to 250 nodes"), _ENTRIES[1]]
-    assert validate(_work_cv("- Ran 250 nodes [ES1]"), _bundle(entries=e)) == []
-
-
-def test_an_id_shaped_bracket_in_free_text_is_still_a_citable_id():
-    # CHARACTERISATION, not desired behaviour. Anchoring to the generated shape
-    # NARROWS the free-text bypass; it does not close it, because a body line can
-    # still happen to look like a real code. Closing it needs validate() to be
-    # handed the true id list, which is a signature change (see #31's spec).
-    # This test therefore has no killing mutation in this change -- by design: it
-    # is expected to go RED the day someone closes the residual, which makes that
-    # a visible, deliberate change rather than a silent one.
+def test_an_id_shaped_bracket_in_free_text_is_not_a_citable_id():
+    # CLOSED by #174 (was a CHARACTERISATION of a residual, not desired behaviour).
+    # Before #174, validate() recovered citable ids by re-parsing the rendered
+    # bundle TEXT, so any free-text line shaped like a real code -- even one
+    # belonging to no entry at all -- was accepted as a citation token. #174
+    # replaced that with a structural source set: an id is citable only if
+    # `assign_codes` actually assigned it (BundleSources.ids, `nums.keys()` in
+    # cv/bundle.py), so a body line that merely LOOKS like one can no longer mint
+    # a citable id. [QQ7] names no real bundle entry, so citing it is now refused.
     e = [dict(_ENTRIES[0], body="[QQ7] fabricated 500 users"), _ENTRIES[1]]
-    assert validate(_work_cv("- Scaled to 500 users [QQ7]"), _bundle(entries=e)) == []
+    v = validate(_work_cv("- Scaled to 500 users [QQ7]"), _bundle(entries=e))
+    assert any("BAD CITATION" in x for x in v), v
 
 
-def test_an_id_shaped_line_in_a_later_body_shadows_the_real_entry():
-    # The sharp edge of the same residual, and worse than minting a spurious id:
-    # when the free-text line looks like an EARLIER, REAL code, it OVERWRITES that
-    # entry's allowlist rather than adding to it (`nums[cur] = ...` on the id line).
-    # Both directions then go wrong at once -- the fabricated figure passes, AND
-    # the entry's genuine metric is reported as INVENTED.
+def test_an_id_shaped_line_in_a_later_body_no_longer_shadows_the_real_entry():
+    # CLOSED by #174. This was the sharper edge of the same residual, and worse
+    # than minting a spurious id: a free-text body line shaped like an EARLIER,
+    # REAL code used to OVERWRITE that entry's allowlist (`nums[cur] = ...`
+    # re-triggering on the id-shaped line), so a fabricated figure passed AND the
+    # entry's genuine metric was reported INVENTED -- both directions wrong at once.
     #
-    # Pre-existing: main behaves identically, so this is a documented bound and not
-    # a regression from the anchor. Closing it needs validate() to be handed the
-    # true id list, which is a signature change and out of scope here. Pinned so
-    # the bound is MEASURED rather than assumed -- an earlier draft of this file
-    # described the residual as narrower than it is.
+    # #174 derives each entry's `nums` from that entry's OWN `_entry_block` lines
+    # only (cv/bundle.py's `bundle_sources`), never by re-scanning rendered text,
+    # so a body line belonging to EA1 that happens to read "[ES1]" is just more of
+    # EA1's own prose -- it cannot reach back and rebind ES1's allowlist. Both
+    # halves now hold: the fabricated 500 (sourced only from EA1's body) is
+    # refused when cited against ES1, and ES1's own genuine metric (90, from its
+    # own metrics= line) still clears.
     e = [_ENTRIES[0], dict(_ENTRIES[1], body="[ES1] fabricated 500 users")]
     b = _bundle(entries=e)
-    assert validate(_work_cv("- Scaled to 500 users [ES1]"), b) == []
-    assert any("INVENTED" in x for x in validate(_work_cv("- Held 90 uptime [ES1]"), b))
+    assert any("INVENTED" in x for x in validate(_work_cv("- Scaled to 500 users [ES1]"), b))
+    assert validate(_work_cv("- Held 90 uptime [ES1]"), b) == []
+
+
+def test_an_id_shaped_line_in_an_entrys_own_body_still_sources_that_entrys_digits():
+    """The sibling above proves an id-shaped body line cannot REBIND another entry's
+    allowlist. This proves the opposite direction: it must not also cost the OWNING
+    entry its own digits. A real Experience Library entry can legitimately read like
+    `[EF1] as above, cut latency to 250 ms` -- cross-referencing an earlier code
+    informally in prose -- and 250 is a genuine metric of THIS entry, not a rebind
+    attempt.
+
+    `test_a_bracket_led_body_lines_numbers_join_the_enclosing_entry` (deleted as a
+    duplicate, git 942ebbe) was the only witness against dropping id-shaped lines from
+    the harvest. It was deleted as a duplicate of `test_a_body_sourced_number_stays_
+    permitted` under a DIFFERENT mutant (dropping `body` from `_entry_block` outright),
+    which left the id-shaped-line-specific hole uncovered: a filter added to
+    `bundle_sources` that drops id-shaped lines from an entry's own body before
+    harvesting -- plausible-looking as "don't let a body line masquerade as a
+    citation" -- takes this entry's allowlist from `{'1', '250', '90'}` to `{'90'}`
+    with the whole suite green (measured against the pre-fix suite; see this PR's
+    review). The `1` is not a typo -- it is `[EA1]`'s OWN digit, the id-shaped token's
+    residual this same wave's docs (docs/ARCHITECTURE.md, CLAUDE.md) document for the
+    baseline case (the `9` of a stray `[ZZ9]`): the blind `\\d+` sweep that removes
+    #174's three holes admits it here too, on purpose, for the identical reason. A
+    truthful bullet citing 250 against its real source is then reported INVENTED
+    METRIC, burning the single retry and possibly the lead.
+    """
+    e = [dict(_ENTRIES[0], body="[EA1] as above, cut latency to 250 ms"), _ENTRIES[1]]
+    b = _bundle(entries=e)
+    assert validate(_work_cv("- Cut latency to 250 ms [ES1]"), b) == []
+
+
+def test_a_section_shaped_body_line_no_longer_strands_the_entrys_numbers():
+    """Change 2. `_SECTION_RE` existed only to keep the negatives block off the last
+    entry, and it took a genuine `=== X ===` line in an entry BODY with it: measured, the
+    user's own verified figure below was reported INVENTED, costing the single retry and
+    potentially the lead. The derivation has no positional parse, so the whole body counts.
+
+    That is NOT "no deletion mutant at all" -- measured: deleting the
+    `if entry.get("body"): lines.append(entry["body"])` lines from `_entry_block`
+    outright also turns this test red, and it is not even a unique witness for that
+    mutant -- several other tests in this file and in test_cv_bundle.py catch the
+    identical drop-body mutant (test_a_body_sourced_number_stays_permitted among them),
+    the same shape git 942ebbe measured before deleting this test's two duplicates. The
+    narrower, true claim: no mutant SPECIFIC to the section-shape exclusion survives,
+    because re-introducing a shape-based filter (like the old `_SECTION_RE` check) needs
+    a line ADDED to `_entry_block`/`bundle_sources`, which this suite's mutation
+    discipline (move-or-delete only, CLAUDE.md) forbids.
+    """
+    e = [dict(_ENTRIES[0], body="Highlights\n=== Detail ===\nCut latency to 250 ms"),
+         _ENTRIES[1]]
+    assert validate(_work_cv("- Cut latency to 250 ms [ES1]"), _bundle(entries=e)) == []
+
+
+def test_an_id_shaped_baseline_line_no_longer_mints_a_citable_entry():
+    """The second live instance of #174's class, found while scoping it and not named in
+    the issue: the baseline pool accumulated only while no id had been seen, so an
+    `[XX9]`-shaped line anywhere in the baseline CV minted a fully citable entry. A bullet
+    citing it then carried a fabricated figure under a fabricated citation, gate-clean.
+
+    The DERIVATION has no deletion mutant, same shape as the sibling above: nothing in
+    `bundle_sources` anchors an id to the `[A-Z]{2}\\d+` shape by matching it OUT of text
+    any more, so there is no check there to delete -- re-introducing the mint-a-citable-
+    entry hole needs an ADD. But the test AS A WHOLE is not arm-independent: deleting
+    `validate`'s own BAD-CITATION arm also kills it (measured), because the now-unrejected
+    `ZZ9` citation reaches `nums[c] for c in cites` with no `ZZ9` key and raises KeyError
+    rather than failing the assertion cleanly.
+    """
+    b = _bundle(baseline="Career summary.\n[ZZ9] stray line with 4200")
+    v = validate(_work_cv("- Shipped 4200 units [ZZ9]"), b)
+    assert any("BAD CITATION" in x for x in v), v
 
 
 # --- Numeric floor on the PROFILE region (#30) --------------------------------
@@ -269,8 +352,22 @@ def test_invented_profile_metric_flagged():
 
 
 def test_profile_number_from_baseline_is_permitted():
+    # In the PROFILE, 777 (a baseline aggregate) is permitted -- and this single
+    # assertion is also the coverage for the design's change 3, the two PROFILE
+    # widenings the structural derivation admits over the old positional parse: a
+    # digit inside a `=== 2020 Highlights ===`-shaped BASELINE line (old code's
+    # `_SECTION_RE` matched it first and `continue`d, so 2020 never reached
+    # `baseline` at all) and an id-shaped baseline line's OWN digit, e.g. the '9' of
+    # a `[ZZ9]` token (old code sliced the id token off before harvesting digits
+    # FOR the entry it minted, and by then `seen_id` was already True so the digit
+    # never reached `baseline` either way). Both are gone as separate code paths:
+    # `bundle_sources`' baseline harvest is `re.findall(r"\d+", ...)` over the raw
+    # block, with no shape check on any line, so a '2020' or a '9' reaches
+    # `profile_permitted` by the exact same mechanism this plain '777' does. There
+    # is no branch a mutant could target that would re-narrow only the two
+    # shape-specific cases without also breaking this one -- a fourth test naming
+    # them would carry no mutant this one does not already kill.
     b = _bundle(baseline="Baseline mentions 777 deployments.")
-    # In the PROFILE, 777 (a baseline aggregate) is permitted...
     assert validate(_cv_with_profile("I led 777 deployments."), b) == []
     # ...but in a WORK BULLET the same baseline number is still flagged. Bullets
     # stay strict (the #5 divergence); assert both to make the asymmetry explicit.
@@ -286,6 +383,33 @@ def test_profile_number_from_an_entry_is_permitted():
 def test_profile_number_from_negatives_is_flagged():
     b = _bundle(negatives=["never claim 500 users"])
     v = validate(_cv_with_profile("I scaled to 500 users."), b)
+    assert any("INVENTED PROFILE METRIC" in x for x in v), v
+
+
+def test_at_zero_entries_the_negatives_no_longer_reach_the_profile_pool():
+    """The third live instance, and it runs the other way -- a NARROWING.
+
+    With no entries `seen_id` never set, so the NEGATIVE CONSTRAINTS block fell through
+    into the baseline arm and its do-not-say figures became profile-permitted. Zero
+    entries is reachable on any install before the user has written an Experience
+    Library entry -- and an empty read is not a mere "no results" there, it fails the
+    WORK-bullet check closed (core/vault.py:1766-1774).
+
+    NOT gate-clean today, corrected: `- Ran things` carries no `[id]`, so `validate`
+    already reports `UNCITED BULLET` for it, independent of anything this test is about.
+    Measured against origin/main (pre-#174): `['UNCITED BULLET: - Ran things']`. The
+    INVENTED PROFILE METRIC finding this test pins is a SECOND violation the fix starts
+    reporting once the derivation stops leaking negatives into the profile pool -- the
+    fix narrows what is PERMITTED, not what is already a violation for another reason.
+
+    Has a deletion mutant, just not in `bundle_sources`: deleting `validate`'s own
+    INVENTED-PROFILE-METRIC arm also kills this test (measured -- the assertion goes
+    from a match to `AssertionError: ['UNCITED BULLET: - Ran things']`). The claim that
+    survives is narrower: the DERIVATION never reads `bundle["negatives"]` at all, so
+    re-introducing the leak needs a line ADDED to `bundle_sources`, not deleted from it.
+    """
+    b = _bundle(entries=[], negatives=["never claim 500 users"])
+    v = validate(_cv_with_profile("I scaled to 500 users.", "- Ran things"), b)
     assert any("INVENTED PROFILE METRIC" in x for x in v), v
 
 
@@ -510,3 +634,38 @@ def test_validate_reports_violations_in_line_order_across_overlapping_regions():
         "INVENTED PROFILE METRIC 777 not in bundle: - second 777 bullet",
         "INVENTED METRIC ['777'] not in ['ES1']: - second 777 bullet",
     ]
+
+
+def test_a_stale_text_caller_fails_loudly_without_echoing_the_bundle():
+    """The second parameter changed TYPE while keeping its POSITION, so a caller left on
+    the old signature must be told what to do rather than dying inside the gate with an
+    AttributeError that reads as a gate bug.
+
+    The message names the type and NO PART of the value. The stale argument is the whole
+    rendered bundle -- the user's baseline CV verbatim plus every entry's company, title,
+    metrics and body -- and cv/engine.py:795 logs a failed run with %s, so an
+    interpolated argument writes the user's CV source corpus into a log file. Asserting
+    the absence is the load-bearing half: a `{sources}` spelling contains no `repr` and
+    satisfies a naive "never repr" rule while leaking identically (a NamedTuple's str()
+    IS its repr()).
+    """
+    stale = "=== BASELINE CV ===\nJane Roe, 12 years, secret-contact-line\n"
+    with pytest.raises(TypeError) as ei:
+        validate("PROFILE\nI build.\n", stale)
+    assert "bundle_sources" in str(ei.value)
+    # The two leak assertions come BEFORE the type-name assertion, deliberately: a
+    # bare `assert` raises and halts the function on its first failure, so whichever
+    # assertion is EARLIEST in a failing run is the only one that has actually fired
+    # -- everything after it never executes. A realistic drift on this guard is
+    # someone adding the value back "for debuggability" ALONGSIDE the type name, e.g.
+    # f"...not {type(sources).__name__} ({sources})", which still contains "str".
+    # With the type-name check ordered first, that drift (and the plainer
+    # `{sources}`-only drift this file's mutation witness targets) would halt on
+    # "str" before ever reaching the leak checks below it -- proven by running the
+    # witness: deleting both leak assertions changed nothing, because they were
+    # unreachable dead code under that failure. Leak checks first means the ACTUAL
+    # leak is what a failing run reports, and the leak checks are the ones a passing
+    # run has genuinely exercised.
+    assert "secret-contact-line" not in str(ei.value)
+    assert "Jane Roe" not in str(ei.value)
+    assert "str" in str(ei.value)

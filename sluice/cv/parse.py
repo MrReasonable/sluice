@@ -399,7 +399,7 @@ def parse_cv(text: str) -> CvDocument:
     # Tightening THIS function to refuse the shape
     # instead would only protect the `template` renderer (the `script` renderer
     # implements no `precheck` to reach it through) and would force a THIRD
-    # documented exception to `validate(cv, bundle) == [] ⇒ parse_cv(cv) does not
+    # documented exception to `validate(cv, sources) == [] ⇒ parse_cv(cv) does not
     # raise` -- see tests/test_cv_parse.py's implication sweep -- for zero added
     # coverage on the path that actually ships. Deliberately not covered here:
     # test_a_preamble_line_is_gate_clean_and_parsed_without_refusal_on_purpose pins

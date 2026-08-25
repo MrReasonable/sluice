@@ -953,7 +953,7 @@ def test_unmodelled_trailing_content_is_refused_rather_than_left_unconsumed():
 #
 # The property those tables are groping at is a single implication:
 #
-#     validate(cv, bundle) == []   =>   parse_cv(cv) does not raise
+#     validate(cv, sources) == []   =>   parse_cv(cv) does not raise
 #
 # and it is worth stating because its violation is silent and expensive. A CV the gate
 # certifies clean has already cost one LLM composition; refusing it here appends a FORMAT
@@ -999,13 +999,13 @@ def _gate_verdict(cv_text):
     -- a second, weaker copy of the gate inside its own drift test would certify
     anything.
     """
-    from sluice.cv.bundle import build_bundle, render_bundle
+    from sluice.cv.bundle import build_bundle, bundle_sources
     from sluice.cv.validate import validate
     from tests.test_cv_engine import ENTRIES
-    bundle = render_bundle(build_bundle(
+    sources = bundle_sources(build_bundle(
         entries=ENTRIES, baseline="BASELINE", negatives=[], jd_keywords=[],
         prefix_map={"Example Foundry": "EF"}))
-    return validate(cv_text, bundle)
+    return validate(cv_text, sources)
 
 
 def test_the_gate_helper_can_both_pass_and_fail():
