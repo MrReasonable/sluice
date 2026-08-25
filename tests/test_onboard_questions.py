@@ -288,10 +288,14 @@ def test_every_value_bearing_question_states_its_consequence():
 def test_the_employers_hint_describes_the_check_that_actually_runs():
     """Pins the hint against `cv/validate.py`'s real behaviour, so the two cannot drift apart
     again. The check is COMPLETENESS and case-SENSITIVE; probed here rather than asserted."""
+    from sluice.cv.bundle import BundleSources
     from sluice.cv.validate import validate
     cv = "WORK EXPERIENCE\nPROFILE\nExample Alpha Ltd did a thing."
-    assert any("MISSING EMPLOYER" in v for v in validate(cv, "", employers=["example alpha ltd"]))
-    assert not any("MISSING EMPLOYER" in v for v in validate(cv, "", employers=["Example Alpha Ltd"]))
+    # An explicitly empty source set (#174): this test exercises only the employer-
+    # completeness gate, which reads no citation or number, so no real bundle is needed.
+    sources = BundleSources({}, frozenset())
+    assert any("MISSING EMPLOYER" in v for v in validate(cv, sources, employers=["example alpha ltd"]))
+    assert not any("MISSING EMPLOYER" in v for v in validate(cv, sources, employers=["Example Alpha Ltd"]))
     hint = {q.key: q for q in catalogue(default_vault=VAULT)}["cv_employers"].hint
     assert "VERBATIM" in hint and "case" in hint.lower()
 
