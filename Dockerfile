@@ -24,7 +24,20 @@
 # here uses does NOT transfer. `name:tag@digest` is valid and records the same fact.
 FROM python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4
 
-# WeasyPrint's runtime shared libraries. NOT a Python dependency and not makeable into one.
+# WeasyPrint's runtime shared libraries, plus an ssh CLIENT. NOT a Python dependency and not
+# makeable into one.
+#
+# `openssh-client` is here for the `claude-max` backend (#209), which is the SHIPPED DEFAULT for
+# primary_backend. It shells out to the `claude` CLI, and this image deliberately does not carry
+# that CLI -- it is a ~325MB self-contained binary and bundling it would more than double the
+# image for a backend many users do not choose. `ClaudeMaxBackend` already knows how to reach one
+# elsewhere (`cmd_template = ["ssh", host] + base` when a host is configured), so what was missing
+# was only the client to do it with. Measured on this image: +11MB (573 -> 584), against the
+# ~325MB the bundled CLI would add.
+#
+# It gives the container no ACCESS by itself: no key is baked in, and the host must authorise one.
+# See docs/INSTALL.md's Docker section for the key and the forced-command wrapper that restricts
+# it to a single `claude --print`.
 #
 # No `tzdata` package here, deliberately: pyproject.toml already ships the `tzdata` WHEEL as a
 # runtime dependency, and its comment gives this exact case as the reason ("a bare container
@@ -39,6 +52,7 @@ RUN apt-get update \
       libffi8 \
       shared-mime-info \
       fonts-dejavu-core \
+      openssh-client \
  && rm -rf /var/lib/apt/lists/*
 
 # THE HARD INVARIANT: this installs the wheel built by the release workflow's `build` job, which
@@ -111,5 +125,10 @@ LABEL org.opencontainers.image.title="job-sluice" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}"
 
-ENTRYPOINT ["job-sluice"]
+# The entrypoint prepares SSH for the claude-max backend when a key is supplied, then execs
+# job-sluice -- see packaging/docker-entrypoint.sh for why a copy is needed rather than a bind
+# mount straight into ~/.ssh. With no key supplied it does nothing but exec, so an API-key
+# install pays nothing for it.
+COPY --chown=sluice:sluice packaging/docker-entrypoint.sh /usr/local/bin/sluice-entrypoint
+ENTRYPOINT ["/usr/local/bin/sluice-entrypoint"]
 CMD ["--help"]
