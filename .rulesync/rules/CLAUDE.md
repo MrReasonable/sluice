@@ -740,6 +740,31 @@ consistently engineers out; see `_select_backend`'s guard in `cli.py`.
 - Conventional commits (`fix(triage): ...`, `ci: ...`, `docs: ...`). These are not decoration
   since #12: release-please reads the subjects to decide the next version and to draft the
   changelog, so a mistyped type silently changes what gets released.
+- **A `!` is a claim about the USER'S INSTALL. `CHANGELOG.md`'s "What counts as breaking here"
+  is the list -- do not restate it.** That section is tracked, it is the one a user reads, and a
+  second copy diverges rather than agreeing: an earlier draft of this very bullet dropped its
+  status-transition class and invented a CLI one.
+
+  What is NOT written down there is the negative case, which is the one that goes wrong. An
+  internal seam change does not earn a `!`. `refactor(core)!: retire read_experience_entries for
+  read_evidence` (`cf5978d2`, #165) took one, and the fact that settles it is `CHANGELOG.md`'s
+  own: **nothing imports `sluice` as a library.** Removing a member of a published Protocol is
+  therefore invisible to every install, however REQUIRED that member was -- which is why a
+  headcount of out-of-tree implementers is not the test, and could not be, since a published
+  package cannot know it. Read without that fact, the seam's own documentation
+  (`docs/ARCHITECTURE.md`, `tests/conformance/test_store_contract.py`) argues the other way, and
+  an agent applying this rule literally lands on "qualifying".
+
+  Get the type right in the COMMIT. The bump is computed from commits already on `main`, so the
+  marker is cheap to type and awkward to unpick afterwards -- not irreversible (`CONTRIBUTING.md`
+  has the version and the changelog being hand-edited inside the release PR before merging), but
+  a correction after the fact rather than a substitute for the right type.
+
+  One mechanical trap, worth knowing before you write about any of this: the breaking-change
+  trailer is recognised by POSITION, not by meaning, so DESCRIBING it in a commit body can
+  trigger it. Measured while drafting this bullet -- a body that opened a line with the literal
+  token was inert only because a backtick preceded it, which is not a margin worth carrying. Do
+  not reason about which prefixes the parser accepts; keep the token out of column one.
 - **The PyPI distribution name is `job-sluice`, not `sluice`.** The latter has been squatted
   since 2015 by an unrelated, dormant zfs-snapshot tool with no console script of its own (no
   binary collision, but `pip install sluice` could never resolve here). Distribution name,
