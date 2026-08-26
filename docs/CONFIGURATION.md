@@ -204,6 +204,8 @@ compute it. See `apply prep` in `docs/USAGE.md` for how the packet renders them,
 | `SLUICE_LOG_LEVEL` | logger level | `INFO` |
 | `SLUICE_TELEGRAM_TOKEN` / `SLUICE_TELEGRAM_CHAT` | `notify.telegram.{token,chat_id}` | notifications disabled unless both are present |
 | `SLUICE_LOCATIONS` | — | **retired** — merely being set makes `load_config` raise |
+| `SLUICE_CLAUDE_HOST` | `triage.claude_max_host`, `cv.compose_host` **and** `track.claude_max_host` at once | unset — each block's own value applies |
+| `SLUICE_CLAUDE_PATH` | `triage.claude_max_path`, `cv.compose_claude_path` **and** `track.claude_max_path` at once | unset — each block's own value applies |
 | `CAMOFOX_URL` | the Camofox server's base URL | `http://127.0.0.1:9377` |
 | `CAMOFOX_USER` | **selects the cookie profile** — Camofox stores one profile per user id, so this decides whose logins a run inherits | `default` |
 | `CAMOFOX_SESSION` | groups tabs within that profile; does **not** select the profile or the authenticated session | `sluice` |
@@ -214,7 +216,19 @@ compute it. See `apply prep` in `docs/USAGE.md` for how the packet renders them,
 
 The `claude-max` role needs **no** API key — it shells out to the flat-rate `claude` CLI,
 locally or over SSH (`claude_max_host`/`claude_max_path`, or `compose_host`/
-`compose_claude_path` under `cv:`). A keyless *fallback* backend is a sanctioned degrade
+`compose_claude_path` under `cv:`). Those three pairs stay separate so the sub-apps *can* run
+against different hosts, but the common case is one host for all three, and
+`SLUICE_CLAUDE_HOST`/`SLUICE_CLAUDE_PATH` set all three together, and are the only way to set them
+at all without a config file — which is what makes a container work with nothing mounted
+([#209](https://github.com/MrReasonable/sluice/issues/209)). A mounted `config.yaml` works there
+too (`docker-compose.yml` binds one at `/app/config/sluice`); the variables just save you from
+needing one. Prefer them under Docker even so: the container's entrypoint only writes an ssh
+`Host` block for a host it learns from `SLUICE_CLAUDE_HOST`, so a `claude_max_host` set *only* in
+the mounted file gets sluice's default ssh behaviour rather than the key, user and known-hosts
+wiring the entrypoint would otherwise set up. An empty or whitespace-only value is
+ignored rather than read as "run it locally": exporting a variable to the empty string is how a
+shell says nothing, and treating that as an instruction would silently undo a configured host.
+If you need the three to differ, leave these unset and use the config keys. A keyless *fallback* backend is a sanctioned degraded state
 (`doctor` reports it `degraded`, `--strict` fails on it); a keyless *primary* backend is `dead`.
 
 **Under the container image** those three XDG roots are pre-set to `/app/config`, `/app/state`

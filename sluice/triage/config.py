@@ -5,7 +5,7 @@ with no config file at all."""
 import os
 from dataclasses import dataclass, field
 
-from sluice.core.config import (refuse_retired_dossier_dir,
+from sluice.core.config import (apply_claude_cli_env, refuse_retired_dossier_dir,
                                 refuse_wrong_container, sub_app_block)
 from sluice.core.paths import config_file, resolve
 
@@ -145,4 +145,7 @@ def load_triage_config(path: str | None = None) -> TriageConfig:
     # escaping as the empty string the loop just set.
     cfg.audit_jsonl = resolve(env_var="TRIAGE_AUDIT", config_value=cfg.audit_jsonl,
                               kind="state", name="triage-audit.jsonl")
+    # Env beats the config block for WHERE the CLI lives -- see the helper for why
+    # this is applied here rather than taught to the setattr loop above.
+    apply_claude_cli_env(cfg, host_attr="claude_max_host", path_attr="claude_max_path")
     return cfg

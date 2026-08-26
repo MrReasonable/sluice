@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass, field
 
 from sluice.core.backends import DEFAULT_TIMEOUT
-from sluice.core.config import (refuse_retired_dossier_dir,
+from sluice.core.config import (apply_claude_cli_env, refuse_retired_dossier_dir,
                                 refuse_wrong_container, sub_app_block)
 from sluice.core.paths import config_file
 from sluice.core.log import get_logger
@@ -147,6 +147,23 @@ def _not_a_phrase(items) -> str:
 
 
 def load_cv_config(path: str | None = None) -> CvConfig:
+    """Public loader: the file pass, then the environment on top of it.
+
+    A thin wrapper rather than a call before each `return`, and the reason is structural: this
+    loader keeps the EARLY-RETURN guard that triage's and track's shed in #80, so "no config
+    file" leaves by a different exit from "config file read". That is precisely the path a
+    container takes -- env only, nothing mounted -- so a tail call would have been dead exactly
+    where #209 needs it, and two calls would be a drift surface with no test forcing them to
+    agree. One exit, applied once.
+    """
+    cfg = _load_cv_config_from_file(path)
+    # Env beats the config block for WHERE the CLI lives -- see the helper for why this is
+    # applied here rather than taught to the setattr loop inside.
+    apply_claude_cli_env(cfg, host_attr="compose_host", path_attr="compose_claude_path")
+    return cfg
+
+
+def _load_cv_config_from_file(path: str | None = None) -> CvConfig:
     cfg = CvConfig()
     path = path or config_file()
     if not (path and os.path.exists(path) and yaml is not None):

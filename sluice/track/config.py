@@ -3,7 +3,7 @@ Every field has a sane default so track runs with no config file."""
 import os
 from dataclasses import dataclass, field
 
-from sluice.core.config import sub_app_block
+from sluice.core.config import apply_claude_cli_env, sub_app_block
 from sluice.core.paths import config_file, resolve
 
 try:
@@ -277,4 +277,7 @@ def load_track_config(path: str | None = None, *,
     cfg.seen_db = resolve(env_var=None, config_value=cfg.seen_db,
                           kind="state", name="track-seen.db",
                           fatal=refuse_relocated_seen_db)
+    # Env beats the config block for WHERE the CLI lives -- see the helper for why
+    # this is applied here rather than taught to the setattr loop above.
+    apply_claude_cli_env(cfg, host_attr="claude_max_host", path_attr="claude_max_path")
     return cfg
