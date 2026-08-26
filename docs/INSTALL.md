@@ -98,6 +98,20 @@ docker compose run --rm job-sluice ingest list-sources --health
 Compose reads an optional `.env` beside it for backend credentials; the file declares it
 `required: false`, so an absent one is not an error.
 
+**Choose a backend before running anything that reaches an LLM.** `claude-max` is the shipped
+default for `primary_backend`, and the image does not carry the `claude` CLI it shells out to —
+that CLI is a ~325MB self-contained binary, and bundling it would more than double the image for a
+backend not everyone chooses. `job-sluice doctor` says so plainly rather than failing later:
+
+```text
+claude-max  claude-sonnet-4-5  dead  primary: triage, cv, track  CLI 'claude' not on PATH
+```
+
+Two ways out. **An API-key provider** is the simpler one: set `primary_backend` to `anthropic`,
+`openai` or `deepseek` and put the matching variable from
+[Backend credentials](#backend-credentials) in `.env`. Or keep the flat rate by pointing the
+container at the CLI already on your machine — see below.
+
 Read [`docker-compose.yml`](../docker-compose.yml) before your first real run. Its comments are
 not decoration — they record two ways a container install loses data silently, both of which come
 from state that persists pointing at an artefact that does not. In particular `VAULT_DIR` is
@@ -107,6 +121,150 @@ databases.
 Camofox is **not** in the image and cannot be — it is a separate persistent browser service. It
 runs on your host, and the compose file points the container at it via
 `CAMOFOX_URL=http://host.docker.internal:9377`.
+
+### claude-max from a container
+
+The image ships an SSH client, and `claude-max` already knows how to run the CLI on another host
+— its command is `ssh <host> <the same argv>` whenever a host is configured. So the container can
+use the `claude` you already have, keeping the flat rate. Nothing is baked in: you supply a key,
+and your machine decides what that key may do.
+
+The design is deliberately lopsided. **The container holds a key that can do exactly one thing;
+your machine holds the credential.** A key that leaked from a container image or a stray volume is
+worth one `claude --print`, not a shell on your laptop.
+
+**1. Let your machine accept SSH.** macOS: System Settings → General → Sharing → Remote Login.
+Linux: install and start `openssh-server`.
+
+**2. Make a key that is only for this.** Not one you already use somewhere else — the whole point
+is that this one is disposable and can be revoked without touching anything else:
+
+```bash
+ssh-keygen -t ed25519 -N "" -C "sluice claude-max" -f ~/.ssh/sluice_claude_max
+```
+
+No passphrase, because nothing can type one: the container runs unattended. That is exactly why
+the key is restricted in step 4 rather than trusted.
+
+**3. Install the wrapper**, which is what makes the key safe. Copy
+[`packaging/claude-max-ssh-wrapper.sh`](../packaging/claude-max-ssh-wrapper.sh) somewhere private,
+replace its two placeholders, and make it executable:
+
+```bash
+mkdir -p ~/.local/libexec
+# Fetch it: the Docker setup above downloads only docker-compose.yml, so there is no
+# packaging/ directory here unless you also cloned the repository.
+#
+# REF must name the SAME release as the image you run. The wrapper builds the argv sluice
+# expects, so a wrapper from a newer branch can disagree with an older image about which flags
+# exist -- the same reason every other channel here names a version.
+#
+# The default tracks JOB_SLUICE_TAG, which is the same variable docker-compose.yml reads
+# (`image: ...:${JOB_SLUICE_TAG:-latest}`), so the two move together: tag unset means image
+# `:latest` and wrapper `main`, and `JOB_SLUICE_TAG=v2.1.0` means both are v2.1.0. The one way
+# to break that pairing is to pin the image by EDITING docker-compose.yml rather than setting
+# the variable -- then the image is a release and REF silently falls back to the moving `main`.
+# If you pinned that way, set REF explicitly here. It is echoed so you can see which you got.
+REF="${JOB_SLUICE_TAG:-main}"   # or set it outright, e.g. REF=v2.1.0
+echo "installing the wrapper from ref: ${REF}"
+curl -fsSL -o /tmp/claude-max-ssh-wrapper.sh \
+  "https://raw.githubusercontent.com/MrReasonable/sluice/${REF}/packaging/claude-max-ssh-wrapper.sh"
+# `command -v` guarded, not a bare substitution: with no claude on PATH the wrapper would
+# render CLAUDE="" and every completion would die at exec, far from the cause. Guarded with
+# `if`, NOT `|| exit` -- this block is meant to be pasted into your shell, and `exit` in an
+# interactive shell closes the terminal rather than stopping the setup.
+CLAUDE_BIN=$(command -v claude)
+if [ -z "$CLAUDE_BIN" ]; then
+  echo "no claude on PATH -- install Claude Code first, then re-run this block"
+else
+  sed -e "s|__CLAUDE_PATH__|${CLAUDE_BIN}|" \
+      -e "s|__TOKEN_FILE__|$HOME/.claude/sluice-oauth-token|" \
+      /tmp/claude-max-ssh-wrapper.sh > ~/.local/libexec/sluice-claude-max-ssh-wrapper.sh
+  chmod 700 ~/.local/libexec/sluice-claude-max-ssh-wrapper.sh
+fi
+```
+
+The wrapper *builds* the command it runs rather than trusting the one that arrives — including a
+deny-list (`Write`, `Edit`, `NotebookEdit`, `Bash`, `Task`, `WebFetch` and every MCP tool) that is
+stricter than sluice's own, because this key is reachable from a container. Validating the
+caller's argv instead would leave that deny-list supplied by the caller, and the caller is who it
+defends against.
+
+Be clear about what that does and does not buy, since `--permission-mode bypassPermissions` is
+allow-by-default: a deny-list cannot name a tool that does not exist yet, so a future release
+could add one this list does not mention. What bounds the damage is `restrict` plus the forced
+command — the key cannot get a shell at all — not the completeness of the list. If that residual
+is not acceptable to you, use an API-key backend in the container instead.
+
+**4. Authorise the key, restricted to that wrapper**, as one line in `~/.ssh/authorized_keys`:
+
+```text
+restrict,command="/absolute/path/to/sluice-claude-max-ssh-wrapper.sh" ssh-ed25519 AAAA... sluice claude-max
+```
+
+`restrict` turns off port forwarding, agent forwarding, X11 and PTY allocation; `command=` means
+the client's own command never runs. Verify it — a shell escape and a file read should both be
+refused:
+
+```bash
+ssh -i ~/.ssh/sluice_claude_max localhost 'id'          # refused by the wrapper
+ssh -i ~/.ssh/sluice_claude_max -tt localhost 'echo hi' # PTY allocation request failed
+```
+
+**5. On macOS, give the wrapper a token.** This step is not optional there, and skipping it fails
+in a way that looks like something else. macOS keeps the live credential in the login keychain,
+and a non-interactive SSH session cannot read a keychain *secret* — measured on one machine,
+`security find-generic-password -w` returns `0` in your desktop session and `36`
+(interaction not allowed) over SSH. `claude` then falls back to a stale `~/.claude/.credentials.json`
+and reports `OAuth session expired and could not be refreshed`, which reads like an expired login
+rather than a permissions boundary.
+
+A long-lived token sidesteps the keychain:
+
+```bash
+claude setup-token                       # opens a browser; prints a 1-year token
+umask 077 && printf '%s\n' 'PASTE-TOKEN-HERE' > ~/.claude/sluice-oauth-token
+```
+
+**The token stays on your machine.** The wrapper reads it and exports
+`CLAUDE_CODE_OAUTH_TOKEN` for the one command it runs; the container never sees it, and never
+needs to. On Linux hosts the credential is already a plain file, so this step is optional.
+
+**6. Point compose at it**, in `.env` beside `docker-compose.yml`:
+
+```bash
+SLUICE_CLAUDE_KEY=/absolute/path/to/.ssh/sluice_claude_max
+SLUICE_CLAUDE_HOST=host.docker.internal
+SLUICE_CLAUDE_SSH_USER=your-account-name-on-this-machine
+SLUICE_CLAUDE_PATH=claude
+```
+
+`SLUICE_CLAUDE_SSH_USER` is your login name on the host — the container's own user is `sluice`,
+which is almost certainly not it. `SLUICE_CLAUDE_PATH` can be any non-empty token while the
+forced-command wrapper is in use, since the wrapper decides which binary runs; without a wrapper
+it must be an **absolute** path, because `ssh host cmd` gets a minimal `PATH` that rarely
+includes `claude`.
+
+Then check it:
+
+```bash
+docker compose run --rm job-sluice doctor
+```
+
+A working setup reports `claude-max ... ok  round-trip ok`. If it says
+`Host key verification failed`, the entrypoint did not run its SSH setup — most often
+`SLUICE_CLAUDE_HOST` or `SLUICE_CLAUDE_SSH_USER` is unset, and the message points at ssh rather
+than at the missing variable.
+
+Two things worth knowing rather than discovering. The first connection pins the host key
+(`StrictHostKeyChecking accept-new`) and refuses a *changed* one afterwards — trust-on-first-use,
+against a host on your own machine. That "afterwards" is load-bearing and nearly was not true:
+`docker compose run --rm` deletes the container layer, so a `known_hosts` written to the home
+directory would start empty on every run and re-accept whatever key was offered, each time. It is
+written under the state volume instead, which persists — verified by running twice and seeing the
+second run start with the key already known. And `SLUICE_CLAUDE_HOST`/`SLUICE_CLAUDE_PATH` set
+`claude_max_host`/`claude_max_path` for `triage`, `cv` **and** `track` together; if you need them
+to differ, leave the variables unset and use the config keys.
 
 ## Homebrew (macOS)
 
@@ -253,7 +411,7 @@ Which credentials you need depends on which providers you configured as `primary
 
 | Provider | Needs |
 |---|---|
-| `claude-max` | **no API key** — shells out to the flat-rate `claude` CLI, locally or over SSH |
+| `claude-max` | **no API key** — shells out to the flat-rate `claude` CLI, locally or over SSH. Under [Docker](#docker) the image carries no CLI, so it needs the ssh route in [claude-max from a container](#claude-max-from-a-container) |
 | `anthropic` | `ANTHROPIC_API_KEY` |
 | `openai` | `OPENAI_API_KEY` |
 | `deepseek` | `DEEPSEEK_API_KEY` |

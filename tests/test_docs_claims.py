@@ -13,6 +13,7 @@ sweep here rather than a one-time fix.
 """
 import argparse
 import glob
+import pathlib
 import re
 
 import pytest
@@ -1007,3 +1008,309 @@ def test_the_install_guide_enumerates_the_same_methods_in_both_of_its_tables():
     assert upgrading == pinning, (
         f"Upgrading and Pinning disagree: only in Upgrading {sorted(upgrading - pinning)}, "
         f"only in Pinning {sorted(pinning - upgrading)}")
+
+
+# DERIVED, not hand-listed: README.md plus every `docs/**/*.md` outside the excluded trees. A
+# hand-list was the first attempt and was wrong within one revision -- it named two guides that
+# ship no paste-in shell at all (`docs/CONFIGURATION.md` has zero fences; `docs/USAGE.md`'s are
+# output-format specimens), which the per-file scope assertion below caught immediately. The
+# deeper problem is the other direction: a hand-list silently fails to cover a bash block added
+# to a guide nobody remembered to name, which is this repo's standing lesson about enumerating
+# rather than listing.
+#
+# `docs/superpowers/` is excluded because it holds historical design documents (CLAUDE.md: "not
+# maintained, and the code wins on any disagreement") whose blocks are transcripts of
+# verification runs rather than instructions to a reader -- three legitimately use `exit`, and
+# sweeping them would make this guard permanently red for no reader's benefit.
+_EXCLUDED_DOC_TREES = ("docs/superpowers/",)
+
+
+def _paste_in_guides():
+    """Every user-facing markdown guide whose shell blocks a reader is meant to paste."""
+    paths = ["README.md"] + sorted(glob.glob("docs/**/*.md", recursive=True))
+    return [p for p in paths
+            if not any(p.startswith(tree) for tree in _EXCLUDED_DOC_TREES)]
+
+# `exit` as a STATEMENT. The prefix set is the POSIX COMMAND-SEPARATOR set plus the reserved
+# words that introduce a command position -- taken as a whole rather than assembled one
+# reviewer-found case at a time, which is how the CV parser's grammar in this repo accumulated
+# its long tail of gate-clean refusals. Two rounds of review each supplied exactly one more
+# spelling before it was written down properly:
+#
+#   separators   ;  ;;  &  &&  |  ||  (  )  {  and start-of-line
+#   reserved     then  else  elif  do
+#
+# `{` is in and `}` is NOT, which is the asymmetry to keep: `{` OPENS a command group so a
+# command follows it, while `}` closes one and must itself be followed by a separator -- `} exit`
+# is not valid shell. `}` was in this set for one revision purely because the two brace
+# characters read as a pair; mutation testing exposed it, since deleting it changed nothing.
+# An alternative nothing can exercise is dead weight a mutant cannot kill.
+#
+# `)` is the one that looks wrong until you write a `case`: `value) exit 1;;` puts `exit` in
+# command position after a close paren, and a set holding only `(` walks straight past it.
+# `; then exit` was the previous round's miss for the same reason -- no delimiter sits
+# immediately before `exit`, only the keyword. Leading whitespace is allowed (`^\s*`), or an
+# indented `exit` inside an `if` body slips through.
+#
+# Still NOT matched, and each is pinned in the synthetic corpus below: `--exit-code`, `my_exit`,
+# `get_exit_code`, `sys.exit(...)`, `EXITCODE=$?`, and the word in prose -- none of which put a
+# bare `exit` in command position.
+_BARE_EXIT = re.compile(
+    r"(?:^\s*|[;&|(){]\s*|(?:^|[\s;&|(){])(?:then|else|elif|do)\s+)exit\b", re.M)
+
+# Fence matching is deliberately permissive about the DELIMITER and strict about the LANGUAGE: a
+# spelling the matcher cannot see contributes zero blocks SILENTLY, and a sweep that reads
+# nothing passes every assertion made about it.
+#
+# Scanned line-by-line rather than by one regex, because CommonMark's closing rule is "the same
+# character, at least as long as the opening run" -- a length COMPARISON, which a backreference
+# cannot express. The regex version this replaced used `(?P=fence)` and so required an exact
+# match: measured, it silently missed ```` ```bash ... ```` ```` (a longer close, which is valid)
+# while also failing to reject a shorter one. Getting that backwards is how a whole block leaves
+# the corpus with nothing going red.
+_FENCE_LANGS = ("bash", "sh", "shell", "console")
+_FENCE_OPEN = re.compile(
+    r"^[ \t]{0,3}(?P<fence>`{3,}|~{3,})[ \t]*(?P<lang>[A-Za-z0-9_+-]*)[ \t]*$")
+
+
+def _shell_blocks(text):
+    """Bodies of every fenced block whose info string names a shell language.
+
+    Up to three spaces of indentation, backticks or tildes, runs longer than three, trailing
+    spaces after the info string, and CRLF are all legal and all appear in the wild; each one
+    used to drop a block from the corpus without a word.
+    """
+    blocks, lines, i = [], text.replace("\r\n", "\n").split("\n"), 0
+    while i < len(lines):
+        m = _FENCE_OPEN.match(lines[i])
+        if not m:
+            i += 1
+            continue
+        fence, lang = m.group("fence"), m.group("lang").lower()
+        char, need = fence[0], len(fence)
+        # The closing fence: same character, at least as long, nothing else on the line.
+        close = re.compile(r"^[ \t]{0,3}" + re.escape(char) + r"{%d,}[ \t]*$" % need)
+        j = i + 1
+        while j < len(lines) and not close.match(lines[j]):
+            j += 1
+        if lang in _FENCE_LANGS:
+            blocks.append("\n".join(lines[i + 1:j]))
+        i = j + 1  # resume AFTER the closing fence, so a nested fence cannot reopen
+    return blocks
+
+
+def _shell_killing_lines(scanned):
+    """(rel, line) for every line in `scanned` that would exit the reader's interactive shell.
+
+    At MODULE scope so a synthetic corpus can be run through the real filter. Inline in the test
+    it could only ever see the live guides -- which are clean, so neutralising the condition
+    changed nothing and the mutant survived: `offenders == []` is the SUCCESS case for a negative
+    sweep, and no assertion over an empty list can tell "nothing is wrong" from "nothing was
+    examined". `test_the_shell_killing_filter_actually_flags_a_bad_block` is what closes that.
+
+    Skips a WHOLE-LINE comment, and only that. Caught on this guard's first run: the comment
+    added beside the fix -- "`if`, NOT `|| exit`" -- is itself an `|| exit` in statement position,
+    so a filter that reads every line flags the note explaining why the hazard was removed.
+    Trailing comments are deliberately NOT stripped: `#` inside a quoted string is not a comment,
+    and a splitter that does not parse the shell would cut a real command in half -- the
+    stop-patching-and-parse case this repo has already been bitten by. It costs nothing here,
+    because `_BARE_EXIT` only matches `exit` in statement position, and prose ("use exit 1 to
+    stop") does not put it there.
+    """
+    return [
+        (rel, line.strip())
+        for rel, blocks in scanned.items()
+        for block in blocks
+        for line in block.splitlines()
+        if not line.lstrip().startswith("#") and _BARE_EXIT.search(line)
+    ]
+
+
+def test_the_shell_killing_filter_actually_flags_a_bad_block():
+    """The sweep above passes when the guides are clean AND when it examines nothing.
+
+    So the filter is driven here over a corpus chosen to contain the exact shapes that matter,
+    rather than trusted because the real sweep is green. Measured: with this absent, replacing
+    the filter's condition with `False` left the whole file green.
+    """
+    scanned = {"synthetic.md": ["""curl -fsSL -o /tmp/x https://example.invalid/x
+CLAUDE_BIN=$(command -v claude) || { echo "no claude on PATH"; exit 1; }
+if [ -z "$CLAUDE_BIN" ]; then exit 1; fi
+for f in a b; do exit 1; done
+if x; then :; else exit 1; fi
+(cd /tmp && missing) || exit 1
+mkdir -p /tmp/x && exit 1
+( exit 1 )
+{ exit 1; }
+case "$x" in value) exit 1;; esac
+case "$x" in a) :;; *) exit 1;; esac
+if a; then :; elif b; then exit 1; fi
+if a; then :; elif exit 1; then :; fi
+until x; do exit 1; done
+  exit 2
+exit
+# `if`, NOT `|| exit` -- a whole-line comment must NOT be flagged
+echo "use exit 1 to stop"  # prose after code: `exit` is not in statement position
+foo --exit-code
+my_exit 1
+get_exit_code
+sys.exit(1)
+EXITCODE=$?
+"""]}
+    flagged = [line for _rel, line in _shell_killing_lines(scanned)]
+    assert flagged == [
+        'CLAUDE_BIN=$(command -v claude) || { echo "no claude on PATH"; exit 1; }',
+        'if [ -z "$CLAUDE_BIN" ]; then exit 1; fi',
+        "for f in a b; do exit 1; done",
+        "if x; then :; else exit 1; fi",
+        "(cd /tmp && missing) || exit 1",
+        # `&&` DIRECTLY before `exit`. The line above contains `&&` but not in that position, so
+        # it is caught by `||` instead and deleting `&` from the pattern changed nothing.
+        "mkdir -p /tmp/x && exit 1",
+        # `(` and `{` OPEN a command position, so `exit` can follow either directly. Both needed
+        # their own line: every other bracket case in this corpus is also caught by a `;` or
+        # `||` elsewhere on the line, so deleting `(` or `{` from the pattern changed nothing.
+        "( exit 1 )",
+        "{ exit 1; }",
+        # `)` in command position -- a `case` clause. Missed for two rounds by a set that held
+        # only `(`, and the reason the prefix set is now written as a whole rather than grown.
+        'case "$x" in value) exit 1;; esac',
+        'case "$x" in a) :;; *) exit 1;; esac',
+        "if a; then :; elif b; then exit 1; fi",
+        # `elif` in the set is only load-bearing if something puts `exit` DIRECTLY after it --
+        # the line above exercises `then`, not `elif`, and with only that one present, deleting
+        # `elif` from the pattern left the suite green. An unexercised alternative is dead weight
+        # a mutant cannot kill, so the contrived-but-valid shape is pinned deliberately.
+        "if a; then :; elif exit 1; then :; fi",
+        "until x; do exit 1; done",
+        "exit 2",
+        "exit",
+    ], f"the filter flagged {flagged!r}"
+
+
+def test_the_fence_scanner_reads_the_shell_fence_spellings_that_occur_in_practice():
+    """A fence spelling the scanner cannot see contributes zero blocks, silently.
+
+    That is the dangerous direction for a negative sweep: the guide still appears in the corpus,
+    it simply has nothing in it, and every assertion over its (empty) offender list passes. Every
+    variant below is legal CommonMark, and each was UNMATCHED by the first version of this code,
+    which required exactly three backticks at column zero followed immediately by a newline.
+
+    The last two are the reason this is a scanner and not a regex: CommonMark's closing rule is a
+    length COMPARISON (same character, at least as long as the opening), which a backreference
+    cannot express. The intermediate `(?P=fence)` version got BOTH wrong -- it rejected a valid
+    longer close and accepted an invalid shorter one -- and neither shows up as a failure, only
+    as a block quietly leaving the corpus.
+    """
+    variants = {
+        "plain": "```bash\nexit 1\n```\n",
+        "indented (CommonMark allows up to three spaces)": "   ```bash\n   exit 1\n   ```\n",
+        "tilde delimiters": "~~~bash\nexit 1\n~~~\n",
+        "CRLF line endings": "```bash\r\nexit 1\r\n```\r\n",
+        "trailing space after the info string": "```bash \nexit 1\n```\n",
+        "a fence run longer than three": "````bash\nexit 1\n````\n",
+        "console": "```console\nexit 1\n```\n",
+        "sh": "```sh\nexit 1\n```\n",
+        "closing fence LONGER than the opening (a valid close)": "```bash\nexit 1\n````\n",
+    }
+    for name, text in variants.items():
+        assert _shell_blocks(text), f"{name}: contributes nothing to the sweep"
+        assert [line for _r, line in _shell_killing_lines({name: _shell_blocks(text)})] == \
+            ["exit 1"], f"{name}: matched a fence but the body did not reach the filter"
+
+    # The language filter still holds: a python block is not a shell block, even though `exit(1)`
+    # appears in it. Widening the sweep to every fence would flag it.
+    assert not _shell_blocks("```python\nexit(1)\n```\n")
+
+    # The two closing-rule cases, asserted on the exact BODY rather than merely "non-empty".
+    # Both mutants survived a non-empty check: an exact-length close simply runs to end-of-file,
+    # which still yields a block containing `exit 1`, so the sweep looks unaffected while the
+    # block boundary is wrong.
+    assert _shell_blocks("```bash\nexit 1\n````\n") == ["exit 1"], (
+        "a closing fence LONGER than the opening is a valid close; the body must stop there "
+        "rather than running to the end of the document")
+    # A SHORTER run does not close the block, so the inner fence stays part of the body.
+    assert _shell_blocks("````bash\n```\nexit 1\n````\n") == ["```\nexit 1"]
+    # ...and scanning resumes AFTER the close, so an inner fence is never reopened as a block of
+    # its own. With the resume point wrong this returns the inner block a second time.
+    assert _shell_blocks("````bash\n```bash\nexit 1\n````\n") == ["```bash\nexit 1"], (
+        "an inner fence was reopened as a separate block; scanning must resume after the close")
+
+
+def test_no_paste_in_snippet_can_close_the_readers_shell():
+    """`exit` in a block the docs tell you to paste kills the terminal instead of the setup.
+
+    Found by review on `docs/INSTALL.md`'s wrapper-install block, which guarded a missing
+    `claude` with `|| { echo ...; exit 1; }`. In a script that is correct; pasted into an
+    interactive shell -- which is exactly what the surrounding prose instructs -- it closes the
+    window, taking any unsaved session with it, and the diagnostic it just printed scrolls away
+    with it. The fix there was `if [ -z "$CLAUDE_BIN" ]; then ... else ... fi`.
+
+    Swept rather than spot-fixed because the next snippet added to any of these guides has the
+    same hazard and nothing else in the suite reads a fenced block for runnability.
+    """
+    # ASSERT ON THE SCOPE FIRST. A fence regex that stops matching (a new info-string, a change
+    # of fence character) yields an empty corpus, and a sweep over nothing passes every
+    # assertion made about it -- the failure mode this repo has hit repeatedly.
+    # Relative paths, matching this module's own convention (`glob.glob("docs/*.md")` above).
+    guides = _paste_in_guides()
+    scanned = {rel: _shell_blocks(pathlib.Path(rel).read_text(encoding="utf-8"))
+               for rel in guides}
+    # A per-file "must be non-empty" is wrong once the corpus is derived -- plenty of guides
+    # legitimately ship no shell at all. What must hold instead is that the MATCHER works and the
+    # EXCLUSION is real, so pin both directly.
+    assert "docs/INSTALL.md" in guides, (
+        f"the guide this sweep was written for is not in the derived corpus: {guides}")
+    assert scanned["docs/INSTALL.md"], (
+        "docs/INSTALL.md contributed no shell blocks; the fence matcher has stopped matching and "
+        "this sweep would pass while reading nothing")
+    total = sum(len(v) for v in scanned.values())
+    assert total >= 30, (
+        f"only {total} shell blocks across {len(guides)} guides; expected the matcher to find "
+        f"far more: { {k: len(v) for k, v in scanned.items() if v} }")
+    # The exclusion must actually exclude something. An `_EXCLUDED_DOC_TREES` that matched no
+    # real path would be inert, and nothing else here would notice -- the guard would simply be
+    # red for a reason the message does not explain.
+    assert glob.glob("docs/superpowers/**/*.md", recursive=True), (
+        "docs/superpowers/ matched no files, so _EXCLUDED_DOC_TREES is inert; if that tree was "
+        "removed, drop the exclusion rather than leaving a rule that does nothing")
+
+    offenders = _shell_killing_lines(scanned)
+    assert not offenders, (
+        "a shell block in a paste-in guide would close the reader's interactive shell; use an "
+        "`if`/`else` so only the setup stops:\n" +
+        "\n".join(f"  {rel}: {line}" for rel, line in offenders))
+
+
+def test_install_guide_and_compose_agree_on_the_image_tag_variable():
+    """`docs/INSTALL.md` states what `docker-compose.yml` defaults the image tag to. Pin it.
+
+    The wrapper-install block derives `REF` from `JOB_SLUICE_TAG` and explains that this is safe
+    BECAUSE compose reads the same variable with a `latest` default -- so the wrapper and the
+    image move together. That is a claim about a different file, made in prose, which is this
+    repo's most persistent source of stale documentation. If either default changes, the
+    reasoning printed for the reader becomes wrong while both files stay individually valid.
+    """
+    compose = pathlib.Path("docker-compose.yml").read_text(encoding="utf-8")
+    m = re.search(r"image:\s*ghcr\.io/\S+/job-sluice:\$\{JOB_SLUICE_TAG:-(?P<default>[\w.-]+)\}",
+                  compose)
+    assert m, ("could not find the job-sluice image line in docker-compose.yml; if the image or "
+               "its tag variable was renamed, docs/INSTALL.md's REF reasoning needs updating too")
+    compose_default = m.group("default")
+
+    install = pathlib.Path("docs/INSTALL.md").read_text(encoding="utf-8")
+    ref = re.search(r'REF="\$\{JOB_SLUICE_TAG:-(?P<default>[\w.-]+)\}"', install)
+    assert ref, "could not find the REF assignment in docs/INSTALL.md"
+
+    # The two defaults are not the same STRING -- an image tag and a git ref are different
+    # namespaces -- so what is pinned is the pairing the prose actually asserts: compose's
+    # default is `latest`, and the guide says `main` goes with it.
+    assert compose_default == "latest", (
+        f"docker-compose.yml now defaults the image tag to {compose_default!r}; docs/INSTALL.md "
+        f"tells the reader it is `latest` and pairs it with the `main` wrapper ref")
+    assert ref.group("default") == "main", (
+        f"docs/INSTALL.md now defaults REF to {ref.group('default')!r}, which no longer matches "
+        f"the `:latest` image its own prose pairs with `main`")
+    assert "${JOB_SLUICE_TAG:-latest}" in install, (
+        "docs/INSTALL.md quotes compose's image line to justify the pairing; that quotation is "
+        "gone, so the reasoning shown to the reader is no longer anchored to anything")
