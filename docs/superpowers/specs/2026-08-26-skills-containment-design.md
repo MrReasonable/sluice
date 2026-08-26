@@ -1,8 +1,10 @@
 # Skills as gated content — design (#168)
 
-Status: proposed, after two `/review-plan` rounds (round 1: 42 findings, 2 Critical; round 2: 38
-findings, 2 Critical, nearly all of them defects in round 1's own fixes). Extends #165 (skills reach
-the composer as framing) and #174 (the gate is handed a structured `BundleSources`).
+Status: proposed, after three `/review-plan` rounds — round 1: 42 findings, 2 Critical; round 2: 38,
+2 Critical; round 3: 31, **0 Critical**. Each round's findings were concentrated in the previous
+round's own fixes, which is why the corrections below are stated with the measurement that forced
+them rather than as bare decisions. Extends #165 (skills reach the composer as framing) and #174 (the
+gate is handed a structured `BundleSources`).
 
 Issue: **#168**. **#194 is deliberately NOT in this spec** — see section 1.2.
 
@@ -129,13 +131,18 @@ than #168's own wording). They are different questions and take different rules.
 | **Question** | is this attributed to the right role? | did you invent this? |
 | **Licensed by** | `Skills:` on the entries **that bullet cites** | the bundle's own **source text** |
 | **Granularity** | per-entry | bundle-wide |
-| **Abstains when** | any cited entry declares no `Skills:` | never — see SC5 |
+| **Abstains when** | any cited entry declares no **non-empty** `Skills:` | never — fails closed, see SC5 |
 | **Matching** | case-sensitive, in-prose (SC9) | normalised, whole-line (SC9) |
 
 ### 3.1 SC4: row 2's vocabulary is the bundle's source text
 
-Entry `Skills:` **∪ the baseline CV ∪ entry bodies** — everything `_source_section` contributes as a
-source. Three independent reasons, all from round 2:
+Entry `Skills:` **∪ the baseline CV block ∪ entry bodies**. Exactly those three, enumerated:
+**not** "everything `_source_section` contributes", which two reviewers found is a different and
+larger set — it also carries the `=== … ===` presentation headers and `_entry_block`'s head line
+(`[id] (company) title | metrics=…`), under which an emitted `- Example Alpha` would be a licensed
+skill token. The enumeration governs; the gloss is gone.
+
+Three independent reasons for the widening, all from round 2:
 
 - `compose._RULES` and `_DERIVED_NEGATIVE_PROMPT` both license the BASELINE CV **and** verified
   entries. A gate licensing only `Skills:` refuses what the prompt in the same run requires: a model
@@ -148,6 +155,11 @@ source. Three independent reasons, all from round 2:
 - #168 item 4 says "must appear in the **source bundle**", not "must appear in `Skills:`".
 
 **Row 1 is unaffected** and stays per-entry. Row 2 answers invention; row 1 answers attribution.
+
+**The residual this buys, stated rather than left implicit:** an ordinary English word that happens to
+appear in the baseline CV or an entry body passes row 2 as a "skill". That is an under-fire, and it is
+the right direction here — row 2's job is to refuse *invention*, (b) is out of scope (1.2), and row 1
+does the precision work. Recorded in section 14.
 
 ### 3.2 SC5: abstain per-entry on row 1; row 2 fails closed
 
@@ -174,7 +186,20 @@ The rule that holds both ends:
   — the gate refusing a token from the cited entry's own source line. Per-entry abstain is an
   under-fire, the direction SC9 already commits to.
 
-Both conditions read **one derived value** so they cannot disagree.
+**Blank is absent, everywhere, and `_entry_skills_line` omits it.** This is not an edge case:
+`_evidence_entries` materialises every declared field via `fm.get(k, "")`, so **every existing note
+gets `Skills == ""` the day SC3 lands**, and `_render_evidence_note` writes a blank `Skills:` into
+every new one. An unconditional line would render N empty `Skills:` lines into both bundles — the same
+"negative claim it may act on" that `render_composer_bundle` refuses one function away. So: an empty
+value is treated as no value by all three conditions, and contributes no line to either prompt.
+
+The guards in section 11 must say **non-empty**, and must use a *production-shaped* fixture — a note
+with a blank `Skills:`, never one with the key omitted, which no production path produces. A
+presence-keyed implementation passes a key-omitting fixture while re-opening round 2's measured row-1
+over-fire.
+
+All three conditions read **one derived value** so they cannot disagree — reviewers confirmed the
+∃-over-all-entries and ∀-over-cited-entries pair can genuinely share one `skills: dict[id → frozenset]`.
 
 ### 3.3 Bundle plumbing
 
@@ -186,8 +211,19 @@ returns is a numeric SOURCE harvested by `bundle_sources`. The new function carr
 contract in its own docstring — every token is a **skill** source for that entry, **no digit of it is
 a numeric source**.
 
-`BundleSources` gains `skills: dict[str, frozenset[str]]`, keyed by entry id like `nums`.
-`bundle_sources` builds both dicts in one pass over `bundle["entries"]`, making key equality
+`BundleSources` gains **two** members, and the second is what round 3 found missing:
+
+- `skills: dict[str, frozenset[str]]`, keyed by entry id like `nums` — **row 1's** per-entry vocabulary.
+- `source_tokens: frozenset[str]` — **row 2's** bundle-wide vocabulary, derived in `bundle_sources`
+  from `_baseline_block`, each `_entry_block`'s body, and each `_entry_skills_line`.
+
+The second is not optional. `nums` and `baseline` are **digit** sets (`re.findall(r"\d+", …)`), and
+`cv/engine.py` hands `validate` the `BundleSources` and nothing else — so SC4's widened vocabulary,
+which needs the baseline's and bodies' *words*, had no route into the gate at all. The obvious repair
+(re-parsing rendered bundle text inside `validate`) is exactly what #174 removed, so the tokens are
+derived structurally alongside everything else.
+
+`bundle_sources` builds `nums` and `skills` in one pass over `bundle["entries"]`, making key equality
 structural. **Round 2's caveat, carried:** that constrains only the factory, not the hand-constructed
 `BundleSources` values that exist in tests, and `ids` derived from `nums` alone will not notice a
 `skills` key `nums` lacks. The plan adds a construction-time check rather than relying on the one-pass
@@ -199,9 +235,21 @@ build alone.
 metric — `INVENTED METRIC ['3']` in a bullet, and `INVENTED PROFILE METRIC 3` twice in prose. Latent
 today; #168 makes it the main path. The only actionable answer is to delete a true skill name.
 
-When a skill mention is licensed, its span is removed before `\d+` extraction — the technique
-`validate.py` already applies to citations. **It covers PROFILE as well as bullets**, using the
-bundle-wide vocabulary, consistent with `profile_permitted` already being a bundle-wide pool.
+A skill mention's span is removed before `\d+` extraction — the technique `validate.py` already
+applies to citations. **It covers PROFILE as well as bullets**, using the bundle-wide vocabulary,
+consistent with `profile_permitted` already being a bundle-wide pool.
+
+**Span removal is decided independently of row 1's verdict, and getting this wrong was round 3's
+sharpest finding.** An earlier revision removed a span only "when a skill mention is licensed" —
+i.e. when row 1 passed it. But row 1 is case-sensitive (SC9) and abstains when a cited entry is
+un-annotated (SC5), and section 3.3 deliberately keeps skill digits out of every numeric pool. So each
+row-1 *under*-fire became a hard `INVENTED METRIC`: `- Migrated to s3 [A1]` (wrong case), or
+`… S3 [A1][B1]` where B declares no `Skills:`. Retry, then `skipped-gate`, on a skill the user really
+declared — this section's own opening harm, reintroduced by the fix for it.
+
+The rule: **span removal matches against the cited entries' `Skills:` case-INSENSITIVELY, and runs in
+row 1's abstain arm too.** It is a numeric-gate concern, not an attribution verdict. Row 1 keeps its
+case-sensitive rule for the separate question of whether a mention is *misattributed*.
 
 **The subtractive-licence constraint.** Span removal makes `Skills:` the first field that *subtracts*
 from the hard numeric gate. A skill token must **begin with a letter**; a wholly-numeric or
@@ -279,7 +327,13 @@ Two measured cases the plan must test, one in each direction:
   for the first case ("revert to the WORK region on an unmodelled header") it starts being
   citation-checked, which is a new over-fire.
 
-The mechanism is the plan's to choose; **both cases are non-negotiable tests.**
+**The mechanism is settled** (round 3): implement the skills region as a **contiguous bullet run
+that does not clear `in_work`**. That satisfies both cases without the generalisation `section_spans`'
+docstring forbids — the region ends at the first non-bullet line, so an unmodelled header after
+`SKILLS` returns to the WORK region it never left, and one after `CERTIFICATES` is untouched.
+
+**Three non-negotiable tests**: the two cases above, plus bullets appearing after `SKILLS` with no
+intervening header, which is the case a contiguous-run implementation can get wrong.
 
 `section_spans` returns a 2-tuple consumed at **two** call sites — `validate`'s loop and
 `cv/engine.py`'s STYLE scoping. Skills lines are **excluded from the STYLE tier**: a slop complaint
@@ -314,9 +368,12 @@ rewritten to remove.
 with ordinary English. **Row 2 normalises case and whitespace** — it compares a whole emitted line
 against the vocabulary, with no sentence to collide with. Both directions need a guard (section 11).
 
-**Every failure mode of row 1 is an under-fire.** An inflected, lowercase or sentence-initial mention
-is not detected. Note this is true only *given* SC5's per-entry abstain: round 2 measured that
-without it, row 1 over-fires on a partially annotated vault.
+**Every failure mode of row 1 is an under-fire — but only once span removal is decoupled from it
+(3.4).** An inflected, lowercase or sentence-initial mention is simply not detected as a
+misattribution. Two corrections this claim has needed: round 2 measured that without SC5's per-entry
+abstain, row 1 *over*-fires on a partially annotated vault; round 3 measured that while span removal
+was gated on row 1's verdict, an under-fire converted into a hard `INVENTED METRIC` one layer down.
+The claim is true of the design as it now stands, and false of both earlier ones.
 
 ---
 
@@ -331,20 +388,49 @@ Three additions to `compose._RULES`, all phrased to **name no skill** so they ca
    Round 2 found the earlier revision supplied no prompt rule for row 2 at all, which is how the
    prompt and the gate came to disagree.
 
-**The neutrality sweep needs work, and the earlier claim that it did not was wrong.**
+**The neutrality sweep needs work, and both earlier answers were wrong.**
 `tests/test_prompt_neutrality.py`'s `_render` supplies synthetic values for *required* parameters
-only — measured, `_employer_line`'s configured branch is already unswept for exactly this reason. A
-conditional `SKILLS` block threaded abstain-shaped (mirroring `employers=None`) would likewise be
-unswept, making section 6's coverage vacuous. The plan adds an `_SYNTHETIC_ARGS` entry with a
-non-empty vocabulary and witnesses it by moving a `_FORBIDDEN` term into the block.
+only — measured, `_employer_line`'s configured branch is already unswept for exactly this reason, so a
+conditional `SKILLS` block threaded abstain-shaped would likewise be unswept and section 6's coverage
+vacuous.
 
-**`composer_headings()` must change with this, and section 9's earlier inference was wrong.** That
-helper derives the legal template headings from the `_RULES` **constant**, statically. A conditional
-`SKILLS` block never appears in the constant, and a `{skills_block}` substitution slot fails its
-`isalpha` filter — so the template heading would be rejected **permanently**, not merely until block 1
-lands. The fix keeps it derived rather than hand-listed: render `_RULES` with a representative
-non-empty vocabulary and take the headings from the rendered text. That is a derivation change, not a
-weakening, and the plan must show the helper still fails on an undeclared heading.
+The previous revision's repair — add an `_SYNTHETIC_ARGS` entry — is **inert, measured twice
+independently**: `_render` `continue`s on any parameter carrying a default *before* it reads the
+overrides, so an entry naming an abstain-shaped vocabulary is read and discarded. A `_FORBIDDEN` term
+moved into such a block sweeps clean, meaning the proposed witness would pass while proving nothing.
+
+**`_render` itself must change** — either the parameter's requiredness, or `_render`'s
+default-before-overrides precedence. That makes it a sixth entry in 11.1. The witness is unchanged and
+non-negotiable: move a `_FORBIDDEN` term into the block and watch the sweep go **red** before trusting
+it. Note the block is also invisible to the static `_RULES` reader in
+`test_cv_prompt_expresses_no_role_or_culture_preference` when threaded through a substitution slot.
+
+**`composer_headings()` must change, and BOTH earlier answers were wrong.** The helper derives the
+legal template headings from the `_RULES` **constant**, statically. A conditional `SKILLS` block never
+appears in that constant and a `{skills_block}` slot fails its `isalpha` filter, so the template
+heading would be rejected **permanently** — not merely until block 1 lands, which is what section 9
+originally inferred.
+
+The obvious repair — render `_RULES` and derive from the rendered text — was proposed in the previous
+revision and **four reviewers independently measured that it opens a leak**. `{name_heading}` is
+`name.upper()` on its own line, so the substituted name matches the all-caps-alphabetic filter exactly
+and enters the set:
+
+```
+raw      : ['CERTIFICATES', 'EDUCATION', 'PROFILE', 'WORK EXPERIENCE']
+rendered : ['CERTIFICATES', 'EDUCATION', 'PROFILE', 'WORK EXPERIENCE', '<the substituted name>']
+```
+
+That set is the **allowlist** in three template no-content guards and in the shipped-file leak sweep,
+so a template could then print that literal with every negative guard green — and the stated
+acceptance criterion ("still fails on an undeclared heading") cannot catch it, because the leaked name
+*is* declared.
+
+**The fix keeps it static and anchors it on an independent source:** derive from the parser's own
+grammar — `PROFILE`, `WORK EXPERIENCE`, and `_TRAILING_SECTIONS` (which gains `SKILLS` in 4.4). That is
+independent of `_RULES`, so it is not self-certifying, it carries `SKILLS` automatically, and no
+substituted value can ever enter it. The plan must still show the helper fails on an undeclared
+heading, and must assert the derived set is non-empty.
 
 ---
 
@@ -359,11 +445,19 @@ Two `NOTICE` rows in `core/doctor.py`, modelled on `classify_negatives_vs_skills
 Plus the section 3.4 row: a `Skills:` token whose digits also appear as a standalone figure in the
 same entry's `Metrics:`.
 
-The precedent reports **an identifier, a count, and a locator**, never the user's text —
-`DoctorReport` reaches MCP clients whole. Round 2 found the earlier revision's *ordinal* locator
-unresolvable: `cmd_evidence_list` prints no index, and `--pending` selects a different set. The
-identifier is therefore the **entry's note title**, which `experience list` already prints. Surfacing
-an entry's `Skills:` in that listing is part of this block's work so the rows are actionable.
+**No doctor row carries user-authored text today** — even the vault problem report names the key
+`vault_dir` rather than the path — and `DoctorReport` reaches MCP clients whole. Two locator designs
+have now been rejected: an *ordinal* (round 2: unresolvable, `cmd_evidence_list` prints no index and
+`--pending` selects a different set), and the **entry's note title** (round 3: `title` is
+`evidence_slug()` of the user's own `--name`, which for an Experience Library entry commonly encodes
+an employer or client — and the cited precedent's docstring separately excludes the entry title as
+"a name the user chose").
+
+**Each row therefore reports a count plus the command that resolves it** — `job-sluice experience list`
+or `job-sluice skills list` — and no user-authored string at all. That is the precedent's own shape.
+Surfacing an entry's `Skills:` in the `experience list` output is part of this block's work, so the
+count is actionable there rather than in the report. This binds all three rows, section 3.4's
+included.
 
 ---
 
@@ -425,9 +519,9 @@ Each closes a specific fail-open and must be witnessed by mutation — moving or
 | Digit isolation | folding `_entry_skills_line` into `_entry_block` |
 | Digit over-fire | a fabricated number hidden in or adjacent to a licensed skill span passing unreported |
 | Skill-token shape | a digit-leading `Skills:` token accepted, re-opening the subtractive path |
-| Row-1 abstain | row 1 firing when a cited entry declares no `Skills:` |
+| Row-1 abstain | row 1 firing when a cited entry declares no **non-empty** `Skills:`, witnessed on a production-shaped blank-value fixture |
 | Row-2 fail-closed | an emitted `SKILLS` section going unchecked on an un-annotated vault |
-| Request abstain | a `SKILLS` block requested when no entry declares `Skills:` |
+| Request abstain | a `SKILLS` block requested when no entry declares a **non-empty** `Skills:` |
 | Citation-check preservation | **both** 4.3 cases, one per direction |
 | Marker equality | `section_spans`' SKILLS markers diverging from `parse.py`'s SKILLS markers |
 | Case-rule direction | swapping row 1's and row 2's normalisation, both ways |
@@ -435,6 +529,9 @@ Each closes a specific fail-open and must be witnessed by mutation — moving or
 | Scope assertion | the sweep enumerating zero skills and passing vacuously (`all([])` is `True`) |
 | Envelope survival | a real `SKILLS` section stripped by `_unwrap_agent_envelope` |
 | Prompt/gate agreement | a `_RULES` rule permitting what a containment row forbids, or the reverse — one test must READ the other string, never restate it |
+| **SC4's vocabulary width** | narrowing row 2 back to entry `Skills:` alone (round 2's rejected design). The "prompt/gate agreement" row does NOT cover this: its mechanism is reading the other *string*, and row 2's other side is a computed frozenset — measured, that narrowing leaves `_RULES` byte-identical and every other guard green |
+| Span-removal independence | gating span removal on row 1's verdict again (3.4), which converts a row-1 under-fire into a hard `INVENTED METRIC` |
+| Blank-value handling | treating a blank `Skills:` as a declared value — the default state of every note the day SC3 lands |
 
 ### 11.1 Five existing guards this collides with
 
@@ -453,6 +550,9 @@ argued change:
 4. `test_the_rendered_prompt_has_not_drifted` and `test_the_composer_prompt_has_not_drifted` both red
    (section 2.1) — the first pins D11 as byte-identity with the pre-#165 auditor text.
 5. `test_the_allowlist_still_matches_the_frozen_prompt` — section 12.
+6. `tests/test_prompt_neutrality.py`'s `_render` — its default-before-overrides precedence must
+   change for the conditional `SKILLS` block to be swept at all (section 6). Found in round 3; the
+   previous revision assumed a fixture entry would suffice, and it is inert.
 
 ### 11.2 Fixture neutrality
 
@@ -472,7 +572,9 @@ Fixture values use invented technology-shaped names (`ExampleQL`, `WidgetFramewo
 An earlier revision recorded this as an open question and described the break as digit-driven.
 **Round 2 settled it by reading the real test, and the diagnosis was wrong.**
 
-`_oracle` returns a **2-tuple**; section 3.3 makes `BundleSources` 3-field. Measured:
+`_oracle` returns a **2-tuple**; section 3.3 makes `BundleSources` 4-field (`nums`, `baseline`,
+`skills`, `source_tokens`). Measured against the 3-field shape, and the arity argument is unchanged by
+the fourth member:
 
 ```
 Proposed(*oracle) TypeError: missing 1 required positional argument: 'skills'
@@ -508,11 +610,17 @@ Definition of done for every block: `./.venv/bin/python -m pytest` green, and
 2. Doctor rows, plus `experience list` surfacing `Skills:` so they have a locator.
 3. `_render_evidence_note`'s blank `Skills:`; the neutrality collector extension (11.2); the
    `_SYNTHETIC_ARGS` prompt-sweep entry (section 6).
-4. Documentation: `docs/ARCHITECTURE.md` (the `BundleSources` story, the framing/citable split),
-   `docs/USAGE.md`, `sluice.yaml.example` if any text changes, and **`.rulesync/rules/CLAUDE.md`** —
-   which states the renderer-precheck exceptions, spells the repeated-trailing-header exception as
-   CERTIFICATES/EDUCATION only, and licenses the wider `_TRAILING_MARKERS` on the grounds that the
-   gate never citation-checks those sections (4.1 falsifies that). Regenerate with `npm run rulesync`.
+4. Documentation. **The claims block 1 falsifies are corrected IN block 1**, not here — an earlier
+   revision repaired them a block later, leaving an interval in which a shipped document asserted
+   something the code had already made false and nothing was red. Those are: the wider-`_TRAILING_MARKERS`
+   licence in both `.rulesync/rules/CLAUDE.md` and `cv/parse.py`'s own comment ("no check here for a
+   wider marker to slip past"), the repeated-trailing-header exception spelled as CERTIFICATES/EDUCATION
+   only, and the **2-tuple `section_spans` contract** stated in `.rulesync/rules/CLAUDE.md`,
+   `docs/ARCHITECTURE.md` (two places) and `cv/voice.py`.
+
+   This block carries the rest: `docs/ARCHITECTURE.md`'s `BundleSources` story and framing/citable
+   split, `docs/USAGE.md`, and `sluice.yaml.example` if any text changes. Regenerate with
+   `npm run rulesync`.
 5. **Template last.**
 
 Block 1 is large because SC8 makes it indivisible; blocks 2-4 are independent of each other.
@@ -532,6 +640,10 @@ is only requested once a user has populated `Skills:`, but block 5 should not la
   than `unsupported`. It is a change to a pinned property and is stated as one.
 - **A metric-shorthand skill name subtracts from the numeric gate** (3.4). `p99` is the example; the
   doctor notice makes it visible.
-- **Row 1 under-fires**, by construction and by SC5's per-entry abstain.
+- **Row 2 over-licenses.** Its vocabulary is the bundle's source text, so an ordinary English word
+  appearing in the baseline CV or an entry body passes as a "skill" (3.1). Deliberate: row 2 refuses
+  invention, (b) is out of scope, and row 1 does the precision work.
+- **Row 1 under-fires**, by construction and by SC5's per-entry abstain — and only genuinely so now
+  that span removal is decoupled from its verdict (3.4).
 - **The two skill vocabularies can drift.** Nothing forces entry `Skills:` and the Skills Inventory to
   agree, so neither becomes a prerequisite for the other. Section 7 makes the drift visible.
