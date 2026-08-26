@@ -158,7 +158,7 @@ git commit -m "feat(cv): declare Skills on the experience evidence kind (#168)"
 - Consumes: Task 1's `entry["fields"]["Skills"]`.
 - Produces:
   - `_entry_skills_line(entry) -> list[str]` — `[]` for a blank/absent value.
-  - `BundleSources(nums, baseline, skills, source_tokens)`; `skills: dict[str, frozenset[str]]` keyed by entry id, `source_tokens: frozenset[str]`.
+  - `BundleSources(nums, baseline, skills, source_tokens)`; `skills: dict[str, frozenset[str]]` keyed by entry id; `source_tokens: tuple[tuple[str, ...], ...]` — one token SEQUENCE per source block, **not** a flat set.
   - `bundle.SKILL_TOKEN_RE` — the shape a `Skills:` item must match.
 
 - [ ] **Step 1: Write the failing tests**
@@ -200,9 +200,25 @@ def test_source_tokens_carry_the_words_row_2_checks_against():
         baseline="Used Widget3 throughout.", negatives=["never claim 91 users"],
         jd_keywords=[], prefix_map={})
     s = B.bundle_sources(b)
-    assert {"ExampleQL", "WidgetFramework", "Widget3"} <= s.source_tokens
+    flat = {t for block in s.source_tokens for t in block}
+    assert {"ExampleQL", "WidgetFramework", "Widget3"} <= flat
     # The NEGATIVES are not a source -- #31, and now a property of the derivation.
-    assert "users" not in s.source_tokens
+    assert "users" not in flat
+
+
+def test_source_tokens_are_per_block_so_a_two_word_skill_cannot_match_across_a_seam():
+    """Row 2 searches for a skill's token SEQUENCE, so a flat token list would let
+    "Widget Framework" match the last word of one entry followed by the first word of the
+    next -- an adjacency that exists nowhere in the user's prose."""
+    b = B.build_bundle(
+        entries=[{"company": "A", "title": "t", "metrics": "", "body": "Ran Widget",
+                  "fields": {"Skills": ""}},
+                 {"company": "B", "title": "t", "metrics": "", "body": "Framework work",
+                  "fields": {"Skills": ""}}],
+        baseline="b", negatives=[], jd_keywords=[], prefix_map={})
+    s = B.bundle_sources(b)
+    assert not any(list(block[i:i + 2]) == ["Widget", "Framework"]
+                   for block in s.source_tokens for i in range(len(block)))
 
 
 def test_a_digit_leading_skill_token_is_refused_at_construction():
@@ -291,10 +307,12 @@ class BundleSources(NamedTuple):
     # Row 1's vocabulary: which skills each entry licenses, keyed exactly like `nums` so
     # a bullet's citations union over the two the same way.
     skills: dict[str, frozenset[str]]
-    # Row 2's vocabulary: the WORDS of the bundle's source text. Separate from the above
-    # because row 2 asks a different question (did you invent this) at a different
-    # granularity (bundle-wide). `nums`/`baseline` are digit sets and cannot answer it.
-    source_tokens: frozenset[str]
+    # Row 2's vocabulary: the WORDS of the bundle's source text, as one token SEQUENCE
+    # per source block. Separate from the above because row 2 asks a different question
+    # (did you invent this) at a different granularity (bundle-wide). `nums`/`baseline`
+    # are digit sets and cannot answer it. Sequences rather than a set, because a skill
+    # can be two words and no single token is "machine learning".
+    source_tokens: tuple[tuple[str, ...], ...]
 
     @property
     def ids(self):
@@ -306,7 +324,7 @@ In `bundle_sources`, build all four in the one pass:
 ```python
     nums: dict[str, frozenset[str]] = {}
     skills: dict[str, frozenset[str]] = {}
-    tokens: set[str] = set()
+    blocks: list[tuple] = []
     for e in bundle["entries"]:
         eid = e["id"]
         if eid in nums:
@@ -321,14 +339,18 @@ In `bundle_sources`, build all four in the one pass:
         # Enumerated, never "everything _source_section contributes" -- that larger set
         # also carries the presentation headers and `_entry_block`'s head line, under
         # which an emitted `- Example Alpha` would be a licensed skill token.
-        tokens |= set(items)
-        tokens |= set(_WORD_RE.findall(e.get("body", "")))
+        #
+        # Kept as one token SEQUENCE PER BLOCK, never flattened: row 2 searches for a
+        # skill's token subsequence, and a flat list would invent adjacencies across
+        # block seams that exist nowhere in the user's prose.
+        blocks.append(tuple(items))
+        blocks.append(tuple(_WORD_RE.findall(e.get("body", ""))))
     baseline_block = _baseline_block(bundle)
     baseline = frozenset(re.findall(r"\d+", "\n".join(baseline_block)))
-    tokens |= set(_WORD_RE.findall("\n".join(baseline_block)))
+    blocks.append(tuple(_WORD_RE.findall("\n".join(baseline_block))))
     # `skills` and `nums` are keyed in ONE pass, so their key sets are equal by
     # construction rather than by assertion.
-    return BundleSources(nums, baseline, skills, frozenset(tokens))
+    return BundleSources(nums, baseline, skills, tuple(b for b in blocks if b))
 ```
 
 Add near `SKILL_TOKEN_RE`:
@@ -479,14 +501,21 @@ In `section_spans`, add `skills` to the returns and track the region as a run th
             continue                       # a skills line is NOT also a work bullet
         if in_profile:
             profile.append((i, line))
-        if in_work and line.lstrip().startswith(("-", "•", "*")):
+        if in_work and line.lstrip().startswith(_WORK_BULLET_MARKERS):
             work.append((i, line))
     return profile, work, skills
 ```
 
-Add the marker tuple above `section_spans`:
+Add BOTH marker tuples above `section_spans`, as NAMED module constants, and have both
+`startswith` calls take the name. The existing AST guard recovers literal tuples and indexes
+`[0]`; with two non-equal literals in the module, selecting the WORK one *by value* would make
+its equality assertion a tautology. Names let the guard read two `ast.Assign` nodes by name.
 
 ```python
+# The WORK set. Must stay EXACTLY equal to cv/parse.py's `_BULLET_MARKERS` -- too narrow
+# refuses a gate-clean CV, too wide is a citation-check bypass.
+_WORK_BULLET_MARKERS = ("-", "•", "*")
+
 # The SKILLS region's markers, and they must EQUAL what cv/parse.py accepts for SKILLS.
 # SKILLS is the FIRST trailing section the hard gate checks, which is exactly why: a
 # marker the parser accepts here and this function does not is a gate BYPASS -- the line
@@ -547,6 +576,16 @@ git commit -m "feat(cv): give section_spans a named SKILLS region (#168)"
 - [ ] **Step 1: Write the failing tests**
 
 ```python
+def test_a_two_word_skill_is_matched_as_a_sequence_not_a_token():
+    """Row 2's vocabulary is source TEXT, so whole-line set membership is undefined --
+    no single token is "Widget Framework". Both rows use one subsequence primitive."""
+    s = _sources(body="Ran a Widget Framework migration.", skills="",
+                 baseline="Example Alpha.")
+    assert V.validate(_cv_with_skills(["Widget Framework"]), s) == []
+    assert any("UNSOURCED SKILL" in x
+               for x in V.validate(_cv_with_skills(["Framework Widget"]), s))
+
+
 def test_an_emitted_skill_absent_from_the_bundle_is_refused():
     s = _sources(body="Ran the rebuild.", skills="ExampleQL", baseline="Example Alpha.")
     v = V.validate(_cv_with_skills(["ExampleQL", "Kubernetes"]), s)
@@ -581,6 +620,25 @@ Expected: FAIL — no `UNSOURCED SKILL` produced.
 
 - [ ] **Step 3: Implement**
 
+Add the row-2 matcher beside `_names_skill`. Task 5 defines `_tokens`, `_subseq` and
+`_names_skill`; if Task 5 has not run yet, define `_tokens` and `_subseq` here and let Task 5
+reuse them. **They must be ONE implementation** — two copies let the vocabulary the gate builds
+drift from the one it searches with.
+
+```python
+def _in_source(blocks, item):
+    """True when `item`'s token sequence appears contiguously in ANY source block.
+
+    Case-INSENSITIVE, unlike row 1: this matches a whole emitted item against a corpus,
+    with no sentence to collide with, and a case-sensitive rule would refuse a skill whose
+    note is filed lowercase. Per-BLOCK rather than over a flattened corpus, so a two-word
+    skill cannot match an adjacency invented at a block seam.
+    """
+    needle = [t.casefold() for t in _tokens(item)]
+    return bool(needle) and any(
+        _subseq([t.casefold() for t in block], needle) for block in blocks)
+```
+
 Inside `validate`'s line-ordered loop, add a third branch:
 
 ```python
@@ -601,7 +659,7 @@ Inside `validate`'s line-ordered loop, add a third branch:
             # collide with, and a case-sensitive rule here would refuse every skill whose
             # note is filed lowercase.
             item = _CITE_RE.sub("", skills_by_line[i]).lstrip("-•*–— ").strip()
-            if item and item.casefold() not in {t.casefold() for t in sources.source_tokens}:
+            if item and not _in_source(sources.source_tokens, item):
                 v.append(f"UNSOURCED SKILL {item!r}: not in the bundle")
 ```
 
@@ -710,15 +768,23 @@ def _tokens(text):
     return _WORD_RE.findall(text)
 
 
-def _names_skill(text, skill):
-    """True when `skill`'s token sequence appears contiguously in `text`. A subsequence
-    match, never substring containment -- `"java" in "javascript"` is the bug rank() was
-    rewritten to remove."""
-    hay, needle = _tokens(text), _tokens(skill)
+def _subseq(hay, needle):
+    """True when `needle` appears as a CONTIGUOUS subsequence of `hay`.
+
+    The ONE matching primitive both rows use -- row 1 case-sensitively over a bullet's
+    prose, row 2 case-insensitively over each source block. Never substring containment:
+    `"java" in "javascript"` is the bug rank() was rewritten to remove. Two copies of this
+    would let the vocabulary the gate BUILDS drift from the one it SEARCHES with.
+    """
     if not needle:
         return False
-    return any(hay[i:i + len(needle)] == needle
+    return any(list(hay[i:i + len(needle)]) == list(needle)
                for i in range(len(hay) - len(needle) + 1))
+
+
+def _names_skill(text, skill):
+    """Row 1: `skill`'s token sequence, CASE-SENSITIVELY, in `text`."""
+    return _subseq(_tokens(text), _tokens(skill))
 ```
 
 - [ ] **Step 4: Run, then the suite**
@@ -760,9 +826,16 @@ def test_a_digit_bearing_skill_name_is_not_a_fabricated_metric():
     assert V.validate(_bullet("Ran the Widget3 migration [AL1]"), s) == []
 
 
+def test_profile_removal_uses_entry_skills_not_the_row_2_vocabulary():
+    """The wide vocabulary would let an ordinary baseline word blank an adjacent digit."""
+    s = _two_entry_sources(al_skills="", be_skills="", baseline="We shipped Alpha 92 times.")
+    v = V.validate(_cv(profile="Alpha 92 shipments.", bullet="Ran it [AL1]"), s)
+    assert any("INVENTED PROFILE METRIC" in x for x in v)
+
+
 def test_the_same_holds_in_profile_prose():
-    """PROFILE has no citation to hang the per-entry rule on, so it uses the bundle-wide
-    vocabulary -- consistent with `profile_permitted` already being a bundle-wide pool."""
+    """PROFILE has no citation to hang the per-entry rule on, so it uses the union of
+    entry `Skills:` -- consistent with `profile_permitted` already being bundle-wide."""
     s = _two_entry_sources(al_skills="Widget3", be_skills="")
     cv = _cv(profile="Deep experience with Widget3.", bullet="Ran it [AL1]")
     assert not any("INVENTED PROFILE METRIC" in x for x in V.validate(cv, s))
@@ -827,10 +900,15 @@ In the WORK-bullet branch, before extracting `bullet_nums`:
             bullet_nums = set(re.findall(r"\d+", _strip_skill_spans(prose, cited_skills)))
 ```
 
-In the PROFILE branch:
+In the PROFILE branch — note the vocabulary, which is **not** SC4's:
 
 ```python
-            prose = _strip_skill_spans(_CITE_RE.sub("", line), sources.source_tokens)
+            # The union of entry `Skills:`, NEVER `sources.source_tokens`. PROFILE has no
+            # citation to scope by, but licensing removal from SC4's row-2 vocabulary (the
+            # baseline's and bodies' WORDS) would let any ordinary word in the user's prose
+            # blank an adjacent digit -- a hole in the numeric gate rather than a fix to it.
+            all_skills = set().union(*sources.skills.values()) if sources.skills else set()
+            prose = _strip_skill_spans(_CITE_RE.sub("", line), all_skills)
 ```
 
 - [ ] **Step 4: Run, then the suite**
@@ -921,7 +999,7 @@ Derive the remedy text rather than adding a third literal:
 
 - [ ] **Step 4: Resolve the two guard collisions**
 
-`test_the_work_bullet_markers_are_exactly_what_the_gate_citation_checks` asserts `len(gate_markers) == 1` over every literal-tuple `startswith()` in `cv/validate.py`; Task 3 took that to 2. **Widen the pin deliberately** — it exists to stop the AST equality test reading the wrong tuple, so select by name rather than by count, and record why in a comment.
+`test_the_work_bullet_markers_are_exactly_what_the_gate_citation_checks` asserts `len(gate_markers) == 1` over every literal-tuple `startswith()` in `cv/validate.py`; Task 3 took that to 2. **Widen the pin deliberately, and select by NAME.** Task 3 bound both tuples to named constants precisely so this is possible: recover the two `ast.Assign` nodes by their target names (`_WORK_BULLET_MARKERS`, `_SKILLS_MARKERS`) and assert `_WORK_BULLET_MARKERS == parse._BULLET_MARKERS` and `_SKILLS_MARKERS == parse._TRAILING_MARKERS`. Selecting the WORK tuple by VALUE — "the one that matches `_BULLET_MARKERS`" — turns the assertion into a tautology, the same assert-the-code-equals-itself hazard the spec names for `_oracle` and `_validate_line_sets_before_the_extraction`. Assert both names were found, so a rename cannot make the sweep pass vacuously.
 
 `test_unmodelled_trailing_content_is_refused_rather_than_left_unconsumed` stops raising once `_TRAILING_SECTIONS` gains `SKILLS`. **Re-anchor it on `PUBLICATIONS`**, which remains unmodelled.
 
@@ -1009,7 +1087,9 @@ def build_prompt(bundle_text, jd, company, role, *, name, contact="",
         _RULES.format(..., skills_block=_SKILLS_BLOCK if skills_requested else "")
 ```
 
-Add `"SKILLS"` to `_REQUIRED_HEADERS` **only when requested** — or leave `_REQUIRED_HEADERS` alone and let the engine's structural checks handle it; the engine already knows whether it asked.
+Add `"SKILLS"` to `_REQUIRED_HEADERS`. That set is `_is_envelope_aside`'s "these lines are real CV content" test, so adding `SKILLS` only *widens* what survives unwrapping and cannot fail a CV closed.
+
+**Do NOT add an "envelope survival" guard.** Measured on shipped code with `_REQUIRED_HEADERS` unchanged: a realistic full-wrap #28 envelope leaves a bulleted `SKILLS` section entirely intact, because `_is_envelope_aside` already returns False for it. SC7's bulleted shape is what carries the protection, so such a guard is an equivalent mutant — it would pass whether or not the code was correct.
 
 - [ ] **Step 4: Re-anchor `composer_headings()` — do NOT render `_RULES`**
 
@@ -1098,7 +1178,9 @@ git commit -m "docs(cv): correct the claims the SKILLS gate falsifies (#168)"
 
 **Files:** Modify `sluice/core/doctor.py`, `sluice/evidence/commands.py`. Test: `tests/test_doctor.py`.
 
-Three `NOTICE` rows: inventory skills evidenced by no entry; entry `Skills:` absent from the inventory; a `Skills:` token whose digits also appear as a standalone figure in the same entry's `Metrics:` (the `p99` residual).
+**Two** `NOTICE` rows: inventory skills evidenced by no entry; entry `Skills:` absent from the inventory.
+
+A third row was proposed for the `p99` subtractive residual — a `Skills:` token whose digits also appear in the same entry's `Metrics:` — and **is dropped as inverted**: every digit in `Metrics:` is already in `nums[eid]` via `_entry_block`, so that condition selects exactly the cases where span removal is a no-op. The residual is recorded in the spec's section 14 instead.
 
 **Each row reports a count plus the resolving command** — `job-sluice experience list` or `job-sluice skills list` — and **no user-authored string at all.** Two locator designs were rejected in review: an ordinal (`cmd_evidence_list` prints no index, and `--pending` selects a different set) and the entry title (`evidence_slug()` of the user's own `--name`, which commonly encodes an employer; the cited precedent's docstring separately excludes it as "a name the user chose"). No doctor row carries user-authored text today.
 
@@ -1112,8 +1194,17 @@ Surface an entry's `Skills:` in `experience list` so the counts are actionable t
 
 **Files:** Modify `sluice/core/vault.py` (`_render_evidence_note`), `tests/test_fixture_name_neutrality.py`.
 
-- [ ] `_render_evidence_note` emits a blank `Skills:` on new experience notes — verify Task 1's blank-is-absent handling covers it end to end.
-- [ ] Extend the fixture-neutrality collector to the `Skills` field. It is currently keyed on the literal string `Company`, so this position is reached by **no sweep**, and prose guidance already failed once for `Company` at #135. **It must read both the comma and block-list shapes**, and must handle a comma-joined value collecting as one identity into the lead-identity roster.
+`_render_evidence_note`'s blank `Skills:` is **not** work and does not land here: it writes
+`{k: str(fields.get(k, "")) for k in spec.fields}`, so the blank appears on every new experience
+note the moment Task 1 adds the field. It is live from Task 1 — which is why Task 5's abstain
+guards must be fixtured against a **blank value**, never a missing key.
+
+- [ ] Extend the fixture-neutrality collector to the `Skills` field. It is currently keyed on the literal string `Company`, so this position is reached by **no sweep**, and prose guidance already failed once for `Company` at #135. Three shape requirements, the last measured off the existing `Company:` collector's own comment:
+
+  - both the comma and block-list spellings;
+  - a comma-joined value must collect as **separate** identities, not one;
+  - a **literal two-character `\n` escape** must count as an item separator alongside a real newline. This repo's evidence fixtures pack a whole frontmatter block into ONE Python string literal joined that way, so a collector reading only real newlines sweeps clean over exactly the fixtures that exist. Needs a shape-coverage test, not just a value test.
+- [ ] Add each new fixture skill value (`ExampleQL`, `WidgetFramework`, `Widget3`) to `_REVIEWED_FIXTURE_IDENTITIES` in the same change. Nothing local can establish whether a technology-shaped name belongs to a real product — the ratchet exists to force that one-time human call at the moment the value is added.
 - [ ] Assert the collector's scope is non-empty before asserting on its contents — for a negative guard, finding nothing is the success case.
 - [ ] Commit as `test(cv): sweep the Skills fixture position for leaked identities (#168)`.
 
@@ -1139,8 +1230,8 @@ Surface an entry's `Skills:` in `experience list` so the counts are actionable t
 
 ## Self-Review
 
-**Spec coverage.** Walked each spec section: 1.1→T4/T5; 1.2 (out of scope, no task); 2/SC3→T1; 2.1→T2 step 4 (the three frozen tests); 3/SC4→T4; 3.2/SC5→T4, T5, T8; 3.3→T2; 3.4/SC6→T6; 4.1/SC7→T3, T7; 4.2/SC8→the ordering note; 4.3→T3; 4.4→T7; 5/SC9→T5; 6→T8; 7→T10; 8→T1 (auto-generated), T11; 9 (measurements, no task); 11→witness steps in T2, T4, T5, T6; 11.1's six collisions→T2 (frozen ×3), T3 (`_validate_line_sets`), T7 (`len(gate_markers)`, trailing-content), T8 (`_render`); 11.2→T11; 12→T2 step 4; 13→T9, T12, T13; 14 (risks, no task). **No gaps.**
+**Spec coverage.** Walked each spec section: 1.1→T4/T5; 1.2 (out of scope, no task); 2/SC3→T1; 2.1→T2 step 4 (the three frozen tests); 3/SC4→T4; 3.2/SC5→T4, T5, T8; 3.3→T2; 3.4/SC6→T6; 4.1/SC7→T3, T7; 4.2/SC8→the ordering note; 4.3→T3; 4.4→T7; 5/SC9→T5; 6→T8; 7→T10; 8→T1 (auto-generated), T11; 9 (measurements, no task); 11→witness steps in T2, T4, T5, T6; 11.1's EIGHT collisions→T2 (frozen ×3), T3 (`_validate_line_sets`), T7 (`len(gate_markers)`, trailing-content, implication-sweep sibling), T8 (`_render`, `composer_headings` + its three consumers); 11.2→T11; 12→T2 step 4; 13→T9, T12, T13; 14 (risks, no task). **No gaps.**
 
 **Placeholder scan.** Tasks 10–12 are described at a coarser grain than 1–9 deliberately: they are independent of each other and of the gate work, and each has a named file, a named behaviour and a named commit message. If executing them as written proves under-specified, expand that task before starting it rather than improvising.
 
-**Type consistency.** `_entry_skills_line`, `_skill_items`, `SKILL_TOKEN_RE`, `_WORD_RE` (bundle.py); `_SKILLS_MARKERS`, `_tokens`, `_names_skill`, `_strip_skill_spans` (validate.py); `BundleSources(nums, baseline, skills, source_tokens)`; `section_spans → (profile, work, skills)`; `build_prompt(..., skills_requested=False)`; `CvDocument.skills`. Each is defined in exactly one task and consumed under the same name later. `_WORD_RE` is defined in `bundle.py` (Task 2) and re-used in `validate.py` (Task 5) — **import it, do not redefine it**, or the two tokenisers can drift and the vocabulary the gate builds stops matching the one it searches with.
+**Type consistency.** `_entry_skills_line`, `_skill_items`, `SKILL_TOKEN_RE`, `_WORD_RE` (bundle.py); `_WORK_BULLET_MARKERS`, `_SKILLS_MARKERS`, `_tokens`, `_subseq`, `_names_skill`, `_in_source`, `_strip_skill_spans` (validate.py); `BundleSources(nums, baseline, skills, source_tokens)`; `section_spans → (profile, work, skills)`; `build_prompt(..., skills_requested=False)`; `CvDocument.skills`. Each is defined in exactly one task and consumed under the same name later. `_WORD_RE` is defined in `bundle.py` (Task 2) and re-used in `validate.py` (Task 5) — **import it, do not redefine it**, or the two tokenisers can drift and the vocabulary the gate builds stops matching the one it searches with.
