@@ -247,6 +247,58 @@ def refuse_wrong_container(block: str, key: str, value, default, *,
         f"but got a {type(value).__name__}. {shape}")
 
 
+# The claude-max CLI's LOCATION, which is a deployment fact rather than a preference: the same
+# category as CAMOFOX_URL, whose own comment says env overrides it "so offline tests / alt
+# sessions need no code change". It earns an env override for the same reason, and #209 is the
+# case that forced it -- inside a container there is no `claude` binary and no way to reach one,
+# and until now the only route to `claude_max_host` was a mounted config.yaml, because none of
+# the three sub-app key pairs was settable any other way.
+#
+# ONE variable pair for all three sub-apps, not six. The keys are separate so triage, cv and
+# track CAN run against different hosts, and that stays true -- but nobody varies WHERE the CLI
+# lives per sub-app in the case this exists for, and six variables to express one fact is a
+# configuration surface nobody would thank us for. If you genuinely need them to differ, leave
+# these unset and use the config keys, which is the documented layering working as intended
+# rather than a special case.
+_CLAUDE_HOST_ENV = "SLUICE_CLAUDE_HOST"
+_CLAUDE_PATH_ENV = "SLUICE_CLAUDE_PATH"
+
+
+def apply_claude_cli_env(cfg, *, host_attr: str, path_attr: str) -> None:
+    """Let the environment say WHERE the claude CLI is, overriding the config block.
+
+    Applied AFTER a loader's YAML pass, never inside it. The sub-app loaders are deliberately
+    `hasattr`-filtered `setattr` loops over whatever the block contained, and CLAUDE.md says in
+    terms that they must not be "fixed" into naming their own fields -- so this names the two
+    attributes explicitly from outside instead of teaching the loop about them.
+
+    `cv` spells its pair `compose_host`/`compose_claude_path` while triage and track use
+    `claude_max_host`/`claude_max_path`, which is why the attribute names are parameters rather
+    than assumed.
+
+    An EMPTY env var is ignored rather than treated as "no host". Exporting a variable to the
+    empty string is how a shell says nothing, and reading it as an instruction to run the CLI
+    locally would silently undo a configured remote host -- the quiet-wrong-default class this
+    codebase engineers out everywhere else.
+    """
+    # Fail loudly on a name the config does not have. A bare `setattr` would CREATE the
+    # attribute instead, leaving a dead value nothing reads while the env var silently stops
+    # reaching that sub-app -- and the test cannot see it, because it hand-lists the same
+    # literals it reads back with `getattr`. Same posture `load_cv_config` already takes on a
+    # retired `cv.name`.
+    for attr in (host_attr, path_attr):
+        if not hasattr(cfg, attr):
+            raise AttributeError(
+                f"{type(cfg).__name__} has no {attr!r}; the claude-CLI env override names a "
+                f"field that no longer exists, so it would silently stop applying")
+    host = os.environ.get(_CLAUDE_HOST_ENV, "").strip()
+    path = os.environ.get(_CLAUDE_PATH_ENV, "").strip()
+    if host:
+        setattr(cfg, host_attr, host)
+    if path:
+        setattr(cfg, path_attr, path)
+
+
 def sub_app_block(block: str, loaded: object) -> dict:
     """Normalise a sub-app's top-level block to a mapping, raising `ValueError` when it
     is anything else.
