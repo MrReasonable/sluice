@@ -1,2 +1,8 @@
 *
 !dist/*.whl
+
+# The container entrypoint, which prepares SSH for the claude-max backend (#209). Named
+# EXPLICITLY, one path, keeping the deny-all posture above: a broader `!packaging/` would ship
+# nfpm's staging inputs into the image for no reason and quietly widen what a future file in
+# that directory reaches.
+!packaging/docker-entrypoint.sh

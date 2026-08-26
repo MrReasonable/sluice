@@ -20,7 +20,16 @@ x-sluice: &sluice
   # Backend credentials. Which variables matter depends on which providers you configured as
   # `primary_backend`/`fallback_backend`, so they are deliberately NOT enumerated here: a list
   # in this file would be a second source of truth that goes stale the moment a provider is
-  # added. Put whatever your configured providers need in `.env`; `claude-max` needs none.
+  # added. Put whatever your configured providers need in `.env`.
+  #
+  # `claude-max` is the SHIPPED DEFAULT for primary_backend and needs no API key -- but it shells
+  # out to the `claude` CLI, which this image does not carry. You have two options, and doing
+  # neither leaves `doctor` reporting it `dead` with triage/cv/track blocked:
+  #
+  #   1. Configure `primary_backend` as `anthropic`, `openai` or `deepseek` and put that
+  #      provider's key in `.env`. Simplest; costs per token rather than the flat rate.
+  #   2. Point it at the `claude` CLI on your HOST over ssh -- the four SLUICE_CLAUDE_* variables
+  #      below. Keeps the flat rate. See docs/INSTALL.md's "claude-max from a container".
   #
   # `required: false` so `docker compose up` works with no `.env` at all -- an absent optional
   # file must not be a startup error. Needs Compose v2.24+ for the long form.
@@ -55,6 +64,31 @@ x-sluice: &sluice
     # fail to connect with no obvious reason why. The scheme is REQUIRED -- core/camofox.py
     # concatenates this value directly, so a scheme-less host:port raises `unknown url type`.
     CAMOFOX_URL: ${CAMOFOX_URL:-http://host.docker.internal:9377}
+
+    # Reaching the host's `claude` CLI (#209). All four are unset by default, and the entrypoint
+    # does nothing beyond a BatchMode floor unless a non-empty key is mounted below -- so an API-key install
+    # is untouched by their presence here.
+    #
+    # SLUICE_CLAUDE_HOST/PATH are read by sluice itself and set `claude_max_host`/`claude_max_path`
+    # for triage, cv AND track at once. PATH must be ABSOLUTE: `ssh host cmd` runs a
+    # non-interactive, non-login shell whose PATH is minimal, so a bare `claude` is not found.
+    # It is also what the host's forced-command wrapper is keyed to, so it can be any non-empty
+    # token when that wrapper is in use -- the wrapper decides which binary actually runs.
+    #
+    # SSH_USER is the account on the HOST. The container user is `sluice`, which is almost
+    # certainly not your login name, and ssh would otherwise offer the wrong one.
+    SLUICE_CLAUDE_HOST: ${SLUICE_CLAUDE_HOST:-}
+    SLUICE_CLAUDE_PATH: ${SLUICE_CLAUDE_PATH:-}
+    SLUICE_CLAUDE_SSH_USER: ${SLUICE_CLAUDE_SSH_USER:-}
+    #
+    # PINNED EMPTY, deliberately, and this line is load-bearing. SLUICE_CLAUDE_KEY names a path on
+    # YOUR MACHINE and is used below as the bind-mount SOURCE; the entrypoint reads a fixed
+    # in-container TARGET. Omitting it from this block is NOT enough to keep the two apart:
+    # `env_file: .env` above injects every variable in .env into the container, and
+    # docs/INSTALL.md tells the reader to put SLUICE_CLAUDE_KEY there. Rendered with
+    # `docker compose config`, the host path appeared verbatim in the container environment.
+    # An `environment:` entry overrides an env_file one, so this is what stops it.
+    SLUICE_CLAUDE_KEY: ""
 
   # Linux does not resolve host.docker.internal on its own; Docker Desktop does. This makes the
   # two behave the same rather than leaving a platform-dependent failure for the user to hit.
@@ -125,6 +159,23 @@ x-sluice: &sluice
 
     # Dossier cache. Losing it costs re-fetches (and so needs Camofox again), never correctness.
     - sluice-cache:/app/cache/sluice
+
+    # The ssh key for the host's claude CLI (#209), read-only, and deliberately NOT under
+    # ~/.ssh: mounting a file into that directory makes docker create it root-owned, and the
+    # container user then cannot write known_hosts -- which surfaces as "Host key verification
+    # failed" even with StrictHostKeyChecking=accept-new. The entrypoint copies it into place
+    # with the right ownership and mode instead.
+    #
+    # Inert when SLUICE_CLAUDE_KEY is unset, which is the default -- but by /dev/null plus
+    # `create_host_path: false`, NOT by a `required:` key, which a bind mount does not take.
+    # The entrypoint then sees an empty file and its `-s` test is false. The TOKEN this key ultimately authenticates with never enters the container:
+    # it lives on the host, read by the forced-command wrapper there.
+    - type: bind
+      source: ${SLUICE_CLAUDE_KEY:-/dev/null}
+      target: /run/secrets/sluice_claude_key
+      read_only: true
+      bind:
+        create_host_path: false
 
 services:
   job-sluice:

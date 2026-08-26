@@ -504,6 +504,18 @@ def _home_rooted_hits(value: str) -> list:
             or _HOME_VAR.search(c)]
 
 
+def _default_of(value: str) -> str:
+    """The `:-default` half of a `${VAR:-default}` expansion, or the value unchanged.
+
+    Only the default is ever a literal in this file; what `VAR` expands to at runtime is the
+    reader's own environment and is none of this repository's business. Deliberately narrow: it
+    matches the whole value or nothing, so a path that merely CONTAINS an expansion is left
+    alone for the sweep to judge.
+    """
+    m = re.fullmatch(r"\$\{[A-Z_][A-Z0-9_]*:-([^}]*)\}", value.strip())
+    return m.group(1) if m else value
+
+
 def test_no_compose_mount_source_is_an_absolute_or_home_rooted_path():
     """Closes the one real gap in the repo-wide neutrality sweep.
 
@@ -526,6 +538,33 @@ def test_no_compose_mount_source_is_an_absolute_or_home_rooted_path():
     # `~/secrets/.env` -- a whole arm of the guard disappearing without a single test noticing.
     assert env_files, "found no env_file paths in docker-compose.yml; that arm checked nothing"
     host_paths = [source for source, _target in pairs] + env_files
+    # `/dev/null` is exempt, and nothing else absolute is. A bind mount's SOURCE must exist, so a
+    # mount that is meant to be absent still needs to name something -- and /dev/null is the
+    # portable "nothing" compose files use for exactly that (#209's optional ssh key). It is a
+    # POSIX device rather than a location on anyone's disk, so it cannot be the personal path
+    # this guard exists to catch. Written as an exact-match exemption on the DEFAULT half of the
+    # expansion rather than a pattern, so `/dev/null-ish` or `/dev/nullvault` is still caught.
+    # Exempt ONLY a value whose non-default half is itself clean. `${HOME:-/dev/null}` has a
+    # `/dev/null` default and a home-rooted variable, and exempting on the default alone would
+    # wave it through -- the sweep's whole subject.
+    #
+    # The literal, NOT `os.devnull`, and deliberately so (raised in review, declined). What is
+    # being compared here is a STRING INSIDE docker-compose.yml, read as bytes off disk. That
+    # string is consumed by a Linux container and is `/dev/null` no matter what machine runs
+    # pytest, whereas `os.devnull` is a property of the HOST -- `nul` on Windows. Swapping it in
+    # would make this exemption stop matching the shipped compose file on a Windows checkout, and
+    # the sweep would fail on a file that had not changed. A host-OS constant is the wrong
+    # authority for the content of a file that never leaves the repository.
+    exempt = [v for v in host_paths
+              if _default_of(v) == "/dev/null" and not _home_rooted_hits(v.split(":-")[0])]
+    host_paths = [v for v in host_paths if v not in exempt]
+    # RE-ANCHORED after the filter, not before. The `assert pairs` above proves the READER found
+    # mounts; it says nothing about what survives to be judged. Measured: a `_default_of` that
+    # returned a constant emptied this list and the sweep passed while checking nothing -- the
+    # exemption was entirely unwitnessed.
+    assert host_paths, (
+        "every mount source was exempted, so this sweep checked nothing -- _default_of is "
+        "matching more than the one `/dev/null` sentinel it is allowed to exempt")
     bad = [(value, hit) for value in host_paths for hit in _home_rooted_hits(value)]
     assert not bad, (
         f"compose host paths must be relative or named volumes, never absolute, home-rooted "
@@ -693,6 +732,62 @@ def test_compose_camofox_url_carries_a_scheme_and_the_shipped_port():
     )
 
 
+def _entrypoint_expands(name: str, script: str) -> bool:
+    """True only for a real shell EXPANSION of `name` -- `$NAME` or `${NAME...}`.
+
+    Two narrowings, each closing a way this fails open. A bare `name in script` substring
+    test accepts a variable whose name is merely a PREFIX of one the script reads
+    (`SLUICE_CLAUDE` on the strength of `SLUICE_CLAUDE_HOST`). And a token-bounded match --
+    the first fix -- is satisfied by a COMMENT, which reads nothing: measured,
+    `SLUICE_CLAUDE_KEY` appears six times in the script and is expanded zero times, yet
+    passed. Only an expansion can support the claim.
+
+    FULL-LINE comments are dropped, and nothing else is.
+
+    A previous version also stripped `'...'` on the grounds that sh does not expand there.
+    That is true of a single-quoted STRING and false of a single quote sitting inside a
+    double-quoted one -- and this very script has such a line (`echo "... 'ssh
+    $SLUICE_CLAUDE_HOST ...' ..."`). Measured: the strip removed the expansion from it. A
+    guard that hides a real read is worse than one that counts an extra, so the unsafe half
+    is gone rather than patched a third time; distinguishing the two needs a shell parser,
+    not another regex.
+
+    The claim this supports is therefore "the script EXPANDS this variable" -- which is what
+    is checkable. An expansion inside an error message counts, and that is honest rather
+    than ideal: `echo "$FOO"` does read `$FOO`. What it still excludes, and what the failure
+    actually was, is a variable the script merely NAMES in prose.
+    """
+    live = re.sub(r"^[ \t]*#[^\n]*$", "", script, flags=re.M)
+    return re.search(rf"\$\{{?{re.escape(name)}(?![A-Za-z0-9_])", live) is not None
+
+
+def _unpinned_neutralised(doc: dict, names: set) -> list:
+    """(service, name, value) for every service that does NOT resolve `name` to the empty pin.
+
+    Reads the PARSED document per service rather than grepping the file, because YAML `<<` merge
+    is KEY-level: a service that merges the shared anchor and then declares its own
+    `environment:` replaces that mapping wholesale and silently loses the pin, while the literal
+    still sits in the file for a grep to find. That is the shape recorded against this very
+    compose file at #173, where a flat search certified a service that had lost VAULT_DIR.
+
+    At module scope so a synthetic document can be run through it. Inline, it could only ever see
+    the live file -- which is clean, so neutralising the assertion changed nothing and the mutant
+    survived.
+    """
+    services = doc.get("services") or {}
+    assert services, "the document declares no services; this check would be vacuous"
+    out = []
+    for svc_name, svc in services.items():
+        env = svc.get("environment") or {}
+        assert isinstance(env, dict), (
+            f"service {svc_name} uses the LIST spelling for environment:, which this check "
+            f"cannot read -- convert it or teach the check that form")
+        for n in names:
+            if env.get(n, None) != "":
+                out.append((svc_name, n, env.get(n, "<absent>")))
+    return out
+
+
 def test_every_env_var_compose_sets_is_a_name_sluice_knows():
     """Deliberately a LITERAL-PRESENCE check, and no stronger claim than that.
 
@@ -705,7 +800,48 @@ def test_every_env_var_compose_sets_is_a_name_sluice_knows():
     names = set(re.findall(r"^\s{4,}([A-Z][A-Z0-9_]{2,}):\s", COMPOSE.read_text(), re.MULTILINE))
     assert names, "found no environment variables in docker-compose.yml; nothing was checked"
     source = "\n".join(p.read_text() for p in (ROOT / "sluice").rglob("*.py"))
-    unknown = [n for n in names if f'"{n}"' not in source and f"'{n}'" not in source]
+    # The container ENTRYPOINT is a reader too, and a real one: it consumes
+    # SLUICE_CLAUDE_SSH_USER and SLUICE_CLAUDE_KEY, neither of which sluice itself ever sees
+    # (#209). Leaving it out would have forced a genuine variable to be deleted or the guard to
+    # be dropped -- and the guard's actual claim is "something in this image reads it", not
+    # "sluice/ reads it".
+    #
+    # Matched on the BARE name, not a quoted literal. Python spells an env lookup
+    # `os.environ["X"]`, shell spells it `${X:-}` -- so the quoted-literal test above finds
+    # nothing in a shell script however many times the variable appears. Measured: three
+    # occurrences, zero matches, and the guard failed on a variable that was genuinely read.
+    entrypoint = (ROOT / "packaging" / "docker-entrypoint.sh").read_text()
+
+
+    # Deliberately set-and-not-read. `SLUICE_CLAUDE_KEY` names a path on the HOST and is the
+    # bind-mount SOURCE; the entrypoint reads a fixed container TARGET instead. It appears in
+    # `environment:` ONLY to pin it empty, because `env_file: .env` would otherwise inject the
+    # host path into the container -- which is what made the documented setup fail. So it is a
+    # neutraliser, not a knob, and the "something reads this" rule does not apply to it. Held to
+    # the stricter standard in exchange: it must be pinned empty, never given a value here.
+    NEUTRALISED = {"SLUICE_CLAUDE_KEY"}
+    # Asserted per SERVICE, from the PARSED document, not by grepping the file. YAML `<<` merge
+    # is key-level: a service that merges the shared anchor and then declares its own
+    # `environment:` replaces that mapping wholesale and silently loses the pin, while the
+    # literal still sits in the file for a grep to find. That is not hypothetical here -- it is
+    # the shape recorded against this very compose file at #173, where a flat search over the
+    # document certified a service that had lost VAULT_DIR.
+    import yaml
+    doc = yaml.safe_load(COMPOSE.read_text())
+    violations = _unpinned_neutralised(doc, NEUTRALISED)
+    assert not violations, (
+        f"these services do not resolve the neutralised variables to the empty pin: "
+        f"{violations}. They are exempt from the reads-it rule ONLY because they are pinned "
+        f"empty; without that, env_file injects the host path and the entrypoint skips setup.")
+    for n in NEUTRALISED:
+        assert re.search(rf"^\s+{n}:\s*\"\"\s*$", COMPOSE.read_text(), re.M), (
+            f"{n} is exempt from the reads-it rule only because it is pinned EMPTY; it now "
+            f"carries a value, so either it is read (drop the exemption) or the pin broke")
+
+    unknown = [n for n in names
+               if n not in NEUTRALISED
+               and f'"{n}"' not in source and f"'{n}'" not in source
+               and not _entrypoint_expands(n, entrypoint)]
     assert not unknown, (
         f"docker-compose.yml sets {unknown}, which appear nowhere in sluice/ as a literal. An "
         f"environment variable sluice does not know is silently ignored"
@@ -817,3 +953,63 @@ def test_dependabot_covers_the_docker_ecosystem():
         "dependabot.yml declares no `docker` ecosystem, so the Dockerfile's digest-pinned "
         "base image will never be bumped"
     )
+
+
+def test_a_commented_expansion_does_not_count_as_a_read():
+    """The falsify partner for `_entrypoint_expands`, calling the REAL function.
+
+    An earlier version defined its own copy of the logic inline, which meant a mutation applied
+    to the real one left this green -- measured, twice over. That is the "testing the helper
+    reproduces the defect one level up" failure (#170), and it is why the function is at module
+    scope rather than nested inside the guard that uses it.
+
+    Synthetic input rather than the live script, because the live script is CLEAN: an assertion
+    made against it passes today and starts failing for the wrong reason the moment the shape
+    appears. The prose row is the failure that actually happened -- `SLUICE_CLAUDE_KEY` appeared
+    six times in comments and error text, expanded zero times, and the guard passed it.
+    """
+    assert not _entrypoint_expands("FOO", "# uses $FOO for the thing\nexec x\n"), \
+        "a comment is not a read"
+    assert not _entrypoint_expands("FOO", 'echo "set FOO to a path" >&2\n'), \
+        "prose naming it is not a read"
+    assert not _entrypoint_expands("FOO", "exec x ${FOOBAR}\n"), \
+        "a longer name is not this one"
+
+    # ...and these ARE reads, including the one inside a message, which the docstring admits.
+    assert _entrypoint_expands("FOO", "exec x $FOO\n")
+    assert _entrypoint_expands("FOO", 'exec x "${FOO:-d}"\n')
+    assert _entrypoint_expands("FOO", 'echo "running with $FOO" >&2\n')
+    # A single quote inside a double-quoted string must not hide the expansion behind it -- the
+    # bug an earlier version of this stripper had, measured against the real entrypoint.
+    assert _entrypoint_expands("FOO", """echo "tries 'ssh $FOO ...' next"\n""")
+
+
+def test_the_neutralised_pin_is_checked_per_service_not_by_grepping_the_file():
+    """The per-service check, against SYNTHETIC compose input.
+
+    The live file is clean, so neutralising the per-service assertion changes nothing and the
+    mutation survives -- a guard whose live input lacks the shape it guards is invisible when it
+    breaks. This supplies the shape: a document whose literal pin is present for a grep to find,
+    while a service that declares its own `environment:` has silently lost it. YAML `<<` merge is
+    KEY-level, so the anchor's whole mapping is replaced -- the hazard recorded against this very
+    compose file at #173.
+    """
+    import yaml
+
+    doc = yaml.safe_load("""
+        x-shared: &shared
+          environment:
+            SLUICE_CLAUDE_KEY: ""
+            CAMOFOX_URL: http://example.invalid
+        services:
+          good:
+            <<: *shared
+          bad:
+            <<: *shared
+            environment:
+              CAMOFOX_URL: http://example.invalid
+        """)
+    violations = _unpinned_neutralised(doc, {"SLUICE_CLAUDE_KEY"})
+    assert violations == [("bad", "SLUICE_CLAUDE_KEY", "<absent>")], (
+        f"the per-service check must flag exactly the service that lost the merged pin, and "
+        f"leave the one that kept it alone: {violations}")
