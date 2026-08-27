@@ -735,7 +735,14 @@ def classify_skills_reconciliation(experience_entries: list, skills_entries: lis
     informational rather than gate-enforcing, so it must never RAISE the way that
     function's own per-token validation does on a malformed entry -- doctor never
     refuses (this module's own house rule, stated at `DoctorReport.exit_code` and in
-    CLAUDE.md).
+    CLAUDE.md). A `Skills` VALUE that is present but not a `str` (an `int`, a `list`)
+    is handled by ABSTAINING -- treated as no claim at all -- rather than by
+    coercing it with `str()`: stringifying a list renders Python's own repr
+    (brackets, quotes, comma-separated elements), and this function's own comma-split
+    would then read those as further "skill names" and could carry a non-string
+    Store's own returned content into a comparison this function's docstring
+    elsewhere promises reports only a COUNT. Abstaining keeps that promise; coercing
+    would not.
 
     REPORTS A COUNT, never the skill's own name: a `DoctorReport` reaches MCP clients
     whole (core/protocols.py's Store contract), and "no doctor row carries user-authored
@@ -763,8 +770,19 @@ def classify_skills_reconciliation(experience_entries: list, skills_entries: lis
         # omitting the key -- core/protocols.py's Store contract does not forbid it,
         # even though the real Vault never produces one) passes straight through and
         # `.split` raises on it. `or ""` catches both shapes doctor must never refuse
-        # on: an absent key and a present-but-falsy one.
-        raw = (e.get("fields") or {}).get("Skills") or ""
+        # on: an absent key and a present-but-falsy one -- but NOT a non-string
+        # TRUTHY one (an int, a list): `or ""` never fires on a truthy value, so
+        # `.split` still raises on those too. `isinstance` closes the gap by
+        # ABSTAINING rather than coercing: stringifying a list would comma-split it
+        # into junk tokens derived from whatever the Store actually returned --
+        # exactly the "no doctor row carries user-authored text" guarantee this
+        # function exists to keep, applied one step earlier to the INPUT rather than
+        # the report. A malformed value is not a claim, so it contributes nothing,
+        # the same empty-means-abstain posture this codebase applies to a preference
+        # gate.
+        raw = (e.get("fields") or {}).get("Skills")
+        if not isinstance(raw, str):
+            continue
         claimed |= {t.strip() for t in raw.split(",") if t.strip()}
 
     titles = {e.get("title", "") for e in skills_entries}
