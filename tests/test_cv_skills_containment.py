@@ -228,3 +228,74 @@ def test_row_2_fails_closed_when_no_entry_declares_skills():
     assert V.section_spans(cv)[2]  # scope: the SKILLS region was actually collected
     v = V.validate(cv, s)
     assert any("UNSOURCED SKILL" in x for x in v)
+
+
+def test_a_two_word_skill_spanning_a_block_seam_still_refuses_through_validate():
+    """Task 4 review's inherited coverage gap: row 2 searches `source_tokens` PER BLOCK
+    (tests/test_cv_bundle.py's own `test_source_tokens_are_per_block_so_a_two_word_
+    skill_cannot_match_across_a_seam` pins that at the bundle-construction level), but
+    nothing before this test drove `validate()` itself through the scenario -- the
+    property was verified only by COMPOSITION (that unit test plus Task 4's per-block
+    loop), which stops at the bundle rather than reaching the gate.
+
+    AL1's body ends with the first word of a two-word skill and BE1's body begins with
+    the second -- two SEPARATE blocks, so the seam between them is not itself a
+    contiguous run anywhere in the user's prose."""
+    b = build_bundle(
+        entries=[
+            {"company": "Example Alpha", "title": "Engineer", "metrics": "",
+             "body": "Delivered the Example", "fields": dict(Skills=""),
+             "best_for": "", "category": ""},
+            {"company": "Example Beta", "title": "Engineer", "metrics": "",
+             "body": "Framework rollout continued.", "fields": dict(Skills=""),
+             "best_for": "", "category": ""},
+        ],
+        baseline="Example Alpha.", negatives=[], jd_keywords=[],
+        prefix_map={"Example Alpha": "AL", "Example Beta": "BE"})
+    s = bundle_sources(b)
+    # Scope: assert the seam actually exists (the two tokens ARE adjacent across the
+    # block boundary) before asserting on validate()'s output -- otherwise this test
+    # would pass for the wrong reason (no seam to fail to bridge).
+    assert s.source_tokens[0][-1] == "Example"
+    assert s.source_tokens[1][0] == "Framework"
+    cv = _cv_with_skills(["Example Framework"])
+    assert V.section_spans(cv)[2]  # scope: the SKILLS region was actually collected
+    v = V.validate(cv, s)
+    assert any("UNSOURCED SKILL" in x and "Example Framework" in x for x in v)
+
+
+# --- Task 5: row 1 -- a bullet's skill must belong to a cited entry -----------------
+
+def test_a_skill_named_in_a_bullet_citing_the_wrong_entry_is_refused():
+    s = _two_entry_sources(al_skills="Example Query", be_skills="Example Framework")
+    v = V.validate(_bullet("Ran the Example Query work [BE1]"), s)
+    assert any("MISATTRIBUTED SKILL" in x and "Example Query" in x for x in v)
+
+
+def test_row_1_abstains_when_a_cited_entry_declares_no_skills():
+    """SC5, measured in review: with the abstain condition bundle-wide instead of
+    per-entry, a bullet citing an un-annotated entry and naming a skill present in THAT
+    ENTRY'S OWN BODY was a hard violation -- the gate refusing a token from the cited
+    entry's own source line."""
+    s = _two_entry_sources(al_skills="Example Query", be_skills="")
+    assert V.validate(_bullet("Ran the Example Query work [BE1]"), s) == []
+
+
+def test_row_1_abstains_on_a_blank_value_not_only_a_missing_key():
+    """`_evidence_entries` materialises every declared field, so `Skills == ""` is the
+    PRODUCTION shape and a key-omitting fixture proves nothing. A presence-keyed
+    implementation passes that fixture while re-opening the over-fire above."""
+    s = _two_entry_sources(al_skills="Example Query", be_skills="   ")
+    assert V.validate(_bullet("Ran the Example Query work [BE1]"), s) == []
+
+
+def test_row_1_is_case_sensitive_so_ordinary_english_never_collides():
+    """SC9: row 1 scans free prose, where a short common-word skill name would otherwise
+    collide with its ordinary sense. Every failure mode here is an UNDER-fire.
+
+    `Widget` is the fixture BECAUSE it is an ordinary English noun as well as a plausible
+    skill name -- that collision is the whole point of the row. It must stay invented: a
+    real language or product name here would sit in the candidate's own declared-skills
+    slot, which is the position a real skill set leaks from."""
+    s = _two_entry_sources(al_skills="Widget", be_skills="Example Framework")
+    assert V.validate(_bullet("Ran the widget rework [BE1]"), s) == []
