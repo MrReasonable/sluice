@@ -1792,14 +1792,15 @@ def test_the_evidence_skills_collector_sees_every_shape_it_claims_to():
     inline_text = 'Skills: Example Query, Example Framework\\nverified: x'
     assert _block_list_skill_items(block_pattern, inline_text) == []
 
-    # REGRESSION (found by this task's own planting witness): a bare `Skills:` followed
-    # by a REAL newline then a block-list item must not ALSO satisfy the comma
-    # collector's bare-value alternative. `\s` matches a real newline, so `Skills:\s*`
-    # used to swallow the line break and start its value capture on `- Example Torrent`
-    # itself -- a bogus DASH-PREFIXED second identity for the same value the block-list
-    # collector already found correctly. `_evidence_field_re`'s post-colon gap is
-    # `[ \t]*` specifically to close this; a regression here reopens it silently, for
-    # `Company:` too, since the two share one pattern.
+    # REGRESSION (found by this task's own planting witness, which used a different value
+    # in this same shape -- "Example Torrent", planted in tests/test_doctor.py and
+    # reverted): a bare `Skills:` followed by a REAL newline then a block-list item must
+    # not ALSO satisfy the comma collector's bare-value alternative. `\s` matches a real
+    # newline, so `Skills:\s*` used to swallow the line break and start its value capture
+    # on `- Example Query` itself -- a bogus DASH-PREFIXED second identity for the same
+    # value the block-list collector already found correctly. `_evidence_field_re`'s
+    # post-colon gap is `[ \t]*` specifically to close this; a regression here reopens it
+    # silently, for `Company:` too, since the two share one pattern.
     assert comma_pattern.findall(real_block) == []
 
 
