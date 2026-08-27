@@ -276,17 +276,31 @@ def test_row_1_abstains_when_a_cited_entry_declares_no_skills():
     """SC5, measured in review: with the abstain condition bundle-wide instead of
     per-entry, a bullet citing an un-annotated entry and naming a skill present in THAT
     ENTRY'S OWN BODY was a hard violation -- the gate refusing a token from the cited
-    entry's own source line."""
+    entry's own source line.
+
+    POSITIVE CONTROL (review round 1): the identical bullet and vocabulary, but with
+    BE1's `Skills:` populated instead of blank, DOES report the violation -- pinning the
+    silence below to the abstain condition rather than to the row never firing at all."""
+    bullet = _bullet("Ran the Example Query work [BE1]")
+    populated = _two_entry_sources(al_skills="Example Query", be_skills="Example Framework")
+    assert any("MISATTRIBUTED SKILL" in x for x in V.validate(bullet, populated))
     s = _two_entry_sources(al_skills="Example Query", be_skills="")
-    assert V.validate(_bullet("Ran the Example Query work [BE1]"), s) == []
+    assert V.validate(bullet, s) == []
 
 
 def test_row_1_abstains_on_a_blank_value_not_only_a_missing_key():
     """`_evidence_entries` materialises every declared field, so `Skills == ""` is the
     PRODUCTION shape and a key-omitting fixture proves nothing. A presence-keyed
-    implementation passes that fixture while re-opening the over-fire above."""
+    implementation passes that fixture while re-opening the over-fire above.
+
+    POSITIVE CONTROL (review round 1): the identical bullet and vocabulary, but with
+    BE1's `Skills:` populated instead of whitespace-only, DOES report the violation --
+    pinning the silence below to the blank value rather than to the row never firing."""
+    bullet = _bullet("Ran the Example Query work [BE1]")
+    populated = _two_entry_sources(al_skills="Example Query", be_skills="Example Framework")
+    assert any("MISATTRIBUTED SKILL" in x for x in V.validate(bullet, populated))
     s = _two_entry_sources(al_skills="Example Query", be_skills="   ")
-    assert V.validate(_bullet("Ran the Example Query work [BE1]"), s) == []
+    assert V.validate(bullet, s) == []
 
 
 def test_row_1_is_case_sensitive_so_ordinary_english_never_collides():
@@ -296,6 +310,13 @@ def test_row_1_is_case_sensitive_so_ordinary_english_never_collides():
     `Widget` is the fixture BECAUSE it is an ordinary English noun as well as a plausible
     skill name -- that collision is the whole point of the row. It must stay invented: a
     real language or product name here would sit in the candidate's own declared-skills
-    slot, which is the position a real skill set leaks from."""
+    slot, which is the position a real skill set leaks from.
+
+    POSITIVE CONTROL (review round 1): the identical bullet with the skill spelled in
+    MATCHING case DOES report the violation -- pinning the silence below to case rather
+    than to the skill being absent from the vocabulary or the bullet never being
+    collected."""
     s = _two_entry_sources(al_skills="Widget", be_skills="Example Framework")
+    assert any("MISATTRIBUTED SKILL" in x
+               for x in V.validate(_bullet("Ran the Widget rework [BE1]"), s))
     assert V.validate(_bullet("Ran the widget rework [BE1]"), s) == []
