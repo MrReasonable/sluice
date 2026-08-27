@@ -12,6 +12,8 @@ _RULES = """CV RULES (follow exactly):
 - Rephrasing changes wording and emphasis, never facts or numbers. Any number or named fact you include must remain unchanged from the bundle entry it came from.
 - Every WORK EXPERIENCE bullet MUST end with a citation [id] naming the bundle entry it came from (several allowed: [id] [id]). No uncited bullets. Any number in a bullet must appear in a cited entry.
 - The SKILLS INVENTORY section is FRAMING, not a source. Use it to choose which experience entries to lead with and how to describe them. Never cite it, never quote a number from it, and never introduce a claim that rests on it alone: every fact in the CV must still come from the BASELINE CV or a VERIFIED EXPERIENCE ENTRY.
+- You may name a skill in a WORK EXPERIENCE bullet only if an entry that bullet cites lists that skill. If no cited entry lists it, leave it out.
+- Every line of the SKILLS section must come from the SOURCE BUNDLE. Do not add a skill the bundle does not contain.
 - {employer_line}
 - NO em dashes anywhere. Use commas, colons, semicolons, periods, or parentheses. No double hyphens (--). En-dash date ranges (12/2025-present) are fine.
 - No AI slop (avoid these words/phrases and any inflection of them: {banned_phrases}). Short sentences. Real metrics only.
@@ -36,7 +38,30 @@ CERTIFICATES
 - cert
 
 EDUCATION
-- university, dates | degree"""
+- university, dates | degree
+{skills_block}"""
+
+# The gated SKILLS section's format-contract example. Interpolated into `_RULES` only
+# when `build_prompt` is called with `skills_requested=True` -- see that function.
+# SC5's request-abstain: an entry-free vault (no `Skills:` field anywhere in the
+# Experience Library) must never see this text, or the model complies with a section
+# the hard gate (row 2, cv/validate.py) can license nothing for, earning a guaranteed
+# HARD violation on every single lead and burning the one retry for free.
+#
+# Named `_SKILLS_PROMPT_BLOCK`, not `_SKILLS_BLOCK`: tests/test_prompt_neutrality.py's
+# constant discovery (`_prompt_symbols_in`) admits a module-level constant only when
+# `PROMPT` is in its name. That buys a SECOND, independent sweep route for whatever this
+# block ever says -- one that survives a later regression in `_render`'s override
+# precedence (see that file's `_render`), rather than depending solely on it.
+#
+# Its single leading newline is what produces a blank line before the SKILLS header once
+# spliced after "- university, dates | degree\n" above (a trailing "\n" there plus this
+# constant's own leading "\n"), matching the blank-line-before-header convention every
+# other section in this format contract already follows.
+_SKILLS_PROMPT_BLOCK = """
+SKILLS
+- skill
+"""
 
 
 def _employer_line(employers):
@@ -93,13 +118,15 @@ def _banned_phrases_sentence(slop_allow=None):
 # explicitly anyway, already non-blank (guaranteed by the skipped-config refusal that runs
 # before compose is ever reached).
 def build_prompt(bundle_text, jd, company, role, *, name, contact="",
-                  employers=None, prior_violations=None, slop_allow=None):
+                  employers=None, prior_violations=None, slop_allow=None,
+                  skills_requested=False):
     parts = [
         f"Compose a tailored CV for {name} applying for {role} at {company}.",
         "",
         _RULES.format(contact=contact, name_heading=name.upper(),
                      employer_line=_employer_line(employers), role=role,
-                     banned_phrases=_banned_phrases_sentence(slop_allow)),
+                     banned_phrases=_banned_phrases_sentence(slop_allow),
+                     skills_block=_SKILLS_PROMPT_BLOCK if skills_requested else ""),
         "",
         "=== THE ROLE (JD) ===",
         jd or "(no JD text captured; compose from the bundle for a general fit)",
@@ -124,7 +151,15 @@ def build_prompt(bundle_text, jd, company, role, *, name, contact="",
 # slip -- never legitimate CV content. `slop.py`'s unqualified DOUBLE-HYPHEN-DASH
 # rule correctly rejects it either way; this recovers the artefact BEFORE that gate
 # ever sees it rather than weakening the gate to tolerate it.
-_REQUIRED_HEADERS = {"PROFILE", "WORK EXPERIENCE", "CERTIFICATES", "EDUCATION"}
+#
+# "SKILLS" (#168 Task 8) only WIDENS what `_is_envelope_aside` treats as real CV content
+# -- it can never cause a genuine CV to fail closed, only stop a genuine SKILLS section
+# from being misread as a stray aside. Measured on a realistic full-wrap #28 envelope
+# with this entry present: a bulleted SKILLS section is left intact already, because
+# SC7's bulleted shape (see `_looks_like_cv_content`) already carries the protection --
+# so no separate "envelope survival" guard is added here; one would be an equivalent
+# mutant; it would pass whether or not this line was correct.
+_REQUIRED_HEADERS = {"PROFILE", "WORK EXPERIENCE", "CERTIFICATES", "EDUCATION", "SKILLS"}
 
 
 # Deliberately a LITERAL duplicate of cv/parse.py's _TRAILING_MARKERS, not an
@@ -231,9 +266,11 @@ def _unwrap_agent_envelope(text):
 # cv/engine.py's run_one actually calls (build_prompt is an internal helper compose() forwards
 # to), so a reader arriving at the real call site is exactly who that comment exists to reach.
 def compose(backend, bundle_text, jd, company, role, *, name, contact="",
-            employers=None, prior_violations=None, slop_allow=None):
+            employers=None, prior_violations=None, slop_allow=None,
+            skills_requested=False):
     raw = backend.complete(build_prompt(bundle_text, jd, company, role, name=name,
                                         contact=contact, employers=employers,
                                         prior_violations=prior_violations,
-                                        slop_allow=slop_allow))
+                                        slop_allow=slop_allow,
+                                        skills_requested=skills_requested))
     return _unwrap_agent_envelope(raw)

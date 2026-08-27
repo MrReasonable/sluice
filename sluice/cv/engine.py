@@ -359,11 +359,27 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
                 # own `allow` below) while the PROMPT kept instructing the model
                 # against the very phrase the candidate asked to keep -- suppressing
                 # the hold while composing the candidate's own voice out anyway.
+                #
+                # skills_requested=any(es.skills for es in sources.entries.values())
+                # (#168 Task 8, SC5's request abstain): `sources` is already bound above,
+                # before this loop and before this call, from the SAME `b` that produced
+                # `bundle_text` -- so this reads the identical per-entry `Skills:`
+                # frozensets row 1 (cv/validate.py's attribution check) and row 2 (the
+                # bundle-wide containment check) both read. Deliberately NOT a second
+                # computation via cv/bundle.py's private `_skill_items` over
+                # `bundle["entries"]`: SC5 requires the request condition and the gate's
+                # own abstain condition to agree, and reading from one already-derived
+                # place is what makes them unable to disagree -- a second computation
+                # could drift from this one and either request a section the gate can
+                # license nothing for (SC5's failure) or silently withhold a section the
+                # gate would have allowed.
                 cv_text = _compose.compose(backend, bundle_text, jd, company, role,
                                            name=cv_name, contact=cv_contact,
                                            employers=cvcfg.employers,
                                            prior_violations=retry_msgs,
-                                           slop_allow=cvcfg.slop_allow)
+                                           slop_allow=cvcfg.slop_allow,
+                                           skills_requested=any(
+                                               es.skills for es in sources.entries.values()))
             except Exception as e:
                 # A retry that never RETURNS must not bin a lead attempt 1 already
                 # earned. compose() catches nothing, so a BackendError -- a timeout,

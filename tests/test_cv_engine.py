@@ -2845,6 +2845,45 @@ def test_a_skill_reaches_the_composers_prompt(monkeypatch):
     assert "Example Cloud Skill" in be.prompts[0]
 
 
+# ── #168 Task 8: the prompt requests a SKILLS section only when an ENTRY declares one ──
+# Deliberately NOT `_SKILL_ENTRY`/`skills=[...]` above: that is the #165 FRAMING corpus,
+# a wholly separate feature (an evidence kind of its own, never citable). This is the
+# per-entry `Skills:` field SC5's request condition actually reads --
+# `sources.entries[id].skills`, derived by cv/bundle.py's `bundle_sources` from
+# `entries[i]["fields"]["Skills"]`. "Example Query" is already on
+# tests/test_fixture_name_neutrality.py's `_REVIEWED_SKILL_VALUES` roster.
+_SKILL_DECLARING_ENTRY = {**ENTRIES[0], "fields": {"Skills": "Example Query"}}
+
+
+def test_the_composer_is_asked_for_a_skills_section_when_an_entry_declares_one(monkeypatch):
+    """SC5's request condition, wired end to end through run_one. `sources` is bound
+    once in cv/engine.py, before the retry loop and before compose() is ever called, and
+    is what BOTH this prompt request and cv/validate.py's own gate read -- see
+    cv/engine.py's comment on why `skills_requested` must not be a second, independent
+    computation of the same value."""
+    _served(monkeypatch)
+    be = RecordingBackend()
+    run_one(_skills_note(), SkillsVault([_SKILL_DECLARING_ENTRY]), _cfg(), be,
+            FakeCache(), renderer=FakeRenderer())
+    assert be.prompts, "the compose call never happened; this test would pass vacuously"
+    from sluice.cv.compose import _SKILLS_PROMPT_BLOCK
+    assert _SKILLS_PROMPT_BLOCK in be.prompts[0]
+
+
+def test_the_composer_is_not_asked_for_a_skills_section_when_no_entry_declares_one(monkeypatch):
+    """The mirror control, and without it the wiring above is unfalsifiable in the
+    direction that matters: a run_one that always passed skills_requested=True would
+    still pass that test. `ENTRIES` carries no `fields` at all (see its own definition),
+    so every entry's `Skills:` reads as blank -- SC5's abstain case."""
+    _served(monkeypatch)
+    be = RecordingBackend()
+    run_one(_skills_note(), SkillsVault(ENTRIES), _cfg(), be, FakeCache(),
+            renderer=FakeRenderer())
+    assert be.prompts, "the compose call never happened; this test would pass vacuously"
+    from sluice.cv.compose import _SKILLS_PROMPT_BLOCK
+    assert _SKILLS_PROMPT_BLOCK not in be.prompts[0]
+
+
 def test_the_advisory_audit_is_never_shown_the_framing_section(monkeypatch):
     """#165 D11. cv/audit.py's prompt opens 'SOURCE BUNDLE is the ONLY truth', so a CV
     claim resting on a skills line alone would read as SUPPORTED and be served unsigned --

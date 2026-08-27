@@ -121,6 +121,12 @@ _SYNTHETIC_ARGS = {
                     "structured_data": "",
                     "jd": {"markdown": "SYNTHETIC jd"}},
     },
+    # #168 Task 8: `skills_requested` defaults to False, and the SKILLS block it gates
+    # (`_SKILLS_PROMPT_BLOCK`) is the ONLY route into this prompt for a term planted
+    # there -- a defaulted-False render would sweep zero characters of it. True is what
+    # makes the sweep actually reach that text, which is the whole point of overriding a
+    # DEFAULTED parameter (see `_render`'s override-before-default precedence above).
+    "sluice.cv.compose.build_prompt": {"skills_requested": True},
 }
 
 # A floor, not a roster: every prompt known when this was written must still be swept, so
@@ -190,15 +196,31 @@ def _strings_in(value):
 
 def _render(func, qualname):
     """`func` called with a fixed synthetic value for each REQUIRED parameter; optional
-    ones keep their shipped defaults (which is what renders the FULL ban list, since
-    compose's `slop_allow` defaults to None)."""
+    ones keep their shipped defaults UNLESS `_SYNTHETIC_ARGS` explicitly overrides them
+    (which is what renders the FULL ban list, since compose's `slop_allow` defaults to
+    None, and what renders the CONDITIONAL SKILLS block, since compose's
+    `skills_requested` defaults to False and a defaulted-False call never reaches that
+    block's text at all).
+
+    Overrides are consulted BEFORE the defaulted-parameter `continue` -- an earlier
+    version of this loop checked default-ness first and `continue`d past any parameter
+    carrying one, which made an `_SYNTHETIC_ARGS` entry for a defaulted parameter
+    (`skills_requested`, `slop_allow`) silently inert: the override was computed but
+    never used, so a `_FORBIDDEN` term hidden inside a conditional block reached by that
+    parameter would sweep clean with the whole suite green. Measured twice independently
+    (`_employer_line`'s configured branch was already unswept for exactly this reason).
+    """
     overrides = _SYNTHETIC_ARGS.get(qualname, {})
     args, kwargs = [], {}
     for name, p in inspect.signature(func).parameters.items():
-        if p.default is not inspect.Parameter.empty or p.kind in (
-                p.VAR_POSITIONAL, p.VAR_KEYWORD):
+        if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD):
             continue
-        value = overrides.get(name, _SYNTHETIC.format(name))
+        if name in overrides:
+            value = overrides[name]          # an explicit override beats a default
+        elif p.default is not inspect.Parameter.empty:
+            continue
+        else:
+            value = _SYNTHETIC.format(name)
         if p.kind is p.POSITIONAL_ONLY:
             args.append(value)
         else:
