@@ -225,6 +225,41 @@ def _names_skill(text, skill):
     return _subseq(_tokens(text), _tokens(skill))
 
 
+def _strip_skill_spans(text, skills):
+    """Remove each licensed skill's own span before `\\d+` extraction.
+
+    The same technique this module already applies to citations, and for the same reason:
+    a digit that is part of a NAME is not a metric. Without it `Example Widget3` reads as the
+    number 3 and the only actionable answer is to delete a true skill name.
+
+    Matches COMPLETE TOKEN SEQUENCES, never substrings. A substring removal
+    (`re.sub(re.escape(skill), ...)`) is a hole in the numeric gate, not a fix to it:
+    with `Skills: Example Widget3`, a bullet reading `Widget30` has `Widget3` struck out and
+    leaves `0` behind, so
+    a fabricated `30` passes whenever `0` is licensed by a cited entry. It is also the
+    substring-containment SC9 forbids by name -- `"java" in "javascript"` is the bug rank()
+    was rewritten to remove, and this function must not reintroduce it one layer down.
+
+    CASE-INSENSITIVE, and decided WITHOUT reference to row 1's verdict. Row 1 answers a
+    different question (misattribution) under a case-SENSITIVE rule that deliberately
+    under-fires; gating removal on it converted every one of those under-fires into a
+    hard INVENTED METRIC. `cv/bundle.py`'s PER-TOKEN letter-leading rule is what stops
+    this subtracting a real figure.
+    """
+    hay = _tokens(text)
+    needles = sorted((_tokens(s) for s in skills), key=len, reverse=True)
+    kept, i = [], 0
+    while i < len(hay):
+        for n in needles:
+            if n and [t.casefold() for t in hay[i:i + len(n)]] == [t.casefold() for t in n]:
+                i += len(n)          # drop the whole matched token run
+                break
+        else:
+            kept.append(hay[i])
+            i += 1
+    return " ".join(kept)
+
+
 def validate(cv_text, sources, employers=None, fabrication_decoys=None):
     if not isinstance(sources, BundleSources):
         # Fail loudly at construction. The old second parameter was the rendered bundle
@@ -278,7 +313,24 @@ def validate(cv_text, sources, employers=None, fabrication_decoys=None):
             # the PDF and MUST be checked, and the profile has no BAD-CITATION backstop
             # behind the strip. (#30)
             prose = _CITE_RE.sub("", line)
-            for n in re.findall(r"\d+", prose):
+            # Digit handling (#168, Task 6): the union of entry `Skills:`, NEVER
+            # `sources.source_tokens`. PROFILE has no citation to scope by, but licensing
+            # removal from row 2's (SC4) wide vocabulary -- the baseline's and bodies'
+            # WORDS -- would let any ordinary word in the user's prose blank an adjacent
+            # digit. That is a hole in the numeric gate rather than a fix to it.
+            #
+            # Extraction only, same shape as the WORK-bullet branch just below: `prose`
+            # itself stays UNSTRIPPED of skill spans, because it also feeds the violation
+            # MESSAGE (`prose.strip()[:50]`) a few lines down, and `_strip_skill_spans`
+            # reconstructs its output by re-tokenising and rejoining with single spaces --
+            # it drops everything `_WORD_RE` does not match (a leading bullet marker,
+            # original punctuation and spacing) even when nothing is actually stripped.
+            # Feeding that reconstruction to the MESSAGE, not just the digit scan, was
+            # measured to desync `tests/test_cv_validate.py`'s line-order pin from the raw
+            # line it was written against for no gain in what the check detects.
+            all_skills = (set().union(*(e.skills for e in sources.entries.values()))
+                          if sources.entries else set())
+            for n in re.findall(r"\d+", _strip_skill_spans(prose, all_skills)):
                 if n not in profile_permitted:
                     v.append(f"INVENTED PROFILE METRIC {n} not in bundle: {prose.strip()[:50]}")
         # The bullet-marker test that selects these lines lives in `section_spans` and
@@ -296,7 +348,16 @@ def validate(cv_text, sources, employers=None, fabrication_decoys=None):
                 v.append(f"BAD CITATION {bad}: not bundle entries - {line.strip()[:50]}")
                 continue
             prose = re.sub(r"\[[^\]]+\]", "", line)
-            bullet_nums = set(re.findall(r"\d+", prose))
+            # Digit handling (#168, Task 6): strip each CITED entry's own skill spans
+            # before `\d+` extraction, so a digit-bearing skill name (`Example Widget3`)
+            # does not read as a fabricated metric. Licensed by the entries THIS BULLET
+            # CITES (mirrors `union` two lines down), and decided WITHOUT reference to
+            # row 1's verdict just below -- see `_strip_skill_spans`' own docstring for
+            # why gating removal on row 1 passing converted every one of its deliberate
+            # under-fires into a hard INVENTED METRIC on a skill the user really declared.
+            cited_skills = set().union(*(sources.entries[c].skills for c in cites
+                                         if c in sources.entries)) if cites else set()
+            bullet_nums = set(re.findall(r"\d+", _strip_skill_spans(prose, cited_skills)))
             union = set().union(*(nums[c] for c in cites))
             invented = bullet_nums - union
             if invented:
