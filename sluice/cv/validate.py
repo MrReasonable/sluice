@@ -220,6 +220,11 @@ def _in_source(blocks, item):
         _subseq([t.casefold() for t in block], needle) for block in blocks)
 
 
+def _names_skill(text, skill):
+    """Row 1: `skill`'s token sequence, CASE-SENSITIVELY, in `text`."""
+    return _subseq(_tokens(text), _tokens(skill))
+
+
 def validate(cv_text, sources, employers=None, fabrication_decoys=None):
     if not isinstance(sources, BundleSources):
         # Fail loudly at construction. The old second parameter was the rendered bundle
@@ -296,6 +301,26 @@ def validate(cv_text, sources, employers=None, fabrication_decoys=None):
             invented = bullet_nums - union
             if invented:
                 v.append(f"INVENTED METRIC {sorted(invented)} not in {cites}: {prose.strip()[:50]}")
+            # ROW 1 (SC2): is this attributed to the right role? Licensed by the entries
+            # THIS BULLET CITES -- the identical shape as the numeric rule two lines up,
+            # which permits a figure only if a cited entry carries it.
+            #
+            # ABSTAINS PER-ENTRY (SC5): if ANY cited entry declares no non-empty
+            # `Skills:`, this bullet is not checked at all. Measured otherwise: on a
+            # partially annotated vault a bullet citing an un-annotated entry, naming a
+            # skill from that entry's own body, was a hard violation.
+            #
+            # CASE-SENSITIVE (SC9): this scans free prose. A candidate whose inventory
+            # lists a short common-word skill must not be blocked for using that word in
+            # its ordinary sense. Every failure mode is an under-fire, which is the
+            # direction a hard gate must err.
+            if all(sources.entries[c].skills for c in cites if c in sources.entries):
+                licensed = set().union(*(sources.entries[c].skills for c in cites))
+                vocabulary = set().union(*(e.skills for e in sources.entries.values()))
+                for item in sorted(vocabulary - licensed):
+                    if _names_skill(prose, item):
+                        v.append(f"MISATTRIBUTED SKILL {item!r} not in {cites}: "
+                                 f"{prose.strip()[:50]}")
         if i in skills_by_line:
             # ROW 2 (SC4): did you invent this? Licensed by the bundle's SOURCE TEXT --
             # entry `Skills:` + entry bodies + the baseline -- because `compose._RULES`
