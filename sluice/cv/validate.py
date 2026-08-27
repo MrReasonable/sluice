@@ -30,63 +30,143 @@ from sluice.cv.bundle import BundleSources
 _CITE_RE = re.compile(r"\s*\[[A-Za-z]{2}[0-9]+\]")
 
 
-def section_spans(cv_text):
-    """The PROFILE prose lines and the WORK bullet lines of `cv_text`, 1-indexed.
+# The WORK set. Must stay EXACTLY equal to cv/parse.py's `_BULLET_MARKERS` -- too narrow
+# refuses a gate-clean CV, too wide is a citation-check bypass. Named, not inlined, so
+# `tests/test_cv_parse.py`'s AST guard can recover it BY NAME: with a second marker tuple
+# now alive in this module (`_SKILLS_MARKERS` below, not equal to this one), the guard
+# used to recover "the" literal tuple passed to `.startswith(...)` and index `[0]` --
+# with two candidates, selecting the WORK one by VALUE or by position would make its own
+# equality assertion a tautology, certifying nothing while reading as a real check.
+_WORK_BULLET_MARKERS = ("-", "•", "*")
 
-    Returns `(profile_lines, work_bullet_lines)`, each a list of `(lineno, line)` with
-    the RAW line: both checks below consume it unstripped (`_CITE_RE.sub("", line)`,
-    `line.lstrip()`), so handing back a stripped line would change what they see.
+# The SKILLS region's markers (#168). Pre-shaped to equal cv/parse.py's own
+# `_TRAILING_MARKERS` -- the WORK set plus the en and em dash -- rather than the
+# narrower WORK tuple, and derived from `_WORK_BULLET_MARKERS` the same way
+# `_TRAILING_MARKERS` is derived from `_BULLET_MARKERS` there, so the two en/em-dash
+# characters are typed in exactly one place in each module. Once `cv/parse.py` accepts a
+# SKILLS section of its own (a later task in this plan), this tuple must equal whatever
+# THAT reader accepts, for the identical reason `_WORK_BULLET_MARKERS` must equal
+# `_BULLET_MARKERS`: a marker the parser accepts and this function does not is a gate
+# BYPASS -- the line parses, renders into the PDF, and is never containment-checked here.
+# Wider than the WORK tuple is safe today for the same reason `_TRAILING_MARKERS` is: a
+# SKILLS line is not currently number- or citation-checked at all (Task 3 only COLLECTS
+# the region; validating its contents is Tasks 4-6), so there is no bypass in being wide,
+# only in being narrower than whatever eventually accepts it.
+_SKILLS_MARKERS = _WORK_BULLET_MARKERS + ("–", "—")
+
+
+def section_spans(cv_text):
+    """The PROFILE prose lines, the WORK bullet lines, and the SKILLS bullet lines of
+    `cv_text`, 1-indexed.
+
+    Returns `(profile_lines, work_bullet_lines, skills_lines)`, each a list of
+    `(lineno, line)` with the RAW line: the two existing checks below consume it
+    unstripped (`_CITE_RE.sub("", line)`, `line.lstrip()`), so handing back a stripped
+    line would change what they see. `skills_lines` is collected but not yet CHECKED by
+    anything in this module (#168's Task 3 -- see the SKILLS branch below); it exists so
+    a later task can validate it without re-deriving the region split a third time.
 
     Extracted from `validate`'s own loop so a later scope-limited check can reason about
     the exact lines the gate reasons about, rather than a second copy of the split that
-    would drift from it. `validate` consumes this too -- one state machine, two
-    consumers. `tests/test_cv_validate.py`'s equivalence pin transcribes the loop as it
-    stood BEFORE the extraction and asserts these two lists against it.
+    would drift from it. `validate` consumes this too -- one state machine, three
+    consumers now. `tests/test_cv_validate.py`'s equivalence pin transcribes the loop as
+    it stood BEFORE the extraction (later hand-extended to model the SKILLS run too --
+    see that file's own comment) and asserts the profile/work lists against it.
 
-    The terminator set is `CERTIFICATES`/`EDUCATION` and NOTHING else, deliberately. The
-    obvious generalisation -- "any all-caps line ends the section" -- is a WEAKENING of
-    the fabrication gate, not a tidy-up: bullets under a header this module does not
-    model (PUBLICATIONS, PROJECTS, AWARDS) are citation-checked today, and a generic
-    splitter would silently stop checking them, rendering an uncited claim into the PDF.
-    That is the arm a naive extraction drops, so it is pinned by name.
+    The terminator set for PROFILE/WORK is `CERTIFICATES`/`EDUCATION` and NOTHING else,
+    deliberately. The obvious generalisation -- "any all-caps line ends the section" --
+    is a WEAKENING of the fabrication gate, not a tidy-up: bullets under a header this
+    module does not model (PUBLICATIONS, PROJECTS, AWARDS) are citation-checked today,
+    and a generic splitter would silently stop checking them, rendering an uncited claim
+    into the PDF. That is the arm a naive extraction drops, so it is pinned by name.
 
-    Note that neither header CLEARS the other's flag on the way in: `PROFILE` sets
-    `in_profile` without touching `in_work`, so a CV that repeats `PROFILE` after
-    `WORK EXPERIENCE` puts the same line in BOTH lists. `validate` reports in line order
-    across the two for that reason, and that order is pinned too -- the violation list is
-    fed back to the composer verbatim on its single retry.
+    SKILLS is a DIFFERENT kind of region: a CONTIGUOUS BULLET RUN, not a span held open
+    by a start/end header pair. It ends at the first line that is neither blank nor a
+    SKILLS-shaped bullet, or at `CERTIFICATES`/`EDUCATION` (whichever comes first) -- see
+    the branch's own comments for why a blank must NOT end the run and a non-blank
+    non-bullet line safely may. Only a bullet line is materialised into `skills_lines`;
+    a blank line that merely keeps the run alive is not itself a skill and is dropped,
+    the same way `work_bullet_lines` already drops every non-bullet line inside WORK.
 
-    The marker tuple is the gate's own and must stay the ONLY `startswith((...))` in
-    this module -- `tests/test_cv_parse.py` reads it out of this module's AST (see
-    `test_the_work_bullet_markers_are_exactly_what_the_gate_citation_checks`, which
-    refuses to pass if it finds more than one) and asserts EQUALITY with `cv/parse.py`'s
-    `_BULLET_MARKERS`, because a WORK marker the parser accepts and the gate does not
-    reaches the PDF with the citation check never having looked at it. It is NOT that
-    module's `_TRAILING_MARKERS`, which is deliberately WIDER and scoped to
-    CERTIFICATES/EDUCATION -- sections this helper collects nothing inside, since the
-    terminator clears both flags and only a later PROFILE/WORK EXPERIENCE header can set
-    them again (see the paragraph above: a terminator is not permanent, it holds until
-    the next modelled header). CLAUDE.md is explicit the two tuples stay separate rather
-    than being widened into one.
+    Note that no header CLEARS another's flag on the way IN, with one exception:
+    `PROFILE` sets `in_profile` without touching `in_work`, so a CV that repeats
+    `PROFILE` after `WORK EXPERIENCE` puts the same line in BOTH lists (`validate`
+    reports in line order across the two for that reason, and that order is pinned too --
+    the violation list is fed back to the composer verbatim on its single retry).
+    `SKILLS` is the same shape: entering it does NOT clear `in_work`, which is what lets
+    a `PUBLICATIONS` section emitted after a SKILLS run stay citation-checked (see the
+    branch's own comment). The one asymmetry is `PROFILE` and `SKILLS` DO clear each
+    other -- a CV cannot be inside both at once, since neither is prose a skill bullet
+    could sensibly belong to.
+
+    The WORK marker tuple (`_WORK_BULLET_MARKERS`) is the gate's own citation-check
+    surface and must stay the only NAME `tests/test_cv_parse.py`'s AST guard resolves for
+    that purpose -- see `test_the_work_bullet_markers_are_exactly_what_the_gate_citation_
+    checks`, which asserts EQUALITY with `cv/parse.py`'s `_BULLET_MARKERS`, because a WORK
+    marker the parser accepts and the gate does not reaches the PDF with the citation
+    check never having looked at it. `_SKILLS_MARKERS` is a SECOND, wider tuple used only
+    to shape the SKILLS run (see its own comment above) -- it is NOT `cv/parse.py`'s
+    `_TRAILING_MARKERS`, which stays scoped to CERTIFICATES/EDUCATION, a pair of sections
+    this helper collects nothing inside at all: their terminator clears every flag and
+    only a later PROFILE/WORK EXPERIENCE/SKILLS header can set one again. CLAUDE.md is
+    explicit these tuples stay separate rather than being widened into one.
     """
-    profile, work = [], []
+    profile, work, skills = [], [], []
     in_work = False
     in_profile = False
+    in_skills = False
     for i, line in enumerate(cv_text.splitlines(), 1):
         u = line.strip().upper()
         if u == "PROFILE":
-            in_profile = True
+            in_profile, in_skills = True, False
             continue
         if u == "WORK EXPERIENCE":
-            in_work, in_profile = True, False
+            in_work, in_profile, in_skills = True, False, False
+            continue
+        if u == "SKILLS":
+            # A CONTIGUOUS BULLET RUN that deliberately does NOT clear `in_work`.
+            # Clearing it would swallow a PUBLICATIONS section emitted afterwards, whose
+            # bullets ARE citation-checked today -- measured -- and a fabricated figure
+            # there would ship unchecked. Reverting to WORK on any unmodelled header
+            # instead regresses the mirror case (a PUBLICATIONS bullet after
+            # CERTIFICATES, uncited-clean today). A run that ends at the first non-bullet
+            # line satisfies both, without the "any all-caps line ends the section"
+            # generalisation this function's docstring names as a gate WEAKENING.
+            in_skills, in_profile = True, False
             continue
         if u in ("CERTIFICATES", "EDUCATION"):
-            in_work, in_profile = False, False
+            in_work, in_profile, in_skills = False, False, False
+        is_bullet = line.lstrip().startswith(_SKILLS_MARKERS)
+        # A BLANK line does NOT end the run, and that is the whole correctness of this
+        # branch. `cv/parse.py` skips blank runs in three places -- its own comment calls
+        # that spacing "the LIKELY case, not an exotic one" -- so ending at the first
+        # non-bullet line diverges from the section the parser actually reads. Measured, a
+        # blank under the header put the skills lines in NO region while `parse_cv` still
+        # returned them and the template rendered them: containment-checked by nothing.
+        #
+        # A non-blank non-bullet line DOES end it, and is safe precisely because
+        # `parse_cv` raises `CvParseError` on that same line -- gate and parser fail
+        # closed together.
+        if in_skills and line.strip() and not is_bullet:
+            in_skills = False
+        if in_skills:
+            # Only a BULLET line is materialised here -- a blank kept the run alive
+            # (the check above) but is not itself a skill. The first shipped version of
+            # this branch appended every in-region line unconditionally, so a blank
+            # right after the `SKILLS` header showed up as a stray `(i, "")` entry in
+            # the returned list: harmless to the gate (nothing reads `skills_lines` yet)
+            # but a real defect in the region's own returned contents, caught by the
+            # blank-tolerance test this branch exists to satisfy. `work_bullet_lines`
+            # already drops non-bullet lines the identical way, via its own marker
+            # check below.
+            if is_bullet:
+                skills.append((i, line))
+            continue                       # a skills-region line is NOT also a work bullet
         if in_profile:
             profile.append((i, line))
-        if in_work and line.lstrip().startswith(("-", "•", "*")):
+        if in_work and line.lstrip().startswith(_WORK_BULLET_MARKERS):
             work.append((i, line))
-    return profile, work
+    return profile, work, skills
 
 
 def validate(cv_text, sources, employers=None, fabrication_decoys=None):
@@ -117,7 +197,12 @@ def validate(cv_text, sources, employers=None, fabrication_decoys=None):
     # negatives (excluded by the parse). Broader than a WORK bullet, which is tied to
     # its cited entry, because a profile is an aggregate summary. (#30)
     profile_permitted = baseline.union(*nums.values())
-    profile_lines, work_bullets = section_spans(cv_text)
+    # `_skills_lines` is intentionally unused here: Task 3 (#168) only teaches
+    # `section_spans` to COLLECT the SKILLS region: the two checks below are exactly the
+    # ones that existed before it, unchanged. Validating what a skill line claims is
+    # Tasks 4-6's job, on this same collected list -- this call site does not change
+    # again to gain that, only its body does.
+    profile_lines, work_bullets, _skills_lines = section_spans(cv_text)
     # The two line SETS come from `section_spans` so a later scope-limited check (#167)
     # can share this split instead of keeping a second copy that would drift from it; the
     # two checks below are unchanged. Merged back into ONE line-ordered pass, not two

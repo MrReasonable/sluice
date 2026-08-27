@@ -452,29 +452,57 @@ def test_profile_strip_matches_render_citation_shape():
 # so the test that certifies it has to compare it against that loop AS SHIPPED, never
 # against itself. `_validate_line_sets_before_the_extraction` below is transcribed from
 # `git show b831dc9:sluice/cv/validate.py` lines 97-123, i.e. the loop as it stood
-# BEFORE `section_spans` existed. The ONLY change made in transcription is
+# BEFORE `section_spans` existed. The first change made in transcription was
 # `enumerate(..., 1)`: the pre-change loop selected lines without numbering them, and an
-# equivalence assertion needs each selected line to carry an identity. Every predicate --
-# the header comparisons, both `continue`s, the terminator set, the marker tuple -- is
-# byte-for-byte the pre-change code.
+# equivalence assertion needs each selected line to carry an identity. Every OTHER
+# predicate -- the header comparisons, both `continue`s, the terminator set, the marker
+# tuple -- was, at that point, byte-for-byte the pre-change code.
 #
 # Deriving this reference by reading the NEW helper instead would assert that the code
 # equals itself and certify nothing. A silent weakening of the fabrication gate is
 # precisely what that would let ship green.
+#
+# #168's Task 3 extends this a SECOND time, by hand, for the identical reason: the
+# alphabet the random sweep below draws from already contains "SKILLS", and once
+# `section_spans` learns to pull a SKILLS bullet run out of WORK, this reference and
+# `section_spans` genuinely diverge on any CV where a WORK-shaped bullet sits inside a
+# SKILLS region -- measured, before this extension, on ~127/2000 rows at the sweep's
+# shipped seed. That divergence is EXPECTED and does not indicate a bug in either side:
+# it is exactly the behaviour change #168 exists to make (a SKILLS bullet is no longer a
+# WORK bullet), and the reference has to model it or the sweep would fail on the new,
+# correct behaviour instead of confirming it. The SKILLS branch below is typed
+# independently from `section_spans`' own -- not copy-pasted -- so the two can still
+# disagree if either has a bug; `test_the_section_span_helper_matches_the_pre_extraction_
+# loop_on_random_cvs` is what actually exercises that independence over 2000 rows.
 def _validate_line_sets_before_the_extraction(cv_text):
     profile, work = [], []
     in_work = False
     in_profile = False
+    in_skills = False
     for i, line in enumerate(cv_text.splitlines(), 1):
         u = line.strip().upper()
         if u == "PROFILE":
-            in_profile = True
+            in_profile, in_skills = True, False
             continue
         if u == "WORK EXPERIENCE":
-            in_work, in_profile = True, False
+            in_work, in_profile, in_skills = True, False, False
+            continue
+        if u == "SKILLS":
+            in_skills, in_profile = True, False
             continue
         if u in ("CERTIFICATES", "EDUCATION"):
-            in_work, in_profile = False, False
+            in_work, in_profile, in_skills = False, False, False
+        # This reference never returns a `skills` list of its own -- it only needs to
+        # know whether a line is CONSUMED by the SKILLS run, so it can keep it out of
+        # `work` the same way `section_spans` does. The wider SKILLS-shaped marker set
+        # (WORK's three plus the en and em dash) governs region CONTINUATION here, same
+        # as it does in `section_spans`: a blank line does not end the run, and a
+        # non-blank non-bullet line does.
+        is_skills_bullet = line.lstrip().startswith(("-", "•", "*", "–", "—"))
+        if in_skills and line.strip() and not is_skills_bullet:
+            in_skills = False
+        if in_skills:
+            continue                       # a skills-region line is never a WORK bullet
         if in_profile:
             profile.append((i, line))
         if in_work and line.lstrip().startswith(("-", "•", "*")):
@@ -545,7 +573,7 @@ def test_the_section_span_helper_reproduces_validates_own_profile_and_work_line_
     # EDUCATION, so a generic section splitter would silently stop citation-checking
     # bullets under PUBLICATIONS or PROJECTS -- weakening the fabrication gate while
     # scoping a style rule.
-    profile, work = section_spans(cv_text)
+    profile, work, _skills = section_spans(cv_text)
     assert [n for n, _ in profile] == _lines_validate_profile_checks(cv_text)
     assert [n for n, _ in work] == _lines_validate_citation_checks(cv_text)
     # The checks consume the RAW line (`_CITE_RE.sub("", line)`, `line.lstrip()`), so the
@@ -572,7 +600,7 @@ def test_the_section_span_helper_matches_the_pre_extraction_loop_on_random_cvs()
     profile_seen = work_seen = 0
     for _ in range(2000):
         cv = "\n".join(rng.choice(alphabet) for _ in range(rng.randint(0, 15)))
-        profile, work = section_spans(cv)
+        profile, work, _skills = section_spans(cv)
         assert (profile, work) == _validate_line_sets_before_the_extraction(cv), cv
         profile_seen += len(profile)
         work_seen += len(work)
@@ -597,14 +625,14 @@ def test_the_equivalence_corpus_actually_exercises_both_line_sets():
 def test_a_bullet_under_PUBLICATIONS_is_still_a_WORK_bullet():
     cv = ("PROFILE\nProse.\n\nWORK EXPERIENCE\n01/2020-present | X | Role\n"
           "- did a thing [e1]\n\nPUBLICATIONS\n- a paper [e1]\n")
-    _, work = section_spans(cv)
+    _, work, _skills = section_spans(cv)
     assert len(work) == 2, "PUBLICATIONS does not end the WORK section"
 
 
 def test_CERTIFICATES_ends_the_WORK_section():
     cv = ("PROFILE\nProse.\n\nWORK EXPERIENCE\n01/2020-present | X | Role\n"
           "- did a thing [e1]\n\nCERTIFICATES\n- a cert\n")
-    _, work = section_spans(cv)
+    _, work, _skills = section_spans(cv)
     assert len(work) == 1, "CERTIFICATES ends the WORK section"
 
 
