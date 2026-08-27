@@ -690,7 +690,7 @@ Each closes a specific fail-open and must be witnessed by mutation — moving or
 | Span-removal independence | gating span removal on row 1's verdict again (3.4), which converts a row-1 under-fire into a hard `INVENTED METRIC` |
 | Blank-value handling | treating a blank `Skills:` as a declared value — the default state of every note the day SC3 lands |
 
-### 11.1 Five existing guards this collides with
+### 11.1 Nine existing guards this collides with
 
 Round 2 found three the earlier revision missed. None may be deleted; each needs a deliberate,
 argued change:
@@ -721,6 +721,14 @@ argued change:
    all three read the result as an allowlist, so all three move with it.
 8. `tests/test_cv_parse.py`'s implication sweep gains a **third** documented exception (the SKILLS
    grammar sibling in section 11), alongside the LOCATION and repeated-trailing-header ones.
+9. `test_evidence_skill_values_are_on_the_reviewed_roster` (11.2) -- not a pre-existing guard this
+   design breaks, but a NEW one this design's own work makes go red repeatedly: Task 4 is where
+   fixture skill values start accumulating (`tests/test_cv_skills_containment.py`), and the roster
+   this test enforces has no entries until 11.2 lands, ten tasks later. A task whose definition of
+   done is a green suite cannot defer the fix that far — the neutrality file's own docstring warns
+   this is exactly the suppression pressure that gets a real guard weakened rather than satisfied.
+   Each task must roster its OWN new values in the same change, on `_REVIEWED_SKILL_VALUES`, never
+   `_REVIEWED_FIXTURE_IDENTITIES` (11.2 states why).
 
 ### 11.2 Fixture neutrality
 
@@ -797,7 +805,7 @@ Definition of done for every block: `./.venv/bin/python -m pytest` green, and
    markers and both 4.3 preservation cases; both containment rows with SC5's abstain and fail-closed
    rules; SC6's digit handling and token-shape refusal; `parse.py` + `CvDocument`; `_RULES`' three
    additions and the `composer_headings()` derivation change; the section
-   12 repair; the five guard collisions in 11.1.
+   12 repair; the nine guard collisions in 11.1.
 2. Doctor rows, plus `experience list` surfacing `Skills:` so they have a locator.
 3. The neutrality collector extension (11.2). (`_render_evidence_note`'s blank `Skills:` is **not**
    work and does not land here: it writes `{k: str(fields.get(k, "")) for k in spec.fields}`, so the
