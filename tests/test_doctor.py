@@ -2127,6 +2127,28 @@ def test_a_none_skills_value_does_not_raise():
     assert classify_skills_reconciliation([entry], []) == []
 
 
+def test_a_non_string_truthy_skills_value_does_not_raise():
+    """The gap `or ""` alone left open: `or ""` only ever fires on a FALSY value
+    (None, "", missing), so a present-but-TRUTHY non-string (an int, a list) still
+    reached `.split` and raised -- reachable by exactly the argument that justified
+    closing the None case, since `core/protocols.py`'s Store contract does not
+    require `fields["Skills"]` to be a `str` either. Both shapes covered in one test:
+    an `int` (`5`) and a `list` (two items) -- an `int` alone would not prove the list
+    shape is handled, since a naive `isinstance(raw, (int, ...))`-shaped fix could
+    special-case just one type and still crash on the other.
+
+    Built via subscript assignment, matching the None test immediately above and for
+    the identical reason: `5` and `["a", "b"]` are not candidate skill NAMES, so there
+    is nothing here for a human to confirm invented-vs-real, and no value is being
+    hidden from the neutrality sweep by using this shape."""
+    entry_int = {"fields": {}}
+    entry_int["fields"]["Skills"] = 5
+    entry_list = {"fields": {}}
+    entry_list["fields"]["Skills"] = ["a", "b"]
+    assert classify_skills_reconciliation([entry_int], []) == []
+    assert classify_skills_reconciliation([entry_list], []) == []
+
+
 def test_duplicate_claims_across_entries_count_once():
     """`claimed` is built as a SET across every experience entry -- two entries both
     naming "Example Ghost" (absent from the inventory) must report ONE unmatched name,
