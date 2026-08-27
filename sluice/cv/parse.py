@@ -56,16 +56,30 @@ class CvDocument:
     contact: str
     profile: str
     work: list[Role]
+    skills: list[str]
     certificates: list[str]
     education: list[str]
 
 
-# The only two headers legal immediately after a WORK EXPERIENCE role's bullets end.
-# A line that is neither of these AND fails to be followed by a valid meta line (see
-# `_is_header_shaped`'s use below) is refused by name rather than silently absorbed as a
-# company, which would only fail one line later as a bad meta line and hide the real
+# The headers legal immediately after a WORK EXPERIENCE role's bullets end (or after
+# each other -- the trailing-section reader below accepts them in ANY order, see its own
+# comment). A line that is neither of these AND fails to be followed by a valid meta line
+# (see `_is_header_shaped`'s use below) is refused by name rather than silently absorbed
+# as a company, which would only fail one line later as a bad meta line and hide the real
 # problem behind a misleading one.
-_TRAILING_SECTIONS = frozenset({"CERTIFICATES", "EDUCATION"})
+#
+# SKILLS joined this set at #168 Task 7. Before that, `parse_cv` rejected every SKILLS
+# section outright (an "unmodelled section header" refusal at the header line, whatever
+# followed it), which is what let `validate.section_spans`' SKILLS run (#168 Task 3) end
+# its collection at the first non-blank non-bullet line "for free" -- the parser refused
+# the whole document before that line's contents could matter. Adding SKILLS here removes
+# that accident, so the correspondence has to be established instead: the entry reader
+# below (`_is_trailing_entry`, shared by all three headers) must refuse the same
+# terminator line the gate's SKILLS run stops at, or a line the gate never inspected
+# reaches the PDF. `test_the_skills_region_markers_equal_what_the_gate_collects`
+# (tests/test_cv_parse.py) is what pins that this reader's marker set is not narrower
+# than the gate's own `_SKILLS_MARKERS`.
+_TRAILING_SECTIONS = frozenset({"SKILLS", "CERTIFICATES", "EDUCATION"})
 
 # WORK EXPERIENCE bullets ONLY (the loop below), and EQUAL to the gate's own set --
 # measured, not asserted in passing: `cv/validate.py`'s citation check fires on
@@ -86,22 +100,30 @@ _TRAILING_SECTIONS = frozenset({"CERTIFICATES", "EDUCATION"})
 # `test_the_work_bullet_markers_never_exceed_what_the_gate_citation_checks` derives that
 # set from validate.py's own AST and asserts equality, so a change to either side reds.
 #
-# The CERTIFICATES/EDUCATION reader does NOT use this tuple -- see `_TRAILING_MARKERS`
-# just below, which is deliberately wider. An earlier version of this comment said the
-# trailing reader "reuses this exact tuple", and that stopped being true in the very
-# commit that split them: the ceiling argument above is what forces WORK to match the
-# gate exactly, and it has no force in a section the gate never citation-checks, where
-# only the floor (do not refuse gate-clean input) applies.
+# The trailing-section reader (CERTIFICATES/EDUCATION/SKILLS, below) does NOT use this
+# tuple -- see `_TRAILING_MARKERS` just below, which is deliberately wider. An earlier
+# version of this comment said the trailing reader "reuses this exact tuple", and that
+# stopped being true in the very commit that split them: the ceiling argument above is
+# what forces WORK to match the gate exactly, and it has no force in a section the gate
+# never citation-checks, where only the floor (do not refuse gate-clean input) applies.
 _BULLET_MARKERS = ("-", "•", "*")
 
-# CERTIFICATES/EDUCATION only, and DELIBERATELY WIDER than `_BULLET_MARKERS`. Widening
-# the shared tuple above would be a gate bypass: `validate.section_spans` citation-checks
-# a WORK line only when it starts with one of `-`/`•`/`*`, so a marker this parser accepted
-# there and the gate did not would render an UNCITED bullet into the PDF with the
-# citation gate never having looked at it. That reasoning does not reach the two trailing
-# sections, because the gate never citation-checks them AT ALL (`in_work` is false
-# throughout) -- there is no check here for a wider marker to slip past, so the only
-# effect of accepting one is that a gate-clean CV stops being refused.
+# CERTIFICATES/EDUCATION/SKILLS only, and DELIBERATELY WIDER than `_BULLET_MARKERS`.
+# Widening the shared tuple above would be a gate bypass: `validate.section_spans`
+# citation-checks a WORK line only when it starts with one of `-`/`•`/`*`, so a marker
+# this parser accepted there and the gate did not would render an UNCITED bullet into the
+# PDF with the citation gate never having looked at it. That reasoning does not reach the
+# three trailing sections, because the gate never citation-checks any of them AT ALL
+# (`in_work` is false throughout CERTIFICATES/EDUCATION, and a SKILLS line is diverted to
+# `skills_lines` rather than checked as a WORK bullet even where `in_work` itself stays
+# set -- see `validate.section_spans`'s own comment on why entering SKILLS does not clear
+# it) -- there is no citation check here for a wider marker to slip past, so the only
+# effect of accepting one is that a gate-clean CV stops being refused. SKILLS gained its
+# OWN check at #168 (row 2, `UNSOURCED SKILL` -- containment against the bundle's source
+# text, not a citation format), and that check strips the marker with the identical
+# character set before comparing (`validate.py`'s `.lstrip("-•*–— ")`), so widening this
+# tuple is still not a bypass of it either: a marker this reader accepts is a marker that
+# check also strips before deciding whether the item is sourced.
 #
 # The en dash earns its place by measurement: `– Example Scrum Master` under CERTIFICATES
 # passes the gate untouched and, before this, was refused by the loop below. (A synthetic
@@ -263,7 +285,8 @@ def _looks_like_an_attempted_date(text: str) -> bool:
 
     The two cases it separates, both of which reach that branch identically today:
 
-        a genuine unmodelled section header -- PUBLICATIONS, SKILLS, AWARDS -- is
+        a genuine unmodelled section header -- PUBLICATIONS, PROJECTS, AWARDS (SKILLS
+            was in this list until #168 Task 7 modelled it as a third trailing section) -- is
             followed by ordinary section content: a bullet, or prose. Neither carries a
             `MM/YYYY` token, so this returns False and the "unmodelled section header"
             message is correct and actionable ("this section isn't modelled").
@@ -346,7 +369,7 @@ def _is_work_bullet(stripped: str) -> bool:
 
 
 def _is_trailing_entry(stripped: str) -> bool:
-    """Exactly what the CERTIFICATES/EDUCATION entry loop below consumes. Same
+    """Exactly what the CERTIFICATES/EDUCATION/SKILLS entry loop below consumes. Same
     lookahead-matches-the-loop rule as `_is_work_bullet`."""
     return stripped.startswith(_TRAILING_MARKERS)
 
@@ -427,9 +450,9 @@ def parse_cv(text: str) -> CvDocument:
             idx += 1
             continue
         if any(_is_section(stripped, h) for h in _TRAILING_SECTIONS):
-            # CERTIFICATES or EDUCATION, compared case-insensitively like every other
-            # header (see `_is_section`) -- stop here WITHOUT consuming the line, so the
-            # section reader below starts from it.
+            # CERTIFICATES, EDUCATION, or SKILLS, compared case-insensitively like every
+            # other header (see `_is_section`) -- stop here WITHOUT consuming the line, so
+            # the section reader below starts from it.
             break
 
         # A line that is not blank and not a known trailing section is a CANDIDATE
@@ -580,22 +603,34 @@ def parse_cv(text: str) -> CvDocument:
             location=_strip_cite(location), title=_strip_cite(title), bullets=bullets,
         ))
 
-    # ---- CERTIFICATES / EDUCATION (both optional, in EITHER order) ----
-    # `validate.section_spans` turns `in_work`/`in_profile` off on seeing EITHER header and never
-    # records which one it saw or in what order -- the gate is completely order-agnostic
-    # between these two sections. A parser that hard-coded CERTIFICATES-then-EDUCATION
-    # would be stricter than the gate on an axis the gate never checks at all: composing
-    # them in the other order is exactly as gate-clean as the canonical order. Read
-    # whichever recognised header comes next, in a loop, rather than two fixed
-    # if-blocks -- see the reversed-order case in tests/test_cv_parse.py.
+    # ---- CERTIFICATES / EDUCATION / SKILLS (all optional, in ANY order) ----
+    # `validate.section_spans` turns `in_work`/`in_profile` off on seeing EITHER CERTIFICATES
+    # or EDUCATION and never records which one it saw or in what order -- the gate is
+    # completely order-agnostic between these two sections. A parser that hard-coded
+    # CERTIFICATES-then-EDUCATION would be stricter than the gate on an axis the gate
+    # never checks at all: composing them in the other order is exactly as gate-clean as
+    # the canonical order. Read whichever recognised header comes next, in a loop, rather
+    # than two fixed if-blocks -- see the reversed-order case in tests/test_cv_parse.py.
+    #
+    # SKILLS (#168 Task 7) joins this loop as a THIRD header, read by the same generic
+    # `next(...)` lookup -- so it is order-agnostic with CERTIFICATES/EDUCATION too, for
+    # the same reason: nothing upstream (`compose._RULES`) pins where it must sit relative
+    # to them. Its gate-side mechanism differs, though, and this reader does not need to
+    # care: `validate.section_spans` models SKILLS as a CONTIGUOUS BULLET RUN that ends at
+    # the first non-blank non-bullet line (or at CERTIFICATES/EDUCATION), not as a
+    # header pair that toggles a flag -- see that function's own comment. What this reader
+    # needs from that model is only the ONE property Task 7 exists to establish: its own
+    # entry-loop refusal below must stop at the identical line the gate's run does, via
+    # the SAME marker set (`_TRAILING_MARKERS`, and see `_SKILLS_MARKERS`'s comment in
+    # cv/validate.py for why that tuple must not be narrower than this one).
     sections: dict[str, list[str]] = {}
     while idx < len(lines):
         # Skip a blank run before looking for the next header. compose.py's `_RULES`
         # format block blank-separates "WORK EXPERIENCE" from its own first entry
         # (see the fixture header lines above), so a model mirroring that spacing for
-        # CERTIFICATES/EDUCATION is the LIKELY case, not an exotic one -- measured: this
-        # is what a blank line straight after "CERTIFICATES" used to do before this fix,
-        # since the entries loop below never saw past it to find the real entries.
+        # CERTIFICATES/EDUCATION/SKILLS is the LIKELY case, not an exotic one -- measured:
+        # this is what a blank line straight after "CERTIFICATES" used to do before this
+        # fix, since the entries loop below never saw past it to find the real entries.
         while idx < len(lines) and not lines[idx].strip():
             idx += 1
         if idx >= len(lines):
@@ -621,21 +656,29 @@ def parse_cv(text: str) -> CvDocument:
             # model can act on WITHOUT inventing anything (merge the two headings) -- which
             # is the test the two-field meta line above is held to, and the reason that one
             # went the other way.
+            # Derived from `_TRAILING_SECTIONS`, never a hand-typed second list: a message
+            # hardcoding "CERTIFICATES and EDUCATION" went stale the moment SKILLS joined
+            # that set, naming the wrong sections to a model repeating a SKILLS header.
+            names = " and ".join(sorted(_TRAILING_SECTIONS))
             raise CvParseError(
                 f"{header} appears twice: entries under the second one would be dropped "
-                f"from the PDF. Emit CERTIFICATES and EDUCATION at most once each, with "
-                f"every entry under a single header.")
+                f"from the PDF. Emit {names} at most once each, with every entry under a "
+                f"single header.")
         if header is None:
             # UNREACHABLE as this function stands, and named as such rather than described
             # as a behaviour: the refusal at the END of this loop body already rejects any
             # non-blank line that is not a recognised trailing header, and the WORK loop
             # above only breaks INTO this loop on a line that is one. So every arrival here
             # carries a recognised header. Measured 2026-08-06: this repo's gate-clean
-            # fixture with a trailing `SKILLS` section appended is gate-clean and RAISES at
-            # that refusal ("EDUCATION: unrecognised line 'SKILLS'") -- an earlier revision
-            # of this comment claimed such a section was "silently left unconsumed" HERE,
-            # which was false, and `test_unmodelled_trailing_content_is_refused_rather_
-            # than_left_unconsumed` is what now holds the corrected claim.
+            # fixture with a trailing `PUBLICATIONS` section appended is gate-clean and
+            # RAISES at that refusal ("EDUCATION: unrecognised line 'PUBLICATIONS'") -- an
+            # earlier revision of this comment claimed such a section was "silently left
+            # unconsumed" HERE, which was false, and `test_unmodelled_trailing_content_is_
+            # refused_rather_than_left_unconsumed` is what now holds the corrected claim.
+            # (That test used SKILLS as its example until #168 Task 7 modelled SKILLS as a
+            # trailing section of its own -- PUBLICATIONS took its place as the example,
+            # since it stays unmodelled and the refusal this branch documents is otherwise
+            # unchanged.)
             #
             # Kept as a loop terminator so `next(...)`'s None default has a defined
             # outcome, not as a live branch. Corroborated by mutation, and note which way
@@ -662,7 +705,7 @@ def parse_cv(text: str) -> CvDocument:
         # missing space ("-Example Cloud Practitioner"), a bullet glyph, an asterisk, or
         # an en dash marker each yielded ZERO entries here while passing the fabrication
         # gate untouched (this content is never citation-checked) -- so a CV with a
-        # malformed marker in either section shipped a PDF silently missing it.
+        # malformed marker in any of the three sections shipped a PDF silently missing it.
         #
         # An earlier revision of this comment claimed all four cases were fixed while the
         # loop still read `_BULLET_MARKERS`, under which the en dash was NOT a marker at
@@ -714,8 +757,9 @@ def parse_cv(text: str) -> CvDocument:
                 f"{header}: unrecognised line {lines[idx].strip()!r} -- expected each "
                 f"entry to start with one of {_TRAILING_MARKERS!r}")
         sections[header] = entries
+    skills = sections.get("SKILLS", [])
     certificates = sections.get("CERTIFICATES", [])
     education = sections.get("EDUCATION", [])
 
     return CvDocument(name=name, contact=contact, profile=profile, work=work,
-                       certificates=certificates, education=education)
+                       skills=skills, certificates=certificates, education=education)
