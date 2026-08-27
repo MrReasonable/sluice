@@ -430,8 +430,17 @@ the parser actually reads. Two harms, both measured against the real `parse_cv`:
   rules out, while its cheapest compliance (add `[AL1]`) is work-clean and still renders as a skill.
 
 The rule: **a blank line does not clear `in_skills`; a non-blank non-bullet line does** — the latter
-is safe precisely because `parse_cv` raises `CvParseError` on that same line, so gate and parser fail
-closed together. In code, `if in_skills and line.strip() and not is_bullet`.
+is safe — but **not for the reason an earlier revision gave**, which was measured false. That
+revision said `parse_cv` raises on that same terminator line. It does not: it raises
+`unmodelled section header 'SKILLS'` at the HEADER, whatever follows the run.
+
+Today the property therefore holds *more* strongly than claimed — any SKILLS section at all
+rejects the whole document. But that is an accident of the parser not yet modelling SKILLS, and
+it **stops being true at 4.4**, where the parser learns to accept one. From then on the
+correspondence has to be established rather than inherited: `cv/parse.py`'s trailing-section
+reader refuses a non-marker line under a trailing header, which is what makes gate and parser
+stop at the same place. **4.4 owns that obligation and needs a test for it** — a terminator the
+gate honours and the parser silently absorbs is a SKILLS line that renders uncontained. In code, `if in_skills and line.strip() and not is_bullet`.
 
 **SC7's guard widens with it.** Marker-set equality compares tuples and cannot see this class at all.
 The property to assert is a grammar one: *every entry line in any text `parse_cv` accepts as a SKILLS

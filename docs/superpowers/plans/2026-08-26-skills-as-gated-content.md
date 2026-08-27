@@ -639,7 +639,7 @@ def test_a_blank_line_inside_the_run_does_not_eject_the_remaining_skills():
     _p, work, skills = V.section_spans(cv)
     assert [t.strip() for _n, t in skills] == ["- Example Query", "- Example Framework"]
     assert not any("Example Framework" in t for _n, t in work)
-
+```
 
 Build the after-`CERTIFICATES` fixture as a STANDALONE literal, not by appending a `tail` to
 the shared `_CV` base — that base already carries its own `SKILLS` section, so a `tail` adding a
@@ -699,8 +699,13 @@ In `section_spans`, add `skills` to the returns and track the region as a run th
         # blank under the header put the skills lines in NO region while `parse_cv` still
         # returned them and the template rendered them: containment-checked by nothing.
         #
-        # A non-blank non-bullet line DOES end it, and is safe precisely because `parse_cv`
-        # raises CvParseError on that same line -- gate and parser fail closed together.
+        # A non-blank non-bullet line DOES end it. Note WHY, because the obvious reason is
+        # wrong and was measured wrong: `parse_cv` does NOT raise on that terminator line. It
+        # raises `unmodelled section header 'SKILLS'` at the HEADER, whatever follows -- so
+        # today ANY skills section rejects the whole document, a stronger guarantee than this
+        # run needs. That accident ends when Task 7 teaches the parser to accept SKILLS; from
+        # then on it is the trailing-section reader's refusal of a non-marker line that makes
+        # gate and parser stop in the same place, and Task 7 owns a test for it.
         if in_skills and line.strip() and not is_bullet:
             in_skills = False
         if in_skills:
@@ -1208,6 +1213,15 @@ git commit -m "fix(cv): stop a digit-bearing skill name reading as a fabricated 
 **Interfaces:**
 - Consumes: `validate._SKILLS_MARKERS` (Task 3), for the equality guard only.
 - Produces: `CvDocument.skills: list[str]`.
+
+**Obligation inherited from Task 3.** `section_spans` ends its SKILLS run at the first non-blank
+non-bullet line. Before this task, `parse_cv` rejected EVERY skills section outright (it raises
+`unmodelled section header 'SKILLS'` at the header, whatever follows), so gate and parser stopped
+together for free. **This task removes that accident**, so the correspondence must now be
+established: the parser's trailing-section reader must refuse the same terminator line the gate
+stops at, or a skills line renders with no containment check behind it. Add a test — a SKILLS
+section followed by a non-marker line must raise, AND `section_spans` must have ended its region
+at that same line.
 
 - [ ] **Step 1: Write the failing tests**
 
