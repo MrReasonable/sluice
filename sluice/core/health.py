@@ -31,9 +31,29 @@ from sluice.core.paths import resolve
 
 # The content-completeness signals a producer may compute over a search's PARSED leads
 # (#156) -- `ingest/engine.py`'s `_lead_rates`. Named here, not there, so `record`'s sticky
-# high-water update and `detect_drift`'s `blank` check both consume the SAME roster rather
-# than each hand-listing the two keys and drifting apart.
-RATE_SIGNALS = ("company_rate", "link_rate")
+# high-water update and the reporting layer both consume the SAME roster rather than each
+# hand-listing the keys and drifting apart.
+#
+# `location_rate` joined on 2026-08-27 and is MEASURED ONLY -- see `BLANK_SIGNALS` below for
+# why it does not also classify. It is here because it was previously measured NOWHERE, and
+# that gap was load-bearing: reed lost location on 100% of its rows to a stale selector and
+# no check in this module could see it, because the only two completeness signals that
+# existed were company and link, both of which reed kept.
+RATE_SIGNALS = ("company_rate", "link_rate", "location_rate")
+
+# The subset `detect_drift` actually CLASSIFIES on, and it is deliberately narrower than the
+# set above. `blank` is in `BREAKER_REASONS`, so a reason returned here withholds every lead
+# the source produced this run -- which is the right price for a company collapse (incident
+# 1's harm was ~185 blank-companied notes burned into `seen.db`, which has no removal path)
+# and NOT obviously the right price for a location one: a lead that kept its title, company
+# and link is still worth having, and a board that legitimately serves a batch of
+# remote/unspecified roles would be binned wholesale on a field that is merely degraded.
+#
+# So location is reported and high-watered but cannot withhold. Promoting it into this tuple
+# is a real option and needs its own measurement against the fleet's healthy windows -- the
+# same evidence `_RATE_ROW_FLOOR` and the 2-run streak were each chosen on -- not an
+# assumption that more signals classified is strictly better.
+BLANK_SIGNALS = ("company_rate", "link_rate")
 
 
 class HealthStore:
@@ -114,6 +134,78 @@ class HealthStore:
         rotted run look like a collapse relative to nothing, which is the health-store
         analogue of empty-config-abstains."""
         return dict(self._data.get(source_id, {}).get("rate_high_water", {}))
+
+    def latest_rates(self, source_id: str) -> tuple:
+        """`({signal: rate}, runs_back)` from the most recent run that carried any rate.
+
+        `({}, -1)` when no retained run carries one at all -- a source that has never cleared
+        `_RATE_ROW_FLOOR` within the 30-run window. Note that is "not measured RECENTLY", not
+        "never measured": the window is capped, so an older measurement can age out. The
+        sentinel is -1 rather than 0 because 0 is a real answer meaning "this run", and a
+        caller testing truthiness of the age would read the two the same way.
+
+        Walks BACKWARDS rather than reading `runs[-1]`: the row floor in `_lead_rates`
+        withholds the rate keys entirely on a thin run, so the newest entry frequently carries
+        none, and reporting "no rates" for a source that measured fine yesterday would read as
+        a completeness collapse rather than as a small page.
+
+        The AGE comes back with the rates because the two are only safe together. A rate up to
+        29 runs old rendered as though it were this run's measurement is the failure this
+        whole report exists to remove, one layer up: `ingest list-sources --health` is what a
+        human runs to catch a rotted extractor, and a stale 100% is exactly the reassuring
+        answer a rotted extractor produces. It also decides guarded-ness honestly -- when the
+        newest run carried no rate, `prior_rate` is `None` for every key and `_blank_reason`
+        cannot fire at all, so the source is not currently guarded whatever its high-water is.
+
+        The `RATE_SIGNALS` filter is load-bearing, not tidiness: a real run records non-rate
+        signals (`landed_host`, `requested_path`, `error`, ...) on every single entry, so
+        without it `rates` is truthy for EVERY run ever recorded and the "no rate measured"
+        state becomes unreachable -- taking the age and the guarded-ness verdict with it.
+        """
+        runs = self._data.get(source_id, {}).get("runs", [])
+        for age, run in enumerate(reversed(runs)):
+            rates = {k: v for k, v in (run.get("signals") or {}).items() if k in RATE_SIGNALS}
+            if rates:
+                return rates, age
+        return {}, -1
+
+    def unguarded_signals(self, source_id: str, declared_absent=()) -> list:
+        """The classifying signals whose sticky high-water sits below `_BLANK_HW_MIN`, so
+        `blank` can NEVER fire for them however far this source falls. Report-only.
+
+        This names a real blind spot rather than a hypothetical one. `_blank_reason` judges a
+        run against the source's OWN best-ever rate, and skips any signal whose best never
+        cleared 0.8 -- which is correct for a board that genuinely does not publish a field
+        (weworkremotely's extractor hardcodes an empty company), and silently wrong for a
+        board that was ALREADY broken when its first run was recorded. The high-water only
+        climbs, so such a source never establishes a bar to fall from and stays exempt
+        forever.
+
+        That is not a corner case: it is what happens to every source after the health file
+        is lost or first created, and it is what hid reed. On 2026-08-27 reed's company
+        high-water was 0.1, measured from a run whose extractor was already reading the wrong
+        elements -- so the one check that would have reported the collapse was, by
+        construction, switched off for it.
+
+        Deliberately NOT fixed by lowering the floor or adding an absolute one: `blank`
+        withholds a source's whole run, and a board that legitimately lacks a field would
+        then be binned every single day. The honest fix is to make the exemption VISIBLE and
+        let a human rule on which of the two cases a given source is -- see
+        `cli.cmd_list_sources`. Ordered by `BLANK_SIGNALS`, which is what it iterates, so the
+        output is stable.
+
+        `declared_absent` is that human ruling, recorded in the SOURCE rather than here --
+        `BrowserListSource.unpublished_fields`. A board whose extractor cannot read a field
+        because the board does not publish it (weworkremotely and eighty_k both hardcode an
+        empty company) would otherwise carry this flag on every invocation for ever, and a
+        flag permanently lit on known-benign rows is how a report teaches its reader to skip
+        the column -- the same hazard the caller's own comment names. Subtracted HERE rather
+        than in the caller so one place computes the verdict.
+        """
+        highs = self.rate_highs(source_id)
+        declared = {f"{name}_rate" for name in (declared_absent or ())}
+        return [key for key in BLANK_SIGNALS
+                if key not in declared and highs.get(key, 0.0) < _BLANK_HW_MIN]
 
     def prior_rate(self, source_id: str, key: str) -> float | None:
         """The most recently RECORDED run's value for `key`, or `None` if there is no
@@ -406,7 +498,7 @@ def _blank_reason(signals: dict, rate_highs: dict | None, rate_priors: dict | No
     source has since proven it can do better. That is the intended shape, not a leniency
     bug: the comparison is against the source's OWN best-ever performance, and a run that
     falls short of it twice in a row is exactly what this gate exists to catch."""
-    for key in RATE_SIGNALS:
+    for key in BLANK_SIGNALS:
         hw = (rate_highs or {}).get(key)
         rate = signals.get(key)
         if hw is None or rate is None or hw < _BLANK_HW_MIN or rate >= _BLANK_COLLAPSE * hw:

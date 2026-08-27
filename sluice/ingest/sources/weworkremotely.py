@@ -18,6 +18,11 @@ document.querySelectorAll('a[href*="/remote-jobs/"]').forEach(a=>{
 
 register(BrowserListSource(
     id="weworkremotely",
+    # The extractor pushes `company:''` unconditionally: this board's job anchors carry
+    # the role only, so there is no company on the page for a selector to have stopped
+    # reading. Declared so `ingest list-sources --health` stops printing a permanent
+    # UNGUARDED(company) here -- a flag always lit on a benign row is how a column dies.
+    unpublished_fields=("company",),
     extractor_js=_JS,
     wait=4, scrolls=2, scroll_amount=1400,
     extra={"location": "Remote"},

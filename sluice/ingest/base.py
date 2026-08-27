@@ -254,11 +254,16 @@ def _sized(value):
 def _first_degraded(rows) -> str | None:
     """The first truthy `degraded` marker among `rows`, or `None`.
 
-    A row-level marker (`_stepstone.py`'s anchor fallback, `reed.py`'s unscoped link
-    tier) is DIRECT evidence that the good path did not run this search, which is why
-    `detect_drift` ranks it above the inferred `blank` reason. `_sized` already
-    guarantees `rows` is a list here -- this is the row-content half, not the payload
-    normalisation half."""
+    A row-level marker (`_stepstone.py`'s anchor fallback, and `reed.py`'s TWO tiers -- its
+    unscoped link cascade and its card-selector fallback) is DIRECT evidence that the good
+    path did not run this search, which is why `detect_drift` ranks it above the inferred
+    `blank` reason. `_sized` already guarantees `rows` is a list here -- this is the
+    row-content half, not the payload normalisation half.
+
+    FIRST marked ROW, not last write: a producer stamping two different markers on the SAME
+    row settles that between themselves by assignment order (reed does exactly this, so that
+    `card-fallback` names the upstream cause rather than its `link-fallback` symptom), and
+    nothing here arbitrates it."""
     for row in _sized(rows):
         if isinstance(row, dict) and row.get("degraded"):
             return row["degraded"]
@@ -309,6 +314,20 @@ class BrowserListSource:
     # Declared per source because path shapes are board-specific and a shared default
     # would be one board's convention imposed on twenty-one others.
     posting_paths: tuple = ()
+    # Completeness signals this board does not publish AT ALL, so an empty value is the
+    # board's answer rather than a broken selector -- e.g. ("company",). Report-only, and the
+    # ONLY thing it does is stop `ingest list-sources --health` printing a permanent
+    # `UNGUARDED(<field>)` for a source whose rate can never climb (see
+    # `HealthStore.unguarded_signals`). It does NOT change what `blank` classifies: the 0.8
+    # high-water floor already leaves such a source outside the check, so declaring this
+    # cannot suppress a real drift reason, only a standing notice about an impossible one.
+    #
+    # Empty is the abstaining default, and it is the SAFE direction: an undeclared source that
+    # genuinely lacks a field keeps showing the flag, which is noise a human can act on, while
+    # a wrongly-declared one goes quiet about a signal that might have been recoverable. So
+    # declare it only where the board has been looked at and found not to publish the field --
+    # naming a field the extractor simply stopped reading is exactly the mistake this hides.
+    unpublished_fields: tuple = ()
 
     def __post_init__(self) -> None:
         # ASSIGNED back, not merely checked -- see `validate_posting_paths`.
@@ -501,6 +520,20 @@ class CarouselSource:
     # classes, and it is why the guard's tests enumerate the source CLASSES rather than
     # naming the one that had the bug -- both for this field and for `rejected_paths`.
     posting_paths: tuple = ()
+    # Completeness signals this board does not publish AT ALL, so an empty value is the
+    # board's answer rather than a broken selector -- e.g. ("company",). Report-only, and the
+    # ONLY thing it does is stop `ingest list-sources --health` printing a permanent
+    # `UNGUARDED(<field>)` for a source whose rate can never climb (see
+    # `HealthStore.unguarded_signals`). It does NOT change what `blank` classifies: the 0.8
+    # high-water floor already leaves such a source outside the check, so declaring this
+    # cannot suppress a real drift reason, only a standing notice about an impossible one.
+    #
+    # Empty is the abstaining default, and it is the SAFE direction: an undeclared source that
+    # genuinely lacks a field keeps showing the flag, which is noise a human can act on, while
+    # a wrongly-declared one goes quiet about a signal that might have been recoverable. So
+    # declare it only where the board has been looked at and found not to publish the field --
+    # naming a field the extractor simply stopped reading is exactly the mistake this hides.
+    unpublished_fields: tuple = ()
 
     def __post_init__(self) -> None:
         # ASSIGNED back, not merely checked -- see `validate_posting_paths`.

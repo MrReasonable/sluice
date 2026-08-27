@@ -51,6 +51,11 @@ def _lead_rates(leads) -> dict:
     return {
         "company_rate": sum(1 for lead in leads if lead.company) / len(leads),
         "link_rate": sum(1 for lead in leads if lead.url) / len(leads),
+        # Measured but not classified on -- see `BLANK_SIGNALS` in core/health.py. Added
+        # 2026-08-27 because location was previously measured nowhere at all, which is how
+        # reed served 20 rows a run with location on none of them and every check stayed
+        # green: `blank` only ever looked at company and link, and reed kept both.
+        "location_rate": sum(1 for lead in leads if lead.location) / len(leads),
     }
 
 
