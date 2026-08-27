@@ -939,8 +939,20 @@ git commit -m "feat(cv): refuse an emitted skill absent from the bundle (#168)"
 - Test: `tests/test_cv_skills_containment.py`
 
 **Interfaces:**
-- Consumes: `BundleSources.skills` (Task 2).
+- Consumes: `BundleSources.entries[id].skills` (Task 2), and `_tokens`/`_subseq` (Task 4) —
+  reuse them, do not define a second tokeniser. Two would let the vocabulary the gate builds
+  drift from the one it searches with.
 - Produces: violation string `f"MISATTRIBUTED SKILL {item!r} not in {cites}: …"`.
+
+**Inherited coverage gap (Task 4 review).** Row 2 searches `source_tokens` **per block**, so a
+two-word skill cannot match an adjacency invented where one block ends and the next begins. That
+property is currently verified only by COMPOSITION — Task 4's per-block loop plus Task 2's
+`test_source_tokens_are_per_block_so_a_two_word_skill_cannot_match_across_a_seam`, which stops at
+the bundle. **No single test drives `validate()` through the scenario.** Add one here, in the same
+module: a bundle whose first entry's body ends with the first word of a two-word skill and whose
+second begins with the second word, that skill emitted in a `SKILLS` section, asserting
+`UNSOURCED SKILL`. Assert the seam exists first (the two tokens ARE adjacent across the block
+boundary) or the row passes for the wrong reason.
 
 - [ ] **Step 1: Write the failing tests**
 
