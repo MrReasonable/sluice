@@ -43,15 +43,19 @@ _WORK_BULLET_MARKERS = ("-", "•", "*")
 # `_TRAILING_MARKERS` -- the WORK set plus the en and em dash -- rather than the
 # narrower WORK tuple, and derived from `_WORK_BULLET_MARKERS` the same way
 # `_TRAILING_MARKERS` is derived from `_BULLET_MARKERS` there, so the two en/em-dash
-# characters are typed in exactly one place in each module. Once `cv/parse.py` accepts a
-# SKILLS section of its own (a later task in this plan), this tuple must equal whatever
-# THAT reader accepts, for the identical reason `_WORK_BULLET_MARKERS` must equal
-# `_BULLET_MARKERS`: a marker the parser accepts and this function does not is a gate
-# BYPASS -- the line parses, renders into the PDF, and is never containment-checked here.
-# Wider than the WORK tuple is safe today for the same reason `_TRAILING_MARKERS` is: a
-# SKILLS line is not currently number- or citation-checked at all (Task 3 only COLLECTS
-# the region; validating its contents is Tasks 4-6), so there is no bypass in being wide,
-# only in being narrower than whatever eventually accepts it.
+# characters are typed in exactly one place in each module. `cv/parse.py` now accepts a
+# SKILLS section of its own (#168 Task 7), so this tuple must equal whatever THAT reader
+# accepts, for the identical reason `_WORK_BULLET_MARKERS` must equal `_BULLET_MARKERS`:
+# a marker the parser accepts and this function does not is a gate BYPASS -- the line
+# parses, renders into the PDF, and is never containment-checked here.
+# `test_the_skills_region_markers_equal_what_the_gate_collects`
+# (`tests/test_cv_parse.py`) derives both tuples and asserts equality, so a change to
+# either side reds. Wider than the WORK tuple is safe for the same reason
+# `_TRAILING_MARKERS` is: a SKILLS line is not number- or citation-checked (Task 3's
+# region split carries no such check, and Task 7's parser doesn't add one either), only
+# CONTAINMENT-checked (`UNSOURCED SKILL`, Task 4, and the misattribution check, Task 5) --
+# and that check strips the identical marker set before comparing
+# (`.lstrip("-•*–— ")`), so a marker this tuple accepts is one that check also strips.
 _SKILLS_MARKERS = _WORK_BULLET_MARKERS + ("–", "—")
 
 
@@ -60,11 +64,13 @@ def section_spans(cv_text):
     `cv_text`, 1-indexed.
 
     Returns `(profile_lines, work_bullet_lines, skills_lines)`, each a list of
-    `(lineno, line)` with the RAW line: the two existing checks below consume it
-    unstripped (`_CITE_RE.sub("", line)`, `line.lstrip()`), so handing back a stripped
-    line would change what they see. `skills_lines` is collected but not yet CHECKED by
-    anything in this module (#168's Task 3 -- see the SKILLS branch below); it exists so
-    a later task can validate it without re-deriving the region split a third time.
+    `(lineno, line)` with the RAW line: all three checks below consume it unstripped
+    (`_CITE_RE.sub("", line)`, `line.lstrip()`, and the SKILLS check's own
+    `.lstrip("-•*–— ")`), so handing back a stripped line would change what they see.
+    `skills_lines` is CHECKED now: an UNSOURCED SKILL containment check (#168 Task 4) and
+    a misattribution check (Task 5). At Task 3, when this region split was first
+    extracted, it was collected but not yet read by anything -- that gap is what Tasks
+    4-6 closed, and this sentence is what stops the docstring from still claiming it.
 
     Extracted from `validate`'s own loop so a later scope-limited check can reason about
     the exact lines the gate reasons about, rather than a second copy of the split that
@@ -144,20 +150,23 @@ def section_spans(cv_text):
         # blank under the header put the skills lines in NO region while `parse_cv` still
         # returned them and the template rendered them: containment-checked by nothing.
         #
-        # A non-blank non-bullet line DOES end it. That is NOT safe today because the
-        # parser fails at the SAME line -- it doesn't. `parse_cv` does not yet model a
-        # SKILLS section at all, so it raises `CvParseError: unmodelled section header
-        # 'SKILLS'` at the HEADER, whatever follows the run: measured, a terminator line
-        # and a lone trailing blank both hit that identical refusal. The property this
-        # run relies on holds today for a STRONGER reason than a line-for-line match --
-        # any SKILLS content whatsoever rejects the whole document -- and that reason is
-        # an accident of the parser not yet modelling the section, not something this
-        # branch establishes. Task 7 (#168) teaches the parser to accept SKILLS as a
-        # trailing section; from THAT point on it is the trailing-section reader's own
-        # refusal of a non-marker line -- the same mechanism CERTIFICATES/EDUCATION
-        # already use -- that makes gate and parser stop at the same line, and Task 7
-        # owns the test that pins it. Until then, do not read this comment as claiming a
-        # correspondence that does not exist yet.
+        # A non-blank non-bullet line DOES end it, and is safe because the parser's own
+        # trailing-section reader refuses at that SAME line -- the same mechanism
+        # CERTIFICATES/EDUCATION already use. That correspondence had to be ESTABLISHED,
+        # not assumed: before #168 Task 7, `parse_cv` rejected every SKILLS section
+        # outright (`CvParseError: unmodelled section header 'SKILLS'` at the HEADER,
+        # whatever followed -- measured, a terminator line and a lone trailing blank both
+        # hit that identical refusal), so gate and parser stopped at the same place for a
+        # reason that had nothing to do with WHERE this run's own terminator fell. Task 7
+        # taught `cv/parse.py` to read SKILLS through the same generic
+        # CERTIFICATES/EDUCATION/SKILLS loop, whose own refusal now fires at the specific
+        # non-marker line rather than at the header, which is what makes gate and parser
+        # agree on WHERE, not merely THAT, they stop.
+        # `test_a_skills_terminator_line_ends_both_the_gate_region_and_the_parse`
+        # (`tests/test_cv_parse.py`) is the test that pins it, asserting BOTH halves --
+        # that this run stops collecting at the terminator line, and that the parser's
+        # own refusal names that same line -- because either alone proves nothing about
+        # where the other stops.
         if in_skills and line.strip() and not is_bullet:
             in_skills = False
         if in_skills:
@@ -165,11 +174,11 @@ def section_spans(cv_text):
             # (the check above) but is not itself a skill. The first shipped version of
             # this branch appended every in-region line unconditionally, so a blank
             # right after the `SKILLS` header showed up as a stray `(i, "")` entry in
-            # the returned list: harmless to the gate (nothing reads `skills_lines` yet)
-            # but a real defect in the region's own returned contents, caught by the
-            # blank-tolerance test this branch exists to satisfy. `work_bullet_lines`
-            # already drops non-bullet lines the identical way, via its own marker
-            # check below.
+            # the returned list: harmless to the gate AT THE TIME (Task 3 shipped before
+            # anything read `skills_lines` -- that changed at Task 4) but a real defect
+            # in the region's own returned contents, caught by the blank-tolerance test
+            # this branch exists to satisfy. `work_bullet_lines` already drops
+            # non-bullet lines the identical way, via its own marker check below.
             if is_bullet:
                 skills.append((i, line))
             continue                       # a skills-region line is NOT also a work bullet

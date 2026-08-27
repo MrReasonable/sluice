@@ -34,11 +34,12 @@ network code of its own.
 SCOPING is the CALLER's, exactly as it is for this check's deterministic sibling
 (cv/slop.py's `check_phrases`, which takes lines it has no opinion about). This module is
 never handed the document -- what goes in the `excerpt` is cv/engine.py's call, and it
-sends the PROFILE prose and WORK bullets `validate.section_spans` yields, because a voice
-complaint about an EMPLOYER or CERTIFICATE line is answerable only by renaming the
-employer or the certificate -- a style rule turned into fabrication pressure. That policy
-lives with the tier, in cv/engine.py, and this module keeps its zero imports rather than
-reaching for cv/validate.py to reproduce the split.
+sends the PROFILE prose and WORK bullets, two of the THREE regions `validate.section_spans`
+yields (#168's Task 3 added a SKILLS region alongside them, deliberately excluded from this
+excerpt), because a voice complaint about an EMPLOYER, CERTIFICATE, or SKILL line is
+answerable only by renaming the thing it names -- a style rule turned into fabrication
+pressure. That policy lives with the tier, in cv/engine.py, and this module keeps its zero
+imports rather than reaching for cv/validate.py to reproduce the split.
 """
 
 

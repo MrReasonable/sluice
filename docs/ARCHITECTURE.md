@@ -434,19 +434,21 @@ whichever neighbour it was written next to:
    (`cv/slop.py`'s `check_phrases`, ~40 case-insensitive AI-tell stems)
    never blocks; it is also SCOPED, unlike the hard tier --
    `cv/validate.py`'s `section_spans` (the gate's own line split, extracted
-   so nothing keeps a second copy) yields exactly the PROFILE-prose and
-   WORK-bullet lines, since the only way to answer a phrase complaint about
-   an employer, certificate or education line is to rename the thing it
-   names. An OPT-IN third signal (`cv.voice_check`, off by default,
-   `cv/voice.py`) rides the same retry once the hard tier is clean: a model
-   judgment of the draft's VOICE, for an AI-tell clause a fixed phrase list
-   cannot catch -- it fails open on a backend error, like the advisory audit
-   below. It is scoped by the SAME `section_spans` split, because the reason
-   for that scoping is a property of the tier and not of the phrase list: the
+   so nothing keeps a second copy) yields the PROFILE-prose and WORK-bullet
+   lines -- two of the THREE regions the function now returns, since #168's
+   Task 3 added a SKILLS region alongside them, deliberately left out here --
+   since the only way to answer a phrase complaint about an employer,
+   certificate or education line is to rename the thing it names. An OPT-IN
+   third signal (`cv.voice_check`, off by default, `cv/voice.py`) rides the
+   same retry once the hard tier is clean: a model judgment of the draft's
+   VOICE, for an AI-tell clause a fixed phrase list cannot catch -- it fails
+   open on a backend error, like the advisory audit below. It is scoped by
+   the SAME two of `section_spans`' three regions, because the reason for
+   that scoping is a property of the tier and not of the phrase list: the
    engine rejoins those lines into the text it hands `run_voice`, so the model
-   never sees an employer, certificate or education line it could complain
-   about, and skips the call entirely when that text is blank. What the model
-   gives up is document context (the contact block, section headers and the
+   never sees an employer, certificate, education, or SKILLS line it could
+   complain about, and skips the call entirely when that text is blank. What
+   the model gives up is document context (the contact block, section headers and the
    employer/date/role meta lines) -- acceptable because those lines are
    transcribed declared facts rather than composed prose, and the prompt
    already forbids judging content. EITHER a HARD finding OR a surviving
