@@ -1874,6 +1874,15 @@ NO_SCOPED_PROSE_CV = (CLEAN_CV
                       .replace("- Coached [EF1]", "", 1)
                       .replace("- CI [EF1]", "", 1))
 
+# STYLE_DIRTY_CV plus a SKILLS section carrying its OWN phrase-dirty entry (#168, Task
+# 3): "Example Synergy" matches slop._PHRASES' "synergy" stem exactly like the PROFILE
+# line above it matches "leverage". The PROFILE phrase is what forces a retry to exist
+# at all -- same load-bearing shape as EMPLOYER_PHRASE_CV above -- so "the skill line
+# never reaches the retry" is non-vacuous rather than true only because no retry ran at
+# all. Gate-clean and HARD-clean: no digit, no em dash, no double hyphen is introduced.
+_CV_WITH_SLOPPY_SKILL = STYLE_DIRTY_CV.replace(
+    "CERTIFICATES", "SKILLS\n- Example Synergy\n\nCERTIFICATES", 1)
+
 _DRAFTS = {
     "clean": CLEAN_CV,
     "hard-clean-style-dirty": STYLE_DIRTY_CV,
@@ -1881,6 +1890,7 @@ _DRAFTS = {
     "employer-phrase": EMPLOYER_PHRASE_CV,
     "doubled-profile": DOUBLED_PROFILE_CV,
     "no-scoped-prose": NO_SCOPED_PROSE_CV,
+    "skills-style-dirty": _CV_WITH_SLOPPY_SKILL,
 }
 
 
@@ -1906,9 +1916,10 @@ def test_the_sequence_fixtures_are_the_tiers_they_claim():
 
     def _style(text):
         # The engine's own scoping, reproduced: PROFILE prose + WORK bullets, nothing
-        # else. A fixture that is "style-dirty" only OUTSIDE that scope is not
-        # style-dirty as far as this loop is concerned.
-        profile, work = section_spans(text)
+        # else -- SKILLS included (#168, Task 3) -- since a fixture that is
+        # "style-dirty" only OUTSIDE that scope is not style-dirty as far as this loop
+        # is concerned.
+        profile, work, _skills = section_spans(text)
         return check_phrases(profile + work)
 
     for name, text, hard, style in [
@@ -1929,7 +1940,7 @@ def test_the_sequence_fixtures_are_the_tiers_they_claim():
     # anything but WHITESPACE specifically, because the engine's guard is
     # `scoped_text.strip()` and a bare truthiness check would already be satisfied by the
     # newline join of the two blank PROFILE lines this fixture has.
-    _p, _w = section_spans(NO_SCOPED_PROSE_CV)
+    _p, _w, _s = section_spans(NO_SCOPED_PROSE_CV)
     assert not _w, "the bullet replaces no-opped; the WORK region is not empty"
     assert _p and not any(t.strip() for _ln, t in _p), (
         "the fixture no longer has a whitespace-ONLY profile region, so the engine's "
@@ -2116,7 +2127,7 @@ def test_a_line_in_BOTH_scoped_regions_is_complained_about_once(monkeypatch):
     """
     from sluice.cv.validate import section_spans
 
-    profile, work = section_spans(DOUBLED_PROFILE_CV)
+    profile, work, _skills = section_spans(DOUBLED_PROFILE_CV)
     assert set(dict(profile)) & set(dict(work)), (
         "the fixture no longer puts a line in BOTH regions, so this asserts nothing")
 
@@ -2409,6 +2420,14 @@ def test_the_voice_check_is_shown_exactly_the_lines_the_phrase_tier_is(monkeypat
     de-duplicates into a line-ordered union before either half runs (a CV repeating
     `PROFILE` after `WORK EXPERIENCE` puts a line in both regions), which is why the
     expected text is rebuilt the same way and not as `profile + work`.
+
+    `section_spans` returns a third region, `skills`, since #168's Task 3 -- discarded
+    here rather than folded into `expected`, because `scoped_lines` in the ENGINE is
+    built from `profile_lines + work_lines` only (see its own comment). STYLE_DIRTY_CV
+    carries no SKILLS section, so this row alone cannot tell a correct exclusion from a
+    bug that silently included it -- `test_the_style_tier_is_not_scoped_over_the_skills_
+    region` right below is the fixture built specifically to make that distinction, over
+    BOTH halves of the tier this test compares.
     """
     from sluice.cv.validate import section_spans
 
@@ -2417,7 +2436,7 @@ def test_the_voice_check_is_shown_exactly_the_lines_the_phrase_tier_is(monkeypat
     assert be.voice_prompts, "the voice check never ran"
     shown = be.voice_prompts[0].split(_VOICE_MARKER, 1)[1].strip()
 
-    profile, work = section_spans(STYLE_DIRTY_CV)
+    profile, work, _skills = section_spans(STYLE_DIRTY_CV)
     expected = "\n".join(t for _ln, t in sorted(dict(profile + work).items())).strip()
     assert shown == expected
 
@@ -2430,6 +2449,54 @@ def test_the_voice_check_is_shown_exactly_the_lines_the_phrase_tier_is(monkeypat
     # ...while the prose the check exists to judge is all still there.
     assert "I leverage the same delivery patterns across teams." in shown
     assert "- Grew team from 3 to 8 [EF1]" in shown
+
+
+def test_the_style_tier_is_not_scoped_over_the_skills_region(monkeypatch):
+    """A slop complaint about a bare skill name is answerable only by RENAMING a skill
+    the user really holds -- the LOCATION shape CLAUDE.md names as this repo's governing
+    bug class, applied to the region `section_spans` learned to collect in #168's Task 3.
+
+    Both halves of the STYLE tier, in one test, over one fixture: `check_phrases`'
+    scoped set (the deterministic half) and the voice prompt (the model-judged half) --
+    mirroring `test_a_voice_finding_on_an_EMPLOYER_line_never_reaches_the_retry` and
+    `test_a_phrase_in_an_EMPLOYER_line_never_reaches_the_retry` above, applied to SKILLS
+    instead of an employer line.
+
+    Scope first: a fixture whose SKILLS region is empty, or whose skill line is not
+    actually style-dirty, would make the assertions below pass whatever the engine does.
+    """
+    from sluice.cv.slop import check_phrases
+    from sluice.cv.validate import section_spans
+
+    _p, _work, skills = section_spans(_CV_WITH_SLOPPY_SKILL)
+    assert skills, "fixture has no SKILLS region, so this guard proves nothing"
+    assert check_phrases(skills), (
+        "fixture's skill line is not style-dirty, so the exclusion below is untested")
+
+    # CONTROL: shown the WHOLE document, the reactive voice backend's rule DOES flag the
+    # skill line -- otherwise its absence from the retry below would say nothing about
+    # scoping (same control shape the EMPLOYER/CERTIFICATE tests above use).
+    assert "Example Synergy" in _voice_judge(_CV_WITH_SLOPPY_SKILL, ("Example Synergy",))
+
+    res, be = _run_voice_sequence(
+        monkeypatch, ["skills-style-dirty", "skills-style-dirty"], voice_check=True,
+        voice_marks=("Example Synergy",))
+    assert res.status == "rendered"
+    assert be.voice_prompts, "the voice check never ran"
+    assert len(be.compose_prompts) == 2, (
+        "no retry happened -- the in-scope PROFILE phrase that is supposed to force "
+        "one no longer matches, so the exclusion below would be tested against nothing")
+
+    # The INPUT side, for both halves: the skill line reaches neither the voice prompt...
+    assert not any("Example Synergy" in p for p in be.voice_prompts), be.voice_prompts
+    # ...nor, via check_phrases' deterministic scoped set, the retry the composer reads.
+    retry = be.compose_prompts[1]
+    assert "Example Synergy" not in retry, retry
+    assert "SLOP synergy" not in retry, retry
+    # ...while the IN-SCOPE profile phrase that forces the retry to exist at all DOES
+    # reach it -- without this, the absences above would be vacuously true of a retry
+    # that never happened for style reasons at all.
+    assert "SLOP leverage" in retry, retry
 
 
 # ── #167 Task 16: CvResult.slop and CvResult.voice_flags gain readers ────────────────

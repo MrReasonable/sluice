@@ -575,7 +575,12 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
             # `WORK EXPERIENCE` puts a line in BOTH lists (see section_spans), and this
             # list is handed to the composer VERBATIM -- a duplicated or out-of-order
             # complaint is what the model reads.
-            profile_lines, work_lines = section_spans(cv_text)
+            # `section_spans` returns a third region since #168's Task 3. Skills lines
+            # are deliberately NOT in the STYLE tier's scope: a slop complaint about a
+            # bare skill name is answerable only by RENAMING the skill, which is the
+            # same reasoning that already scopes this tier away from employer and
+            # certificate lines (see the comment block above).
+            profile_lines, work_lines, _skills_lines = section_spans(cv_text)
             scoped_lines = sorted(dict(profile_lines + work_lines).items())
             style_msgs = [f"SLOP {phrase}: {snip}" for _ln, phrase, snip
                           in _slop_phrases(scoped_lines, allow=cvcfg.slop_allow)]

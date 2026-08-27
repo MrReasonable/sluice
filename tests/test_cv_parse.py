@@ -604,9 +604,20 @@ def test_the_work_bullet_markers_are_exactly_what_the_gate_citation_checks():
                    gate-CLEAN; a parser recognising only `-` would take it for a
                    candidate company and refuse a CV the gate had certified.
 
-    Derived from validate.py's own source (the tuple it passes to `startswith`), never
-    hand-listed, so a change to EITHER side reds. `parse.py`'s `_BULLET_MARKERS` comment
-    states this equality in prose; this is what stops that prose going stale.
+    Derived from validate.py's own source (the `_WORK_BULLET_MARKERS` assignment, read by
+    NAME), never hand-listed, so a change to EITHER side reds. `parse.py`'s
+    `_BULLET_MARKERS` comment states this equality in prose; this is what stops that
+    prose going stale.
+
+    Recovered BY NAME rather than by finding "the" literal tuple passed to
+    `.startswith(...)` (#168, Task 3): `cv/validate.py` gained a SECOND marker tuple,
+    `_SKILLS_MARKERS`, deliberately not equal to this one (it is wider, matching
+    `parse.py`'s own `_TRAILING_MARKERS`). With two candidates in the module, selecting
+    "the" one by value or by position -- the shape this guard used before -- would make
+    this very equality assertion a tautology if it happened to grab `_SKILLS_MARKERS`
+    instead, and would do so SILENTLY: the assertion would still run and still pass,
+    just against the wrong tuple. Keying on the assignment target's NAME is what makes
+    the guard immune to a module gaining a second, differently-shaped tuple.
     """
     import ast
     import inspect
@@ -614,23 +625,26 @@ def test_the_work_bullet_markers_are_exactly_what_the_gate_citation_checks():
     from sluice.cv import validate as _validate_mod
     from sluice.cv.parse import _BULLET_MARKERS, _TRAILING_MARKERS
 
-    # The one `startswith((...))` call in cv/validate.py that gates the citation check.
-    # It lives in `section_spans` (the line-set helper `validate` consumes), not in
-    # `validate` itself; this walks the whole MODULE, so where it sits does not matter --
-    # what matters is that there stays exactly ONE of them to read.
+    # The `_WORK_BULLET_MARKERS = (...)` assignment in cv/validate.py that gates the
+    # citation check -- found by NAME, not by scanning for a `startswith((...))` call
+    # with a literal-tuple argument, which no longer identifies it uniquely once
+    # `_SKILLS_MARKERS` exists alongside it (see the docstring above). This walks the
+    # whole MODULE, so where the assignment sits does not matter -- what matters is that
+    # there stays exactly ONE assignment to this name to read.
     tree = ast.parse(inspect.getsource(_validate_mod))
     gate_markers = [
-        tuple(el.value for el in node.args[0].elts)
+        tuple(el.value for el in node.value.elts)
         for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "startswith" and node.args
-        and isinstance(node.args[0], ast.Tuple)
-        and all(isinstance(el, ast.Constant) for el in node.args[0].elts)
+        if isinstance(node, ast.Assign) and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id == "_WORK_BULLET_MARKERS"
+        and isinstance(node.value, ast.Tuple)
+        and all(isinstance(el, ast.Constant) for el in node.value.elts)
     ]
     assert len(gate_markers) == 1, (
-        f"expected exactly one bullet-marker startswith() in cv/validate.py, found "
-        f"{gate_markers} -- this guard can no longer say which tuple gates the citation "
-        "check, so it must not pass having guessed")
+        f"expected exactly one `_WORK_BULLET_MARKERS = (...)` assignment in "
+        f"cv/validate.py, found {gate_markers} -- this guard can no longer say which "
+        "tuple gates the citation check, so it must not pass having guessed")
 
     assert set(_BULLET_MARKERS) == set(gate_markers[0]), (
         f"parse.py's WORK bullet markers and the gate's citation-check markers have "
