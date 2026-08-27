@@ -525,13 +525,25 @@ def test_the_widened_regex_still_matches_exactly_the_one_real_fallback():
     # snippets -- a regex that passes the parametrized cases above in isolation could
     # still over-match real extractor code the tests never construct by hand.
     branches = _whole_row_fallback_branches()
-    assert [name for name, _ in branches] == ["_stepstone.py"], (
-        f"the widened sweep now matches something other than the one known real "
-        f"fallback: {[name for name, _ in branches]}"
+    # reed.py joined this roster on 2026-08-27: its card selector gained a whole-row fallback
+    # tier (the stable `data-qa="job-card"` hook first, the old class-substring net only if
+    # that matches nothing), so a future reed rename degrades to a NAMED `fallback` reason
+    # rather than to the bare `zero` #207 is about. It stamps its marker -- the sibling
+    # `test_reeds_card_fallback_stamps_a_marker` witnesses that specifically.
+    assert [name for name, _ in branches] == ["_stepstone.py", "reed.py"], (
+        f"the widened sweep now matches something other than the known real "
+        f"fallbacks: {[name for name, _ in branches]}"
     )
 
 
-_DEGRADED_STAMP = re.compile(r"degraded\s*:\s*['\"]")  # the JS object-key STAMP, not prose
+# The STAMP, not prose. Both spellings, because the two real producers differ and neither is
+# wrong: `_stepstone.py` builds the marker into the row it pushes (`degraded:'anchor-fallback'`,
+# an object KEY), while reed stamps it onto an already-built row after a dominance check
+# (`returned[0].degraded = 'card-fallback'`, an ASSIGNMENT) -- it cannot use the key form,
+# because at push time it does not yet know whether the tier dominated the page.
+# Still anchored on a following QUOTE so an explanatory comment containing the word
+# "degraded" cannot satisfy it -- that exact vacuity is why this is not a bare substring test.
+_DEGRADED_STAMP = re.compile(r"degraded\s*[:=]\s*['\"]")
 
 
 def test_a_later_branchs_marker_cannot_satisfy_an_earlier_unmarked_one(tmp_path, monkeypatch):
@@ -568,6 +580,55 @@ def test_every_whole_row_fallback_stamps_a_degraded_marker():
         f"a whole-row fallback that cannot see a company ships with no `degraded` marker: "
         f"{unmarked} -- it will report as a healthy count forever, exactly incident 1"
     )
+
+
+def test_reeds_card_fallback_stamps_a_marker():
+    # reed's CARD tier (2026-08-27): `article[data-qa="job-card"]` first, the old
+    # class-substring net only if that matches nothing. The old net is known to match reed's
+    # nav chrome -- `jobseeker-module_mainNavContainer__BpHeE` contains the substring "job",
+    # which is how it once reported 121 "cards" -- so reaching it is never a healthy state
+    # and must be a NAMED reason rather than a silent one. Its own witness rather than
+    # relying on `_DEGRADED_STAMP`'s roster sweep, matching the sibling below: the sweep
+    # proves SOME marker is in the branch body, this proves it is THIS one.
+    text = (_SOURCES_DIR / "reed.py").read_text(encoding="utf-8")
+    assert re.search(r"degraded\s*=\s*['\"]card-fallback['\"]", text), (
+        "reed's card-selector fallback tier lost its marker -- a reed rename would report "
+        "as a bare `zero` again"
+    )
+
+
+def test_reeds_card_fallback_flag_is_actually_set_inside_the_branch():
+    """The marker existing is not the same as the marker being REACHABLE.
+
+    Found by mutation: deleting `cardFallback = true;` from the fallback branch leaves the
+    stamp guarded by a flag nothing ever assigns, so a reed `data-qa` rename reverts to the
+    bare `zero` this tier exists to convert into a named reason -- and the whole suite stayed
+    green, because the sibling test below asserts only that the literal appears in the file.
+    Assert the flag is assigned INSIDE the degrading branch, which is what makes it reachable.
+    """
+    branches = [body for name, body in _whole_row_fallback_branches() if name == "reed.py"]
+    assert len(branches) == 1, (
+        f"expected exactly one whole-row fallback branch in reed.py, found {len(branches)}")
+    assert re.search(r"cardFallback\s*=\s*(true|cards\.length)", branches[0]), (
+        "reed's card-fallback branch no longer sets the flag that gates its marker -- the "
+        "stamp is unreachable and a `data-qa` rename reports as a bare `zero`")
+
+
+def test_reeds_card_marker_is_stamped_after_the_link_marker():
+    """The documented precedence, which nothing tested until a mutant swapped the two blocks
+    and the suite stayed green.
+
+    Both stamps assign the SAME property on the SAME row, so the later write wins. Card-
+    fallback must be later: a missing `data-qa` contract is the more upstream cause and names
+    what a human has to go and look at, where `link-fallback` names its symptom.
+    """
+    text = (_SOURCES_DIR / "reed.py").read_text(encoding="utf-8")
+    link_at = text.find("degraded = 'link-fallback'")
+    card_at = text.find("degraded = 'card-fallback'")
+    assert link_at != -1 and card_at != -1, "one of reed's two markers is missing entirely"
+    assert card_at > link_at, (
+        "reed's card-fallback stamp must be written AFTER the link-fallback stamp -- they "
+        "assign the same property, so swapping them silently inverts which cause is reported")
 
 
 def test_reeds_link_only_fallback_also_stamps_a_marker():
