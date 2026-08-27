@@ -290,6 +290,20 @@ are now two bundle-wide sets, and only one of them may license removal from the 
   removal from it would let any ordinary word in the user's prose blank an adjacent digit, which is a
   hole in the numeric gate rather than a fix to it.
 
+**The PROFILE half of that rule has NO POSSIBLE FALSIFIER, and saying so is the honest record.**
+Task 6's implementer and its reviewer independently tried to construct a case where the two
+vocabularies give different observable results, and both failed for the same structural reason:
+`bundle_sources` harvests every body and baseline digit into `nums`/`baseline` via a direct
+`\d+` regex, so any digit `source_tokens` could additionally license is already in
+`profile_permitted`. The wider vocabulary strips tokens whose digits were permitted anyway.
+
+So this is a **tightening kept for defence in depth**, not an enforced invariant: it costs nothing,
+it is the more defensible bound, and it starts to matter the moment `nums` harvesting narrows. But
+no test can distinguish the two implementations today, and none should be written claiming to — a
+row whose name promises a discrimination it cannot make is worse than one that states the limit.
+The test that exists pins the weaker, real property: a declared skill's digits are not reported as
+invented in PROFILE prose.
+
 **Span removal is decided independently of row 1's verdict, and getting this wrong was round 3's
 sharpest finding.** An earlier revision removed a span only "when a skill mention is licensed" —
 i.e. when row 1 passed it. But row 1 is case-sensitive (SC9) and abstains when a cited entry is
