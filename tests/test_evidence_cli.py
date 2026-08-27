@@ -172,6 +172,73 @@ def test_list_prints_the_verified_set_and_pending_prints_the_inbox_set(tmp_path,
     assert "beta" in pending_out and "alpha" not in pending_out
 
 
+def test_experience_list_surfaces_the_skills_field(tmp_path, monkeypatch, capsys):
+    """#168 Task 10: `experience list` is the resolving command core/doctor.py's skills
+    reconciliation rows point a user at, so the `Skills:` value itself has to be
+    visible somewhere a plain listing shows it -- the reconciliation rows never carry
+    it themselves (core/doctor.py's own "no doctor row carries user-authored text"
+    rule).
+
+    Written directly into the vault rather than through `add`, so the entry is
+    CITABLE (`verified:` set) from the start and `list` (no `--pending`) shows it --
+    `add` alone only ever files a pending entry."""
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    exp = Vault(str(tmp_path))._evidence_dir("experience")
+    os.makedirs(exp, exist_ok=True)
+    with open(os.path.join(exp, "alpha.md"), "w", encoding="utf-8") as fh:
+        fh.write("---\nCompany: Example Alpha\nCategory: \nBest For: \nMetrics: \n"
+                 "Skills: Example Widget, Example Framework\n"
+                 "verified: 2026-08-25\n---\nBody.\n")
+
+    assert main(["experience", "list"]) == 0
+    out = capsys.readouterr().out
+    assert "alpha" in out
+    assert "Skills: Example Widget, Example Framework" in out
+
+
+def test_experience_list_omits_a_blank_skills_line(tmp_path, monkeypatch, capsys):
+    """Blank is absent (SC5, cv/bundle.py:_skill_items): an entry with no `Skills:`
+    annotation -- the common case for every note that predates #168 -- must not print
+    a bare trailing "Skills: " on every line, which would be noise on every entry
+    rather than a signal on the ones that actually declare one."""
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    exp = Vault(str(tmp_path))._evidence_dir("experience")
+    os.makedirs(exp, exist_ok=True)
+    with open(os.path.join(exp, "alpha.md"), "w", encoding="utf-8") as fh:
+        fh.write("---\nCompany: Example Alpha\nCategory: \nBest For: \nMetrics: \n"
+                 "verified: 2026-08-25\n---\nBody.\n")
+
+    assert main(["experience", "list"]) == 0
+    out = capsys.readouterr().out
+    assert "alpha" in out
+    assert "Skills:" not in out
+
+
+def test_skills_list_does_not_show_a_skills_field(tmp_path, monkeypatch, capsys):
+    """The `skills` kind declares no `Skills` frontmatter field at all
+    (`EVIDENCE_KINDS["skills"].fields`) -- experience's `Skills:` surfacing must not
+    leak onto a listing of an unrelated kind. The premise is asserted explicitly
+    rather than assumed, so a future registry edit that DID give `skills` a `Skills`
+    field would fail this test for the right reason instead of the wrong one."""
+    assert "Skills" not in EVIDENCE_KINDS["skills"].fields
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    assert main(["skills", "add", "--name", "alpha", "--proficiency", "expert"]) == 0
+    capsys.readouterr()
+
+    class _YesAsker:
+        interactive = True
+
+        def confirm(self, prompt):
+            return True
+
+    Sluice(Config()).verify_evidence_interactive(kind="skills", asker=_YesAsker(),
+                                                 only="alpha", today="2026-08-22")
+    assert main(["skills", "list"]) == 0
+    out = capsys.readouterr().out
+    assert "alpha" in out
+    assert "Skills:" not in out
+
+
 def test_verify_with_a_non_matching_id_prints_to_stderr_and_exits_1(tmp_path, monkeypatch,
                                                                     capsys):
     """R11's CLI half: the facade's `not_found` key must actually reach the terminal as

@@ -111,6 +111,18 @@ def cmd_evidence_add(args, config) -> int:
 
 
 def cmd_evidence_list(args, config) -> int:
+    """List one kind's entries. `experience` entries also print their `Skills:` value
+    (#168 Task 10), so `core/doctor.py`'s skills-reconciliation NOTICE rows -- which
+    report a count and never the skill's own name, by this codebase's own "no doctor
+    row carries user-authored text" rule -- have somewhere actionable to point a user
+    at: this command is the resolving command `job-sluice experience list` those rows
+    name.
+
+    Keyed on `"Skills" in spec.fields` rather than a hardcoded `args.kind ==
+    "experience"` check, so a future kind that grows its own `Skills` field (unlikely,
+    but the registry-driven discipline this whole module already follows for its flags)
+    would get this for free rather than needing a second hand-written branch here.
+    """
     from sluice.core.app import Sluice
 
     try:
@@ -125,9 +137,18 @@ def cmd_evidence_list(args, config) -> int:
     if not entries:
         print(f"no {'pending' if args.pending else 'verified'} {args.kind} entries")
         return 0
+    show_skills = "Skills" in EVIDENCE_KINDS[args.kind].fields
     for e in entries:
         marker = "pending" if args.pending else e["verified"]
-        print(f"{e['title']}  [{marker}]")
+        line = f"{e['title']}  [{marker}]"
+        if show_skills:
+            skills = (e.get("fields") or {}).get("Skills", "")
+            # Blank is absent (SC5, cv/bundle.py:_skill_items) -- omitted rather than
+            # printed as a bare "Skills: " on every entry that has not annotated one,
+            # which is the common case today and would be noise on every line.
+            if skills:
+                line += f"  Skills: {skills}"
+        print(line)
     return 0
 
 

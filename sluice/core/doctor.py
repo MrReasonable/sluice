@@ -684,6 +684,94 @@ def classify_negatives_vs_skills(negatives: list, skills: list) -> list:
     return out
 
 
+def classify_skills_reconciliation(experience_entries: list, skills_entries: list) -> list:
+    """Up to two NOTICE rows cross-referencing verified experience entries' `Skills:`
+    claims against the verified Skills Inventory (#168 Task 10) -- modelled on
+    `classify_negatives_vs_skills` immediately above: two hand-maintained corpora
+    nothing else here keeps in agreement, made VISIBLE rather than left to silently
+    drift.
+
+    Neither direction is an error. `Skills:` licenses a CV bullet's own numbers
+    RELATIONALLY (cv/bundle.py's `_skill_items`/`_entry_skills_line`) with no
+    requirement that the name it claims also exist as its own Skills Inventory entry --
+    a user may simply type a skill name straight into `Skills:` and never curate an
+    inventory entry for it at all. And a Skills Inventory entry is read by the composer
+    purely as FRAMING (`EvidenceKind.read_by_composer`, cited_by_gate=False) with no
+    requirement that any experience entry cite it back -- the spec's own words for this
+    row are "framing-only, licensing nothing". So both directions are NOTICE, never
+    DEGRADED, the same posture `classify_negatives_vs_skills` and `classify_gate` take:
+    `--strict` in a cron job must not fail an install that simply has not (yet, or
+    ever) linked the two corpora together (see `DoctorReport.exit_code`'s own
+    reasoning for why NOTICE is excluded from the count by construction).
+
+    IDENTITY. An experience entry's `Skills:` value is free TEXT a user typed into an
+    ordinary frontmatter field, never reduced. A Skills Inventory entry's `title` is
+    the STORED FILENAME, which for every entry `propose_evidence` created is
+    `evidence_slug(name)` -- lowercase, dash-separated (core/vault.py). Comparing the
+    two verbatim would therefore almost never match a real pair ("Example Widget3" vs
+    "example-widget3"). `_keys` reduces a typed name the SAME way
+    `Sluice.verify_evidence_interactive`'s own `--id` lookup already does
+    (`entry["title"] == only or entry["title"] == reduced`, core/app.py) -- reused
+    rather than re-derived, so the two identity checks cannot silently disagree about
+    what counts as the same skill. A name that fails to reduce (`evidence_slug` raises
+    on an all-punctuation name) falls back to the verbatim form alone, mirroring that
+    same call site.
+
+    PARSING. `Skills:` is comma-separated free text, split HERE rather than through
+    `cv/bundle.py:_skill_items` -- `sluice/core/` must not import a sub-app (CLAUDE.md's
+    layering rule; nothing under `sluice/core/` imports `sluice.cv` today), and this
+    reconciliation is informational rather than gate-enforcing, so it must never RAISE
+    the way that function's own per-token validation does on a malformed entry --
+    doctor never refuses (this module's own house rule, stated at `DoctorReport.
+    exit_code` and in CLAUDE.md).
+
+    REPORTS A COUNT, never the skill's own name: a `DoctorReport` reaches MCP clients
+    whole (core/protocols.py's Store contract), and "no doctor row carries user-authored
+    text today" is this codebase's own standing rule (see the spec's section 7) -- a
+    skill name is exactly that, this person's own claimed expertise.
+
+    Both counts are computed independently and each row is suppressed at zero, so an
+    install using only one of the two corpora (or neither) reads sensibly rather than
+    reporting a false 100%-unmatched row against an empty other side -- the
+    empty-means-abstain posture CLAUDE.md states for every preference gate, applied
+    here to a NOTICE row instead.
+    """
+    from sluice.core.vault import evidence_slug
+
+    def _keys(name: str) -> set:
+        try:
+            return {name, evidence_slug(name)}
+        except ValueError:
+            return {name}
+
+    claimed = set()
+    for e in experience_entries:
+        raw = (e.get("fields") or {}).get("Skills", "")
+        claimed |= {t.strip() for t in raw.split(",") if t.strip()}
+
+    titles = {e.get("title", "") for e in skills_entries}
+    claimed_keys = set().union(*(_keys(n) for n in claimed)) if claimed else set()
+
+    unclaimed = sum(1 for title in titles if title not in claimed_keys)
+    unmatched = sum(1 for name in claimed if not _keys(name) & titles)
+
+    experience_label = EVIDENCE_KINDS["experience"].relpath.rsplit("/", 1)[-1]
+    skills_label = EVIDENCE_KINDS["skills"].relpath.rsplit("/", 1)[-1]
+
+    out = []
+    if unclaimed:
+        out.append(ComponentCheck(
+            "gates", skills_label, NOTICE,
+            f"{unclaimed} inventory skill(s) evidenced by no entry -- "
+            f"job-sluice experience list"))
+    if unmatched:
+        out.append(ComponentCheck(
+            "gates", experience_label, NOTICE,
+            f"{unmatched} entry Skills: name(s) absent from the inventory -- "
+            f"job-sluice skills list"))
+    return out
+
+
 def classify_gate(owner: str, name: str, value: list) -> ComponentCheck:
     """One posture NOTICE per list-typed field `list_typed_fields` swept from a
     loaded config: abstaining (empty) or active (non-empty). Most of these are
