@@ -32,7 +32,7 @@ except ImportError:  # pragma: no cover - exercised by not having the extra inst
 from sluice import __version__
 from sluice.core import status as _status
 from sluice.core.config import load_config
-from sluice.core.health import HealthStore
+from sluice.core.health import RATE_SIGNALS as HEALTH_RATE_SIGNALS, HealthStore
 from sluice.core.log import get_logger, notify
 from sluice.core.paths import resolve
 from sluice.core.protocols import EVIDENCE_KINDS
@@ -156,6 +156,48 @@ def cmd_list_sources(args, config) -> int:
         line = f"{src.id:16} {src.kind:9} {state}"
         if health is not None:
             line += f"  baseline={health.baseline(src.id):.0f}"
+            # The completeness rates, printed beside the count rather than left in the state
+            # file. A count is what a rotted extractor keeps: reed reported ~20 rows a run
+            # for weeks while reading location off none of them, and nothing a human ran
+            # would say so. Shown as whole percentages because these are ratios over at most
+            # a few dozen rows -- more precision than that reads as significance it lacks.
+            rates, age = health.latest_rates(src.id)
+            for key in HEALTH_RATE_SIGNALS:
+                if key in rates:
+                    line += f" {key.removesuffix('_rate')}={rates[key] * 100:.0f}%"
+            # The VINTAGE, never omitted when the number is not this run's. A rate can be up
+            # to `_KEEP` runs old -- `_lead_rates` withholds every rate key below its row
+            # floor, so a source serving thin pages records none for run after run -- and a
+            # stale 100% rendered as though it were current is precisely the reassuring answer
+            # a rotted extractor produces. This command is what a human runs to catch that, so
+            # the one thing it must not do is answer with an undated number.
+            if rates and age > 0:
+                line += f" ({age} run{'s' if age > 1 else ''} ago)"
+            # Whether `blank` can fire for this source AT ALL, which is two separate questions.
+            #
+            # UNMEASURED: the newest run carried no rate, so `prior_rate` is None for every
+            # key and `_blank_reason` cannot fire whatever the high-water says. The source is
+            # not guarded right now, and saying so is the honest reading of a state that would
+            # otherwise render as a healthy-looking rate with no flag beside it.
+            #
+            # UNGUARDED: the high-water never cleared the floor, so there is no bar to fall
+            # from. Legitimate for a board that does not publish the field and a live blind
+            # spot for one already broken when first recorded; nothing here can tell the two
+            # apart, which is why it is surfaced for a human rather than guessed at -- and why
+            # a source may DECLARE the benign case via `unpublished_fields`, so the flag stops
+            # being permanently lit on rows nobody needs to act on.
+            #
+            # Both are claims about a LIVE guard, so neither is shown for a disabled source:
+            # nothing runs, so no guard is blind.
+            if state == "enabled":
+                if not rates:
+                    line += " UNMEASURED"
+                else:
+                    unguarded = health.unguarded_signals(
+                        src.id, declared_absent=getattr(src, "unpublished_fields", ()))
+                    if unguarded:
+                        line += (" UNGUARDED("
+                                 + ",".join(k.removesuffix("_rate") for k in unguarded) + ")")
             if health.should_retire(src.id):
                 line += " RETIRE"
         print(line)

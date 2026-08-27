@@ -17,6 +17,10 @@ document.querySelectorAll('a[href*="jobId="]').forEach(a=>{
 
 register(BrowserListSource(
     id="eighty_k",
+    # Same shape as weworkremotely: the extractor takes the card's whole innerText as
+    # the title and pushes `company:''`, so an empty company is this board's answer
+    # rather than a selector that rotted. See `unpublished_fields` in ingest/base.py.
+    unpublished_fields=("company",),
     extractor_js=_JS,
     wait=5, scrolls=2, scroll_amount=1400,
     searches_spec=[
