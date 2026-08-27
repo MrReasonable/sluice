@@ -2262,13 +2262,22 @@ class _VoiceBackend:
         return self.audit_out
 
 
-def _run_voice_sequence(monkeypatch, drafts, *, voice_check, **kw):
+def _run_voice_sequence(monkeypatch, drafts, *, voice_check, entries=ENTRIES, **kw):
     """run_one over a scripted draft sequence with `cv.voice_check` set. Returns
     (result, backend) -- mirrors _run_sequence, minus the renderer no test below
-    needs to inspect."""
+    needs to inspect.
+
+    `entries` defaults to the shared ENTRIES fixture every existing caller in this
+    file uses unmodified. The one caller that needs a SOURCED skill declared
+    (#168's row 2 containment check now reaches the SKILLS region too, so an
+    un-sourced skill line fails the HARD gate before the STYLE tier this test
+    isolates ever runs) passes its own single-entry list rather than widening
+    ENTRIES -- and, with it, every other test in this file that builds on ENTRIES
+    unmodified.
+    """
     _served(monkeypatch)
     be = _VoiceBackend(drafts, **kw)
-    v = FakeVault(ENTRIES)
+    v = FakeVault(entries)
     cfg = _cfg()
     cfg.voice_check = voice_check
     res = run_one(Note({"status": "shortlist", "company": "Example Foundry",
@@ -2478,9 +2487,16 @@ def test_the_style_tier_is_not_scoped_over_the_skills_region(monkeypatch):
     # scoping (same control shape the EMPLOYER/CERTIFICATE tests above use).
     assert "Example Synergy" in _voice_judge(_CV_WITH_SLOPPY_SKILL, ("Example Synergy",))
 
+    # #168's row 2 (containment) now checks the SKILLS region independently of the
+    # STYLE tier this test isolates, so "Example Synergy" must be a genuinely SOURCED
+    # skill or the run fails the HARD gate instead of reaching the STYLE check at all
+    # -- `_CV_WITH_SLOPPY_SKILL`'s own comment already claims "gate-clean". A local
+    # entry, not a change to the shared ENTRIES every other test in this file builds
+    # on unmodified.
+    entries = [{**ENTRIES[0], "fields": {"Skills": "Example Synergy"}}]
     res, be = _run_voice_sequence(
         monkeypatch, ["skills-style-dirty", "skills-style-dirty"], voice_check=True,
-        voice_marks=("Example Synergy",))
+        entries=entries, voice_marks=("Example Synergy",))
     assert res.status == "rendered"
     assert be.voice_prompts, "the voice check never ran"
     assert len(be.compose_prompts) == 2, (
@@ -2489,9 +2505,16 @@ def test_the_style_tier_is_not_scoped_over_the_skills_region(monkeypatch):
 
     # The INPUT side, for both halves: the skill line reaches neither the voice prompt...
     assert not any("Example Synergy" in p for p in be.voice_prompts), be.voice_prompts
-    # ...nor, via check_phrases' deterministic scoped set, the retry the composer reads.
+    # ...nor, via check_phrases' deterministic scoped set, a STYLE finding about it in
+    # the retry the composer reads. NOT "Example Synergy not in retry" bare: #168's row
+    # 2 (containment, above this test in the file) now requires the skill to be a
+    # genuinely SOURCED one, and a sourced skill legitimately appears in the SOURCE
+    # BUNDLE section of every compose prompt, retry included -- that occurrence is
+    # correct and has nothing to do with the STYLE tier this test isolates. The
+    # `check_phrases` FINDING format ("SLOP <phrase>: <line>") is what actually
+    # distinguishes "the source bundle mentions this skill" from "the STYLE tier
+    # flagged this skill line", and only the second is what this test polices.
     retry = be.compose_prompts[1]
-    assert "Example Synergy" not in retry, retry
     assert "SLOP synergy" not in retry, retry
     # ...while the IN-SCOPE profile phrase that forces the retry to exist at all DOES
     # reach it -- without this, the absences above would be vacuously true of a retry

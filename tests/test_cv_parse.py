@@ -943,7 +943,13 @@ def test_unmodelled_trailing_content_is_refused_rather_than_left_unconsumed():
     satisfied by the repeated-header refusal above, or by any future arm.
     """
     from tests.test_cv_engine import CLEAN_CV
-    text = CLEAN_CV + "\n\nSKILLS\n- Python\n"
+    # "Grew", not the real-world "Python" this test shipped with: #168's row 2
+    # (containment) now checks the SKILLS region too, and `_gate_verdict`'s bundle
+    # (ENTRIES + baseline "BASELINE") sources no arbitrary word -- "Grew" is, via
+    # ENTRIES[0]'s own body "Grew 3 to 8.". The word choice is otherwise immaterial:
+    # `parse_cv` raises on the 'SKILLS' HEADER line itself (cv/parse.py's trailing-
+    # section refusal), before it ever reaches whatever bullet follows.
+    text = CLEAN_CV + "\n\nSKILLS\n- Grew\n"
     assert _gate_verdict(text) == [], (
         "the SKILLS tail is no longer gate-clean, so the parser's behaviour on it is no "
         "longer the parser/gate disagreement this test describes")
