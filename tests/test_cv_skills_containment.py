@@ -332,29 +332,35 @@ def test_a_digit_bearing_skill_name_is_not_a_fabricated_metric():
     assert V.validate(_bullet("Ran the Example Widget3 migration [AL1]"), s) == []
 
 
-def test_profile_removal_uses_entry_skills_not_the_row_2_vocabulary():
-    """The wide vocabulary would let an ordinary baseline word blank an adjacent digit.
+def test_a_declared_skills_digit_is_not_reported_invented_in_profile_prose():
+    """Renamed and re-fixtured on review (was
+    `test_profile_removal_uses_entry_skills_not_the_row_2_vocabulary`): the original
+    fixture declared NO skills on either entry, so no span removal ever ran under
+    EITHER candidate vocabulary, and the test proved nothing about which one PROFILE
+    actually uses -- confirmed independently by a reviewer who tried to build a
+    discriminating case and could not (see the paragraph below for why).
 
-    FIXTURE NOTE: the plan's literal fixture reused the baseline's OWN digit ("92") as
-    the profile's figure too, which measured out to be non-discriminating -- "92" is
-    already `baseline`-permitted (`bundle_sources` derives `baseline` from digits found
-    anywhere in the baseline text), so `profile_permitted` contains it regardless of
-    whether any span-removal runs at all, and BOTH a correct implementation and one
-    wrongly scoped to `sources.source_tokens` report no violation for it. Measured
-    further: no digit-based fixture CAN discriminate the two for the PROFILE branch --
-    `bundle_sources` already folds every baseline/body digit into `nums`, so anything
-    `source_tokens` adds beyond `all_skills` (baseline and body WORDS) carries only
-    digits `profile_permitted` already covers; the sole vocabulary member `source_tokens`
-    contributes and `nums` does NOT is a skill-item digit, and that is exactly what
-    `all_skills` licenses too. So this row is a REGRESSION pin on the property named in
-    the docstring above, not a discriminator: a genuinely fabricated figure (`47`,
-    absent from baseline, body and every declared skill) sitting beside the SAME ordinary
-    baseline word ("Alpha") must still be reported when no entry declares any skill at
-    all -- proving the wide vocabulary is not silently swallowing it before extraction.
+    This version at least exercises the removal it claims to pin: BE1 declares
+    `Example Widget3` while the WORK bullet cites only AL1, so the PROFILE mention is
+    licensed purely through the bundle-wide UNION of every entry's `Skills:` --
+    consistent with `profile_permitted` already being bundle-wide -- and not through
+    whichever entry happens to be cited elsewhere in the CV.
+
+    THIS DOES NOT DISCRIMINATE `all_skills` from `sources.source_tokens`, and NO test
+    can: `bundle_sources` derives `nums[entry]` from `_entry_block` (id line + body) via
+    a direct `\\d+` regex, so every digit anywhere in any entry's body or the baseline is
+    ALREADY independently `profile_permitted`, stripped or not. The only digits
+    `source_tokens` carries beyond `nums` are skill-item digits -- and those are, by
+    construction, always ALSO in `all_skills`, since a skill item can only exist inside
+    some entry's `Skills:` field. So the two candidate vocabularies always produce the
+    identical surviving digit set for PROFILE; this row is a regression pin on "a
+    declared skill's digits are not reported invented in PROFILE prose", not a
+    falsifier of the vocabulary choice. A test whose name promised that distinction
+    would be worse than one that admits the limit.
     """
-    s = _two_entry_sources(al_skills="", be_skills="", baseline="We shipped Alpha 92 times.")
-    v = V.validate(_cv(profile="Alpha 47 shipments.", bullet="Ran it [AL1]"), s)
-    assert any("INVENTED PROFILE METRIC" in x for x in v)
+    s = _two_entry_sources(al_skills="", be_skills="Example Widget3")
+    cv = _cv(profile="Deep experience with Example Widget3 overall.", bullet="Ran it [AL1]")
+    assert not any("INVENTED PROFILE METRIC" in x for x in V.validate(cv, s))
 
 
 def test_the_same_holds_in_profile_prose():
@@ -381,26 +387,46 @@ def test_the_same_holds_in_profile_prose():
 
 def test_span_removal_does_not_depend_on_row_1_passing():
     """The review's sharpest finding: while removal was gated on row 1's verdict, three
-    decisions combined into the harm it exists to prevent. Row 1 is case-sensitive (SC9)
-    and abstains on an un-annotated cited entry (SC5), and skill digits sit in NO numeric
-    pool -- so each row-1 UNDER-fire became a hard INVENTED METRIC on a skill the user
-    really declared. Removal is a numeric-gate concern, not an attribution verdict.
+    decisions combined into the harm it exists to prevent. Row 1 abstains on an
+    un-annotated cited entry (SC5), and skill digits sit in NO numeric pool -- so a
+    row-1 abstain became a hard INVENTED METRIC on a skill the user really declared.
+    Removal is a numeric-gate concern, not an attribution verdict.
 
-    FIXTURE NOTE (wrong-case arm only): the plan's literal bullet ("Ran widget3 [AL1]")
-    dropped the "Example" token entirely rather than just lower-casing it, so the
-    two-token needle `["Example", "Widget3"]` could never match a one-token haystack --
-    that fails independent of case-sensitivity, for the same reason a needle longer
-    than its haystack window never matches. Both tokens are kept here, lower-cased, so
-    the case-INSENSITIVE span match this row exists to prove is what is actually being
-    exercised.
+    Confirmed by the mutation witness (Step 5): moving the digit-removal vocabulary so
+    it is computed ONLY inside row 1's `if all(...)` arm (i.e. gated on row 1 running at
+    all, matching a plausible earlier revision) makes exactly this assertion fail, with
+    the exact over-fire this docstring describes.
     """
-    # wrong case: row 1 does not match, and must still not produce a numeric violation
+    s = _two_entry_sources(al_skills="Example Widget3", be_skills="")
+    assert not any("INVENTED" in x
+                   for x in V.validate(_bullet("Ran Example Widget3 [AL1][BE1]"), s))
+
+
+def test_span_removal_is_case_insensitive_unlike_row_1():
+    """A DIFFERENT under-fire than the abstain case above: row 1 (SC9) is
+    case-SENSITIVE by design, so `example widget3` does not case-match the declared
+    `Example Widget3` and row 1 correctly stays silent about misattribution. Digit
+    removal must not inherit that case-sensitivity -- it answers a different question
+    (is this digit part of a real name) and is decided independently of row 1's
+    verdict, so it must still strip the span case-insensitively and must not report the
+    embedded `3` as an invented metric.
+
+    Mislabelled on first review: this arm previously lived inside
+    `test_span_removal_does_not_depend_on_row_1_passing`, but the mutation witness for
+    THAT test (gating removal on row 1's `if all(...)` arm) does not make this
+    assertion fail -- a single citation with a declared skill means row 1's `licensed`
+    set and this row's own removal vocabulary coincide, so this arm witnesses
+    case-insensitivity, not row-1 decoupling, and needed its own name.
+
+    FIXTURE NOTE: an earlier draft of this fixture ("Ran widget3 [AL1]") dropped the
+    "Example" token entirely rather than just lower-casing it, so the two-token needle
+    `["Example", "Widget3"]` could never match a one-token haystack -- that fails
+    independent of case-sensitivity, for the same reason a needle longer than its
+    haystack window never matches. Both tokens are kept here, lower-cased, so the
+    case-INSENSITIVE span match this row exists to prove is what is actually exercised.
+    """
     s = _two_entry_sources(al_skills="Example Widget3", be_skills="Example Framework")
     assert not any("INVENTED" in x for x in V.validate(_bullet("Ran example widget3 [AL1]"), s))
-    # abstaining entry: same
-    s2 = _two_entry_sources(al_skills="Example Widget3", be_skills="")
-    assert not any("INVENTED" in x
-                   for x in V.validate(_bullet("Ran Example Widget3 [AL1][BE1]"), s2))
 
 
 def test_a_fabricated_number_beside_a_licensed_skill_is_still_caught():
@@ -409,3 +435,25 @@ def test_a_fabricated_number_beside_a_licensed_skill_is_still_caught():
     s = _two_entry_sources(al_skills="Example Widget3", be_skills="")
     v = V.validate(_bullet("Ran Example Widget3 and cut cost by 92% [AL1]"), s)
     assert any("INVENTED METRIC" in x and "92" in x for x in v)
+
+
+def test_a_substring_prefix_match_does_not_launder_a_fabricated_metric():
+    """The substring-containment hole SC9 forbids by name (`"java" in "javascript"`),
+    reproduced as a LIVE regression rather than argued from the code: mutating
+    `_strip_skill_spans` back to a naive `re.sub(re.escape(skill), "", text)` leaves the
+    ENTIRE suite green, including every other row in this file -- this is the one row
+    that catches it, and it did not exist until a reviewer built the exploit by hand.
+
+    The shape: `Skills: Example Widget3` licenses stripping the token `Widget3`. A
+    substring `re.sub` also strikes `Widget3` out of the UNRELATED token `Widget30`
+    (which merely shares a prefix), leaving the bare digit `0` behind. If that leftover
+    `0` happens to be independently licensed -- here, by the entry's own BODY -- the
+    genuinely fabricated `30` is never even extracted, let alone flagged: the mutant
+    reports zero violations. The real (token-sequence) implementation never performs
+    the strike-out at all, since `Widget30` and `Widget3` are different tokens, so `30`
+    is extracted whole and correctly reported as invented.
+    """
+    s = _sources(body="Logged 0 regressions this quarter.", skills="Example Widget3",
+                 baseline="Example Alpha.")
+    v = V.validate(_bullet("Ran the Example Widget30 migration [ES1]"), s)
+    assert any("INVENTED METRIC" in x and "30" in x for x in v)
