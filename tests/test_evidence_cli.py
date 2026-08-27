@@ -239,6 +239,33 @@ def test_skills_list_does_not_show_a_skills_field(tmp_path, monkeypatch, capsys)
     assert "Skills:" not in out
 
 
+def test_the_cli_gate_itself_ignores_a_skills_field_the_registry_does_not_declare(
+        monkeypatch, capsys):
+    """The test above drives a REAL vault, where `core/vault.py`'s `_evidence_entries`
+    already never populates `fields["Skills"]` for a kind that does not declare it
+    (`{k: fm.get(k, "") for k in spec.fields}`) -- so it cannot tell the CLI's OWN
+    `"Skills" in spec.fields` gate (`cmd_evidence_list`) apart from that upstream
+    invariant. Measured: forcing `show_skills = True` unconditionally in
+    `cmd_evidence_list` left every test in this file GREEN, including the one above,
+    whose own docstring claims to guard exactly this leak.
+
+    This test drives `cmd_evidence_list` through a STUB `Sluice.list_evidence` that
+    violates the upstream invariant on purpose -- a `Skills` key on a `skills`-kind
+    entry, a shape the real Vault never produces -- so only the CLI's own gate stands
+    between that key and the printed line."""
+    from sluice.core.app import Sluice
+
+    monkeypatch.setattr(
+        Sluice, "list_evidence",
+        lambda self, *, kind, pending=False: [
+            {"title": "alpha", "verified": "2026-08-25",
+             "fields": {"Skills": "Example Ghost"}}])
+    assert main(["skills", "list"]) == 0
+    out = capsys.readouterr().out
+    assert "alpha" in out
+    assert "Skills:" not in out
+
+
 def test_verify_with_a_non_matching_id_prints_to_stderr_and_exits_1(tmp_path, monkeypatch,
                                                                     capsys):
     """R11's CLI half: the facade's `not_found` key must actually reach the terminal as

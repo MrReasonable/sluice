@@ -709,21 +709,33 @@ def classify_skills_reconciliation(experience_entries: list, skills_entries: lis
     the STORED FILENAME, which for every entry `propose_evidence` created is
     `evidence_slug(name)` -- lowercase, dash-separated (core/vault.py). Comparing the
     two verbatim would therefore almost never match a real pair ("Example Widget3" vs
-    "example-widget3"). `_keys` reduces a typed name the SAME way
-    `Sluice.verify_evidence_interactive`'s own `--id` lookup already does
-    (`entry["title"] == only or entry["title"] == reduced`, core/app.py) -- reused
-    rather than re-derived, so the two identity checks cannot silently disagree about
-    what counts as the same skill. A name that fails to reduce (`evidence_slug` raises
-    on an all-punctuation name) falls back to the verbatim form alone, mirroring that
-    same call site.
+    "example-widget3"). `_keys` reduces a typed name through the SAME `evidence_slug`
+    call `Sluice.verify_evidence_interactive`'s own `--id` lookup already imports and
+    uses (`entry["title"] == only or entry["title"] == reduced`, core/app.py), applying
+    the identical verbatim-or-reduced comparison shape around it. The REDUCTION cannot
+    drift between the two call sites since it is one shared function; the comparison
+    itself is written independently at each -- currently identical, so the two checks
+    agree today, but that agreement is not structurally enforced the way sharing the
+    reduction is. A name that fails to reduce (`evidence_slug` raises on an
+    all-punctuation name) falls back to the verbatim form alone, mirroring that same
+    call site.
 
     PARSING. `Skills:` is comma-separated free text, split HERE rather than through
     `cv/bundle.py:_skill_items` -- `sluice/core/` must not import a sub-app (CLAUDE.md's
-    layering rule; nothing under `sluice/core/` imports `sluice.cv` today), and this
-    reconciliation is informational rather than gate-enforcing, so it must never RAISE
-    the way that function's own per-token validation does on a malformed entry --
-    doctor never refuses (this module's own house rule, stated at `DoctorReport.
-    exit_code` and in CLAUDE.md).
+    layering rule). Verified narrowly, not as a blanket claim about `sluice/core/` as a
+    whole: `core/doctor.py` ITSELF imports nothing from `sluice.cv`, which is the
+    property this function's own layering actually depends on. `core/app.py` (a
+    DIFFERENT `core/` module, the documented composition root every sub-app is wired
+    through) does import from `sluice.cv`, lazily, inside individual method bodies --
+    `sluice.cv.config` inside BOTH `Sluice.compose_cv` and `Sluice.doctor` itself (the
+    method that builds the `DoctorReport` this function's rows end up in), and
+    `sluice.cv.engine` inside `compose_cv` alone. Those imports are deliberate (the
+    composition root doing its job) and unrelated to this function's own layering
+    claim, which is only ever about `core/doctor.py`. This reconciliation is also
+    informational rather than gate-enforcing, so it must never RAISE the way that
+    function's own per-token validation does on a malformed entry -- doctor never
+    refuses (this module's own house rule, stated at `DoctorReport.exit_code` and in
+    CLAUDE.md).
 
     REPORTS A COUNT, never the skill's own name: a `DoctorReport` reaches MCP clients
     whole (core/protocols.py's Store contract), and "no doctor row carries user-authored
@@ -746,7 +758,13 @@ def classify_skills_reconciliation(experience_entries: list, skills_entries: lis
 
     claimed = set()
     for e in experience_entries:
-        raw = (e.get("fields") or {}).get("Skills", "")
+        # `.get("Skills", "")` only supplies the default when the key is ABSENT; an
+        # explicit `None` VALUE (a Store returning `{"Skills": None}` rather than
+        # omitting the key -- core/protocols.py's Store contract does not forbid it,
+        # even though the real Vault never produces one) passes straight through and
+        # `.split` raises on it. `or ""` catches both shapes doctor must never refuse
+        # on: an absent key and a present-but-falsy one.
+        raw = (e.get("fields") or {}).get("Skills") or ""
         claimed |= {t.strip() for t in raw.split(",") if t.strip()}
 
     titles = {e.get("title", "") for e in skills_entries}

@@ -2011,23 +2011,22 @@ def test_the_negatives_cross_check_runs_through_the_real_wiring(tmp_path, monkey
 
 
 # ── #168 Task 10: an experience entry's `Skills:` claims vs the Skills Inventory ──
-def _exp(skills: str) -> dict:
-    """A minimal experience entry dict, the shape `Vault._evidence_entries` produces --
-    only `fields["Skills"]` matters to the classifier under test.
-
-    Built via subscript assignment rather than a single dict literal: the fixture-name
-    neutrality sweep (tests/test_fixture_name_neutrality.py) pattern-matches the
-    literal key text for "Skills" followed by a colon and a value anywhere in
-    `tests/`, including inside a dict literal's own source -- and a bareword
-    PARAMETER NAME sitting in that value position read to that regex exactly like an
-    unreviewed skill string (measured). The values that matter for review are the
-    ones actually passed to this helper at each call site, reviewed on
-    `_REVIEWED_SKILL_VALUES` there."""
-    entry = {"fields": {}}
-    entry["fields"]["Skills"] = skills
-    return entry
-
-
+#
+# Entries below are built as literal nested dicts -- `fields` holding a `Skills` entry
+# written out in full at each call site -- matching tests/test_cv_bundle.py's and
+# tests/test_cv_engine.py's own precedent for this exact shape, rather than through a
+# value-taking helper function. A helper taking the skill
+# string as a PARAMETER (an earlier version of this file had one, `_exp(skills)`, built
+# via `entry["fields"]["Skills"] = skills`) puts the actual value only at the CALL SITE,
+# with no "Skills:" text anywhere near it in the source -- invisible to BOTH neutrality
+# collectors in tests/test_fixture_name_neutrality.py: the `Skills:`-keyed one (which
+# needs the literal key text immediately before the value) and the `Example <Word>`
+# identity sweep (which would otherwise catch it independent of any key at all, the way
+# #167 needed it to for body prose). Measured directly: with the helper shape,
+# `_all_fixture_skill_values()` and `_cv_fixture_identities()` both missed
+# "ExampleZephyrOnly" entirely -- a collector matching SYNTAX, not semantics, exactly
+# the "pattern consumed by two engines" class CLAUDE.md names. A literal dict avoids the
+# indirection instead of teaching either sweep a new shape to look for.
 def _skill(title: str) -> dict:
     """A minimal Skills Inventory entry dict -- only `title` matters."""
     return {"title": title}
@@ -2039,7 +2038,7 @@ def test_a_claimed_skill_matching_the_inventory_by_slug_reports_nothing():
     STORED FILENAME (`evidence_slug(name)`, lowercase-dashed), never the raw typed
     text -- "Example Widget" reduces to "example-widget"."""
     assert classify_skills_reconciliation(
-        [_exp("Example Widget")], [_skill("example-widget")]) == []
+        [{"fields": {"Skills": "Example Widget"}}], [_skill("example-widget")]) == []
 
 
 def test_an_inventory_skill_named_by_no_entry_is_reported():
@@ -2052,7 +2051,7 @@ def test_an_inventory_skill_named_by_no_entry_is_reported():
 
 
 def test_an_entry_skill_absent_from_the_inventory_is_reported():
-    rows = classify_skills_reconciliation([_exp("Example Ghost")], [])
+    rows = classify_skills_reconciliation([{"fields": {"Skills": "Example Ghost"}}], [])
     assert len(rows) == 1
     assert rows[0].state == NOTICE
     assert rows[0].subject == "Experience Library (unmatched)"
@@ -2065,7 +2064,7 @@ def test_both_rows_can_fire_together_on_a_wholly_disjoint_pair():
     always returns at most one row (e.g. an early `return` after the first check) is
     invisible to either of them alone but caught here."""
     rows = classify_skills_reconciliation(
-        [_exp("Example Ghost")], [_skill("example-orphan")])
+        [{"fields": {"Skills": "Example Ghost"}}], [_skill("example-orphan")])
     assert len(rows) == 2
     subjects = {r.subject for r in rows}
     assert subjects == {"Skills Inventory (unclaimed)", "Experience Library (unmatched)"}
@@ -2084,10 +2083,48 @@ def test_a_blank_skills_value_never_counts_as_a_claim():
     SATISFY the orphan check by coincidence for any title that happens to be falsy,
     so the second assertion pins the count explicitly rather than merely checking
     the row is present."""
-    assert classify_skills_reconciliation([_exp("")], []) == []
-    rows = classify_skills_reconciliation([_exp("")], [_skill("example-widget")])
+    assert classify_skills_reconciliation([{"fields": {"Skills": ""}}], []) == []
+    rows = classify_skills_reconciliation(
+        [{"fields": {"Skills": ""}}], [_skill("example-widget")])
     assert len(rows) == 1
     assert rows[0].subject == "Skills Inventory (unclaimed)"
+
+
+def test_a_missing_skills_key_never_counts_as_a_claim():
+    """`.get("Skills", "")` defaults an ABSENT key the same way a blank one reads --
+    the shape every pre-#168 Experience Library note actually has (no `Skills:` line at
+    all, per tests/test_evidence_kinds.py's own `gamma` fixture), as opposed to the
+    test above's explicitly-blank shape."""
+    assert classify_skills_reconciliation([{"fields": {}}], []) == []
+
+
+def test_a_missing_fields_key_never_counts_as_a_claim():
+    """`(e.get("fields") or {})` -- an entry with no `fields` key at all must abstain
+    the same way, not raise. Not a shape `Vault._evidence_entries` ever produces (every
+    real entry dict carries `fields`), but the Store contract does not require it and
+    doctor never refuses on an unusual-but-harmless shape."""
+    assert classify_skills_reconciliation([{}], []) == []
+
+
+def test_a_none_skills_value_does_not_raise():
+    """`fields.get("Skills", "")` only supplies the DEFAULT when the key is ABSENT --
+    an explicit None VALUE (a Store returning a Skills key set to Python's null rather
+    than omitting the key) passes straight through to `.split`, which raises
+    `AttributeError` on None. Not reachable via the real `Vault` today
+    (`_parse_fm_spaced`/`_fm_dict` always yield `str`), but `core/protocols.py`'s Store
+    contract does not forbid it, and "doctor never refuses" -- this module's own house
+    rule -- means a malformed but plausible Store return must not crash the whole
+    report over one bad field.
+
+    Built via subscript assignment, unlike every other entry in this file -- None is
+    not a candidate skill NAME (there is nothing here for a human to confirm invented
+    vs. real), so this one line is the sole deliberate exception to this file's own
+    "always a literal dict" rule stated above: a subscript assignment keeps the bare
+    word None off the `Skills:`-collector's literal-adjacency match, which is exactly
+    right here since there is no name being hidden from review."""
+    entry = {"fields": {}}
+    entry["fields"]["Skills"] = None
+    assert classify_skills_reconciliation([entry], []) == []
 
 
 def test_duplicate_claims_across_entries_count_once():
@@ -2096,7 +2133,8 @@ def test_duplicate_claims_across_entries_count_once():
     not two. A defect that counts occurrences instead of distinct names would report a
     count of 2 in that row's detail text, which this test's exact assertion catches."""
     rows = classify_skills_reconciliation(
-        [_exp("Example Ghost"), _exp("Example Ghost, Example Widget")],
+        [{"fields": {"Skills": "Example Ghost"}},
+         {"fields": {"Skills": "Example Ghost, Example Widget"}}],
         [_skill("example-widget")])
     assert len(rows) == 1
     assert "1 entry Skills:" in rows[0].detail
@@ -2108,11 +2146,13 @@ def test_a_name_that_cannot_reduce_falls_back_to_verbatim_and_can_still_match():
     (doctor never refuses), and a hand-placed inventory entry whose own title was
     never reduced (evidence_slug is CREATE-time only, per its own docstring) can still
     match it verbatim."""
-    assert classify_skills_reconciliation([_exp("###")], [_skill("###")]) == []
+    assert classify_skills_reconciliation(
+        [{"fields": {"Skills": "###"}}], [_skill("###")]) == []
 
 
 def test_a_name_that_cannot_reduce_and_does_not_match_verbatim_is_still_reported():
-    rows = classify_skills_reconciliation([_exp("###")], [_skill("something-else")])
+    rows = classify_skills_reconciliation(
+        [{"fields": {"Skills": "###"}}], [_skill("something-else")])
     subjects = {r.subject for r in rows}
     assert "Experience Library (unmatched)" in subjects
     assert "Skills Inventory (unclaimed)" in subjects
@@ -2124,20 +2164,20 @@ def test_the_report_names_no_skill_string():
     carries user-authored text" rule means neither the raw typed name nor its reduced
     slug form may appear in either row's detail or subject."""
     rows = classify_skills_reconciliation(
-        [_exp("ExampleZephyrOnly")], [_skill("example-orphan-only")])
+        [{"fields": {"Skills": "Example Zephyr"}}], [_skill("example-orphan-only")])
     assert len(rows) == 2
     for r in rows:
-        assert "ExampleZephyrOnly" not in r.detail
-        assert "examplezephyronly" not in r.detail.lower()
+        assert "Example Zephyr" not in r.detail
+        assert "example-zephyr" not in r.detail.lower()
         assert "example-orphan-only" not in r.detail
-        assert "examplezephyronly" not in r.subject.lower()
+        assert "example-zephyr" not in r.subject.lower()
         assert "example-orphan-only" not in r.subject.lower()
 
 
 def test_the_rows_never_affect_the_exit_code():
     """NOTICE, never DEGRADED -- same posture classify_negatives_vs_skills's identical
     test pins."""
-    rows = classify_skills_reconciliation([_exp("Example Ghost")], [])
+    rows = classify_skills_reconciliation([{"fields": {"Skills": "Example Ghost"}}], [])
     assert DoctorReport(checks=[], components=rows).exit_code(strict=True) == 0
 
 
