@@ -447,9 +447,10 @@ prose, and an id-shaped baseline line's own digit (the `9` of a stray `[ZZ9]`) d
 (#167) has TWO halves and neither blocks: `cv/slop.py`'s ~40 AI-tell stems and the opt-in
 model-judged `cv/voice.py` check (`cv.voice_check`). The scoping is a property of the TIER, so it
 covers both — `cv/engine.py` matches the stems against, and shows the model, exactly the
-PROFILE-prose/WORK-bullet lines `cv/validate.py`'s own `section_spans` yields, never the whole
-document, because a complaint naming an employer, certificate or education line is answerable only
-by renaming the thing it names. A surviving finding from either ALSO drives the
+PROFILE-prose/WORK-bullet lines — two of the THREE regions `cv/validate.py`'s own `section_spans`
+yields (#168's Task 3 added a SKILLS region alongside them, deliberately excluded here) — never the
+whole document, because a complaint naming an employer, certificate or education line is answerable
+only by renaming the thing it names. A surviving finding from either ALSO drives the
 retry: the engine retries composition exactly once when the HARD gate fails OR a STYLE/VOICE finding
 survives, feeding every finding back, and RETAINS the last HARD-clean draft across that retry so a
 worse or failed second attempt can never bin a lead the first one already cleared — a phrase may never
@@ -634,7 +635,11 @@ deliberate refusal of gate-clean input, and it was added rather than inherited: 
 gate-clean AND slop-clean AND parsed without raising, returning `certificates == []` with the second
 block's entries gone — and since the template guards each section with `{% if document.certificates
 %}`, the heading vanished with them, so the PDF was indistinguishable from a candidate who holds
-none. Both exceptions pass the same test, and it is the test to apply to any third: the refusal must
+none. `SKILLS` joined `CERTIFICATES`/`EDUCATION` as a third trailing section at #168's Task 7, and
+the same refusal covers a repeated `SKILLS` header identically — the message names whichever
+sections are actually live by deriving them from `_TRAILING_SECTIONS` rather than hand-listing a
+pair that would go stale the moment a third joined it. Both exceptions pass the same test, and it is
+the test to apply to any third: the refusal must
 be answerable WITHOUT inventing content (here, merge the two headings). That is exactly what the
 LOCATION refusal failed, and why that one went the other way. The repeat is refused even when it
 turns out to be empty and so drops nothing; that over-refusal is stated in `cv/parse.py` rather than
@@ -643,9 +648,16 @@ disguised as a distinction the code draws.
 The one place a parser may legitimately be stricter is a WORK bullet marker, and there the
 requirement is EQUALITY with the gate, not merely "no wider": a marker `validate.py` does not also
 citation-check would render an UNCITED bullet into the PDF ungated, while one it checks and the
-parser rejects is the governing bug class again. `_TRAILING_MARKERS` (CERTIFICATES/EDUCATION, which
-the gate never citation-checks, so the bypass argument has no force there) is a separate, wider
-tuple from `_BULLET_MARKERS` for exactly that reason — never widen the shared one.
+parser rejects is the governing bug class again. `_TRAILING_MARKERS` (CERTIFICATES/EDUCATION/SKILLS,
+none of which the gate ever citation-checks, so that half of the bypass argument still has no force
+there) is a separate, wider tuple from `_BULLET_MARKERS` for exactly that reason — never widen the
+shared one. SKILLS is not fully exempt, though: it is the FIRST trailing section the hard gate DOES
+check, via containment rather than citation (`UNSOURCED SKILL`, #168), so a marker this tuple
+accepts that `validate.py`'s `_SKILLS_MARKERS` does not recognise as a bullet would let that line
+slip past `skills_lines` entirely and reach the PDF uncontained — a bypass of the NEW check even
+though the citation argument still has no force. The two tuples are pre-shaped equal for exactly
+that reason, and the containment check strips with the identical character set before comparing, so
+keep them in lockstep rather than widening either alone.
 
 **Neutrality: no personal data in this repo.** No employer names, role preferences, locations,
 contact details, hostnames, or absolute paths in `sluice/` or `tests/`. The judge's criteria are read

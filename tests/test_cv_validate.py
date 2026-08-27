@@ -450,30 +450,43 @@ def test_profile_strip_matches_render_citation_shape():
 # --- section_spans(): the extraction's equivalence pin (#167) -----------------
 # `section_spans` is an EXTRACTION of validate()'s own line loop -- not a new split --
 # so the test that certifies it has to compare it against that loop AS SHIPPED, never
-# against itself. `_validate_line_sets_before_the_extraction` below is transcribed from
-# `git show b831dc9:sluice/cv/validate.py` lines 97-123, i.e. the loop as it stood
-# BEFORE `section_spans` existed. The first change made in transcription was
-# `enumerate(..., 1)`: the pre-change loop selected lines without numbering them, and an
-# equivalence assertion needs each selected line to carry an identity. Every OTHER
-# predicate -- the header comparisons, both `continue`s, the terminator set, the marker
-# tuple -- was, at that point, byte-for-byte the pre-change code.
+# against itself. `_validate_line_sets_before_the_extraction` below has TWO arms with
+# TWO DIFFERENT GUARANTEES, and the difference is the whole point of this comment: read
+# it before trusting either arm the way the other deserves.
 #
-# Deriving this reference by reading the NEW helper instead would assert that the code
-# equals itself and certify nothing. A silent weakening of the fabrication gate is
-# precisely what that would let ship green.
+# The PROFILE and WORK arms are transcribed from `git show b831dc9:sluice/cv/validate.py`
+# lines 97-123, i.e. the loop as it stood BEFORE `section_spans` existed. The first
+# change made in transcription was `enumerate(..., 1)`: the pre-change loop selected
+# lines without numbering them, and an equivalence assertion needs each selected line to
+# carry an identity. Every OTHER predicate governing these two arms -- the header
+# comparisons, both `continue`s, the terminator set, the marker tuple -- was, at that
+# point, byte-for-byte the pre-change code, and #168's Task 3 (below) leaves both
+# untouched. Deriving THIS reference by reading the NEW helper instead would assert that
+# the code equals itself and certify nothing -- a silent weakening of the fabrication
+# gate is precisely what that would let ship green. What makes that argument work is
+# that the PROFILE/WORK arms are grounded in code that shipped and ran in production
+# before `section_spans` (or SKILLS) ever existed: an INDEPENDENT oracle, not anyone's
+# current belief about what the loop should do.
 #
-# #168's Task 3 extends this a SECOND time, by hand, for the identical reason: the
-# alphabet the random sweep below draws from already contains "SKILLS", and once
-# `section_spans` learns to pull a SKILLS bullet run out of WORK, this reference and
-# `section_spans` genuinely diverge on any CV where a WORK-shaped bullet sits inside a
-# SKILLS region -- measured, before this extension, on ~127/2000 rows at the sweep's
-# shipped seed. That divergence is EXPECTED and does not indicate a bug in either side:
-# it is exactly the behaviour change #168 exists to make (a SKILLS bullet is no longer a
-# WORK bullet), and the reference has to model it or the sweep would fail on the new,
-# correct behaviour instead of confirming it. The SKILLS branch below is typed
-# independently from `section_spans`' own -- not copy-pasted -- so the two can still
-# disagree if either has a bug; `test_the_section_span_helper_matches_the_pre_extraction_
-# loop_on_random_cvs` is what actually exercises that independence over 2000 rows.
+# The SKILLS arm is NOT that. #168's Task 3 extends this reference a SECOND time, by
+# hand, because the alphabet the random sweep below draws from already contains
+# "SKILLS", and once `section_spans` learns to pull a SKILLS bullet run out of WORK,
+# this reference and `section_spans` genuinely diverge on any CV where a WORK-shaped
+# bullet sits inside a SKILLS region -- measured, before this extension, on ~127/2000
+# rows at the sweep's shipped seed. That divergence is EXPECTED and does not indicate a
+# bug in either side: it is exactly the behaviour change #168 exists to make (a SKILLS
+# bullet is no longer a WORK bullet), and the reference has to model it or the sweep
+# would fail on the new, correct behaviour instead of confirming it. There is no
+# `b831dc9` for SKILLS -- no prior-shipped code to transcribe, because the behaviour is
+# new -- so the SKILLS branch below is typed independently from `section_spans`' own
+# only in the narrow sense of "not copy-pasted": both were written by the same person,
+# from the same design, close together in time. `test_the_section_span_helper_matches_
+# the_pre_extraction_loop_on_random_cvs` is what exercises that independence over 2000
+# rows, and it is real -- a coding slip in either side can still make them disagree --
+# but it is a CONSISTENCY check between two expressions of one new idea, not an
+# INDEPENDENT oracle against history the way the PROFILE/WORK arms are. A bug both
+# share, because both typings share the same misreading of the design, is exactly the
+# failure mode this arm cannot catch.
 def _validate_line_sets_before_the_extraction(cv_text):
     profile, work = [], []
     in_work = False
