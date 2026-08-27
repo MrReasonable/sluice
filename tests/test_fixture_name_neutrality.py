@@ -248,6 +248,23 @@ def _identity_of(raw):
     return raw.removesuffix(".md").split("/")[-1].split(" - ")[0].strip()
 
 
+def _evidence_field_re(key: str):
+    """The collector pattern for ONE capitalised evidence frontmatter key.
+
+    Parameterised rather than copied because every hardening below was MEASURED against the
+    real corpus for `Company:` and applies unchanged to any sibling key -- most of all the
+    escaped-`\\n` shape, where a whole frontmatter block is one Python string literal joined
+    by two literal characters (backslash, `n`) rather than real newlines. A second key given
+    its own hand-written regex would start from the naive `key:\\s*"(...)"` that was tried
+    first here and measured to match NOTHING real, and would then drift from this one every
+    time either was corrected.
+
+    See the long comment above for what each alternative and the lookahead terminator close.
+    """
+    return re.compile(rf"""["']?{key}["']?\s*:\s*("[^"{{\n]+"|'[^'{{\n]+'"""
+                      rf"""|[^\s"'`{{\\\n][^"'`{{\\\n]*?(?=["'`\\\n]|\s*$))""", re.M)
+
+
 _IDENTITY_COLLECTORS = (
     ("frontmatter company:", re.compile(r'company:\s*"([^"]*)"')),
     ("lead-note filename", re.compile(r'"([A-Za-z][^"\n]*? - [^"\n]*?\.md)"')),
@@ -324,9 +341,7 @@ _IDENTITY_COLLECTORS = (
     # closes that without a possessive quantifier (no other regex in this file uses one).
     # None of the real fixtures need a leading space inside the value, and `Example Foundry`
     # / `Example Systems` still keep their INTERNAL space via the wider class that follows.
-    ("evidence Company: (frontmatter or dict/kwarg)",
-     re.compile(r"""["']?Company["']?\s*:\s*("[^"{\n]+"|'[^'{\n]+'"""
-                r"""|[^\s"'`{\\\n][^"'`{\\\n]*?(?=["'`\\\n]|\s*$))""", re.M)),
+    ("evidence Company: (frontmatter or dict/kwarg)", _evidence_field_re("Company")),
 )
 
 # Derived from the packet's own warned-field classification (sluice/apply/packet.py's
@@ -1557,3 +1572,90 @@ def test_cv_fixture_identities_are_on_the_reviewed_roster():
     assert unreviewed == [], (
         "these CV-fixture identities are not on _REVIEWED_FIXTURE_IDENTITIES: "
         f"{unreviewed}. Confirm each names no real firm, then add it to the roster.")
+
+
+# ── Skill values (#168) ──────────────────────────────────────────────────────────────
+#
+# Skill values are NOT lead identities, and they get their own roster rather than joining
+# `_REVIEWED_FIXTURE_IDENTITIES`. That roster's own docstring scopes it to "LEAD identities
+# -- employers a fixture names", and `_CV_IDENTITY_EXEMPT` exists (owner's ruling,
+# 2026-08-24) precisely to keep a product-shaped NON-employer value off it: "rostering it
+# would make the roster mean something wider than it says." Adding technology names by
+# policy is what that carve-out was created to prevent -- one list answering two different
+# questions, with no way to tell afterwards which call an entry records.
+#
+# Same tool, separate question, following the `_REVIEWED_CANDIDATE_VALUES` precedent. The
+# question a human is being asked here is:
+#
+#   Is this technology-shaped value INVENTED, or does it name a real product or language
+#   the candidate actually works with?
+#
+# Nothing running locally can answer that -- no local check can tell an invented name from
+# a real one. This is a RATCHET: it forces the answer once, in the commit that introduces
+# the value, rather than retroactively over an accumulated corpus.
+_REVIEWED_SKILL_VALUES = frozenset({
+    # Invented for #168, not drawn from any real skill inventory, and shaped to the
+    # `Example <Word>` convention this file's own failure message prescribes.
+    "Example Framework",
+    "Example Query",
+})
+
+# The same parameterised pattern the evidence `Company:` collector uses, so every shape
+# measured for that key -- bare, quoted, dict/kwarg, and the escaped-`\n` block where a
+# whole frontmatter section is ONE Python string literal -- is covered here for free.
+# Deliberately NOT a member of `_IDENTITY_COLLECTORS`: that tuple feeds the EMPLOYER
+# roster and carries its own `len(...) == 5` scope pin.
+_SKILL_COLLECTOR = ("evidence Skills: (frontmatter or dict/kwarg)",
+                    _evidence_field_re("Skills"))
+
+
+def _all_fixture_skill_values():
+    """Every individual skill value any fixture declares.
+
+    SPLIT ON COMMAS: `Skills:` holds a comma-separated list, so one match is `Example Query,
+    Example Framework` -- two identities, not one. Rostering the joined string would let a
+    real product name ride into `tests/` inside a pair whose other half was reviewed.
+    """
+    values = set()
+    for raw in _collect(_SKILL_COLLECTOR[1]):
+        values |= {part.strip() for part in raw.split(",") if part.strip()}
+    return values
+
+
+def test_evidence_skill_values_are_on_the_reviewed_roster():
+    """#168 put a candidate's real skills into a new `Skills:` frontmatter position, and
+    measured at the time it was added, NO collector in this file reached it -- the evidence
+    collector is keyed on the literal `Company`. A technology name could ship into `tests/`
+    with every guard in this file green.
+
+    A ratchet, not a classifier, exactly like the employer roster above: nothing here can
+    tell an invented name from a real product, so a new value fails the build until a human
+    records the call in `_REVIEWED_SKILL_VALUES`.
+    """
+    found = _all_fixture_skill_values()
+    # SCOPE first. For a negative guard an empty sweep reads exactly like a clean one, and
+    # `unreviewed` below would be empty for a collector that matched nothing at all.
+    assert found, (
+        "the Skills: collector matched no fixture value anywhere in tests/ -- either the "
+        "corpus lost its skills fixtures or the pattern stopped matching; both make every "
+        "assertion below vacuous")
+
+    unreviewed = sorted(found - _REVIEWED_SKILL_VALUES)
+    assert not unreviewed, (
+        f"unreviewed skill value(s) in tests/: {unreviewed}. Nothing local can tell whether "
+        f"a technology-shaped name is invented or names a real product, so this needs a "
+        f"human call: confirm it is synthetic and add it to _REVIEWED_SKILL_VALUES. Prefer "
+        f"`Example <Word>`.")
+
+
+def test_the_skill_roster_has_no_stale_entries():
+    """The roster is a record of calls a human made about values that EXIST. An entry whose
+    value has left the corpus is a call about nothing, and it silently widens what the next
+    reviewer sees as already-approved. Same shape as the employer roster's own staleness
+    check.
+    """
+    stale = sorted(_REVIEWED_SKILL_VALUES - _all_fixture_skill_values())
+    assert not stale, (
+        f"_REVIEWED_SKILL_VALUES lists {stale}, which no fixture declares any more -- drop "
+        f"the entr{'y' if len(stale) == 1 else 'ies'} rather than leaving a reviewed value "
+        f"that pre-approves a future re-introduction nobody looked at")
