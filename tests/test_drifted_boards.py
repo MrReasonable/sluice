@@ -101,18 +101,29 @@ _ISO_DATE = re.compile(r"\b(20\d{2})-(\d{2})-(\d{2})\b")
 # would let the very belief this guard exists to expire satisfy it again.
 _REPROBE_MARKERS = ("re-probed", "reprobed", "confirmed", "upheld", "verified")
 
+# WORD-BOUNDED, and that is load-bearing rather than tidiness. A plain substring test accepts
+# `unverified`, because it CONTAINS `verified` -- measured: "unverified as of 2026-08-26" was
+# read as evidence of a completed probe, which is the exact negation of what this guard
+# asserts. `\b` also stops `confirmed` matching inside a longer word. The markers are escaped
+# rather than inlined because `re-probed` carries a hyphen, which is a regex-significant
+# character in some positions and a word boundary here.
+_MARKER_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(m) for m in _REPROBE_MARKERS) + r")\b", re.IGNORECASE)
+
 
 def _reprobe_dates(docstring: str) -> list:
     """Every VALID calendar date on a line that claims a re-probe.
 
-    Three holes this closes, all three measured against the previous tuple comparison rather
-    than reasoned about: `(2026, 99, 99) >= (2026, 8, 25)` is `True`, so an impossible date
-    from a typo passed; `2099-01-01` passed and would keep passing for ever; and a date on an
-    unrelated line passed with no re-probe having happened at all.
+    Four holes this closes, every one of them measured against the version that shipped
+    before it rather than reasoned about: `(2026, 99, 99) >= (2026, 8, 25)` is `True`, so an
+    impossible date from a typo passed; `2099-01-01` passed and would keep passing for ever;
+    a date on an unrelated line passed with no re-probe having happened at all; and, once the
+    marker requirement was added as a SUBSTRING test, `unverified` satisfied it by containing
+    `verified`.
     """
     found = []
     for line in (docstring or "").splitlines():
-        if not any(marker in line.lower() for marker in _REPROBE_MARKERS):
+        if not _MARKER_RE.search(line):
             continue
         for year, month, day in _ISO_DATE.findall(line):
             try:
@@ -142,6 +153,9 @@ def test_the_disabled_roster_is_not_vacuous():
      "that someone went and looked at it"),
     ("retirement CONFIRMED 2026-07-07",
      "a real re-probe marker, but dated BEFORE the floor -- that is inherited belief"),
+    ("unverified as of 2026-08-26",
+     "the NEGATION of a marker -- a substring test accepted `unverified` because it contains "
+     "`verified`, reading a statement that nobody checked as proof that somebody did"),
     ("", "no date at all"),
 ])
 def test_a_docstring_that_records_no_completed_reprobe_is_rejected(docstring, why):
@@ -160,7 +174,11 @@ def test_a_real_reprobe_line_is_still_accepted():
     # The other half: a guard that rejects everything is not a guard. Both shipped
     # phrasings -- marker before the date, and marker after it -- must pass.
     today = date.today()
-    for docstring in ("Hired. RETIRED 2026-07-07, retirement CONFIRMED 2026-08-27.",
+    # A synthetic board name, not a real one. These are stand-in docstrings exercising the
+    # PARSER, so nothing here needs to name a board sluice actually scrapes -- and the
+    # neutrality sweep over `tests/` should not have to adjudicate a fixture that could just
+    # as easily be generic.
+    for docstring in ("Example Board. RETIRED 2026-07-07, retirement CONFIRMED 2026-08-27.",
                       "Re-probed 2026-08-27 on the DOMAIN, not a search path.",
                       "reads 12/12 of them with salary (verified live 2026-08-25)."):
         dates = [d for d in _reprobe_dates(docstring) if _REPROBE_FLOOR <= d <= today]
