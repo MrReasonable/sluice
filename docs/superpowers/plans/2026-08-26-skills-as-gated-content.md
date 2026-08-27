@@ -1085,6 +1085,14 @@ git commit -m "feat(cv): refuse a skill attributed to an uncited entry (#168)"
 
 - [ ] **Step 1: Write the failing tests**
 
+**Every negative row below needs a POSITIVE CONTROL, not just a presence check.** Task 5's review
+found its equivalent rows asserting `== []` with nothing establishing that the check could have
+fired — the group was saved only by a sibling positive test, which proves the group is live but
+not that any individual row is. For digit handling the control is sharp and cheap: assert that the
+SAME CV, with the skill NOT licensed (drop the `Skills:` value from the fixture), DOES report
+`INVENTED METRIC`. That pins the suppression to the licensing rather than to the digit being
+absent, a broken helper, or the bullet never reaching the WORK region at all.
+
 ```python
 def test_a_digit_bearing_skill_name_is_not_a_fabricated_metric():
     """Measured on main BEFORE this feature: `- Ran the migration on Example Widget3 … [AL1]`
