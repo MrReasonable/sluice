@@ -2046,7 +2046,7 @@ def test_an_inventory_skill_named_by_no_entry_is_reported():
     rows = classify_skills_reconciliation([], [_skill("example-widget")])
     assert len(rows) == 1
     assert rows[0].state == NOTICE
-    assert rows[0].subject == "Skills Inventory"
+    assert rows[0].subject == "Skills Inventory (unclaimed)"
     assert "1 inventory skill" in rows[0].detail
     assert "job-sluice experience list" in rows[0].detail
 
@@ -2055,7 +2055,7 @@ def test_an_entry_skill_absent_from_the_inventory_is_reported():
     rows = classify_skills_reconciliation([_exp("Example Ghost")], [])
     assert len(rows) == 1
     assert rows[0].state == NOTICE
-    assert rows[0].subject == "Experience Library"
+    assert rows[0].subject == "Experience Library (unmatched)"
     assert "1 entry Skills:" in rows[0].detail
     assert "job-sluice skills list" in rows[0].detail
 
@@ -2068,7 +2068,7 @@ def test_both_rows_can_fire_together_on_a_wholly_disjoint_pair():
         [_exp("Example Ghost")], [_skill("example-orphan")])
     assert len(rows) == 2
     subjects = {r.subject for r in rows}
-    assert subjects == {"Skills Inventory", "Experience Library"}
+    assert subjects == {"Skills Inventory (unclaimed)", "Experience Library (unmatched)"}
 
 
 def test_no_experience_and_no_inventory_abstains():
@@ -2087,7 +2087,7 @@ def test_a_blank_skills_value_never_counts_as_a_claim():
     assert classify_skills_reconciliation([_exp("")], []) == []
     rows = classify_skills_reconciliation([_exp("")], [_skill("example-widget")])
     assert len(rows) == 1
-    assert rows[0].subject == "Skills Inventory"
+    assert rows[0].subject == "Skills Inventory (unclaimed)"
 
 
 def test_duplicate_claims_across_entries_count_once():
@@ -2114,8 +2114,8 @@ def test_a_name_that_cannot_reduce_falls_back_to_verbatim_and_can_still_match():
 def test_a_name_that_cannot_reduce_and_does_not_match_verbatim_is_still_reported():
     rows = classify_skills_reconciliation([_exp("###")], [_skill("something-else")])
     subjects = {r.subject for r in rows}
-    assert "Experience Library" in subjects
-    assert "Skills Inventory" in subjects
+    assert "Experience Library (unmatched)" in subjects
+    assert "Skills Inventory (unclaimed)" in subjects
 
 
 def test_the_report_names_no_skill_string():
@@ -2168,8 +2168,15 @@ def test_the_skills_reconciliation_runs_through_the_real_wiring(tmp_path, monkey
     monkeypatch.setattr(Sluice, "store", _REAL_STORE)
 
     report = Sluice(Config(vault_dir=str(vault))).doctor(offline=True)
-    subjects = {c.subject for c in report.components
-               if c.subject in ("Skills Inventory", "Experience Library")}
-    assert subjects == {"Skills Inventory", "Experience Library"}, (
+    # Filtered on the `gates` component too, not subject alone: `classify_store`
+    # ABOVE this call in `Sluice.doctor` already emits its own "store"-component
+    # rows at the bare "Skills Inventory"/"Experience Library" subjects (the
+    # per-kind total/verified/pending counts), so a subject-only filter is
+    # satisfied by THOSE rows regardless of whether this reconciliation ran at
+    # all -- measured: deleting the call site under test left this assertion green
+    # until this component filter was added.
+    gate_subjects = {c.subject for c in report.components if c.component == "gates"}
+    expected = {"Skills Inventory (unclaimed)", "Experience Library (unmatched)"}
+    assert expected <= gate_subjects, (
         "Sluice.doctor did not run the skills reconciliation -- the pure classifier's "
-        f"own tests cannot see this (components: {[c.subject for c in report.components]})")
+        f"own tests cannot see this (gates subjects: {sorted(gate_subjects)})")
