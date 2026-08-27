@@ -42,8 +42,10 @@ With `--health` the line grows:
   because "no rate measured" and "a rate of 0%" are different facts.
 - **`(<A> runs ago)`** — the rates are not from the most recent run. They can be up to 30 runs
   old, so an undated percentage would let a stale 100% read as a current healthy measurement.
-- **`UNMEASURED`** — the newest run recorded no rate at all, so the `blank` drift check cannot
-  fire for this source right now whatever its history says.
+- **`UNMEASURED`** — the newest run recorded no rate, so the `blank` drift check cannot fire
+  for this source right now whatever its history says. Shown whenever the rates are not from
+  the newest run — including when they are merely stale, since a rate from three runs ago is
+  not evidence the guard is running today.
 - **`UNGUARDED(<signal>)`** — that signal's best-ever rate never cleared 0.8, so `blank` can
   never fire for it however far the source falls. This is legitimate for a board that does not
   publish the field and a real blind spot for one that was already broken when first recorded,

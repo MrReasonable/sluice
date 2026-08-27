@@ -300,8 +300,10 @@ no guard can be blind). A human rules on which case a source is and records the 
 in the source's own `unpublished_fields`, which silences the flag for the named field only —
 without it the two boards that hardcode an empty company light it for ever, and a permanently
 lit flag on benign rows is how a reader learns to skip the column. A source whose NEWEST run
-recorded no rate prints `UNMEASURED` instead: below `_RATE_ROW_FLOOR` there is no rate, so
-`prior_rate` is `None` and `blank` cannot fire at all. `latest_rates` returns how many runs
+recorded no rate prints `UNMEASURED` instead: below `_RATE_ROW_FLOOR` there is no rate for this
+run, so `blank` cannot fire at all. The gate is the AGE (`age != 0`), not whether some rate
+exists — a merely STALE rate is not coverage either, and `unguarded_signals` is consulted only
+at `age == 0`. `latest_rates` returns how many runs
 back the rates came from and the CLI prints that age — an undated rate can be 30 runs old, and
 a stale 100% is exactly the reassuring answer a rotted extractor gives the command run to
 catch it.

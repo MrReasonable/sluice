@@ -175,22 +175,27 @@ def cmd_list_sources(args, config) -> int:
                 line += f" ({age} run{'s' if age > 1 else ''} ago)"
             # Whether `blank` can fire for this source AT ALL, which is two separate questions.
             #
-            # UNMEASURED: the newest run carried no rate, so `prior_rate` is None for every
-            # key and `_blank_reason` cannot fire whatever the high-water says. The source is
-            # not guarded right now, and saying so is the honest reading of a state that would
-            # otherwise render as a healthy-looking rate with no flag beside it.
+            # UNMEASURED: the NEWEST run carried no rate, so `_blank_reason` sees `rate is
+            # None` for every key and returns False whatever the high-water says -- verified
+            # by execution, not read off the code. Gated on `age != 0`, which covers BOTH the
+            # never-measured case (`-1`) and the merely-stale one: a rate from three runs ago
+            # says nothing about whether the guard is live NOW, and an earlier version of this
+            # gated on `rates` being non-empty, so a stale-but-present rate rendered as though
+            # the guard were working. The rate and its age still print either way -- the last
+            # known value is useful, it just must not be mistaken for coverage.
             #
             # UNGUARDED: the high-water never cleared the floor, so there is no bar to fall
             # from. Legitimate for a board that does not publish the field and a live blind
             # spot for one already broken when first recorded; nothing here can tell the two
             # apart, which is why it is surfaced for a human rather than guessed at -- and why
             # a source may DECLARE the benign case via `unpublished_fields`, so the flag stops
-            # being permanently lit on rows nobody needs to act on.
+            # being permanently lit on rows nobody needs to act on. Only meaningful when the
+            # newest run actually measured, hence the `age == 0` arm.
             #
             # Both are claims about a LIVE guard, so neither is shown for a disabled source:
             # nothing runs, so no guard is blind.
             if state == "enabled":
-                if not rates:
+                if age != 0:
                     line += " UNMEASURED"
                 else:
                     unguarded = health.unguarded_signals(
