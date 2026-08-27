@@ -1647,8 +1647,8 @@ def test_cv_fixture_identities_are_on_the_reviewed_roster():
 # ── Skill values (#168) ──────────────────────────────────────────────────────────────
 #
 # `_REVIEWED_SKILL_VALUES` itself is defined earlier, beside `_CV_IDENTITY_EXEMPT` -- that
-# set derives from this roster, so the roster has to exist first. What follows is the
-# collector and the two tests that keep the roster honest against `tests/`.
+# set derives from this roster, so the roster has to exist first. What follows is the two
+# collectors and the tests that keep the roster honest against `tests/`.
 #
 # The same parameterised pattern the evidence `Company:` collector uses, so every shape
 # measured for that key -- bare, quoted, dict/kwarg, and the escaped-`\n` block where a
@@ -1659,17 +1659,125 @@ _SKILL_COLLECTOR = ("evidence Skills: (frontmatter or dict/kwarg)",
                     _evidence_field_re("Skills"))
 
 
+def _evidence_block_list_re(key: str):
+    """The YAML block-list spelling of `{key}:` -- `_parse_fm_spaced` (core/vault.py)
+    reads `key:\\n  - a\\n  - b` and joins it into the identical comma string
+    `_evidence_field_re` catches, and that shape is already LIVE for `Category:`
+    (`tests/test_core_vault_cv.py`'s `test_read_experience_parses_block_list_category`).
+    `_evidence_field_re`'s own alternation cannot see it at all -- measured: every
+    alternative there requires a value TOKEN immediately after `key:`, and a block list
+    has none; the value starts on the next line instead. A `Skills:` fixture written the
+    way `Category:` already is would sweep clean over `_SKILL_COLLECTOR` alone.
+
+    Not promoted to a sibling of `_evidence_field_re` (yet): nothing has needed a
+    block-list `Company:` fixture, so generalising it there would be an unexercised
+    guess. Kept `key`-parameterised anyway, matching that function's own reasoning, so a
+    second field needing this shape does not fork a third copy.
+
+    The line-break between `key:` and the first `- item`, and between each `- item` in
+    the run, is a REAL newline or the literal two-character `\\n` escape ALIKE -- every
+    packed-frontmatter fixture in this repo joins its lines with the escape (one Python
+    string literal), never a real newline, so treating only the real character as a
+    boundary would catch nothing that actually exists. Captures the WHOLE run of `- item`
+    lines as one string; the caller splits it into per-item values, mirroring the comma
+    spelling's own post-findall split.
+    """
+    nl = r"(?:\\n|\n)"
+    item = r'''"[^"{\n\\]+"|'[^'{\n\\]+'|[^\s"'`{\\\n][^"'`{\\\n]*?(?=["'`\\\n]|\s*$)'''
+    return re.compile(rf'''["']?{key}["']?\s*:[ \t]*{nl}((?:[ \t]*-[ \t]*(?:{item}){nl})+)''')
+
+
+_SKILL_BLOCK_LIST_COLLECTOR = ("evidence Skills: (YAML block list)",
+                               _evidence_block_list_re("Skills"))
+
+
+def _block_list_skill_items(pattern, text) -> list:
+    """Every `- item` line inside ONE captured block-list run of `text`.
+
+    Normalises the literal `\\n` escape to a real newline FIRST, so one
+    `str.splitlines()` call treats both spellings of a line break identically -- the same
+    rule `_evidence_block_list_re` anchors on, kept in exactly one place so the two
+    cannot drift apart. Shared between the roster sweep and the shape-coverage test
+    below, for the same reason.
+    """
+    items = []
+    for run in pattern.findall(text):
+        for line in run.replace("\\n", "\n").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("- "):
+                item = stripped[2:].strip().strip('"').strip("'")
+                if item:
+                    items.append(item)
+    return items
+
+
 def _all_fixture_skill_values():
-    """Every individual skill value any fixture declares.
+    """Every individual skill value any fixture declares, across BOTH spellings.
 
     SPLIT ON COMMAS: `Skills:` holds a comma-separated list, so one match is `Example Query,
     Example Framework` -- two identities, not one. Rostering the joined string would let a
     real product name ride into `tests/` inside a pair whose other half was reviewed.
+
+    The YAML block-list spelling (`_evidence_block_list_re`, above) is a SECOND collector,
+    not an alternative branch of the first: `_SKILL_COLLECTOR`'s alternation requires a
+    value token immediately after `Skills:`, so it cannot also match a block list where the
+    value starts on the next line. A skill named only in that shape would otherwise be
+    invisible to this whole roster.
     """
     values = set()
     for raw in _collect(_SKILL_COLLECTOR[1]):
         values |= {part.strip() for part in raw.split(",") if part.strip()}
+    for text in _test_sources():
+        values |= set(_block_list_skill_items(_SKILL_BLOCK_LIST_COLLECTOR[1], text))
     return values
+
+
+def test_the_evidence_skills_collector_sees_every_shape_it_claims_to():
+    """Companion to `test_the_evidence_company_collector_sees_every_shape_it_claims_to`,
+    covering the two shapes that collector never had to: a comma-joined value must split
+    into SEPARATE identities, and the YAML block-list spelling `_evidence_field_re`
+    cannot see at all (see `_evidence_block_list_re`'s docstring for why).
+
+    Every string below is written as the collectors see it -- fragments of Python SOURCE.
+    `\\n` inside them is two characters, backslash then `n`, exactly as a real
+    packed-frontmatter fixture writes it (one Python string literal joining several
+    frontmatter lines). This file is `_SELF`, excluded from `_test_sources()`, so none of
+    these values reaches `_REVIEWED_SKILL_VALUES`.
+    """
+    comma_pattern = _SKILL_COLLECTOR[1]
+    block_pattern = _SKILL_BLOCK_LIST_COLLECTOR[1]
+
+    # Comma spelling: ONE regex match, split into TWO identities -- not the joined string
+    # `_REVIEWED_SKILL_VALUES` would otherwise need to carry as a single entry.
+    comma_text = 'Skills: Example Query, Example Framework\\nverified: 2026-01-01'
+    [comma_raw] = comma_pattern.findall(comma_text)
+    comma_found = [part.strip() for part in comma_raw.split(",")]
+    assert comma_found == ["Example Query", "Example Framework"], comma_found
+
+    # Block-list spelling, joined with the literal two-character `\n` escape -- the shape
+    # every packed-frontmatter fixture in this repo actually uses.
+    escaped_block = (
+        'Skills:\\n  - Example Query\\n  - Example Framework\\nverified: 2026-01-01')
+    escaped_items = _block_list_skill_items(block_pattern, escaped_block)
+    assert escaped_items == ["Example Query", "Example Framework"], escaped_items
+
+    # The SAME block-list spelling joined with a REAL newline (a triple-quoted fixture
+    # rather than one packed literal) must count identically -- neither boundary form may
+    # be the only one recognised.
+    real_block = "Skills:\n  - Example Query\n  - Example Framework\nverified: 2026-01-01"
+    real_items = _block_list_skill_items(block_pattern, real_block)
+    assert real_items == ["Example Query", "Example Framework"], real_items
+
+    # A block list under a DIFFERENT key must not leak into the Skills sweep -- this is
+    # the live `Category:` shape (`tests/test_core_vault_cv.py`), and a collector keyed
+    # loosely enough to match it too would attribute someone else's field value to Skills.
+    other_key_block = "Category:\n  - Process\n  - Leadership\nverified: x"
+    assert _block_list_skill_items(block_pattern, other_key_block) == []
+
+    # A bare `Skills:` with an INLINE value (the comma spelling) has no block-list run to
+    # find -- the two collectors must not double-count the same fixture.
+    inline_text = 'Skills: Example Query, Example Framework\\nverified: x'
+    assert _block_list_skill_items(block_pattern, inline_text) == []
 
 
 def test_evidence_skill_values_are_on_the_reviewed_roster():
