@@ -346,8 +346,22 @@ def _skill_items(entry: dict) -> list[str]:
                     f"({token!r} does not), or the numeric gate's span removal would "
                     "blank a real figure")
     return items
+```
 
+Validate at CONSTRUCTION too, in `build_bundle` -- `test_every_token_of_a_skill_must_begin_with_a_letter`
+calls `build_bundle` DIRECTLY and expects the `ValueError` there, matching this module's
+fail-loudly-at-construction rule. `bundle_sources` re-derives the same items later; the
+duplication is pure, and it buys a failure close to the note that caused it rather than one
+surfacing at gate time:
 
+```python
+def build_bundle(entries, baseline, negatives, jd_keywords, prefix_map, skills=()) -> dict:
+    for e in entries:      # validation side effect only; items re-derived in bundle_sources
+        _skill_items(e)
+    ...
+```
+
+```python
 def _entry_skills_line(entry: dict) -> list[str]:
     """The lines ONE entry contributes as SKILL sources.
 
@@ -364,14 +378,40 @@ def _entry_skills_line(entry: dict) -> list[str]:
     return [f"skills={', '.join(items)}"] if items else []
 ```
 
-In `_source_section`, render it after each entry's block:
+**Do NOT render it from `_source_section` unconditionally** — that helper feeds BOTH
+`render_bundle` (the #60 advisory audit's corpus) and `render_composer_bundle`, so a skills line
+added there reaches the auditor. Parameterise the per-entry emitter instead, and let
+`render_composer_bundle` opt in:
 
 ```python
+def _source_section(bundle: dict, entry_lines=_entry_block) -> list[str]:
+    """...
+
+    `entry_lines` defaults to the AUDITOR's narrow view, and that direction is the point: a
+    caller who forgets the argument gets the safe rendering. (Contrast the flag on
+    `render_bundle` this module rejected twice, where the forgetful default WIDENED.) One
+    loop and one header definition, so a line added here cannot silently reach one audience
+    and not the other -- which a second near-duplicate loop would allow.
+    """
+    ...
     for e in bundle["entries"]:
-        lines += _entry_block(e)
-        lines += _entry_skills_line(e)
+        lines += entry_lines(e)
         lines.append("")
 ```
+
+and in `render_composer_bundle`:
+
+```python
+    lines = _source_section(bundle, lambda e: _entry_block(e) + _entry_skills_line(e))
+```
+
+**Remove `render_composer_bundle`'s early return** (`if not bundle.get("skills"): return
+render_bundle(bundle)`) at the same time. Entry `Skills:` and the Skills Inventory are
+INDEPENDENT sources, and that guard gates the first on the second — so a declared entry-level
+`Skills:` would be silently dropped from the composer's prompt whenever the inventory happened
+to be empty. Render entries unconditionally; add the SKILLS INVENTORY framing section only when
+`bundle["skills"]` is non-empty. Byte-equality with `render_bundle` for a bundle with neither
+survives, because `_entry_skills_line` returns `[]` per entry.
 
 Extend `BundleSources`:
 
@@ -406,6 +446,18 @@ class BundleSources(NamedTuple):
     @property
     def ids(self):
         return self.entries.keys()
+
+    @property
+    def nums(self):
+        """The per-entry numeric allowlists, DERIVED -- same reason `ids` is derived: a
+        stored second view could disagree with `entries` about what an id licenses.
+
+        Load-bearing for the SEQUENCING, not just for taste. `cv/validate.py` reads
+        `sources.nums` today, so without this property every existing `validate()` call
+        raises AttributeError the moment this task lands -- measured, the suite drops by
+        ~290 tests. With it, this task changes no production file outside this one, which
+        is what the plan's ordering argument means by inert."""
+        return {eid: es.nums for eid, es in self.entries.items()}
 ```
 
 In `bundle_sources`, build all four in the one pass:
@@ -448,7 +500,7 @@ In `bundle_sources`, build all four in the one pass:
     # it by hand, so `validate()` re-checks the key sets on entry (see Task 4). The failure
     # mode is why it is worth a guard at all: row 1 reads a missing `skills` key as an
     # abstain, so a mismatched value skips attribution checking SILENTLY.
-    return BundleSources(nums, baseline, skills, tuple(b for b in blocks if b))
+    return BundleSources(entries, baseline, tuple(b for b in blocks if b))
 ```
 
 `_WORD_RE` is used by `_skill_items` above, so define it alongside `SKILL_TOKEN_RE`, before
@@ -460,9 +512,27 @@ both:
 _WORD_RE = re.compile(r"[A-Za-z0-9#+.]+")
 ```
 
-- [ ] **Step 4: Repair the three frozen tests, in this commit**
+- [ ] **Step 3b: Two neutrality-guard interactions**
 
-`_entry_skills_line` changes the prompt text, so `test_the_rendered_prompt_has_not_drifted`, `test_the_composer_prompt_has_not_drifted` and `test_the_allowlist_still_matches_the_frozen_prompt` all go red. Re-capture the two frozen literals, and read the diff yourself: the freeze is a ratchet against a literal, not against the world, and only a human reading that diff distinguishes a deliberate prompt change from a silent widening.
+Both are consequences of the `Skills:` collector added in Task 1's commit, and both fail the
+build if ignored:
+
+- A test body spelled `{"Skills": value}` (an unquoted parametrize variable) is read by that
+  collector out of the Python source and reported as an unreviewed skill named `value`. Use the
+  keyword-argument spelling instead, **with a comment saying why** — describe the shape rather
+  than reproducing it, since the literal text in a comment trips the same collector. Without the
+  comment the next tidy-up reinstates the bug.
+- `_CV_IDENTITY_RE` sweeps every `test_cv_*.py` for `Example <Word>` and requires each on the
+  EMPLOYER roster or `_CV_IDENTITY_EXEMPT`. Skill values belong on neither: **derive** the
+  exemption from `_REVIEWED_SKILL_VALUES` through that same regex (it captures only the
+  letters-only prefix, so `Example Widget3` is exempted as `Example Widget` — a spelling nobody
+  typed, which is exactly why deriving beats hand-listing).
+
+- [ ] **Step 4: Repair the frozen tests, in this commit**
+
+`_entry_skills_line` changes the COMPOSER's prompt text, so `test_the_composer_prompt_has_not_drifted` and `test_the_allowlist_still_matches_the_frozen_prompt` go red — **two, not three**.
+
+**`test_the_rendered_prompt_has_not_drifted` must stay GREEN.** It pins the AUDITOR's prompt, which this task does not touch. If it reds, skills have reached `render_bundle` and the #60 hold is disarmed: that is a signal you took the wrong path, not a literal to re-capture. Re-capture the two frozen literals, and read the diff yourself: the freeze is a ratchet against a literal, not against the world, and only a human reading that diff distinguishes a deliberate prompt change from a silent widening.
 
 For the allowlist test, the break is **arity**, not digits — `_oracle` returns a 2-tuple and `BundleSources` is now 4-field. Change the assertion to compare only what the oracle models:
 
