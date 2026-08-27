@@ -293,7 +293,9 @@ def test_the_employers_hint_describes_the_check_that_actually_runs():
     cv = "WORK EXPERIENCE\nPROFILE\nExample Alpha Ltd did a thing."
     # An explicitly empty source set (#174): this test exercises only the employer-
     # completeness gate, which reads no citation or number, so no real bundle is needed.
-    sources = BundleSources({}, frozenset())
+    # `BundleSources` is 3-field since #168 (`entries`, `baseline`, `source_tokens`); the
+    # third is likewise empty here, since row 2 (#168's skills gate) plays no part either.
+    sources = BundleSources({}, frozenset(), ())
     assert any("MISSING EMPLOYER" in v for v in validate(cv, sources, employers=["example alpha ltd"]))
     assert not any("MISSING EMPLOYER" in v for v in validate(cv, sources, employers=["Example Alpha Ltd"]))
     hint = {q.key: q for q in catalogue(default_vault=VAULT)}["cv_employers"].hint

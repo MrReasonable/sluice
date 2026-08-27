@@ -101,6 +101,14 @@ _DERIVED_NEGATIVE_PROMPT = ("claim no technology, language, framework or tool th
 
 def build_bundle(entries, baseline, negatives, jd_keywords, prefix_map,
                  skills=()) -> dict:
+    # Fail loudly at construction (#168, this module's house rule -- see SKILL_TOKEN_RE's
+    # own comment). `_skill_items` is otherwise only reached lazily, from `bundle_sources`,
+    # which most callers invoke well after `build_bundle` -- an entry with a malformed
+    # `Skills:` value would then surface far from the note that caused it, at gate time
+    # instead of at load time. Called for its validation side effect only: the returned
+    # items are discarded here and re-derived (identically) by `bundle_sources` later.
+    for e in entries:
+        _skill_items(e)
     ranked = rank(entries, jd_keywords)
     return {"baseline": baseline, "entries": assign_codes(ranked, prefix_map),
             "negatives": list(negatives),
@@ -165,6 +173,74 @@ def _baseline_block(bundle: dict) -> list[str]:
     return [bundle["baseline"]]
 
 
+# EVERY TOKEN of a `Skills:` item must begin with a letter. Span removal (cv/validate.py)
+# makes this the first field that SUBTRACTS from the hard numeric gate, so an unconstrained
+# value is a laundering path.
+#
+# PER TOKEN, and that is the whole guard: an ITEM-level check (`^[A-Za-z]` against the
+# comma-separated item) accepts `Result 92`, because the item begins with `R` -- and removal
+# then blanks `92` from every bullet citing the entry, which is the exact path this rule
+# exists to close. A per-token rule refuses `Result 92`, `92x`, `120ms` and a bare `92`
+# alike, while accepting `Example Widget3`, where the digit is INSIDE a letter-led token.
+#
+# It does NOT close a letter-led metric shorthand -- `p99` still licenses removing `99` for
+# its own entry. That is a stated residual (spec section 14): tightening further (two
+# leading alphabetic characters) would kill legitimate short names.
+SKILL_TOKEN_RE = re.compile(r"^[A-Za-z]")
+
+# The ONE tokeniser. `cv/validate.py` imports this rather than redefining it -- two copies
+# let the vocabulary the gate BUILDS drift from the one it SEARCHES with.
+_WORD_RE = re.compile(r"[A-Za-z0-9#+.]+")
+
+
+def _skill_items(entry: dict) -> list[str]:
+    """The `Skills:` items for one entry, blank-safe.
+
+    Accepts the comma spelling AND a YAML block list: `_parse_fm_spaced` joins a block
+    list to the identical comma string, so both arrive here the same way -- which is why
+    a collector written for one shape alone sweeps clean over the other.
+
+    A BLANK value yields [], and that is load-bearing: `_evidence_entries` materialises
+    every declared field via `fm.get(k, "")`, so every existing note carries
+    `Skills == ""` the day #168 lands. Blank is absent (SC5).
+    """
+    raw = (entry.get("fields") or {}).get("Skills", "")
+    items = [t.strip() for t in raw.split(",") if t.strip()]
+    for item in items:
+        for token in _WORD_RE.findall(item):
+            if not SKILL_TOKEN_RE.match(token):
+                raise ValueError(
+                    f"skill {item!r} is invalid: every token must begin with a letter "
+                    f"({token!r} does not), or the numeric gate's span removal would "
+                    "blank a real figure")
+    return items
+
+
+def _entry_skills_line(entry: dict) -> list[str]:
+    """The lines ONE entry contributes as SKILL sources.
+
+    Sibling of `_entry_block` and `_baseline_block`, carrying the INVERTED contract:
+    every token here is a SKILL source for this entry, and NO DIGIT of it is a numeric
+    source. That is why it is a separate function -- `_entry_block`'s stated rule is that
+    every line it returns is harvested by `bundle_sources` into `nums`, so folding these
+    in would license every digit inside every skill name at once (`Example Widget3` -> `3`).
+
+    Deliberately not named `_skills_block`, matching `_framing_lines`' precedent for the
+    same reason: the `_*_block` names in this module mean "numeric source".
+
+    NOT part of `_entry_block`'s own emission, and not reached by `render_bundle`'s call
+    to `_source_section` -- that call passes no `entry_lines` override, so it gets
+    `_entry_block` alone. `render_bundle` is the #60 ADVISORY audit's corpus, and a skill
+    claim resting on `Skills:` alone must read `unsupported` to the auditor -- exactly the
+    D11 guarantee `render_composer_bundle` already holds for the framing section. Only
+    `render_composer_bundle` folds this function's output in, by passing `_source_section`
+    an `entry_lines` override that appends it to `_entry_block`'s own lines -- see
+    `_source_section`'s docstring for why that is a safe default to invert.
+    """
+    items = _skill_items(entry)
+    return [f"skills={', '.join(items)}"] if items else []
+
+
 def _framing_lines(skill: dict) -> list[str]:
     """The lines ONE skills entry contributes to the COMPOSER's prompt (#165).
 
@@ -194,14 +270,31 @@ def _framing_lines(skill: dict) -> list[str]:
     return lines
 
 
-def _source_section(bundle: dict) -> list[str]:
-    """Everything up to and including the last entry: the lines BOTH audiences see."""
+def _source_section(bundle: dict, entry_lines=_entry_block) -> list[str]:
+    """Everything up to and including the last entry: the lines BOTH audiences see --
+    unless `entry_lines` overrides what one entry contributes.
+
+    `entry_lines` is a per-entry LINE EMITTER, defaulting to `_entry_block` -- the narrow,
+    auditor-safe shape. `render_bundle` (the #60 ADVISORY audit's corpus) calls this with
+    no argument, so a caller who forgets one gets the SAFE default. That is the OPPOSITE
+    hazard from the one `render_composer_bundle`'s own docstring cites for rejecting a
+    keyword flag on `render_bundle` itself: there, a forgetful default WIDENED what the
+    auditor could see (it would get the framing section too). Here, a forgetful default
+    only NARROWS what the composer would have seen, and can never leak a skill source to
+    the auditor -- so a flag is safe at THIS seam even though it was rejected one level up.
+    `render_composer_bundle` passes `lambda e: _entry_block(e) + _entry_skills_line(e)` to
+    add its own per-entry skill line, through the ONE loop both callers already share.
+
+    A second, near-duplicate loop was the first design here and was rejected: a line added
+    to this loop later would need remembering to add to a second copy too, and nothing
+    would go red if a maintainer forgot -- the exact drift class a shared loop closes.
+    """
     lines = ["=== BASELINE CV (authoritative for dates/employers/certs) ==="]
     lines += _baseline_block(bundle)
     lines += ["",
               "=== VERIFIED EXPERIENCE ENTRIES (the ONLY permitted source; cite by [id]) ==="]
     for e in bundle["entries"]:
-        lines += _entry_block(e)
+        lines += entry_lines(e)
         lines.append("")
     return lines
 
@@ -263,15 +356,37 @@ def render_composer_bundle(bundle: dict) -> str:
     `bundle_sources`. Omitted ENTIRELY when the inventory is empty -- an empty header
     would assert to the model that the candidate holds no skills, a negative claim it may
     act on.
+
+    Passes its own `entry_lines` override to `_source_section` (#168) -- never calls
+    `render_bundle` or duplicates its loop -- so every entry's own `_entry_skills_line`
+    belongs in the composer's prompt ALONE. That inclusion is, unlike the SKILLS INVENTORY
+    framing above, NOT conditional on `bundle["skills"]`: a `Skills:` field declared on an
+    entry is a source in its own right, independent of whether a separate Skills Inventory
+    note exists at all. Gating it on the inventory's presence would silently drop a
+    candidate's own declared entry skills from the one prompt that is supposed to see
+    them, whenever they had not also filed a Skills Inventory note.
     """
-    if not bundle.get("skills"):
-        return render_bundle(bundle)
-    framing = ["=== SKILLS INVENTORY (framing only; NOT citable, introduces no facts) ==="]
-    for sk in bundle["skills"]:
-        framing += _framing_lines(sk)
-    framing.append("")
-    return "\n".join(_source_section(bundle) + framing
-                     + _negatives_section(bundle, extra=(_DERIVED_NEGATIVE_PROMPT,)))
+    lines = _source_section(bundle, entry_lines=lambda e: _entry_block(e) + _entry_skills_line(e))
+    if bundle.get("skills"):
+        lines += ["=== SKILLS INVENTORY (framing only; NOT citable, introduces no facts) ==="]
+        for sk in bundle["skills"]:
+            lines += _framing_lines(sk)
+        lines.append("")
+        lines += _negatives_section(bundle, extra=(_DERIVED_NEGATIVE_PROMPT,))
+    else:
+        lines += _negatives_section(bundle)
+    return "\n".join(lines)
+
+
+class EntrySources(NamedTuple):
+    """What ONE bundle entry licenses. Numbers and skills travel together because they are
+    keyed by the same id: two separate id-keyed dicts could disagree about what an id is,
+    which is what `BundleSources.ids`' docstring argues against. Collapsed, key equality is
+    structural even for the hand-built values the suite constructs -- so no `validate()`
+    guard is needed, and none is added: a guard there would NARROW THE WAYS IN rather than
+    remove the capability, the distinction #174's own docstring draws."""
+    nums: frozenset[str]
+    skills: frozenset[str]
 
 
 class BundleSources(NamedTuple):
@@ -288,16 +403,41 @@ class BundleSources(NamedTuple):
     re-create, one level up, the exact redundancy this fixes -- two structures that can
     disagree about what an id is.
     """
-    nums: dict[str, frozenset[str]]
+    # Row 1's per-entry vocabulary. ONE id-keyed structure carrying both the numeric and the
+    # skill allowlist, so the two cannot disagree about what an id is -- see EntrySources.
+    entries: dict[str, EntrySources]
     baseline: frozenset[str]
+    # Row 2's vocabulary: the WORDS of the bundle's source text, as one token SEQUENCE per
+    # source block. A different question (did you invent this) at a different granularity
+    # (bundle-wide), which `baseline` and the entries' digit sets cannot answer. Sequences
+    # rather than a set, because a skill can be two words and no single token is one.
+    #
+    # Its NESTING needs a construction-time shape check: a flat `tuple[str, ...]` is valid
+    # Python and iterates as CHARACTERS in row 2's matcher, so every skill would read
+    # UNSOURCED and every lead would go `skipped-gate` -- silently, on a value that looks
+    # right. Reject a member that is not a tuple/list of `str`. (Task 4 adds that guard to
+    # `validate()`, the one caller that reaches row 2 -- see `EntrySources`' docstring for
+    # why no guard lives on construction here either.)
+    source_tokens: tuple[tuple[str, ...], ...]
 
     @property
     def ids(self):
-        return self.nums.keys()
+        return self.entries.keys()
+
+    @property
+    def nums(self):
+        """The per-entry numeric allowlists, DERIVED -- same reason `ids` is derived: a
+        stored second view could disagree with `entries` about what an id licenses.
+        Keeps every existing `validate()` consumer (`sluice/cv/validate.py`) working
+        unchanged across #168's rename of the stored field from `nums` to `entries`, so
+        plumbing the bundle stays genuinely INERT for the gate -- Task 2 changes no
+        production file outside this one."""
+        return {eid: es.nums for eid, es in self.entries.items()}
 
 
 def bundle_sources(bundle: dict) -> BundleSources:
-    """Derive the citable ids and their permitted numbers from the bundle's STRUCTURE.
+    """Derive the citable ids and their permitted numbers, skills and source vocabulary
+    from the bundle's STRUCTURE.
 
     Ids and entry boundaries come from `build_bundle`; the numbers come from exactly the
     lines that entry contributed to the prompt, via the shared `_entry_block`. Nothing
@@ -312,17 +452,53 @@ def bundle_sources(bundle: dict) -> BundleSources:
     The `[{id}] ` token is sliced by LENGTH from the known id, never matched out of the
     text: `_entry_block` puts it first on line 0, and that offset-0 contract is what
     `test_the_allowlist_still_matches_the_frozen_prompt` pins.
+
+    `source_tokens` (#168, SC4) is built in this SAME pass, from the SAME per-entry
+    `items`/`body` values that fill `EntrySources.skills` -- one entry's skill vocabulary
+    and its row-2 source text can never disagree about what that entry declared, because
+    both come from one read of it. Kept as one token SEQUENCE per source block (entry
+    skills, entry body, baseline), never flattened into a single list: row 2 searches for
+    a skill's token SUBSEQUENCE, and a flat list would invent adjacencies across block
+    seams that exist nowhere in the user's prose (see
+    `test_source_tokens_are_per_block_so_a_two_word_skill_cannot_match_across_a_seam`).
     """
-    nums: dict[str, frozenset[str]] = {}
+    entries: dict[str, EntrySources] = {}
+    blocks: list[tuple] = []
     for e in bundle["entries"]:
         eid = e["id"]
-        if eid in nums:
+        if eid in entries:
             # Fail loudly at construction. Naming the id and NOT the entry is deliberate:
             # the entry holds the user's own CV prose, and this message reaches a log.
             raise ValueError(f"duplicate bundle entry id {eid!r}: ids must be unique, "
                              "since each one keys its own allowlist")
         block = _entry_block(e)
         block[0] = block[0][len(eid) + 2:]   # drop the leading `[{eid}]`
-        nums[eid] = frozenset(re.findall(r"\d+", "\n".join(block)))
-    baseline = frozenset(re.findall(r"\d+", "\n".join(_baseline_block(bundle))))
-    return BundleSources(nums, baseline)
+        entry_nums = frozenset(re.findall(r"\d+", "\n".join(block)))
+        items = _skill_items(e)
+        # ONE id-keyed structure: `nums` and `skills` cannot disagree about what an id is,
+        # so the key equality holds for hand-built values too and needs no guard.
+        entries[eid] = EntrySources(entry_nums, frozenset(items))
+        # Row 2's vocabulary, SC4: entry `Skills:` + the entry's BODY + the baseline.
+        # Enumerated, never "everything _source_section contributes" -- that larger set
+        # also carries the presentation headers and `_entry_block`'s head line, under
+        # which an emitted `- Example Alpha` would be a licensed skill token.
+        #
+        # Kept as one token SEQUENCE PER BLOCK, never flattened: row 2 searches for a
+        # skill's token subsequence, and a flat list would invent adjacencies across
+        # block seams that exist nowhere in the user's prose.
+        # TOKENISED, not stored whole: row 2 searches for a skill's token SEQUENCE, so a
+        # block holding the item `"Example Query"` as ONE element can never match the needle
+        # ["Example", "Query"] -- a multi-word skill declared only in `Skills:` would be
+        # refused as unsourced, which is the opposite of what declaring it means.
+        blocks.append(tuple(t for item in items for t in _WORD_RE.findall(item)))
+        blocks.append(tuple(_WORD_RE.findall(e.get("body", ""))))
+    baseline_block = _baseline_block(bundle)
+    baseline = frozenset(re.findall(r"\d+", "\n".join(baseline_block)))
+    blocks.append(tuple(_WORD_RE.findall("\n".join(baseline_block))))
+    # `skills` and `nums` are keyed in ONE pass, so their key sets are equal by
+    # construction rather than by assertion -- for values built HERE. That is not the whole
+    # contract: `BundleSources` is a directly-constructible NamedTuple and the suite builds
+    # it by hand, so `validate()` re-checks the key sets on entry (see Task 4). The failure
+    # mode is why it is worth a guard at all: row 1 reads a missing `skills` key as an
+    # abstain, so a mismatched value skips attribution checking SILENTLY.
+    return BundleSources(entries, baseline, tuple(b for b in blocks if b))

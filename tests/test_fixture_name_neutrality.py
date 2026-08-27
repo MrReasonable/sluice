@@ -1506,13 +1506,55 @@ _CV_TEST_MODULES = tuple(sorted(
 # previously invisible to every check in this file.
 _CV_IDENTITY_RE = re.compile(r"\bExample [A-Z][A-Za-z]+")
 
+# Skill values (#168) are NOT lead identities, and they get their own roster rather than
+# joining `_REVIEWED_FIXTURE_IDENTITIES`. That roster's own docstring scopes it to "LEAD
+# identities -- employers a fixture names", and `_CV_IDENTITY_EXEMPT` below exists (owner's
+# ruling, 2026-08-24) precisely to keep a product-shaped NON-employer value off it:
+# "rostering it would make the roster mean something wider than it says." Adding technology
+# names by policy is what that carve-out was created to prevent -- one list answering two
+# different questions, with no way to tell afterwards which call an entry records.
+#
+# Same tool, separate question, following the `_REVIEWED_CANDIDATE_VALUES` precedent. The
+# question a human is being asked here is:
+#
+#   Is this technology-shaped value INVENTED, or does it name a real product or language
+#   the candidate actually works with?
+#
+# Nothing running locally can answer that -- no local check can tell an invented name from
+# a real one. This is a RATCHET: it forces the answer once, in the commit that introduces
+# the value, rather than retroactively over an accumulated corpus.
+#
+# Defined HERE, above `_CV_IDENTITY_EXEMPT`, so that set can be DERIVED from this one
+# rather than hand-listing the same values a second time -- see it immediately below.
+_REVIEWED_SKILL_VALUES = frozenset({
+    # Invented for #168, not drawn from any real skill inventory, and shaped to the
+    # `Example <Word>` convention this file's own failure message prescribes.
+    "Example Framework",
+    "Example Query",
+    # Invented for #168's SKILL_TOKEN_RE guard (tests/test_cv_bundle.py): the digit is
+    # deliberately INSIDE a letter-led token, the one shape that rule must accept rather
+    # than refuse.
+    "Example Widget3",
+})
+
 # `_REVIEWED_FIXTURE_IDENTITIES` is about LEAD identities -- employers a fixture names.
 # `Example Sans` is a font FAMILY in a @font-face fixture, beside genuine faces like
 # "DejaVu Sans"; it names no firm, and rostering it would make the roster mean something
 # wider than it says. Exempted by name, not by pattern, so a real employer that happened
 # to end in "Sans" would still force the human call. Same shape as CLAUDE.md's cairo/pango
 # carve-out from the place-name sweep. (Owner's ruling, 2026-08-24.)
-_CV_IDENTITY_EXEMPT = frozenset({"Example Sans"})
+#
+# Every OTHER exemption here is DERIVED from `_REVIEWED_SKILL_VALUES` above, through the
+# SAME `_CV_IDENTITY_RE` this sweep matches with -- not hand-listed beside it. A hand-typed
+# second copy is a drift surface twice over: it can fall out of sync with the roster it is
+# supposed to mirror, and `_CV_IDENTITY_RE`'s own letters-only capture means the STRING that
+# needs listing (`Example Widget`, from `Example Widget3`) is not even the one a human
+# typed -- exactly the kind of entry a later reader deletes as junk on sight. Skill values
+# are reviewed on `_REVIEWED_SKILL_VALUES`, not here; this only re-derives what that roster
+# already decided, at the granularity this OTHER sweep happens to need.
+_CV_IDENTITY_EXEMPT = frozenset({"Example Sans"}) | {
+    m.group(0) for v in _REVIEWED_SKILL_VALUES if (m := _CV_IDENTITY_RE.match(v))
+}
 
 
 def _cv_fixture_identities():
@@ -1576,30 +1618,10 @@ def test_cv_fixture_identities_are_on_the_reviewed_roster():
 
 # ── Skill values (#168) ──────────────────────────────────────────────────────────────
 #
-# Skill values are NOT lead identities, and they get their own roster rather than joining
-# `_REVIEWED_FIXTURE_IDENTITIES`. That roster's own docstring scopes it to "LEAD identities
-# -- employers a fixture names", and `_CV_IDENTITY_EXEMPT` exists (owner's ruling,
-# 2026-08-24) precisely to keep a product-shaped NON-employer value off it: "rostering it
-# would make the roster mean something wider than it says." Adding technology names by
-# policy is what that carve-out was created to prevent -- one list answering two different
-# questions, with no way to tell afterwards which call an entry records.
+# `_REVIEWED_SKILL_VALUES` itself is defined earlier, beside `_CV_IDENTITY_EXEMPT` -- that
+# set derives from this roster, so the roster has to exist first. What follows is the
+# collector and the two tests that keep the roster honest against `tests/`.
 #
-# Same tool, separate question, following the `_REVIEWED_CANDIDATE_VALUES` precedent. The
-# question a human is being asked here is:
-#
-#   Is this technology-shaped value INVENTED, or does it name a real product or language
-#   the candidate actually works with?
-#
-# Nothing running locally can answer that -- no local check can tell an invented name from
-# a real one. This is a RATCHET: it forces the answer once, in the commit that introduces
-# the value, rather than retroactively over an accumulated corpus.
-_REVIEWED_SKILL_VALUES = frozenset({
-    # Invented for #168, not drawn from any real skill inventory, and shaped to the
-    # `Example <Word>` convention this file's own failure message prescribes.
-    "Example Framework",
-    "Example Query",
-})
-
 # The same parameterised pattern the evidence `Company:` collector uses, so every shape
 # measured for that key -- bare, quoted, dict/kwarg, and the escaped-`\n` block where a
 # whole frontmatter section is ONE Python string literal -- is covered here for free.

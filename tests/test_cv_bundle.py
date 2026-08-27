@@ -20,6 +20,15 @@ ENTRIES = [
      "category": "leadership", "metrics": "15", "body": "Led 15 people."},
 ]
 
+# The two skill values below are on tests/test_fixture_name_neutrality.py's
+# `_REVIEWED_SKILL_VALUES` roster and are digit-free ON PURPOSE: `_frozen_bundle` (below)
+# stamps them onto two FROZEN_ENTRIES so FROZEN_COMPOSER_BUNDLE_TEXT demonstrates the new
+# per-entry `skills=` line, and `test_the_allowlist_still_matches_the_frozen_prompt`'s
+# `_oracle` comparison is DIGIT-only -- a digit inside either value would move
+# `bundle_sources(b)`'s numeric pools without moving what `_oracle` derives from the
+# (deliberately unchanged) auditor-facing FROZEN_BUNDLE_TEXT, and the two would disagree
+# for a reason that has nothing to do with what #174 or #168 actually guard.
+
 # The bundle prompt as it stood BEFORE #174's refactor, frozen as a literal.
 #
 # This is the reference for `tests/test_cv_bundle.py`'s two assertions, and it is
@@ -144,9 +153,11 @@ Baseline names 21 and 22.
 [AL1] (Example Alpha 31) Staff Engineer, 32 teams | metrics=33 34
 Ran 37 services.
 Owned 38 dashboards.
+skills=Example Query
 
 [BE1] (Example Beta 41) Principal Engineer | metrics=43
 Cut latency to 47 ms.
+skills=Example Framework
 
 [AL2] (Example Alpha 51) Engineer | metrics=53
 
@@ -161,7 +172,19 @@ Cut latency to 47 ms.
 
 
 def _frozen_bundle():
-    return B.build_bundle(entries=FROZEN_ENTRIES, baseline=FROZEN_BASELINE,
+    """`FROZEN_ENTRIES` itself stays untouched -- it is shared by every OTHER test in this
+    file via `_bundle_with_skills`, and stamping a `Skills:` field onto the module-level
+    constant would put a `skills=` line into all of THEIR composer output too. `build_bundle`
+    never mutates its `entries` argument in place (`rank` sorts a copy, `assign_codes`
+    spreads each dict into a new one), so a locally-built list with two entries' `fields`
+    filled in is exactly as safe as passing `FROZEN_ENTRIES` directly, and it is what keeps
+    this fixture's own choice (declaring two entries' skills) from leaking into fixtures
+    that never asked for it -- see `test_an_empty_inventory_emits_no_header_at_all` two
+    functions below, which needs FROZEN_ENTRIES to stay `Skills`-free."""
+    entries = [{**FROZEN_ENTRIES[0], "fields": {"Skills": "Example Query"}},
+               {**FROZEN_ENTRIES[1], "fields": {"Skills": "Example Framework"}},
+               FROZEN_ENTRIES[2]]
+    return B.build_bundle(entries=entries, baseline=FROZEN_BASELINE,
                           negatives=FROZEN_NEGATIVES, jd_keywords=[],
                           prefix_map=FROZEN_PREFIX_MAP, skills=FROZEN_SKILLS)
 
@@ -243,7 +266,12 @@ def test_the_allowlist_still_matches_the_frozen_prompt():
     corpus.
     """
     b = _frozen_bundle()
-    assert B.bundle_sources(b) == B.BundleSources(*_oracle(FROZEN_BUNDLE_TEXT))
+    s = B.bundle_sources(b)
+    # `_oracle` transcribes the pre-#174 NUMERIC harvester and never modelled skills, so
+    # it can only speak to `nums` and `baseline`. `BundleSources.nums` (#168) is a DERIVED
+    # property over `entries` -- see its own docstring -- so this comparison is exactly
+    # the shape `_oracle` already returns, unchanged from before #168.
+    assert (s.nums, s.baseline) == _oracle(FROZEN_BUNDLE_TEXT)
 
 
 def test_ids_is_derived_from_nums():
@@ -296,6 +324,12 @@ def test_bundle_sources_sentinels_hold_independent_of_the_frozen_literal():
     # not merely excluded from baseline.
     all_nums = set().union(*s.nums.values())
     assert not ({"91", "92"} & all_nums)
+    # AL1 and BE1's own `Skills:` values (`_frozen_bundle`'s addition, #168) must be
+    # licensed as SKILLS and nowhere near either's numeric pool -- both values are
+    # digit-free, so this is a tautology for `nums` and the real assertion is `skills`.
+    assert s.entries["AL1"].skills == frozenset({"Example Query"})
+    assert s.entries["BE1"].skills == frozenset({"Example Framework"})
+    assert s.entries["AL2"].skills == frozenset()
 
 
 def test_a_duplicate_id_raises_naming_the_id_and_not_the_entry():
@@ -569,3 +603,118 @@ def test_the_derived_constraint_reaches_no_number_pool():
                                         ["never claim 91 users"], [], FROZEN_PREFIX_MAP,
                                         skills=[_SKILL]))
     assert "91" not in s.baseline and all("91" not in n for n in s.nums.values())
+
+
+# ── #168: `_entry_skills_line`, EntrySources, and BundleSources.source_tokens ────
+def test_a_blank_skills_value_contributes_no_line():
+    """SC5: blank is absent. An unconditional line would render an empty `Skills:` into
+    both prompts -- the same "negative claim it may act on" that `render_composer_bundle`
+    refuses one function away -- and every existing note has `Skills == ""` on day one."""
+    assert B._entry_skills_line({"id": "AL1", "fields": {"Skills": ""}}) == []
+    assert B._entry_skills_line({"id": "AL1", "fields": {}}) == []
+
+
+def test_skills_are_licensed_per_entry_and_their_digits_are_not():
+    """The inverted contract of `_entry_block`: every token here is a SKILL source for
+    this entry, and NO digit of it is a numeric source. Folding this into `_entry_block`
+    would license every skill digit as a metric at once."""
+    b = B.build_bundle(
+        entries=[{"company": "Example Alpha", "title": "rebuild", "metrics": "40",
+                  "body": "Did the work.", "fields": {"Skills": "Example Widget3"}}],
+        baseline="Example Alpha, 2020-2024.", negatives=[], jd_keywords=[],
+        prefix_map={})
+    s = B.bundle_sources(b)
+    eid = b["entries"][0]["id"]
+    assert s.entries[eid].skills == frozenset({"Example Widget3"})
+    assert "3" not in s.entries[eid].nums   # the skill's digit is licensed NOWHERE
+    assert "3" not in s.baseline
+
+
+def test_source_tokens_carry_the_words_row_2_checks_against():
+    """SC4's vocabulary needs the baseline's and bodies' WORDS. `nums` and `baseline` are
+    DIGIT sets, and engine.py hands `validate` the BundleSources and nothing else -- so
+    without this member row 2 has no route into the gate at all, and the obvious repair
+    (re-parsing rendered text inside validate) is what #174 removed."""
+    b = B.build_bundle(
+        entries=[{"company": "Example Alpha", "title": "rebuild", "metrics": "40",
+                  "body": "Ran an Example Framework migration.",
+                  "fields": {"Skills": "Example Query"}}],
+        baseline="Used Example Widget3 throughout.", negatives=["never claim 91 users"],
+        jd_keywords=[], prefix_map={})
+    s = B.bundle_sources(b)
+    flat = {t for block in s.source_tokens for t in block}
+    # LEXICAL tokens, not whole items: "Example Query" contributes two tokens.
+    assert {"Example", "Query", "Framework", "Widget3"} <= flat
+    assert "Example Query" not in flat, "items must be tokenised, not stored whole"
+    # The NEGATIVES are not a source -- #31, and now a property of the derivation.
+    assert "users" not in flat
+
+
+def test_a_multi_word_skill_declared_only_in_skills_is_sourced():
+    """The case the un-tokenised store got wrong: a two-word skill that appears NOWHERE
+    except `Skills:`. Stored whole it is one element and row 2's token-sequence search can
+    never match it, so the gate would refuse a skill the user explicitly declared."""
+    b = B.build_bundle(
+        entries=[{"company": "Example Alpha", "title": "t", "metrics": "",
+                  "body": "Unrelated prose.", "fields": {"Skills": "Example Query"}}],
+        baseline="Nothing relevant here.", negatives=[], jd_keywords=[], prefix_map={})
+    s = B.bundle_sources(b)
+    assert any(list(block[i:i + 2]) == ["Example", "Query"]
+               for block in s.source_tokens for i in range(len(block)))
+
+
+def test_source_tokens_are_per_block_so_a_two_word_skill_cannot_match_across_a_seam():
+    """Row 2 searches for a skill's token SEQUENCE, so a flat token list would let
+    "Widget Framework" match the last word of one entry followed by the first word of the
+    next -- an adjacency that exists nowhere in the user's prose."""
+    b = B.build_bundle(
+        entries=[{"company": "A", "title": "t", "metrics": "", "body": "Ran Widget",
+                  "fields": {"Skills": ""}},
+                 {"company": "B", "title": "t", "metrics": "", "body": "Framework work",
+                  "fields": {"Skills": ""}}],
+        baseline="b", negatives=[], jd_keywords=[], prefix_map={})
+    s = B.bundle_sources(b)
+    assert not any(list(block[i:i + 2]) == ["Widget", "Framework"]
+                   for block in s.source_tokens for i in range(len(block)))
+
+
+@pytest.mark.parametrize("value", ["92x", "120ms", "92", "Result 92", "Example 92"])
+def test_every_token_of_a_skill_must_begin_with_a_letter(value):
+    """SC6: span removal makes `Skills:` the first field that SUBTRACTS from the hard
+    numeric gate, so an unconstrained value is a laundering path.
+
+    PER TOKEN, not per item, and that distinction is the whole guard: `Result 92` is ONE
+    comma-separated item that BEGINS with a letter, so an item-level check accepts it --
+    and removal then blanks `92` from every bullet citing the entry, which is exactly the
+    path this rule exists to close. Only a per-token rule refuses it.
+
+    Fail loudly at construction, this module's house rule.
+
+    `fields=dict(Skills=value)`, deliberately not a `Skills`-keyed dict LITERAL: with an
+    unquoted PARAMETRIZE variable as the right-hand side, the literal-braces spelling
+    reads, to tests/test_fixture_name_neutrality.py's bare-token collector (built for
+    unquoted YAML frontmatter such as an unquoted `Example Widget3`), as a fixture value
+    of the bare Python name itself -- a false positive with no fixture behind it. The
+    `key=value` kwarg spelling has no colon after the key, so that collector's
+    colon-anchored pattern never matches it; runtime behaviour of the two spellings is
+    identical.
+    """
+    with pytest.raises(ValueError, match="must begin with a letter"):
+        B.build_bundle(
+            entries=[{"company": "Example Alpha", "title": "t", "metrics": "",
+                      # `dict(Skills=value)` is deliberate -- see this test's own
+                      # docstring. Do not "tidy" this to a `Skills`-keyed dict LITERAL;
+                      # that resurrects a false-positive bare-variable finding in
+                      # tests/test_fixture_name_neutrality.py's skill-value sweep.
+                      "body": "", "fields": dict(Skills=value)}],
+            baseline="b", negatives=[], jd_keywords=[], prefix_map={})
+
+
+def test_a_multi_word_skill_with_an_embedded_digit_is_accepted():
+    """The shape the rule must NOT refuse: every token letter-leading, digits inside."""
+    b = B.build_bundle(
+        entries=[{"company": "Example Alpha", "title": "t", "metrics": "",
+                  "body": "", "fields": {"Skills": "Example Widget3"}}],
+        baseline="b", negatives=[], jd_keywords=[], prefix_map={})
+    assert B.bundle_sources(b).entries[b["entries"][0]["id"]].skills == frozenset(
+        {"Example Widget3"})
