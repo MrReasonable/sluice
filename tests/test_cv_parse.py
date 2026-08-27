@@ -8,6 +8,7 @@ rather than a real place name: `tests/` is bound by the no-personal-data rule.
 """
 import pytest
 
+from sluice.cv import parse as P
 from sluice.cv.parse import CvDocument, CvParseError, Role, parse_cv
 
 CV = """\
@@ -36,6 +37,32 @@ CERTIFICATES
 EDUCATION
 - Example University, 2010-2013 | BSc Computer Science
 """
+
+# `Example Query`/`Example Framework` are already on `_REVIEWED_SKILL_VALUES`
+# (tests/test_fixture_name_neutrality.py, #168) -- reused here rather than minted fresh,
+# so this fixture does not force a second, redundant roster entry for values that mean
+# the identical thing (a synthetic skill name) in both places.
+_CV_WITH_SKILLS = CV.replace(
+    "CERTIFICATES\n- Example Cloud Practitioner, 2022",
+    "SKILLS\n- Example Query\n- Example Framework\n\n"
+    "CERTIFICATES\n- Example Cloud Practitioner, 2022")
+
+# A repeated CERTIFICATES header, with a (non-repeated) SKILLS section also present --
+# NOT a repeated SKILLS header, and that is deliberate, not a naming accident. The
+# repeated header's own NAME always appears in the raised message's first clause
+# ("{header} appears twice"), regardless of what the remedy text lists -- so a fixture
+# that repeats SKILLS itself cannot discriminate whether the remedy text actually names
+# every trailing section or still hardcodes "CERTIFICATES and EDUCATION": both satisfy
+# `match="SKILLS"` from that first clause alone, with the remedy text never inspected.
+# Measured: reverting the remedy derivation in cv/parse.py to that hardcoded string left
+# a SKILLS-repeated version of this fixture GREEN. Repeating CERTIFICATES instead is what
+# makes "SKILLS" appear in the message ONLY via the derived remedy list -- the actual
+# claim `test_the_repeated_header_remedy_names_every_trailing_section` makes.
+_CV_WITH_A_REPEATED_HEADER_AND_A_SKILLS_SECTION = CV.replace(
+    "CERTIFICATES\n- Example Cloud Practitioner, 2022\n\nEDUCATION",
+    "SKILLS\n- Example Query\n\n"
+    "CERTIFICATES\n- Example Cloud Practitioner, 2022\n\n"
+    "CERTIFICATES\n- Example Cloud Practitioner, 2022\n\nEDUCATION")
 
 
 def test_parse_reads_every_section():
@@ -393,8 +420,8 @@ def test_parse_returns_the_documented_types():
     field name is a breaking change for every user template."""
     doc = parse_cv(CV)
     assert isinstance(doc, CvDocument) and isinstance(doc.work[0], Role)
-    assert [f for f in ("name", "contact", "profile", "work", "certificates", "education")
-            if not hasattr(doc, f)] == []
+    assert [f for f in ("name", "contact", "profile", "work", "skills", "certificates",
+                        "education") if not hasattr(doc, f)] == []
     assert [f for f in ("company", "dates", "location", "title", "bullets")
             if not hasattr(doc.work[0], f)] == []
 
@@ -590,12 +617,81 @@ def test_parse_accepts_a_dash_marker_the_gate_never_inspects():
     assert doc.education == ["Example University, 2010-2013 | BSc Computer Science"]
 
 
+def test_a_skills_section_parses_into_the_document():
+    """SKILLS (#168, Task 7) is now a trailing section like CERTIFICATES/EDUCATION: an
+    entry-marked bullet run the trailing-section reader collects into its own list,
+    stripped of its marker exactly the way `certificates`/`education` are."""
+    doc = P.parse_cv(_CV_WITH_SKILLS)
+    assert doc.skills == ["Example Query", "Example Framework"]
+
+
+def test_the_skills_region_markers_equal_what_the_gate_collects():
+    """SKILLS is the FIRST trailing section the hard gate checks, so this equality is a
+    gate property, not tidiness: a marker the parser accepts and `section_spans` does not
+    is a BYPASS -- the line parses into CvDocument.skills, renders into the PDF, and is
+    never containment-checked. Derived from both modules, never hand-listed."""
+    from sluice.cv.validate import _SKILLS_MARKERS
+    assert set(_SKILLS_MARKERS) == set(P._TRAILING_MARKERS)
+
+
+def test_the_repeated_header_remedy_names_every_trailing_section():
+    """The remedy text used to hardcode 'CERTIFICATES and EDUCATION'. Extending the
+    refusal to SKILLS without the message produces a refusal naming the wrong sections.
+
+    The repeated header in the fixture below is CERTIFICATES, not SKILLS -- see its own
+    comment for why that is what makes `match="SKILLS"` actually pin the remedy text
+    rather than passing regardless of it.
+    """
+    with pytest.raises(P.CvParseError, match="SKILLS"):
+        P.parse_cv(_CV_WITH_A_REPEATED_HEADER_AND_A_SKILLS_SECTION)
+
+
+def test_a_skills_terminator_line_ends_both_the_gate_region_and_the_parse():
+    """The obligation THIS task inherits from Task 3's `section_spans`, and the reason a
+    single `pytest.raises` is not enough to discharge it.
+
+    `section_spans`' SKILLS run ends at the first non-blank non-bullet line. Before this
+    task that was safe "for free": `parse_cv` rejected every SKILLS section outright, so
+    the parser and the gate stopped at the same place for a reason that had nothing to do
+    with WHERE the gate's run ended. Now that SKILLS is a modelled trailing section, the
+    correspondence has to be ESTABLISHED rather than assumed -- if the parser's own
+    refusal fired at a DIFFERENT line than the gate's run stopped at (later, say), a line
+    the gate never inspected would parse into `CvDocument.skills` and render into the PDF
+    with no containment check behind it.
+
+    BOTH halves are asserted, because either one alone proves nothing: a parser that
+    raises SOMEWHERE in the document says nothing about WHERE, and a `section_spans` that
+    stops at the right line says nothing about whether the parser agrees it should stop
+    there too.
+    """
+    from sluice.cv.validate import section_spans
+    original = "SKILLS\n- Example Query\n- Example Framework\n\n"
+    terminated = "SKILLS\n- Example Query\n- Example Framework\nNot a bullet line\n\n"
+    text = _CV_WITH_SKILLS.replace(original, terminated)
+    assert "Not a bullet line" in text and text.count(original) == 0, (
+        "the replace no-opped")
+
+    # HALF ONE: the gate's own region must have stopped collecting AT the terminator --
+    # not merely somewhere, but excluding this exact line from what it hands to row 2.
+    _, _, skills_lines = section_spans(text)
+    assert "Not a bullet line" not in [line.strip() for _, line in skills_lines], (
+        "section_spans still collected the terminator line into the SKILLS region -- "
+        "Task 3's run did not actually end where this test assumes")
+    assert [line.strip().lstrip("-•*–— ") for _, line in skills_lines] == [
+        "Example Query", "Example Framework"], (
+        "the two genuine entries ahead of the terminator must still be collected")
+
+    # HALF TWO: the parser must refuse at the SAME line, naming SKILLS (not silently
+    # absorb it as a third skill, and not raise for some unrelated reason elsewhere).
+    with pytest.raises(P.CvParseError, match=r"SKILLS: unrecognised line 'Not a bullet line'"):
+        P.parse_cv(text)
+
+
 def test_the_work_bullet_markers_are_exactly_what_the_gate_citation_checks():
     """The other half of the two-tuple split, asserted STRUCTURALLY rather than by
     reading the comment that claims it.
 
-    EQUALITY, not a subset, because both directions are load-bearing and this test
-    previously asserted only one of them:
+    EQUALITY for the WORK side, because both directions are load-bearing:
 
       too WIDE  -> a fabrication-gate BYPASS. A WORK marker this parser accepts and
                    validate.py does not is never citation-checked, so it reaches the PDF
@@ -604,20 +700,42 @@ def test_the_work_bullet_markers_are_exactly_what_the_gate_citation_checks():
                    gate-CLEAN; a parser recognising only `-` would take it for a
                    candidate company and refuse a CV the gate had certified.
 
-    Derived from validate.py's own source (the `_WORK_BULLET_MARKERS` assignment, read by
-    NAME), never hand-listed, so a change to EITHER side reds. `parse.py`'s
-    `_BULLET_MARKERS` comment states this equality in prose; this is what stops that
-    prose going stale.
+    A SUPERSET for the SKILLS side (#168, Task 7), never equality: `cv/parse.py`'s
+    `_TRAILING_MARKERS` is the `template` renderer's OWN grammar -- `script` never parses
+    a CV at all -- so pinning the renderer-independent gate (`validate._SKILLS_MARKERS`)
+    to one renderer's tuple by EQUALITY would let a later narrowing on the parser side
+    silently narrow what the gate accepts too, for every renderer, with this assertion
+    still green. `>=` is the correct floor: the gate's markers must not be NARROWER than
+    what the parser accepts (that direction is the identical bypass the WORK equality
+    above guards against -- a marker the parser accepts and the gate does not is never
+    containment-checked), but the gate is free to stay wider even where the parser's own
+    set never catches up.
+
+    Derived from validate.py's own source (the `_WORK_BULLET_MARKERS` and
+    `_SKILLS_MARKERS` assignments, read by NAME), never hand-listed, so a change to any
+    side reds. `parse.py`'s `_BULLET_MARKERS` comment states the WORK equality in prose;
+    this is what stops that prose going stale.
 
     Recovered BY NAME rather than by finding "the" literal tuple passed to
-    `.startswith(...)` (#168, Task 3): `cv/validate.py` gained a SECOND marker tuple,
-    `_SKILLS_MARKERS`, deliberately not equal to this one (it is wider, matching
-    `parse.py`'s own `_TRAILING_MARKERS`). With two candidates in the module, selecting
-    "the" one by value or by position -- the shape this guard used before -- would make
-    this very equality assertion a tautology if it happened to grab `_SKILLS_MARKERS`
-    instead, and would do so SILENTLY: the assertion would still run and still pass,
-    just against the wrong tuple. Keying on the assignment target's NAME is what makes
-    the guard immune to a module gaining a second, differently-shaped tuple.
+    `.startswith(...)` (#168, Task 3): `cv/validate.py` carries TWO marker tuples now.
+    With two candidates in the module, selecting "the" one by value or by position --
+    the shape this guard used before -- would make the WORK equality assertion a
+    TAUTOLOGY if it happened to grab `_SKILLS_MARKERS` instead, and would do so SILENTLY:
+    the assertion would still run and still pass, just against the wrong tuple. Keying on
+    each assignment's target NAME, and asserting each name was found EXACTLY ONCE, is
+    what makes the guard immune to that -- and to a rename that would otherwise let the
+    walk find nothing and pass vacuously having guessed.
+
+    The AST walk here checks PRESENCE only (exactly one `name = ...` assignment, whatever
+    its right-hand side), never the literal SHAPE of the value -- `_WORK_BULLET_MARKERS`
+    is a bare tuple literal, but `_SKILLS_MARKERS` is a computed expression
+    (`_WORK_BULLET_MARKERS + ("–", "—")`, see its own comment), and re-implementing
+    Python's evaluation rules in the AST walker to recover THAT value would be a second,
+    weaker interpreter liable to drift from the real one. The actual value is read off
+    the imported module object by the SAME name instead (`_validate_mod._SKILLS_MARKERS`)
+    -- still "by name", not "by value": a module attribute lookup cannot silently grab a
+    DIFFERENT name's tuple the way the old usage-site scan could, which is the one
+    property this guard exists to hold.
     """
     import ast
     import inspect
@@ -625,37 +743,47 @@ def test_the_work_bullet_markers_are_exactly_what_the_gate_citation_checks():
     from sluice.cv import validate as _validate_mod
     from sluice.cv.parse import _BULLET_MARKERS, _TRAILING_MARKERS
 
-    # The `_WORK_BULLET_MARKERS = (...)` assignment in cv/validate.py that gates the
-    # citation check -- found by NAME, not by scanning for a `startswith((...))` call
-    # with a literal-tuple argument, which no longer identifies it uniquely once
-    # `_SKILLS_MARKERS` exists alongside it (see the docstring above). This walks the
-    # whole MODULE, so where the assignment sits does not matter -- what matters is that
-    # there stays exactly ONE assignment to this name to read.
-    tree = ast.parse(inspect.getsource(_validate_mod))
-    gate_markers = [
-        tuple(el.value for el in node.value.elts)
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Assign) and len(node.targets) == 1
-        and isinstance(node.targets[0], ast.Name)
-        and node.targets[0].id == "_WORK_BULLET_MARKERS"
-        and isinstance(node.value, ast.Tuple)
-        and all(isinstance(el, ast.Constant) for el in node.value.elts)
-    ]
-    assert len(gate_markers) == 1, (
-        f"expected exactly one `_WORK_BULLET_MARKERS = (...)` assignment in "
-        f"cv/validate.py, found {gate_markers} -- this guard can no longer say which "
-        "tuple gates the citation check, so it must not pass having guessed")
+    def _assigned_exactly_once(tree, name):
+        # True iff `name = ...` appears as a top-level-target assignment exactly once in
+        # `tree`. Walking the whole MODULE, so where the assignment sits does not matter
+        # -- what matters is that a rename or deletion cannot make this guard find
+        # nothing and pass having guessed, the failure mode a value- or position-based
+        # search had before `_SKILLS_MARKERS` existed to collide with.
+        return sum(
+            1 for node in ast.walk(tree)
+            if isinstance(node, ast.Assign) and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name) and node.targets[0].id == name
+        ) == 1
 
-    assert set(_BULLET_MARKERS) == set(gate_markers[0]), (
+    tree = ast.parse(inspect.getsource(_validate_mod))
+    assert _assigned_exactly_once(tree, "_WORK_BULLET_MARKERS"), (
+        "expected exactly one `_WORK_BULLET_MARKERS = ...` assignment in cv/validate.py "
+        "-- this guard can no longer say which tuple gates the citation check, so it "
+        "must not pass having guessed")
+    assert _assigned_exactly_once(tree, "_SKILLS_MARKERS"), (
+        "expected exactly one `_SKILLS_MARKERS = ...` assignment in cv/validate.py -- "
+        "this guard can no longer say which tuple bounds the SKILLS containment check, "
+        "so it must not pass having guessed")
+
+    work_markers = _validate_mod._WORK_BULLET_MARKERS
+    skills_markers = _validate_mod._SKILLS_MARKERS
+
+    assert set(_BULLET_MARKERS) == set(work_markers), (
         f"parse.py's WORK bullet markers and the gate's citation-check markers have "
         f"drifted. Accepted here but NOT citation-checked: "
-        f"{sorted(set(_BULLET_MARKERS) - set(gate_markers[0]))} -- such a bullet reaches "
+        f"{sorted(set(_BULLET_MARKERS) - set(work_markers))} -- such a bullet reaches "
         f"the PDF UNCITED, a fabrication-gate bypass. Citation-checked but NOT accepted "
-        f"here: {sorted(set(gate_markers[0]) - set(_BULLET_MARKERS))} -- such a bullet is "
+        f"here: {sorted(set(work_markers) - set(_BULLET_MARKERS))} -- such a bullet is "
         "gate-clean and refused, the governing bug class.")
     assert set(_TRAILING_MARKERS) > set(_BULLET_MARKERS), (
         "the trailing-section tuple is no longer wider than the WORK tuple, so the "
         "en-dash certificate case is back to being refused while gate-clean")
+    assert set(skills_markers) >= set(_TRAILING_MARKERS), (
+        f"the gate's SKILLS markers no longer cover everything parse.py's trailing-"
+        f"section reader accepts: "
+        f"{sorted(set(_TRAILING_MARKERS) - set(skills_markers))} would parse into "
+        "CvDocument.skills, render into the PDF, and never be containment-checked -- a "
+        "gate bypass, the same shape the WORK equality above guards against.")
 
 
 def test_parse_refuses_unrecognised_content_under_a_trailing_header():
@@ -934,8 +1062,11 @@ def test_unmodelled_trailing_content_is_refused_rather_than_left_unconsumed():
     That comment used to say a section this parser does not model (e.g. SKILLS) sitting
     after the trailing sections was "silently left unconsumed". Measured 2026-08-06, it
     is not: the refusal at the end of the section loop rejects any non-blank line that is
-    not a recognised trailing header, so the SKILLS header itself raises there. The
-    comment was describing an arm nothing reaches.
+    not a recognised trailing header, so the SKILLS header itself raised there -- before
+    #168 Task 7 modelled SKILLS as a trailing section of its own. PUBLICATIONS takes its
+    place as the example now: it stays unmodelled, and the refusal this test pins is
+    otherwise unchanged (`test_parse_refuses_a_section_it_does_not_model` above already
+    uses PUBLICATIONS for the SAME reason, in the WORK loop's own unmodelled-header arm).
 
     This is a PROSE guard, and it is here because the same false-mechanism defect has now
     been found four times on this branch. Asserting on the MESSAGE is what ties it to the
@@ -943,17 +1074,17 @@ def test_unmodelled_trailing_content_is_refused_rather_than_left_unconsumed():
     satisfied by the repeated-header refusal above, or by any future arm.
     """
     from tests.test_cv_engine import CLEAN_CV
-    # "Grew", not the real-world "Python" this test shipped with: #168's row 2
-    # (containment) now checks the SKILLS region too, and `_gate_verdict`'s bundle
-    # (ENTRIES + baseline "BASELINE") sources no arbitrary word -- "Grew" is, via
-    # ENTRIES[0]'s own body "Grew 3 to 8.". The word choice is otherwise immaterial:
-    # `parse_cv` raises on the 'SKILLS' HEADER line itself (cv/parse.py's trailing-
-    # section refusal), before it ever reaches whatever bullet follows.
-    text = CLEAN_CV + "\n\nSKILLS\n- Grew\n"
+    # PUBLICATIONS is not one of PROFILE/WORK EXPERIENCE/SKILLS/CERTIFICATES/EDUCATION, so
+    # `validate.section_spans` never sets or clears a flag on seeing it -- unlike the old
+    # SKILLS example, its bullet is not row-2 (containment) checked at all, and the word
+    # choice below is immaterial for that reason rather than needing to be sourced from
+    # the bundle. `parse_cv` raises on the 'PUBLICATIONS' line itself (cv/parse.py's
+    # trailing-section refusal), before it ever reaches whatever bullet follows.
+    text = CLEAN_CV + "\n\nPUBLICATIONS\n- Something\n"
     assert _gate_verdict(text) == [], (
-        "the SKILLS tail is no longer gate-clean, so the parser's behaviour on it is no "
-        "longer the parser/gate disagreement this test describes")
-    with pytest.raises(CvParseError, match=r"EDUCATION: unrecognised line 'SKILLS'"):
+        "the PUBLICATIONS tail is no longer gate-clean, so the parser's behaviour on it "
+        "is no longer the parser/gate disagreement this test describes")
+    with pytest.raises(CvParseError, match=r"EDUCATION: unrecognised line 'PUBLICATIONS'"):
         parse_cv(text)
 
 
@@ -1115,3 +1246,66 @@ def test_a_date_range_the_gate_certifies_clean_is_never_refused_here(
             "costs a composition, a retry the model cannot act on, and then the lead.")
     assert doc.work[0].dates == variant
     assert doc.work[0].title == "Staff Engineer", "the meta line was mis-split"
+
+
+# ── a SKILLS sibling sweep, on the axis Task 7 introduces ───────────────────────
+#
+# A SEPARATE parametrize block, not an added parameter on the sweep above: that one
+# sweeps the WORK date range on one fixed line; the marker character a SKILLS entry
+# starts with is a different grammar entirely, introduced by #168 Task 7, and belongs to
+# its own table for the identical reason the date-range alphabet does not also vary the
+# WORK bullet marker.
+def test_the_skills_marker_alphabet_still_carries_every_gate_marker():
+    """SCOPE, the same shape as `test_the_separator_alphabet_still_carries_the_measured_
+    regressions` above: an empty or silently-narrowed `_TRAILING_MARKERS` would make the
+    sweep below pass having swept nothing, which is the failure mode CLAUDE.md names --
+    a discovery loop whose matcher is broken yields an empty set that satisfies every
+    assertion over it. Imports the SAME tuple the sweep parametrizes on, so this cannot
+    itself drift into pinning a copy the sweep does not actually run.
+    """
+    assert P._TRAILING_MARKERS, "the SKILLS sweep would run zero marker rows"
+    assert set(P._TRAILING_MARKERS) == {"-", "•", "*", "–", "—"}
+
+
+@pytest.mark.parametrize("space", ["", " "])
+@pytest.mark.parametrize("marker", P._TRAILING_MARKERS)
+def test_a_skills_marker_the_gate_certifies_clean_is_never_refused_here(marker, space):
+    """The SKILLS sibling of `test_a_date_range_the_gate_certifies_clean_is_never_refused_
+    here` above, holding the identical implication -- `validate(cv, sources) == [] =>
+    parse_cv(cv) does not raise` -- over the marker grammar Task 7 adds instead of the
+    date-range grammar the sweep above already covers.
+
+    Every member of `_TRAILING_MARKERS`, with or without a following space, must be a
+    marker the parser and the gate agree names a genuine SKILLS entry --
+    `test_the_skills_region_markers_equal_what_the_gate_collects` pins that the two
+    tuples are the SAME set, and this is what would catch either one drifting in
+    practice: a marker the gate accepts and the parser refuses costs a composition, a
+    retry the model cannot act on, and then the lead -- the governing bug class this
+    whole file exists to catch, now on the SKILLS axis.
+    """
+    from tests.test_cv_engine import CLEAN_CV
+    # "Grew" is sourced via ENTRIES[0]'s own body ("Grew 3 to 8.") in the bundle
+    # `_gate_verdict` builds -- see that helper's docstring -- so row 2 (containment)
+    # licenses it regardless of which marker or spacing precedes it.
+    entry_line = f"{marker}{space}Grew"
+    text = CLEAN_CV + f"\n\nSKILLS\n{entry_line}\n"
+    assert f"\n{entry_line}\n" in text, "the construction no-opped"
+
+    # The ANTECEDENT, computed -- never assumed, for the identical reason the sweep above
+    # computes it: a row the gate rejects says nothing about the parser and must not be
+    # silently skipped either.
+    violations = _gate_verdict(text)
+    assert violations == [], (
+        f"{entry_line!r} is no longer gate-clean ({violations}), so this row proves "
+        "nothing about the parser. Fix the fixture or drop the row -- do not let it pass "
+        "vacuously.")
+
+    # The CONSEQUENT.
+    try:
+        doc = parse_cv(text)
+    except CvParseError as e:
+        pytest.fail(
+            f"the gate certifies a SKILLS entry marked {entry_line!r} clean and the "
+            f"parser refuses it: {e}. That costs a composition, a retry the model cannot "
+            "act on, and then the lead.")
+    assert doc.skills == ["Grew"]
