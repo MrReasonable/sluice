@@ -458,15 +458,14 @@ def test_profile_strip_matches_render_citation_shape():
 # lines 97-123, i.e. the loop as it stood BEFORE `section_spans` existed. The first
 # change made in transcription was `enumerate(..., 1)`: the pre-change loop selected
 # lines without numbering them, and an equivalence assertion needs each selected line to
-# carry an identity. Every OTHER predicate governing these two arms -- the header
-# comparisons, both `continue`s, the terminator set, the marker tuple -- was, at that
-# point, byte-for-byte the pre-change code, and #168's Task 3 (below) leaves both
-# untouched. Deriving THIS reference by reading the NEW helper instead would assert that
-# the code equals itself and certify nothing -- a silent weakening of the fabrication
-# gate is precisely what that would let ship green. What makes that argument work is
-# that the PROFILE/WORK arms are grounded in code that shipped and ran in production
-# before `section_spans` (or SKILLS) ever existed: an INDEPENDENT oracle, not anyone's
-# current belief about what the loop should do.
+# carry an identity. The VALUES these two arms compare against -- the header strings
+# ("PROFILE", "WORK EXPERIENCE"), the terminator set, and the WORK marker tuple -- are
+# still, byte-for-byte, the pre-change code. Deriving THIS reference by reading the NEW
+# helper instead would assert that the code equals itself and certify nothing -- a
+# silent weakening of the fabrication gate is precisely what that would let ship green.
+# What makes that argument work, for those VALUES, is that they are grounded in code
+# that shipped and ran in production before `section_spans` (or SKILLS) ever existed:
+# an INDEPENDENT oracle, not anyone's current belief about what the loop should do.
 #
 # The SKILLS arm is NOT that. #168's Task 3 extends this reference a SECOND time, by
 # hand, because the alphabet the random sweep below draws from already contains
@@ -484,9 +483,27 @@ def test_profile_strip_matches_render_citation_shape():
 # the_pre_extraction_loop_on_random_cvs` is what exercises that independence over 2000
 # rows, and it is real -- a coding slip in either side can still make them disagree --
 # but it is a CONSISTENCY check between two expressions of one new idea, not an
-# INDEPENDENT oracle against history the way the PROFILE/WORK arms are. A bug both
-# share, because both typings share the same misreading of the design, is exactly the
-# failure mode this arm cannot catch.
+# INDEPENDENT oracle against history. A bug both share, because both typings share the
+# same misreading of the design, is exactly the failure mode this arm cannot catch.
+#
+# That WORK-bullet divergence is not purely a SKILLS-arm property, though, and not
+# WORK-only either: it is Task 3 reaching into the PROFILE and WORK arms themselves.
+# The PROFILE and WORK EXPERIENCE header handlers now also reset a new `in_skills` flag
+# on entry, and a new `if in_skills: continue` gate sits between the header comparisons
+# and the final profile/work appends -- code with no b831dc9 original, typed by Task 3
+# for the identical reason the SKILLS branch above was. WORK is reachable through it
+# because `SKILLS` deliberately does NOT clear `in_work` (see `section_spans`'s own
+# comment on why): a WORK-shaped bullet under a SKILLS header mid-WORK-EXPERIENCE is
+# excluded from `work` where the pre-Task-3 code would have kept it, which is the
+# divergence measured above. PROFILE is reachable too, by a different route, verified
+# directly rather than assumed: `PROFILE\nProse.\nSKILLS\n- Example Widget\nMore
+# prose.\n` collects LESS into `profile` under this handling than the pre-Task-3 loop
+# would, because entering SKILLS now clears `in_profile`, where "SKILLS" was not a
+# header the pre-Task-3 loop recognised at all. So the INDEPENDENT-oracle claim above
+# holds for the VALUES it names, not for "the arms behave exactly like b831dc9's loop"
+# -- that second, stronger claim is false for both PROFILE and WORK once a SKILLS run
+# is present, and the SKILLS-interaction control flow is exactly what all three arms
+# now share: Task 3's hand-typed logic, not history.
 def _validate_line_sets_before_the_extraction(cv_text):
     profile, work = [], []
     in_work = False

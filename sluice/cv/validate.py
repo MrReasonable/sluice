@@ -53,9 +53,11 @@ _WORK_BULLET_MARKERS = ("-", "•", "*")
 # either side reds. Wider than the WORK tuple is safe for the same reason
 # `_TRAILING_MARKERS` is: a SKILLS line is not number- or citation-checked (Task 3's
 # region split carries no such check, and Task 7's parser doesn't add one either), only
-# CONTAINMENT-checked (`UNSOURCED SKILL`, Task 4, and the misattribution check, Task 5) --
-# and that check strips the identical marker set before comparing
-# (`.lstrip("-•*–— ")`), so a marker this tuple accepts is one that check also strips.
+# CONTAINMENT-checked (`UNSOURCED SKILL`, Task 4) -- and that check strips the
+# identical marker set before comparing (`.lstrip("-•*–— ")`), so a marker this tuple
+# accepts is one that check also strips. (The misattribution check, Task 5, reads
+# `work_by_line` instead -- it never reaches this tuple or `skills_lines` at all; see
+# the docstring below.)
 _SKILLS_MARKERS = _WORK_BULLET_MARKERS + ("–", "—")
 
 
@@ -67,10 +69,12 @@ def section_spans(cv_text):
     `(lineno, line)` with the RAW line: all three checks below consume it unstripped
     (`_CITE_RE.sub("", line)`, `line.lstrip()`, and the SKILLS check's own
     `.lstrip("-•*–— ")`), so handing back a stripped line would change what they see.
-    `skills_lines` is CHECKED now: an UNSOURCED SKILL containment check (#168 Task 4) and
-    a misattribution check (Task 5). At Task 3, when this region split was first
-    extracted, it was collected but not yet read by anything -- that gap is what Tasks
-    4-6 closed, and this sentence is what stops the docstring from still claiming it.
+    `skills_lines` is CHECKED now, by the UNSOURCED SKILL containment check (#168 Task
+    4). At Task 3, when this region split was first extracted, it was collected but not
+    yet read by anything -- that gap is what Task 4 closed, and this sentence is what
+    stops the docstring from still claiming it. (The misattribution check, Task 5,
+    reads `work_bullet_lines` instead -- it scans WORK-bullet prose against the SKILLS
+    vocabulary, never `skills_lines` itself.)
 
     Extracted from `validate`'s own loop so a later scope-limited check can reason about
     the exact lines the gate reasons about, rather than a second copy of the split that
