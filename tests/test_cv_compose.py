@@ -343,3 +343,46 @@ def test_the_prompt_permits_the_same_sources_the_derived_negative_does():
     for source in ("BASELINE CV", "VERIFIED EXPERIENCE ENTRY"):
         assert source in prompt, source
     assert "BASELINE CV" in _DERIVED_NEGATIVE_PROMPT
+
+
+# ── #168 Task 8: the prompt asks for the section ──────────────────────────────
+def test_the_skills_block_is_absent_when_no_entry_declares_skills():
+    """SC5's request abstain. An unconditional block against a gate that can license
+    nothing was the review's first Critical: prompt demands the section, every line
+    violates, one retry, skipped-gate -- on every lead, on every vault at upgrade.
+
+    Checked against the exact gated block (`C._SKILLS_PROMPT_BLOCK`), not a blanket
+    "SKILLS" substring: `_RULES` already carries an unconditional "SKILLS INVENTORY"
+    framing bullet (#165, a wholly separate, always-on feature -- the informational
+    corpus, not the per-entry `Skills:` field this task gates), and TWO always-present
+    row 1/row 2 attribution rules Task 8 itself adds (they must fire on every compose,
+    since the gate rows they describe are never conditional -- see cv/validate.py). All
+    three legitimately contain the word "SKILLS", so a bare substring assertion here
+    would fail on shipped text this task neither owns nor is meant to touch. Measured:
+    the blanket-substring form of this test, taken verbatim from the plan, fails on the
+    unmodified `_RULES` bullet alone even before this task's own two new rules exist."""
+    p = C.build_prompt("BUNDLE", "JD", "Co", "Role", name="EXAMPLE CANDIDATE",
+                       skills_requested=False)
+    assert C._SKILLS_PROMPT_BLOCK not in p
+
+
+def test_the_skills_block_is_present_when_an_entry_declares_skills():
+    """Mirror of the abstain test above, checked the same precise way. A blanket
+    "SKILLS" substring check here would be VACUOUS -- always true regardless of
+    `skills_requested`, because of the same pre-existing #165 framing bullet -- so it
+    would witness nothing about this flag; a mutant that always sent `skills_block=""`
+    would still pass it."""
+    p = C.build_prompt("BUNDLE", "JD", "Co", "Role", name="EXAMPLE CANDIDATE",
+                       skills_requested=True)
+    assert C._SKILLS_PROMPT_BLOCK in p
+
+
+def test_the_prompt_states_the_rule_row_2_enforces():
+    """A `_RULES` rule permitting what a containment row forbids is the mutant the guard
+    table names, and the design shipped it twice. This test READS the rule text --
+    the literal row 2 sentence, not a generic "SOURCE BUNDLE"/"SKILLS" substring pair,
+    both of which are already present in the prompt's other, unrelated bullets and so
+    would pass without this rule existing at all."""
+    p = C.build_prompt("BUNDLE", "JD", "Co", "Role", name="EXAMPLE CANDIDATE",
+                       skills_requested=True)
+    assert ("Every line of the SKILLS section must come from the SOURCE BUNDLE" in p)

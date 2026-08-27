@@ -165,15 +165,27 @@ def _decode_css_escapes(literal: str) -> str:
 def composer_headings() -> set[str]:
     """The section headings a template may legitimately print.
 
-    DERIVED from `cv/compose.py`'s `_RULES` -- the format block the composer actually
-    asks the model for -- never hand-listed, so this cannot drift from what a CV really
-    contains. Callers must assert it is non-empty: `set() <= anything` is True, so a
-    derivation that silently stopped matching would make every comparison below pass.
+    DERIVED from `cv/parse.py`'s own grammar -- the sections the parser models -- never
+    from `_RULES`. Reading `_RULES` STATICALLY misses the conditional SKILLS block
+    (compose.py's `{skills_block}`, only interpolated when `build_prompt` is called with
+    `skills_requested=True`), which would reject that heading permanently and turn a
+    genuine, gate-clean SKILLS section into a leak-sweep false positive the moment a
+    template renders it (#168 Task 13). RENDERING `_RULES` instead -- an earlier revision
+    of this fix -- is worse: `{name_heading}` is `name.upper()` on its own line, so a
+    rendered set of "every all-caps alphabetic line" ADMITS THE SUBSTITUTED CANDIDATE
+    NAME into what is the ALLOWLIST for three template no-content guards plus the
+    shipped-file leak sweep. Four reviewers independently measured that a template could
+    then print that literal name with every negative guard green. Anchoring on the
+    parser's grammar is immune to both failure modes: it is independent of `_RULES`
+    entirely (so it is not self-certifying against the very prompt it allowlists for),
+    and it carries `SKILLS` automatically the day the parser accepts the section (#168
+    Task 7), with no dependency on whether any given compose call actually requested it.
+
+    Callers must assert it is non-empty: `set() <= anything` is True, so a derivation
+    that silently stopped matching would make every comparison below pass.
     """
-    from sluice.cv.compose import _RULES
-    return {ln.strip() for ln in _RULES.splitlines()
-            if ln.strip() and ln.strip() == ln.strip().upper()
-            and all(c.isalpha() or c.isspace() for c in ln.strip())}
+    from sluice.cv.parse import _TRAILING_SECTIONS
+    return {"PROFILE", "WORK EXPERIENCE"} | set(_TRAILING_SECTIONS)
 
 
 def _css_regions(text: str) -> list[str]:
