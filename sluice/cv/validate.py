@@ -12,7 +12,7 @@ known-hallucination-string check. Configure both via the `cv:` block of
 sluice.yaml for the same behavior a fixed list gave before."""
 import re
 
-from sluice.cv.bundle import BundleSources
+from sluice.cv.bundle import _WORD_RE, BundleSources
 
 # The PROFILE is prose, not bullets, so its citation strip must match what the
 # RENDERER delivers, not the WORK-bullet strip. render.strip_citations removes only
@@ -180,6 +180,46 @@ def section_spans(cv_text):
     return profile, work, skills
 
 
+# The ONE tokeniser and the ONE subsequence primitive both containment rows use (#168).
+# Row 2 (`_in_source`, below) is the only consumer today; row 1 (`_names_skill`, Task 5)
+# reuses these two rather than redefining them -- two copies would let the vocabulary the
+# gate BUILDS drift from the one it SEARCHES with.
+def _tokens(text):
+    """Case-PRESERVING alphanumeric runs. Deliberately not core/stem.py: stemming answers
+    a RELEVANCE question (right for rank()), and this is an IDENTITY question -- a
+    licensed `Widget` would license an emitted `Widgeting`. `stem.tokens` is also
+    alphabetic-only, so it destroys the digit-bearing names span removal exists to
+    protect."""
+    return _WORD_RE.findall(text)
+
+
+def _subseq(hay, needle):
+    """True when `needle` appears as a CONTIGUOUS subsequence of `hay`.
+
+    The ONE matching primitive both rows use -- row 1 case-sensitively over a bullet's
+    prose, row 2 case-insensitively over each source block. Never substring containment:
+    `"java" in "javascript"` is the bug rank() was rewritten to remove. Two copies of this
+    would let the vocabulary the gate BUILDS drift from the one it SEARCHES with.
+    """
+    if not needle:
+        return False
+    return any(list(hay[i:i + len(needle)]) == list(needle)
+               for i in range(len(hay) - len(needle) + 1))
+
+
+def _in_source(blocks, item):
+    """True when `item`'s token sequence appears contiguously in ANY source block.
+
+    Case-INSENSITIVE, unlike row 1: this matches a whole emitted item against a corpus,
+    with no sentence to collide with, and a case-sensitive rule would refuse a skill whose
+    note is filed lowercase. Per-BLOCK rather than over a flattened corpus, so a two-word
+    skill cannot match an adjacency invented at a block seam.
+    """
+    needle = [t.casefold() for t in _tokens(item)]
+    return bool(needle) and any(
+        _subseq([t.casefold() for t in block], needle) for block in blocks)
+
+
 def validate(cv_text, sources, employers=None, fabrication_decoys=None):
     if not isinstance(sources, BundleSources):
         # Fail loudly at construction. The old second parameter was the rendered bundle
@@ -208,21 +248,22 @@ def validate(cv_text, sources, employers=None, fabrication_decoys=None):
     # negatives (excluded by the parse). Broader than a WORK bullet, which is tied to
     # its cited entry, because a profile is an aggregate summary. (#30)
     profile_permitted = baseline.union(*nums.values())
-    # `_skills_lines` is intentionally unused here: Task 3 (#168) only teaches
-    # `section_spans` to COLLECT the SKILLS region: the two checks below are exactly the
-    # ones that existed before it, unchanged. Validating what a skill line claims is
-    # Tasks 4-6's job, on this same collected list -- this call site does not change
-    # again to gain that, only its body does.
-    profile_lines, work_bullets, _skills_lines = section_spans(cv_text)
-    # The two line SETS come from `section_spans` so a later scope-limited check (#167)
-    # can share this split instead of keeping a second copy that would drift from it; the
-    # two checks below are unchanged. Merged back into ONE line-ordered pass, not two
-    # sequential passes, because both regions can be live at once (`PROFILE` after
-    # `WORK EXPERIENCE` -- see `section_spans`) and the violation list's order is output:
-    # it is fed back to the composer verbatim on the single retry.
+    # `skills_lines` (#168, Task 4) is now checked below (row 2) alongside the two
+    # checks that existed before it. Row 1 (Task 5, attribution) and digit handling
+    # (Task 6) still have no branch here -- this call site does not change again to
+    # gain those, only the loop body does.
+    profile_lines, work_bullets, skills_lines = section_spans(cv_text)
+    # The three line SETS come from `section_spans` so a later scope-limited check
+    # (#167) can share this split instead of keeping a second copy that would drift
+    # from it. Merged back into ONE line-ordered pass, not separate sequential passes,
+    # because more than one region can be live at once (`PROFILE` after `WORK
+    # EXPERIENCE`, or `SKILLS` alongside either -- see `section_spans`) and the
+    # violation list's order is output: it is fed back to the composer verbatim on the
+    # single retry.
     profile_by_line = dict(profile_lines)
     work_by_line = dict(work_bullets)
-    for i in sorted(profile_by_line | work_by_line):
+    skills_by_line = dict(skills_lines)
+    for i in sorted(profile_by_line | work_by_line | skills_by_line):
         if i in profile_by_line:
             line = profile_by_line[i]
             # Prose, NOT a bullet: no citation required or expected (requiring [id]
@@ -255,4 +296,21 @@ def validate(cv_text, sources, employers=None, fabrication_decoys=None):
             invented = bullet_nums - union
             if invented:
                 v.append(f"INVENTED METRIC {sorted(invented)} not in {cites}: {prose.strip()[:50]}")
+        if i in skills_by_line:
+            # ROW 2 (SC4): did you invent this? Licensed by the bundle's SOURCE TEXT --
+            # entry `Skills:` + entry bodies + the baseline -- because `compose._RULES`
+            # and `_DERIVED_NEGATIVE_PROMPT` license exactly those, and #168 asks that an
+            # emitted skill "appear in the source bundle", not in `Skills:` alone.
+            #
+            # ALWAYS RUNS. Never conditional on a non-empty vocabulary: `section_spans`
+            # is pure over text, so a section emitted on an un-annotated vault would
+            # otherwise be checked by nothing at all. Fail closed.
+            #
+            # Normalised comparison, unlike row 1's case-sensitive in-prose scan: this
+            # compares a whole emitted line against the vocabulary, with no sentence to
+            # collide with, and a case-sensitive rule here would refuse every skill whose
+            # note is filed lowercase.
+            item = _CITE_RE.sub("", skills_by_line[i]).lstrip("-•*–— ").strip()
+            if item and not _in_source(sources.source_tokens, item):
+                v.append(f"UNSOURCED SKILL {item!r}: not in the bundle")
     return v

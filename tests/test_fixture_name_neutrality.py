@@ -1536,6 +1536,11 @@ _REVIEWED_SKILL_VALUES = frozenset({
     # deliberately INSIDE a letter-led token, the one shape that rule must accept rather
     # than refuse.
     "Example Widget3",
+    # Invented for #168 Task 4 (tests/test_cv_engine.py's STYLE-tier scoping test): must
+    # match slop._PHRASES' "synergy" stem AND, once row 2 (containment) reaches the
+    # SKILLS region, be a genuinely SOURCED skill -- one value doing both jobs, neither
+    # of which the other three reviewed values can stand in for.
+    "Example Synergy",
 })
 
 # `_REVIEWED_FIXTURE_IDENTITIES` is about LEAD identities -- employers a fixture names.

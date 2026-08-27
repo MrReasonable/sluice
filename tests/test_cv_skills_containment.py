@@ -1,14 +1,21 @@
 # tests/test_cv_skills_containment.py
-"""#168, Task 3: `section_spans` learns to collect a SKILLS region as a CONTIGUOUS
-BULLET RUN. This module pins the five preservation cases the design review named --
-three independent reviewers found a Critical defect in an earlier version of exactly
-this mechanism, so each case below is measured, not merely plausible.
+"""#168: SKILLS as gated content.
 
-Task 3 only teaches `section_spans` to COLLECT the region; nothing here validates what
-a skill line CLAIMS (no citation check, no number check) -- that is Tasks 4-6. These
-tests are scoped to `section_spans` itself, never to `validate()`'s violation list.
+Task 3 taught `section_spans` to collect a SKILLS region as a CONTIGUOUS BULLET RUN;
+the five tests immediately below (`test_skills_lines_are_collected_into_their_own_
+region` and its neighbours) pin that collection ALONE and never reach `validate()`'s
+violation list -- three independent reviewers found a Critical defect in an earlier
+version of exactly this mechanism, so each case is measured, not merely plausible.
+
+Task 4 (further below) adds row 2: an emitted SKILLS item must appear in the bundle's
+SOURCE TEXT (`BundleSources.source_tokens`), searched as a token SUBSEQUENCE per
+source block, case-insensitively. It is the first task in this file where `validate()`
+actually refuses something. Tasks 5 (row 1: a bullet's skill must belong to a cited
+entry) and 6 (digit handling) reuse the five shared helpers defined below rather than
+redefining them -- see each helper's own docstring.
 """
 from sluice.cv import validate as V
+from sluice.cv.bundle import build_bundle, bundle_sources
 
 # The base fixture every test but the last builds from. `{tail}` lets each test append
 # content AFTER the SKILLS section without re-typing the WORK EXPERIENCE / SKILLS
@@ -84,3 +91,140 @@ def test_a_skills_section_after_certificates_is_still_collected():
           "CERTIFICATES\n- Example Practitioner\n\nSKILLS\n\n- Example Query\n")
     _p, _work, skills = V.section_spans(cv)
     assert [t.strip() for _n, t in skills] == ["- Example Query"]
+
+
+# --- Shared test helpers for Tasks 4, 5 and 6 (#168) --------------------------------
+#
+# Tasks 4 (row 2, below), 5 (row 1) and 6 (digit handling -- span removal) all drive
+# `validate()` through these five builders. Defined ONCE here and reused, never
+# redefined, so three separately-implemented tasks cannot each grow their own CV/bundle
+# shape and drift from one another the way `_CITE_RE`/tokeniser duplication would.
+
+
+def _sources(*, body, skills, baseline):
+    """One bundle entry -> BundleSources. Row 2 (`_in_source`, below) searches every
+    source block regardless of which entry cites it, so this entry's id is incidental
+    -- a test that needs ATTRIBUTION (row 1, Task 5) uses `_two_entry_sources` instead,
+    which keeps AL1 and BE1 apart.
+
+    `skills` is threaded into the entry's `fields` via `dict(Skills=skills)`, never a
+    dict-LITERAL keyed the same way (deliberately not reproduced here: writing that
+    exact colon-then-bare-parameter shape in this docstring would itself trip the
+    collector described below, which scans comments too). With a runtime PARAMETER on
+    the right of a colon, that literal spelling reads to
+    tests/test_fixture_name_neutrality.py's `Skills:` collector (built for frontmatter
+    and dict/kwarg literals alike, keyed on the colon) as if the bare Python parameter
+    NAME were itself a declared skill value -- a false-positive fixture with nothing
+    behind it. The `key=value` kwarg spelling has no colon after the key, so that
+    collector never matches it; the dict `_skill_items` reads at runtime is identical
+    either way. `tests/test_cv_bundle.py`'s own
+    `test_every_token_of_a_skill_must_begin_with_a_letter` established this same
+    workaround first, for the identical reason.
+    """
+    return bundle_sources(build_bundle(
+        entries=[{"company": "Example Systems", "title": "Engineer", "metrics": "",
+                  "body": body,
+                  # `dict(Skills=skills)` is deliberate -- see this function's own
+                  # docstring. Do not "tidy" this to a `Skills`-keyed dict LITERAL.
+                  "fields": dict(Skills=skills), "best_for": "", "category": ""}],
+        baseline=baseline, negatives=[], jd_keywords=[],
+        prefix_map={"Example Systems": "ES"}))
+
+
+def _two_entry_sources(*, al_skills, be_skills, baseline="Example Alpha."):
+    """AL1 (Example Alpha) + BE1 (Example Beta) -> BundleSources, for row 1 (Task 5)
+    and the digit tests (Task 6) that cite one entry against another.
+
+    `prefix_map` is REQUIRED, not merely convenient: `cv/bundle.py`'s `_prefix` derives
+    a fallback prefix from the company name's own first two letters when no override is
+    given, and "Example Alpha" and "Example Beta" both derive "EX" -- ids would come out
+    EX1/EX2, not the AL1/BE1 every citing test in this module (and the two later tasks
+    that reuse this helper) names by hand.
+
+    See `_sources` above for why `Skills` is threaded through as a keyword argument
+    rather than a dict-literal colon.
+    """
+    return bundle_sources(build_bundle(
+        entries=[
+            {"company": "Example Alpha", "title": "Engineer", "metrics": "",
+             # `dict(Skills=...)` is deliberate -- see `_sources`' docstring above.
+             "body": "", "fields": dict(Skills=al_skills), "best_for": "", "category": ""},
+            {"company": "Example Beta", "title": "Engineer", "metrics": "",
+             "body": "", "fields": dict(Skills=be_skills), "best_for": "", "category": ""},
+        ],
+        baseline=baseline, negatives=[], jd_keywords=[],
+        prefix_map={"Example Alpha": "AL", "Example Beta": "BE"}))
+
+
+def _cv_with_skills(items):
+    """A CV whose only content is a SKILLS region -- `section_spans`' third region, a
+    contiguous bullet run. No PROFILE or WORK EXPERIENCE preamble: row 2 does not need
+    a citable WORK bullet to fire, and with no `WORK EXPERIENCE` header the
+    reverse-chronology check sees no start years and stays silent."""
+    return "\n".join(["SKILLS"] + [f"- {item}" for item in items])
+
+
+def _bullet(text):
+    """A CV with one WORK bullet, `text` verbatim (citations included). One entry, so
+    the reverse-chronology check sees a single start year and always passes clean."""
+    return "\n".join(["PROFILE", "I did the work.", "", "WORK EXPERIENCE", "",
+                      "Example Alpha", "01/2020-01/2024 | LOCATION | Engineer",
+                      f"- {text}"])
+
+
+def _cv(*, profile, bullet):
+    """A CV with a caller-controlled PROFILE line and one caller-controlled WORK
+    bullet -- Task 6's PROFILE-vs-bullet digit tests need the two set independently."""
+    return "\n".join(["PROFILE", profile, "", "WORK EXPERIENCE", "",
+                      "Example Alpha", "01/2020-01/2024 | LOCATION | Engineer",
+                      f"- {bullet}"])
+
+
+# --- Task 4: row 2 -- the emitted SKILLS section must come from the bundle ----------
+
+def test_a_two_word_skill_is_matched_as_a_sequence_not_a_token():
+    """Row 2's vocabulary is source TEXT, so whole-line set membership is undefined --
+    no single token is "Widget Framework". Both rows use one subsequence primitive."""
+    s = _sources(body="Ran a Widget Framework migration.", skills="",
+                 baseline="Example Alpha.")
+    assert s.source_tokens  # scope: the bundle actually carries blocks to search
+    cv = _cv_with_skills(["Widget Framework"])
+    assert V.section_spans(cv)[2]  # scope: the SKILLS region was actually collected
+    assert V.validate(cv, s) == []
+    assert any("UNSOURCED SKILL" in x
+               for x in V.validate(_cv_with_skills(["Framework Widget"]), s))
+
+
+def test_an_emitted_skill_absent_from_the_bundle_is_refused():
+    s = _sources(body="Ran the rebuild.", skills="Example Query", baseline="Example Alpha.")
+    assert s.source_tokens
+    cv = _cv_with_skills(["Example Query", "Kubernetes"])
+    assert V.section_spans(cv)[2]
+    v = V.validate(cv, s)
+    assert any("UNSOURCED SKILL" in x and "Kubernetes" in x for x in v)
+    assert not any("Example Query" in x for x in v)
+
+
+def test_row_2_licenses_a_skill_from_the_baseline_or_a_body():
+    """SC4. `_RULES` and `_DERIVED_NEGATIVE_PROMPT` both license the BASELINE CV and
+    verified entries, so a gate licensing only `Skills:` refuses what the prompt in the
+    same run requires -- measured as `skipped-gate` on every lead."""
+    s = _sources(body="Ran an Example Framework migration.", skills="",
+                 baseline="Used Example Widget3 throughout.")
+    assert s.source_tokens
+    cv = _cv_with_skills(["Example Framework", "Example Widget3"])
+    assert V.section_spans(cv)[2]
+    assert V.validate(cv, s) == []
+
+
+def test_row_2_fails_closed_when_no_entry_declares_skills():
+    """SC5, and the most serious finding of the review: making row 2 CONDITIONAL on a
+    non-empty vocabulary turned fail-closed into fail-OPEN. `section_spans` is pure over
+    text, so its SKILLS region exists regardless -- a model-emitted section on an
+    un-annotated vault would then be checked by NOTHING and render, where today it yields
+    UNCITED BULLET. Only the _RULES request is conditional; this check always runs."""
+    s = _sources(body="Ran the rebuild.", skills="", baseline="Example Alpha.")
+    cv = _cv_with_skills(["Kubernetes"])
+    assert V.section_spans(cv)[2]  # scope: the SKILLS region was actually collected
+    v = V.validate(cv, s)
+    assert any("UNSOURCED SKILL" in x for x in v)
