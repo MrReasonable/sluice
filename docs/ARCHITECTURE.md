@@ -321,6 +321,61 @@ whichever neighbour it was written next to:
    distinguishable, and a tiny sample (a comma-less title on a 1-2-row
    carousel read) is noise a floor exists to exclude.
 
+   WHAT IS MEASURED AND WHAT IS CLASSIFIED ON ARE TWO DIFFERENT ROSTERS
+   (2026-08-27). `RATE_SIGNALS` is everything `_lead_rates` computes and
+   `record` high-waters -- `company_rate`, `link_rate` and `location_rate`.
+   `BLANK_SIGNALS` is the strict SUBSET `_blank_reason` classifies on, and
+   it is company and link only. `location_rate` exists because location
+   was previously measured nowhere at all, which is how reed served ~20
+   rows a run with location on none of them while every check stayed green
+   -- the vocabulary was company and link, and reed kept both. It is kept
+   OUT of the classifying set because `blank` sits in `BREAKER_REASONS`
+   and withholds every lead the source produced: that is the right price
+   for a company collapse (incident 1's harm was ~185 blank-companied
+   notes burned into `seen.db`, which has no removal path) and not
+   obviously right for a location one, where a lead that kept its title,
+   company and link is still worth having. Promoting it is a real option
+   and needs its own measurement against the fleet's healthy windows, the
+   same evidence the row floor and the 2-run streak were each chosen on.
+
+   THE HIGH-WATER FLOOR HAS A BLIND SPOT, AND IT IS REPORTED RATHER THAN
+   CLOSED. Skipping any signal whose high-water never cleared 0.8 is right
+   for a board that genuinely does not publish a field (weworkremotely's
+   extractor hardcodes an empty company) and silently wrong for one that
+   was ALREADY broken when its first run was recorded: the high-water only
+   ever climbs, so such a source never establishes a bar to fall from and
+   is exempt for good. Measured 2026-08-27, reed's company high-water was
+   0.1, taken from a run whose extractor was already reading the wrong
+   elements -- the one check that would have reported the collapse was, by
+   construction, switched off for exactly the source that needed it. Every
+   source is in this state after the health file is first created or lost.
+   It is NOT fixed by lowering the floor or adding an absolute one: `blank`
+   bins a source's whole run, so a board that legitimately lacks a field
+   would be binned daily, and nothing local can tell that case from a
+   stopped selector. `HealthStore.unguarded_signals` names the exemption
+   instead and `ingest list-sources --health` prints it -- the rates per
+   source, plus `UNGUARDED(<signal>)` BY NAME, shown for ENABLED sources
+   only (nothing runs for a disabled one, so no guard can be blind). A
+   human rules on which case a given source is, and records the benign
+   ruling with the source's own `unpublished_fields`, which silences the
+   flag for the named field only -- without it, the two boards that
+   hardcode an empty company light it on every invocation for ever, and a
+   flag permanently lit on known-benign rows is how a report teaches its
+   reader to skip the column.
+
+   A source whose NEWEST run recorded no rate is reported `UNMEASURED`
+   rather than carrying a rate with no flag: below `_RATE_ROW_FLOOR`,
+   `_lead_rates` withholds every rate key, so `prior_rate` is `None` and
+   `_blank_reason` cannot fire at all -- the source genuinely is not
+   guarded, whatever its high-water says. The rates themselves come from
+   `HealthStore.latest_rates`, which walks BACK to the last run that
+   carried any and returns how many runs back that was; the CLI prints
+   that age, because a rate up to 30 runs old rendered as this run's
+   measurement is the same reassuring-stale-100% failure the whole report
+   exists to remove. Note the distinction the code actually draws is "no
+   rate in the retained 30-run window", which is not the same as "never
+   measured" -- an old measurement can age out.
+
    `should_retire` (three consecutive `_is_dead` runs) and `_RECOVERABLE`
    (`auth`, `blocked`, `unreachable` -- reasons an OPERATOR ACTION brings
    back, so they defer retirement indefinitely) predate #156 and are

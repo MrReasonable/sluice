@@ -25,8 +25,33 @@ Scan job boards into the lead store.
 ### `job-sluice ingest list-sources [--health]`
 
 Lists every registered source, sorted by id, one per line: `<id> <kind> enabled|disabled`.
-With `--health`, appends the baseline count and ` RETIRE` if the source is flagged for
-auto-retirement. Fully offline. Exit 0 always.
+Fully offline. Exit 0 always.
+
+With `--health` the line grows:
+
+```text
+<id> <kind> enabled|disabled  baseline=<N>[ company=<P>%][ link=<P>%][ location=<P>%]
+    [ (<A> runs ago)][ UNMEASURED | UNGUARDED(<signal>,...)][ RETIRE]
+```
+
+- **`baseline=<N>`** — median row count over the last 7 runs.
+- **`company=` / `link=` / `location=`** — completeness of that field across the run's parsed
+  leads. A count alone is what a rotted extractor keeps: a board can serve a healthy-looking
+  20 rows a run with the location read off none of them, which is what these columns exist to
+  make visible. Omitted entirely when the run produced too few leads to measure (below 8),
+  because "no rate measured" and "a rate of 0%" are different facts.
+- **`(<A> runs ago)`** — the rates are not from the most recent run. They can be up to 30 runs
+  old, so an undated percentage would let a stale 100% read as a current healthy measurement.
+- **`UNMEASURED`** — the newest run recorded no rate at all, so the `blank` drift check cannot
+  fire for this source right now whatever its history says.
+- **`UNGUARDED(<signal>)`** — that signal's best-ever rate never cleared 0.8, so `blank` can
+  never fire for it however far the source falls. This is legitimate for a board that does not
+  publish the field and a real blind spot for one that was already broken when first recorded,
+  and nothing local can tell the two apart — hence a flag for a human rather than a verdict. A
+  source can record the benign ruling with `unpublished_fields`, which stops the flag for the
+  named field only. Shown for enabled sources only: nothing runs for a disabled one, so no
+  guard can be blind.
+- **`RETIRE`** — the source is flagged for auto-retirement.
 
 ### `job-sluice ingest run [--source ID ...] [--all] [--sink {vault,json}] [--dry-run]`
 
