@@ -144,9 +144,20 @@ def section_spans(cv_text):
         # blank under the header put the skills lines in NO region while `parse_cv` still
         # returned them and the template rendered them: containment-checked by nothing.
         #
-        # A non-blank non-bullet line DOES end it, and is safe precisely because
-        # `parse_cv` raises `CvParseError` on that same line -- gate and parser fail
-        # closed together.
+        # A non-blank non-bullet line DOES end it. That is NOT safe today because the
+        # parser fails at the SAME line -- it doesn't. `parse_cv` does not yet model a
+        # SKILLS section at all, so it raises `CvParseError: unmodelled section header
+        # 'SKILLS'` at the HEADER, whatever follows the run: measured, a terminator line
+        # and a lone trailing blank both hit that identical refusal. The property this
+        # run relies on holds today for a STRONGER reason than a line-for-line match --
+        # any SKILLS content whatsoever rejects the whole document -- and that reason is
+        # an accident of the parser not yet modelling the section, not something this
+        # branch establishes. Task 7 (#168) teaches the parser to accept SKILLS as a
+        # trailing section; from THAT point on it is the trailing-section reader's own
+        # refusal of a non-marker line -- the same mechanism CERTIFICATES/EDUCATION
+        # already use -- that makes gate and parser stop at the same line, and Task 7
+        # owns the test that pins it. Until then, do not read this comment as claiming a
+        # correspondence that does not exist yet.
         if in_skills and line.strip() and not is_bullet:
             in_skills = False
         if in_skills:
