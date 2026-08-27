@@ -6,6 +6,7 @@ These are cheap string assertions on purpose -- the extractors themselves need a
 live DOM, so what is pinned here is the part that silently rotted: which host we
 ask, which selector we ask for, and whether a board is switched on at all.
 """
+import re
 from urllib.parse import urlparse
 
 import pytest
@@ -62,12 +63,46 @@ def test_escape_city_url_follows_the_redirect_the_retirement_note_recorded():
         assert not parts.path.startswith("/opportunities")
 
 
-@pytest.mark.parametrize("source_id", ["escape_city", "bwork", "theorg"])
+def _disabled_source_ids():
+    """Every registered source flagged disabled, DERIVED from the registry.
+
+    This roster used to be hand-listed as ["escape_city", "bwork", "theorg"], and the
+    omission it produced is the exact failure this file is about: `hired` was the one
+    2026-07-07 retirement never independently re-probed, and being absent from the list
+    meant the guard written to catch that could not see it. A hand-list is wrong within
+    one revision -- derive it, so a source disabled tomorrow is covered the same day.
+    """
+    return sorted(s.id for s in sources.all_sources() if not getattr(s, "enabled", True))
+
+
+# The sweep that established the re-probe discipline. A retirement dated on or after this
+# has been checked against the live world at least once; anything older is inherited belief.
+# A FLOOR rather than the single pinned string this used to compare against, so a later
+# re-probe can supersede an earlier one without the test having to be edited to match.
+_REPROBE_FLOOR = (2026, 8, 25)
+_ISO_DATE = re.compile(r"\b(20\d{2})-(\d{2})-(\d{2})\b")
+
+
+def test_the_disabled_roster_is_not_vacuous():
+    # `@parametrize` over an empty list runs ZERO tests and reports green, so a registry
+    # that failed to load would silently certify nothing -- the "a sweep that discovers
+    # nothing passes" shape. Assert the SCOPE before trusting any verdict over it.
+    assert sources.all_sources(), "registry empty -- the re-probe guard would certify nothing"
+    assert _disabled_source_ids(), \
+        "no disabled sources found -- the re-probe guard has nothing to check"
+
+
+@pytest.mark.parametrize("source_id", _disabled_source_ids())
 def test_disabled_boards_say_why_next_to_the_flag(source_id):
     """A retirement is a claim about the world and goes stale. Each must carry its reason
     in the module docstring so the next person can re-probe it rather than inherit it."""
     src = _src(source_id)
     assert src.enabled is False
     mod = __import__(f"sluice.ingest.sources.{source_id}", fromlist=["*"])
-    assert mod.__doc__ and "2026-08-25" in mod.__doc__, \
-        f"{source_id} retirement has not been re-probed"
+    dates = [tuple(int(part) for part in found)
+             for found in _ISO_DATE.findall(mod.__doc__ or "")]
+    assert any(d >= _REPROBE_FLOOR for d in dates), (
+        f"{source_id} retirement has not been re-probed: its docstring carries no date on "
+        f"or after {'-'.join(f'{p:02d}' for p in _REPROBE_FLOOR)}, so the reason there is "
+        f"inherited rather than checked"
+    )

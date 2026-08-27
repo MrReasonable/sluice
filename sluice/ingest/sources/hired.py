@@ -1,5 +1,19 @@
-"""Hired (hired.com). RETIRED 2026-07-07: hired.com now 302-redirects to lhh.com
-(LHH acquisition) - the standalone job board is defunct. Registered disabled.
+"""Hired (hired.com). RETIRED 2026-07-07, retirement CONFIRMED 2026-08-27.
+
+The original note recorded a 302 to lhh.com and inferred the board was defunct -- the
+same path-shaped evidence that turned out to be wrong for three of the five boards
+retired that day, so it was worth re-probing rather than inheriting.
+
+Re-probed 2026-08-27 on the DOMAIN, not a search path, which is the distinction #207 is
+about: `hired.com`, `www.hired.com` and `hired.com/jobs` ALL 302 to
+`www.lhh.com/en-us/about-us/our-story` -- an acquirer's corporate About page, not a
+listing surface and not a moved board. The domain still resolves, so this is not bwork's
+NXDOMAIN case; it is a site that has been wholly redirected away. There is no path left
+to fix, which is what separates it from jobserve and hackajob.
+
+LHH runs its own job search, but that would be a NEW source against a different board
+with a different extractor, not a revival of this one -- and adding it is a decision
+about whether that board is worth scraping, not a drift fix. Registered disabled.
 Declarative extractor JS + an example search (override via config).
 """
 from sluice.ingest.base import BrowserListSource
