@@ -571,7 +571,13 @@ git commit -m "feat(cv): carry per-entry skills and source tokens on BundleSourc
 **Files:**
 - Modify: `sluice/cv/validate.py` (`section_spans`)
 - Modify: `sluice/cv/engine.py` (STYLE-tier call site)
-- Modify: `tests/test_cv_validate.py` (`_validate_line_sets_before_the_extraction`)
+- Modify: `tests/test_cv_validate.py` (`_validate_line_sets_before_the_extraction`, plus four
+  mechanical 2-tuple unpacks)
+- Modify: `tests/test_cv_engine.py` (three mechanical unpacks, plus the STYLE-tier comparison
+  at ~2420, which needs a deliberate rework rather than a re-unpack)
+- Modify: `tests/test_cv_parse.py` — **required, and an earlier revision omitted it**: the named
+  marker constants break its AST guard, which must resolve the WORK tuple BY NAME. Step 4's own
+  text says so; the file list did not.
 - Test: `tests/test_cv_skills_containment.py`
 
 **Interfaces:**
@@ -635,6 +641,11 @@ def test_a_blank_line_inside_the_run_does_not_eject_the_remaining_skills():
     assert not any("Example Framework" in t for _n, t in work)
 
 
+Build the after-`CERTIFICATES` fixture as a STANDALONE literal, not by appending a `tail` to
+the shared `_CV` base — that base already carries its own `SKILLS` section, so a `tail` adding a
+second one duplicates the entries and the assertion below compares against the wrong list.
+
+```python
 def test_a_skills_section_after_certificates_is_still_collected():
     """The fourth case, and the only one that can observe the no-region bypass: the three
     others all keep `in_work` true. `CERTIFICATES` clears it, so an earlier revision put
@@ -693,7 +704,13 @@ In `section_spans`, add `skills` to the returns and track the region as a run th
         if in_skills and line.strip() and not is_bullet:
             in_skills = False
         if in_skills:
-            skills.append((i, line))
+            # Only a BULLET is materialised. The blank lines that keep the run alive are
+            # not themselves skills, and appending them was a real bug in an earlier
+            # revision of this plan -- it broke the blank-tolerance test two steps below,
+            # which is the one case this whole mechanism exists for. `work` already drops
+            # every non-bullet line inside WORK for the same reason.
+            if is_bullet:
+                skills.append((i, line))
             continue                       # a skills line is NOT also a work bullet
         if in_profile:
             profile.append((i, line))
