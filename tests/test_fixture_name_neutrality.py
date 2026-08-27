@@ -1541,6 +1541,17 @@ _REVIEWED_SKILL_VALUES = frozenset({
     # SKILLS region, be a genuinely SOURCED skill -- one value doing both jobs, neither
     # of which the other three reviewed values can stand in for.
     "Example Synergy",
+    # Invented for #168 Task 10 (tests/test_doctor.py's skills-reconciliation fixtures
+    # and tests/test_evidence_cli.py's `experience list` Skills: surfacing test): a
+    # name deliberately absent from any Skills Inventory fixture in the same test, so
+    # the "entry Skills: absent from the inventory" NOTICE row has something real to
+    # fire on.
+    "Example Ghost",
+    # Invented for the SAME Task 10 fixtures: the matching half, paired with a Skills
+    # Inventory entry titled "example-widget" (`evidence_slug("Example Widget")`) so
+    # the "inventory skill evidenced by no entry" row has a genuine non-firing case to
+    # contrast against.
+    "Example Widget",
 })
 
 # `_REVIEWED_FIXTURE_IDENTITIES` is about LEAD identities -- employers a fixture names.

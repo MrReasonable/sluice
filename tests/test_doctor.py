@@ -9,8 +9,8 @@ import pytest
 from sluice.core.doctor import (
     DEAD, DEGRADED, NOTICE, OK, BackendCheck, BackendTarget, ComponentCheck,
     DoctorReport, RoleUse, classify, classify_dossier_cache, classify_gate,
-    classify_negatives_vs_skills, classify_renderer, classify_store,
-    classify_track_google, enumerate_targets,
+    classify_negatives_vs_skills, classify_renderer, classify_skills_reconciliation,
+    classify_store, classify_track_google, enumerate_targets,
     format_roles, list_typed_fields,
 )
 
@@ -2008,3 +2008,168 @@ def test_the_negatives_cross_check_runs_through_the_real_wiring(tmp_path, monkey
     # the NOTICE with the genuinely DEAD rows a bare tmp vault produces (no baseline CV, no
     # Candidate Profile), which is a different claim and one that would fail for the right
     # reasons.
+
+
+# ── #168 Task 10: an experience entry's `Skills:` claims vs the Skills Inventory ──
+def _exp(skills: str) -> dict:
+    """A minimal experience entry dict, the shape `Vault._evidence_entries` produces --
+    only `fields["Skills"]` matters to the classifier under test.
+
+    Built via subscript assignment rather than a single dict literal: the fixture-name
+    neutrality sweep (tests/test_fixture_name_neutrality.py) pattern-matches the
+    literal key text for "Skills" followed by a colon and a value anywhere in
+    `tests/`, including inside a dict literal's own source -- and a bareword
+    PARAMETER NAME sitting in that value position read to that regex exactly like an
+    unreviewed skill string (measured). The values that matter for review are the
+    ones actually passed to this helper at each call site, reviewed on
+    `_REVIEWED_SKILL_VALUES` there."""
+    entry = {"fields": {}}
+    entry["fields"]["Skills"] = skills
+    return entry
+
+
+def _skill(title: str) -> dict:
+    """A minimal Skills Inventory entry dict -- only `title` matters."""
+    return {"title": title}
+
+
+def test_a_claimed_skill_matching_the_inventory_by_slug_reports_nothing():
+    """The POSITIVE control every negative test below leans on: a real matching pair,
+    proving the row CAN fire before any test asserts it does not. `title` is the
+    STORED FILENAME (`evidence_slug(name)`, lowercase-dashed), never the raw typed
+    text -- "Example Widget" reduces to "example-widget"."""
+    assert classify_skills_reconciliation(
+        [_exp("Example Widget")], [_skill("example-widget")]) == []
+
+
+def test_an_inventory_skill_named_by_no_entry_is_reported():
+    rows = classify_skills_reconciliation([], [_skill("example-widget")])
+    assert len(rows) == 1
+    assert rows[0].state == NOTICE
+    assert rows[0].subject == "Skills Inventory"
+    assert "1 inventory skill" in rows[0].detail
+    assert "job-sluice experience list" in rows[0].detail
+
+
+def test_an_entry_skill_absent_from_the_inventory_is_reported():
+    rows = classify_skills_reconciliation([_exp("Example Ghost")], [])
+    assert len(rows) == 1
+    assert rows[0].state == NOTICE
+    assert rows[0].subject == "Experience Library"
+    assert "1 entry Skills:" in rows[0].detail
+    assert "job-sluice skills list" in rows[0].detail
+
+
+def test_both_rows_can_fire_together_on_a_wholly_disjoint_pair():
+    """Distinct MUTANT-killing shape from the two single-row tests above: a defect that
+    always returns at most one row (e.g. an early `return` after the first check) is
+    invisible to either of them alone but caught here."""
+    rows = classify_skills_reconciliation(
+        [_exp("Example Ghost")], [_skill("example-orphan")])
+    assert len(rows) == 2
+    subjects = {r.subject for r in rows}
+    assert subjects == {"Skills Inventory", "Experience Library"}
+
+
+def test_no_experience_and_no_inventory_abstains():
+    assert classify_skills_reconciliation([], []) == []
+
+
+def test_a_blank_skills_value_never_counts_as_a_claim():
+    """SC5 (cv/bundle.py:_skill_items): blank is absent. A blank `Skills:` value must
+    contribute NOTHING to `claimed` -- proven two ways in one test. Against an empty
+    inventory, no row fires at all (a phantom "" name would otherwise be reported as
+    an unmatched claim, which this first assertion catches). Against a non-empty
+    inventory, only the orphan row fires -- a phantom "" claim would otherwise also
+    SATISFY the orphan check by coincidence for any title that happens to be falsy,
+    so the second assertion pins the count explicitly rather than merely checking
+    the row is present."""
+    assert classify_skills_reconciliation([_exp("")], []) == []
+    rows = classify_skills_reconciliation([_exp("")], [_skill("example-widget")])
+    assert len(rows) == 1
+    assert rows[0].subject == "Skills Inventory"
+
+
+def test_duplicate_claims_across_entries_count_once():
+    """`claimed` is built as a SET across every experience entry -- two entries both
+    naming "Example Ghost" (absent from the inventory) must report ONE unmatched name,
+    not two. A defect that counts occurrences instead of distinct names would report a
+    count of 2 in that row's detail text, which this test's exact assertion catches."""
+    rows = classify_skills_reconciliation(
+        [_exp("Example Ghost"), _exp("Example Ghost, Example Widget")],
+        [_skill("example-widget")])
+    assert len(rows) == 1
+    assert "1 entry Skills:" in rows[0].detail
+
+
+def test_a_name_that_cannot_reduce_falls_back_to_verbatim_and_can_still_match():
+    """An all-punctuation `Skills:` value makes `evidence_slug` raise -- `_keys` must
+    fall back to the verbatim string alone rather than propagating the exception
+    (doctor never refuses), and a hand-placed inventory entry whose own title was
+    never reduced (evidence_slug is CREATE-time only, per its own docstring) can still
+    match it verbatim."""
+    assert classify_skills_reconciliation([_exp("###")], [_skill("###")]) == []
+
+
+def test_a_name_that_cannot_reduce_and_does_not_match_verbatim_is_still_reported():
+    rows = classify_skills_reconciliation([_exp("###")], [_skill("something-else")])
+    subjects = {r.subject for r in rows}
+    assert "Experience Library" in subjects
+    assert "Skills Inventory" in subjects
+
+
+def test_the_report_names_no_skill_string():
+    """Same discipline as test_the_report_names_no_configured_value above: a
+    DoctorReport reaches MCP clients whole, and this module's own "no doctor row
+    carries user-authored text" rule means neither the raw typed name nor its reduced
+    slug form may appear in either row's detail or subject."""
+    rows = classify_skills_reconciliation(
+        [_exp("ExampleZephyrOnly")], [_skill("example-orphan-only")])
+    assert len(rows) == 2
+    for r in rows:
+        assert "ExampleZephyrOnly" not in r.detail
+        assert "examplezephyronly" not in r.detail.lower()
+        assert "example-orphan-only" not in r.detail
+        assert "examplezephyronly" not in r.subject.lower()
+        assert "example-orphan-only" not in r.subject.lower()
+
+
+def test_the_rows_never_affect_the_exit_code():
+    """NOTICE, never DEGRADED -- same posture classify_negatives_vs_skills's identical
+    test pins."""
+    rows = classify_skills_reconciliation([_exp("Example Ghost")], [])
+    assert DoctorReport(checks=[], components=rows).exit_code(strict=True) == 0
+
+
+def test_the_skills_reconciliation_runs_through_the_real_wiring(tmp_path, monkeypatch):
+    """Every other test of this check calls the pure classifier directly, so the
+    smallest DELETION in production code -- removing the call site in `Sluice.doctor`
+    -- leaves them all green. This is the one that reddens. Follows
+    test_the_negatives_cross_check_runs_through_the_real_wiring's idiom exactly,
+    including restoring the REAL store the file's autouse `_harmless_components`
+    fixture replaces with a bare sentinel.
+    """
+    import os
+
+    from sluice.core.config import Config
+
+    vault = tmp_path / "vault"
+    exp = vault / "Job Applications" / "Experience Library"
+    sk = vault / "Job Applications" / "Skills Inventory"
+    os.makedirs(exp, exist_ok=True)
+    os.makedirs(sk, exist_ok=True)
+    (exp / "alpha.md").write_text(
+        "---\nCompany: Example Alpha\nCategory: \nBest For: \nMetrics: \n"
+        "Skills: Example Ghost\nverified: 2026-08-25\n---\nBody.\n", encoding="utf-8")
+    (sk / "Example Orphan.md").write_text(
+        "---\nProficiency: 8 years\nDomain: platform\nEvidence: e\n"
+        "Signal Value: depth\nverified: 2026-08-25\n---\nBody.\n", encoding="utf-8")
+    monkeypatch.setenv("VAULT_DIR", str(vault))
+    monkeypatch.setattr(Sluice, "store", _REAL_STORE)
+
+    report = Sluice(Config(vault_dir=str(vault))).doctor(offline=True)
+    subjects = {c.subject for c in report.components
+               if c.subject in ("Skills Inventory", "Experience Library")}
+    assert subjects == {"Skills Inventory", "Experience Library"}, (
+        "Sluice.doctor did not run the skills reconciliation -- the pure classifier's "
+        f"own tests cannot see this (components: {[c.subject for c in report.components]})")

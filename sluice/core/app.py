@@ -2196,6 +2196,27 @@ class Sluice:
                     components.extend(_doctor.classify_negatives_vs_skills(
                         cv_cfg.negatives, _skills))
 
+            # #168 Task 10. A SEPARATE cross-check from the negatives one immediately
+            # above -- it needs no cv_cfg at all (the reconciliation is a property of
+            # the two evidence corpora alone, not of anything cv-configured), so it
+            # runs whether or not the `cv:` block loaded, unlike the `if cv_cfg is not
+            # None:` guard above. Both reads sit in ONE try, deliberately unlike that
+            # block's single-corpus read: this check needs BOTH corpora to say
+            # anything at all (either read failing leaves nothing to reconcile), so
+            # splitting them into two try blocks would only add a second near-
+            # identical except arm for no behavioural gain. An unreadable corpus is
+            # already reported DEAD by classify_store above WHEN the store implements
+            # the optional preflight hook, and WARNED here when it does not -- the
+            # same shape the negatives cross-check's own except uses.
+            try:
+                _experience = store.read_evidence("experience", verified_only=True)
+                _inventory = store.read_evidence("skills", verified_only=True)
+            except Exception as e:  # noqa: BLE001 -- see the comment above.
+                _log.warning("evidence read for the skills reconciliation failed: %s", e)
+            else:
+                components.extend(_doctor.classify_skills_reconciliation(
+                    _experience, _inventory))
+
         # Track/Google: probed through track.google_client's own helper rather
         # than importing the google libs here a second time -- that module is
         # the ONE sanctioned import site (see CLAUDE.md's stdlib-only rule for
