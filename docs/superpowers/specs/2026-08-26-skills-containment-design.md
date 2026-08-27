@@ -83,7 +83,7 @@ Company: Example Alpha
 Category: platform
 Best For: event-driven work
 Metrics: 40% latency reduction
-Skills: ExampleQL, WidgetFramework
+Skills: Example Query, Example Framework
 Verified: 2026-08-01
 ```
 
@@ -111,17 +111,28 @@ note does not state its own roles. Section 7 makes that drift visible.
 - **#165's D3 survives**: a Skills Inventory line still supports nothing on its own. The Inventory
   keeps exactly its existing job — ordering and framing via `rank()` on the `Domain`-mapped
   `best_for` — and licenses nothing in this design.
-- **#165's D11 does NOT survive untouched, and the earlier revisions were wrong to claim it did.**
-  `_entry_skills_line` sits in `_source_section`, which `render_bundle` returns and `cv/engine.py`
-  hands to `run_audit`. The auditor's source set genuinely widens, by skill names attached to entries
-  it already sees. `test_the_rendered_prompt_has_not_drifted`'s docstring pins D11 as **byte-identity
-  with the pre-#165 auditor text**, and this design breaks that. Three frozen tests go red, not one:
-  that test, `test_the_composer_prompt_has_not_drifted`, and the allowlist test in section 12.
+- **#165's D11 survives, and `_entry_skills_line` is rendered by `render_composer_bundle` ONLY.**
+  Two earlier revisions put it in `_source_section`, which `render_bundle` returns and
+  `cv/engine.py` hands to `run_audit` — widening the ADVISORY auditor's corpus. They justified that
+  as making an emitted skill supportable rather than `unsupported`.
 
-  The widening is *intended* and is what makes an emitted skill supportable by the auditor rather
-  than `unsupported` — the architect traced `Skills:` → `_entry_skills_line` → `_source_section` →
-  `render_bundle` → `run_audit` end to end and confirmed it. But it is a change to a pinned property,
-  not a preservation of it, and the plan states it as such.
+  **That justification does not survive review.** `render_bundle` is the corpus for the WHOLE CV, not
+  just the gated `SKILLS` section, so the widening also flips **WORK-bullet** claims to `supported` —
+  including precisely the cases row 1 cannot see: an un-annotated cited entry (SC5's per-entry
+  abstain, the guaranteed day-one state) and a case-mismatched mention (SC9). A misattributed skill in
+  a bullet would then be caught by neither the hard gate nor the #60 sign-off hold, and section 14
+  listed those two risks separately without ever noting that the layer removed by the first was the
+  only cover for the second.
+
+  Nothing the design needs is lost by keeping the auditor's corpus unchanged: row 2's route into the
+  gate is `BundleSources.skills` / `.source_tokens`, derived **structurally** (3.3), so the gate never
+  depended on the auditor seeing the text. `render_composer_bundle` already exists for exactly this
+  split, and its own docstring states the harm the widening would cause.
+
+  Consequence for section 12: **two** frozen tests go red, not three —
+  `test_the_composer_prompt_has_not_drifted` and the allowlist test.
+  `test_the_rendered_prompt_has_not_drifted` stays green, and its docstring's D11 byte-identity pin
+  stays true.
 
 **Wording correction.** `cited_by_gate` is a **per-kind** flag, not per-field. The gate licenses
 content the composer emitted from a citable kind; `Skills:` is a field on such a kind. The flag is
@@ -219,7 +230,11 @@ All three conditions read **one derived value** so they cannot disagree — revi
 ### 3.3 Bundle plumbing
 
 `_entry_skills_line(entry)` in `cv/bundle.py`, sibling to `_entry_block` and `_baseline_block`,
-rendered by `_source_section` after each entry's block so both audiences see it.
+rendered by **`render_composer_bundle` only**, after each entry's block.
+
+**Not `_source_section`.** That helper feeds BOTH renderers, so putting skills there widens the
+ADVISORY auditor's corpus for the whole CV — see 2.1. The composer needs the text; the gate does
+not (it reads the structured members below); the auditor must not have it.
 
 Deliberately **not** folded into `_entry_block`: that function's contract is that every line it
 returns is a numeric SOURCE harvested by `bundle_sources`. The new function carries the inverted
@@ -228,9 +243,21 @@ a numeric source**.
 
 `BundleSources` gains **two** members, and the second is what round 3 found missing:
 
-- `skills: dict[str, frozenset[str]]`, keyed by entry id like `nums` — **row 1's** per-entry vocabulary.
-- `source_tokens: frozenset[str]` — **row 2's** bundle-wide vocabulary, derived in `bundle_sources`
+- `entries: dict[str, EntrySources]`, where `EntrySources` is a NamedTuple of
+  `(nums: frozenset[str], skills: frozenset[str])` — **row 1's** per-entry vocabulary, carried
+  beside the numeric one in ONE id-keyed structure. Two separate id-keyed dicts could disagree about
+  what an id is, which is what the `ids` property's docstring argues against; collapsing them makes
+  key equality structural for hand-built values too, so the alternative (a `ValueError` in
+  `validate()`) is unnecessary — and that guard would have *narrowed the ways in* rather than removed
+  the capability, the distinction #174's own docstring draws.
+- `source_tokens: tuple[tuple[str, ...], ...]` — **row 2's** bundle-wide vocabulary as one
+  ordered token sequence per source block, derived in `bundle_sources`
   from `_baseline_block`, each `_entry_block`'s body, and each `_entry_skills_line`.
+
+  **Its NESTING needs a shape guard.** A flat `tuple[str, ...]` is structurally valid Python and
+  iterates as *characters* inside row 2's matcher, so every emitted skill would read UNSOURCED and
+  every lead would go `skipped-gate` — silently, on a value that looks right. Reject a member that is
+  not a tuple/list of `str` at construction.
 
 The second is not optional. `nums` and `baseline` are **digit** sets (`re.findall(r"\d+", …)`), and
 `cv/engine.py` hands `validate` the `BundleSources` and nothing else — so SC4's widened vocabulary,
@@ -268,7 +295,7 @@ sharpest finding.** An earlier revision removed a span only "when a skill mentio
 i.e. when row 1 passed it. But row 1 is case-sensitive (SC9) and abstains when a cited entry is
 un-annotated (SC5), and section 3.3 deliberately keeps skill digits out of every numeric pool. So each
 row-1 *under*-fire became a hard `INVENTED METRIC`: `- Migrated to s3 [A1]` (wrong case), or
-`… S3 [A1][B1]` where B declares no `Skills:`. Retry, then `skipped-gate`, on a skill the user really
+`… Example Widget3 [A1][B1]` where B declares no `Skills:`. Retry, then `skipped-gate`, on a skill the user really
 declared — this section's own opening harm, reintroduced by the fix for it.
 
 The rule: **span removal matches against the cited entries' `Skills:` case-INSENSITIVELY, and runs in
@@ -276,9 +303,12 @@ row 1's abstain arm too.** It is a numeric-gate concern, not an attribution verd
 case-sensitive rule for the separate question of whether a mention is *misattributed*.
 
 **The subtractive-licence constraint.** Span removal makes `Skills:` the first field that *subtracts*
-from the hard numeric gate. A skill token must **begin with a letter**; a wholly-numeric or
-digit-leading token (`92`, `92x`, `120ms`) licenses nothing and is refused loudly at bundle
-construction. Round 2 flagged that the earlier "wholly-numeric" rule missed `92x`, `120ms` and `p99`.
+from the hard numeric gate. **Every TOKEN of a skill item must begin with a letter**, and the
+per-token part is the whole guard: an item-level check accepts `Result 92` — one
+comma-separated item, beginning with a letter — and removal then blanks `92` from every bullet
+citing that entry, which is the exact path the rule exists to close. Per token it refuses
+`Result 92`, `92x`, `120ms` and a bare `92` alike, while accepting `Example Widget3`, where the
+digit sits inside a letter-led token. Refused loudly at bundle construction. Round 2 flagged that the earlier "wholly-numeric" rule missed `92x`, `120ms` and `p99`.
 
 **Accepted residual, stated plainly rather than mitigated:** a letter-leading token that is *also* a
 metric shorthand — `p99` — still licenses removal of its digits for bullets citing that entry. It
@@ -316,12 +346,20 @@ The placement argument — this position fails **loudly** if a later edit drops 
 
 **Marker equality is part of the grammar, and round 2 found it was not.** Three reviewers
 independently found the same bypass: an earlier revision said SKILLS bullets use `_TRAILING_MARKERS`
-(which includes `–` and `—`) while `section_spans` collects on `("-", "•", "*")`. A line `– ExampleQL`
+(which includes `–` and `—`) while `section_spans` collects on `("-", "•", "*")`. A line `– Example Query`
 then parses into `CvDocument.skills`, renders into the PDF, and is **never containment-checked**.
 
 **The `SKILLS` region in `section_spans` collects on the SAME set `cv/parse.py` accepts for `SKILLS`,
 and a guard asserts that equality.** `_BULLET_MARKERS` — the WORK set, which must stay exactly equal
 to the gate's citation-checked set — is untouched.
+
+**The gate's set must be a SUPERSET, not an equal.** `cv/parse.py` is the `template` renderer's
+parser; `script` implements no `precheck` and never parses at all. Asserting equality pins a
+renderer-INDEPENDENT gate to one renderer's grammar, so a later narrowing of `_TRAILING_MARKERS`
+(template's own business) would silently narrow the gate for every renderer with the assertion still
+green. Assert `set(_SKILLS_MARKERS) >= set(parse._TRAILING_MARKERS)` and keep `_SKILLS_MARKERS` as
+the gate's own deliberately-wide set; the reverse direction is covered by the SKILLS implication
+sweep.
 
 **Both marker tuples become NAMED module constants** in `cv/validate.py` —
 `_WORK_BULLET_MARKERS` and `_SKILLS_MARKERS` — and both `startswith` calls take the name. This is
@@ -378,11 +416,35 @@ that does not clear `in_work`**. That satisfies both cases without the generalis
 docstring forbids — the region ends at the first non-bullet line, so an unmodelled header after
 `SKILLS` returns to the WORK region it never left, and one after `CERTIFICATES` is untouched.
 
-**Three non-negotiable tests**: the two cases above, plus bullets appearing after `SKILLS` with no
-intervening header, which is the case a contiguous-run implementation can get wrong.
+**A blank line must NOT end the run.** Three reviewers measured the same defect independently:
+`cv/parse.py` skips blank runs in three places and its own comment calls that spacing "the LIKELY
+case, not an exotic one", so a run ending at the first *non-bullet* line diverges from the section
+the parser actually reads. Two harms, both measured against the real `parse_cv`:
 
-`section_spans` returns a 2-tuple consumed at **two** call sites — `validate`'s loop and
-`cv/engine.py`'s STYLE scoping. Skills lines are **excluded from the STYLE tier**: a slop complaint
+- A blank under the header, with `SKILLS` after `EDUCATION`: the skills region is empty AND the work
+  region is empty, while `parse_cv` still returns both lines as skills entries and the template
+  renders them. **Checked by nothing** — which falsifies 3.2's "row 2 always runs on an emitted
+  section … it fails closed".
+- A blank *inside* the run drops the following bullets back into WORK, reported `UNCITED BULLET` —
+  and 4.4 forbids per-skill `[id]`s, so the retry's only *literal* remedy is the one this design
+  rules out, while its cheapest compliance (add `[AL1]`) is work-clean and still renders as a skill.
+
+The rule: **a blank line does not clear `in_skills`; a non-blank non-bullet line does** — the latter
+is safe precisely because `parse_cv` raises `CvParseError` on that same line, so gate and parser fail
+closed together. In code, `if in_skills and line.strip() and not is_bullet`.
+
+**SC7's guard widens with it.** Marker-set equality compares tuples and cannot see this class at all.
+The property to assert is a grammar one: *every entry line in any text `parse_cv` accepts as a SKILLS
+section is collected into `section_spans`' skills region*, swept over blank-line placements (under
+the header, between entries, trailing) as well as markers.
+
+**Four non-negotiable tests**, not three: the two preservation cases above, bullets after `SKILLS`
+with no intervening header, and the after-`CERTIFICATES` no-region case — the first three all keep
+`in_work` true and cannot observe it.
+
+`section_spans` returns a **3-tuple** (`profile`, `work`, `skills`) consumed at **two production**
+call sites — `validate`'s loop and `cv/engine.py`'s STYLE scoping — **plus nine in `tests/`, across
+`tests/test_cv_validate.py` and `tests/test_cv_engine.py`**, all of which unpack two values today. Skills lines are **excluded from the STYLE tier**: a slop complaint
 about a bare skill name is answerable only by renaming the skill, the same reasoning that already
 scopes that tier away from employer and certificate lines.
 
@@ -393,9 +455,10 @@ No skill carries an `[id]`; per-phrase citations invite a fake-citation launder.
 - `CvDocument` gains `skills: list[str]`.
 - `_TRAILING_SECTIONS` gains `SKILLS`.
 - `_BULLET_MARKERS` is **not** touched.
-- The repeated-trailing-header refusal extends to `SKILLS`, and its remedy text is **hardcoded**
-  ("Emit CERTIFICATES and EDUCATION at most once each"). Derive the list from `_TRAILING_SECTIONS`
-  rather than adding a third literal.
+- The repeated-trailing-header refusal extends to `SKILLS`, and **its remedy text names the
+  sections derived from `_TRAILING_SECTIONS`** — so a repeated `SKILLS` header is told about
+  `SKILLS`. The text is a hardcoded "Emit CERTIFICATES and EDUCATION at most once each" today;
+  deriving it is the contract, and adding a third literal is not.
 
 ---
 
@@ -544,9 +607,21 @@ Reproduced by execution against `origin/main` at `1c1d1715`, across two review r
   is uncited-clean today (4.3).
 - `composer_headings()` returns four headings from the `_RULES` constant, statically (6).
 - The morphology candidate set is not quiet (1.2).
-- Every consumer of `EvidenceKind.fields` copes with a fifth `experience` field unedited. The
-  enumeration's scope and spelling, so a later reader can re-run it rather than trust a number:
-  every `spec.fields` / `self.fields` read under `sluice/`, by grep. Those are:
+- Every consumer of `EvidenceKind.fields` copes with a fifth `experience` field unedited. Scope and
+  spelling, so a later reader can re-run it rather than trust a count:
+  `grep -rn '\.fields' sluice --include='*.py'`, discarding `dataclasses.fields(...)` (that is
+  `CandidateProfile`, unrelated). **Six** read sites — `cli.py`'s flag loop, `protocols.py`'s own
+  `__post_init__`, `core/vault.py` ×3 (`_render_evidence_note` ×2 and `_evidence_entries`),
+  `evidence/wizard.py`, `evidence/commands.py`. No `floor_map` entry is required because
+  `__post_init__` validates floor→field, not field→floor.
+
+  Two DOWNSTREAM `entry["fields"]` consumers that grep does not reach, and they matter because one
+  of them is where a user first sees the new key: `mcpserver.py` (passes the dict through whole) and
+  `cv/bundle.py`'s `_framing_lines` (the `skills` kind only). An earlier revision "corrected" an
+  over-count by dropping `mcpserver.py` entirely — right that it is not a `spec.fields` reader,
+  wrong to stop mentioning it.
+
+  For contrast, these read floor keys or counts and never `fields`:
   `rank`, `assign_codes`, `_entry_block`, `doctor` and `preflight` read floor keys or counts and never
   `fields`, which is why no `floor_map` entry is required. **Round 2 correction: `mcpserver.py` was
   over-counted in this list.**
@@ -598,9 +673,13 @@ Round 2 found three the earlier revision missed. None may be deleted; each needs
 argued change:
 
 1. `test_the_work_bullet_markers_are_exactly_what_the_gate_citation_checks` asserts
-   `len(gate_markers) == 1` over every literal-tuple `startswith()` in `cv/validate.py`. A SKILLS
-   region takes it to 2. The pin stops the AST equality test reading the wrong tuple, so it must be
-   widened knowingly.
+   `len(gate_markers) == 1` over every literal-tuple `startswith()` in `cv/validate.py`. Measured
+   with the guard's own AST comprehension: a SKILLS region takes it to **0**, not 2, because the
+   sweep admits only a literal `ast.Tuple` and 4.1 binds BOTH `startswith` arguments to names. A
+   worker widening the pin to `== 2` as an earlier revision instructed still fails; the half-applied
+   variant (naming only the SKILLS tuple) leaves exactly 1 literal and the assertion passes green
+   with SC7's equality never checked. The remedy is unchanged — recover two `ast.Assign` nodes by
+   target name and assert both names were found — but the stated diagnosis now matches it.
 2. `_validate_line_sets_before_the_extraction` — the shipped random sweep's alphabet **already
    contains `"SKILLS"`**, and the proposed helper diverges on **136/2000 rows** at the shipped seed.
    "Update the reference" is the assert-the-code-equals-itself hazard its own comment names.
@@ -636,10 +715,23 @@ Three shape requirements, the last of them measured off the existing collector's
   literal joined that way, so a collector reading only real newlines sweeps clean over exactly the
   fixtures that exist. Requires a shape-coverage test, not just a value test.
 
-**Each new fixture skill value joins `_REVIEWED_FIXTURE_IDENTITIES` as part of the same change.**
+**Each new fixture skill value joins `_REVIEWED_SKILL_VALUES` — its OWN roster — in the same
+change.** Not `_REVIEWED_FIXTURE_IDENTITIES`: that roster's docstring scopes it to "LEAD identities
+— employers a fixture names", and `_CV_IDENTITY_EXEMPT` exists by the owner's 2026-08-24 ruling
+precisely to keep a product-shaped non-employer value off it ("rostering it would make the roster
+mean something wider than it says"). Adding technology names by policy is what that carve-out was
+created to prevent — one list answering two different questions, with no way to tell afterwards
+which call an entry records. Same tool, separate question, following the `_REVIEWED_CANDIDATE_VALUES`
+precedent.
+
+Note `_CV_IDENTITY_RE`'s `[A-Za-z]+` truncates at a digit, so it captures `Example Widget` from
+`Example Widget3`. A roster instruction naming only the full value leaves the guard red on a string
+nobody typed.
 Nothing running locally can establish whether a technology-shaped name belongs to a real product —
-that is the judgement the ratchet exists to force at the moment a value is added. `ExampleQL`,
-`WidgetFramework` and `Widget3` are invented for this work; `Widget` alone is already on the list.
+that is the judgement the ratchet exists to force at the moment a value is added. `Example Query`,
+`Example Framework` and `Example Widget3` are invented for this work and follow the `Example <Word>`
+convention the sweep's own failure message prescribes. `Example Widget3` carries a digit deliberately:
+it is the fixture that exercises SC6's span removal, and no existing roster entry has that shape.
 
 ---
 
@@ -658,7 +750,7 @@ with skills defaulted to {}: False   # the one-pass build keys all 3 entries wit
 ```
 
 It breaks with **no `Skills:` value anywhere and no digit involved** — plain arity. The digit story
-was a fixture choice: `Skills: ExampleQL, WidgetFramework` keeps the oracle agreeing (measured
+was a fixture choice: `Skills: Example Query, Example Framework` keeps the oracle agreeing (measured
 `True`); only a digit-bearing name in the **frozen** fixture breaks it.
 
 **The repair, measured:** compare the two fields `_oracle` actually models —
@@ -681,7 +773,7 @@ Definition of done for every block: `./.venv/bin/python -m pytest` green, and
    `BundleSources.skills` with its construction check; `section_spans`' SKILLS region with matched
    markers and both 4.3 preservation cases; both containment rows with SC5's abstain and fail-closed
    rules; SC6's digit handling and token-shape refusal; `parse.py` + `CvDocument`; `_RULES`' three
-   additions and the `composer_headings()` derivation change; `_unwrap_agent_envelope`; the section
+   additions and the `composer_headings()` derivation change; the section
    12 repair; the five guard collisions in 11.1.
 2. Doctor rows, plus `experience list` surfacing `Skills:` so they have a locator.
 3. The neutrality collector extension (11.2). (`_render_evidence_note`'s blank `Skills:` is **not**
@@ -690,6 +782,11 @@ Definition of done for every block: `./.venv/bin/python -m pytest` green, and
    block 1, which is why block 1's abstain guards must be fixtured against a blank value rather than
    a missing key. The `_SYNTHETIC_ARGS` entry moved into block 1 with section 6's `_render` fix.)
 4. Documentation. **The claims block 1 falsifies are corrected IN block 1**, not here — an earlier
+   revision also deferred `docs/USAGE.md`'s `experience add` flag list, which block 1 falsifies the
+   moment the field is DECLARED (the flag is generated from `spec.fields`), one task before any gate
+   work. That one is now corrected in block 1 too, together with a derived guard comparing each
+   registry-generated `add` command's documented flags against the real parser — so the next field
+   addition cannot repeat it. An earlier
    revision repaired them a block later, leaving an interval in which a shipped document asserted
    something the code had already made false and nothing was red. Those are: the wider-`_TRAILING_MARKERS`
    licence in both `.rulesync/rules/CLAUDE.md` and `cv/parse.py`'s own comment ("no check here for a
@@ -717,11 +814,18 @@ is only requested once a user has populated `Skills:`, but block 5 should not la
 ## 14. Accepted risks
 
 - **(b) is not covered mechanically.** Deliberate, on measurement (1.2). #194 carries the evidence.
-- **D11's byte-identity pin is broken deliberately** (2.1). The auditor's source set widens by skill
-  names on entries it already sees; that widening is what makes an emitted skill supportable rather
-  than `unsupported`. It is a change to a pinned property and is stated as one.
-- **A metric-shorthand skill name subtracts from the numeric gate** (3.4). `p99` is the example; the
-  doctor notice makes it visible.
+- **The auditor's corpus is deliberately NOT widened** (2.1), reversing two earlier revisions. The
+  cost accepted with it: an emitted `SKILLS` line rests on entry `Skills:` text the auditor cannot
+  see, so the #60 audit may classify it `unsupported` and withhold the pointer for human sign-off.
+  That is the safe direction, and it is what keeps a *misattributed* skill in a WORK bullet — the
+  case row 1 abstains on or under-fires on — still covered by the sign-off hold rather than by
+  nothing at all.
+- **A metric-shorthand skill name subtracts from the numeric gate** (3.4). `p99` is the example.
+  **Documented only — there is no doctor notice for it.** An earlier revision proposed one and
+  sections 3.4 and 7 removed it as inverted (its condition selected exactly the no-op cases); this
+  bullet claimed it still existed. Re-adding a row here means specifying the *reverse* condition —
+  digits appearing nowhere in that entry's `_entry_block` numbers — with a payload that carries no
+  user text.
 - **Row 2 over-licenses.** Its vocabulary is the bundle's source text, so an ordinary English word
   appearing in the baseline CV or an entry body passes as a "skill" (3.1). Deliberate: row 2 refuses
   invention, (b) is out of scope, and row 1 does the precision work.
