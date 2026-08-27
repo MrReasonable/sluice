@@ -755,18 +755,28 @@ def classify_skills_reconciliation(experience_entries: list, skills_entries: lis
     unclaimed = sum(1 for title in titles if title not in claimed_keys)
     unmatched = sum(1 for name in claimed if not _keys(name) & titles)
 
+    # Derived from the SAME registry `classify_store` above reads its own per-kind
+    # subjects from -- but suffixed, DELIBERATELY not reused bare: `classify_store`
+    # already emits a "store"-component row at the bare "Skills Inventory"/
+    # "Experience Library" subject for each corpus's own total/verified/pending
+    # count, and a reader (or a test keying on `subject` alone rather than the
+    # `(component, subject)` pair together) could not tell that row apart from this
+    # one. Measured: a mutation deleting this function's call site in Sluice.doctor
+    # left `test_the_skills_reconciliation_runs_through_the_real_wiring` GREEN when
+    # the two subjects were bare, because `classify_store`'s own rows alone already
+    # satisfied the subject-set assertion.
     experience_label = EVIDENCE_KINDS["experience"].relpath.rsplit("/", 1)[-1]
     skills_label = EVIDENCE_KINDS["skills"].relpath.rsplit("/", 1)[-1]
 
     out = []
     if unclaimed:
         out.append(ComponentCheck(
-            "gates", skills_label, NOTICE,
+            "gates", f"{skills_label} (unclaimed)", NOTICE,
             f"{unclaimed} inventory skill(s) evidenced by no entry -- "
             f"job-sluice experience list"))
     if unmatched:
         out.append(ComponentCheck(
-            "gates", experience_label, NOTICE,
+            "gates", f"{experience_label} (unmatched)", NOTICE,
             f"{unmatched} entry Skills: name(s) absent from the inventory -- "
             f"job-sluice skills list"))
     return out
