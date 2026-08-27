@@ -350,7 +350,7 @@ the prompt) and `EvidenceKind.cited_by_gate` (may the gate license its content).
 confirmation line and `doctor`'s row both read them, so neither claims a citability the code does
 not have.
 
-### `job-sluice experience add --name NAME [--company V] [--category V] [--best-for V] [--metrics V] [--body TEXT] [--body-file PATH|-]`
+### `job-sluice experience add --name NAME [--company V] [--category V] [--best-for V] [--metrics V] [--skills V] [--body TEXT] [--body-file PATH|-]`
 ### `job-sluice skills add --name NAME [--proficiency V] [--domain V] [--evidence V] [--signal-value V] [--body TEXT] [--body-file PATH|-]`
 ### `job-sluice stories add --name NAME [--company V] [--best-for V] [--body TEXT] [--body-file PATH|-]`
 

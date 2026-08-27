@@ -1314,3 +1314,57 @@ def test_install_guide_and_compose_agree_on_the_image_tag_variable():
     assert "${JOB_SLUICE_TAG:-latest}" in install, (
         "docs/INSTALL.md quotes compose's image line to justify the pairing; that quotation is "
         "gone, so the reasoning shown to the reader is no longer anchored to anything")
+
+
+def _parser_flags(group: str, sub: str) -> set:
+    """Every long option `job-sluice <group> <sub>` really accepts, from the live parser.
+
+    Walked through argparse's own `_SubParsersAction`/`.choices`, the same private-API shape
+    `_command_tree` above uses, so it cannot drift from `--help`. `-h/--help` is dropped: it
+    is argparse's, not the command's, and no doc heading lists it.
+    """
+    parser = _build_parser()
+    top = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+    group_parser = top.choices[group]
+    group_sp = next(a for a in group_parser._actions
+                    if isinstance(a, argparse._SubParsersAction))
+    return {opt for action in group_sp.choices[sub]._actions
+            for opt in action.option_strings
+            if opt.startswith("--") and opt != "--help"}
+
+
+def _documented_flags(usage: str, group: str, sub: str) -> set:
+    """The long options USAGE.md's heading for `<group> <sub>` shows the reader."""
+    for line in usage.splitlines():
+        if line.startswith(f"### `job-sluice {group} {sub} "):
+            return set(re.findall(r"--[a-z][a-z-]*", line))
+    return set()
+
+
+@pytest.mark.parametrize("kind", sorted(EVIDENCE_KINDS))
+def test_every_evidence_add_flag_is_documented(kind):
+    """`cli.py` generates one `--<field>` flag per `EvidenceKind.fields` entry, so ADDING A
+    FIELD silently adds a user-visible flag. `test_every_real_command_is_documented_in_usage_md`
+    above compares COMMANDS and never looks at flags, so that addition documents itself
+    nowhere -- measured: `--skills` shipped and USAGE.md still listed four flags, with the
+    whole suite green.
+
+    Derived from the real parser on both sides rather than hand-listed, which is the point:
+    correcting the one missing flag would leave the next field addition free to repeat it.
+    """
+    real = _parser_flags(kind, "add")
+    assert real, (
+        f"walked no flags for `{kind} add` -- for a comparison this is the vacuous-pass "
+        f"shape, so the scope is asserted before the contents are")
+
+    usage = dict(_read_all()).get("docs/USAGE.md", "")
+    assert usage, "docs/USAGE.md was not readable, so this comparison would pass vacuously"
+
+    documented = _documented_flags(usage, kind, "add")
+    assert documented, f"docs/USAGE.md has no `### `job-sluice {kind} add ...`` heading"
+
+    missing = sorted(real - documented)
+    assert not missing, (
+        f"`job-sluice {kind} add` accepts {missing} but docs/USAGE.md's heading does not "
+        f"list them. The flags are generated from EVIDENCE_KINDS[{kind!r}].fields, so a new "
+        f"field creates a new flag with no other prompt to document it.")

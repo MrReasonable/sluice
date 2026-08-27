@@ -167,8 +167,24 @@ EVIDENCE_KINDS = {
     # one the composer is handed at all. TWO flags since #165: `read_by_composer` says the
     # corpus reaches the prompt, `cited_by_gate` says the gate may license its content.
     # They coincide here and diverge for `skills`.
+    #
+    # `Skills` (#168) is the skill->role association stored here rather than on the skill
+    # note: it is where the gate already reads, so a per-entry frozenset slots in beside
+    # `nums` with no name join. No `floor_map` entry -- it has no floor analogue, exactly
+    # like the skills kind's own Proficiency/Evidence/Signal Value.
+    #
+    # DECLARING it makes it live IMMEDIATELY, because six sites read `spec.fields`: the
+    # `--skills` flag on `experience add`, the evidence wizard's question, the blank
+    # `Skills:` line `_render_evidence_note` writes into every new note, `propose_evidence`'s
+    # unknown-field refusal, and `fields['Skills']` on every entry dict (which
+    # `mcpserver.py` passes through whole). What is NOT yet consumed is the BUNDLE and the
+    # GATE -- `_entry_block` reads the floor keys, never `fields`, so no skill reaches
+    # either prompt or the numeric allowlist yet.
+    #
+    # When that arrives, digits inside a Skills value must NOT be licensed by the gate: a
+    # skill named "Example Widget3" must not license the digit 3.
     "experience": EvidenceKind("Job Applications/Experience Library",
-                               ("Company", "Category", "Best For", "Metrics"),
+                               ("Company", "Category", "Best For", "Metrics", "Skills"),
                                cited_by_gate=True, read_by_composer=True),
     # `Domain` IS this kind's keyword axis -- what `Best For` is for the other two, and
     # exactly what `cv/bundle.py`'s rank() scores on. Without the mapping the floor's
