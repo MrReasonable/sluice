@@ -261,8 +261,21 @@ def _evidence_field_re(key: str):
     time either was corrected.
 
     See the long comment above for what each alternative and the lookahead terminator close.
+
+    The gap AFTER `:` is `[ \\t]*`, not `\\s*` -- `\\s` matches a REAL newline too, and a
+    bare `key:` immediately followed by one (a triple-quoted fixture, rather than the
+    packed-escape shape every real fixture here otherwise uses) let the value alternative's
+    `\\s`-excluding first-char class start matching on the FOLLOWING physical line instead
+    of refusing to match at all. Measured via #168 Task 11's own block-list planting
+    witness: a `Skills:\\n  - Example Torrent\\n` fixture (a bare `key:` with no inline
+    value, immediately followed by a YAML block-list item) collected `- Example Torrent`,
+    dash included, as a bogus SECOND identity alongside the correct one the block-list
+    collector found. `[ \\t]*` still allows the ordinary `Company: Alpha` gap (a same-line
+    space) and does not change a single one of the four shapes
+    `test_the_evidence_company_collector_sees_every_shape_it_claims_to` pins -- only the
+    cross-newline case, which no real fixture here has ever relied on.
     """
-    return re.compile(rf"""["']?{key}["']?\s*:\s*("[^"{{\n]+"|'[^'{{\n]+'"""
+    return re.compile(rf"""["']?{key}["']?\s*:[ \t]*("[^"{{\n]+"|'[^'{{\n]+'"""
                       rf"""|[^\s"'`{{\\\n][^"'`{{\\\n]*?(?=["'`\\\n]|\s*$))""", re.M)
 
 
@@ -1778,6 +1791,16 @@ def test_the_evidence_skills_collector_sees_every_shape_it_claims_to():
     # find -- the two collectors must not double-count the same fixture.
     inline_text = 'Skills: Example Query, Example Framework\\nverified: x'
     assert _block_list_skill_items(block_pattern, inline_text) == []
+
+    # REGRESSION (found by this task's own planting witness): a bare `Skills:` followed
+    # by a REAL newline then a block-list item must not ALSO satisfy the comma
+    # collector's bare-value alternative. `\s` matches a real newline, so `Skills:\s*`
+    # used to swallow the line break and start its value capture on `- Example Torrent`
+    # itself -- a bogus DASH-PREFIXED second identity for the same value the block-list
+    # collector already found correctly. `_evidence_field_re`'s post-colon gap is
+    # `[ \t]*` specifically to close this; a regression here reopens it silently, for
+    # `Company:` too, since the two share one pattern.
+    assert comma_pattern.findall(real_block) == []
 
 
 def test_evidence_skill_values_are_on_the_reviewed_roster():
