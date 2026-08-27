@@ -272,6 +272,40 @@ separate scope decision, not a side effect of this feature; `drop` is the lowest
 signal here, so a false positive there costs a late report, while suppressing a healthy day's
 leads is the worse failure.
 
+**What is MEASURED and what is CLASSIFIED on are two different rosters, and the gap between them
+is deliberate (2026-08-27).** `RATE_SIGNALS` is everything `_lead_rates` computes and `record`
+high-waters — `company_rate`, `link_rate`, `location_rate`. `BLANK_SIGNALS` is the strict SUBSET
+`_blank_reason` classifies on, and it is company and link only. `location_rate` exists because
+location was previously measured NOWHERE, which is how reed served ~20 rows a run with location on
+none of them while every check stayed green — the vocabulary was company and link, and reed kept
+both. It stays OUT of the classifying set because `blank` is in `BREAKER_REASONS` and withholds
+every lead the source produced: right for a company collapse, not obviously right for a location
+one, where a lead keeping its title, company and link is still worth having. Promote it only on its
+own measurement against the fleet's healthy windows — not on the assumption that more signals
+classified is strictly better.
+
+**`blank`'s 0.8 high-water floor has a blind spot that is REPORTED, not closed.** Skipping a signal
+whose high-water never cleared the floor is right for a board that genuinely does not publish a
+field (weworkremotely hardcodes an empty company) and silently wrong for one ALREADY broken when its
+first run was recorded — the high-water only climbs, so it never establishes a bar to fall from and
+is exempt for good. Measured: reed's company high-water was 0.1, taken from a run whose extractor
+was already reading the wrong elements, so the check that would have reported the collapse was
+switched off for the one source that needed it. Every source is in this state after the health file
+is first created or lost. Do NOT "fix" this by lowering the floor or adding an absolute one: `blank`
+bins a source's whole run, so a board that legitimately lacks a field would be binned daily, and
+nothing local can tell that case from a stopped selector. `HealthStore.unguarded_signals` names the
+exemption and `ingest list-sources --health` prints it — rates per source plus
+`UNGUARDED(<signal>)` BY NAME, for ENABLED sources only (nothing runs for a disabled one, so
+no guard can be blind). A human rules on which case a source is and records the benign ruling
+in the source's own `unpublished_fields`, which silences the flag for the named field only —
+without it the two boards that hardcode an empty company light it for ever, and a permanently
+lit flag on benign rows is how a reader learns to skip the column. A source whose NEWEST run
+recorded no rate prints `UNMEASURED` instead: below `_RATE_ROW_FLOOR` there is no rate, so
+`prior_rate` is `None` and `blank` cannot fire at all. `latest_rates` returns how many runs
+back the rates came from and the CLI prints that age — an undated rate can be 30 runs old, and
+a stale 100% is exactly the reassuring answer a rotted extractor gives the command run to
+catch it.
+
 **`cli.py` imports the heavy modules inside command functions, not at module scope.** That is
 deliberate: it keeps offline commands (and their tests) from ever touching Camofox, the vault, or a
 backend. Keep new commands lazy the same way.
