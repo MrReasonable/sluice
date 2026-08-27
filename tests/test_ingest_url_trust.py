@@ -129,8 +129,16 @@ def test_the_class_sweep_is_not_looking_at_an_empty_set():
     assert {"BrowserListSource", "CarouselSource"} <= names, (
         f"the registry's parse-path classes are now {sorted(names)} and no longer include "
         "both base classes -- the sweeps below would silently stop covering one")
+    # `_ReedSource` joined 2026-08-27: reed's company recovery moved out of the extractor JS
+    # and into a `parse` override, so it became a parse path. Read against the sweeps below
+    # before being added here, per this docstring's instruction: it subclasses
+    # `BrowserListSource` without re-declaring any field and delegates to `super().parse`, so
+    # it inherits `posting_paths` (default `()`), the `health_hint` rejection count and the
+    # validator -- the same shape as `_NaukrigulfSource` and `WellfoundSource`, both of which
+    # already pass every row below on exactly that basis.
     assert names == {"BrowserListSource", "CarouselSource", "WellfoundSource",
-                     "_LinkedInSource", "_NaukrigulfSource", "_WorkInStartupsSource"}, (
+                     "_LinkedInSource", "_NaukrigulfSource", "_ReedSource",
+                     "_WorkInStartupsSource"}, (
         f"the registry's parse-path classes are now {sorted(names)}; every sweep "
         "parameterised over them covers a different set than when it was written, so "
         "re-read the new one before updating this row")
