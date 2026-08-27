@@ -365,9 +365,16 @@ whichever neighbour it was written next to:
 
    A source whose NEWEST run recorded no rate is reported `UNMEASURED`
    rather than carrying a rate with no flag: below `_RATE_ROW_FLOOR`,
-   `_lead_rates` withholds every rate key, so `prior_rate` is `None` and
-   `_blank_reason` cannot fire at all -- the source genuinely is not
-   guarded, whatever its high-water says. The rates themselves come from
+   `_lead_rates` withholds every rate key, so `_blank_reason` sees no
+   rate for this run and returns False whatever the high-water says --
+   the source genuinely is not guarded. The gate is the AGE, not the
+   presence of a rate: `age != 0` covers both the never-measured case
+   (`-1`) and the merely STALE one, because a rate retained from three
+   runs ago says nothing about whether the guard is live now.
+   `unguarded_signals` is consulted only at `age == 0`. Gating on "some
+   rate exists" instead let a stale rate render with no `UNMEASURED` and,
+   on a low high-water, a confident `UNGUARDED` -- two claims about a
+   guard that was not running. The rates themselves come from
    `HealthStore.latest_rates`, which walks BACK to the last run that
    carried any and returns how many runs back that was; the CLI prints
    that age, because a rate up to 30 runs old rendered as this run's

@@ -203,6 +203,31 @@ def test_an_unmeasured_source_is_reported_unmeasured_not_unguarded(capsys):
     assert "UNMEASURED" in line, line
 
 
+def test_a_stale_rate_never_implies_the_guard_is_live(capsys):
+    """A rate that is merely STALE is not coverage either.
+
+    `blank` compares THIS run's rate against the high-water, so when the newest run recorded
+    no rate it returns None whatever the history says -- executed below, not read off the
+    code. An earlier version gated the flag on `latest_rates` being non-empty, so a source
+    with a healthy rate from three runs ago rendered with no UNMEASURED and, if its
+    high-water was low, a confident UNGUARDED -- both of which describe a guard that is not
+    running. Gating on `age != 0` covers the stale case and the never-measured one alike.
+    """
+    assert detect_drift("reed", 20, dict(_THIN_RUN), 20.0,
+                        rate_highs={"company_rate": 1.0, "link_rate": 1.0},
+                        rate_priors={"company_rate": 0.0, "link_rate": 0.0}) is None, \
+        "blank fired on a run carrying no rate -- the premise of the age gate is wrong"
+
+    h = HealthStore()
+    # A LOW high-water, so the stale-rate path would otherwise print UNGUARDED(company).
+    h.record("reed", 20, {"company_rate": 0.1, "link_rate": 1.0})
+    h.record("reed", 3, _THIN_RUN)
+    line = _health_lines(capsys)["reed"]
+    assert "UNMEASURED" in line, line
+    assert "UNGUARDED" not in line, (
+        "a stale rate produced a guarded-ness verdict for a run that recorded no rate: " + line)
+
+
 def test_a_stale_rate_is_never_printed_as_though_it_were_this_runs(capsys):
     """The failure the vintage exists to remove: a rate up to `_KEEP` runs old rendered as a
     bare percentage reads as a healthy current measurement, which is exactly the reassuring
