@@ -40,6 +40,53 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [3.0.0](https://github.com/MrReasonable/sluice/compare/v2.0.1...v3.0.0) (2026-08-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **core:** `Store.read_experience_entries` is removed from the protocol and from `Vault`. It was a second required spelling of `read_evidence("experience")`, kept for one caller that no longer exists. Any out-of-tree store implementing the seam should drop the method; no behaviour changes for any in-tree caller.
+
+### Features
+
+* **config:** SLUICE_CLAUDE_HOST/PATH set the claude CLI's location ([db97b43](https://github.com/MrReasonable/sluice/commit/db97b43331ce72e455fd2b57cebebad5f7a0073d))
+* **core:** add a Porter stemmer for keyword matching ([#165](https://github.com/MrReasonable/sluice/issues/165)) ([252e58a](https://github.com/MrReasonable/sluice/commit/252e58a7d6b527a2f3d47d80b4ab4415f9ef5fb3))
+* **cv:** compose from the Skills Inventory, degrading if it is unreadable ([#165](https://github.com/MrReasonable/sluice/issues/165)) ([e7e4cc5](https://github.com/MrReasonable/sluice/commit/e7e4cc52d82baca1d77f82ab7b2234bd5a506d61))
+* **cv:** derive the skills negative constraint instead of typing it ([#165](https://github.com/MrReasonable/sluice/issues/165)) ([c7b3850](https://github.com/MrReasonable/sluice/commit/c7b3850640b1f45aa397b3bad612d6fb82a58922))
+* **cv:** emit the Skills Inventory as a non-citable bundle section ([#165](https://github.com/MrReasonable/sluice/issues/165)) ([83a5a13](https://github.com/MrReasonable/sluice/commit/83a5a13c3ef58a3b2392050ce27db87a34795287))
+* **cv:** tell the composer the skills section is framing, not a source ([#165](https://github.com/MrReasonable/sluice/issues/165)) ([5aae67e](https://github.com/MrReasonable/sluice/commit/5aae67e77a574a32194a838af921b514a5ec16d0))
+* **docker:** reach the host's claude CLI over ssh from a container ([91b4d70](https://github.com/MrReasonable/sluice/commit/91b4d708d88a9713c5d4fac5ee9f5746cf141a02))
+* **doctor:** report a negative that contradicts the Skills Inventory ([#165](https://github.com/MrReasonable/sluice/issues/165)) ([131c130](https://github.com/MrReasonable/sluice/commit/131c13059d4f178ef5df9c22b3ea3127574599e3))
+
+
+### Bug Fixes
+
+* **cv,doctor,docs:** address the five-reviewer PR review ([#165](https://github.com/MrReasonable/sluice/issues/165)) ([1c1d171](https://github.com/MrReasonable/sluice/commit/1c1d17159e5a9323d5d6a082435e42dfbe7571b7))
+* **cv:** rank evidence on stems, not raw substrings ([#165](https://github.com/MrReasonable/sluice/issues/165)) ([b5b7e2e](https://github.com/MrReasonable/sluice/commit/b5b7e2e781a3066054d96f48fbc4ac424dd18388))
+* **doctor:** name a doc URL a packaged install can follow ([db7cf9d](https://github.com/MrReasonable/sluice/commit/db7cf9d143ace79f2d50d59734057ecbc7f826f5))
+* **ingest:** revive three boards retired on path drift, not death ([911c9bc](https://github.com/MrReasonable/sluice/commit/911c9bca78ae3a7231f8332008b83e069e55522a))
+* **track:** name both causes when the lastrun watermark is held ([35ed247](https://github.com/MrReasonable/sluice/commit/35ed2476644b6e465f37d2bb8f72c4b34f31e9b7))
+* **track:** stop claiming an OAuth consent flow sluice does not have ([ca6a972](https://github.com/MrReasonable/sluice/commit/ca6a972b2a2ef06ece7ed66b4ad00164e3894508))
+
+
+### Refactoring
+
+* **core:** retire read_experience_entries for read_evidence ([#165](https://github.com/MrReasonable/sluice/issues/165)) ([cf5978d](https://github.com/MrReasonable/sluice/commit/cf5978d2ce9d5326181845c22752d6ebb02dcd76))
+* **core:** split read_by_composer from cited_by_gate ([#165](https://github.com/MrReasonable/sluice/issues/165)) ([6450745](https://github.com/MrReasonable/sluice/commit/6450745246ade49962eb4bc5cac6233d383e07a1))
+
+
+### Documentation
+
+* add the install guide ([#104](https://github.com/MrReasonable/sluice/issues/104)) ([b5983b3](https://github.com/MrReasonable/sluice/commit/b5983b319623d4f837131376e54b60de9de9e74e))
+* **cv:** describe the fourth bundle section and the two evidence flags ([#165](https://github.com/MrReasonable/sluice/issues/165)) ([d4ee72b](https://github.com/MrReasonable/sluice/commit/d4ee72bf536a4b52c34186ad8b0295c5bb61e010))
+* **cv:** design the Skills Inventory's route into the bundle ([#165](https://github.com/MrReasonable/sluice/issues/165)) ([24d2a85](https://github.com/MrReasonable/sluice/commit/24d2a85b965fb577d63076cf41aa50672eacc508))
+* **cv:** plan the Skills Inventory's route into the bundle ([#165](https://github.com/MrReasonable/sluice/issues/165)) ([4ecd1cd](https://github.com/MrReasonable/sluice/commit/4ecd1cd9c2f87ab2e1e77c7fa4f3952107e3d978))
+* **cv:** revise the [#165](https://github.com/MrReasonable/sluice/issues/165) design and plan on 49 review findings ([eaf3b7e](https://github.com/MrReasonable/sluice/commit/eaf3b7ebffc6366d4729901285568a57d6df1a4b))
+* **cv:** revise the [#165](https://github.com/MrReasonable/sluice/issues/165) plan on round 2's 44 findings ([a64cddb](https://github.com/MrReasonable/sluice/commit/a64cddb559bd34003e48db5f0a3022b34c953b1a))
+* **install:** how to reach the host's claude CLI from a container ([192cc45](https://github.com/MrReasonable/sluice/commit/192cc4579b04bc1a93c9896910f8d691fa7548d3))
+* **release:** record the negative case for `!`, and point at the existing list ([f6dac28](https://github.com/MrReasonable/sluice/commit/f6dac28dd88be22294de42edb642f7f349f1ea7c))
+* **rulesync:** name docs/INSTALL.md in the docs roster ([7944d49](https://github.com/MrReasonable/sluice/commit/7944d493dfd5153ea46b1030fca743886bbd4ec3))
+
 ## [2.0.1](https://github.com/MrReasonable/sluice/compare/v2.0.0...v2.0.1) (2026-08-25)
 
 
