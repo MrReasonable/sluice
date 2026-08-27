@@ -40,12 +40,30 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
-## [3.0.0](https://github.com/MrReasonable/sluice/compare/v2.0.1...v3.0.0) (2026-08-27)
+## [2.1.0](https://github.com/MrReasonable/sluice/compare/v2.0.1...v2.1.0) (2026-08-27)
 
 
-### ⚠ BREAKING CHANGES
+### Upgrade notes
 
-* **core:** `Store.read_experience_entries` is removed from the protocol and from `Vault`. It was a second required spelling of `read_evidence("experience")`, kept for one caller that no longer exists. Any out-of-tree store implementing the seam should drop the method; no behaviour changes for any in-tree caller.
+**No action is required.** Nothing imports `sluice` as a library, so this release changes nothing
+about how an existing `sluice.yaml` or an existing vault is read. Three things are worth knowing:
+
+* **`Store.read_experience_entries` is gone** from the protocol and from `Vault`
+  ([cf5978d](https://github.com/MrReasonable/sluice/commit/cf5978d2ce9d5326181845c22752d6ebb02dcd76)).
+  It was a second required spelling of `read_evidence("experience")`, kept for one caller that no
+  longer exists; every in-tree caller is unchanged. Only an out-of-tree store implementing the seam
+  would notice, and it should drop the method. That commit carried a `!`, which is why this release
+  was first numbered 3.0.0 -- corrected here, because by this project's own criterion a change no
+  install can observe does not earn a major.
+* **The Skills Inventory is a new, optional vault note**, read from
+  `Job Applications/Skills Inventory`. The four `cv` features below use it, and composing degrades
+  cleanly when it is absent or unreadable, so nothing breaks if you never create one. Create it if
+  you want those features.
+* **`cv.negatives` is a new, optional config key.** With a non-empty Skills Inventory the bundle
+  already derives its own technology cross-reference, so a hand-typed line restating which
+  technologies you work in is a shadow of that file and will drift from it -- `job-sluice doctor`
+  now reports any line naming a skill the inventory actually holds. Use the key for the negatives
+  an inventory cannot express.
 
 ### Features
 
