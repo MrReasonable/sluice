@@ -1552,6 +1552,17 @@ _REVIEWED_SKILL_VALUES = frozenset({
     # the "inventory skill evidenced by no entry" row has a genuine non-firing case to
     # contrast against.
     "Example Widget",
+    # Invented for #168 Task 10's own report-neutrality test
+    # (`test_the_report_names_no_skill_string`): a name deliberately absent from the
+    # inventory fixture in the same test, distinct from every other reviewed value so
+    # a leak of THIS value specifically proves the report is not merely omitting one
+    # already-rostered name by coincidence.
+    "Example Zephyr",
+    # NOT a name -- an all-punctuation `Skills:` value invented for #168 Task 10's
+    # `evidence_slug`-cannot-reduce fixtures (tests/test_doctor.py). Synthetic noise,
+    # reviewed the same as every other captured value: nothing here could ever be
+    # mistaken for a real product name.
+    "###",
 })
 
 # `_REVIEWED_FIXTURE_IDENTITIES` is about LEAD identities -- employers a fixture names.
