@@ -269,12 +269,14 @@ def section_spans(cv_text):
         # -- it asserts the terminator line is absent from `skills_lines`, and a
         # non-bullet line is never materialised there whatever this block decides, with
         # nothing following the terminator in its fixture to tell the two apart. The arms
-        # are pinned by three rows in `tests/test_cv_skills_containment.py` --
-        # `test_a_bullet_under_a_group_heading_is_still_row_2_checked` (this block
-        # deleted), `test_only_a_contract_heading_ends_the_run` (a contract heading's own
-        # `in_skills = False` deleted from its branch above) and
-        # `test_a_group_heading_while_work_is_live_still_ends_the_run` (the `in_work` arm
-        # deleted) -- and, for the `in_work` arm a second time, by
+        # are pinned by three rows in `tests/test_cv_skills_containment.py`, each named
+        # against the DELETION that reddens it, measured one at a time rather than
+        # assumed -- `test_a_bullet_under_a_group_heading_is_still_row_2_checked` (drop
+        # `and in_work` from the condition below, so the run ends at every non-blank
+        # non-bullet line), `test_only_a_contract_heading_ends_the_run` (drop
+        # `in_skills = False` from the CERTIFICATES/EDUCATION branch above) and
+        # `test_a_group_heading_while_work_is_live_still_ends_the_run` (drop the whole
+        # condition below) -- and, for that last arm a second time, by
         # `tests/test_cv_validate.py`'s random-document equivalence sweep, which is what
         # makes that arm's agreement with the pre-extraction loop a property rather than
         # a claim.
