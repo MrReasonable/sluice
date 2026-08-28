@@ -48,3 +48,8 @@
 <h2>EDUCATION</h2>
 <ul>{% for item in document.education %}<li>{{ item }}</li>{% endfor %}</ul>
 {% endif %}
+
+{% if document.skills %}
+<h2>SKILLS</h2>
+<ul>{% for item in document.skills %}<li>{{ item }}</li>{% endfor %}</ul>
+{% endif %}
