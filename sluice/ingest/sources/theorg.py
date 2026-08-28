@@ -16,6 +16,7 @@ _JS = """(()=>{const r=[];document.querySelectorAll('div[class*="job"],a[href*="
 register(BrowserListSource(
     id="theorg",
     enabled=False,  # retired 2026-07-07: /jobs/<role> 404
+    reprobed="2026-08-25",   # see the module docstring for what was found
     extractor_js=_JS,
     wait=4, scrolls=2, scroll_amount=600,
     searches_spec=[

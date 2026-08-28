@@ -14,6 +14,7 @@ _JS = """(()=>{const r=[];document.querySelectorAll('div[class*="job"],li[class*
 register(BrowserListSource(
     id="bwork",
     enabled=False,  # retired 2026-07-07: b-work.io HTTP 500
+    reprobed="2026-08-25",   # see the module docstring for what was found
     extractor_js=_JS,
     wait=5, scrolls=2, scroll_amount=600,
     searches_spec=[

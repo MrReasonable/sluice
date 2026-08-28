@@ -308,6 +308,19 @@ back the rates came from and the CLI prints that age — an undated rate can be 
 a stale 100% is exactly the reassuring answer a rotted extractor gives the command run to
 catch it.
 
+**A retirement is a claim about the world, and `reprobed` is where its date lives (#207 ask 4).**
+Every DISABLED source declares the ISO date its retirement was last checked against the live
+world, as a field on the source contract -- not as prose in the module docstring. That is a
+measured choice: mining the date out of the docstring means deciding from PROSE whether a line
+asserts a check HAPPENED, and every tightening of that acquired a hole -- a tuple comparison
+ranked the impossible `2026-99-99` above the floor, a marker-word requirement admitted
+`unverified` (it contains `verified`), and word-bounding the markers still admitted `not
+verified` / `never confirmed` / `no longer verified` / `yet to be re-probed`. The set is
+unbounded because it is a natural-language question; a declared date cannot be negated. The
+docstring still carries the REASON — the part a human reads, which no field replaces. Malformed
+values raise at construction (`validate_reprobed`); whether a disabled source must carry one,
+and whether it is recent enough, is policy and lives in `tests/test_drifted_boards.py`.
+
 **`cli.py` imports the heavy modules inside command functions, not at module scope.** That is
 deliberate: it keeps offline commands (and their tests) from ever touching Camofox, the vault, or a
 backend. Keep new commands lazy the same way.

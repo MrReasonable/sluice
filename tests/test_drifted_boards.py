@@ -6,12 +6,13 @@ These are cheap string assertions on purpose -- the extractors themselves need a
 live DOM, so what is pinned here is the part that silently rotted: which host we
 ask, which selector we ask for, and whether a board is switched on at all.
 """
-import re
 from datetime import date
+from types import SimpleNamespace
 from urllib.parse import urlparse
 
 import pytest
 
+from sluice.ingest import base as sources_base
 from sluice.ingest import sources
 
 
@@ -76,61 +77,38 @@ def _disabled_source_ids():
     return sorted(s.id for s in sources.all_sources() if not getattr(s, "enabled", True))
 
 
-# The sweep that established the re-probe discipline. A retirement dated on or after this
-# has been checked against the live world at least once; anything older is inherited belief.
-# A FLOOR rather than the single pinned string this used to compare against, so a later
-# re-probe can supersede an earlier one without the test having to be edited to match.
+# The sweep that established the re-probe discipline. A retirement dated on or after this has
+# been checked against the live world at least once; anything older is inherited belief. A
+# FLOOR rather than a pinned string, so a later re-probe supersedes an earlier one without the
+# test being edited to match.
 _REPROBE_FLOOR = date(2026, 8, 25)
-_ISO_DATE = re.compile(r"\b(20\d{2})-(\d{2})-(\d{2})\b")
-
-# The date must sit on a line that SAYS it is a re-probe. Without this the check accepts any
-# recent date anywhere in the docstring -- a note about when the board changed its layout
-# would satisfy a guard that is supposed to assert someone went and looked. The window is
-# narrow today so almost any date in range really is a re-probe date, but the floor is fixed
-# and the window widens every day, so the hole grows on its own.
-#
-# Matched case-insensitively against the LINE, not adjacent to the date, because the shipped
-# docstrings put the marker before the date ("retirement CONFIRMED 2026-08-27") and after it
-# ("Re-probed 2026-08-27 on the DOMAIN"). `verified` earns its place the same way: escape_city
-# records its check as "(verified live 2026-08-25)", which asserts someone went and looked
-# just as much as the other three do.
-#
-# Kept deliberately small, and the test is what decides membership: every entry is a word that
-# asserts a CHECK HAPPENED. A word that merely describes a STATE -- "disabled", "retired" --
-# must never be added, because the original inherited notes all contain those, and adding one
-# would let the very belief this guard exists to expire satisfy it again.
-_REPROBE_MARKERS = ("re-probed", "reprobed", "confirmed", "upheld", "verified")
-
-# WORD-BOUNDED, and that is load-bearing rather than tidiness. A plain substring test accepts
-# `unverified`, because it CONTAINS `verified` -- measured: "unverified as of 2026-08-26" was
-# read as evidence of a completed probe, which is the exact negation of what this guard
-# asserts. `\b` also stops `confirmed` matching inside a longer word. The markers are escaped
-# rather than inlined because `re-probed` carries a hyphen, which is a regex-significant
-# character in some positions and a word boundary here.
-_MARKER_RE = re.compile(
-    r"\b(?:" + "|".join(re.escape(m) for m in _REPROBE_MARKERS) + r")\b", re.IGNORECASE)
 
 
-def _reprobe_dates(docstring: str) -> list:
-    """Every VALID calendar date on a line that claims a re-probe.
+def _reprobe_date(src):
+    """The source's DECLARED re-probe date, or None if absent/unparseable.
 
-    Four holes this closes, every one of them measured against the version that shipped
-    before it rather than reasoned about: `(2026, 99, 99) >= (2026, 8, 25)` is `True`, so an
-    impossible date from a typo passed; `2099-01-01` passed and would keep passing for ever;
-    a date on an unrelated line passed with no re-probe having happened at all; and, once the
-    marker requirement was added as a SUBSTRING test, `unverified` satisfied it by containing
-    `verified`.
+    Reads the `reprobed` field (#207 ask 4 -- the rule belongs in the source contract). This
+    replaced a scan of the module docstring, and the reason is worth keeping: deciding from
+    PROSE whether a line asserts that a check happened is a natural-language question, and
+    every tightening of it acquired a new hole. Measured, in order, against each version that
+    shipped before the next:
+
+      - a bare tuple comparison accepted `2026-99-99`, because (2026, 99, 99) sorts above the
+        floor, and `2099-01-01`, which would have satisfied it for ever
+      - restricting to lines carrying a marker word accepted `unverified`, since it CONTAINS
+        `verified` -- the negation of the rule satisfying the rule
+      - word-bounding the markers still accepted `not verified`, `never confirmed`, `no longer
+        verified` and `yet to be re-probed`
+
+    That set is unbounded. A declared date cannot be negated: it is either a date or it is not.
+    `sluice/ingest/base.py`'s `validate_reprobed` rejects a malformed one at construction, so
+    by the time this reads the field the only open questions are presence and recency.
     """
-    found = []
-    for line in (docstring or "").splitlines():
-        if not _MARKER_RE.search(line):
-            continue
-        for year, month, day in _ISO_DATE.findall(line):
-            try:
-                found.append(date(int(year), int(month), int(day)))
-            except ValueError:
-                continue      # 2026-99-99 and friends are not dates, so not evidence
-    return found
+    raw = getattr(src, "reprobed", "") or ""
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        return None
 
 
 def test_the_disabled_roster_is_not_vacuous():
@@ -142,47 +120,30 @@ def test_the_disabled_roster_is_not_vacuous():
         "no disabled sources found -- the re-probe guard has nothing to check"
 
 
-@pytest.mark.parametrize("docstring,why", [
-    ("retirement CONFIRMED 2026-99-99",
-     "an impossible calendar date -- the previous tuple comparison ranked (2026,99,99) above "
-     "the floor, so a typo silently satisfied the guard"),
-    ("re-probed 2099-01-01",
-     "a FUTURE date, which records nothing anyone did and would satisfy this for ever"),
-    ("the board changed its layout on 2026-08-26",
-     "a date on a line that claims no re-probe -- a note about the board is not evidence "
-     "that someone went and looked at it"),
-    ("retirement CONFIRMED 2026-07-07",
-     "a real re-probe marker, but dated BEFORE the floor -- that is inherited belief"),
-    ("unverified as of 2026-08-26",
-     "the NEGATION of a marker -- a substring test accepted `unverified` because it contains "
-     "`verified`, reading a statement that nobody checked as proof that somebody did"),
+@pytest.mark.parametrize("value,why", [
+    ("2026-99-99", "an impossible calendar date -- an earlier tuple comparison ranked "
+                   "(2026,99,99) above the floor, so a typo satisfied the guard"),
+    ("2026-07-07", "a real date, but BEFORE the floor -- that is inherited belief"),
     ("", "no date at all"),
+    ("unverified", "prose where a date belongs"),
+    ("not verified 2026-08-26", "a NEGATED claim -- the whole reason this reads a field "
+                                "rather than sniffing the docstring for marker words"),
 ])
-def test_a_docstring_that_records_no_completed_reprobe_is_rejected(docstring, why):
-    """The holes in the first version of this guard, each one measured against it.
+def test_a_source_that_records_no_completed_reprobe_is_rejected(value, why):
+    """Every row here defeated some earlier version of this guard.
 
-    Every row here PASSED before: `_ISO_DATE.findall` scanned the whole docstring and the
-    verdict was a tuple comparison, which accepts impossible dates, future dates and dates
-    that have nothing to do with a re-probe.
+    The last two are the point: as prose they each passed a marker-based check, and as a
+    `reprobed` value they are simply not dates. That is the whole argument for the field.
     """
-    today = date.today()
-    dates = [d for d in _reprobe_dates(docstring) if _REPROBE_FLOOR <= d <= today]
-    assert not dates, f"a docstring carrying {why} was accepted as a completed re-probe"
+    src = SimpleNamespace(reprobed=value)
+    parsed = _reprobe_date(src)
+    assert parsed is None or not (_REPROBE_FLOOR <= parsed <= date.today()), (
+        f"a source declaring {value!r} was accepted as re-probed, but it is {why}")
 
 
-def test_a_real_reprobe_line_is_still_accepted():
-    # The other half: a guard that rejects everything is not a guard. Both shipped
-    # phrasings -- marker before the date, and marker after it -- must pass.
-    today = date.today()
-    # A synthetic board name, not a real one. These are stand-in docstrings exercising the
-    # PARSER, so nothing here needs to name a board sluice actually scrapes -- and the
-    # neutrality sweep over `tests/` should not have to adjudicate a fixture that could just
-    # as easily be generic.
-    for docstring in ("Example Board. RETIRED 2026-07-07, retirement CONFIRMED 2026-08-27.",
-                      "Re-probed 2026-08-27 on the DOMAIN, not a search path.",
-                      "reads 12/12 of them with salary (verified live 2026-08-25)."):
-        dates = [d for d in _reprobe_dates(docstring) if _REPROBE_FLOOR <= d <= today]
-        assert dates, f"a genuine re-probe line was rejected: {docstring!r}"
+def test_a_real_declared_reprobe_is_accepted():
+    # The other half: a guard that rejects everything is not a guard.
+    assert _reprobe_date(SimpleNamespace(reprobed="2026-08-27")) == date(2026, 8, 27)
 
 
 @pytest.mark.parametrize("source_id", _disabled_source_ids())
@@ -191,16 +152,37 @@ def test_disabled_boards_say_why_next_to_the_flag(source_id):
     in the module docstring so the next person can re-probe it rather than inherit it."""
     src = _src(source_id)
     assert src.enabled is False
-    mod = __import__(f"sluice.ingest.sources.{source_id}", fromlist=["*"])
     # Bounded at BOTH ends. The floor is the discipline; `today` is the other half, because a
-    # future date is not a record of something someone did -- `2099-01-01` would otherwise
-    # satisfy this for ever, which is the same "a claim nobody has to revisit" failure the
-    # whole guard exists to prevent.
-    today = date.today()
-    dates = [d for d in _reprobe_dates(mod.__doc__) if _REPROBE_FLOOR <= d <= today]
-    assert dates, (
-        f"{source_id} retirement has not been re-probed: its docstring carries no valid "
-        f"calendar date between {_REPROBE_FLOOR.isoformat()} and today on a line naming a "
-        f"re-probe ({'/'.join(_REPROBE_MARKERS)}), so the reason there is inherited rather "
-        f"than checked"
+    # future date records nothing anyone did -- `2099-01-01` would otherwise satisfy this for
+    # ever, the same "a claim nobody has to revisit" failure the guard exists to prevent.
+    probed = _reprobe_date(src)
+    assert probed is not None and _REPROBE_FLOOR <= probed <= date.today(), (
+        f"{source_id} declares reprobed={getattr(src, 'reprobed', '')!r}, which is not a date "
+        f"between {_REPROBE_FLOOR.isoformat()} and today -- so its retirement is inherited "
+        f"belief rather than something someone checked"
     )
+    # The WHEN is the field; the WHY is still prose, and a date with no reason beside it
+    # tells the next person nothing about what to look for.
+    mod = __import__(f"sluice.ingest.sources.{source_id}", fromlist=["*"])
+    assert (mod.__doc__ or "").strip(), (
+        f"{source_id} carries a re-probe date but no docstring saying what was found")
+
+
+def test_a_malformed_reprobed_date_is_refused_at_construction():
+    """FAIL LOUDLY AT CONSTRUCTION, the posture `validate_posting_paths` already sets.
+
+    This is the half of #207 ask 4 that lives in the source CONTRACT rather than in this
+    file: a retirement whose recorded check date is `2026-99-99` reads as evidence to a
+    human and parses as nothing, so it must not be constructible. Whether a disabled source
+    must carry one at all, and whether the date is recent enough to still be believed, stay
+    here -- those are policy, and the floor and `today` live in this file.
+    """
+    for bad in ("2026-99-99", "27/08/2026", "yesterday", "not verified 2026-08-26"):
+        with pytest.raises(ValueError, match="reprobed"):
+            sources_base.BrowserListSource(
+                id="demo", searches_spec=[("A", "https://example.invalid/jobs")],
+                extractor_js="(()=>[])()", reprobed=bad)
+    # "" is the abstaining default and must stay constructible -- every ENABLED source has it.
+    assert sources_base.BrowserListSource(
+        id="demo", searches_spec=[("A", "https://example.invalid/jobs")],
+        extractor_js="(()=>[])()").reprobed == ""

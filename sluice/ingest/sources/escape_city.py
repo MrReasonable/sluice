@@ -40,6 +40,7 @@ document.querySelectorAll('.job-card').forEach(card=>{
 register(BrowserListSource(
     id="escape_city",
     enabled=False,  # 2026-08-25: board is live and the extractor works; `?q=` cannot carry a keyword search
+    reprobed="2026-08-25",   # see the module docstring for what was found
     extractor_js=_JS,
     wait=4, scrolls=2, scroll_amount=800,
     extra={"job_type": "perm"},

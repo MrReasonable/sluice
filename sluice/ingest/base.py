@@ -9,6 +9,7 @@ subclasses / duck-types `Source` directly.
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date
 from typing import Protocol
 from urllib.parse import urlparse
 
@@ -270,6 +271,32 @@ def _first_degraded(rows) -> str | None:
     return None
 
 
+def validate_reprobed(qualified: str, value):
+    """Raise unless `value` is "" or a real ISO calendar date. Returns it unchanged.
+
+    FAIL LOUDLY AT CONSTRUCTION, the same posture as `validate_posting_paths` beside it: a
+    malformed date here is a usage error, and the alternative is a retirement whose recorded
+    check date is `2026-99-99` -- which reads as evidence to a human and parses as nothing.
+    `date.fromisoformat` is what makes "is this a date" a question with one answer, rather
+    than the prose question the guard used to ask.
+
+    FORMAT only. Whether a DISABLED source must carry one, and whether the date is recent
+    enough to still be believed, are policy rather than shape, and live in
+    tests/test_drifted_boards.py where the floor and `today` are.
+    """
+    if value == "":
+        return value
+    if not isinstance(value, str):
+        raise ValueError(f"{qualified}: reprobed must be a string ISO date (YYYY-MM-DD) or "
+                         f"\"\", got a {type(value).__name__}")
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        raise ValueError(f"{qualified}: reprobed must be an ISO date (YYYY-MM-DD) or \"\", "
+                         f"got {value!r}") from None
+    return value
+
+
 def _row_to_lead(source: str, search: Search, row: dict, extra: dict | None) -> Lead:
     """Map an extractor row {title, company?, location?, link, salary?} to a Lead.
     Source-level `extra` sets defaults; the search's own params override them (so
@@ -328,10 +355,27 @@ class BrowserListSource:
     # declare it only where the board has been looked at and found not to publish the field --
     # naming a field the extractor simply stopped reading is exactly the mistake this hides.
     unpublished_fields: tuple = ()
+    # ISO date (YYYY-MM-DD) on which this source's RETIREMENT was last checked against the
+    # live world, or "" for a source that is not retired. #207 ask 4: "a retirement is a claim
+    # about the outside world and it goes stale", and the rule for recording that belongs in
+    # the source CONTRACT rather than in one test.
+    #
+    # A declared FIELD rather than a date mined out of the module docstring, and the reason is
+    # measured rather than stylistic. The docstring version had to decide, from prose, whether
+    # a line asserted that a check HAPPENED -- and every tightening acquired a new hole: a
+    # substring test accepted `unverified` (it contains `verified`), and word-bounding it still
+    # accepted `not verified`, `never confirmed`, `no longer verified` and `yet to be
+    # re-probed`. That set is unbounded because it is a question about natural language, not
+    # about a date. A field cannot be negated: it is either a date or it is not.
+    #
+    # The docstring still carries the REASON, which is the part a human reads and which no
+    # field can replace. This carries only the WHEN.
+    reprobed: str = ""
 
     def __post_init__(self) -> None:
         # ASSIGNED back, not merely checked -- see `validate_posting_paths`.
         self.posting_paths = validate_posting_paths(f"source {self.id}", self.posting_paths)
+        validate_reprobed(f"source {self.id}", self.reprobed)
 
     def searches(self) -> list:
         return [_mk_search(spec) for spec in self.searches_spec]
@@ -534,10 +578,27 @@ class CarouselSource:
     # declare it only where the board has been looked at and found not to publish the field --
     # naming a field the extractor simply stopped reading is exactly the mistake this hides.
     unpublished_fields: tuple = ()
+    # ISO date (YYYY-MM-DD) on which this source's RETIREMENT was last checked against the
+    # live world, or "" for a source that is not retired. #207 ask 4: "a retirement is a claim
+    # about the outside world and it goes stale", and the rule for recording that belongs in
+    # the source CONTRACT rather than in one test.
+    #
+    # A declared FIELD rather than a date mined out of the module docstring, and the reason is
+    # measured rather than stylistic. The docstring version had to decide, from prose, whether
+    # a line asserted that a check HAPPENED -- and every tightening acquired a new hole: a
+    # substring test accepted `unverified` (it contains `verified`), and word-bounding it still
+    # accepted `not verified`, `never confirmed`, `no longer verified` and `yet to be
+    # re-probed`. That set is unbounded because it is a question about natural language, not
+    # about a date. A field cannot be negated: it is either a date or it is not.
+    #
+    # The docstring still carries the REASON, which is the part a human reads and which no
+    # field can replace. This carries only the WHEN.
+    reprobed: str = ""
 
     def __post_init__(self) -> None:
         # ASSIGNED back, not merely checked -- see `validate_posting_paths`.
         self.posting_paths = validate_posting_paths(f"source {self.id}", self.posting_paths)
+        validate_reprobed(f"source {self.id}", self.reprobed)
 
     def searches(self) -> list:
         return [_mk_search(spec) for spec in self.searches_spec]
