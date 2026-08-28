@@ -222,9 +222,17 @@ SKILL_TOKEN_RE = re.compile(r"^\.?[A-Za-z]")
 # Both refusals are answerable only by deleting or corrupting true content -- the shape
 # CLAUDE.md's LOCATION-field incident names -- and `S3`, `p99`, `OAuth2` and `Log4j` all
 # sit in an ordinary bullet that ends with a full stop. The internal dot MUST survive:
-# `Node.js`, `ASP.NET` and `802.11ac` are one token each, and splitting them would make a
-# two-token needle that no `Skills:` value could match. The leading dot survives so `.NET`
-# stays distinguishable from a bare `NET` (see `SKILL_TOKEN_RE` above).
+# `Node.js` and `ASP.NET` are one token each, and splitting them would make a two-token
+# needle that no `Skills:` value could match. The leading dot survives so `.NET` stays
+# distinguishable from a bare `NET` (see `SKILL_TOKEN_RE` above).
+#
+# `802.11ac` is deliberately NOT cited as an example here, though it has the same token
+# shape: `SKILL_TOKEN_RE` refuses it as a `Skills:` value outright (digit-leading), so it
+# can never be a needle, and citing it would read as if this rule made it expressible. It
+# is still governed by this pattern on the OTHER side -- as an EMITTED skill in a SKILLS
+# section, row 2 matches it against source text, where it must stay one token or a body
+# mentioning it could never source it. The two directions are not the same mechanism, and
+# an example that only holds for one of them belongs with that one.
 _WORD_RE = re.compile(r"\.?[A-Za-z0-9#+]+(?:\.[A-Za-z0-9#+]+)*")
 
 
@@ -242,7 +250,29 @@ def _skill_items(entry: dict) -> list[str]:
     raw = (entry.get("fields") or {}).get("Skills", "")
     items = [t.strip() for t in raw.split(",") if t.strip()]
     for item in items:
-        for token in _WORD_RE.findall(item):
+        tokens = _WORD_RE.findall(item)
+        if not tokens:
+            # A NON-BLANK item that tokenises to NOTHING -- `...`, `.`, `-`, `#` alone.
+            # Refused rather than carried as a token-less item, because a token-less item
+            # is not inert: it is non-empty, so it makes `entries[eid].skills` TRUTHY, and
+            # row 1's abstain (`if all(sources.entries[c].skills for c in cites)`) is
+            # keyed on exactly that truthiness. Measured -- with `Skills: ""` a bullet
+            # naming another entry's skill is clean, and with `Skills: "..."` the same
+            # bullet returns MISATTRIBUTED SKILL. So a punctuation typo silently switched
+            # a hard gate row ON for the whole vault, which is the quiet-wrong-default bug
+            # class this codebase engineers out everywhere else.
+            #
+            # It is also a REGRESSION GUARD on the trailing-dot tokeniser fix: before it,
+            # `...` was one token and `SKILL_TOKEN_RE` refused it loudly. Widening
+            # `_WORD_RE` to drop trailing dots turned that loud error into quiet
+            # activation. `-` was already in this state beforehand (no `_WORD_RE`
+            # alternative ever matched a lone hyphen), so this closes a pre-existing hole
+            # in the same line.
+            raise ValueError(
+                f"skill {item!r} is invalid: it contains no name at all, and a value that "
+                "is non-empty but nameless would still switch the misattribution check on "
+                "for every entry -- leave the field blank instead to mean 'not annotated'")
+        for token in tokens:
             if not SKILL_TOKEN_RE.match(token):
                 raise ValueError(
                     f"skill {item!r} is invalid: every token must begin with a letter, "
@@ -534,6 +564,21 @@ def bundle_sources(bundle: dict) -> BundleSources:
         # block holding the item `"Example Query"` as ONE element can never match the needle
         # ["Example", "Query"] -- a multi-word skill declared only in `Skills:` would be
         # refused as unsourced, which is the opposite of what declaring it means.
+        #
+        # A block seam is the ONLY seam this preserves. Punctuation INSIDE a block is
+        # transparent to `_WORD_RE`, so a multi-word needle may match across a sentence
+        # boundary: with the body `"The estate ran on Example Query. Example Framework came
+        # later."`, the emitted skills `Query Example` and `Example Query Example Framework`
+        # are both SOURCED. That is fail-OPEN, and it is stated rather than left to be
+        # rediscovered -- but it is CONSISTENCY, not a new class. A comma or a semicolon
+        # never blocked a match either (`"Example Query, Example Framework"` has always
+        # matched `Query Example`), and the full stop only appeared to, by the accident
+        # that `[A-Za-z0-9#+.]+` glued it to the token before it -- an accident that
+        # simultaneously produced three FALSE refusals on ordinary sentence-final skill
+        # names, which is why it was removed rather than kept. Pinned by
+        # `test_row_2_matches_across_a_sentence_seam_inside_one_block`
+        # (tests/test_cv_skills_containment.py) so it is a recorded property with a
+        # falsifier, not an accident anyone can quietly reverse.
         blocks.append(tuple(t for item in items for t in _WORD_RE.findall(item)))
         blocks.append(tuple(_WORD_RE.findall(e.get("body", ""))))
     baseline_block = _baseline_block(bundle)

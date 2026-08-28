@@ -650,14 +650,28 @@ def test_a_skills_terminator_line_ends_both_the_gate_region_and_the_parse():
     """The obligation THIS task inherits from Task 3's `section_spans`, and the reason a
     single `pytest.raises` is not enough to discharge it.
 
-    `section_spans`' SKILLS run ends at the first non-blank non-bullet line. Before this
-    task that was safe "for free": `parse_cv` rejected every SKILLS section outright, so
-    the parser and the gate stopped at the same place for a reason that had nothing to do
-    with WHERE the gate's run ended. Now that SKILLS is a modelled trailing section, the
-    correspondence has to be ESTABLISHED rather than assumed -- if the parser's own
+    `section_spans`' SKILLS run ends at a non-blank non-bullet line that is either
+    ALL-CAPS or reached while `in_work` is live; a line that is NEITHER is read as a group
+    heading and the run continues past it. The terminator below (`Not a bullet line`,
+    inside a live WORK EXPERIENCE) is the `in_work` case, which is the arm where gate and
+    parser still stop together. Before the group-heading fix the rule was simply "the
+    first non-blank non-bullet line", and this docstring said so; it is corrected here
+    rather than left disagreeing with `sluice/cv/validate.py`, whose own comment now
+    states the split and names what pins each arm.
+
+    Before Task 7 the correspondence was safe "for free": `parse_cv` rejected every SKILLS
+    section outright, so the parser and the gate stopped at the same place for a reason
+    that had nothing to do with WHERE the gate's run ended. Now that SKILLS is a modelled
+    trailing section, it has to be ESTABLISHED rather than assumed -- if the parser's own
     refusal fired at a DIFFERENT line than the gate's run stopped at (later, say), a line
     the gate never inspected would parse into `CvDocument.skills` and render into the PDF
     with no containment check behind it.
+
+    SCOPE, stated because it was once overstated: this test pins the two halves AGREE on
+    this fixture. It does not pin the terminator rule itself -- measured, deleting either
+    arm of that rule, or the whole block, leaves this file green. The three rows that do
+    pin it live in `tests/test_cv_skills_containment.py`; `sluice/cv/validate.py`'s
+    comment names them.
 
     BOTH halves are asserted, because either one alone proves nothing: a parser that
     raises SOMEWHERE in the document says nothing about WHERE, and a `section_spans` that
