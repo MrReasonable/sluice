@@ -449,12 +449,19 @@ class BundleSources(NamedTuple):
     # (bundle-wide), which `baseline` and the entries' digit sets cannot answer. Sequences
     # rather than a set, because a skill can be two words and no single token is one.
     #
-    # Its NESTING needs a construction-time shape check: a flat `tuple[str, ...]` is valid
-    # Python and iterates as CHARACTERS in row 2's matcher, so every skill would read
-    # UNSOURCED and every lead would go `skipped-gate` -- silently, on a value that looks
-    # right. Reject a member that is not a tuple/list of `str`. (Task 4 adds that guard to
-    # `validate()`, the one caller that reaches row 2 -- see `EntrySources`' docstring for
-    # why no guard lives on construction here either.)
+    # Its NESTING needs a shape check somewhere: a flat `tuple[str, ...]` is valid Python
+    # and iterates as CHARACTERS in row 2's matcher, so every skill reads UNSOURCED and
+    # every lead goes `skipped-gate` -- silently, on a value that LOOKS right. Measured:
+    # `BundleSources(entries={...}, baseline=frozenset(), source_tokens=("Example",
+    # "Query"))` was accepted and reported the one declared skill as unsourced.
+    #
+    # That check lives in `validate()`, beside its `isinstance(sources, BundleSources)`
+    # guard -- see there. An earlier version of THIS comment said Task 4 had added it; it
+    # had not, so the harm described as prevented was live, which is what the final review
+    # of this branch caught. It is NOT here at construction, and that is the same call
+    # `EntrySources`' docstring makes for key equality: `bundle_sources` below builds this
+    # value correctly by construction, so the only producer that can get the shape wrong
+    # is a caller building one by hand, and the gate is where such a value arrives.
     source_tokens: tuple[tuple[str, ...], ...]
 
     @property
@@ -532,10 +539,18 @@ def bundle_sources(bundle: dict) -> BundleSources:
     baseline_block = _baseline_block(bundle)
     baseline = frozenset(re.findall(r"\d+", "\n".join(baseline_block)))
     blocks.append(tuple(_WORD_RE.findall("\n".join(baseline_block))))
-    # `skills` and `nums` are keyed in ONE pass, so their key sets are equal by
-    # construction rather than by assertion -- for values built HERE. That is not the whole
-    # contract: `BundleSources` is a directly-constructible NamedTuple and the suite builds
-    # it by hand, so `validate()` re-checks the key sets on entry (see Task 4). The failure
-    # mode is why it is worth a guard at all: row 1 reads a missing `skills` key as an
-    # abstain, so a mismatched value skips attribution checking SILENTLY.
+    # `skills` and `nums` are keyed in ONE pass here -- but that is not why their key sets
+    # agree, and an earlier version of this comment got the reason wrong in a way that
+    # invited a guard nobody needs. They agree because there is only ONE id-keyed
+    # structure: `nums` is a DERIVED property over `entries` (see `BundleSources.nums`), so
+    # every `BundleSources` has equal key sets, hand-built ones included, and there is
+    # nothing for a caller to get out of step. `validate()` therefore does NOT re-check
+    # them -- the earlier comment claimed it did, citing a Task 4 that added no such
+    # check -- and adding one would assert that a dict's keys equal its own keys.
+    #
+    # What the failure mode WOULD be, if the two were ever stored separately again: row 1
+    # reads a missing `skills` key as an abstain, so a mismatched value would skip
+    # attribution checking SILENTLY. That is the reason to keep them collapsed, not a
+    # reason for a guard. `source_tokens` is the field that genuinely does need one, and
+    # it has one -- in `validate()`, see its own comment above.
     return BundleSources(entries, baseline, tuple(b for b in blocks if b))

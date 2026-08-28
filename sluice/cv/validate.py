@@ -341,6 +341,29 @@ def validate(cv_text, sources, employers=None, fabrication_decoys=None):
         raise TypeError(
             f"validate() takes a BundleSources, not {type(sources).__name__} -- build it "
             "with cv.bundle.bundle_sources(bundle)")
+    # Row 2's vocabulary is NESTED: one token SEQUENCE per source block. A flat
+    # `tuple[str, ...]` is valid Python and `_in_source` iterates each member, so a flat
+    # value makes every block a STRING that iterates as CHARACTERS -- no multi-token
+    # needle can match, every emitted skill reads UNSOURCED, and the lead goes
+    # `skipped-gate` after burning its one retry. Measured on
+    # `source_tokens=("Example", "Query")` against a bundle that really declared
+    # `Example Query`: exactly that, silently, on a value that looks right.
+    #
+    # Here rather than at construction, for the same reason as the check above: the one
+    # producer, `bundle_sources`, cannot get it wrong, so a wrong value can only arrive
+    # from a hand-built caller -- and this is where such a value arrives. Unlike the
+    # `entries`/`nums` key sets, which are equal by construction (`nums` is derived), the
+    # nesting is NOT structural, so nothing else holds it.
+    #
+    # Checked in FULL rather than on the first member: a partial check would pass a
+    # correctly-shaped head with a flat tail, which fails in exactly the same silent way.
+    if not all(isinstance(b, (tuple, list)) and all(isinstance(t, str) for t in b)
+               for b in sources.source_tokens):
+        raise TypeError(
+            "validate() takes a BundleSources whose source_tokens is a sequence of "
+            "TOKEN SEQUENCES, one per source block -- a flat sequence of strings would "
+            "silently report every emitted skill as UNSOURCED; build it with "
+            "cv.bundle.bundle_sources(bundle)")
     v = []
     ids, nums, baseline = sources.ids, sources.nums, sources.baseline
     for decoy in (fabrication_decoys or []):
@@ -424,8 +447,19 @@ def validate(cv_text, sources, employers=None, fabrication_decoys=None):
             # row 1's verdict just below -- see `_strip_skill_spans`' own docstring for
             # why gating removal on row 1 passing converted every one of its deliberate
             # under-fires into a hard INVENTED METRIC on a skill the user really declared.
-            cited_skills = set().union(*(sources.entries[c].skills for c in cites
-                                         if c in sources.entries)) if cites else set()
+            #
+            # Indexed WITHOUT a membership guard, deliberately. Every `c` here is already
+            # known to be a key of `sources.entries`: the `bad`/BAD CITATION arm five
+            # lines up `continue`s on any cite outside `ids`, and `ids` IS
+            # `sources.entries.keys()`. `cites` is non-empty for the same reason (the
+            # UNCITED BULLET arm). Two `if c in sources.entries` filters used to sit here
+            # and on row 1's abstain below; they were unreachable, and worse than merely
+            # redundant -- had a `c` ever been missing, filtering it out would have made
+            # row 1's `all(...)` vacuously True and RUN the check instead of abstaining,
+            # then raised KeyError one line later on `licensed`, which carries no such
+            # filter. So the filters could not have protected anything; they only hid
+            # that the invariant is upheld by the two `continue`s above.
+            cited_skills = set().union(*(sources.entries[c].skills for c in cites))
             bullet_nums = set(re.findall(r"\d+", _strip_skill_spans(prose, cited_skills)))
             union = set().union(*(nums[c] for c in cites))
             invented = bullet_nums - union
@@ -444,7 +478,10 @@ def validate(cv_text, sources, employers=None, fabrication_decoys=None):
             # lists a short common-word skill must not be blocked for using that word in
             # its ordinary sense. Every failure mode is an under-fire, which is the
             # direction a hard gate must err.
-            if all(sources.entries[c].skills for c in cites if c in sources.entries):
+            # No membership guard on `cites`, for the reason given at `cited_skills`
+            # above -- and it matters most HERE, since filtering would turn an abstain
+            # into a run.
+            if all(sources.entries[c].skills for c in cites):
                 licensed = set().union(*(sources.entries[c].skills for c in cites))
                 vocabulary = set().union(*(e.skills for e in sources.entries.values()))
                 for item in sorted(vocabulary - licensed):
