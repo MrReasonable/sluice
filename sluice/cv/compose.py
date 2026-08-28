@@ -12,8 +12,7 @@ _RULES = """CV RULES (follow exactly):
 - Rephrasing changes wording and emphasis, never facts or numbers. Any number or named fact you include must remain unchanged from the bundle entry it came from.
 - Every WORK EXPERIENCE bullet MUST end with a citation [id] naming the bundle entry it came from (several allowed: [id] [id]). No uncited bullets. Any number in a bullet must appear in a cited entry.
 - The SKILLS INVENTORY section is FRAMING, not a source. Use it to choose which experience entries to lead with and how to describe them. Never cite it, never quote a number from it, and never introduce a claim that rests on it alone: every fact in the CV must still come from the BASELINE CV or a VERIFIED EXPERIENCE ENTRY.
-- You may name a skill in a WORK EXPERIENCE bullet only if an entry that bullet cites lists that skill. If no cited entry lists it, leave it out.
-- Every line of the SKILLS section must come from the SOURCE BUNDLE. Do not add a skill the bundle does not contain.
+{skills_attribution_rule}- Every line of the SKILLS section must come from the SOURCE BUNDLE. Do not add a skill the bundle does not contain.
 - {employer_line}
 - NO em dashes anywhere. Use commas, colons, semicolons, periods, or parentheses. No double hyphens (--). En-dash date ranges (12/2025-present) are fine.
 - No AI slop (avoid these words/phrases and any inflection of them: {banned_phrases}). Short sentences. Real metrics only.
@@ -40,6 +39,33 @@ CERTIFICATES
 EDUCATION
 - university, dates | degree
 {skills_block}"""
+
+# Row 1's prompt rule, and the SECOND thing `skills_requested` gates -- not just the
+# format-contract block below. It shipped UNCONDITIONAL and that was a Critical: measured
+# with `skills_requested=False`, this sentence still rendered, and on a vault where no
+# entry carries a `Skills:` value -- the shipped default, and every install on upgrade day
+# -- "only if an entry that bullet cites lists that skill" is satisfiable by naming NO
+# skill at all. A compliant model strips every technology name out of every WORK bullet,
+# and NOTHING catches it: that is a COMPLIANCE change, not a gate violation, so
+# `validate()` sees a clean CV and the run reports success while the CVs go out weaker.
+#
+# Gated on the SAME condition the engine already computes for the block below
+# (`any(es.skills for es in sources.entries.values())`, cv/engine.py) rather than on a
+# second test of its own, for the reason SC5 gives there: the request condition and the
+# gate's abstain condition must be unable to disagree.
+#
+# Row 1 (cv/validate.py's MISATTRIBUTED SKILL) ABSTAINS PER-ENTRY on exactly this
+# condition -- `if all(sources.entries[c].skills for c in cites ...)` -- so a conditional
+# rule is what makes the prompt state the rule the gate will actually apply. Row 2
+# (UNSOURCED SKILL) is the one that is genuinely unconditional (it fails closed on an
+# un-annotated vault), which is why its bullet above stays outside this gating.
+#
+# Its trailing newline, not a leading one, is what makes the empty case collapse cleanly:
+# the placeholder sits at column 0 of its own line in `_RULES`, so an empty value leaves
+# the SKILLS INVENTORY bullet and the row 2 bullet adjacent with no blank line between.
+_SKILLS_ATTRIBUTION_PROMPT_RULE = (
+    "- You may name a skill in a WORK EXPERIENCE bullet only if an entry that bullet "
+    "cites lists that skill. If no cited entry lists it, leave it out.\n")
 
 # The gated SKILLS section's format-contract example. Interpolated into `_RULES` only
 # when `build_prompt` is called with `skills_requested=True` -- see that function.
@@ -126,6 +152,8 @@ def build_prompt(bundle_text, jd, company, role, *, name, contact="",
         _RULES.format(contact=contact, name_heading=name.upper(),
                      employer_line=_employer_line(employers), role=role,
                      banned_phrases=_banned_phrases_sentence(slop_allow),
+                     skills_attribution_rule=(
+                         _SKILLS_ATTRIBUTION_PROMPT_RULE if skills_requested else ""),
                      skills_block=_SKILLS_PROMPT_BLOCK if skills_requested else ""),
         "",
         "=== THE ROLE (JD) ===",

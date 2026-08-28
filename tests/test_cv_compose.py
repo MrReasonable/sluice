@@ -354,13 +354,20 @@ def test_the_skills_block_is_absent_when_no_entry_declares_skills():
     Checked against the exact gated block (`C._SKILLS_PROMPT_BLOCK`), not a blanket
     "SKILLS" substring: `_RULES` already carries an unconditional "SKILLS INVENTORY"
     framing bullet (#165, a wholly separate, always-on feature -- the informational
-    corpus, not the per-entry `Skills:` field this task gates), and TWO always-present
-    row 1/row 2 attribution rules Task 8 itself adds (they must fire on every compose,
-    since the gate rows they describe are never conditional -- see cv/validate.py). All
-    three legitimately contain the word "SKILLS", so a bare substring assertion here
-    would fail on shipped text this task neither owns nor is meant to touch. Measured:
-    the blanket-substring form of this test, taken verbatim from the plan, fails on the
-    unmodified `_RULES` bullet alone even before this task's own two new rules exist."""
+    corpus, not the per-entry `Skills:` field this task gates), and the row 2 rule Task 8
+    itself adds, which IS always present. Row 2 (`UNSOURCED SKILL`) is unconditional in
+    the gate -- `cv/validate.py` runs it on every SKILLS line, fail-closed, whatever the
+    vocabulary -- so its prompt rule is unconditional too. Row 1 (`MISATTRIBUTED SKILL`)
+    is NOT: it abstains per-entry (`if all(sources.entries[c].skills for c in cites ...)`),
+    so its prompt rule is gated on `skills_requested` alongside the block, and this
+    docstring used to claim the opposite for BOTH rows -- an un-annotated vault then read
+    a rule it could only satisfy by naming no skill anywhere (see
+    `test_the_row_1_attribution_rule_is_absent_when_no_entry_declares_skills`). The
+    always-present bullets legitimately contain the word "SKILLS", so a bare substring
+    assertion here would fail on shipped text this task neither owns nor is meant to
+    touch. Measured: the blanket-substring form of this test, taken verbatim from the
+    plan, fails on the unmodified `_RULES` bullet alone even before this task's own new
+    rules exist."""
     p = C.build_prompt("BUNDLE", "JD", "Co", "Role", name="EXAMPLE CANDIDATE",
                        skills_requested=False)
     assert C._SKILLS_PROMPT_BLOCK not in p
@@ -386,3 +393,38 @@ def test_the_prompt_states_the_rule_row_2_enforces():
     p = C.build_prompt("BUNDLE", "JD", "Co", "Role", name="EXAMPLE CANDIDATE",
                        skills_requested=True)
     assert ("Every line of the SKILLS section must come from the SOURCE BUNDLE" in p)
+
+
+def test_the_row_1_attribution_rule_is_absent_when_no_entry_declares_skills():
+    """SC5's request abstain, for the ROW 1 RULE rather than the format block.
+
+    The rule shipped unconditional. On a vault where no entry carries a `Skills:` value
+    -- the shipped default, and every install the day #168 lands -- "you may name a skill
+    in a WORK EXPERIENCE bullet only if an entry that bullet cites lists that skill" is
+    satisfiable ONLY by naming no skill at all, so a compliant model strips every
+    technology name out of every bullet. The gate cannot see that: it is a COMPLIANCE
+    change, not a violation, so `validate()` returns clean and the run reports success
+    while the CVs go out weaker. The block-level abstain above does not cover it -- that
+    test asserts on `_SKILLS_PROMPT_BLOCK`, which this rule is not part of.
+
+    Asserted as "no rule that FORBIDS naming a skill", by checking the constant is absent
+    AND that the surviving prompt still carries no conditional-permission sentence: a
+    bare `_SKILLS_ATTRIBUTION_PROMPT_RULE not in p` alone would pass on a mutant that
+    merely re-worded the same instruction inline."""
+    p = C.build_prompt("BUNDLE", "JD", "Co", "Role", name="EXAMPLE CANDIDATE",
+                       skills_requested=False)
+    assert C._SKILLS_ATTRIBUTION_PROMPT_RULE not in p
+    assert "only if an entry" not in p
+    # Row 2 is genuinely unconditional (the gate row fails closed), so it must survive --
+    # without this the test would also pass on a mutant that gated the WRONG rule.
+    assert "Every line of the SKILLS section must come from the SOURCE BUNDLE" in p
+
+
+def test_the_row_1_attribution_rule_is_present_when_an_entry_declares_skills():
+    """The positive control for the abstain above: gated, not deleted. Without this row a
+    mutant that dropped the rule entirely would leave the abstain test green while row 1
+    of the gate refused CVs the prompt never warned the model about."""
+    p = C.build_prompt("BUNDLE", "JD", "Co", "Role", name="EXAMPLE CANDIDATE",
+                       skills_requested=True)
+    assert C._SKILLS_ATTRIBUTION_PROMPT_RULE in p
+    assert "only if an entry that bullet cites lists that skill" in p
