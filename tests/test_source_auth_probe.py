@@ -310,13 +310,26 @@ def test_a_camofox_outage_is_explained_for_EVERY_source_class(src):
     that implements it -- one today, after `CarouselSource` was retired on 2026-08-28 with
     its last producer.
 
-    Kept PARAMETRIZED over a list rather than collapsed to a single call, because the bug
-    it records is a PARITY bug: the first fix landed on one implementation and an outage
-    still retired the other after three runs -- the identical defect, in the file next
-    door. A second implementation joins this list, it does not get its own test.
+    Kept PARAMETRIZED over a list rather than collapsed to a single call, because the bug it
+    records is a PARITY bug: the first fix landed on one implementation and an outage still
+    retired the other after three runs -- the identical defect, in the file next door. A
+    second implementation joins this list; it does not get its own test.
 
-    Parameterised over the classes rather than written twice: a third implementation joins
-    this test by existing, instead of by someone remembering.
+    The list is HAND-WRITTEN, and this docstring used to claim the opposite -- that a third
+    implementation "joins this test by existing, instead of by someone remembering" -- which
+    was never true of a literal list, as `_every_registered_source`'s own docstring below
+    records. Corrected rather than propped up with a scope assertion, because the enumerated
+    coverage already exists next door and is the better mechanism:
+    `test_health_hint_tolerates_a_non_dict_raw_for_EVERY_registered_source` parametrizes over
+    the whole registry, and `test_the_conformance_sweep_actually_sees_the_overriding_sources`
+    is its anti-vacuity guard.
+
+    What stays hand-written here is deliberate rather than lazy. This test drives `fetch`, and
+    `_WorkInStartupsSource.fetch` HEAD-checks the URL over the network before it will touch a
+    tab -- so sweeping the registry through THIS property would either make the suite
+    non-hermetic or require stubbing a second thing to test a first. The property being
+    guarded is the base `fetch`/`health_hint` handshake; a source that overrides `fetch` to
+    short-circuit is not exercising it.
     """
     class _NoTab(_Cam):
         def create_tab(self, url=""):
@@ -370,6 +383,7 @@ def test_health_hint_tolerates_a_non_dict_raw_for_EVERY_registered_source(src, r
     assert hint["landed_path"] == "" and hint["requested_path"] == ""
     assert "fetch_error" not in hint, "a non-dict carries no error to report"
     assert "degraded" not in hint, "a non-dict carries no rows to have stamped a marker"
+
 
 
 def test_the_conformance_sweep_actually_sees_the_overriding_sources():
