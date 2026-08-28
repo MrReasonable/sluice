@@ -2980,3 +2980,38 @@ def test_a_refused_lead_never_reads_any_evidence_corpus():
                 policy=StalenessPolicy(ttl_days=1, today="2026-08-25"))
     assert r.status == "skipped-stale"
     assert v.reads == [], f"a refused lead touched the evidence corpora: {v.reads}"
+
+
+def test_one_malformed_skills_value_fails_every_lead_in_the_run():
+    """The BLAST RADIUS of a malformed `Skills:` value, pinned because both shipped docs
+    once claimed the wrong one ("fails only the lead currently being composed").
+
+    `build_bundle` runs INSIDE `run_one`, per lead, over the SHARED verified corpus, so a
+    single bad value raises for every lead in the run -- not for one. That matters to a
+    user reading the docs to gauge risk before annotating an Experience Library.
+
+    Both halves are asserted. The failure half alone would pass on a fake that broke for
+    an unrelated reason, so the CONTROL re-runs the identical three leads with a
+    well-formed value and requires all three to complete. Failing loudly is the right
+    behaviour here -- it is the CLAIM about scope that was wrong, not the code -- so this
+    test pins the scope, not a softer outcome.
+    """
+    def _leads():
+        return [Note({"status": "shortlist", "company": f"Example Co{i}",
+                      "role": "Analyst"},
+                     path=f"Job Applications/Job Leads/Example Co{i} - Analyst.md")
+                for i in range(3)]
+
+    entry = dict(ENTRIES[0], fields=dict(Skills="Result 92"))
+    v = FakeVault([entry], notes=_leads())
+    results = run_batch(v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(),
+                        renderer=FakeRenderer(), dry_run=True)
+    assert [r.status for r in results] == ["error", "error", "error"]
+
+    entry = dict(ENTRIES[0], fields=dict(Skills="Example Query"))
+    v = FakeVault([entry], notes=_leads())
+    results = run_batch(v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(),
+                        renderer=FakeRenderer(), dry_run=True)
+    assert [r.status for r in results] == ["dry-run", "dry-run", "dry-run"], (
+        "the control run must succeed, or the failure above proves nothing about the "
+        "malformed value")

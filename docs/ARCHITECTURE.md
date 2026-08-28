@@ -437,17 +437,25 @@ whichever neighbour it was written next to:
    so a CV bullet citing the entry may use those names without tripping the
    misattribution check below, and a digit inside one of them (`Widget3`) is
    not read as an invented metric for a bullet citing that same entry. Every
-   token of a `Skills:` item must begin with a letter (`cv/bundle.py`'s
-   `SKILL_TOKEN_RE`, checked PER TOKEN rather than per item -- an item-level
-   check would accept `Result 92` because the item begins with `R`, and span
-   removal would then blank the real figure `92` from every bullet citing the
-   entry) -- fail-loudly at `build_bundle` construction, this module's own
-   house rule, rather than at gate time far from the note that caused it. That
-   construction call sits inside `cv/engine.py`'s per-lead try, though, not at
-   `experience add`/`verify` time: a malformed `Skills:` value fails only the
-   lead currently being composed (`cv run`'s per-lead `error` outcome), never
-   the proposal or verification commands, which do not import `cv/bundle.py` at
-   all. `BundleSources`' per-entry allowlist is now a NamedTuple,
+   token of a `Skills:` item must begin with a letter, or with a dot then a
+   letter so `.NET` is expressible (`cv/bundle.py`'s `SKILL_TOKEN_RE`, checked
+   PER TOKEN rather than per item -- an item-level check would accept
+   `Result 92` because the item begins with `R`, and span removal would then
+   blank the real figure `92` from every bullet citing the entry). A
+   DIGIT-leading token stays refused whatever it names, which costs real values
+   (`ISO 9001`, `Web 2.0`, `Section 508`, `3D modelling`, `5S`, `802.11ac`) and
+   is stated as an over-refusal rather than disguised as a distinction the code
+   draws: nothing separates those from the metric shorthand the rule exists to
+   close. It is fail-loudly at `build_bundle` construction, this module's own
+   house rule, rather than at gate time far from the note that caused it.
+   That construction call sits inside `cv/engine.py`'s per-lead try, but the
+   blast radius is the RUN, not the lead: `build_bundle` runs per lead over the
+   SHARED verified corpus, so one malformed value raises for every lead --
+   measured, three shortlisted leads all returned `cv run`'s `error` outcome
+   from a single bad `Skills:` value. The per-lead try means the run completes
+   rather than aborting, and the proposal and verification commands are
+   untouched, since they do not import `cv/bundle.py` at all.
+   `BundleSources`' per-entry allowlist is now a NamedTuple,
    `EntrySources(nums, skills)`, rather than a bare digit set, so the two
    travel together keyed by the same entry id and no second id-keyed structure
    can disagree about what an id licenses. `BundleSources` itself grew from two
