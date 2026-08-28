@@ -2,7 +2,6 @@ from types import SimpleNamespace
 
 from sluice.ingest.base import (
     BrowserListSource,
-    CarouselSource,
     Ctx,
     Search,
     searches_for,
@@ -141,22 +140,6 @@ def test_health_hint_promotes_the_FIRST_degraded_marker_only():
     assert src.health_hint(raw)["degraded"] == "anchor-fallback"
 
 
-def test_health_hint_promotes_a_degraded_row_marker_from_a_carousel_source():
-    src = CarouselSource(id="wttj", read_js="R", advance_selector="[n]",
-                         searches_spec=[("Example Search", "http://o")])
-    raw = {"jobs": [{"title": "A", "link": "u", "degraded": "anchor-fallback"}]}
-    assert src.health_hint(raw)["degraded"] == "anchor-fallback"
-
-
-def test_carousel_health_hint_reports_paths_too():
-    src = CarouselSource(id="wttj", read_js="R", advance_selector="[n]",
-                         searches_spec=[("Example Search", "http://o")])
-    raw = {"jobs": [], "landed": "https://example.invalid/login",
-           "requested": "https://example.invalid/jobs"}
-    hint = src.health_hint(raw)
-    assert hint["landed_path"] == "/login" and hint["requested_path"] == "/jobs"
-
-
 def test_browserlist_fetch_drives_camofox_with_fake():
     calls = []
 
@@ -199,43 +182,3 @@ def test_browserlist_fetch_returns_empty_when_no_tab():
     assert raw["result"] == [] and raw["error"] == "no-tab"
 
 
-def test_carousel_parse_maps_jobs_to_leads():
-    src = CarouselSource(id="wttj", read_js="R", advance_selector='[data-testid="next"]',
-                         searches_spec=[("Otta", "http://o")])
-    raw = {"jobs": [{"title": "Analyst", "company": "Acme", "link": "http://o/1", "salary": "£100k"}]}
-    leads = src.parse(raw, Search("Otta", "http://o"))
-    assert leads[0].title == "Analyst"
-    assert leads[0].salary == "£100k"
-    assert leads[0].source == "wttj"
-
-
-def test_carousel_fetch_walks_until_repeat():
-    reads = [
-        {"result": {"title": "A", "link": "http://o/1"}},
-        {"result": {"title": "B", "link": "http://o/2"}},
-        {"result": {"title": "B", "link": "http://o/2"}},  # repeat → stop
-    ]
-
-    class FakeCam:
-        def __init__(self):
-            self.i = 0
-
-        def create_tab(self, url=""):
-            return "t1"
-
-        def evaluate(self, tid, expr):
-            if expr == "R":
-                r = reads[self.i]
-                return r
-            # advance JS: pretend a next-button exists, advance the read cursor
-            self.i += 1
-            return {"result": True}
-
-        def close_tab(self, tid):
-            return {}
-
-    src = CarouselSource(id="wttj", read_js="R", advance_selector="[n]",
-                         searches_spec=[("Otta", "http://o")])
-    ctx = Ctx(camofox=FakeCam(), sleep=lambda *_: None)
-    raw = src.fetch(ctx, Search("Otta", "http://o"))
-    assert [j["title"] for j in raw["jobs"]] == ["A", "B"]

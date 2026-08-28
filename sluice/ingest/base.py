@@ -1,10 +1,18 @@
-"""The Source contract and the two base classes that cover almost every board.
+"""The Source contract and the base class that covers almost every board.
 
 A Source splits impure I/O (`fetch`, which drives the browser) from a pure
 transform (`parse`, raw dict -> list[Lead]) so parsers are tested offline against
-golden fixtures with no Camofox. `BrowserListSource` covers scroll-a-list boards;
-`CarouselSource` covers one-job-at-a-time carousels (WTTJ/Otta). Anything weirder
-subclasses / duck-types `Source` directly.
+golden fixtures with no Camofox. `BrowserListSource` covers scroll-a-list boards.
+Anything weirder subclasses / duck-types `Source` directly -- `wellfound`,
+`naukrigulf`, `reed`, `linkedin` and `workinstartups` all do, by overriding one of
+the two sanctioned hooks rather than by needing a second base class.
+
+There WAS a second one. `CarouselSource` read a one-job-at-a-time carousel by
+clicking an advance control, and was retired on 2026-08-28 when its only producer
+(`wttj`) moved to WTTJ's list view and left it with none. It is recorded here
+rather than silently dropped because the shape is real and a future board may
+want it back: read the visible job, advance, stop when a read repeats or the
+control disappears. `git log -- sluice/ingest/base.py` has the implementation.
 """
 import time
 from collections.abc import Callable
@@ -541,175 +549,3 @@ class BrowserListSource:
         if rejected:
             hint["rejected_paths"] = rejected
         return hint
-
-
-@dataclass
-class CarouselSource:
-    """A one-job-at-a-time carousel (WTTJ/Otta): read the visible job, click the
-    advance button, repeat until it stops yielding new jobs. Advancing CONSUMES
-    the job, so we stop as soon as a read repeats or the advance button is gone."""
-    id: str
-    read_js: str
-    advance_selector: str
-    searches_spec: list
-    kind: str = "carousel"
-    enabled: bool = True
-    wait: float = 3
-    max_jobs: int = 40
-    extra: dict | None = None
-    # Same opt-in as BrowserListSource, same abstaining default -- see `admits_path`.
-    # `parse` below reads it, so declaring it here is not decoration: without the field
-    # the attribute lookup raises and every carousel source dies at parse time. That is
-    # exactly what happened when the guard was first added to only one of the two
-    # classes, and it is why the guard's tests enumerate the source CLASSES rather than
-    # naming the one that had the bug -- both for this field and for `rejected_paths`.
-    posting_paths: tuple = ()
-    # Completeness signals this board does not publish AT ALL, so an empty value is the
-    # board's answer rather than a broken selector -- e.g. ("company",). Report-only, and the
-    # ONLY thing it does is stop `ingest list-sources --health` printing a permanent
-    # `UNGUARDED(<field>)` for a source whose rate can never climb (see
-    # `HealthStore.unguarded_signals`). It does NOT change what `blank` classifies: the 0.8
-    # high-water floor already leaves such a source outside the check, so declaring this
-    # cannot suppress a real drift reason, only a standing notice about an impossible one.
-    #
-    # Empty is the abstaining default, and it is the SAFE direction: an undeclared source that
-    # genuinely lacks a field keeps showing the flag, which is noise a human can act on, while
-    # a wrongly-declared one goes quiet about a signal that might have been recoverable. So
-    # declare it only where the board has been looked at and found not to publish the field --
-    # naming a field the extractor simply stopped reading is exactly the mistake this hides.
-    unpublished_fields: tuple = ()
-    # ISO date (YYYY-MM-DD) on which this source's RETIREMENT was last checked against the
-    # live world, or "" for a source that is not retired. #207 ask 4: "a retirement is a claim
-    # about the outside world and it goes stale", and the rule for recording that belongs in
-    # the source CONTRACT rather than in one test.
-    #
-    # A declared FIELD rather than a date mined out of the module docstring, and the reason is
-    # measured rather than stylistic. The docstring version had to decide, from prose, whether
-    # a line asserted that a check HAPPENED -- and every tightening acquired a new hole: a
-    # substring test accepted `unverified` (it contains `verified`), and word-bounding it still
-    # accepted `not verified`, `never confirmed`, `no longer verified` and `yet to be
-    # re-probed`. That set is unbounded because it is a question about natural language, not
-    # about a date. A field cannot be negated: it is either a date or it is not.
-    #
-    # The docstring still carries the REASON, which is the part a human reads and which no
-    # field can replace. This carries only the WHEN.
-    reprobed: str = ""
-
-    def __post_init__(self) -> None:
-        # ASSIGNED back, not merely checked -- see `validate_posting_paths`.
-        self.posting_paths = validate_posting_paths(f"source {self.id}", self.posting_paths)
-        validate_reprobed(f"source {self.id}", self.reprobed)
-
-    def searches(self) -> list:
-        return [_mk_search(spec) for spec in self.searches_spec]
-
-    def fetch(self, ctx: Ctx, search: Search) -> dict:
-        cam, sleep = ctx.camofox, getattr(ctx, "sleep", time.sleep)
-        tid = cam.create_tab(search.url)
-        if not tid:
-            return {"jobs": [], "landed": "", "requested": search.url, "error": "no-tab"}
-        # Same try/finally as BrowserListSource, for the same reason. `health_hint` was fixed
-        # in one implementation and not the other twice on this branch; a resource leak is no
-        # different, so both close together.
-        jobs, seen, errors = [], set(), []
-        landed = None
-        try:
-            sleep(self.wait)
-            for _ in range(self.max_jobs):
-                read = cam.evaluate(tid, self.read_js)
-                if isinstance(read, dict) and read.get("error"):
-                    # `Camofox._api` captures every failure as `{"error": ...}` rather than
-                    # raising, so a failed evaluate is INDISTINGUISHABLE from a page with no
-                    # jobs unless we look. This class did not look: it broke out of the loop
-                    # and returned an empty `jobs` with no `error`, so `health_hint` had
-                    # nothing to propagate, `detect_drift` saw a bare `zero`, and three such
-                    # runs retired the source. That is the exact failure this branch removes
-                    # -- and it was removed for the list-shaped sources only.
-                    errors.append(read["error"])
-                    break
-                job = read.get("result") if isinstance(read, dict) else None
-                if not isinstance(job, dict):
-                    break
-                sig = job.get("link") or job.get("title")
-                if not sig or sig in seen:  # "all caught up" / repeat
-                    break
-                seen.add(sig)
-                jobs.append(job)
-                advanced = cam.evaluate(tid, _advance_js(self.advance_selector))
-                if isinstance(advanced, dict) and advanced.get("error"):
-                    errors.append(advanced["error"])
-                    break
-                if not (isinstance(advanced, dict) and advanced.get("result")):
-                    break
-                sleep(0.5)
-            landed = cam.evaluate(tid, "location.href")
-        finally:
-            cam.close_tab(tid)
-        if isinstance(landed, dict) and landed.get("error"):
-            errors.append(landed["error"])
-        landed_result = landed.get("result") if isinstance(landed, dict) else None
-        # READ, not assumed. This returned `landed: search.url` unconditionally, which asserts
-        # `requested_host == landed_host` -- a manufactured "no redirect" on a run where
-        # nothing was read, and redirect is one of the few signals that would have explained
-        # the zero. Same reasoning as the base class, which stopped doing this.
-        out = {"jobs": jobs, "landed": landed_result or ("" if errors else (search.url or "")),
-               "requested": search.url}
-        if errors:
-            out["error"] = errors[0]
-        return out
-
-    def parse(self, raw: dict, search: Search) -> list:
-        # Same guard as BrowserListSource.parse, deliberately: a defensive pattern applied
-        # to one of two parse paths is the half-applied shape this repo treats as worse
-        # than none. No carousel source declares `posting_paths` today, so this abstains
-        # and changes nothing -- it is here so the 24th source cannot pick the wrong class
-        # and quietly lose the guard.
-        return [
-            _row_to_lead(self.id, search, job, self.extra)
-            for job in raw.get("jobs", [])
-            if isinstance(job, dict) and (job.get("title") or "").strip()
-            and admits_path(self.posting_paths, job.get("link") or job.get("url") or "")
-        ]
-
-    def health_hint(self, raw: dict) -> dict:
-        raw = raw if isinstance(raw, dict) else {}   # see BrowserListSource.health_hint
-        hint = {
-            # `_sized` not `len(...)` directly: normalising `raw` guarantees a DICT,
-            # not that the value under the payload key is sized. `{"jobs": None}`
-            # raised TypeError straight past the tolerance the line above exists for.
-            "count": len(_sized(raw.get("jobs"))),
-            "landed_host": _host(raw.get("landed", "")),
-            "requested_host": _host(raw.get("requested", "")),
-            "landed_path": _path(raw.get("landed", "")),
-            "requested_path": _path(raw.get("requested", "")),
-            "markers": {},
-        }
-        # The same propagation as BrowserListSource, for the same reason. `health_hint` is a
-        # PROTOCOL member with two implementations, and the first fix landed on one of them --
-        # so a Camofox outage still reached the classifier as an unexplained zero here and
-        # retired this source after three runs. Fixing the instance and not the class is how
-        # the identical bug survives in the file next door; the conformance test is
-        # parameterised over both classes so a third implementation cannot repeat it.
-        if raw.get("error"):
-            hint["fetch_error"] = raw["error"]
-        degraded = _first_degraded(raw.get("jobs"))
-        if degraded:
-            hint["degraded"] = degraded
-        # And the path guard's rejections (#153), for the same reason as everything above
-        # it. `parse` filters on BOTH classes; reporting on only one would leave the
-        # carousel path the SILENT filter this key exists to prevent -- which is the
-        # instance-not-class shape the paragraph above narrates, repeated inside the very
-        # fix for it. No carousel source declares `posting_paths` today, so this is absent
-        # on every one of them and their hints stay byte-identical.
-        rejected = _rejected_path_count(self.posting_paths, raw.get("jobs"))
-        if rejected:
-            hint["rejected_paths"] = rejected
-        return hint
-
-
-def _advance_js(selector: str) -> str:
-    """JS that clicks the advance control and reports whether it existed."""
-    return (
-        "(()=>{const b=document.querySelector(" + repr(selector) + ");"
-        "if(!b)return false;b.click();return true;})()"
-    )

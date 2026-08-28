@@ -1414,6 +1414,12 @@ _CORPUS_DIR = _TESTS_DIR / "fixtures"
 # sees and silently rewrite the evidence. Use `Alfa`/`Bravo` for anything generated; extend this
 # family only for captured values whose SHAPE has to survive.
 _REVIEWED_CORPUS_LOCATIONS = frozenset({
+    # Added 2026-08-28 with wttj's recapture. A THREE-token comma list, because the
+    # captured value was one -- a board listing a role in three cities. Each component
+    # is already a reviewed invented toponym in this roster; the composite is new only
+    # as an arrangement, and it preserves the token STRUCTURE `_norm_location` reduces
+    # to a set, which is what a substitution here has to keep intact.
+    'Palmerburgh, Potterburgh, Clarkefurt',
     'ASR', 'Allied Brennmark (Remote)', 'Allied Sundic Reaches - Allied Sundic Reaches',
     'Brackenburgh - Bantria', 'Clarkefurt', 'Clarkefurt - Allied Sundic Reaches',
     'Clarkefurt - Allied Sundic Reaches (ASR)', 'Ellery Kestrelburgh',
@@ -1459,6 +1465,12 @@ _REVIEWED_CORPUS_COMPANIES = frozenset({
     'Example Meridian', 'Example MeridianPalmerburgh', 'Example Northgate', 'Example Retail',
     'Example Robotics', 'Example Systems', 'Example Systems ABMPalmerburgh',
     'Example Telemetry', 'Example Telemetry EdgePalmerburgh ZZ9Z', 'Example Towers',
+    # Added 2026-08-28 with wttj's recapture, when that source moved from the Otta carousel
+    # to WTTJ's list view and its fixture had to be taken again. All three were already on
+    # `_REVIEWED_FIXTURE_IDENTITIES`; this roster is separate, so they needed reviewing here
+    # too. The capture was scrubbed through a one-to-one map onto reviewed values before it
+    # was written, so no real employer reached the tree at any point.
+    'Example Cloud', 'Example Data', 'Example Tidal',
 })
 
 
@@ -1612,7 +1624,7 @@ _REVIEWED_CORPUS_DIGESTS = {
     'weworkremotely':
         '880e0707532ccb3171d729f90b0d9a9997c34090b028d0a44ed398eeda7546c0',
     'wttj':
-        '17a4c8acdbe46286096686a4a363ed9c0a6f1121aafd817e214339ad0c2dd9a3',
+        'a3d2f62ae8285c16e1a43e4d0ba83a2f9343c8ff8d2729ebec0846fcb3ca659c',
 }
 
 
