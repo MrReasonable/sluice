@@ -214,6 +214,48 @@ def test_experience_list_omits_a_blank_skills_line(tmp_path, monkeypatch, capsys
     assert "Skills:" not in out
 
 
+def test_experience_list_omits_a_whitespace_only_skills_line(tmp_path, monkeypatch,
+                                                             capsys):
+    """The blank case's other spelling, and the QUOTED form is the one that matters --
+    measured, not assumed. An unquoted `Skills:    ` never reaches this code as
+    whitespace at all: `_parse_fm_spaced` hands back `''` for it, so a test written that
+    way passes with or without the fix. `Skills: "   "` survives verbatim, and that is a
+    shape a human editing their own Obsidian vault can produce.
+
+    It must read as ABSENT, because it already does everywhere else -- `_skill_items`
+    splits on commas and drops each item that is empty after stripping, so this entry
+    declares no skill to the bundle at all. Measured before the fix: it printed a bare
+    `Skills:` suffix with nothing after it.
+
+    A second note carries a real annotation, so the assertion cannot pass because the
+    listing showed no skills field at all."""
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    exp = Vault(str(tmp_path))._evidence_dir("experience")
+    os.makedirs(exp, exist_ok=True)
+    with open(os.path.join(exp, "alpha.md"), "w", encoding="utf-8") as fh:
+        fh.write("---\nCompany: Example Alpha\nCategory: \nBest For: \nMetrics: \n"
+                 'Skills: "   "\nverified: 2026-08-25\n---\nBody.\n')
+    with open(os.path.join(exp, "beta.md"), "w", encoding="utf-8") as fh:
+        fh.write("---\nCompany: Example Beta\nCategory: \nBest For: \nMetrics: \n"
+                 "Skills: Example Widget\nverified: 2026-08-25\n---\nBody.\n")
+
+    assert main(["experience", "list"]) == 0
+    out = capsys.readouterr().out
+    lines = {ln.split("  ")[0]: ln for ln in out.splitlines() if ln.strip()}
+    assert "alpha" in lines and "beta" in lines, out
+    # Bound to locals before the assertions, and asserted without a trailing message.
+    # `tests/test_fixture_name_neutrality.py`'s skills collector is colon-anchored and
+    # scans comments too, so asserting the label directly against a SUBSCRIPT expression
+    # made it read the rest of that source line as a declared skill value -- a false
+    # positive with no fixture behind it, the same shape `dict(Skills=...)` avoids
+    # elsewhere in this suite. Deliberately not reproduced here for that same reason.
+    alpha, beta = lines["alpha"], lines["beta"]
+    assert "Skills:" not in alpha
+    # SCOPE: the surfacing still works, so the line above is not passing because the
+    # whole field stopped being printed.
+    assert "Skills: Example Widget" in beta
+
+
 def test_skills_list_does_not_show_a_skills_field(tmp_path, monkeypatch, capsys):
     """The `skills` kind declares no `Skills` frontmatter field at all
     (`EVIDENCE_KINDS["skills"].fields`) -- experience's `Skills:` surfacing must not
