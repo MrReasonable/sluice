@@ -1694,6 +1694,34 @@ Four points in the config are the seams for pluggable adapters.
   an override that forgets to delegate to `super().parse(...)` loses the
   guard silently.
 
+  Two further plugin declarations sit beside it, neither a user config key.
+  `unpublished_fields` names completeness signals the BOARD does not publish
+  (weworkremotely and eighty_k both hardcode an empty company), so
+  `ingest list-sources --health` stops printing a permanent `UNGUARDED(...)`
+  for a rate that can never climb; it is report-only and cannot suppress a
+  drift reason. `reprobed` (#207 ask 4) is the ISO date on which a source's
+  RETIREMENT was last checked against the live world -- "a retirement is a
+  claim about the outside world and it goes stale", and the rule for
+  recording that belongs in the source contract rather than in one test.
+  Both default to the abstaining empty value, and a malformed `reprobed`
+  raises at construction via `validate_reprobed`, on the same reasoning as
+  `validate_posting_paths`: a recorded check date of `2026-99-99` reads as
+  evidence to a human and parses as nothing.
+
+  `reprobed` is a FIELD rather than a date mined out of the module docstring,
+  and that was arrived at by measurement rather than taste. The docstring
+  version had to decide from PROSE whether a line asserted that a check had
+  happened, and each tightening acquired a fresh hole: a tuple comparison
+  ranked the impossible `2026-99-99` above the floor; requiring a marker word
+  admitted `unverified`, which contains `verified`; word-bounding the markers
+  still admitted `not verified`, `never confirmed`, `no longer verified` and
+  `yet to be re-probed`. That set is unbounded because it is a question about
+  natural language. A declared date cannot be negated. The docstring still
+  carries the REASON, which is what a human actually reads and what no field
+  replaces; the field carries only the WHEN. `tests/test_drifted_boards.py`
+  holds the policy half -- that a DISABLED source must carry one, and that it
+  must fall between the re-probe floor and today.
+
 `job-sluice doctor` is a read-only preflight over the whole pipeline, not only the backend
 seam: it enumerates every configured backend (primary and fallback, per sub-app) and
 classifies each as `ok`/`degraded`/`dead`, then does the same for a second table of
