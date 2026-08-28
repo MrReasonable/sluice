@@ -146,8 +146,22 @@ def cmd_evidence_list(args, config) -> int:
             # Blank is absent (SC5, cv/bundle.py:_skill_items) -- omitted rather than
             # printed as a bare "Skills: " on every entry that has not annotated one,
             # which is the common case today and would be noise on every line.
-            if skills:
-                line += f"  Skills: {skills}"
+            #
+            # WHITESPACE-ONLY is blank, and the check is on the stripped value for that
+            # reason: `_skill_items` splits on commas and drops every item that is empty
+            # after stripping, so `Skills: "   "` contributes nothing THERE while a bare
+            # truthiness test printed an empty `Skills:` suffix HERE -- one value
+            # described two ways. Only the QUOTED spelling reaches this line as
+            # whitespace (measured: `_parse_fm_spaced` hands back `''` for an unquoted
+            # run of spaces), and a human editing their own vault can write it.
+            #
+            # `isinstance` rather than a bare `.strip()`: this is a display path,
+            # `core/protocols.py`'s Store contract does not require the field to be a
+            # `str`, and raising `AttributeError` out of `list` over one odd field is not
+            # a trade this command should make. A non-str value abstains, matching
+            # `classify_skills_reconciliation`'s own posture on the same field.
+            if isinstance(skills, str) and skills.strip():
+                line += f"  Skills: {skills.strip()}"
         print(line)
     return 0
 
