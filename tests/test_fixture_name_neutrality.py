@@ -151,6 +151,7 @@ most likely to carry a REAL EMPLOYER NAME, which is the single highest-value thi
 file exists to catch, so leaving this shape uncovered on that key was a worse bet than leaving
 it uncovered on `Skills:`.
 """
+import ast
 import dataclasses
 import itertools
 import hashlib
@@ -1729,6 +1730,89 @@ _REVIEWED_SKILL_VALUES = frozenset({
     # reviewed the same as every other captured value: nothing here could ever be
     # mistaken for a real product name.
     "###",
+    # ---- Reviewed 2026-08-28, when the AST collector below first reached them --------
+    #
+    # Every value under this heading was ALREADY in `tests/` and swept clean, in a shape
+    # no colon-keyed regex could see (a `dict(Skills=...)` kwarg, a `parametrize` list, a
+    # CV fixture's own emitted SKILLS section). None is a new fixture; what is new is that
+    # the ratchet can now see them, which is the whole point of extending it.
+    #
+    # Placeholder and invented values first.
+    #
+    # `Examplestore3` -- invented for the trailing-period tokeniser regression: a
+    # digit-bearing product-shaped name that ends a sentence in a bullet. `Example` family.
+    "Examplestore3",
+    # Self-describing invented label, used as the fabricated skill a grouped SKILLS
+    # section smuggles past row 2. It names nothing and is not meant to.
+    "Totally Invented Skill",
+    # Single generic English words, used for what their SHAPE proves rather than for what
+    # they name: `Widget` pins row 1's case sensitivity (`widget` must not fire), and
+    # `Node` pins that a dotted name is a NAME and not a prefix (`Node` alone must be
+    # UNSOURCED where `Node.js` is sourced). `Framework Widget` / `Widget Framework` are
+    # the same two words in both orders, which is exactly what makes them a
+    # subsequence-vs-set fixture.
+    "Widget",
+    "Node",
+    "Framework Widget",
+    "Widget Framework",
+    # NOT names -- the malformed-value parametrize rows for `SKILL_TOKEN_RE`
+    # (tests/test_cv_bundle.py). Every one is a number or a number-led token, which is the
+    # single property under test.
+    "92",
+    "92x",
+    "120ms",
+    "Result 92",
+    "Example 92",
+    #
+    # ---- Real, generic, public technology and standard names -------------------------
+    #
+    # These are the one group here that names something real, and the call is deliberate.
+    # They are industry-standard identifiers, not anything out of a private job hunt: they
+    # name no employer, no location, no person and no preference, and every one appears in
+    # a position that tests the SHAPE of a token rule rather than anyone's inventory. An
+    # invented substitute could not do that job -- the whole claim of
+    # `test_a_leading_dot_before_a_letter_is_an_expressible_skill` is that a REAL shipped
+    # technology was inexpressible, and a fictional one would prove nothing about it.
+    #
+    # Same ground as this file's existing `indeed` exemption (a shipped adapter id is
+    # public integration surface), and narrow in the same way: it covers a public
+    # technology NAME in a shape fixture, and does NOT extend to using one as a lead,
+    # employer or candidate identity, which is what the rosters here govern. It is also
+    # the ground CLAUDE.md already states for IANA timezone identifiers -- a standards key
+    # with no synthetic substitute, where the standard's own value is the property under
+    # test. (Reviewed 2026-08-28.)
+    #
+    # Accepted by the rule -- a leading dot before a letter, and an internal dot:
+    ".NET",
+    ".NET Core",
+    "Node.js",
+    # Refused by the rule, every one because its first token leads with a DIGIT. They are
+    # on this roster because they are real things a candidate could genuinely hold, which
+    # is precisely why the over-refusal is worth pinning by name:
+    "ISO 9001",
+    "Web 2.0",
+    "Section 508",
+    "3D modelling",
+    "5S",
+    "802.11ac",
+    # An emitted skill in a row-2 containment fixture, present in the CV and absent from
+    # the bundle, so the gate must call it UNSOURCED. A widely-known open-source project,
+    # chosen because a reader recognises it instantly as a plausible CV skill.
+    "Kubernetes",
+    #
+    # ---- Added by the re-review round's own fixtures (2026-08-28) --------------------
+    #
+    # The ratchet caught these three on its first run after the AST collector went in --
+    # written in this round, unrostered, red. Recorded here as the human call they force.
+    #
+    # `Example Query` with its two words REVERSED: the fixture for row 2 matching a token
+    # SUBSEQUENCE across a sentence seam. It names nothing; the word order IS the test.
+    "Query Example",
+    # NOT names -- the token-less `Skills:` values that must be REFUSED rather than
+    # silently switching row 1's abstain off. `#` is here because `_WORD_RE` admits it (so
+    # `C#` survives), which sends it down the letter-leading arm instead.
+    "...",
+    "#",
 })
 
 # `_REVIEWED_FIXTURE_IDENTITIES` is about LEAD identities -- employers a fixture names.
@@ -1821,12 +1905,250 @@ def test_cv_fixture_identities_are_on_the_reviewed_roster():
 # whole frontmatter section is ONE Python string literal -- is covered here for free.
 # Deliberately NOT a member of `_IDENTITY_COLLECTORS`: that tuple feeds the EMPLOYER
 # roster and carries its own `len(...) == 5` scope pin.
-_SKILL_COLLECTOR = ("evidence Skills: (frontmatter or dict/kwarg)",
+_SKILL_COLLECTOR = ("evidence Skills: (frontmatter or dict literal)",
                     _evidence_field_re("Skills"))
 
 
 _SKILL_BLOCK_LIST_COLLECTOR = ("evidence Skills: (YAML block list)",
                                _evidence_block_list_re("Skills"))
+
+
+# --- The AST collector: the three shapes no REGEX here can reach ---------------------
+#
+# Measured, and this is the THIRD collector-evasion instance on this branch: after the
+# final review round, `_all_fixture_skill_values()` collected 8 values while EVERY
+# skill-shaped value that round added was invisible to it. The regex collectors above are
+# anchored on a COLON, so they see a frontmatter line and a dict LITERAL and nothing else
+# -- `dict(Skills="X")` has an `=`, a `@pytest.mark.parametrize` list has neither, and a
+# CV fixture's own emitted `SKILLS` section is prose inside a string. The roster read
+# green throughout, so "a new value forces a human call" never fired.
+#
+# (That is also why `_SKILL_COLLECTOR`'s label no longer says "dict/kwarg": it never
+# matched a kwarg. Measured: `_evidence_field_re("Skills")` returns [] for
+# `dict(Skills="Example Query")` and for `skills="Example Query"`, and matches only the
+# dict-LITERAL spelling `{"Skills": "Example Query"}`. The label and the code now agree.)
+#
+# AST rather than a fourth regex, because all three shapes are about Python STRUCTURE
+# (which argument, which decorator, which list) rather than about text next to a colon --
+# the thing a regex is good at and has already been corrected twice here for.
+_SKILL_BULLET_MARKERS = ("-", "•", "*", "–", "—")
+_SKILL_KEY_PREFIX_RE = re.compile(r"""^\s*["']?Skills["']?\s*:\s*""", re.I)
+
+
+def _is_skill_kwarg(name: str) -> bool:
+    """Is `name` an argument that carries a `Skills:` VALUE?
+
+    `Skills` itself (the `dict(Skills=...)` spelling this suite adopted precisely to dodge
+    the colon-keyed collectors -- see `tests/test_cv_bundle.py`'s own docstring), plus the
+    `_skills`-suffixed parameters the containment fixtures thread it through
+    (`al_skills=`, `be_skills=`, `skills=`).
+
+    Suffix-anchored, NOT substring: `skills_requested=` and `skills_unreadable=` are
+    booleans about a FEATURE, not skill values, and a `"skills" in name` rule would sweep
+    them in and then demand they be rostered.
+    """
+    n = name.lower()
+    return n == "skills" or n.endswith("_skills")
+
+
+def _skill_strings(node) -> set:
+    """The skill values in one AST value node: a string constant, or a
+    list/tuple/set of them.
+
+    Split on commas for the same reason `_all_fixture_skill_values` splits the regex
+    collector's output: a `Skills:` value holds a comma-separated LIST, so
+    `dict(Skills="Example Query, Example Framework")` is two identities and rostering the
+    joined string would let a real product name ride in beside a reviewed one.
+    """
+    out = set()
+    nodes = (node.elts if isinstance(node, (ast.List, ast.Tuple, ast.Set)) else [node])
+    for n in nodes:
+        if isinstance(n, ast.Constant) and isinstance(n.value, str):
+            # One fixture threads a whole frontmatter LINE through the kwarg
+            # (`_FM.format(skills="Skills: Example Query, Example Framework\n")`), so the
+            # key itself has to come off or the roster grows a `Skills:` entry that names
+            # nothing. The VALUES there are already reached by the frontmatter regex
+            # collector; stripping here just stops this one double-counting the key.
+            out |= {p.strip() for p in _SKILL_KEY_PREFIX_RE.sub("", n.value).split(",")
+                    if p.strip()}
+    return out
+
+
+def _skills_run(lines) -> set:
+    """The bullet values of every emitted `SKILLS` section in `lines`.
+
+    Mirrors `cv/validate.py`'s `section_spans` rather than inventing a second rule: the
+    run starts at a bare `SKILLS` line and continues across blanks AND across a
+    non-ALL-CAPS group heading (`Languages`), ending only at an ALL-CAPS line. Stopping at
+    the first non-bullet instead would miss exactly the value that motivated this
+    collector -- `_GROUPED_TAIL_CV`'s second bullet sits UNDER a `Languages` heading, and
+    a collector that stopped there would sweep clean over it while the gate checks it.
+
+    `in_work` plays no part: that arm of `section_spans` is about which CHECK claims a
+    line, and this is a roster asking a different question -- would a reader see this
+    under SKILLS.
+    """
+    out, in_skills, in_work = set(), False, False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "SKILLS":
+            in_skills = True
+            continue
+        if stripped == "WORK EXPERIENCE":
+            in_work, in_skills = True, False
+            continue
+        if stripped in ("CERTIFICATES", "EDUCATION"):
+            in_work, in_skills = False, False
+            continue
+        if not in_skills:
+            continue
+        if stripped.startswith(_SKILL_BULLET_MARKERS):
+            item = stripped.lstrip("-•*–— ").strip().strip('"').strip("'")
+            if item:
+                out |= {p.strip() for p in item.split(",") if p.strip()}
+        elif stripped and (stripped.isupper() or in_work):
+            in_skills = False
+    return out
+
+
+def _called_name(node) -> str:
+    """The dotted tail of a call's callee, or "" -- `_cv_with_skills` for both a bare
+    call and an `X._cv_with_skills` attribute access."""
+    f = node.func
+    if isinstance(f, ast.Name):
+        return f.id
+    if isinstance(f, ast.Attribute):
+        return f.attr
+    return ""
+
+
+def _skills_section_builders(tree) -> set:
+    """Names of functions in ONE module that emit a bare `SKILLS` section header.
+
+    `_cv_with_skills(items)` builds `"SKILLS"` plus one bullet per item, so its CALLER's
+    literal list is a list of skill values -- but the header lives in the callee, where no
+    scan of the call site can see it. Resolving the helper by what it CONTAINS is what
+    makes that shape reachable without keying on a name (see the call rule's own comment
+    for the false positive a name rule was measured to produce).
+    """
+    out = set()
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if any(isinstance(n, ast.Constant) and n.value == "SKILLS"
+               for n in ast.walk(fn)):
+            out.add(fn.name)
+    return out
+
+
+def _parametrize_values(fn) -> dict:
+    """`{argname: {literal string values}}` for one function's `parametrize` decorators.
+
+    Single-argname form only (`parametrize("value", [...])`), which is every shape this
+    suite uses for a skill fixture. A comma-joined argname list ("a,b") is deliberately
+    skipped rather than guessed at: a wrong pairing would roster a value under the wrong
+    parameter, and a MISSED one shows up as an unrostered value the moment it is a skill,
+    which is the direction this ratchet is meant to fail in.
+    """
+    out = {}
+    for dec in fn.decorator_list:
+        if not (isinstance(dec, ast.Call) and _called_name(dec) == "parametrize"
+                and len(dec.args) >= 2):
+            continue
+        name = dec.args[0]
+        if not (isinstance(name, ast.Constant) and isinstance(name.value, str)
+                and "," not in name.value):
+            continue
+        out.setdefault(name.value.strip(), set()).update(_skill_strings(dec.args[1]))
+    return out
+
+
+def _ast_skill_values(text) -> set:
+    """Every skill value one test module declares in a shape no regex here can reach.
+
+    THREE shapes, each one this branch actually introduced:
+
+      kwarg          `dict(Skills="Example Query")`, `al_skills="Examplestore3"`
+      parametrize    `@parametrize("value", [".NET"])` feeding `dict(Skills=value)`
+      emitted SKILLS a CV fixture's own `SKILLS` section, whether written as one
+                     triple-quoted string or as a list of per-line string constants
+
+    A SyntaxError returns the empty set rather than raising: this sweeps every file under
+    `tests/`, and one unparseable file must not take the whole guard down -- but it must
+    not be silent either, so `test_every_test_module_parses_for_the_ast_collector` fails
+    the build on one instead. Swallowing it HERE and asserting on it THERE is what keeps a
+    parse failure from reading as "no skill values found", the empty-sweep shape this
+    file's own docstring warns about.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return set()
+    values = set()
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        params = _parametrize_values(fn)
+        if not params:
+            continue
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Call):
+                for kw in node.keywords:
+                    if (kw.arg and _is_skill_kwarg(kw.arg)
+                            and isinstance(kw.value, ast.Name)):
+                        values |= params.get(kw.value.id, set())
+            elif isinstance(node, ast.Dict):
+                for k, val in zip(node.keys, node.values):
+                    if (isinstance(k, ast.Constant) and k.value == "Skills"
+                            and isinstance(val, ast.Name)):
+                        values |= params.get(val.id, set())
+    builders = _skills_section_builders(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            for kw in node.keywords:
+                if kw.arg and _is_skill_kwarg(kw.arg):
+                    values |= _skill_strings(kw.value)
+            # A helper in THIS module that builds a SKILLS section, handed a literal
+            # sequence: `_cv_with_skills(["Example Query", "Kubernetes"])`. The header
+            # those items end up under is inside the helper, so no run-scan can see this
+            # shape from the call site.
+            #
+            # Resolved by what the helper CONTAINS (a bare "SKILLS" string constant),
+            # never by its NAME. A name rule was tried first and measured to sweep
+            # `classify_negatives_vs_skills(["never claim anything"], ...)` -- whose first
+            # argument is a list of NEGATIVE CONSTRAINTS, the opposite of a skill -- onto
+            # the roster. Containment is also the property that matters: a helper that
+            # never emits the header cannot put its argument under one.
+            if _called_name(node) in builders:
+                for arg in node.args:
+                    if isinstance(arg, (ast.List, ast.Tuple, ast.Set)):
+                        values |= _skill_strings(arg)
+        elif isinstance(node, ast.Dict):
+            # A dict KEY is matched case-SENSITIVELY against the frontmatter key
+            # (`{"Skills": "Example Widget3"}`), the same way `_evidence_field_re` matches
+            # it. Lowercase `"skills"` is the evidence KIND id, not a value-carrying
+            # field: `{"experience": "8801", "skills": "8802"}` in
+            # tests/test_evidence_store.py maps kinds to sentinels, and a
+            # case-insensitive key rule was measured to roster `8802` off it. A KWARG is
+            # matched loosely by contrast (`_is_skill_kwarg`), because there the name is a
+            # Python parameter -- `al_skills=`, `be_skills=` -- and not a frontmatter key.
+            for k, val in zip(node.keys, node.values):
+                if (isinstance(k, ast.Constant) and k.value == "Skills"):
+                    values |= _skill_strings(val)
+        elif isinstance(node, (ast.List, ast.Tuple)):
+            # A CV written as one string per LINE -- `"\n".join([...])`, the shape
+            # `_GROUPED_TAIL_CV` uses.
+            lines = [e.value for e in node.elts
+                     if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+            if lines:
+                values |= _skills_run(lines)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            # A CV written as ONE string -- the `_CV` triple-quoted shape. `\\n` is
+            # normalised first for the same reason `_block_list_items` does it: a packed
+            # fixture joins its lines with the two-character escape, not a real newline.
+            if "SKILLS" in node.value:
+                values |= _skills_run(node.value.replace("\\n", "\n").splitlines())
+    return values
 
 
 def _all_fixture_skill_values():
@@ -1847,6 +2169,11 @@ def _all_fixture_skill_values():
         values |= {part.strip() for part in raw.split(",") if part.strip()}
     for text in _test_sources():
         values |= set(_block_list_items(_SKILL_BLOCK_LIST_COLLECTOR[1], text))
+        # The THIRD collector, and the one that is not a regex at all: the kwarg,
+        # parametrize and emitted-SKILLS shapes, which are about Python structure rather
+        # than about text beside a colon. See `_ast_skill_values` for why all three were
+        # invisible to the two above, and to what that cost.
+        values |= _ast_skill_values(text)
     return values
 
 
@@ -1946,3 +2273,121 @@ def test_the_skill_roster_has_no_stale_entries():
         f"_REVIEWED_SKILL_VALUES lists {stale}, which no fixture declares any more -- drop "
         f"the entr{'y' if len(stale) == 1 else 'ies'} rather than leaving a reviewed value "
         f"that pre-approves a future re-introduction nobody looked at")
+
+
+def test_every_test_module_parses_for_the_ast_collector():
+    """The SCOPE guard for `_ast_skill_values`' swallowed SyntaxError.
+
+    That function returns the empty set on an unparseable module so one bad file cannot
+    take the whole sweep down -- but an empty set is indistinguishable from "this file
+    declares no skills", which is the fail-open shape this file exists to close. Asserting
+    on parseability HERE is what keeps the swallow honest: a file that stops parsing
+    reddens by name instead of quietly contributing nothing.
+
+    It also pins the SCOPE of the sweep itself. `_test_sources()` returning [] would make
+    every collector assertion vacuous, and a count floor catches that.
+    """
+    sources = _test_sources()
+    assert len(sources) > 20, (
+        f"_test_sources() found only {len(sources)} modules -- the sweep's own corpus is "
+        "missing, which makes every roster assertion below vacuous")
+    for path in sorted(_TESTS_DIR.rglob("*.py")):
+        if path.name == _SELF:
+            continue
+        try:
+            ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError as e:            # pragma: no cover - a red build, by design
+            raise AssertionError(
+                f"{path.name} does not parse ({e}), so _ast_skill_values() swallows it "
+                "and silently contributes no skill values to the roster sweep") from e
+
+
+def test_the_ast_skill_collector_sees_every_shape_it_claims_to():
+    """The three shapes no regex in this file can reach, each measured as a fragment of
+    Python SOURCE -- and each one a shape that WAS live in `tests/` while the roster read
+    green.
+
+    Written against `_ast_skill_values` (which parses) rather than against a pattern,
+    because that is the unit: the claim is about which AST positions are read, not about
+    which characters match. This file is `_SELF`, excluded from `_test_sources()`, so
+    nothing here reaches `_REVIEWED_SKILL_VALUES`.
+    """
+    # (1) KWARG. Both the `dict(Skills=...)` spelling this suite adopted specifically to
+    # dodge the colon collectors, and the `_skills`-suffixed parameters that thread a
+    # value through a fixture builder.
+    assert _ast_skill_values(
+        'f(fields=dict(Skills="Example Alpha, Example Beta"))') == {
+            "Example Alpha", "Example Beta"}
+    assert _ast_skill_values('_two(al_skills="Example Gamma", be_skills="")') == {
+        "Example Gamma"}
+
+    # A kwarg carrying a whole frontmatter LINE (a live shape in
+    # tests/test_evidence_kinds.py) must yield the VALUES, never the key.
+    assert _ast_skill_values(
+        '_FM.format(skills="Skills: Example Delta\\n")') == {"Example Delta"}
+
+    # ...and a boolean FEATURE flag whose name merely contains "skills" is not a value.
+    assert _ast_skill_values("compose(skills_requested=True)") == set()
+
+    # (2) PARAMETRIZE feeding a skill kwarg. The list is in a DECORATOR, syntactically
+    # nowhere near the word Skills; only the dataflow to the kwarg connects them.
+    src = (
+        '@pytest.mark.parametrize("value", ["Example Epsilon", "Example Zeta"])\n'
+        'def test_x(value):\n'
+        '    build(fields=dict(Skills=value))\n')
+    assert _ast_skill_values(src) == {"Example Epsilon", "Example Zeta"}
+    # The same list with NO skill kwarg behind it stays out -- the dataflow is the claim,
+    # not the mere presence of a parametrize list.
+    assert _ast_skill_values(
+        '@pytest.mark.parametrize("value", ["Example Eta"])\n'
+        'def test_x(value):\n'
+        '    build(title=value)\n') == set()
+
+    # (3) EMITTED SKILLS SECTION, in the two shapes CV fixtures here actually use: one
+    # triple-quoted string, and one string per line in a list.
+    assert _ast_skill_values('CV = """SKILLS\n- Example Theta\n- Example Iota\n"""') == {
+        "Example Theta", "Example Iota"}
+    assert _ast_skill_values('CV = "\\n".join(["SKILLS", "- Example Kappa"])') == {
+        "Example Kappa"}
+
+    # A GROUP HEADING does not end the run, matching `section_spans` -- the bullet under
+    # `Languages` is checked by the gate, so the roster must see it too. This is the exact
+    # value that motivated the whole collector.
+    assert _ast_skill_values(
+        'CV = "\\n".join(["SKILLS", "- Example Lambda", "Languages", "- Example Mu"])'
+    ) == {"Example Lambda", "Example Mu"}
+
+    # An ALL-CAPS header DOES end it, so a following section's bullets are not rostered as
+    # skills.
+    assert _ast_skill_values(
+        'CV = "\\n".join(["SKILLS", "- Example Nu", "PUBLICATIONS", "- a paper"])'
+    ) == {"Example Nu"}
+
+    # While WORK EXPERIENCE is live the run ends at a non-bullet line, exactly as
+    # `section_spans` does -- without this, a role's own bullets would be rostered as
+    # skills. Measured: `- An uncited claim` was collected before this arm existed.
+    assert _ast_skill_values(
+        'CV = "\\n".join(["WORK EXPERIENCE", "SKILLS", "- Example Xi", "Example Beta",'
+        ' "- An uncited claim"])') == {"Example Xi"}
+
+    # (3b) A BUILDER's caller: the header lives inside `_cv_with_skills`, so the call site
+    # has no SKILLS line of its own to scan. Resolved by what the helper CONTAINS.
+    builder = ('def _cv_with_skills(items):\n'
+               '    return "\\n".join(["SKILLS"] + [f"- {i}" for i in items])\n')
+    assert _ast_skill_values(builder + 'x = _cv_with_skills(["Example Omicron"])') == {
+        "Example Omicron"}
+    # A helper that never emits the header is NOT a builder, however its name reads --
+    # this is the live `classify_negatives_vs_skills(<negatives>, <inventory>)` shape,
+    # whose first argument is the OPPOSITE of a skill and was measured onto the roster by
+    # an earlier name-keyed rule.
+    assert _ast_skill_values(
+        'classify_negatives_vs_skills(["never claim anything"], [])') == set()
+
+    # A lowercase `skills` is the evidence KIND id, not a value-carrying frontmatter key.
+    # Measured: a case-insensitive dict-key rule rostered the sentinel `8802` off
+    # tests/test_evidence_store.py's `{"experience": "8801", "skills": "8802"}`.
+    assert _ast_skill_values('s = {"experience": "8801", "skills": "8802"}') == set()
+
+    # An unparseable module contributes nothing rather than raising -- the swallow
+    # `test_every_test_module_parses_for_the_ast_collector` above keeps honest.
+    assert _ast_skill_values("def (:") == set()
