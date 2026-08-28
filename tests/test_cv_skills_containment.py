@@ -14,6 +14,8 @@ actually refuses something. Tasks 5 (row 1: a bullet's skill must belong to a ci
 entry) and 6 (digit handling) reuse the five shared helpers defined below rather than
 redefining them -- see each helper's own docstring.
 """
+import pytest
+
 from sluice.cv import validate as V
 from sluice.cv.bundle import build_bundle, bundle_sources
 
@@ -621,3 +623,45 @@ def test_a_group_heading_while_work_is_live_still_ends_the_run():
     assert [t.strip() for _n, t in skills] == ["- Example Query"]
     assert "- An uncited claim" in [t.strip() for _n, t in work]
     assert any("UNCITED BULLET" in x for x in V.validate(cv, s))
+
+
+# --- `source_tokens`' nesting: the guard bundle.py's comment claimed existed -----------
+#
+# `bundle.py` said "Task 4 adds that guard to `validate()`". It did not, so the harm the
+# comment described as prevented was live: measured, a FLAT `("Example", "Query")` was
+# accepted and the one declared skill came back UNSOURCED. Silent, on a value that looks
+# right, and it costs every lead in the run its retry and then the lead.
+
+
+def test_a_flat_source_tokens_is_refused_rather_than_reported_as_unsourced():
+    """The refusal, and the harm it replaces, asserted TOGETHER.
+
+    A flat sequence makes each 'block' a STRING, which `_in_source` iterates as
+    CHARACTERS -- so no multi-token needle can ever match and every emitted skill reads
+    UNSOURCED. The control below shows the SAME skill against the SAME entries passing
+    once the nesting is right, which is what makes the first half a shape refusal rather
+    than an ordinary containment failure.
+    """
+    from sluice.cv.bundle import BundleSources, EntrySources
+    entries = {"AL1": EntrySources(frozenset(), frozenset({"Example Query"}))}
+    cv = "\n".join(["SKILLS", "- Example Query"])
+
+    flat = BundleSources(entries=entries, baseline=frozenset(),
+                         source_tokens=("Example", "Query"))
+    with pytest.raises(TypeError, match="TOKEN SEQUENCES"):
+        V.validate(cv, flat)
+
+    nested = BundleSources(entries=entries, baseline=frozenset(),
+                           source_tokens=(("Example", "Query"),))
+    assert V.validate(cv, nested) == []
+
+
+def test_the_shape_check_reads_every_block_not_just_the_first():
+    """A first-member-only check passes a correctly-shaped head with a flat tail, which
+    fails in exactly the same silent way -- so the guard has to be a full sweep."""
+    from sluice.cv.bundle import BundleSources, EntrySources
+    mixed = BundleSources(
+        entries={"AL1": EntrySources(frozenset(), frozenset({"Example Query"}))},
+        baseline=frozenset(), source_tokens=(("Example", "Query"), "Framework"))
+    with pytest.raises(TypeError, match="TOKEN SEQUENCES"):
+        V.validate("\n".join(["SKILLS", "- Example Query"]), mixed)
