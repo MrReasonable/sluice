@@ -2039,6 +2039,15 @@ def _skills_run(lines) -> set:
     here and does not in `section_spans`, which can only keep a LATER run alive longer, so
     it over-collects rather than under-collects -- the safe direction for a ratchet whose
     failure mode is a value it never sees at all.
+
+    EVERY heading compare here is case-INSENSITIVE, opener included, exactly as
+    `section_spans` compares `line.strip().upper()`. That matters at the opener above all:
+    a case-SENSITIVE opener meant a fixture spelling its header `Skills` opened a run in
+    the GATE and not in this sweep, so an unreviewed value could reach the tree with the
+    ratchet green -- the same class of blind spot as the four WORK bullets above, one step
+    earlier. What stops the folded opener from firing on unrelated text is not a narrower
+    compare but a narrower INPUT: see `_ast_skill_values`' two call sites, which hand this
+    function only blocks that are actually newline-joined DOCUMENTS.
     """
     from tests.template_content import composer_headings
 
@@ -2046,18 +2055,23 @@ def _skills_run(lines) -> set:
     out, in_skills, in_work = set(), False, False
     for line in lines:
         stripped = line.strip()
-        # ASYMMETRIC on case, deliberately, and measured in both directions. The
-        # TERMINATORS are compared uppercased, as `section_spans` compares them
-        # (`line.strip().upper()`): a case-sensitive compare read `  Education  ` as
-        # ordinary content and kept a run alive the gate had already ended, which swept
-        # four WORK bullets out of `tests/test_cv_validate.py`'s random-document alphabet
-        # into the skill roster. The OPENER stays an exact `SKILLS`, because folding it
-        # too made every bare lowercase `"skills"` string literal in an unrelated list
-        # open a run -- nine CLI field names arrived as skill values on the first run.
-        # The residual is stated rather than disguised: a CV fixture spelling its header
-        # `Skills` would open a run in the gate and not here. No fixture in `tests/` does.
+        # Uppercased, as `section_spans` compares (`line.strip().upper()`), for the
+        # opener and both terminator arms alike -- the two engines have to agree on what
+        # a heading IS or each divergence is a hole. Measured, one in each direction: a
+        # case-sensitive TERMINATOR read `  Education  ` as ordinary content and kept a
+        # run alive the gate had already ended, sweeping four WORK bullets out of
+        # `tests/test_cv_validate.py`'s random-document alphabet into the skill roster;
+        # a case-sensitive OPENER missed a `Skills`-cased header the gate opens on, so an
+        # unreviewed value could ship with this sweep green.
+        #
+        # Folding the opener is only safe because `_ast_skill_values` hands this function
+        # DOCUMENTS and not arbitrary string lists -- see its two call sites. Against every
+        # list literal, a folded opener fired on 20 argv lists (`main(["skills", "add",
+        # "--name", ...])`), whose `--flag` elements strip to nine field names; rostering
+        # `name`/`id`/`verified` as reviewed skill values would pre-approve those strings
+        # for good, which is worse than the noise.
         heading = stripped.upper()
-        if stripped == "SKILLS":
+        if heading == "SKILLS":
             in_skills = True
             continue
         if heading == "WORK EXPERIENCE":
@@ -2074,6 +2088,55 @@ def _skills_run(lines) -> set:
                 out |= {p.strip() for p in item.split(",") if p.strip()}
         elif stripped and in_work:
             in_skills = False
+    return out
+
+
+def _newline_joined_blocks(tree) -> set:
+    """`id()` of every list/tuple literal in `tree` that is joined into a DOCUMENT --
+    a direct argument of a `"\\n".join(...)` call, on either side of the `+` in the
+    `["SKILLS"] + [f"- {i}" for i in items]` builder shape.
+
+    This is what makes `_skills_run`'s case-insensitive opener safe, and it is a
+    different kind of narrowing from the one it replaced. A narrower COMPARE (an exact
+    `SKILLS`) gave the sweep a blind spot the gate does not have: real CV text spelled
+    `Skills` reached `validate()` and not the roster. A narrower INPUT excludes text that
+    is not a CV at all -- an argv list never reaches `validate()` by any path, so nothing
+    the gate checks can hide behind this.
+
+    Measured over `tests/` rather than argued: with the opener folded and no input rule,
+    the list branch collected from 20 `main(["skills", "add", "--name", ...])` argv lists,
+    whose `--flag` elements strip to nine field names (`name`, `id`, `verified`, ...).
+    This rule drops all nine and keeps every genuine value the branch ever produced
+    (`Example Query`, `Totally Invented Skill`, both from `_GROUPED_TAIL_CV`).
+
+    THE RESIDUAL, stated because a rule that names no cost reads as free: a fixture that
+    builds CV lines into a VARIABLE and joins it somewhere else is not seen here. No
+    fixture in `tests/` does that today -- the same measurement above is what says so, not
+    an assumption -- and the shape it would need is unusual, since a CV fixture written as
+    a list exists precisely to be joined on the spot. Deliberately NOT closed by also
+    accepting a list that carries a second contract heading: every genuine list here
+    already satisfies both rules, so that clause would be unreachable, and an unreachable
+    guard deletes green -- the equivalent-mutant shape this repo refuses everywhere else.
+    """
+    out = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        if not (isinstance(f, ast.Attribute) and f.attr == "join"):
+            continue
+        sep = f.value
+        if not (isinstance(sep, ast.Constant) and isinstance(sep.value, str)):
+            continue
+        # A REAL newline or the two-character escape: a packed fixture joins its lines
+        # with `"\\n"`, the same shape `_block_list_items` already normalises for.
+        if "\n" not in sep.value and "\\n" not in sep.value:
+            continue
+        for arg in node.args:
+            sides = (arg.left, arg.right) if isinstance(arg, ast.BinOp) else (arg,)
+            for side in sides:
+                if isinstance(side, (ast.List, ast.Tuple)):
+                    out.add(id(side))
     return out
 
 
@@ -2182,6 +2245,7 @@ def _ast_skill_values(text) -> set:
                             and isinstance(val, ast.Name)):
                         values |= params.get(val.id, set())
     builders = _skills_section_builders(tree)
+    joined_blocks = _newline_joined_blocks(tree)
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             for kw in node.keywords:
@@ -2216,17 +2280,32 @@ def _ast_skill_values(text) -> set:
                     values |= _skill_strings(val, consts)
         elif isinstance(node, (ast.List, ast.Tuple)):
             # A CV written as one string per LINE -- `"\n".join([...])`, the shape
-            # `_GROUPED_TAIL_CV` uses.
+            # `_GROUPED_TAIL_CV` uses. Restricted to lists that are ACTUALLY joined into
+            # a document (`_newline_joined_blocks`, which has the measurement): the
+            # branch used to walk every list literal, which was harmless only while
+            # `_skills_run`'s opener was case-sensitive and is what that opener was
+            # wrongly narrowed to compensate for. This narrows the INPUT to what this
+            # comment already claimed the branch was for, rather than narrowing what the
+            # collector understands about CV text.
             lines = [e.value for e in node.elts
                      if isinstance(e, ast.Constant) and isinstance(e.value, str)]
-            if lines:
+            if lines and id(node) in joined_blocks:
                 values |= _skills_run(lines)
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             # A CV written as ONE string -- the `_CV` triple-quoted shape. `\\n` is
             # normalised first for the same reason `_block_list_items` does it: a packed
             # fixture joins its lines with the two-character escape, not a real newline.
-            if "SKILLS" in node.value:
-                values |= _skills_run(node.value.replace("\\n", "\n").splitlines())
+            #
+            # The cheap prefilter is case-INSENSITIVE, matching the opener it stands in
+            # front of: keyed on the literal `SKILLS` it silently vetoed every
+            # `Skills`-cased CV before `_skills_run` was ever reached, so folding the
+            # opener alone would have left the same hole one level up. MULTI-LINE is the
+            # input rule on this branch, and it costs nothing real -- a one-line string
+            # cannot hold a heading AND a bullet beneath it, so it can only be a bare
+            # `"skills"`-ish literal, never a document.
+            lines = node.value.replace("\\n", "\n").splitlines()
+            if len(lines) > 1 and "SKILLS" in node.value.upper():
+                values |= _skills_run(lines)
     return values
 
 
@@ -2446,10 +2525,35 @@ def test_the_ast_skill_collector_sees_every_shape_it_claims_to():
     ) == {"Example Nu", "Example Rho"}
 
     # A CONTRACT heading DOES end it, so a following section's bullets are not rostered
-    # as skills.
+    # as skills. Spelled in MIXED case on purpose: `section_spans` compares
+    # `line.strip().upper()`, so `Education` ends the gate's run, and a collector that
+    # only recognised the shouted spelling would keep collecting past it.
     assert _ast_skill_values(
-        'CV = "\\n".join(["SKILLS", "- Example Sigma", "EDUCATION", "- a degree"])'
+        'CV = "\\n".join(["SKILLS", "- Example Sigma", "Education", "- a degree"])'
     ) == {"Example Sigma"}
+
+    # THE OPENER IS CASE-INSENSITIVE TOO, in both fixture spellings. This is the row that
+    # reds if it is ever narrowed back to an exact `SKILLS`: the gate opens its run on
+    # `Skills` (it compares `line.strip().upper()`), so a fixture header spelled that way
+    # is checked by `validate()` and must be seen here, or an unreviewed value ships with
+    # this sweep green.
+    assert _ast_skill_values(
+        'CV = "\\n".join(["Skills", "- Example Tau"])') == {"Example Tau"}
+    assert _ast_skill_values('CV = """Skills\n- Example Upsilon\n"""') == {
+        "Example Upsilon"}
+
+    # ...and what keeps that fold from firing on text that is not a CV is the INPUT rule,
+    # not a narrower compare. An argv list is a multi-element list of strings whose
+    # `--flag` members strip to plausible-looking words, and 20 of them live in
+    # `tests/test_evidence_cli.py`; none is joined into a document, so none opens a run.
+    # A one-line string cannot hold a heading and a bullet beneath it either.
+    assert _ast_skill_values(
+        'main(["skills", "add", "--name", "x", "--proficiency", "expert"])') == set()
+    assert _ast_skill_values('KIND = "skills"') == set()
+    # The same list, joined, IS a document and DOES collect -- so the rule above is an
+    # input restriction and not a way of never seeing lists at all.
+    assert _ast_skill_values(
+        'CV = "\\n".join(["skills", "- Example Phi"])') == {"Example Phi"}
 
     # While WORK EXPERIENCE is live the run ends at a non-bullet line, exactly as
     # `section_spans` does -- without this, a role's own bullets would be rostered as
