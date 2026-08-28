@@ -268,10 +268,12 @@ actually answers, not just that a key is present.
 - **`notice`, Experience Library / Skills Inventory / STAR Stories counts** (#164): one row per
   evidence corpus, informational only — `<verified> verified / <total> total entries`. Zero
   verified `experience` entries means every CV fails the fabrication gate (no citable source
-  material), which is a `cv run` failure, not a `doctor` one; `skills`/`stories` are not yet
-  read by any composer, so an empty one is not itself a blocker today. A non-zero PENDING
-  count also gets `; <pending> proposed and awaiting review (job-sluice <kind> verify)` — an entry
-  `<kind> add` captured sits in `_inbox/` doing nothing until a human runs that command.
+  material), which is a `cv run` failure, not a `doctor` one; since #165 a verified `skills`
+  entry reaches the composer as framing (citable by nothing) and a verified `stories` entry is
+  consumed by nothing yet, so an empty one of either is not itself a blocker today. A non-zero
+  PENDING count also gets `; <pending> proposed and awaiting review (job-sluice <kind> verify)`
+  — an entry `<kind> add` captured sits in `_inbox/` doing nothing until a human runs that
+  command.
 - **`dead`, an evidence corpus that cannot be read**: `<Corpus> | dead | cannot be read — …`,
   one row per affected kind and only for that kind. The usual cause is a symlinked directory:
   the store refuses to read or write through one anywhere below the vault root, because

@@ -233,12 +233,14 @@ triage:
 #   employers: [Employer A, Employer B]   # empty skips the per-employer gate
 #   fabrication_decoys: [Some Other Company]
 #   # Free-text constraints prepended to the bundle's NEGATIVE CONSTRAINTS block. With a
-#   # non-empty Skills Inventory the bundle already derives its own cross-reference
-#   # ("claim no technology ... not named in the BASELINE CV, the VERIFIED EXPERIENCE
-#   # ENTRIES or the SKILLS INVENTORY above"), so a line here restating which technologies
-#   # you work in is a hand-typed shadow of that file and will drift from it -- `job-sluice
-#   # doctor` reports any line that names a skill the inventory actually holds. What this
-#   # key is still FOR is the negatives an inventory cannot express:
+#   # non-empty Skills Inventory the bundle already derives its own cross-reference ("claim
+#   # no technology, language, framework or tool that is not named in the BASELINE CV or the
+#   # VERIFIED EXPERIENCE ENTRIES above" -- deliberately NOT naming the Skills Inventory
+#   # itself, since a claim resting on that framing section alone is exactly what this rule
+#   # forbids), so a line here restating which technologies you work in is a hand-typed
+#   # shadow of that file and will drift from it -- `job-sluice doctor` reports any line
+#   # that names a skill the inventory actually holds. What this key is still FOR is the
+#   # negatives an inventory cannot express:
 #   negatives:
 #     - never claim a certification the Experience Library does not evidence
 #   served_prefix: CV
