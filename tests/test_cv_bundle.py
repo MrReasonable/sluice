@@ -668,10 +668,10 @@ def test_source_tokens_are_per_block_so_a_two_word_skill_cannot_match_across_a_s
     "Widget Framework" match the last word of one entry followed by the first word of the
     next -- an adjacency that exists nowhere in the user's prose."""
     b = B.build_bundle(
-        entries=[{"company": "A", "title": "t", "metrics": "", "body": "Ran Widget",
-                  "fields": {"Skills": ""}},
-                 {"company": "B", "title": "t", "metrics": "", "body": "Framework work",
-                  "fields": {"Skills": ""}}],
+        entries=[{"company": "Example Alpha", "title": "t", "metrics": "",
+                  "body": "Ran Widget", "fields": {"Skills": ""}},
+                 {"company": "Example Beta", "title": "t", "metrics": "",
+                  "body": "Framework work", "fields": {"Skills": ""}}],
         baseline="b", negatives=[], jd_keywords=[], prefix_map={})
     s = B.bundle_sources(b)
     assert not any(list(block[i:i + 2]) == ["Widget", "Framework"]
@@ -720,11 +720,16 @@ def test_a_multi_word_skill_with_an_embedded_digit_is_accepted():
         {"Example Widget3"})
 
 
-@pytest.mark.parametrize("value", [".NET", ".NET Core"])
+@pytest.mark.parametrize("value", [".Example", ".Example Widget"])
 def test_a_leading_dot_before_a_letter_is_an_expressible_skill(value):
     """SC6's rule refused a leading-dot name outright -- a shipped technology nobody
     could name, whose only answer to the refusal was to misspell it. The widening is
     narrow: a dot THEN a letter, nothing else.
+
+    The values are SYNTHETIC and pin the SHAPE, one dotted token alone and one followed
+    by a second word; `docs/USAGE.md` names the real technology this was widened for,
+    which is where a user needs to read it. Nothing about the rule depends on the
+    letters after the dot, so a synthetic value costs this test nothing.
 
     Safe on the rule's own terms. What SC6 guards is a token whose DIGITS span removal
     would then blank out of a real bullet; a dot-then-letter token carries no digit to
@@ -739,17 +744,25 @@ def test_a_leading_dot_before_a_letter_is_an_expressible_skill(value):
     assert B.bundle_sources(b).entries[b["entries"][0]["id"]].skills == frozenset({value})
 
 
-@pytest.mark.parametrize("value", ["ISO 9001", "Web 2.0", "Section 508", "3D modelling",
-                                   "5S", "802.11ac"])
+@pytest.mark.parametrize("value", ["Example 9001", "Example 2.0", "9E modelling",
+                                   "5X", "123.45ab"])
 def test_a_digit_leading_skill_token_stays_refused_whatever_it_names(value):
     """The STATED over-refusal, pinned so it cannot be quietly widened away.
 
-    Every value here is a real thing someone could hold, and every one is refused. That
-    is not a gap the rule fails to reach: a word-then-bare-number name is structurally
-    identical to the metric shorthand `Result 92`, and nothing available here tells them
-    apart, so admitting one admits the laundering path the rule exists to close. The
-    honest position is to refuse both and SAY so (see `SKILL_TOKEN_RE`'s comment and
-    docs/USAGE.md), not to characterise the rule as catching only metric shorthand.
+    Every value here is the SHAPE of a real thing someone could hold -- a standard's
+    number after a word, a dotted version after a word, a digit-led token opening a
+    phrase, a digit-led token alone, and a digit-led token carrying internal dots -- and
+    every one is refused. That is not a gap the rule fails to reach: a word-then-bare-
+    number name is structurally identical to the metric shorthand `Result 92`, and
+    nothing available here tells them apart, so admitting one admits the laundering path
+    the rule exists to close. The honest position is to refuse both and SAY so (see
+    `SKILL_TOKEN_RE`'s comment and docs/USAGE.md), not to characterise the rule as
+    catching only metric shorthand.
+
+    The values are synthetic, and the real names they stand for live in `docs/USAGE.md`,
+    where a user reads WHICH of their own credentials this rule costs them. Only the
+    token shape is under test here, and a synthetic value carries it exactly; two of the
+    six real names shared one shape, so five rows cover what six did.
     """
     with pytest.raises(ValueError, match="must begin with a letter"):
         B.build_bundle(

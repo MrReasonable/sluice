@@ -1747,13 +1747,12 @@ _REVIEWED_SKILL_VALUES = frozenset({
     # section smuggles past row 2. It names nothing and is not meant to.
     "Totally Invented Skill",
     # Single generic English words, used for what their SHAPE proves rather than for what
-    # they name: `Widget` pins row 1's case sensitivity (`widget` must not fire), and
-    # `Node` pins that a dotted name is a NAME and not a prefix (`Node` alone must be
-    # UNSOURCED where `Node.js` is sourced). `Framework Widget` / `Widget Framework` are
-    # the same two words in both orders, which is exactly what makes them a
+    # they name: `Widget` pins row 1's case sensitivity (`widget` must not fire) and, on
+    # its own, that a dotted name is a NAME and not a prefix (`Widget` alone must be
+    # UNSOURCED where `Widget.Node` is sourced). `Framework Widget` / `Widget Framework`
+    # are the same two words in both orders, which is exactly what makes them a
     # subsequence-vs-set fixture.
     "Widget",
-    "Node",
     "Framework Widget",
     "Widget Framework",
     # NOT names -- the malformed-value parametrize rows for `SKILL_TOKEN_RE`
@@ -1765,41 +1764,34 @@ _REVIEWED_SKILL_VALUES = frozenset({
     "Result 92",
     "Example 92",
     #
-    # ---- Real, generic, public technology and standard names -------------------------
+    # ---- Token SHAPES for the `SKILL_TOKEN_RE` rule, all synthetic --------------------
     #
-    # These are the one group here that names something real, and the call is deliberate.
-    # They are industry-standard identifiers, not anything out of a private job hunt: they
-    # name no employer, no location, no person and no preference, and every one appears in
-    # a position that tests the SHAPE of a token rule rather than anyone's inventory. An
-    # invented substitute could not do that job -- the whole claim of
-    # `test_a_leading_dot_before_a_letter_is_an_expressible_skill` is that a REAL shipped
-    # technology was inexpressible, and a fictional one would prove nothing about it.
+    # This group used to hold real public technology and standard names (`.NET`,
+    # `Node.js`, `ISO 9001`, `Web 2.0`, `Section 508`, `3D modelling`, `5S`, `802.11ac`,
+    # `Kubernetes`) under an exemption arguing a real name was needed to prove the rule
+    # costs real things. Owner's ruling on the #168 review round: replace them here, keep
+    # them in `docs/USAGE.md`. A synthetic value carries every shape the rule turns on at
+    # no cost, and `docs/USAGE.md` is where a user needs to read WHICH of their own
+    # credentials the over-refusal costs them -- so the information stays exactly where
+    # it is load-bearing and leaves the corpus where it was only decoration.
     #
-    # Same ground as this file's existing `indeed` exemption (a shipped adapter id is
-    # public integration surface), and narrow in the same way: it covers a public
-    # technology NAME in a shape fixture, and does NOT extend to using one as a lead,
-    # employer or candidate identity, which is what the rosters here govern. It is also
-    # the ground CLAUDE.md already states for IANA timezone identifiers -- a standards key
-    # with no synthetic substitute, where the standard's own value is the property under
-    # test. (Reviewed 2026-08-28.)
-    #
-    # Accepted by the rule -- a leading dot before a letter, and an internal dot:
-    ".NET",
-    ".NET Core",
-    "Node.js",
-    # Refused by the rule, every one because its first token leads with a DIGIT. They are
-    # on this roster because they are real things a candidate could genuinely hold, which
-    # is precisely why the over-refusal is worth pinning by name:
-    "ISO 9001",
-    "Web 2.0",
-    "Section 508",
-    "3D modelling",
-    "5S",
-    "802.11ac",
+    # Accepted by the rule -- a leading dot before a letter, alone and with a second word:
+    ".Example",
+    ".Example Widget",
+    # ...and an internal dot, whose leading token is deliberately one that appears nowhere
+    # else in that fixture's bundle, so `Widget` alone can prove the prefix half.
+    "Widget.Node",
+    # Refused by the rule, every one because a token leads with a DIGIT: a standard's
+    # number after a word, a dotted version after a word, a digit-led token opening a
+    # phrase, a digit-led token alone, and a digit-led token carrying internal dots.
+    "Example 9001",
+    "Example 2.0",
+    "9E modelling",
+    "5X",
+    "123.45ab",
     # An emitted skill in a row-2 containment fixture, present in the CV and absent from
-    # the bundle, so the gate must call it UNSOURCED. A widely-known open-source project,
-    # chosen because a reader recognises it instantly as a plausible CV skill.
-    "Kubernetes",
+    # the bundle, so the gate must call it UNSOURCED. Self-describing and invented.
+    "Example Unbacked",
     #
     # ---- Added by the re-review round's own fixtures (2026-08-28) --------------------
     #

@@ -24,7 +24,7 @@ Copied verbatim from the spec and from `CLAUDE.md`. Every task's requirements im
 - **Comments explain *why*** — the invariant upheld, the bug prevented. Match the surrounding density.
 - **Conventional Commits.** `feat(cv): …`, `test(cv): …`, `docs(cv): …`. release-please reads these.
 - **`.rulesync/` is canonical.** Edit `.rulesync/rules/CLAUDE.md`, never the generated `CLAUDE.md`. Regenerate with `npm ci --ignore-scripts && npm run rulesync`.
-- **Definition of done, every task:** `./.venv/bin/python -m pytest` green (4989 passing at baseline) and `ruff check sluice tests scripts` clean.
+- **Definition of done, every task:** `./.venv/bin/python -m pytest` green (4989 passing at baseline) and `./.venv/bin/ruff check sluice tests scripts` clean.
 - **Mutation discipline:** where a task says "witness the guard", mutate by **moving or deleting**, never adding, and run `./.venv/bin/python -m compileall -q -f --invalidation-mode checked-hash sluice tests scripts`
   once before starting. Explicitly, never a bare `python` — that resolves to a version-manager
   shim here and fails outside an activated venv.
