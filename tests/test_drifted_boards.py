@@ -204,12 +204,20 @@ def test_wttj_posting_regex_is_not_anchored_past_the_locale_segment():
     """
     js = _src("wttj").extractor_js
     assert "/companies/" in js, "wttj must match postings by their /companies/<co>/jobs/ shape"
-    # COMMENTS STRIPPED FIRST. The extractor's own comment explains this bug and therefore
-    # contains the forbidden pattern verbatim, so a check over the raw text is satisfied by
-    # the prose describing the defect rather than by the code avoiding it -- the same way a
-    # bare-substring `degraded` check in tests/test_health_wrong_page.py was once satisfied by
-    # the comment above the marker. Grep the CODE, not the explanation of the code.
-    code = re.sub(r"//[^\n]*", "", js)
+    # WHOLE-LINE comments stripped, and the anchoring is the load-bearing part. The
+    # extractor's own comment explains this bug and so contains the forbidden pattern
+    # verbatim, so a check over the raw text is satisfied by the prose describing the defect
+    # rather than by the code avoiding it -- the same way a bare-substring `degraded` check in
+    # tests/test_health_wrong_page.py was once satisfied by the comment above the marker.
+    #
+    # But the first version of THIS strip, `//[^\n]*`, was a URL-eater: it cuts from the first
+    # `//` on a line, and `https://` contains one. A forbidden pattern sharing a line with an
+    # absolute-URL literal was therefore invisible -- found by a surviving mutant, and not a
+    # hypothetical shape, since wttj's own previous extractor built links as
+    # `'https://app...' + rel`. Anchoring to a line that STARTS with `//` keeps real code in
+    # view. Grep the CODE, not the explanation of the code -- and make sure the strip has not
+    # eaten the code along with the explanation.
+    code = re.sub(r"(?m)^[ \t]*//.*$", "", js)
     assert not re.search(r"\^\\?/\[a-z", code), (
         "wttj's posting regex is anchored at the path start with a lowercase-only class -- "
         "the locale segment is `en-GB` and this matches nothing")
