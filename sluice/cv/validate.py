@@ -253,9 +253,9 @@ def section_spans(cv_text):
         # on the same fixture with WORK still open, `- Totally Invented Skill` is reported
         # as `UNCITED BULLET`. The bypass exists only where NO region claims the line, so
         # extending the run only there can add checking and can never move a line out of
-        # one. Without this clause a company line after a SKILLS section (`Example Beta`,
-        # not all-caps) would read as a group heading and swallow that role's bullets out
-        # of the citation check entirely.
+        # one. Without this clause a company line after a SKILLS section (`Example Beta`
+        # -- not a contract heading, so nothing else ends the run at it) would keep the
+        # run alive and swallow that role's bullets out of the citation check entirely.
         #
         # This SPLITS the gate/parser correspondence that used to hold here, and the
         # docstring above says so. Before, both stopped at the same line: `cv/parse.py`'s
