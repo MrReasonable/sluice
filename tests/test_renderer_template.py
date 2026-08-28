@@ -38,6 +38,18 @@ EDUCATION
 - Example University, 2010-2013 | BSc Computer Science
 """
 
+# `Example Query`/`Example Framework` are already on `_REVIEWED_SKILL_VALUES`
+# (tests/test_fixture_name_neutrality.py, #168) -- reused here rather than minted fresh,
+# so this fixture does not force a second, redundant roster entry for values that mean
+# the identical thing (a synthetic skill name) in both places. Placed after EDUCATION,
+# matching `cv/compose.py`'s `_RULES` format contract (WORK EXPERIENCE, CERTIFICATES,
+# EDUCATION, SKILLS) -- `cv/parse.py` itself accepts the three trailing sections in ANY
+# order, so this ordering is a fixture choice, not a grammar requirement.
+CV_WITH_SKILLS = CV.replace(
+    "EDUCATION\n- Example University, 2010-2013 | BSc Computer Science\n",
+    "EDUCATION\n- Example University, 2010-2013 | BSc Computer Science\n\n"
+    "SKILLS\n- Example Query\n- Example Framework\n")
+
 
 class FakeHTML:
     """Captures the HTML the renderer hands WeasyPrint, and writes a stub PDF."""
@@ -171,6 +183,32 @@ def test_a_blank_location_does_not_leave_a_dangling_separator(tmp_path):
     html = FakeHTML.captured["html"]
     assert "03/2021-present | Staff Engineer" in html
     assert " |  | " not in html, "a blank LOCATION left a dangling separator in the PDF"
+
+
+def test_the_shipped_template_renders_a_skills_section(tmp_path):
+    """#168 Task 13: SKILLS joins CERTIFICATES/EDUCATION as a third `{% if %}`-guarded
+    trailing block in the shipped template, matching that shape exactly rather than
+    inventing a different guard -- see CLAUDE.md's account of the repeated-CERTIFICATES
+    incident that shape exists to avoid."""
+    r = _renderer(tmp_path)
+    r.render(CV_WITH_SKILLS, str(tmp_path / "out"))
+    html = FakeHTML.captured["html"]
+    assert "SKILLS" in html
+    assert "Example Query" in html
+    assert "Example Framework" in html
+
+
+def test_a_document_with_no_skills_renders_no_skills_heading(tmp_path):
+    """The CERTIFICATES shape: `{% if document.skills %}` means an empty list omits the
+    heading entirely rather than rendering an empty section under it -- the exact defect
+    that made a repeated CERTIFICATES header indistinguishable from "holds none" (see
+    CLAUDE.md). `CV` (unlike `CV_WITH_SKILLS`) carries no SKILLS section at all, so
+    `document.skills == []`.
+    """
+    r = _renderer(tmp_path)
+    r.render(CV, str(tmp_path / "out"))
+    html = FakeHTML.captured["html"]
+    assert "SKILLS" not in html, "an empty skills list must not print the heading either"
 
 
 def test_every_shipped_template_contributes_no_content():
