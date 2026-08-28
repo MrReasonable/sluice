@@ -718,3 +718,41 @@ def test_a_multi_word_skill_with_an_embedded_digit_is_accepted():
         baseline="b", negatives=[], jd_keywords=[], prefix_map={})
     assert B.bundle_sources(b).entries[b["entries"][0]["id"]].skills == frozenset(
         {"Example Widget3"})
+
+
+@pytest.mark.parametrize("value", [".NET", ".NET Core"])
+def test_a_leading_dot_before_a_letter_is_an_expressible_skill(value):
+    """SC6's rule refused a leading-dot name outright -- a shipped technology nobody
+    could name, whose only answer to the refusal was to misspell it. The widening is
+    narrow: a dot THEN a letter, nothing else.
+
+    Safe on the rule's own terms. What SC6 guards is a token whose DIGITS span removal
+    would then blank out of a real bullet; a dot-then-letter token carries no digit to
+    blank, so admitting it subtracts nothing from the numeric gate.
+    """
+    b = B.build_bundle(
+        entries=[{"company": "Example Alpha", "title": "t", "metrics": "",
+                  # `dict(Skills=value)` is deliberate -- see
+                  # `test_every_token_of_a_skill_must_begin_with_a_letter`'s docstring.
+                  "body": "", "fields": dict(Skills=value)}],
+        baseline="b", negatives=[], jd_keywords=[], prefix_map={})
+    assert B.bundle_sources(b).entries[b["entries"][0]["id"]].skills == frozenset({value})
+
+
+@pytest.mark.parametrize("value", ["ISO 9001", "Web 2.0", "Section 508", "3D modelling",
+                                   "5S", "802.11ac"])
+def test_a_digit_leading_skill_token_stays_refused_whatever_it_names(value):
+    """The STATED over-refusal, pinned so it cannot be quietly widened away.
+
+    Every value here is a real thing someone could hold, and every one is refused. That
+    is not a gap the rule fails to reach: a word-then-bare-number name is structurally
+    identical to the metric shorthand `Result 92`, and nothing available here tells them
+    apart, so admitting one admits the laundering path the rule exists to close. The
+    honest position is to refuse both and SAY so (see `SKILL_TOKEN_RE`'s comment and
+    docs/USAGE.md), not to characterise the rule as catching only metric shorthand.
+    """
+    with pytest.raises(ValueError, match="must begin with a letter"):
+        B.build_bundle(
+            entries=[{"company": "Example Alpha", "title": "t", "metrics": "",
+                      "body": "", "fields": dict(Skills=value)}],
+            baseline="b", negatives=[], jd_keywords=[], prefix_map={})
