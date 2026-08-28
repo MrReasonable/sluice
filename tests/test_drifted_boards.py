@@ -6,6 +6,7 @@ These are cheap string assertions on purpose -- the extractors themselves need a
 live DOM, so what is pinned here is the part that silently rotted: which host we
 ask, which selector we ask for, and whether a board is switched on at all.
 """
+import re
 from datetime import date
 from types import SimpleNamespace
 from urllib.parse import urlparse
@@ -186,3 +187,42 @@ def test_a_malformed_reprobed_date_is_refused_at_construction():
     assert sources_base.BrowserListSource(
         id="demo", searches_spec=[("A", "https://example.invalid/jobs")],
         extractor_js="(()=>[])()").reprobed == ""
+
+
+def test_wttj_posting_regex_is_not_anchored_past_the_locale_segment():
+    """The bug this cost, caught on the live board rather than reasoned about.
+
+    WTTJ's posting links are `/en-GB/companies/<co>/jobs/<slug>`. A regex anchored at the path
+    start with a lowercase locale class -- `^/[a-z-]+/companies/` -- cannot match `en-GB`,
+    because of the uppercase `GB`. It matched ZERO of ten real cards and returned an empty
+    page, which is indistinguishable from a board with no results and is the exact
+    silent-empty shape this file exists for.
+
+    Static, like its jobserve sibling above: this repo has no JS execution harness and
+    `sluice/` is stdlib-only, so the real verification is a live run. A string check still
+    catches the specific regression.
+    """
+    js = _src("wttj").extractor_js
+    assert "/companies/" in js, "wttj must match postings by their /companies/<co>/jobs/ shape"
+    # COMMENTS STRIPPED FIRST. The extractor's own comment explains this bug and therefore
+    # contains the forbidden pattern verbatim, so a check over the raw text is satisfied by
+    # the prose describing the defect rather than by the code avoiding it -- the same way a
+    # bare-substring `degraded` check in tests/test_health_wrong_page.py was once satisfied by
+    # the comment above the marker. Grep the CODE, not the explanation of the code.
+    code = re.sub(r"//[^\n]*", "", js)
+    assert not re.search(r"\^\\?/\[a-z", code), (
+        "wttj's posting regex is anchored at the path start with a lowercase-only class -- "
+        "the locale segment is `en-GB` and this matches nothing")
+
+
+def test_wttj_reads_the_list_view_not_the_retired_carousel():
+    """wttj moved off the Otta carousel (2026-08-28). Both surfaces are still live and spell
+    the same posting with different URLs, so scraping the old one alongside the new would
+    produce duplicate leads that `_norm_url` cannot dedup."""
+    src = _src("wttj")
+    assert not hasattr(src, "advance_selector"), (
+        "wttj is a list source now; an advance selector means the carousel is back")
+    for _, url in src.searches_spec:
+        host = (urlparse(url).hostname or "").lower()
+        assert host == "www.welcometothejungle.com", (
+            f"wttj must read the list view on www, got {host!r}")
