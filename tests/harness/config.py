@@ -152,6 +152,14 @@ def _seed_vault(vault_dir, *, baseline, experience, cv_name):
             f'Category: "{e.get("category", "")}"',
             f'Best For: "{e.get("best_for", "")}"',
             f'Metrics: "{e.get("metrics", "")}"',
+            # `Skills` (#168): the fifth field `EVIDENCE_KINDS["experience"].fields`
+            # declares, and the one this factory did not write until #213's review
+            # found the whole feature untested end to end -- every e2e/functional CV
+            # scenario ran against a vault the containment gate could never see
+            # anything to check. Blank by default (every pre-#168 scenario stays
+            # exactly as unannotated as before); a caller passes `skills=` to opt one
+            # entry in, mirroring how `metrics`/`category`/`best_for` already work.
+            f'Skills: "{e.get("skills", "")}"',
             f'verified: {e.get("verified", "true")}',
         ])
         with open(os.path.join(exp_dir, f"{e['title']}.md"), "w", encoding="utf-8") as f:
