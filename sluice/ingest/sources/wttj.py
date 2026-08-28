@@ -47,6 +47,7 @@ _JS = r"""
     // The card's employee-count chip, used as a positional ANCHOR for location below.
     const EMP=/^\s*\d[\d,\s]*\+?\s*employees?\s*$/i;
     const r=[], seen=new Set();
+    const fellBackFlags=[];  // parallel to r: whether row i used the company fallback tier
     document.querySelectorAll('a[href]').forEach(a=>{
         const href=a.getAttribute('href')||'';
         if(!POSTING.test(href)) return;
@@ -68,12 +69,18 @@ _JS = r"""
         if(!card) return;
         // Company is the element immediately after the title anchor -- the card renders
         // `<a>Title</a><p>Company</p>` as siblings. Falls back to the card's first <p>.
-        let company='';
+        let company='', companyFallback=false;
         const sib=a.nextElementSibling;
         if(sib && sib.tagName==='P') company=(sib.textContent||'').replace(/\s+/g,' ').trim();
         if(!company){
+            // The card's first <p> is the company on today's markup, but the SECOND is the
+            // company's one-line description -- so if the sibling relationship breaks, this
+            // tier quietly starts returning taglines. That reads HEALTHY: `company_rate` is
+            // one of the two `BLANK_SIGNALS`, and it measures COMPLETENESS, not correctness,
+            // so a full column of descriptions scores 1.0. Counted and stamped below, the way
+            // reed's link cascade and `_stepstone`'s anchor tier already stamp theirs.
             const p=card.querySelector('p');
-            if(p) company=(p.textContent||'').replace(/\s+/g,' ').trim();
+            if(p){ company=(p.textContent||'').replace(/\s+/g,' ').trim(); companyFallback=true; }
         }
         // Location lives in an UNCLASSED <span>, so it cannot be selected directly. Taken as
         // the span immediately BEFORE the employee-count chip, which is a structural anchor
@@ -93,8 +100,16 @@ _JS = r"""
         const ei=spans.findIndex(s=>EMP.test(s));
         if(ei>0) location=spans[ei-1];
         r.push({title, company, location, link, salary:''});
+        fellBackFlags.push(companyFallback);
     });
-    return r.slice(0,40);
+    const returned=r.slice(0,40);
+    // DOMINANCE plus a row floor, not a per-row stamp -- the marker promotes to a
+    // source-level `fallback` reason, and `fallback` is in `BREAKER_REASONS`, so one odd card
+    // would withhold the whole run's leads. Same discipline reed's cascade already uses, and
+    // the same floor (8), for the same reason: on a narrow page a single card trips `1 > 0.5`.
+    const fellBack=fellBackFlags.slice(0,40).filter(Boolean).length;
+    if(returned.length >= 8 && fellBack > returned.length/2) returned[0].degraded='company-fallback';
+    return returned;
 })()
 """
 

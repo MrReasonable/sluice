@@ -245,8 +245,10 @@ carousel advanced by clicking a next control — was retired 2026-08-28 when its
 (`wttj`) moved to WTTJ's list view and left it with none. Two consequences worth knowing before
 adding a source. A guard in `tests/test_ingest_url_trust.py` used to assert BOTH base classes
 were reachable, as the anti-vacuity check for a two-implementation seam; with one implementation
-the equivalent claim is that the base class is reached AND at least one subclass overrides
-`parse`, or every row is testing inherited behaviour. And `core/app.py`'s doctor sweep still
+the equivalent claim is that the base class is reached AND at least one class actually
+OVERRIDES `parse` — checked against `parse` itself, not against the class count, since two
+registered subclasses inherit it unchanged and a count would be satisfied while every row
+still tested inherited behaviour. And `core/app.py`'s doctor sweep still
 gates `auth_probe_js` on the class that honours it even though only one class exists, because a
 second could grow the attribute and never evaluate it — the hazard outlives the class that
 illustrated it. `git log -- sluice/ingest/base.py` has the implementation if a carousel board

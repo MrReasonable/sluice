@@ -135,9 +135,19 @@ def test_the_class_sweep_is_not_looking_at_an_empty_set():
     assert "BrowserListSource" in names, (
         f"the registry's parse-path classes are now {sorted(names)} and no longer include the "
         "base class -- the sweeps below would silently stop covering it")
-    assert len(names) > 1, (
-        f"only {sorted(names)} reached the sweep -- no source overrides `parse`, so every "
-        "row below is testing inherited behaviour only")
+    # The OVERRIDE check, asserted against `parse` itself rather than against the class COUNT.
+    # `len(names) > 1` was the first version and its message claimed exactly this, which is
+    # false: membership in `_PARSE_PATH_CLASSES` is only `type(src)`, and `_LinkedInSource`
+    # and `_WorkInStartupsSource` are distinct classes that inherit `parse` unchanged. So the
+    # count could be satisfied while every row below still tested inherited behaviour only --
+    # a guard asserting a property it does not check, which is the shape it was rewritten to
+    # avoid in the first place.
+    overriders = {c.__name__ for c in _PARSE_PATH_CLASSES
+                  if c.parse is not BrowserListSource.parse}
+    assert overriders, (
+        f"no registered source overrides `parse` -- the classes are {sorted(names)} and every "
+        "one inherits it, so each sweep below is testing the base implementation repeatedly "
+        "and would certify nothing about the overrides they exist for")
     # `_ReedSource` joined 2026-08-27: reed's company recovery moved out of the extractor JS
     # and into a `parse` override, so it became a parse path. Read against the sweeps below
     # before being added here, per this docstring's instruction: it subclasses
@@ -403,9 +413,16 @@ _CAPTURES = re.compile(r"\((?!\?:)[^)]*\)")
 def _js_blobs(src):
     """Every JS attribute a source carries, found by SUFFIX rather than by name.
 
-    `CarouselSource` calls its blob `read_js`, not `extractor_js` -- keying on the latter
-    made the first version of this sweep skip wttj entirely and report it clean, which is
-    the "a search that finds nothing proves nothing" failure this file exists to prevent.
+    Keying on `extractor_js` alone made the first version of this sweep skip a whole source
+    and report it clean -- the "a search that finds nothing proves nothing" failure this file
+    exists to prevent. The source that exposed it was the carousel class, whose blob was
+    called `read_js`; that class was retired on 2026-08-28 with its last producer, so the
+    ORIGINAL witness is gone.
+
+    The generality is still exercised, which is why this stayed suffix-keyed rather than being
+    narrowed to the one name now in the registry: `dismiss_js` and `auth_probe_js` are both
+    real, both shipped, and neither is `extractor_js`. Narrowing would silently stop sweeping
+    them.
     """
     return {n: getattr(src, n) for n in dir(src)
             if n.endswith("_js") and isinstance(getattr(src, n, None), str)
