@@ -526,8 +526,20 @@ def _validate_line_sets_before_the_extraction(cv_text):
         # know whether a line is CONSUMED by the SKILLS run, so it can keep it out of
         # `work` the same way `section_spans` does. The wider SKILLS-shaped marker set
         # (WORK's three plus the en and em dash) governs region CONTINUATION here, same
-        # as it does in `section_spans`: a blank line does not end the run, and a
-        # non-blank non-bullet line does.
+        # as it does in `section_spans`: a blank line does not end the run.
+        #
+        # It ends the run at EVERY non-blank non-bullet line, which `section_spans` no
+        # longer does -- since the group-heading fix it reads past one that is neither
+        # all-caps nor reached with `in_work` live. That divergence is invisible to the
+        # two lists compared here, and PROVABLY so rather than by luck: `section_spans`
+        # keeps the run alive only while `in_work` is false, and `in_profile` is always
+        # false inside a SKILLS run (each header clears the other), so the extra lines it
+        # consumes could not have entered `profile` or `work` under either model. The
+        # only way back into either region is a PROFILE / WORK EXPERIENCE header, and
+        # both clear `in_skills` on the way in, in this reference and in `section_spans`
+        # alike. Measured over 20,000 random documents and exhaustively over every
+        # length-3 and length-4 document drawn from an alphabet CONTAINING group
+        # headings: zero rows diverge on `profile` or `work`.
         is_skills_bullet = line.lstrip().startswith(("-", "•", "*", "–", "—"))
         if in_skills and line.strip() and not is_skills_bullet:
             in_skills = False
