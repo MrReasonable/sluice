@@ -2019,10 +2019,10 @@ def _skills_run(lines) -> set:
     """The bullet values of every emitted `SKILLS` section in `lines`.
 
     Mirrors `cv/validate.py`'s `section_spans` rather than inventing a second rule: the
-    run starts at a bare `SKILLS` line and continues across blanks AND across any heading
-    the format contract does not define -- a group heading (`Languages`) and an
-    off-contract section header (`PUBLICATIONS`) alike, in either case -- ending only at
-    `WORK EXPERIENCE`/`CERTIFICATES`/`EDUCATION`. Stopping at the first non-bullet instead
+    run starts at a bare `SKILLS` line in ANY case and continues across blanks AND across
+    any heading the format contract does not define -- a group heading (`Languages`) and
+    an off-contract section header (`PUBLICATIONS`) alike, in either case -- ending only
+    at `WORK EXPERIENCE`/`CERTIFICATES`/`EDUCATION`. Stopping at the first non-bullet instead
     would miss exactly the value that motivated this collector -- `_GROUPED_TAIL_CV`'s
     second bullet sits UNDER a `Languages` heading, and a collector that stopped there
     would sweep clean over it while the gate checks it.
