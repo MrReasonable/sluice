@@ -1913,9 +1913,9 @@ _SKILL_BLOCK_LIST_COLLECTOR = ("evidence Skills: (YAML block list)",
                                _evidence_block_list_re("Skills"))
 
 
-# --- The AST collector: the three shapes no REGEX here can reach ---------------------
+# --- The AST collector: the four shapes no REGEX here can reach ----------------------
 #
-# Measured, and this is the THIRD collector-evasion instance on this branch: after the
+# Measured, and this is the FOURTH collector-evasion instance on this branch: after the
 # final review round, `_all_fixture_skill_values()` collected 8 values while EVERY
 # skill-shaped value that round added was invisible to it. The regex collectors above are
 # anchored on a COLON, so they see a frontmatter line and a dict LITERAL and nothing else
@@ -1928,9 +1928,13 @@ _SKILL_BLOCK_LIST_COLLECTOR = ("evidence Skills: (YAML block list)",
 # `dict(Skills="Example Query")` and for `skills="Example Query"`, and matches only the
 # dict-LITERAL spelling `{"Skills": "Example Query"}`. The label and the code now agree.)
 #
-# AST rather than a fourth regex, because all three shapes are about Python STRUCTURE
-# (which argument, which decorator, which list) rather than about text next to a colon --
-# the thing a regex is good at and has already been corrected twice here for.
+# AST rather than a fourth regex, because all four shapes are about Python STRUCTURE
+# (which argument, which decorator, which list, which name a value was bound to) rather
+# than about text next to a colon -- the thing a regex is good at and has already been
+# corrected twice here for. The fourth shape (constant indirection -- a `NAME = "literal"`
+# binding threaded through a covered kwarg) was added by a #213 review round after this
+# collector, which by then claimed to see "every shape", was planted end to end and stayed
+# green over exactly that shape. See `_ast_skill_values` and `_string_const_bindings`.
 _SKILL_BULLET_MARKERS = ("-", "•", "*", "–", "—")
 _SKILL_KEY_PREFIX_RE = re.compile(r"""^\s*["']?Skills["']?\s*:\s*""", re.I)
 
@@ -1951,7 +1955,7 @@ def _is_skill_kwarg(name: str) -> bool:
     return n == "skills" or n.endswith("_skills")
 
 
-def _skill_strings(node) -> set:
+def _skill_strings(node, consts=None) -> set:
     """The skill values in one AST value node: a string constant, or a
     list/tuple/set of them.
 
@@ -1959,18 +1963,62 @@ def _skill_strings(node) -> set:
     collector's output: a `Skills:` value holds a comma-separated LIST, so
     `dict(Skills="Example Query, Example Framework")` is two identities and rostering the
     joined string would let a real product name ride in beside a reviewed one.
+
+    `consts`, when given, resolves a bare NAME reference against `_string_const_bindings`'
+    map of every simple `NAME = "literal"` assignment in the module -- module-level or a
+    function-local, both bindings this collector was blind to until #213's review planted
+    `dict(Skills=_SOME_CONST)` and `dict(Skills=some_local)` end to end and the roster swept
+    clean over both. Still not general dataflow: a name that is reassigned, built from an
+    f-string, read from a file, or returned by a function call resolves to nothing here,
+    the same way it resolves to nothing for `_string_const_bindings` itself.
     """
     out = set()
     nodes = (node.elts if isinstance(node, (ast.List, ast.Tuple, ast.Set)) else [node])
     for n in nodes:
         if isinstance(n, ast.Constant) and isinstance(n.value, str):
+            raws = {n.value}
+        elif consts is not None and isinstance(n, ast.Name) and n.id in consts:
+            raws = consts[n.id]
+        else:
+            continue
+        for raw in raws:
             # One fixture threads a whole frontmatter LINE through the kwarg
             # (`_FM.format(skills="Skills: Example Query, Example Framework\n")`), so the
             # key itself has to come off or the roster grows a `Skills:` entry that names
             # nothing. The VALUES there are already reached by the frontmatter regex
             # collector; stripping here just stops this one double-counting the key.
-            out |= {p.strip() for p in _SKILL_KEY_PREFIX_RE.sub("", n.value).split(",")
+            out |= {p.strip() for p in _SKILL_KEY_PREFIX_RE.sub("", raw).split(",")
                     if p.strip()}
+    return out
+
+
+def _string_const_bindings(tree) -> dict:
+    """Every simple `NAME = "literal"` assignment in one module -- module-level or local to
+    a function -- mapped to the SET of string values ever bound to that name.
+
+    This is the fourth shape `_ast_skill_values` reaches, closing the gap #213's review
+    measured live: a skill value handed to a covered kwarg through a named constant
+    (`_SKILL = "Example X"` ... `dict(Skills=_SKILL)`) rather than inline. Deliberately NOT
+    general dataflow -- only a direct `NAME = "<string literal>"` assignment is resolved.
+    A name built from an f-string, a function call, string concatenation, or read from a
+    file is invisible here, on purpose: chasing those would turn a small AST sweep into a
+    partial interpreter, and the failure mode of NOT chasing them is a value that still
+    reads as a plain string literal at its assignment site, so a human skimming a diff has
+    something to catch even where this collector cannot.
+
+    Walking the WHOLE tree rather than scoping to one function's own body is deliberate
+    too: a name is matched purely by identifier, so this can over-collect (the same name
+    bound to two different literals in two different functions contributes both), and
+    over-collection is the safe direction for a ratchet whose failure mode is a value it
+    never sees at all -- see `_ast_skill_values`'s own docstring.
+    """
+    out = {}
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)):
+            out.setdefault(node.targets[0].id, set()).add(node.value.value)
     return out
 
 
@@ -2066,12 +2114,24 @@ def _parametrize_values(fn) -> dict:
 def _ast_skill_values(text) -> set:
     """Every skill value one test module declares in a shape no regex here can reach.
 
-    THREE shapes, each one this branch actually introduced:
+    FOUR shapes. The first three are what this branch introduced originally; the fourth
+    (constant indirection) closed a gap #213's review found in THOSE three: each is only
+    reached when the value sits inline at the call site, and none of them followed a name
+    to where it was actually bound.
 
       kwarg          `dict(Skills="Example Query")`, `al_skills="Examplestore3"`
       parametrize    `@parametrize("value", [".NET"])` feeding `dict(Skills=value)`
       emitted SKILLS a CV fixture's own `SKILLS` section, whether written as one
                      triple-quoted string or as a list of per-line string constants
+      const indirect `_SKILL = "Example X"` (module-level) or `skill = "Example X"`
+                     (function-local), later passed as `dict(Skills=_SKILL)` /
+                     `dict(Skills=skill)` -- see `_string_const_bindings`
+
+    What STILL cannot be seen, stated honestly because a label claiming coverage the code
+    lacks is why nobody looks (this file's own recurring lesson, now a fourth time): a
+    COMPUTED value (string concatenation, `.format`, a comprehension), an f-string, a value
+    read from a file or environment, or one returned by a function call. Each of those
+    would need actual dataflow analysis, not an AST sweep, and none is attempted here.
 
     A SyntaxError returns the empty set rather than raising: this sweeps every file under
     `tests/`, and one unparseable file must not take the whole guard down -- but it must
@@ -2084,6 +2144,7 @@ def _ast_skill_values(text) -> set:
         tree = ast.parse(text)
     except SyntaxError:
         return set()
+    consts = _string_const_bindings(tree)
     values = set()
     for fn in ast.walk(tree):
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -2107,7 +2168,7 @@ def _ast_skill_values(text) -> set:
         if isinstance(node, ast.Call):
             for kw in node.keywords:
                 if kw.arg and _is_skill_kwarg(kw.arg):
-                    values |= _skill_strings(kw.value)
+                    values |= _skill_strings(kw.value, consts)
             # A helper in THIS module that builds a SKILLS section, handed a literal
             # sequence: `_cv_with_skills(["Example Query", "Kubernetes"])`. The header
             # those items end up under is inside the helper, so no run-scan can see this
@@ -2122,7 +2183,7 @@ def _ast_skill_values(text) -> set:
             if _called_name(node) in builders:
                 for arg in node.args:
                     if isinstance(arg, (ast.List, ast.Tuple, ast.Set)):
-                        values |= _skill_strings(arg)
+                        values |= _skill_strings(arg, consts)
         elif isinstance(node, ast.Dict):
             # A dict KEY is matched case-SENSITIVELY against the frontmatter key
             # (`{"Skills": "Example Widget3"}`), the same way `_evidence_field_re` matches
@@ -2134,7 +2195,7 @@ def _ast_skill_values(text) -> set:
             # Python parameter -- `al_skills=`, `be_skills=` -- and not a frontmatter key.
             for k, val in zip(node.keys, node.values):
                 if (isinstance(k, ast.Constant) and k.value == "Skills"):
-                    values |= _skill_strings(val)
+                    values |= _skill_strings(val, consts)
         elif isinstance(node, (ast.List, ast.Tuple)):
             # A CV written as one string per LINE -- `"\n".join([...])`, the shape
             # `_GROUPED_TAIL_CV` uses.
@@ -2303,7 +2364,7 @@ def test_every_test_module_parses_for_the_ast_collector():
 
 
 def test_the_ast_skill_collector_sees_every_shape_it_claims_to():
-    """The three shapes no regex in this file can reach, each measured as a fragment of
+    """The four shapes no regex in this file can reach, each measured as a fragment of
     Python SOURCE -- and each one a shape that WAS live in `tests/` while the roster read
     green.
 
@@ -2382,6 +2443,26 @@ def test_the_ast_skill_collector_sees_every_shape_it_claims_to():
     # an earlier name-keyed rule.
     assert _ast_skill_values(
         'classify_negatives_vs_skills(["never claim anything"], [])') == set()
+
+    # (4) CONST INDIRECTION: a `NAME = "literal"` binding, module-level or function-local,
+    # later threaded through the SAME covered kwarg the earlier cases only ever reach
+    # inline. This is the shape #213's review planted end to end -- a value invisible to
+    # shapes (1)-(3), which look only at the call site, never at where a name was bound.
+    assert _ast_skill_values(
+        '_SKILL = "Example Pi"\n'
+        'build(fields=dict(Skills=_SKILL))\n') == {"Example Pi"}
+    assert _ast_skill_values(
+        'def test_x():\n'
+        '    skill = "Example Rho"\n'
+        '    build(fields=dict(Skills=skill))\n') == {"Example Rho"}
+    # Still not general dataflow: a name never bound to a literal anywhere in the module
+    # resolves to nothing, rather than raising or guessing.
+    assert _ast_skill_values('build(fields=dict(Skills=_UNBOUND))') == set()
+    # Nor is it type inference -- a name bound to a non-string literal is never coerced
+    # into a skill value.
+    assert _ast_skill_values(
+        '_COUNT = 3\n'
+        'build(fields=dict(Skills=_COUNT))\n') == set()
 
     # A lowercase `skills` is the evidence KIND id, not a value-carrying frontmatter key.
     # Measured: a case-insensitive dict-key rule rostered the sentinel `8802` off
