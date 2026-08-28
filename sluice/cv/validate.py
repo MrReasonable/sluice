@@ -44,13 +44,16 @@ _WORK_BULLET_MARKERS = ("-", "•", "*")
 # narrower WORK tuple, and derived from `_WORK_BULLET_MARKERS` the same way
 # `_TRAILING_MARKERS` is derived from `_BULLET_MARKERS` there, so the two en/em-dash
 # characters are typed in exactly one place in each module. `cv/parse.py` now accepts a
-# SKILLS section of its own (#168 Task 7), so this tuple must equal whatever THAT reader
-# accepts, for the identical reason `_WORK_BULLET_MARKERS` must equal `_BULLET_MARKERS`:
-# a marker the parser accepts and this function does not is a gate BYPASS -- the line
-# parses, renders into the PDF, and is never containment-checked here.
-# `test_the_skills_region_markers_equal_what_the_gate_collects`
-# (`tests/test_cv_parse.py`) derives both tuples and asserts equality, so a change to
-# either side reds. Wider than the WORK tuple is safe for the same reason
+# SKILLS section of its own (#168 Task 7), so this tuple must not be NARROWER than what
+# THAT reader accepts: a marker the parser accepts and this function does not is a gate
+# BYPASS -- the line parses, renders into the PDF, and is never containment-checked here.
+# A FLOOR, not equality, unlike `_WORK_BULLET_MARKERS`/`_BULLET_MARKERS`: this gate is
+# renderer-independent and `_TRAILING_MARKERS` is the `template` renderer's own grammar,
+# so staying WIDER than it costs nothing and must stay allowed. Equal today is their
+# shape, not their obligation.
+# `test_the_work_bullet_markers_are_exactly_what_the_gate_citation_checks`
+# (`tests/test_cv_parse.py`) derives both tuples and asserts that floor, so a narrowing
+# on either side reds. Wider than the WORK tuple is safe for the same reason
 # `_TRAILING_MARKERS` is: a SKILLS line is not number- or citation-checked (Task 3's
 # region split carries no such check, and Task 7's parser doesn't add one either), only
 # CONTAINMENT-checked (`UNSOURCED SKILL`, Task 4) -- and that check strips the
@@ -139,11 +142,14 @@ def section_spans(cv_text):
     checks`, which asserts EQUALITY with `cv/parse.py`'s `_BULLET_MARKERS`, because a WORK
     marker the parser accepts and the gate does not reaches the PDF with the citation
     check never having looked at it. `_SKILLS_MARKERS` is a SECOND, wider tuple used only
-    to shape the SKILLS run (see its own comment above) -- it is NOT `cv/parse.py`'s
-    `_TRAILING_MARKERS`, which stays scoped to CERTIFICATES/EDUCATION, a pair of sections
-    this helper collects nothing inside at all: their terminator clears every flag and
-    only a later PROFILE/WORK EXPERIENCE/SKILLS header can set one again. CLAUDE.md is
-    explicit these tuples stay separate rather than being widened into one.
+    to shape the SKILLS run (see its own comment above) -- a separate tuple from
+    `cv/parse.py`'s `_TRAILING_MARKERS` rather than an import of it, equal in value today
+    and bound only by a FLOOR (this one must not be narrower). Note the two are scoped
+    differently in that module: `_TRAILING_MARKERS` governs all THREE trailing sections
+    there since #168 Task 7 (SKILLS as well as CERTIFICATES/EDUCATION), while this run
+    collects nothing at all inside CERTIFICATES/EDUCATION -- their header clears every
+    flag, and only a later PROFILE/WORK EXPERIENCE/SKILLS header can set one again.
+    CLAUDE.md is explicit these tuples stay separate rather than being widened into one.
     """
     profile, work, skills = [], [], []
     in_work = False

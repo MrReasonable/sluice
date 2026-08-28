@@ -76,9 +76,10 @@ class CvDocument:
 # that accident, so the correspondence has to be established instead: the entry reader
 # below (`_is_trailing_entry`, shared by all three headers) must refuse the same
 # terminator line the gate's SKILLS run stops at, or a line the gate never inspected
-# reaches the PDF. `test_the_skills_region_markers_equal_what_the_gate_collects`
-# (tests/test_cv_parse.py) is what pins that this reader's marker set is not narrower
-# than the gate's own `_SKILLS_MARKERS`.
+# reaches the PDF. That correspondence is a FLOOR rather than an equality, and it runs
+# the other way round: the gate's own `_SKILLS_MARKERS` must not be narrower than this
+# reader's set. `test_the_work_bullet_markers_are_exactly_what_the_gate_citation_checks`
+# (tests/test_cv_parse.py) is what pins it.
 _TRAILING_SECTIONS = frozenset({"SKILLS", "CERTIFICATES", "EDUCATION"})
 
 # WORK EXPERIENCE bullets ONLY (the loop below), and EQUAL to the gate's own set --
