@@ -529,17 +529,20 @@ def _validate_line_sets_before_the_extraction(cv_text):
         # as it does in `section_spans`: a blank line does not end the run.
         #
         # It ends the run at EVERY non-blank non-bullet line, which `section_spans` no
-        # longer does -- since the group-heading fix it reads past one that is neither
-        # all-caps nor reached with `in_work` live. That divergence is invisible to the
-        # two lists compared here, and PROVABLY so rather than by luck: `section_spans`
-        # keeps the run alive only while `in_work` is false, and `in_profile` is always
-        # false inside a SKILLS run (each header clears the other), so the extra lines it
-        # consumes could not have entered `profile` or `work` under either model. The
-        # only way back into either region is a PROFILE / WORK EXPERIENCE header, and
-        # both clear `in_skills` on the way in, in this reference and in `section_spans`
-        # alike. Measured over 20,000 random documents and exhaustively over every
-        # length-3 and length-4 document drawn from an alphabet CONTAINING group
-        # headings: zero rows diverge on `profile` or `work`.
+        # longer does -- it reads past every one of them that is not a CONTRACT heading,
+        # unless `in_work` is live. That divergence is invisible to the two lists compared
+        # here, and PROVABLY so rather than by luck: `section_spans` keeps the run alive
+        # only while `in_work` is false, and `in_profile` is always false inside a SKILLS
+        # run (each header clears the other), so the extra lines it consumes could not
+        # have entered `profile` or `work` under either model. The only way back into
+        # either region is a PROFILE / WORK EXPERIENCE header, and both clear `in_skills`
+        # on the way in, in this reference and in `section_spans` alike. RE-measured after
+        # the terminator became the contract's own heading set, not inherited from the
+        # earlier all-caps rule: over 20,000 random documents and exhaustively over every
+        # length-3 (19,683) and length-4 (531,441) document drawn from an alphabet
+        # carrying BOTH a group heading and an off-contract section header in both
+        # spellings (`Languages`, `LANGUAGES`, `PUBLICATIONS`), zero rows diverge on
+        # `profile` or `work`.
         is_skills_bullet = line.lstrip().startswith(("-", "•", "*", "–", "—"))
         if in_skills and line.strip() and not is_skills_bullet:
             in_skills = False
@@ -629,14 +632,19 @@ def test_the_section_span_helper_matches_the_pre_extraction_loop_on_random_cvs()
     # is exactly the kind of pin a later edit quietly outgrows. This is the SAME
     # equivalence assertion over shapes nobody picked. Seeded, so it is deterministic and
     # offline; stdlib only. The alphabet carries every header the gate models, several it
-    # does not, all three bullet markers, casing, indentation and a tab-led line.
+    # does not, all three bullet markers, casing, indentation and a tab-led line -- and,
+    # since the SKILLS run's terminator became the contract's own heading set, a GROUP
+    # heading in both spellings, which is the shape that arm now reads past. Without those
+    # two rows this sweep would exercise the new arm only through `PUBLICATIONS`/`PROJECTS`
+    # /`AWARDS`, and the reference's own divergence argument would go unmeasured on the
+    # case it was written for.
     alphabet = [
         "PROFILE", "WORK EXPERIENCE", "CERTIFICATES", "EDUCATION", "PUBLICATIONS",
         "PROJECTS", "AWARDS", "SKILLS", "  profile  ", "work experience",
         "  Education  ", "JANE ROE", "Example Systems", "", "  ",
         "- did 42 things [ES1]", "\u2022 did 500 things", "* uncited 999",
         "  - indented [EA1]", "prose with 8 and 777", "02/2023\u2013present | Loc | Role",
-        "[QQ7] weird", "\tTAB LED", "ALL CAPS BODY LINE",
+        "[QQ7] weird", "\tTAB LED", "ALL CAPS BODY LINE", "Languages", "LANGUAGES",
     ]
     rng = random.Random(20260822)
     profile_seen = work_seen = 0

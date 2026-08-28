@@ -91,31 +91,36 @@ def section_spans(cv_text):
     into the PDF. That is the arm a naive extraction drops, so it is pinned by name.
 
     SKILLS is a DIFFERENT kind of region: a BULLET RUN, not a span held open by a
-    start/end header pair. It ends at `CERTIFICATES`/`EDUCATION`, or at a non-blank
-    non-bullet line that is either ALL-CAPS (a section header) or reached while `in_work`
-    is live -- and NOT at a non-blank non-bullet line that is neither, which is read as a
-    GROUP HEADING (`Languages`, `Frameworks`) and keeps the run alive. See the branch's
-    own comments for why a blank must not end the run, why the two arms that do end it
-    are exactly those two, and why the grouped case had to be closed HERE rather than in
-    a renderer: it was a row 2 bypass, measured, on the section order the shipped format
-    contract itself asks for. Only a bullet line is materialised into `skills_lines`; a
-    blank line, or a group heading, that merely keeps the run alive is not itself a skill
-    and is dropped, the same way `work_bullet_lines` already drops every non-bullet line
-    inside WORK.
+    start/end header pair. It ends at a heading the FORMAT CONTRACT defines and at
+    nothing else, whatever the line's capitalisation. Those headings are exactly the ones
+    this loop already models above -- `PROFILE`, `WORK EXPERIENCE`, `CERTIFICATES`,
+    `EDUCATION` -- each ending the run through its OWN branch, so there is no second
+    terminator list here to drift from them (a repeated `SKILLS` header re-enters the run
+    rather than ending it). The one other way out is `in_work`: a non-blank non-bullet
+    line reached while WORK is live ends the run, because such a line is already claimed
+    by the stricter citation check. Everything else keeps the run alive -- a GROUP HEADING
+    (`Languages`, `Frameworks`) and an OFF-CONTRACT section header (`PUBLICATIONS`,
+    `PROJECTS`, `AWARDS`, in any case) alike. See the branch's own comments for why a
+    blank must not end the run, why an off-contract heading is read past rather than
+    stopped at, and why the grouped case had to be closed HERE rather than in a renderer:
+    it was a row 2 bypass, measured, on the section order the shipped format contract
+    itself asks for. Only a bullet line is materialised into `skills_lines`; a blank line,
+    or a heading that merely keeps the run alive, is not itself a skill and is dropped,
+    the same way `work_bullet_lines` already drops every non-bullet line inside WORK.
 
     That means gate and parser no longer stop at the same line in every case: `cv/parse.py`
-    refuses at a group heading this run reads past. The direction is deliberate and is the
-    safe one -- against the `template` renderer the gate now inspects a SUPERSET of what
-    the parser accepts, so nothing that renderer lays out is uninspected -- and it is the
+    refuses at any line its own SKILLS reader cannot place, and this run reads past every
+    one of them that is not a contract heading. The direction is deliberate and is the
+    safe one -- against the `template` renderer the gate inspects a SUPERSET of what the
+    parser accepts, so nothing that renderer lays out is uninspected -- and it is the
     whole point, since the `script` renderer parses nothing at all.
 
-    That superset argument buys NOTHING under `script`, and this docstring used to
-    overreach into "no line can reach a PDF uninspected", which the residual forty lines
-    down falsifies: no parser runs there, so a bullet under a SHOUTED group heading
-    (`LANGUAGES`, which this run reads as a section header and stops at) reaches a
-    script-rendered PDF with neither check behind it. The change strictly REDUCES that set
-    -- every ordinary Title-Case grouping is now covered where none was -- but it does not
-    empty it.
+    That superset argument buys NOTHING under `script`, so state the reach exactly rather
+    than as "no line can reach a PDF uninspected". What this run guarantees is bounded to
+    itself: from a `SKILLS` header until a CONTRACT heading ends the run, every bullet is
+    containment-checked, under every renderer. Past that heading the pre-#168 model
+    applies unchanged and is not this run's residual -- `CERTIFICATES`/`EDUCATION` content
+    is inspected by no gate check at all, exactly as it was before SKILLS existed.
 
     Note that no header CLEARS another's flag on the way IN, with one exception:
     `PROFILE` sets `in_profile` without touching `in_work`, so a CV that repeats
@@ -158,9 +163,12 @@ def section_spans(cv_text):
             # bullets ARE citation-checked today -- measured -- and a fabricated figure
             # there would ship unchecked. Reverting to WORK on any unmodelled header
             # instead regresses the mirror case (a PUBLICATIONS bullet after
-            # CERTIFICATES, uncited-clean today). A run that ends at the first non-bullet
-            # line satisfies both, without the "any all-caps line ends the section"
-            # generalisation this function's docstring names as a gate WEAKENING.
+            # CERTIFICATES, uncited-clean today). Leaving `in_work` alone satisfies both:
+            # while WORK is live the run ends at the first non-blank non-bullet line and
+            # the citation check keeps that section (see the terminator's own comment
+            # below), and where WORK is already closed there is no citation check to
+            # lose. Neither needs the "any all-caps line ends the section" generalisation
+            # this function's docstring names as a gate WEAKENING.
             in_skills, in_profile = True, False
             continue
         if u in ("CERTIFICATES", "EDUCATION"):
@@ -173,14 +181,14 @@ def section_spans(cv_text):
         # blank under the header put the skills lines in NO region while `parse_cv` still
         # returned them and the template rendered them: containment-checked by nothing.
         #
-        # A non-blank non-bullet line inside the run is one of TWO different things, and
-        # ending the run unconditionally at both was a row 2 BYPASS. Measured on the
-        # shipped format contract's own section order (`compose._RULES` puts SKILLS LAST,
-        # after EDUCATION, and EDUCATION clears `in_work`):
+        # A non-blank non-bullet line inside the run used to end it whenever it was
+        # ALL-CAPS, and that was a row 2 BYPASS. Measured on the shipped format
+        # contract's own section order (`compose._RULES` puts SKILLS LAST, after
+        # EDUCATION, and EDUCATION clears `in_work`):
         #
         #     SKILLS
         #     - Example Query
-        #     Languages
+        #     LANGUAGES
         #     - Totally Invented Skill
         #
         # `- Totally Invented Skill` landed in NO region at all, `validate()` returned
@@ -191,33 +199,47 @@ def section_spans(cv_text):
         # renderer's grammar (CLAUDE.md: the engine may guard what the prompt required;
         # only a renderer may guard what its own LAYOUT needs).
         #
-        # The discriminator is ALL-CAPS, and it is the conservative direction on purpose.
-        # Every header in the format contract is all-caps, and so are the unmodelled ones
-        # this module's docstring names (PUBLICATIONS, PROJECTS, AWARDS); a GROUP HEADING
-        # inside a skills list is not (`Languages`, `Frameworks`, `Tools`). Getting it
-        # wrong the other way has a real cost: a Title-Case unmodelled section after
-        # SKILLS IS swallowed. Measured -- `SKILLS / - Example Query / Publications /
-        # - Wrote a paper that cut cost by 92%` returned `[]` before and now returns
-        # `UNSOURCED SKILL 'Wrote a paper that cut cost by 92%'`.
+        # So the run ends at a heading the FORMAT CONTRACT defines and at nothing else.
+        # That set needs no list here: every one of those headings -- PROFILE, WORK
+        # EXPERIENCE, CERTIFICATES, EDUCATION -- is consumed by its own branch above,
+        # which clears `in_skills` on the way through, and SKILLS itself re-enters the
+        # run. A membership test repeated here could only be an equivalent mutant: it
+        # would be unreachable for all five, and deleting it would leave the suite green.
+        # The set is asserted where it can actually be falsified -- `tests/test_cv_skills_
+        # containment.py::test_only_a_contract_heading_ends_the_run` drives each heading
+        # through this function, DERIVED from `tests/template_content.py`'s
+        # `composer_headings()` (itself `{PROFILE, WORK EXPERIENCE}` plus `cv/parse.py`'s
+        # `_TRAILING_SECTIONS`), never hand-listed, so a sixth contract heading added
+        # there without a branch here reds rather than silently reopening the bypass.
         #
-        # BOTH residuals are stated, because each is the price of the other and a comment
-        # that names only one reads as if the rule were free:
+        # An earlier revision ended the run at any ALL-CAPS line instead, reasoning that
+        # every contract header is shouted and a group heading (`Languages`, `Tools`) is
+        # not. That left the bypass above open for the shouted spelling, and it decided
+        # two identical situations oppositely on CAPITALISATION alone: a Title-Case
+        # unmodelled section was swallowed and checked while an ALL-CAPS one was not.
+        # A closed set derived from the contract replaces a heuristic about shoutiness.
         #
-        #   over-checking  a Title-Case SECTION heading is read as a group heading, and
-        #                  its bullets are containment-checked as skills. Answerable
-        #                  WITHOUT inventing or deleting anything -- shout the heading,
-        #                  which is what the format contract asks for anyway -- and the
-        #                  message names the CONTENT of the bullet, not the heading, so
-        #                  the retry has to be told where to look. That is the weaker half
-        #                  of the trade and is why the message is worth reading twice.
-        #   under-checking an ALL-CAPS group heading (`LANGUAGES`) ends the run, so its
-        #                  bullets are checked by nothing at all under `script`.
+        # ONE residual remains, in the OVER-checking direction, and it is stated because
+        # a comment naming no cost reads as if the rule were free:
+        #
+        #   over-checking  a section this loop does not model, emitted AFTER a SKILLS
+        #                  run (PUBLICATIONS, PROJECTS, AWARDS), keeps the run alive and
+        #                  has its bullets containment-checked as skills -- so a genuine
+        #                  entry there can be reported `UNSOURCED SKILL`, and the message
+        #                  names the bullet's CONTENT rather than the heading, so the
+        #                  retry has to be told where to look. This is now the case for
+        #                  the ALL-CAPS spelling too; "shout the heading" used to be an
+        #                  answer to it and no longer is. The honest remedy is narrower:
+        #                  emit the section BEFORE SKILLS, or not at all -- `_RULES` asks
+        #                  for none of the three, so a retry that drops one returns to
+        #                  the contract rather than deleting something the prompt asked
+        #                  for. Under the shipped `template` renderer that document is
+        #                  refused by `parse_cv` whatever this loop decides, so the added
+        #                  exposure is `cv.renderer: script` alone.
         #
         # The direction is deliberate: over-checking costs a retry on a refusal a human
         # can answer, under-checking ships an ungated line into a PDF. For a containment
-        # gate that is the right way round. What must NOT be read into this comment is
-        # that the over-checking case does not exist -- an earlier revision stated only
-        # the shouted-heading half, on the side it itself called "what must not happen".
+        # gate that is the right way round.
         #
         # `in_work` ends the run too, and that is what keeps this from WEAKENING anything.
         # Entering SKILLS deliberately does not clear `in_work`, so while WORK is live the
@@ -233,33 +255,31 @@ def section_spans(cv_text):
         # docstring above says so. Before, both stopped at the same line: `cv/parse.py`'s
         # trailing-section reader refuses at the first non-marker line, and Task 7 was what
         # made that agreement about WHERE rather than merely THAT (before it, `parse_cv`
-        # rejected every SKILLS section at the HEADER). The gate now reads PAST a group
-        # heading the parser still refuses at. That direction is the safe one -- the gate
-        # inspects MORE than the parser accepts, never less -- and it changes nothing for
-        # the `template` renderer, whose parse already refused this document; it changes
-        # `script`, where the line went unchecked.
+        # rejected every SKILLS section at the HEADER). The gate now reads PAST every line
+        # the parser refuses at that is not a contract heading. That direction is the safe
+        # one -- the gate inspects MORE than the parser accepts, never less -- and it
+        # changes nothing for the `template` renderer, whose parse already refused this
+        # document; it changes `script`, where the line went unchecked.
         #
-        # WHAT PINS THE TWO ARMS, named after measuring rather than assumed. An earlier
+        # WHAT PINS THE ARMS, named after measuring rather than assumed. An earlier
         # revision of this comment cited `test_a_skills_terminator_line_ends_both_the_
         # gate_region_and_the_parse` (`tests/test_cv_parse.py`). It does NOT pin them:
-        # deleting the ALL-CAPS arm, the `in_work` arm, or this whole block each leaves
-        # that entire file green (280 passed, measured three times). Its "HALF ONE" is
-        # vacuous under this rule -- it asserts the terminator line is absent from
-        # `skills_lines`, and a non-bullet line is never materialised there whatever this
-        # block decides, with nothing following the terminator in its fixture to tell the
-        # two apart. The arms are pinned by three rows in
-        # `tests/test_cv_skills_containment.py` --
+        # deleting the `in_work` arm, or this whole block, leaves that entire file green
+        # (280 passed, measured three times). Its "HALF ONE" is vacuous under this rule
+        # -- it asserts the terminator line is absent from `skills_lines`, and a
+        # non-bullet line is never materialised there whatever this block decides, with
+        # nothing following the terminator in its fixture to tell the two apart. The arms
+        # are pinned by three rows in `tests/test_cv_skills_containment.py` --
         # `test_a_bullet_under_a_group_heading_is_still_row_2_checked` (this block
-        # deleted), `test_an_all_caps_line_still_ends_the_run_so_a_real_section_is_not_
-        # swallowed` (the ALL-CAPS arm deleted) and
+        # deleted), `test_only_a_contract_heading_ends_the_run` (a contract heading's own
+        # `in_skills = False` deleted from its branch above) and
         # `test_a_group_heading_while_work_is_live_still_ends_the_run` (the `in_work` arm
         # deleted) -- and, for the `in_work` arm a second time, by
         # `tests/test_cv_validate.py`'s random-document equivalence sweep, which is what
         # makes that arm's agreement with the pre-extraction loop a property rather than
         # a claim.
-        if in_skills and line.strip() and not is_bullet:
-            if line.strip().isupper() or in_work:
-                in_skills = False
+        if in_skills and line.strip() and not is_bullet and in_work:
+            in_skills = False
         if in_skills:
             # Only a BULLET line is materialised here -- a blank kept the run alive
             # (the check above) but is not itself a skill. The first shipped version of
