@@ -354,10 +354,20 @@ An Experience Library entry's `--skills`/`Skills:` field (#168) licenses skills 
 than by merely existing in the Skills Inventory: a comma-separated (or YAML block-list) set of names
 that THIS entry evidences, so a CV bullet citing it may use those names without being flagged a
 misattributed skill, and a digit embedded in one (`Widget3`) is not read as a fabricated metric for
-a bullet citing that entry. Every token of a `Skills:` value must begin with a letter -- a bare `92`
-is refused -- but that check runs at CV compose time (`cv/bundle.py`'s `build_bundle`), not at `add`
-or `verify`: a malformed value fails only the lead currently being composed (`cv run`'s per-lead
-`error` outcome), never the proposal or review commands, which never read it. There is no
+a bullet citing that entry. Every token of a `Skills:` value must begin with a letter, or with a dot
+then a letter (`.NET`). A token that begins with a DIGIT is refused, and that is wider than it
+sounds: a bare `92` is refused, and so are `ISO 9001`, `Web 2.0`, `Section 508`, `3D modelling`, `5S`
+and `802.11ac`. Those are real things people hold, and the refusal is deliberate rather than an
+oversight — a word followed by a bare number is structurally identical to metric shorthand like
+`Result 92`, and admitting one admits the other, which would let a `Skills:` value blank a real
+figure out of the numeric gate. Name them another way (`ISO quality management`) or leave them out.
+
+That check runs at CV compose time (`cv/bundle.py`'s `build_bundle`), not at `add` or `verify`, and
+it is **not** scoped to one lead: `build_bundle` runs per lead over the shared verified corpus, so a
+single malformed value fails EVERY lead in the run — measured over three shortlisted leads, all
+three returned `cv run`'s `error` outcome. The run itself does not abort (each failure is isolated
+per lead), and the proposal and review commands are unaffected, since they never read the field.
+Fix the one entry and the whole run recovers. There is no
 requirement that a `Skills:` name also exist as a verified `skills` entry, or the reverse;
 `job-sluice doctor` reports a drift between the two corpora as an informational count, never the
 skill's own name, and neither direction affects its exit code.

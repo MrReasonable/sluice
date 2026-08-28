@@ -329,6 +329,19 @@ metric shorthand — `p99` — still licenses removal of its digits for bullets 
 requires the user to have written `p99` into their own `Skills:`. A tighter rule (two leading
 alphabetic characters) would kill legitimate short names, so this is a deliberate trade.
 
+**Correction (final review of this branch), and the code is what shipped.** Two changes. The rule is
+"begins with a letter, **or a dot then a letter**" — `SKILL_TOKEN_RE` is `^\.?[A-Za-z]` — because
+the letter-only rule made `.NET` and `.NET Core` inexpressible, with no answer to the refusal but to
+misspell them; a dot-then-letter token carries no digit for span removal to blank, so it costs the
+guard nothing. And the OVER-refusal above is understated as written: it is not only metric shorthand
+that is refused but **every DIGIT-leading token**, which costs `ISO 9001`, `Web 2.0`, `Section 508`,
+`3D modelling`, `5S` and `802.11ac`. Those stay refused deliberately — a word followed by a bare
+number is structurally identical to `Result 92`, and nothing available here separates them — but the
+limitation is stated in `SKILL_TOKEN_RE`'s comment, in the raised message, in `docs/USAGE.md` and
+`docs/ARCHITECTURE.md`, and pinned by
+`test_a_digit_leading_skill_token_stays_refused_whatever_it_names`, rather than left reading as a
+rule that only catches shorthand.
+
 An earlier revision proposed a `doctor` notice for a `Skills:` token whose digits also appear in the
 same entry's `Metrics:`. **That condition is inverted and the row is dropped:** every digit in
 `Metrics:` is already in `nums[eid]` via `_entry_block`, so those are exactly the cases where removal
