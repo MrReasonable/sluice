@@ -196,16 +196,21 @@ def _strings_in(value):
 
 def _render(func, qualname):
     """`func` called with a fixed synthetic value for each REQUIRED parameter; optional
-    ones keep their shipped defaults UNLESS `_SYNTHETIC_ARGS` explicitly overrides them
-    (which is what renders the FULL ban list, since compose's `slop_allow` defaults to
-    None, and what renders the CONDITIONAL SKILLS block, since compose's
-    `skills_requested` defaults to False and a defaulted-False call never reaches that
-    block's text at all).
+    ones keep their shipped defaults UNLESS `_SYNTHETIC_ARGS` explicitly overrides them.
+    The one such override today is compose's `skills_requested`, which defaults to False
+    and gates the CONDITIONAL SKILLS block -- a defaulted-False call never reaches that
+    block's text at all.
+
+    `slop_allow` is NOT overridden and does not need to be: its shipped default (`None`)
+    is exactly what makes `_banned_phrases_sentence` render the FULL ban list, so the
+    sweep already sees every phrase. An earlier version of this docstring credited the
+    override mechanism for that, which is a claim about `_SYNTHETIC_ARGS` that its own
+    contents falsify.
 
     Overrides are consulted BEFORE the defaulted-parameter `continue` -- an earlier
     version of this loop checked default-ness first and `continue`d past any parameter
     carrying one, which made an `_SYNTHETIC_ARGS` entry for a defaulted parameter
-    (`skills_requested`, `slop_allow`) silently inert: the override was computed but
+    (`skills_requested`) silently inert: the override was computed but
     never used, so a `_FORBIDDEN` term hidden inside a conditional block reached by that
     parameter would sweep clean with the whole suite green. Measured twice independently
     (`_employer_line`'s configured branch was already unswept for exactly this reason).

@@ -811,7 +811,7 @@ numeric harvester, and is not taught to derive anything from `bundle_sources`.
 ## 13. Sequencing
 
 Definition of done for every block: `./.venv/bin/python -m pytest` green, and
-`ruff check sluice tests scripts` clean.
+`./.venv/bin/ruff check sluice tests scripts` clean.
 
 1. **Grammar + gate, indivisible (SC8).** `Skills` on the experience kind; `_entry_skills_line`;
    `BundleSources.skills` with its construction check; `section_spans`' SKILLS region with matched

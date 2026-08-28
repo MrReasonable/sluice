@@ -200,10 +200,10 @@ def test_a_two_word_skill_is_matched_as_a_sequence_not_a_token():
 def test_an_emitted_skill_absent_from_the_bundle_is_refused():
     s = _sources(body="Ran the rebuild.", skills="Example Query", baseline="Example Alpha.")
     assert s.source_tokens
-    cv = _cv_with_skills(["Example Query", "Kubernetes"])
+    cv = _cv_with_skills(["Example Query", "Example Unbacked"])
     assert V.section_spans(cv)[2]
     v = V.validate(cv, s)
-    assert any("UNSOURCED SKILL" in x and "Kubernetes" in x for x in v)
+    assert any("UNSOURCED SKILL" in x and "Example Unbacked" in x for x in v)
     assert not any("Example Query" in x for x in v)
 
 
@@ -226,7 +226,7 @@ def test_row_2_fails_closed_when_no_entry_declares_skills():
     un-annotated vault would then be checked by NOTHING and render, where today it yields
     UNCITED BULLET. Only the _RULES request is conditional; this check always runs."""
     s = _sources(body="Ran the rebuild.", skills="", baseline="Example Alpha.")
-    cv = _cv_with_skills(["Kubernetes"])
+    cv = _cv_with_skills(["Example Unbacked"])
     assert V.section_spans(cv)[2]  # scope: the SKILLS region was actually collected
     v = V.validate(cv, s)
     assert any("UNSOURCED SKILL" in x for x in v)
@@ -379,7 +379,8 @@ def test_the_same_holds_in_profile_prose():
     fix and the deferral was reasoning from a mis-attributed origin.
 
     It is fixed: `_WORD_RE` no longer folds a TRAILING dot into the token before it
-    (internal and leading dots survive, so `Node.js`/`.NET` stay one token). This test
+    (internal and leading dots survive, so a dotted name stays one token -- see that
+    pattern's own comment in `cv/bundle.py` for the real names it was widened for). This test
     keeps the space-separated spelling because it is testing the row-2-vocabulary
     distinction its name describes; the sentence-final spelling is pinned separately by
     `test_a_trailing_period_does_not_split_a_declared_skill_from_its_own_name` below.
@@ -509,16 +510,22 @@ def test_a_skill_ending_a_sentence_in_a_body_is_not_reported_unsourced():
 
 
 def test_an_internal_dot_still_holds_a_name_together():
-    """The half the fix must NOT break. `Node.js` is ONE token: splitting it would make a
-    two-token needle (`Node`, `js`) that no `Skills:` value could match, turning every
-    dotted technology name into an UNSOURCED SKILL. Asserted through the gate, not
-    through `_tokens`, so it fails if either the build or the search side drifts."""
-    s = _sources(body="Ran a Node.js migration.", skills="", baseline="Example Alpha.")
-    cv = _cv_with_skills(["Node.js"])
+    """The half the fix must NOT break. `Widget.Node` is ONE token: splitting it would
+    make a two-token needle (`Widget`, `Node`) that no `Skills:` value could match,
+    turning every dotted technology name into an UNSOURCED SKILL. Asserted through the
+    gate, not through `_tokens`, so it fails if either the build or the search side
+    drifts.
+
+    A synthetic name carrying the internal dot, not a real dotted technology: the shape
+    is the whole property, and the leading `Widget` is deliberately a token that appears
+    NOWHERE else in this bundle, which is what lets the prefix half below mean anything
+    (`Example.<x>` could not -- `Example` is in the company name and the baseline)."""
+    s = _sources(body="Ran a Widget.Node migration.", skills="", baseline="Example Alpha.")
+    cv = _cv_with_skills(["Widget.Node"])
     assert V.section_spans(cv)[2]
     assert V.validate(cv, s) == []
-    # ...and the name is still a NAME, not a prefix: `Node` alone is not in the bundle.
-    assert any("UNSOURCED SKILL" in x for x in V.validate(_cv_with_skills(["Node"]), s))
+    # ...and the name is still a NAME, not a prefix: `Widget` alone is not in the bundle.
+    assert any("UNSOURCED SKILL" in x for x in V.validate(_cv_with_skills(["Widget"]), s))
 
 
 def test_a_bare_period_run_is_not_a_token_at_all():
