@@ -655,9 +655,18 @@ shared one. SKILLS is not fully exempt, though: it is the FIRST trailing section
 check, via containment rather than citation (`UNSOURCED SKILL`, #168), so a marker this tuple
 accepts that `validate.py`'s `_SKILLS_MARKERS` does not recognise as a bullet would let that line
 slip past `skills_lines` entirely and reach the PDF uncontained — a bypass of the NEW check even
-though the citation argument still has no force. The two tuples are pre-shaped equal for exactly
-that reason, and the containment check strips with the identical character set before comparing, so
-keep them in lockstep rather than widening either alone.
+though the citation argument still has no force. What that argument establishes is a FLOOR and not an
+equality, and the distinction is load-bearing in one direction only: `_SKILLS_MARKERS` must never be
+NARROWER than `_TRAILING_MARKERS`, while staying WIDER costs nothing, because the gate is
+renderer-independent and `_TRAILING_MARKERS` is the `template` renderer's own grammar — pinning the
+gate to it by equality would let a later narrowing on the parser side narrow the gate too, for every
+renderer, with the guard still green. The two are pre-shaped equal today, which is their shape rather
+than their obligation, and the containment check strips with the identical character set before
+comparing — so never narrow either alone. `tests/test_cv_parse.py::test_the_work_bullet_markers_are_
+exactly_what_the_gate_citation_checks` is the one guard over both relations: EQUALITY on the WORK
+pair, the floor on the SKILLS pair. A second row asserting SKILLS equality shipped beside it on the
+#168 branch, contradicting that same file's own reasoning, and was removed rather than softened into
+a duplicate.
 
 **Neutrality: no personal data in this repo.** No employer names, role preferences, locations,
 contact details, hostnames, or absolute paths in `sluice/` or `tests/`. The judge's criteria are read

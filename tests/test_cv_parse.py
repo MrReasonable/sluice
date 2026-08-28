@@ -625,13 +625,17 @@ def test_a_skills_section_parses_into_the_document():
     assert doc.skills == ["Example Query", "Example Framework"]
 
 
-def test_the_skills_region_markers_equal_what_the_gate_collects():
-    """SKILLS is the FIRST trailing section the hard gate checks, so this equality is a
-    gate property, not tidiness: a marker the parser accepts and `section_spans` does not
-    is a BYPASS -- the line parses into CvDocument.skills, renders into the PDF, and is
-    never containment-checked. Derived from both modules, never hand-listed."""
-    from sluice.cv.validate import _SKILLS_MARKERS
-    assert set(_SKILLS_MARKERS) == set(P._TRAILING_MARKERS)
+# The SKILLS marker relation used to be pinned TWICE in this file, and the two rows
+# disagreed: a `set(_SKILLS_MARKERS) == set(_TRAILING_MARKERS)` row sat here, while
+# `test_the_work_bullet_markers_are_exactly_what_the_gate_citation_checks` below asserts
+# `>=` and argues at length that equality is the WRONG relation on this side. Only one
+# can be the contract, and it is the FLOOR: the hazard is one-directional (a marker the
+# parser accepts and the gate does not is never containment-checked), while the gate is
+# renderer-independent and `_TRAILING_MARKERS` is the `template` renderer's own grammar,
+# so the gate must stay free to be wider than it. The two tuples happen to be equal
+# today; that is their SHAPE, not their obligation. The equality row is gone rather than
+# softened to a second `>=`, which would have been a verbatim duplicate of the surviving
+# assertion.
 
 
 def test_the_repeated_header_remedy_names_every_trailing_section():
@@ -1292,11 +1296,12 @@ def test_a_skills_marker_the_gate_certifies_clean_is_never_refused_here(marker, 
 
     Every member of `_TRAILING_MARKERS`, with or without a following space, must be a
     marker the parser and the gate agree names a genuine SKILLS entry --
-    `test_the_skills_region_markers_equal_what_the_gate_collects` pins that the two
-    tuples are the SAME set, and this is what would catch either one drifting in
-    practice: a marker the gate accepts and the parser refuses costs a composition, a
-    retry the model cannot act on, and then the lead -- the governing bug class this
-    whole file exists to catch, now on the SKILLS axis.
+    `test_the_work_bullet_markers_are_exactly_what_the_gate_citation_checks` pins the
+    structural half of that (the gate's tuple is not NARROWER than this one; equality is
+    deliberately NOT the relation on this side, see its docstring), and this is what
+    would catch a drift in practice: a marker the gate accepts and the parser refuses
+    costs a composition, a retry the model cannot act on, and then the lead -- the
+    governing bug class this whole file exists to catch, now on the SKILLS axis.
     """
     from tests.test_cv_engine import CLEAN_CV
     # "Grew" is sourced via ENTRIES[0]'s own body ("Grew 3 to 8.") in the bundle
