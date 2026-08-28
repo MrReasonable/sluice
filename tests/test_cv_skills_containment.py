@@ -576,9 +576,19 @@ def test_a_bullet_under_a_group_heading_is_still_row_2_checked():
 
 
 def test_a_genuine_skill_under_a_group_heading_is_not_refused():
-    """The positive control the bypass fix must not cost. Grouping a real skills list is
-    a layout choice, and no refusal may follow from it -- the fix CHECKS the extra
-    bullets, it does not refuse the shape."""
+    """The positive control the bypass fix must not cost: the HARD GATE adds no violation
+    for a grouped list of genuine skills. The fix CHECKS the extra bullets; it does not
+    refuse them.
+
+    SCOPE, narrowed after review overstated it. This is a claim about `validate()` ONLY,
+    not about the outcome on the default renderer. `template.precheck` -> `parse_cv` still
+    refuses this same document (`FORMAT: SKILLS: unrecognised line 'Languages'` --
+    measured), so under the shipped renderer a grouped section costs the retry regardless
+    of what the gate says. An earlier version of this docstring claimed "no refusal may
+    follow from it", which is false on the path most users are on. What the fix delivers
+    is that the gate stops being the thing that misses the fabricated bullet -- see
+    `test_a_bullet_under_a_group_heading_is_still_row_2_checked` -- not that grouping
+    became free."""
     s = _sources(body="Ran the rebuild.", skills="Example Query, Example Framework",
                  baseline="Example Alpha.")
     cv = _GROUPED_TAIL_CV.replace("- Totally Invented Skill", "- Example Framework")
@@ -665,3 +675,73 @@ def test_the_shape_check_reads_every_block_not_just_the_first():
         baseline=frozenset(), source_tokens=(("Example", "Query"), "Framework"))
     with pytest.raises(TypeError, match="TOKEN SEQUENCES"):
         V.validate("\n".join(["SKILLS", "- Example Query"]), mixed)
+
+
+# --- Two recorded properties of the trailing-dot tokeniser fix (re-review) -----------
+
+
+def test_row_2_matches_across_a_sentence_seam_inside_one_block():
+    """FAIL-OPEN, recorded rather than left to be rediscovered.
+
+    Dropping the trailing dot from a token also stopped a full stop acting as a barrier
+    INSIDE a source block, so a two-word needle can now span a sentence boundary. That is
+    CONSISTENCY restoration, not a new class: a comma or a semicolon never blocked a match
+    either -- the second assertion here is the control that shows it -- and the full stop
+    only appeared to, by the accident that the old character class glued it to the token
+    before it. That same accident produced three FALSE refusals on ordinary sentence-final
+    skill names, which is why it went rather than stayed.
+
+    The BLOCK seam is a different thing and is still preserved (`source_tokens` keeps one
+    sequence per block); `test_source_tokens_are_per_block_so_a_two_word_skill_cannot_
+    match_across_a_seam` (tests/test_cv_bundle.py) is what pins that, and it is unaffected.
+    """
+    s = _sources(body="The estate ran on Example Query. Example Framework came later.",
+                 skills="", baseline="Example Alpha.")
+    assert s.source_tokens                      # scope: there is a block to search
+    for spanning in ("Query Example", "Example Query Example Framework"):
+        assert V.validate(_cv_with_skills([spanning]), s) == [], spanning
+
+    # CONTROL: the comma spelling of the same fixture has always behaved this way, so the
+    # period's old barrier was an accident and not a rule anyone chose.
+    s2 = _sources(body="Ran Example Query, Example Framework and more.", skills="",
+                  baseline="Example Alpha.")
+    assert V.validate(_cv_with_skills(["Query Example"]), s2) == []
+
+    # ...and the block seam is STILL a barrier, so this is one seam, not all of them.
+    two = _two_entry_sources(al_skills="Example Query", be_skills="Example Framework")
+    assert any("UNSOURCED SKILL" in x
+               for x in V.validate(_cv_with_skills(["Query Example"]), two))
+
+
+def test_a_skills_value_that_names_nothing_is_refused_rather_than_silently_activating():
+    """A NON-BLANK `Skills:` value that tokenises to nothing (`...`, `.`, `-`) must raise.
+
+    It is not inert. A token-less item is still non-empty, so `entries[eid].skills` is
+    TRUTHY, and row 1's abstain is keyed on exactly that truthiness -- so a punctuation
+    typo used to switch the misattribution check ON for the whole vault with no error
+    anywhere. The two assertions below are the measurement: with a blank value the bullet
+    is clean, and before this refusal the SAME bullet with `Skills: ...` returned
+    MISATTRIBUTED SKILL.
+
+    `...` is also a regression guard on the trailing-dot tokeniser fix, which is what
+    turned this from a loud error into quiet activation: `...` used to be ONE token that
+    `SKILL_TOKEN_RE` refused. `-` was already in the quiet state before that fix -- no
+    `_WORD_RE` ever matched a lone hyphen -- so this closes a pre-existing hole in the
+    same line, which is why it is parametrized over both rather than over dots alone.
+    """
+    # The abstain that a blank value correctly produces -- the behaviour the refused
+    # values were silently destroying.
+    clean = _two_entry_sources(al_skills="", be_skills="Example Query")
+    assert V.validate(_bullet("Used Example Query [AL1]"), clean) == []
+
+    for value in ("...", ".", "..", "-"):
+        with pytest.raises(ValueError, match="no name at all"):
+            _two_entry_sources(al_skills=value, be_skills="Example Query")
+
+    # `#` is NOT in this list, and the reason is worth pinning: `_WORD_RE` admits `#`
+    # (so `C#` survives as one token), which makes a lone `#` a real token that the
+    # letter-leading rule refuses down the OTHER arm. Both arms refuse it; only one of
+    # them is this one, and a row here asserting the wrong message would have read as
+    # coverage this check does not provide.
+    with pytest.raises(ValueError, match="must begin with a letter"):
+        _two_entry_sources(al_skills="#", be_skills="Example Query")

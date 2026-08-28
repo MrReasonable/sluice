@@ -366,8 +366,10 @@ That check runs at CV compose time (`cv/bundle.py`'s `build_bundle`), not at `ad
 it is **not** scoped to one lead: `build_bundle` runs per lead over the shared verified corpus, so a
 single malformed value fails EVERY lead in the run — measured over three shortlisted leads, all
 three returned `cv run`'s `error` outcome. The run itself does not abort (each failure is isolated
-per lead), and the proposal and review commands are unaffected, since they never read the field.
-Fix the one entry and the whole run recovers. There is no
+per lead), and the proposal and review commands never REFUSE on it, because they do not import
+`cv/bundle.py` and so never validate it — they do read it (`experience list` prints the field, and
+`verify` shows the raw note text including its `Skills:` line). Fix the one entry and the whole run
+recovers. There is no
 requirement that a `Skills:` name also exist as a verified `skills` entry, or the reverse;
 `job-sluice doctor` reports a drift between the two corpora as an informational count, never the
 skill's own name, and neither direction affects its exit code.
