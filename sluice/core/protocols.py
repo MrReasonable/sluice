@@ -173,16 +173,34 @@ EVIDENCE_KINDS = {
     # `nums` with no name join. No `floor_map` entry -- it has no floor analogue, exactly
     # like the skills kind's own Proficiency/Evidence/Signal Value.
     #
-    # DECLARING it makes it live IMMEDIATELY, because six sites read `spec.fields`: the
-    # `--skills` flag on `experience add`, the evidence wizard's question, the blank
-    # `Skills:` line `_render_evidence_note` writes into every new note, `propose_evidence`'s
-    # unknown-field refusal, and `fields['Skills']` on every entry dict (which
-    # `mcpserver.py` passes through whole). What is NOT yet consumed is the BUNDLE and the
-    # GATE -- `_entry_block` reads the floor keys, never `fields`, so no skill reaches
-    # either prompt or the numeric allowlist yet.
+    # DECLARING it made it live immediately across several independent readers of
+    # `spec.fields` -- an argparse flag builder (`cli.py`), an interactive prompt
+    # builder (the evidence wizard), a note serializer (`_render_evidence_note`'s
+    # unknown-field refusal and its blank-line default), and a note materializer
+    # (`_evidence_entries`' per-entry `fields` dict, which `mcpserver.py` passes
+    # through whole) -- rather than a fixed NUMBER of sites, which drifts the moment any
+    # one of them changes: grep `spec.fields`/`EvidenceKind.fields` across `sluice/` for
+    # the current set rather than trusting a count typed here.
     #
-    # When that arrives, digits inside a Skills value must NOT be licensed by the gate: a
-    # skill named "Example Widget3" must not license the digit 3.
+    # The BUNDLE and the GATE consume it too, now. `cv/bundle.py`'s `_skill_items`
+    # extracts an entry's `Skills:` items (validating every token begins with a letter,
+    # or span removal below would blank a real figure); `_entry_skills_line` folds them
+    # into the COMPOSER's prompt alone, never the #60 advisory audit's; and
+    # `bundle_sources` carries them into `EntrySources.skills`, keyed by entry id beside
+    # `EntrySources.nums`. `cv/validate.py` reads that allowlist through two containment
+    # rows: MISATTRIBUTED SKILL (a WORK bullet naming a skill no entry it cites
+    # declares) and UNSOURCED SKILL (a SKILLS-region line the bundle's own source text
+    # does not contain).
+    #
+    # A digit inside a Skills value is NOT licensed by the gate: `_entry_skills_line`'s
+    # own docstring states it is deliberately excluded from `_entry_block`'s emission,
+    # so no digit from "Example Widget3" ever joins `EntrySources.nums` -- a skill's
+    # digits are never citable as a metric in their own right. The only place a skill's
+    # digit interacts with digit-checking at all is `validate.py`'s
+    # `_strip_skill_spans`, which removes a CITED entry's own declared skill spans from
+    # a bullet's prose before invented-digit extraction, so the `3` in a genuinely
+    # declared "Widget3" is not itself flagged a fabricated metric on the bullet that
+    # names it.
     "experience": EvidenceKind("Job Applications/Experience Library",
                                ("Company", "Category", "Best For", "Metrics", "Skills"),
                                cited_by_gate=True, read_by_composer=True),
