@@ -47,6 +47,10 @@ CITY = {
     'Ellery Kestrelburgh - Allied Sundic Reaches': 'ellerykestrelburgh',
     'Ellery Kestrelburgh': 'ellerykestrelburgh',
     'Fennimoreburgh': 'fennimoreburgh',
+    # Added 2026-08-28 with wttj's recapture for its list view. A three-city comma list,
+    # classified on its FIRST city exactly as the two-city
+    # 'Ellery Kestrelburgh , Quillon Denfurt - ...' entry above already is.
+    'Palmerburgh, Potterburgh, Clarkefurt': 'palmerburgh',
     'Hensleyfurt - Halvenia': 'hensleyfurt',
     'Hensleyfurt': 'hensleyfurt',
     'Hybrid work in Palmerburgh': 'palmerburgh',
