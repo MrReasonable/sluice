@@ -504,6 +504,25 @@ whichever neighbour it was written next to:
    the vocabulary the gate BUILDS cannot drift from the one it SEARCHES with;
    only the case-folding and the corpus differ.
 
+   Row 2's own SKILLS run (`section_spans`' `in_skills` extraction) carries two
+   named residuals, opposite in direction and both accepted on purpose. An
+   ALL-CAPS group heading (`LANGUAGES`) ends the run exactly as a real section
+   header would, so its bullets are checked by NOTHING at all under
+   `cv.renderer: script`, which implements no `precheck` of its own --
+   under-checking, the direction that lets a fabricated line reach the PDF
+   ungated. A Title-Case unmodelled section header straight after SKILLS
+   (`Publications`) is read as a group heading instead and does NOT end the
+   run, so its bullets are swallowed INTO the skills check and flagged
+   `UNSOURCED SKILL` -- over-checking, but answerable without inventing or
+   deleting anything (shout the heading, which the format contract already
+   asks for), so the retry has somewhere to act. The asymmetry is deliberate:
+   over-checking costs a retry a human can answer, under-checking ships an
+   ungated line, and for a containment gate that is the right way round.
+   Pinned by three rows in `tests/test_cv_skills_containment.py`:
+   `test_a_bullet_under_a_group_heading_is_still_row_2_checked`,
+   `test_an_all_caps_line_still_ends_the_run_so_a_real_section_is_not_swallowed`,
+   and `test_a_group_heading_while_work_is_live_still_ends_the_run`.
+
    The STYLE tier
    (`cv/slop.py`'s `check_phrases`, ~40 case-insensitive AI-tell stems)
    never blocks; it is also SCOPED, unlike the hard tier --
