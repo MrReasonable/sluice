@@ -350,6 +350,18 @@ the prompt) and `EvidenceKind.cited_by_gate` (may the gate license its content).
 confirmation line and `doctor`'s row both read them, so neither claims a citability the code does
 not have.
 
+An Experience Library entry's `--skills`/`Skills:` field (#168) licenses skills RELATIONALLY rather
+than by merely existing in the Skills Inventory: a comma-separated (or YAML block-list) set of names
+that THIS entry evidences, so a CV bullet citing it may use those names without being flagged a
+misattributed skill, and a digit embedded in one (`Widget3`) is not read as a fabricated metric for
+a bullet citing that entry. Every token of a `Skills:` value must begin with a letter -- a bare `92`
+is refused -- but that check runs at CV compose time (`cv/bundle.py`'s `build_bundle`), not at `add`
+or `verify`: a malformed value fails only the lead currently being composed (`cv run`'s per-lead
+`error` outcome), never the proposal or review commands, which never read it. There is no
+requirement that a `Skills:` name also exist as a verified `skills` entry, or the reverse;
+`job-sluice doctor` reports a drift between the two corpora as an informational count, never the
+skill's own name, and neither direction affects its exit code.
+
 ### `job-sluice experience add --name NAME [--company V] [--category V] [--best-for V] [--metrics V] [--skills V] [--body TEXT] [--body-file PATH|-]`
 ### `job-sluice skills add --name NAME [--proficiency V] [--domain V] [--evidence V] [--signal-value V] [--body TEXT] [--body-file PATH|-]`
 ### `job-sluice stories add --name NAME [--company V] [--best-for V] [--body TEXT] [--body-file PATH|-]`

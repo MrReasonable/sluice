@@ -430,7 +430,73 @@ whichever neighbour it was written next to:
    never reached the baseline pool either way). Both are consequences of
    `bundle_sources` harvesting the baseline block by a single unscoped
    `\d+` sweep with no positional or shape parse at all, which is also
-   exactly what removes the three holes above. The STYLE tier
+   exactly what removes the three holes above.
+
+   Since #168 a fifth field, `Skills:`, on an Experience Library entry licenses
+   skills RELATIONALLY: it names, per entry, which skills that entry evidences,
+   so a CV bullet citing the entry may use those names without tripping the
+   misattribution check below, and a digit inside one of them (`Widget3`) is
+   not read as an invented metric for a bullet citing that same entry. Every
+   token of a `Skills:` item must begin with a letter (`cv/bundle.py`'s
+   `SKILL_TOKEN_RE`, checked PER TOKEN rather than per item -- an item-level
+   check would accept `Result 92` because the item begins with `R`, and span
+   removal would then blank the real figure `92` from every bullet citing the
+   entry) -- fail-loudly at `build_bundle` construction, this module's own
+   house rule, rather than at gate time far from the note that caused it. That
+   construction call sits inside `cv/engine.py`'s per-lead try, though, not at
+   `experience add`/`verify` time: a malformed `Skills:` value fails only the
+   lead currently being composed (`cv run`'s per-lead `error` outcome), never
+   the proposal or verification commands, which do not import `cv/bundle.py` at
+   all. `BundleSources`' per-entry allowlist is now a NamedTuple,
+   `EntrySources(nums, skills)`, rather than a bare digit set, so the two
+   travel together keyed by the same entry id and no second id-keyed structure
+   can disagree about what an id licenses. `BundleSources` itself grew from two
+   stored fields (`nums`, `baseline`) to three -- `entries` (`dict[str,
+   EntrySources]`, replacing the old bare `nums` dict), `baseline` (unchanged),
+   and `source_tokens` (new: one token SEQUENCE per source block -- each
+   entry's `Skills:` tokens, each entry's body tokens, and the baseline's
+   tokens -- kept unflattened so a two-word skill can never match an adjacency
+   invented at a block seam). `ids` and `nums` are both DERIVED PROPERTIES, not
+   stored fields: a stored second view could disagree with `entries` about what
+   an id licenses, the exact redundancy #174 removed one level up, and every
+   pre-#168 `validate()` caller keeps reading `sources.nums` unchanged.
+
+   The framing/citable split states which of the three evidence kinds gets
+   which `EvidenceKind` flag: `experience` carries both (`cited_by_gate=True,
+   read_by_composer=True`); `skills` carries `read_by_composer` alone (framing
+   only, licensing nothing -- see above); `stories` carries neither (captured
+   and reviewed, consumed by nothing yet). `__post_init__` refuses
+   `cited_by_gate=True` without `read_by_composer=True`, because the gate
+   cannot license content the composer never emitted into the bundle in the
+   first place.
+
+   `cv/validate.py` gained two CONTAINMENT rows alongside the gate's existing
+   citation and number checks (#168), and they differ from each other by
+   design, in both what they scope against and how they compare. Row 1,
+   MISATTRIBUTED SKILL, scans a WORK bullet's own prose CASE-SENSITIVELY
+   (`_names_skill`) against the vocabulary of skills NOT licensed by that
+   bullet's own cited entries -- the bundle's whole skill vocabulary minus the
+   union the cited entries themselves license -- and ABSTAINS entirely for that
+   bullet unless EVERY entry it cites declares a non-empty `Skills:`: measured
+   otherwise, a bullet citing a partially-annotated entry and naming a skill
+   drawn straight from that entry's own body text was flagged a hard violation.
+   Case-sensitivity and the per-entry abstain are both deliberate under-fires,
+   the direction a hard gate must err. Row 2, UNSOURCED SKILL, checks the
+   SKILLS region's own emitted lines (`skills_by_line`, the third value
+   `section_spans` now returns) CASE-INSENSITIVELY (`_in_source`) against
+   `sources.source_tokens` -- did the model invent this line at all, regardless
+   of which entry (if any) it might belong to -- and ALWAYS runs, never
+   conditional on a non-empty vocabulary, because `section_spans` is pure over
+   text and a SKILLS section emitted on an unannotated vault must still be
+   checked by something. Row 1 answers "is this attributed to the right entry";
+   row 2 answers "did you invent this at all", over a different corpus (the
+   bundle's whole source TEXT, not one entry's licensed names) at a different
+   granularity (a whole emitted line, not a scan through free prose). Both rows
+   share one tokeniser and one subsequence primitive (`_tokens`/`_subseq`) so
+   the vocabulary the gate BUILDS cannot drift from the one it SEARCHES with;
+   only the case-folding and the corpus differ.
+
+   The STYLE tier
    (`cv/slop.py`'s `check_phrases`, ~40 case-insensitive AI-tell stems)
    never blocks; it is also SCOPED, unlike the hard tier --
    `cv/validate.py`'s `section_spans` (the gate's own line split, extracted
@@ -1565,7 +1631,15 @@ role, the silently-non-functional fallback the tool exists to catch. Component
 classification adds a fourth state, `notice`, for the gate-posture rows -- and, since
 #165, for the `cv.negatives[i]` rows reporting a configured negative that contradicts the
 verified Skills Inventory, which name an INDEX and an overlap COUNT rather than the
-user's own text, since a report is returned whole to MCP clients. It NEVER
+user's own text, since a report is returned whole to MCP clients. #168's Task 10 added a
+second cross-reference between the same two corpora, `core/doctor.py`'s
+`classify_skills_reconciliation`: up to two more `notice` rows, `Skills
+Inventory (unclaimed)` (an inventory skill no experience entry's `Skills:` claims) and
+`Experience Library (unmatched)` (an entry's `Skills:` name absent from the inventory) --
+each suppressed at zero and, the same posture, reporting only a COUNT rather than the
+skill's own name. Unlike the `cv.negatives[i]` check just named, it is not one of the
+`cv_cfg`-gated checks a few sentences up: it needs only both evidence corpora to be
+readable, so it still runs when `cv_cfg` failed to load. It NEVER
 affects `exit_code`, under `--strict` or otherwise, because an abstaining gate (an
 unconfigured preference simply passes every lead through) is the shipped default and
 legitimate -- grading it as a failure would be the 672ad2a class of bug (see Invariants)
