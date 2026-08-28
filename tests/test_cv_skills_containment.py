@@ -688,8 +688,8 @@ def test_a_group_heading_while_work_is_live_still_ends_the_run():
     """The clause that stops this WEAKENING anything. Entering SKILLS deliberately does
     not clear `in_work`, so while WORK is live the following bullets are already claimed
     by the stricter citation check. Without this arm, a company line after a SKILLS
-    section (`Example Beta` -- not all-caps, so it reads as a group heading) would
-    swallow that role's bullets out of the citation check entirely.
+    section (`Example Beta` -- not a contract heading, so nothing else ends the run at
+    it) would swallow that role's bullets out of the citation check entirely.
 
     Asserted on the CITATION check, not on the region alone: the bullet must still be
     reported by `validate()`, which is the property that would actually be lost."""
