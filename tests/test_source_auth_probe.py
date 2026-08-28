@@ -304,17 +304,16 @@ def test_the_linkedin_source_scrolls_the_RESULTS_PANEL():
 
 # ---- protocol CONFORMANCE, not per-class bespoke tests -----------------------------------
 
-def _carousel():
-    from sluice.ingest.base import CarouselSource
-    return CarouselSource(id="carousel", searches_spec=[("A", "http://x")],
-                          read_js="READ", advance_selector=".next", wait=0)
-
-
-@pytest.mark.parametrize("src", [_src(), _carousel()], ids=lambda s: type(s).__name__)
+@pytest.mark.parametrize("src", [_src()], ids=lambda s: type(s).__name__)
 def test_a_camofox_outage_is_explained_for_EVERY_source_class(src):
-    """`health_hint` is a protocol member with two implementations. The first fix landed on
-    one of them, so an outage still retired the carousel source after three runs -- the
-    identical bug, in the file next door.
+    """`health_hint` is a protocol member, and this asserts the contract over every class
+    that implements it -- one today, after `CarouselSource` was retired on 2026-08-28 with
+    its last producer.
+
+    Kept PARAMETRIZED over a list rather than collapsed to a single call, because the bug
+    it records is a PARITY bug: the first fix landed on one implementation and an outage
+    still retired the other after three runs -- the identical defect, in the file next
+    door. A second implementation joins this list, it does not get its own test.
 
     Parameterised over the classes rather than written twice: a third implementation joins
     this test by existing, instead of by someone remembering.
@@ -382,10 +381,13 @@ def test_the_conformance_sweep_actually_sees_the_overriding_sources():
     """
     srcs = _every_registered_source()
     assert len(srcs) > 5, f"the registry looks unloaded: {len(srcs)} sources"
-    from sluice.ingest.base import BrowserListSource, CarouselSource
-    overriders = [s for s in srcs
-                  if type(s).health_hint not in (BrowserListSource.health_hint,
-                                                 CarouselSource.health_hint)]
+    # Compared against the BASE implementations, enumerated rather than named: a source
+    # counts as an overrider only if its `health_hint` is not one of them. One base class
+    # today (`CarouselSource` retired 2026-08-28); written as a set so a second one is a
+    # one-line change here rather than a rewrite.
+    from sluice.ingest.base import BrowserListSource
+    _BASE_HINTS = {BrowserListSource.health_hint}
+    overriders = [s for s in srcs if type(s).health_hint not in _BASE_HINTS]
     assert overriders, "no overriding health_hint reached the sweep -- it cannot catch one"
 
 
@@ -446,7 +448,7 @@ def test_a_failed_evaluate_is_propagated_as_a_fetch_error(src, _no_prefetch_prob
 
     `Camofox._api` captures failures as `{"error": ...}` rather than raising, so a failed
     evaluate is indistinguishable from a page with no jobs unless the source looks.
-    `BrowserListSource` was taught to look; `CarouselSource` was not -- it broke out of its
+    `BrowserListSource` was taught to look; the carousel class next door was not -- it broke out of its
     read loop and returned an empty list with no error, so `health_hint` had nothing to
     propagate, `detect_drift` saw a bare `zero`, and three runs retired the source.
     """
@@ -497,8 +499,6 @@ def test_a_read_error_ALONE_is_recorded_even_when_the_page_url_reads_fine():
     survived. A fake that fails only the thing under test is the difference between a witness
     and a coincidence.
     """
-    from sluice.ingest.base import CarouselSource
-
     class _ReadFails(_Cam):
         def evaluate(self, tid, expr):
             self.evaluated.append((tid, expr))
@@ -506,42 +506,11 @@ def test_a_read_error_ALONE_is_recorded_even_when_the_page_url_reads_fine():
                 return {"result": "http://x"}      # the page URL reads perfectly well
             return {"error": "read evaluate failed"}
 
-    src = CarouselSource(id="carousel", searches_spec=[("A", "http://x")],
-                         read_js="READ", advance_selector=".next", wait=0)
+    src = _src()
     raw = src.fetch(_ctx(_ReadFails(rows=[])), Search("A", "http://x"))
     assert raw.get("error") == "read evaluate failed", (
         f"a failed read was swallowed while the url read fine: {raw}")
     assert src.health_hint(raw).get("fetch_error"), "it must reach the classifier"
-
-
-def test_an_ADVANCE_error_is_recorded_too():
-    """The second evaluate in the loop. It errored mid-carousel, the loop broke, and the jobs
-    read so far were returned as if the page had simply run out -- a partial read reported as
-    a complete one."""
-    from sluice.ingest.base import CarouselSource
-
-    class _AdvanceFails(_Cam):
-        def __init__(self, **kw):
-            super().__init__(**kw)
-            self._reads = 0
-
-        def evaluate(self, tid, expr):
-            self.evaluated.append((tid, expr))
-            if expr == "location.href":
-                return {"result": "http://x"}
-            if expr == "READ":
-                self._reads += 1
-                return {"result": {"title": f"T{self._reads}", "link": f"http://x/{self._reads}"}}
-            return {"error": "advance evaluate failed"}   # the advance click
-
-    src = CarouselSource(id="carousel", searches_spec=[("A", "http://x")],
-                         read_js="READ", advance_selector=".next", wait=0)
-    raw = src.fetch(_ctx(_AdvanceFails(rows=[])), Search("A", "http://x"))
-    assert raw["jobs"], "the jobs read before the failure must survive"
-    assert raw.get("error") == "advance evaluate failed", (
-        f"a partial carousel read was reported as a complete one: {raw}")
-
-
 @pytest.mark.parametrize("src", _every_registered_source(), ids=lambda s: s.id)
 @pytest.mark.parametrize("payload", [None, 0, "text", 1.5], ids=repr)
 def test_health_hint_tolerates_a_NON_SIZED_value_under_the_count_key(src, payload):

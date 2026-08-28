@@ -1,86 +1,77 @@
 {
-  "jobs": [
+  "result": [
     {
-      "title": "Banker, Example Systems",
+      "title": "Senior Engineering Manager",
       "company": "Example Systems",
-      "location": "",
-      "salary": "Salary not provided",
-      "link": "https://example.com/jobs/1",
-      "caught": false
+      "location": "Palmerburgh, Potterburgh, Clarkefurt",
+      "link": "https://example.com/en-GB/companies/example-systems/jobs/senior-engineering-manager_palmerburgh_aaaa1111",
+      "salary": ""
     },
     {
-      "title": "Banker, Example Foundry",
-      "company": "Example Foundry",
-      "location": "",
-      "salary": "Salary not provided",
-      "link": "https://example.com/jobs/2",
-      "caught": false
-    },
-    {
-      "title": "Banker Lead, Example Meridian",
-      "company": "Example Meridian",
-      "location": "",
-      "salary": "Salary not provided",
-      "link": "https://example.com/jobs/3",
-      "caught": false
-    },
-    {
-      "title": "Education administrator, Example Telemetry",
-      "company": "Example Telemetry",
-      "location": "",
-      "salary": "Salary not provided",
-      "link": "https://example.com/jobs/4",
-      "caught": false
-    },
-    {
-      "title": "Banker, Example Analytics",
-      "company": "Example Analytics",
-      "location": "",
-      "salary": "Salary not provided",
-      "link": "https://example.com/jobs/5",
-      "caught": false
-    },
-    {
-      "title": "Senior Engineering Lead, Example Ironworks",
-      "company": "Example Ironworks",
-      "location": "",
-      "salary": "Salary not provided",
-      "link": "https://example.com/jobs/6",
-      "caught": false
-    },
-    {
-      "title": "Staff Product Engineer, Example Manor",
-      "company": "Example Manor",
-      "location": "",
-      "salary": "£135-170k",
-      "link": "https://example.com/jobs/7",
-      "caught": false
-    },
-    {
-      "title": "Banker, Example Northgate",
+      "title": "Software Engineering Manager",
       "company": "Example Northgate",
       "location": "",
-      "salary": "Salary not provided",
-      "link": "https://example.com/jobs/8",
-      "caught": false
+      "link": "https://example.com/en-GB/companies/example-northgate/jobs/software-engineering-manager",
+      "salary": ""
     },
     {
-      "title": "Immigration officer, Example Robotics",
+      "title": "Interim Senior Engineering Manager",
+      "company": "Example Telemetry",
+      "location": "Clarkefurt",
+      "link": "https://example.com/en-GB/companies/example-telemetry/jobs/interim-senior-engineering-manager_clarkefurt_aaaa1111",
+      "salary": ""
+    },
+    {
+      "title": "Engineering Manager (Financial Services)",
+      "company": "Example Cloud",
+      "location": "Clarkefurt",
+      "link": "https://example.com/en-GB/companies/example-cloud/jobs/engineering-manager-financial-services_clarkefurt_aaaa1111",
+      "salary": ""
+    },
+    {
+      "title": "Analytics Engineering Manager",
+      "company": "Example Data",
+      "location": "Clarkefurt",
+      "link": "https://example.com/en-GB/companies/example-data/jobs/analytics-engineering-manager_clarkefurt_aaaa1111",
+      "salary": ""
+    },
+    {
+      "title": "Senior Engineering Manager - Compliance",
+      "company": "Example Tidal",
+      "location": "Clarkefurt",
+      "link": "https://example.com/en-GB/companies/example-tidal/jobs/senior-engineering-manager_bantria",
+      "salary": ""
+    },
+    {
+      "title": "Senior Engineering Manager - Customer Growth",
+      "company": "Example Telemetry",
+      "location": "Clarkefurt",
+      "link": "https://example.com/en-GB/companies/example-telemetry/jobs/senior-engineering-manager-customer-growth_clarkefurt_aaaa1111",
+      "salary": ""
+    },
+    {
+      "title": "Engineering Lead",
+      "company": "Example Foundry",
+      "location": "Clarkefurt",
+      "link": "https://example.com/en-GB/companies/example-foundry/jobs/engineering-lead_clarkefurt_aaaa1111",
+      "salary": ""
+    },
+    {
+      "title": "Engineering Manager (Runtime Platform, Robot Software)",
       "company": "Example Robotics",
-      "location": "",
-      "salary": "Salary not provided",
-      "link": "https://example.com/jobs/9",
-      "caught": false
+      "location": "Clarkefurt",
+      "link": "https://example.com/en-GB/companies/example-robotics/jobs/engineering-manager-runtime-platform-robot-software_clarkefurt_aaaa1111",
+      "salary": ""
     },
     {
-      "title": "Education administrator, Example Foods",
-      "company": "Example Foods",
-      "location": "",
-      "salary": "£110-137k",
-      "link": "https://example.com/jobs/10",
-      "caught": false
+      "title": "Engineering Manager",
+      "company": "Example Meridian",
+      "location": "Clarkefurt",
+      "link": "https://example.com/en-GB/companies/example-meridian/jobs/engineering-manager_clarkefurt_aaaa1111",
+      "salary": ""
     }
   ],
-  "landed": "https://example.com/search",
-  "requested": "https://example.com/search"
+  "landed": "https://example.com/en-GB/jobs-matches",
+  "requested": "https://example.com/en-GB/jobs-matches",
+  "auth_missing": false
 }

@@ -2238,9 +2238,11 @@ class Sluice:
         #
         # ENUMERATED off the registry rather than hand-listed, and gated on the CLASS that
         # actually honours the field: `auth_probe_js` is declared on `BrowserListSource`, and
-        # only its `fetch` evaluates it. A `CarouselSource` (the base docstring names Otta,
-        # which is login-gated) could grow the attribute tomorrow and never run it -- doctor
-        # would then promise detection that does not happen.
+        # only its `fetch` evaluates it. The gate is kept even though that is currently the
+        # only base class in the registry -- a second one could grow the attribute tomorrow
+        # and never run it, and doctor would then promise detection that does not happen.
+        # (There was such a class until 2026-08-28: `CarouselSource`, retired with its last
+        # producer. The hazard it illustrated outlives it.)
         from sluice.core.camofox import resolve_user
         from sluice.ingest import sources as _registry
         from sluice.ingest.base import BrowserListSource

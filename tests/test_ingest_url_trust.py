@@ -126,9 +126,18 @@ def test_the_class_sweep_is_not_looking_at_an_empty_set():
     the opposite of a list that silently stays short.
     """
     names = {c.__name__ for c in _PARSE_PATH_CLASSES}
-    assert {"BrowserListSource", "CarouselSource"} <= names, (
-        f"the registry's parse-path classes are now {sorted(names)} and no longer include "
-        "both base classes -- the sweeps below would silently stop covering one")
+    # One base class since 2026-08-28, when `CarouselSource` was retired with its last
+    # producer (wttj moved to WTTJ's list view). This asserted BOTH were present, which was
+    # the anti-vacuity guard for a two-implementation seam; with one implementation the
+    # equivalent claim is that the base class is reached at all, plus at least one subclass
+    # that OVERRIDES `parse` -- otherwise the sweeps below only ever see inherited behaviour
+    # and would certify nothing about the overrides they exist for.
+    assert "BrowserListSource" in names, (
+        f"the registry's parse-path classes are now {sorted(names)} and no longer include the "
+        "base class -- the sweeps below would silently stop covering it")
+    assert len(names) > 1, (
+        f"only {sorted(names)} reached the sweep -- no source overrides `parse`, so every "
+        "row below is testing inherited behaviour only")
     # `_ReedSource` joined 2026-08-27: reed's company recovery moved out of the extractor JS
     # and into a `parse` override, so it became a parse path. Read against the sweeps below
     # before being added here, per this docstring's instruction: it subclasses
@@ -136,7 +145,7 @@ def test_the_class_sweep_is_not_looking_at_an_empty_set():
     # it inherits `posting_paths` (default `()`), the `health_hint` rejection count and the
     # validator -- the same shape as `_NaukrigulfSource` and `WellfoundSource`, both of which
     # already pass every row below on exactly that basis.
-    assert names == {"BrowserListSource", "CarouselSource", "WellfoundSource",
+    assert names == {"BrowserListSource", "WellfoundSource",
                      "_LinkedInSource", "_NaukrigulfSource", "_ReedSource",
                      "_WorkInStartupsSource"}, (
         f"the registry's parse-path classes are now {sorted(names)}; every sweep "

@@ -240,6 +240,18 @@ from pure `parse` (raw dict -> `list[Lead]`), which is the whole reason parsers 
 against golden fixtures. Each source ships exactly one neutral example search; a user's real search
 list belongs in `sources.<id>.searches` in config.
 
+**There is ONE base class, and that is recent.** `CarouselSource` — a one-job-at-a-time
+carousel advanced by clicking a next control — was retired 2026-08-28 when its only producer
+(`wttj`) moved to WTTJ's list view and left it with none. Two consequences worth knowing before
+adding a source. A guard in `tests/test_ingest_url_trust.py` used to assert BOTH base classes
+were reachable, as the anti-vacuity check for a two-implementation seam; with one implementation
+the equivalent claim is that the base class is reached AND at least one subclass overrides
+`parse`, or every row is testing inherited behaviour. And `core/app.py`'s doctor sweep still
+gates `auth_probe_js` on the class that honours it even though only one class exists, because a
+second could grow the attribute and never evaluate it — the hazard outlives the class that
+illustrated it. `git log -- sluice/ingest/base.py` has the implementation if a carousel board
+turns up again.
+
 **Health classifies the SHAPE of a run, not only its count and host (#156).** A scraper's dominant
 failure mode is succeeding at reading the wrong page, not crashing — a rotted selector still returns
 a plausible row count from the right host. `detect_drift` (`core/health.py`) has three
