@@ -138,6 +138,18 @@ collector's one-key-per-line fixtures do -- measured, an end-of-line-anchored ve
 none of them. The two quoted forms are self-terminating and are deliberately outside that
 lookahead, which no real dict literal could satisfy. See the collector's own comment,
 immediately above its definition, for the false positives the same measurements found and closed.
+
+A SIXTH position joined this in #168 Task 11's review round: the YAML BLOCK-LIST spelling of
+`Company:` (`Company:\n  - Example Alpha`), which `_parse_fm_spaced` (core/vault.py) already
+accepts for any frontmatter key. It is swept by `_COMPANY_BLOCK_LIST_COLLECTOR`, a SEPARATE
+collector folded directly into `_all_fixture_identities()` rather than added as a sixth member
+of `_IDENTITY_COLLECTORS` -- that tuple's own single-capture-group `_collect()` pathway assumes
+one identity per match, and a block list can legitimately hold several, so the two need
+different post-processing. It reuses `_evidence_block_list_re`, the exact machinery built for
+`Skills:`'s own block-list spelling (see that function's docstring); `Company:` is the field
+most likely to carry a REAL EMPLOYER NAME, which is the single highest-value thing this whole
+file exists to catch, so leaving this shape uncovered on that key was a worse bet than leaving
+it uncovered on `Skills:`.
 """
 import dataclasses
 import itertools
@@ -279,6 +291,57 @@ def _evidence_field_re(key: str):
                       rf"""|[^\s"'`{{\\\n][^"'`{{\\\n]*?(?=["'`\\\n]|\s*$))""", re.M)
 
 
+def _evidence_block_list_re(key: str):
+    """The YAML block-list spelling of `{key}:` -- `_parse_fm_spaced` (core/vault.py)
+    reads `key:\n  - a\n  - b` and joins it into the identical comma string
+    `_evidence_field_re` catches, and that shape is already LIVE for `Category:`
+    (`tests/test_core_vault_cv.py`'s `test_read_experience_parses_block_list_category`).
+    `_evidence_field_re`'s own alternation cannot see it at all -- measured: every
+    alternative there requires a value TOKEN immediately after `key:`, and a block list
+    has none; the value starts on the next line instead. A `Skills:` fixture written the
+    way `Category:` already is would sweep clean over `_SKILL_COLLECTOR` alone.
+
+    PROMOTED here from a Skills-only helper (#168 Task 11 review): the SAME machinery,
+    unchanged, now also feeds `_COMPANY_BLOCK_LIST_COLLECTOR` below. `Company:` is the
+    field most likely to carry a REAL EMPLOYER NAME, the single highest-value thing this
+    whole file exists to catch, so leaving this shape uncovered there was a worse bet
+    than leaving it uncovered on `Skills:` -- reusing the exact `key`-parameterised
+    pattern this function was already built with, rather than forking a second near-copy.
+
+    The line-break between `key:` and the first `- item`, and between each `- item` in
+    the run, is a REAL newline or the literal two-character `\n` escape ALIKE -- every
+    packed-frontmatter fixture in this repo joins its lines with the escape (one Python
+    string literal), never a real newline, so treating only the real character as a
+    boundary would catch nothing that actually exists. Captures the WHOLE run of `- item`
+    lines as one string; the caller splits it into per-item values, mirroring the comma
+    spelling's own post-findall split.
+    """
+    nl = r"(?:\\n|\n)"
+    item = r'''"[^"{\n\\]+"|'[^'{\n\\]+'|[^\s"'`{\\\n][^"'`{\\\n]*?(?=["'`\\\n]|\s*$)'''
+    return re.compile(rf'''["']?{key}["']?\s*:[ \t]*{nl}((?:[ \t]*-[ \t]*(?:{item}){nl})+)''')
+
+
+def _block_list_items(pattern, text) -> list:
+    """Every `- item` line inside ONE captured block-list run of `text`.
+
+    Normalises the literal `\n` escape to a real newline FIRST, so one
+    `str.splitlines()` call treats both spellings of a line break identically -- the same
+    rule `_evidence_block_list_re` anchors on, kept in exactly one place so the two
+    cannot drift apart. Shared by both the Skills roster sweep and the Company identity
+    sweep (`_collect_block_list`, below `_collect`) -- and by both shape-coverage tests
+    -- for the same reason: one extractor for a shape two independent fields now use.
+    """
+    items = []
+    for run in pattern.findall(text):
+        for line in run.replace("\\n", "\n").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("- "):
+                item = stripped[2:].strip().strip('"').strip("'")
+                if item:
+                    items.append(item)
+    return items
+
+
 _IDENTITY_COLLECTORS = (
     ("frontmatter company:", re.compile(r'company:\s*"([^"]*)"')),
     ("lead-note filename", re.compile(r'"([A-Za-z][^"\n]*? - [^"\n]*?\.md)"')),
@@ -357,6 +420,21 @@ _IDENTITY_COLLECTORS = (
     # / `Example Systems` still keep their INTERNAL space via the wider class that follows.
     ("evidence Company: (frontmatter or dict/kwarg)", _evidence_field_re("Company")),
 )
+
+# The YAML block-list spelling of `Company:` (#168 Task 11 review) -- a SEPARATE
+# collector, deliberately NOT folded into `_IDENTITY_COLLECTORS` above. That tuple's
+# `_collect()` consumer applies `_identity_of` to ONE captured value per match; a block
+# list can legitimately hold SEVERAL items in one match (`_evidence_block_list_re`
+# captures the whole run), so it needs `_block_list_items` to split it first --
+# different post-processing, not a different regex. Folded into `_all_fixture_identities`
+# directly, below, via `_collect_block_list`. Also kept out of `_COLLECTORS` (further
+# down): unlike the five in `_IDENTITY_COLLECTORS`, no real `Company:` block-list fixture
+# exists in this repo yet, so `test_every_collector_actually_finds_fixtures`'s `>= 2`
+# anti-vacuity floor would fail on it immediately -- the same reason `_SKILL_COLLECTOR`
+# and `_SKILL_BLOCK_LIST_COLLECTOR` sit outside both tuples too.
+_COMPANY_BLOCK_LIST_COLLECTOR = ("evidence Company: (YAML block list)",
+                                 _evidence_block_list_re("Company"))
+
 
 # Derived from the packet's own warned-field classification (sluice/apply/packet.py's
 # `_WARNED_KEYS`), not hand-listed. `_WARNED_KEYS` is itself the derived remainder of
@@ -670,10 +748,32 @@ def _collect(pattern):
     return found
 
 
+def _collect_block_list(pattern):
+    """The block-list sibling of `_collect`, for one `_evidence_block_list_re` pattern.
+
+    Same normalisation as `_collect` -- `_identity_of` then `_is_source_text` filtering
+    -- applied to EACH item `_block_list_items` splits out of a captured run, so a
+    block-list identity is held to the identical bar as the five `_IDENTITY_COLLECTORS`
+    members. Kept separate from `_collect` itself rather than folded in behind an
+    `if`: `_collect` takes a SIMPLE-VALUE pattern (`pattern.findall` already yields the
+    identity), while this one's pattern yields a multi-item RUN that needs splitting
+    first -- different shapes at the call site, not a cosmetic variant.
+    """
+    found = set()
+    for text in _test_sources():
+        for raw in _block_list_items(pattern, text):
+            name = _identity_of(raw)
+            if _is_source_text(name):
+                continue
+            found.add(name)
+    return found
+
+
 def _all_fixture_identities():
     names = set()
     for _label, pattern in _IDENTITY_COLLECTORS:
         names |= _collect(pattern)
+    names |= _collect_block_list(_COMPANY_BLOCK_LIST_COLLECTOR[1])
     return names
 
 
@@ -727,6 +827,59 @@ def test_the_evidence_company_collector_sees_every_shape_it_claims_to():
         leaked = [v for v in (_identity_of(m) for m in pattern.findall(text))
                   if v and not _is_source_text(v)]
         assert not leaked, f"{shape} leaked {leaked!r} as a fixture identity"
+
+
+def test_the_evidence_company_block_list_collector_sees_every_shape_it_claims_to():
+    """The Company sibling of the Skills block-list collector (#168 Task 11 review): a
+    genuine `Company:` block-list fixture -- the field most likely to carry a REAL
+    EMPLOYER NAME, the single highest-value thing this whole file exists to catch -- was
+    caught by nothing until this collector existed. Reuses `_evidence_block_list_re` and
+    `_block_list_items` UNCHANGED (see their own docstrings): the promotion is wiring, a
+    second `key` argument and a second call site, not a second regex.
+
+    Mirrors `test_the_evidence_skills_collector_sees_every_shape_it_claims_to`'s coverage
+    of the shared machinery, scoped to what is NEW here: the `Company` key specifically,
+    a multi-item block list (Skills' own test already proves the boundary handling this
+    key reuses unchanged), cross-key isolation, and the `_identity_of` slug-reduction
+    `_collect_block_list` applies on top that the Skills path never needed
+    (`_all_fixture_skill_values` reads raw values, not lead identities).
+
+    Written as the collector sees it -- Python SOURCE fragments, `\\n` two characters,
+    exactly as a real packed-frontmatter fixture writes it. This file is `_SELF`,
+    excluded from `_test_sources()`, so none of these values reaches
+    `_REVIEWED_FIXTURE_IDENTITIES`.
+    """
+    pattern = _COMPANY_BLOCK_LIST_COLLECTOR[1]
+
+    # A two-item block list proves the extractor makes no single-item assumption for
+    # this key, even though a REAL Company fixture would realistically name one employer.
+    two_item = "Company:\\n  - Example Alpha\\n  - Example Beta\\nverified: 2026-01-01"
+    assert _block_list_items(pattern, two_item) == ["Example Alpha", "Example Beta"]
+
+    # The escaped-`\n` spelling every real evidence fixture in this repo actually uses.
+    escaped = 'Company:\\n  - Example Foundry\\nverified: 2026-07-01'
+    assert _block_list_items(pattern, escaped) == ["Example Foundry"]
+
+    # A block list under a DIFFERENT key (Skills' own shape) must not leak into the
+    # Company sweep -- a collector keyed loosely enough to match it too would attribute
+    # a skill value to the employer roster instead.
+    other_key = "Skills:\\n  - Example Query\\nverified: x"
+    assert _block_list_items(pattern, other_key) == []
+
+    # `_collect_block_list` (unlike `_all_fixture_skill_values`, which reads raw values)
+    # reduces each item through `_identity_of` before it reaches the roster -- a
+    # `Company - Role.md`-shaped block item must reduce the same way a filename or a
+    # dict/kwarg value already does for the other five identity collectors.
+    slug_item = "Company:\\n  - Example Foundry - Staff Engineer.md\\nverified: x"
+    [raw_slug] = _block_list_items(pattern, slug_item)
+    assert _identity_of(raw_slug) == "Example Foundry"
+
+    # An f-string interpolation is refused at the ITEM regex itself, structurally, the
+    # same way `_evidence_field_re`'s own value alternatives exclude `{` -- not merely
+    # filtered afterward by `_is_source_text`. A quoted or bare `{company}` placeholder
+    # inside a block list matches nothing, so it never reaches `_identity_of` at all.
+    placeholder_item = 'Company:\\n  - "{company}"\\nverified: x'
+    assert _block_list_items(pattern, placeholder_item) == []
 
 
 @pytest.mark.parametrize("label,pattern", _COLLECTORS, ids=[c[0] for c in _COLLECTORS])
@@ -1672,56 +1825,8 @@ _SKILL_COLLECTOR = ("evidence Skills: (frontmatter or dict/kwarg)",
                     _evidence_field_re("Skills"))
 
 
-def _evidence_block_list_re(key: str):
-    """The YAML block-list spelling of `{key}:` -- `_parse_fm_spaced` (core/vault.py)
-    reads `key:\\n  - a\\n  - b` and joins it into the identical comma string
-    `_evidence_field_re` catches, and that shape is already LIVE for `Category:`
-    (`tests/test_core_vault_cv.py`'s `test_read_experience_parses_block_list_category`).
-    `_evidence_field_re`'s own alternation cannot see it at all -- measured: every
-    alternative there requires a value TOKEN immediately after `key:`, and a block list
-    has none; the value starts on the next line instead. A `Skills:` fixture written the
-    way `Category:` already is would sweep clean over `_SKILL_COLLECTOR` alone.
-
-    Not promoted to a sibling of `_evidence_field_re` (yet): nothing has needed a
-    block-list `Company:` fixture, so generalising it there would be an unexercised
-    guess. Kept `key`-parameterised anyway, matching that function's own reasoning, so a
-    second field needing this shape does not fork a third copy.
-
-    The line-break between `key:` and the first `- item`, and between each `- item` in
-    the run, is a REAL newline or the literal two-character `\\n` escape ALIKE -- every
-    packed-frontmatter fixture in this repo joins its lines with the escape (one Python
-    string literal), never a real newline, so treating only the real character as a
-    boundary would catch nothing that actually exists. Captures the WHOLE run of `- item`
-    lines as one string; the caller splits it into per-item values, mirroring the comma
-    spelling's own post-findall split.
-    """
-    nl = r"(?:\\n|\n)"
-    item = r'''"[^"{\n\\]+"|'[^'{\n\\]+'|[^\s"'`{\\\n][^"'`{\\\n]*?(?=["'`\\\n]|\s*$)'''
-    return re.compile(rf'''["']?{key}["']?\s*:[ \t]*{nl}((?:[ \t]*-[ \t]*(?:{item}){nl})+)''')
-
-
 _SKILL_BLOCK_LIST_COLLECTOR = ("evidence Skills: (YAML block list)",
                                _evidence_block_list_re("Skills"))
-
-
-def _block_list_skill_items(pattern, text) -> list:
-    """Every `- item` line inside ONE captured block-list run of `text`.
-
-    Normalises the literal `\\n` escape to a real newline FIRST, so one
-    `str.splitlines()` call treats both spellings of a line break identically -- the same
-    rule `_evidence_block_list_re` anchors on, kept in exactly one place so the two
-    cannot drift apart. Shared between the roster sweep and the shape-coverage test
-    below, for the same reason.
-    """
-    items = []
-    for run in pattern.findall(text):
-        for line in run.replace("\\n", "\n").splitlines():
-            stripped = line.strip()
-            if stripped.startswith("- "):
-                item = stripped[2:].strip().strip('"').strip("'")
-                if item:
-                    items.append(item)
-    return items
 
 
 def _all_fixture_skill_values():
@@ -1741,7 +1846,7 @@ def _all_fixture_skill_values():
     for raw in _collect(_SKILL_COLLECTOR[1]):
         values |= {part.strip() for part in raw.split(",") if part.strip()}
     for text in _test_sources():
-        values |= set(_block_list_skill_items(_SKILL_BLOCK_LIST_COLLECTOR[1], text))
+        values |= set(_block_list_items(_SKILL_BLOCK_LIST_COLLECTOR[1], text))
     return values
 
 
@@ -1771,26 +1876,26 @@ def test_the_evidence_skills_collector_sees_every_shape_it_claims_to():
     # every packed-frontmatter fixture in this repo actually uses.
     escaped_block = (
         'Skills:\\n  - Example Query\\n  - Example Framework\\nverified: 2026-01-01')
-    escaped_items = _block_list_skill_items(block_pattern, escaped_block)
+    escaped_items = _block_list_items(block_pattern, escaped_block)
     assert escaped_items == ["Example Query", "Example Framework"], escaped_items
 
     # The SAME block-list spelling joined with a REAL newline (a triple-quoted fixture
     # rather than one packed literal) must count identically -- neither boundary form may
     # be the only one recognised.
     real_block = "Skills:\n  - Example Query\n  - Example Framework\nverified: 2026-01-01"
-    real_items = _block_list_skill_items(block_pattern, real_block)
+    real_items = _block_list_items(block_pattern, real_block)
     assert real_items == ["Example Query", "Example Framework"], real_items
 
     # A block list under a DIFFERENT key must not leak into the Skills sweep -- this is
     # the live `Category:` shape (`tests/test_core_vault_cv.py`), and a collector keyed
     # loosely enough to match it too would attribute someone else's field value to Skills.
     other_key_block = "Category:\n  - Process\n  - Leadership\nverified: x"
-    assert _block_list_skill_items(block_pattern, other_key_block) == []
+    assert _block_list_items(block_pattern, other_key_block) == []
 
     # A bare `Skills:` with an INLINE value (the comma spelling) has no block-list run to
     # find -- the two collectors must not double-count the same fixture.
     inline_text = 'Skills: Example Query, Example Framework\\nverified: x'
-    assert _block_list_skill_items(block_pattern, inline_text) == []
+    assert _block_list_items(block_pattern, inline_text) == []
 
     # REGRESSION (found by this task's own planting witness, which used a different value
     # in this same shape -- "Example Torrent", planted in tests/test_doctor.py and
