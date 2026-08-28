@@ -2042,7 +2042,12 @@ def test_a_claimed_skill_matching_the_inventory_by_slug_reports_nothing():
 
 
 def test_an_inventory_skill_named_by_no_entry_is_reported():
-    rows = classify_skills_reconciliation([], [_skill("example-widget")])
+    """BOTH corpora carry content, deliberately: with an empty experience side this
+    check abstains outright (see `test_no_skills_claim_anywhere_abstains...` below), so
+    the drift has to be a PARTIAL one -- one inventory entry claimed, one not."""
+    rows = classify_skills_reconciliation(
+        [{"fields": {"Skills": "Example Widget"}}],
+        [_skill("example-widget"), _skill("example-orphan")])
     assert len(rows) == 1
     assert rows[0].state == NOTICE
     assert rows[0].subject == "Skills Inventory (unclaimed)"
@@ -2051,12 +2056,38 @@ def test_an_inventory_skill_named_by_no_entry_is_reported():
 
 
 def test_an_entry_skill_absent_from_the_inventory_is_reported():
-    rows = classify_skills_reconciliation([{"fields": {"Skills": "Example Ghost"}}], [])
+    """Mirror of the row above, and partial for the same reason: an empty INVENTORY
+    abstains, so the entry must claim one name the inventory has and one it has not."""
+    rows = classify_skills_reconciliation(
+        [{"fields": {"Skills": "Example Widget, Example Ghost"}}],
+        [_skill("example-widget")])
     assert len(rows) == 1
     assert rows[0].state == NOTICE
     assert rows[0].subject == "Experience Library (unmatched)"
     assert "1 entry Skills:" in rows[0].detail
     assert "job-sluice skills list" in rows[0].detail
+
+
+def test_an_empty_inventory_abstains_rather_than_reporting_every_claim_unmatched():
+    """One side empty is not drift, it is an install shape. `Skills:` licenses a
+    bullet's numbers RELATIONALLY with no requirement that an inventory entry exist, so
+    a vault that annotates entries and curates no inventory is fully supported -- and
+    reported EVERY declared name as unmatched, permanently, before this abstain. The
+    mirror row was already silent in that state (no titles, so nothing to be unclaimed),
+    which is what made it an asymmetry rather than a consistent posture."""
+    assert classify_skills_reconciliation(
+        [{"fields": {"Skills": "Example Ghost, Example Widget"}}], []) == []
+
+
+def test_no_skills_claim_anywhere_abstains_rather_than_reporting_every_entry_unclaimed():
+    """The same rule on the other side, and the shape EVERY pre-#168 vault has: entries
+    exist, none carries a `Skills:` value, an inventory exists (#165 shipped it first).
+    Guarded on the DERIVED vocabulary, not on `experience_entries` being empty -- an
+    entry whose `Skills:` is blank is the identical "nothing to reconcile" state, and a
+    raw-argument guard would miss it and report every inventory entry unclaimed."""
+    assert classify_skills_reconciliation(
+        [{"fields": {"Skills": ""}}, {"fields": {}}],
+        [_skill("example-widget"), _skill("example-orphan")]) == []
 
 
 def test_both_rows_can_fire_together_on_a_wholly_disjoint_pair():
@@ -2076,16 +2107,18 @@ def test_no_experience_and_no_inventory_abstains():
 
 def test_a_blank_skills_value_never_counts_as_a_claim():
     """SC5 (cv/bundle.py:_skill_items): blank is absent. A blank `Skills:` value must
-    contribute NOTHING to `claimed` -- proven two ways in one test. Against an empty
-    inventory, no row fires at all (a phantom "" name would otherwise be reported as
-    an unmatched claim, which this first assertion catches). Against a non-empty
-    inventory, only the orphan row fires -- a phantom "" claim would otherwise also
-    SATISFY the orphan check by coincidence for any title that happens to be falsy,
-    so the second assertion pins the count explicitly rather than merely checking
-    the row is present."""
-    assert classify_skills_reconciliation([{"fields": {"Skills": ""}}], []) == []
+    contribute NOTHING to `claimed` -- proven two ways in one test, both alongside a
+    REAL claim, since a corpus of blanks alone now abstains before either count is
+    computed and would satisfy any assertion here vacuously.
+
+    First: a phantom "" name would be reported as an unmatched claim, so the otherwise
+    fully-reconciled pair below would fire a row. Second: a phantom "" claim would also
+    SATISFY the orphan check by coincidence for a title that happens to be falsy, so the
+    inventory gains a blank-titled entry that must still read as unclaimed."""
+    entries = [{"fields": {"Skills": ""}}, {"fields": {"Skills": "Example Widget"}}]
+    assert classify_skills_reconciliation(entries, [_skill("example-widget")]) == []
     rows = classify_skills_reconciliation(
-        [{"fields": {"Skills": ""}}], [_skill("example-widget")])
+        entries, [_skill("example-widget"), _skill("")])
     assert len(rows) == 1
     assert rows[0].subject == "Skills Inventory (unclaimed)"
 
@@ -2094,16 +2127,25 @@ def test_a_missing_skills_key_never_counts_as_a_claim():
     """`.get("Skills", "")` defaults an ABSENT key the same way a blank one reads --
     the shape every pre-#168 Experience Library note actually has (no `Skills:` line at
     all, per tests/test_evidence_kinds.py's own `gamma` fixture), as opposed to the
-    test above's explicitly-blank shape."""
-    assert classify_skills_reconciliation([{"fields": {}}], []) == []
+    test above's explicitly-blank shape.
+
+    Paired with a REAL claim and a matching inventory, never against an empty one: this
+    check abstains outright on an empty corpus, so `== []` against an empty inventory
+    would hold whether or not the absent key contributed a phantom name."""
+    assert classify_skills_reconciliation(
+        [{"fields": {}}, {"fields": {"Skills": "Example Widget"}}],
+        [_skill("example-widget")]) == []
 
 
 def test_a_missing_fields_key_never_counts_as_a_claim():
     """`(e.get("fields") or {})` -- an entry with no `fields` key at all must abstain
     the same way, not raise. Not a shape `Vault._evidence_entries` ever produces (every
     real entry dict carries `fields`), but the Store contract does not require it and
-    doctor never refuses on an unusual-but-harmless shape."""
-    assert classify_skills_reconciliation([{}], []) == []
+    doctor never refuses on an unusual-but-harmless shape. Paired with a real claim for
+    the reason the test above states."""
+    assert classify_skills_reconciliation(
+        [{}, {"fields": {"Skills": "Example Widget"}}],
+        [_skill("example-widget")]) == []
 
 
 def test_a_none_skills_value_does_not_raise():
@@ -2124,7 +2166,13 @@ def test_a_none_skills_value_does_not_raise():
     right here since there is no name being hidden from review."""
     entry = {"fields": {}}
     entry["fields"]["Skills"] = None
-    assert classify_skills_reconciliation([entry], []) == []
+    # Alongside a real, matching claim: the raise this pins would happen while `claimed`
+    # is being built, which is BEFORE the empty-corpus abstain, so an empty inventory
+    # would still exercise it -- but `== []` would then hold vacuously, and the second
+    # half of the claim (None contributes no phantom name) would go unchecked.
+    assert classify_skills_reconciliation(
+        [entry, {"fields": {"Skills": "Example Widget"}}],
+        [_skill("example-widget")]) == []
 
 
 def test_a_non_string_truthy_skills_value_does_not_raise():
@@ -2145,8 +2193,12 @@ def test_a_non_string_truthy_skills_value_does_not_raise():
     entry_int["fields"]["Skills"] = 5
     entry_list = {"fields": {}}
     entry_list["fields"]["Skills"] = ["a", "b"]
-    assert classify_skills_reconciliation([entry_int], []) == []
-    assert classify_skills_reconciliation([entry_list], []) == []
+    # Each paired with a real, matching claim -- see the None test above for why an
+    # empty inventory would make the `== []` half of this vacuous.
+    real = {"fields": {"Skills": "Example Widget"}}
+    inventory = [_skill("example-widget")]
+    assert classify_skills_reconciliation([entry_int, real], inventory) == []
+    assert classify_skills_reconciliation([entry_list, real], inventory) == []
 
 
 def test_duplicate_claims_across_entries_count_once():
@@ -2198,8 +2250,12 @@ def test_the_report_names_no_skill_string():
 
 def test_the_rows_never_affect_the_exit_code():
     """NOTICE, never DEGRADED -- same posture classify_negatives_vs_skills's identical
-    test pins."""
-    rows = classify_skills_reconciliation([{"fields": {"Skills": "Example Ghost"}}], [])
+    test pins. Both corpora carry content, and `rows` is asserted non-empty first: with
+    an empty inventory this check abstains, and `exit_code(strict=True) == 0` over an
+    EMPTY row list holds under any posture at all."""
+    rows = classify_skills_reconciliation(
+        [{"fields": {"Skills": "Example Ghost"}}], [_skill("example-orphan")])
+    assert rows, "no row fired, so the exit-code assertion below proves nothing"
     assert DoctorReport(checks=[], components=rows).exit_code(strict=True) == 0
 
 
@@ -2242,3 +2298,42 @@ def test_the_skills_reconciliation_runs_through_the_real_wiring(tmp_path, monkey
     assert expected <= gate_subjects, (
         "Sluice.doctor did not run the skills reconciliation -- the pure classifier's "
         f"own tests cannot see this (gates subjects: {sorted(gate_subjects)})")
+
+
+def test_an_empty_inventory_reports_nothing_through_the_real_wiring(tmp_path,
+                                                                   monkeypatch):
+    """The empty-corpus abstain, asserted through `Sluice.doctor` rather than only
+    through the pure classifier -- the call site passes `read_evidence("skills")`
+    straight in, so a guard placed at the CALL SITE instead of in the classifier would
+    also satisfy the unit tests, and a later refactor moving one without the other would
+    not be seen by them. Same vault shape as the wiring test above with the Skills
+    Inventory left empty: an install that annotates `Skills:` and curates no inventory
+    must produce NEITHER reconciliation row."""
+    import os
+
+    from sluice.core.config import Config
+
+    vault = tmp_path / "vault"
+    exp = vault / "Job Applications" / "Experience Library"
+    sk = vault / "Job Applications" / "Skills Inventory"
+    os.makedirs(exp, exist_ok=True)
+    os.makedirs(sk, exist_ok=True)
+    (exp / "alpha.md").write_text(
+        "---\nCompany: Example Alpha\nCategory: \nBest For: \nMetrics: \n"
+        "Skills: Example Ghost\nverified: 2026-08-25\n---\nBody.\n", encoding="utf-8")
+    monkeypatch.setenv("VAULT_DIR", str(vault))
+    monkeypatch.setattr(Sluice, "store", _REAL_STORE)
+
+    report = Sluice(Config(vault_dir=str(vault))).doctor(offline=True)
+    gate_subjects = {c.subject for c in report.components if c.component == "gates"}
+    # SCOPE: the same report must still carry the `store`-component row for the corpus,
+    # so this is not passing because the whole evidence read failed or the vault was
+    # never seen -- which would make the assertion below hold for the wrong reason.
+    assert any(c.component == "store" and c.subject == "Experience Library"
+               for c in report.components), (
+        "the Experience Library was not read at all, so the absence of a "
+        "reconciliation row proves nothing")
+    assert not {"Skills Inventory (unclaimed)",
+                "Experience Library (unmatched)"} & gate_subjects, (
+        "an empty Skills Inventory must abstain, not report every declared Skills: "
+        f"name unmatched (gates subjects: {sorted(gate_subjects)})")

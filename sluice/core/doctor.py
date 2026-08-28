@@ -749,11 +749,25 @@ def classify_skills_reconciliation(experience_entries: list, skills_entries: lis
     text today" is this codebase's own standing rule (see the spec's section 7) -- a
     skill name is exactly that, this person's own claimed expertise.
 
-    Both counts are computed independently and each row is suppressed at zero, so an
-    install using only one of the two corpora (or neither) reads sensibly rather than
-    reporting a false 100%-unmatched row against an empty other side -- the
-    empty-means-abstain posture CLAUDE.md states for every preference gate, applied
-    here to a NOTICE row instead.
+    ABSTAINS unless BOTH corpora contribute something -- at least one `Skills:` claim
+    and at least one inventory entry -- exactly as `classify_negatives_vs_skills` above
+    abstains on either empty input and again on a vocabulary that reduces to nothing.
+    A reconciliation is a statement about two corpora DRIFTING; with one side empty
+    there is no drift to report, only the other side counted at 100%. Both such installs
+    are fully supported and neither is a mistake: `Skills:` licenses a bullet's numbers
+    RELATIONALLY with no requirement that an inventory entry exist, and an inventory
+    entry is framing that requires no experience entry to cite it back. So a row fired
+    against an empty other side would be permanent, uninformative, and pointed at a
+    remedy the user has deliberately not taken -- the empty-means-abstain posture
+    CLAUDE.md states for every preference gate, applied here to a NOTICE row instead.
+    (Before this, an empty inventory reported EVERY declared `Skills:` name as unmatched
+    while the mirror row silently abstained, and an install with no `Skills:` annotation
+    anywhere -- the shape every pre-#168 vault has -- reported every inventory entry as
+    unclaimed. The asymmetry was in the counts, not in the rule.)
+
+    Past that guard both counts are computed independently and each row is still
+    suppressed at zero, so a partial overlap reports only the direction that actually
+    disagrees.
     """
     from sluice.core.vault import evidence_slug
 
@@ -786,7 +800,16 @@ def classify_skills_reconciliation(experience_entries: list, skills_entries: lis
         claimed |= {t.strip() for t in raw.split(",") if t.strip()}
 
     titles = {e.get("title", "") for e in skills_entries}
-    claimed_keys = set().union(*(_keys(n) for n in claimed)) if claimed else set()
+    # The abstain, on the DERIVED vocabularies rather than the raw arguments -- the same
+    # two-stage shape `classify_negatives_vs_skills` uses, and for the same reason: an
+    # experience corpus none of whose entries carries a usable `Skills:` value is the
+    # identical "nothing to reconcile" state as no experience corpus at all, and a raw
+    # `if not experience_entries` guard would miss it. See the docstring for why one
+    # empty side is an abstain rather than a 100% row.
+    if not claimed or not titles:
+        return []
+
+    claimed_keys = set().union(*(_keys(n) for n in claimed))
 
     unclaimed = sum(1 for title in titles if title not in claimed_keys)
     unmatched = sum(1 for name in claimed if not _keys(name) & titles)
