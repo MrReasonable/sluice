@@ -90,13 +90,24 @@ def section_spans(cv_text):
     and a generic splitter would silently stop checking them, rendering an uncited claim
     into the PDF. That is the arm a naive extraction drops, so it is pinned by name.
 
-    SKILLS is a DIFFERENT kind of region: a CONTIGUOUS BULLET RUN, not a span held open
-    by a start/end header pair. It ends at the first line that is neither blank nor a
-    SKILLS-shaped bullet, or at `CERTIFICATES`/`EDUCATION` (whichever comes first) -- see
-    the branch's own comments for why a blank must NOT end the run and a non-blank
-    non-bullet line safely may. Only a bullet line is materialised into `skills_lines`;
-    a blank line that merely keeps the run alive is not itself a skill and is dropped,
-    the same way `work_bullet_lines` already drops every non-bullet line inside WORK.
+    SKILLS is a DIFFERENT kind of region: a BULLET RUN, not a span held open by a
+    start/end header pair. It ends at `CERTIFICATES`/`EDUCATION`, or at a non-blank
+    non-bullet line that is either ALL-CAPS (a section header) or reached while `in_work`
+    is live -- and NOT at a non-blank non-bullet line that is neither, which is read as a
+    GROUP HEADING (`Languages`, `Frameworks`) and keeps the run alive. See the branch's
+    own comments for why a blank must not end the run, why the two arms that do end it
+    are exactly those two, and why the grouped case had to be closed HERE rather than in
+    a renderer: it was a row 2 bypass, measured, on the section order the shipped format
+    contract itself asks for. Only a bullet line is materialised into `skills_lines`; a
+    blank line, or a group heading, that merely keeps the run alive is not itself a skill
+    and is dropped, the same way `work_bullet_lines` already drops every non-bullet line
+    inside WORK.
+
+    That means gate and parser no longer stop at the same line in every case: `cv/parse.py`
+    refuses at a group heading this run reads past. The direction is deliberate and is the
+    safe one -- the gate inspects a SUPERSET of what the parser accepts, so no line can
+    reach a PDF uninspected -- and it is the whole point, since the `script` renderer
+    parses nothing at all.
 
     Note that no header CLEARS another's flag on the way IN, with one exception:
     `PROFILE` sets `in_profile` without touching `in_work`, so a CV that repeats
@@ -154,25 +165,59 @@ def section_spans(cv_text):
         # blank under the header put the skills lines in NO region while `parse_cv` still
         # returned them and the template rendered them: containment-checked by nothing.
         #
-        # A non-blank non-bullet line DOES end it, and is safe because the parser's own
-        # trailing-section reader refuses at that SAME line -- the same mechanism
-        # CERTIFICATES/EDUCATION already use. That correspondence had to be ESTABLISHED,
-        # not assumed: before #168 Task 7, `parse_cv` rejected every SKILLS section
-        # outright (`CvParseError: unmodelled section header 'SKILLS'` at the HEADER,
-        # whatever followed -- measured, a terminator line and a lone trailing blank both
-        # hit that identical refusal), so gate and parser stopped at the same place for a
-        # reason that had nothing to do with WHERE this run's own terminator fell. Task 7
-        # taught `cv/parse.py` to read SKILLS through the same generic
-        # CERTIFICATES/EDUCATION/SKILLS loop, whose own refusal now fires at the specific
-        # non-marker line rather than at the header, which is what makes gate and parser
-        # agree on WHERE, not merely THAT, they stop.
-        # `test_a_skills_terminator_line_ends_both_the_gate_region_and_the_parse`
-        # (`tests/test_cv_parse.py`) is the test that pins it, asserting BOTH halves --
-        # that this run stops collecting at the terminator line, and that the parser's
-        # own refusal names that same line -- because either alone proves nothing about
-        # where the other stops.
+        # A non-blank non-bullet line inside the run is one of TWO different things, and
+        # ending the run unconditionally at both was a row 2 BYPASS. Measured on the
+        # shipped format contract's own section order (`compose._RULES` puts SKILLS LAST,
+        # after EDUCATION, and EDUCATION clears `in_work`):
+        #
+        #     SKILLS
+        #     - Example Query
+        #     Languages
+        #     - Totally Invented Skill
+        #
+        # `- Totally Invented Skill` landed in NO region at all, `validate()` returned
+        # `[]`, and only `cv/parse.py` refused it -- so under `cv.renderer: script`, which
+        # implements no `precheck`, a fabricated skill rendered ungated. A grouped SKILLS
+        # section is an ordinary CV convention and the format contract does not forbid
+        # one, so this had to be closed in the HARD gate rather than left to one
+        # renderer's grammar (CLAUDE.md: the engine may guard what the prompt required;
+        # only a renderer may guard what its own LAYOUT needs).
+        #
+        # The discriminator is ALL-CAPS, and it is the conservative direction on purpose.
+        # Every header in the format contract is all-caps, and so are the unmodelled ones
+        # this module's docstring names (PUBLICATIONS, PROJECTS, AWARDS); a GROUP HEADING
+        # inside a skills list is not (`Languages`, `Frameworks`, `Tools`). Getting it
+        # wrong the other way is what must not happen: swallowing a genuine section would
+        # report its bullets as UNSOURCED SKILL, and the only answer to THAT is to delete
+        # a true publication -- a refusal answerable only by deleting true content, the
+        # shape CLAUDE.md's LOCATION-field incident names. So an all-caps line ends the
+        # run even when it is really a shouted group heading (`LANGUAGES`); that residual
+        # is stated rather than disguised, and it fails toward accepting, not refusing.
+        #
+        # `in_work` ends the run too, and that is what keeps this from WEAKENING anything.
+        # Entering SKILLS deliberately does not clear `in_work`, so while WORK is live the
+        # following bullets are already claimed by the stricter citation check -- measured
+        # on the same fixture with WORK still open, `- Totally Invented Skill` is reported
+        # as `UNCITED BULLET`. The bypass exists only where NO region claims the line, so
+        # extending the run only there can add checking and can never move a line out of
+        # one. Without this clause a company line after a SKILLS section (`Example Beta`,
+        # not all-caps) would read as a group heading and swallow that role's bullets out
+        # of the citation check entirely.
+        #
+        # This SPLITS the gate/parser correspondence that used to hold here, and the
+        # docstring above says so. Before, both stopped at the same line: `cv/parse.py`'s
+        # trailing-section reader refuses at the first non-marker line, and Task 7 was what
+        # made that agreement about WHERE rather than merely THAT (before it, `parse_cv`
+        # rejected every SKILLS section at the HEADER). The gate now reads PAST a group
+        # heading the parser still refuses at. That direction is the safe one -- the gate
+        # inspects MORE than the parser accepts, never less -- and it changes nothing for
+        # the `template` renderer, whose parse already refused this document; it changes
+        # `script`, where the line went unchecked. `test_a_skills_terminator_line_ends_
+        # both_the_gate_region_and_the_parse` (`tests/test_cv_parse.py`) still pins the
+        # ALL-CAPS/in_work arm, which is the one where they do still agree.
         if in_skills and line.strip() and not is_bullet:
-            in_skills = False
+            if line.strip().isupper() or in_work:
+                in_skills = False
         if in_skills:
             # Only a BULLET line is materialised here -- a blank kept the run alive
             # (the check above) but is not itself a skill. The first shipped version of

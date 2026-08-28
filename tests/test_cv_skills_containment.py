@@ -526,3 +526,98 @@ def test_a_bare_period_run_is_not_a_token_at_all():
     a later 'simplification' back to a character class cannot restore it silently."""
     assert V._tokens("a ... b") == ["a", "b"]
     assert V._tokens("trailing dots... here") == ["trailing", "dots", "here"]
+
+
+# --- The grouped SKILLS section: row 2's bypass (#168 review) ------------------------
+#
+# `Languages` / `Frameworks` / `Tools` grouping is an ordinary CV convention and
+# `compose._RULES` does not forbid one. The run used to end at ANY non-blank non-bullet
+# line, so every bullet after the first group heading landed in NO region whenever
+# `in_work` was already closed -- which is the section order the shipped format contract
+# itself asks for, since it puts SKILLS after EDUCATION. `validate()` returned `[]`.
+# `cv/parse.py` refused, so the `template` renderer blocked it, but `script` implements
+# no `precheck` at all and rendered the fabricated skill. A hard gate that leans on one
+# renderer's grammar is exactly what CLAUDE.md forbids, so the close is here.
+
+_GROUPED_TAIL_CV = "\n".join([
+    "PROFILE",
+    "I did the work.",
+    "",
+    "WORK EXPERIENCE",
+    "",
+    "Example Alpha",
+    "01/2020-01/2024 | LOCATION | Engineer",
+    "- Ran the rebuild [ES1]",
+    "",
+    "EDUCATION",
+    "- Example University, 2010-2013 | BSc",
+    "",
+    "SKILLS",
+    "- Example Query",
+    "Languages",
+    "- Totally Invented Skill",
+])
+
+
+def test_a_bullet_under_a_group_heading_is_still_row_2_checked():
+    """The bypass itself, on the shipped format contract's own section order (SKILLS
+    last, after EDUCATION -- so `in_work` is already closed and nothing else claims the
+    line). Measured before the fix: `section_spans` collected only `- Example Query` and
+    `validate()` returned `[]`."""
+    s = _sources(body="Ran the rebuild.", skills="Example Query",
+                 baseline="Example Alpha.")
+    _p, _w, skills = V.section_spans(_GROUPED_TAIL_CV)
+    assert [t.strip() for _n, t in skills] == ["- Example Query",
+                                              "- Totally Invented Skill"]
+    v = V.validate(_GROUPED_TAIL_CV, s)
+    assert any("UNSOURCED SKILL" in x and "Totally Invented Skill" in x for x in v), v
+
+
+def test_a_genuine_skill_under_a_group_heading_is_not_refused():
+    """The positive control the bypass fix must not cost. Grouping a real skills list is
+    a layout choice, and no refusal may follow from it -- the fix CHECKS the extra
+    bullets, it does not refuse the shape."""
+    s = _sources(body="Ran the rebuild.", skills="Example Query, Example Framework",
+                 baseline="Example Alpha.")
+    cv = _GROUPED_TAIL_CV.replace("- Totally Invented Skill", "- Example Framework")
+    assert V.validate(cv, s) == []
+
+
+def test_an_all_caps_line_still_ends_the_run_so_a_real_section_is_not_swallowed():
+    """The direction that must not be got wrong. A genuine unmodelled section after
+    SKILLS carries an ALL-CAPS header, and swallowing it would report its bullets as
+    UNSOURCED SKILL -- a refusal answerable only by DELETING a true publication, the
+    shape this repo's LOCATION-field incident names. Measured on main: these bullets are
+    in no region and clean, and they must stay that way."""
+    s = _sources(body="Ran the rebuild.", skills="Example Query",
+                 baseline="Example Alpha.")
+    cv = _GROUPED_TAIL_CV.replace("Languages\n- Totally Invented Skill",
+                                  "PUBLICATIONS\n- Wrote a paper that cut cost by 92%")
+    _p, _w, skills = V.section_spans(cv)
+    assert [t.strip() for _n, t in skills] == ["- Example Query"]
+    assert V.validate(cv, s) == []
+
+
+def test_a_group_heading_while_work_is_live_still_ends_the_run():
+    """The clause that stops this WEAKENING anything. Entering SKILLS deliberately does
+    not clear `in_work`, so while WORK is live the following bullets are already claimed
+    by the stricter citation check. Without this arm, a company line after a SKILLS
+    section (`Example Beta` -- not all-caps, so it reads as a group heading) would
+    swallow that role's bullets out of the citation check entirely.
+
+    Asserted on the CITATION check, not on the region alone: the bullet must still be
+    reported by `validate()`, which is the property that would actually be lost."""
+    s = _sources(body="Ran the rebuild.", skills="Example Query",
+                 baseline="Example Alpha.")
+    cv = "\n".join([
+        "PROFILE", "I did the work.", "", "WORK EXPERIENCE", "",
+        "Example Alpha", "01/2020-01/2024 | LOCATION | Engineer",
+        "- Ran the rebuild [ES1]", "",
+        "SKILLS", "- Example Query",
+        "Example Beta", "02/2024-01/2025 | LOCATION | Engineer",
+        "- An uncited claim",
+    ])
+    _p, work, skills = V.section_spans(cv)
+    assert [t.strip() for _n, t in skills] == ["- Example Query"]
+    assert "- An uncited claim" in [t.strip() for _n, t in work]
+    assert any("UNCITED BULLET" in x for x in V.validate(cv, s))
