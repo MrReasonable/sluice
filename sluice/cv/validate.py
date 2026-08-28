@@ -198,11 +198,22 @@ def section_spans(cv_text):
 # reuses these two rather than redefining them -- two copies would let the vocabulary the
 # gate BUILDS drift from the one it SEARCHES with.
 def _tokens(text):
-    """Case-PRESERVING alphanumeric runs. Deliberately not core/stem.py: stemming answers
-    a RELEVANCE question (right for rank()), and this is an IDENTITY question -- a
-    licensed `Widget` would license an emitted `Widgeting`. `stem.tokens` is also
-    alphabetic-only, so it destroys the digit-bearing names span removal exists to
-    protect."""
+    """Case-PRESERVING runs of letters, digits, `#`, `+` and the dots INSIDE a name.
+
+    Not "alphanumeric runs" -- that description was wrong in the one way that mattered.
+    `_WORD_RE` (cv/bundle.py, the ONE definition, imported rather than copied) also admits
+    `#` and `+` so `C#` and `C++` survive as single tokens, and a dot BETWEEN alphanumerics
+    or LEADING one so `Node.js`, `ASP.NET` and `.NET` do. A TRAILING dot is not part of the
+    token: while it was, a sentence-final period silently made `Examplestore3.` a different
+    token from the declared `Examplestore3`, which produced a false `INVENTED METRIC` in a
+    bullet, a false `INVENTED PROFILE METRIC` in prose, and a false `UNSOURCED SKILL`
+    against a skill the entry body really carried -- see `_WORD_RE`'s own comment for the
+    measured cases.
+
+    Deliberately not core/stem.py: stemming answers a RELEVANCE question (right for
+    rank()), and this is an IDENTITY question -- a licensed `Widget` would license an
+    emitted `Widgeting`. `stem.tokens` is also alphabetic-only, so it destroys the
+    digit-bearing names span removal exists to protect."""
     return _WORD_RE.findall(text)
 
 

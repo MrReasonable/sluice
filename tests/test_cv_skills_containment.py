@@ -367,18 +367,20 @@ def test_the_same_holds_in_profile_prose():
     """PROFILE has no citation to hang the per-entry rule on, so it uses the union of
     entry `Skills:` -- consistent with `profile_permitted` already being bundle-wide.
 
-    FIXTURE NOTE: the plan's literal fixture put the skill immediately before a
-    sentence-final period ("Example Widget3."), with no space between. `_WORD_RE`
-    (`[A-Za-z0-9#+.]+`) folds a trailing `.` into the SAME token as the digit it
-    follows, so the tokenised prose carries `Widget3.` where the declared skill's own
-    tokenisation carries `Widget3` -- two different strings, so the sequence match
-    that should strip the span never fires, and the digit survives extraction as a
-    false INVENTED PROFILE METRIC even though the skill IS declared. That is a
-    pre-existing property of the tokeniser this task reuses verbatim (shared with rows
-    1 and 2, already shipped in Tasks 4/5), not something Task 6 introduces or is
-    scoped to fix -- moving the terminal period off the skill token keeps the fixture
-    testing the row-2-vocabulary distinction the test's name and docstring describe,
-    without also tripping an unrelated, already-existing tokeniser edge case.
+    FIXTURE NOTE, superseded and kept because the correction matters more than the
+    note: the plan's literal fixture put the skill immediately before a sentence-final
+    period ("Example Widget3."), which USED to produce a false INVENTED PROFILE METRIC.
+    An earlier revision of this docstring deferred that as "a pre-existing property of
+    the tokeniser this task reuses verbatim". That was FALSE on its facts -- `git show
+    f6dac28d:sluice/cv/bundle.py` has no `_WORD_RE` and `f6dac28d:sluice/cv/validate.py`
+    has no `_tokens`; BOTH landed on this branch, so the defect was this task's own to
+    fix and the deferral was reasoning from a mis-attributed origin.
+
+    It is fixed: `_WORD_RE` no longer folds a TRAILING dot into the token before it
+    (internal and leading dots survive, so `Node.js`/`.NET` stay one token). This test
+    keeps the space-separated spelling because it is testing the row-2-vocabulary
+    distinction its name describes; the sentence-final spelling is pinned separately by
+    `test_a_trailing_period_does_not_split_a_declared_skill_from_its_own_name` below.
     """
     s = _two_entry_sources(al_skills="Example Widget3", be_skills="")
     cv = _cv(profile="Deep experience with Example Widget3 overall.", bullet="Ran it [AL1]")
@@ -457,3 +459,70 @@ def test_a_substring_prefix_match_does_not_launder_a_fabricated_metric():
                  baseline="Example Alpha.")
     v = V.validate(_bullet("Ran the Example Widget30 migration [ES1]"), s)
     assert any("INVENTED METRIC" in x and "30" in x for x in v)
+
+
+# --- The trailing-period tokeniser defect (#168 review) -----------------------------
+#
+# `_WORD_RE` shipped as `[A-Za-z0-9#+.]+`, which folded a SENTENCE-FINAL period into the
+# token before it. Only `.` did that, and it broke all three consumers of the ONE
+# tokeniser at once -- span removal (row 1's digit handling), row 1's own prose scan, and
+# row 2's containment search -- because the declared skill tokenises without the period
+# and the emitted prose tokenises with it, so the sequence match never fires.
+#
+# Every row below is the SAME shape a real CV has: a skill name at the end of a sentence.
+# `S3`, `p99`, `OAuth2` and `Log4j` all sit there in ordinary prose, and each of the three
+# refusals below was answerable only by DELETING or CORRUPTING true content -- dropping a
+# real digit out of a product name, or deleting a skill the bundle genuinely carries.
+
+
+def test_a_trailing_period_does_not_read_a_skill_digit_as_a_fabricated_metric():
+    """Row 1's digit handling. Measured before the fix:
+    `INVENTED METRIC ['3'] not in ['AL1']` -- the only actionable answer to which is to
+    ship `Examplestore` for a product really called `Examplestore3`."""
+    s = _two_entry_sources(al_skills="Examplestore3", be_skills="")
+    v = V.validate(_cv(profile="I did the work.",
+                       bullet="Migrated to Examplestore3. [AL1]"), s)
+    assert not any("INVENTED METRIC" in x for x in v), v
+
+
+def test_a_trailing_period_does_not_split_a_declared_skill_from_its_own_name():
+    """The PROFILE arm of the same defect. Measured before the fix:
+    `INVENTED PROFILE METRIC 3 not in bundle`."""
+    s = _two_entry_sources(al_skills="Examplestore3", be_skills="")
+    v = V.validate(_cv(profile="Specialist in Examplestore3.", bullet="Ran it [AL1]"), s)
+    assert not any("INVENTED PROFILE METRIC" in x for x in v), v
+
+
+def test_a_skill_ending_a_sentence_in_a_body_is_not_reported_unsourced():
+    """Row 2. The bundle DOES contain `Example Widget` -- it is the last thing in the
+    entry's own body sentence. Measured before the fix: `UNSOURCED SKILL 'Example
+    Widget': not in the bundle`, which is simply false, and answerable only by deleting
+    a true skill."""
+    s = _sources(body="The whole estate ran on Example Widget.", skills="",
+                 baseline="Example Alpha.")
+    assert s.source_tokens                      # scope: there are blocks to search
+    cv = _cv_with_skills(["Example Widget"])
+    assert V.section_spans(cv)[2]               # scope: the region was collected
+    assert V.validate(cv, s) == []
+
+
+def test_an_internal_dot_still_holds_a_name_together():
+    """The half the fix must NOT break. `Node.js` is ONE token: splitting it would make a
+    two-token needle (`Node`, `js`) that no `Skills:` value could match, turning every
+    dotted technology name into an UNSOURCED SKILL. Asserted through the gate, not
+    through `_tokens`, so it fails if either the build or the search side drifts."""
+    s = _sources(body="Ran a Node.js migration.", skills="", baseline="Example Alpha.")
+    cv = _cv_with_skills(["Node.js"])
+    assert V.section_spans(cv)[2]
+    assert V.validate(cv, s) == []
+    # ...and the name is still a NAME, not a prefix: `Node` alone is not in the bundle.
+    assert any("UNSOURCED SKILL" in x for x in V.validate(_cv_with_skills(["Node"]), s))
+
+
+def test_a_bare_period_run_is_not_a_token_at_all():
+    """The old pattern matched `...` as a token in its own right, so an ellipsis in a
+    body was a licensed 'word' row 2 could match a skill against. Nothing shipped
+    depended on it, and removing it is part of the same one-character change -- pinned so
+    a later 'simplification' back to a character class cannot restore it silently."""
+    assert V._tokens("a ... b") == ["a", "b"]
+    assert V._tokens("trailing dots... here") == ["trailing", "dots", "here"]

@@ -173,9 +173,9 @@ def _baseline_block(bundle: dict) -> list[str]:
     return [bundle["baseline"]]
 
 
-# EVERY TOKEN of a `Skills:` item must begin with a letter. Span removal (cv/validate.py)
-# makes this the first field that SUBTRACTS from the hard numeric gate, so an unconstrained
-# value is a laundering path.
+# EVERY TOKEN of a `Skills:` item must begin with a letter, or with a DOT then a letter.
+# Span removal (cv/validate.py) makes this the first field that SUBTRACTS from the hard
+# numeric gate, so an unconstrained value is a laundering path.
 #
 # PER TOKEN, and that is the whole guard: an ITEM-level check (`^[A-Za-z]` against the
 # comma-separated item) accepts `Result 92`, because the item begins with `R` -- and removal
@@ -183,14 +183,49 @@ def _baseline_block(bundle: dict) -> list[str]:
 # exists to close. A per-token rule refuses `Result 92`, `92x`, `120ms` and a bare `92`
 # alike, while accepting `Example Widget3`, where the digit is INSIDE a letter-led token.
 #
-# It does NOT close a letter-led metric shorthand -- `p99` still licenses removing `99` for
-# its own entry. That is a stated residual (spec section 14): tightening further (two
-# leading alphabetic characters) would kill legitimate short names.
-SKILL_TOKEN_RE = re.compile(r"^[A-Za-z]")
+# The `\.?` admits `.NET` and `.NET Core`, which the letter-only rule refused outright --
+# a shipped technology nobody could express, with no answer to the refusal but to misspell
+# it. Safe on this rule's own terms: the harm it guards is a token whose DIGITS span removal
+# would then blank, and a dot-then-letter token carries none. (`_WORD_RE` below keeps a
+# LEADING dot on a token for exactly this reason, while dropping a trailing one.)
+#
+# WHAT STAYS REFUSED, stated rather than implied, because the shapes are real and a user
+# meeting one gets an error rather than a gap they can reason about: any token that leads
+# with a DIGIT. `ISO 9001`, `Web 2.0`, `Section 508`, `3D modelling`, `5S` and `802.11ac`
+# are all refused, and that is NOT a case this rule merely fails to reach -- it is
+# structurally indistinguishable from the metric shorthand the rule exists to refuse
+# (`Result 92` is the same shape as `ISO 9001`), so admitting one admits the other and
+# re-opens the laundering path. A letter-led metric shorthand IS reachable and is a
+# separate, stated residual (spec section 14): `p99` still licenses removing `99` for its
+# own entry, and tightening further (two leading alphabetic characters) would kill
+# legitimate short names.
+SKILL_TOKEN_RE = re.compile(r"^\.?[A-Za-z]")
 
 # The ONE tokeniser. `cv/validate.py` imports this rather than redefining it -- two copies
 # let the vocabulary the gate BUILDS drift from the one it SEARCHES with.
-_WORD_RE = re.compile(r"[A-Za-z0-9#+.]+")
+#
+# A dot is part of a token only BETWEEN alphanumerics, or leading one -- never trailing.
+# The original `[A-Za-z0-9#+.]+` folded a sentence-final period into the token before it,
+# and only `.` did that, which broke all three consumers at once (measured, on a bullet
+# reading `Migrated to Examplestore3.` against `Skills: Examplestore3`):
+#
+#   row 1 / span removal -> the declared skill tokenises `Examplestore3` while the prose
+#                           tokenises `Examplestore3.`, so the span never matches, the
+#                           digit survives extraction, and the gate reports
+#                           `INVENTED METRIC ['3']` on a name the user really declared.
+#                           Same shape in PROFILE prose -> `INVENTED PROFILE METRIC 3`.
+#   row 2               -> a skill sourced from an entry BODY that happens to end a
+#                          sentence (`...ran on Example Widget.`) reads as `UNSOURCED
+#                          SKILL`, which is false, and the only actionable answer is to
+#                          delete a true skill.
+#
+# Both refusals are answerable only by deleting or corrupting true content -- the shape
+# CLAUDE.md's LOCATION-field incident names -- and `S3`, `p99`, `OAuth2` and `Log4j` all
+# sit in an ordinary bullet that ends with a full stop. The internal dot MUST survive:
+# `Node.js`, `ASP.NET` and `802.11ac` are one token each, and splitting them would make a
+# two-token needle that no `Skills:` value could match. The leading dot survives so `.NET`
+# stays distinguishable from a bare `NET` (see `SKILL_TOKEN_RE` above).
+_WORD_RE = re.compile(r"\.?[A-Za-z0-9#+]+(?:\.[A-Za-z0-9#+]+)*")
 
 
 def _skill_items(entry: dict) -> list[str]:
@@ -210,9 +245,11 @@ def _skill_items(entry: dict) -> list[str]:
         for token in _WORD_RE.findall(item):
             if not SKILL_TOKEN_RE.match(token):
                 raise ValueError(
-                    f"skill {item!r} is invalid: every token must begin with a letter "
-                    f"({token!r} does not), or the numeric gate's span removal would "
-                    "blank a real figure")
+                    f"skill {item!r} is invalid: every token must begin with a letter, "
+                    f"or a dot then a letter (.NET) -- {token!r} does not, and the "
+                    "numeric gate's span removal would blank a real figure. A token "
+                    "leading with a DIGIT stays refused whatever it names (ISO 9001, "
+                    "Web 2.0, 3D, 5S): nothing distinguishes it from metric shorthand")
     return items
 
 
