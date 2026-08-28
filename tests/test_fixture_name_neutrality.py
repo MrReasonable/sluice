@@ -215,7 +215,8 @@ _REVIEWED_FIXTURE_IDENTITIES = frozenset({
     "Example Beta",
     "Example Candidate", "Example Cartography", "Example Cert", "Example Cloud",
     "Example Co", "Example Data", "Example Decoy", "Example Leverage",
-    "Example Location", "Example Practitioner", "Example Robotics", "Example Scrum",
+    "Example Location", "Example Practitioner", "Example Publication",
+    "Example Robotics", "Example Scrum",
     "Example Synergy", "Example University",
     "Example Foundry", "Example Ltd", "Example Meridian", "Example MeridianRemote",
     "Example Northgate",
@@ -2026,26 +2027,51 @@ def _skills_run(lines) -> set:
     """The bullet values of every emitted `SKILLS` section in `lines`.
 
     Mirrors `cv/validate.py`'s `section_spans` rather than inventing a second rule: the
-    run starts at a bare `SKILLS` line and continues across blanks AND across a
-    non-ALL-CAPS group heading (`Languages`), ending only at an ALL-CAPS line. Stopping at
-    the first non-bullet instead would miss exactly the value that motivated this
-    collector -- `_GROUPED_TAIL_CV`'s second bullet sits UNDER a `Languages` heading, and
-    a collector that stopped there would sweep clean over it while the gate checks it.
+    run starts at a bare `SKILLS` line and continues across blanks AND across any heading
+    the format contract does not define -- a group heading (`Languages`) and an
+    off-contract section header (`PUBLICATIONS`) alike, in either case -- ending only at
+    `WORK EXPERIENCE`/`CERTIFICATES`/`EDUCATION`. Stopping at the first non-bullet instead
+    would miss exactly the value that motivated this collector -- `_GROUPED_TAIL_CV`'s
+    second bullet sits UNDER a `Languages` heading, and a collector that stopped there
+    would sweep clean over it while the gate checks it.
 
-    `in_work` plays no part: that arm of `section_spans` is about which CHECK claims a
-    line, and this is a roster asking a different question -- would a reader see this
-    under SKILLS.
+    `in_work` plays no part beyond ending the run: that arm of `section_spans` is about
+    which CHECK claims a line, and this is a roster asking a different question -- would a
+    reader see this under SKILLS.
+
+    The terminator set is DERIVED from `tests/template_content.py`'s
+    `composer_headings()`, the same closed set `section_spans` is pinned against, rather
+    than hand-listed here -- a pair typed by hand went stale the moment the gate's rule
+    stopped keying on ALL-CAPS, and the collector then swept WORK bullets into the skill
+    roster (measured: four of them). One deliberate divergence: `PROFILE` clears `in_work`
+    here and does not in `section_spans`, which can only keep a LATER run alive longer, so
+    it over-collects rather than under-collects -- the safe direction for a ratchet whose
+    failure mode is a value it never sees at all.
     """
+    from tests.template_content import composer_headings
+
+    contract = composer_headings()
     out, in_skills, in_work = set(), False, False
     for line in lines:
         stripped = line.strip()
+        # ASYMMETRIC on case, deliberately, and measured in both directions. The
+        # TERMINATORS are compared uppercased, as `section_spans` compares them
+        # (`line.strip().upper()`): a case-sensitive compare read `  Education  ` as
+        # ordinary content and kept a run alive the gate had already ended, which swept
+        # four WORK bullets out of `tests/test_cv_validate.py`'s random-document alphabet
+        # into the skill roster. The OPENER stays an exact `SKILLS`, because folding it
+        # too made every bare lowercase `"skills"` string literal in an unrelated list
+        # open a run -- nine CLI field names arrived as skill values on the first run.
+        # The residual is stated rather than disguised: a CV fixture spelling its header
+        # `Skills` would open a run in the gate and not here. No fixture in `tests/` does.
+        heading = stripped.upper()
         if stripped == "SKILLS":
             in_skills = True
             continue
-        if stripped == "WORK EXPERIENCE":
+        if heading == "WORK EXPERIENCE":
             in_work, in_skills = True, False
             continue
-        if stripped in ("CERTIFICATES", "EDUCATION"):
+        if heading in contract:
             in_work, in_skills = False, False
             continue
         if not in_skills:
@@ -2054,7 +2080,7 @@ def _skills_run(lines) -> set:
             item = stripped.lstrip("-•*–— ").strip().strip('"').strip("'")
             if item:
                 out |= {p.strip() for p in item.split(",") if p.strip()}
-        elif stripped and (stripped.isupper() or in_work):
+        elif stripped and in_work:
             in_skills = False
     return out
 
@@ -2418,11 +2444,20 @@ def test_the_ast_skill_collector_sees_every_shape_it_claims_to():
         'CV = "\\n".join(["SKILLS", "- Example Lambda", "Languages", "- Example Mu"])'
     ) == {"Example Lambda", "Example Mu"}
 
-    # An ALL-CAPS header DOES end it, so a following section's bullets are not rostered as
-    # skills.
+    # Nor does an OFF-CONTRACT section header, however loudly it is spelled: since the
+    # terminator became the contract's own heading set, `section_spans` reads past
+    # `PUBLICATIONS` and containment-checks the bullet under it, so the roster must see
+    # that value too. Keying this collector on ALL-CAPS instead would sweep clean over a
+    # skill fixture the gate does check.
     assert _ast_skill_values(
-        'CV = "\\n".join(["SKILLS", "- Example Nu", "PUBLICATIONS", "- a paper"])'
-    ) == {"Example Nu"}
+        'CV = "\\n".join(["SKILLS", "- Example Nu", "PUBLICATIONS", "- Example Rho"])'
+    ) == {"Example Nu", "Example Rho"}
+
+    # A CONTRACT heading DOES end it, so a following section's bullets are not rostered
+    # as skills.
+    assert _ast_skill_values(
+        'CV = "\\n".join(["SKILLS", "- Example Sigma", "EDUCATION", "- a degree"])'
+    ) == {"Example Sigma"}
 
     # While WORK EXPERIENCE is live the run ends at a non-bullet line, exactly as
     # `section_spans` does -- without this, a role's own bullets would be rostered as

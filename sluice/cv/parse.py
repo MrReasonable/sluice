@@ -616,13 +616,20 @@ def parse_cv(text: str) -> CvDocument:
     # `next(...)` lookup -- so it is order-agnostic with CERTIFICATES/EDUCATION too, for
     # the same reason: nothing upstream (`compose._RULES`) pins where it must sit relative
     # to them. Its gate-side mechanism differs, though, and this reader does not need to
-    # care: `validate.section_spans` models SKILLS as a CONTIGUOUS BULLET RUN that ends at
-    # the first non-blank non-bullet line (or at CERTIFICATES/EDUCATION), not as a
-    # header pair that toggles a flag -- see that function's own comment. What this reader
-    # needs from that model is only the ONE property Task 7 exists to establish: its own
-    # entry-loop refusal below must stop at the identical line the gate's run does, via
-    # the SAME marker set (`_TRAILING_MARKERS`, and see `_SKILLS_MARKERS`'s comment in
-    # cv/validate.py for why that tuple must not be narrower than this one).
+    # care: `validate.section_spans` models SKILLS as a CONTIGUOUS BULLET RUN that ends
+    # only at a heading the FORMAT CONTRACT defines (PROFILE / WORK EXPERIENCE /
+    # CERTIFICATES / EDUCATION), or at a non-blank non-bullet line reached while `in_work`
+    # is live -- NOT at a group heading (`Languages`) or an off-contract section header
+    # (`PUBLICATIONS`), whatever its capitalisation, both of which that run reads past.
+    # It is not a header pair that toggles a flag; see that function's own comment.
+    #
+    # What this reader needs from that model is not "we stop at the same line" -- since
+    # #168's review round the two deliberately do not, and a comment claiming they did
+    # was the reason to rewrite this one. What it needs is the SAFE DIRECTION: the gate
+    # must inspect a SUPERSET of what this reader accepts, via the same marker set
+    # (`_TRAILING_MARKERS`, and see `_SKILLS_MARKERS`'s comment in cv/validate.py for why
+    # that tuple must not be narrower than this one). This reader refuses at a heading
+    # the gate reads past; that direction costs a retry, it does not bypass row 2.
     sections: dict[str, list[str]] = {}
     while idx < len(lines):
         # Skip a blank run before looking for the next header. compose.py's `_RULES`

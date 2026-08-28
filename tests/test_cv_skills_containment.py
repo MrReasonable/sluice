@@ -595,19 +595,86 @@ def test_a_genuine_skill_under_a_group_heading_is_not_refused():
     assert V.validate(cv, s) == []
 
 
-def test_an_all_caps_line_still_ends_the_run_so_a_real_section_is_not_swallowed():
-    """The direction that must not be got wrong. A genuine unmodelled section after
-    SKILLS carries an ALL-CAPS header, and swallowing it would report its bullets as
-    UNSOURCED SKILL -- a refusal answerable only by DELETING a true publication, the
-    shape this repo's LOCATION-field incident names. Measured on main: these bullets are
-    in no region and clean, and they must stay that way."""
+def test_only_a_contract_heading_ends_the_run():
+    """The terminator rule itself, in both directions, over a DERIVED set.
+
+    `section_spans`' SKILLS run ends at a heading the format contract DEFINES and at
+    nothing else. The set is taken from `tests/template_content.py`'s
+    `composer_headings()` -- `{PROFILE, WORK EXPERIENCE}` plus `cv/parse.py`'s
+    `_TRAILING_SECTIONS` -- rather than typed here, so a SIXTH contract heading added
+    there without a branch in `section_spans` reds on this row instead of silently
+    reopening the bypass `test_a_bullet_under_a_group_heading_is_still_row_2_checked`
+    closes. `SKILLS` is excluded because a repeated SKILLS header RE-ENTERS the run
+    rather than ending it (`cv/parse.py` refuses the repeat separately).
+
+    The second half is what changed at this branch's review round: an ALL-CAPS line that
+    is NOT a contract heading (`LANGUAGES`) no longer ends the run. Before, it did --
+    which left the bypass open for the shouted spelling of exactly the grouped-skills
+    convention this feature exists to cover, and decided two identical situations
+    oppositely on capitalisation alone (a Title-Case unmodelled section was swallowed
+    and checked; an ALL-CAPS one was not). The accepted cost is pinned separately by
+    `test_an_off_contract_section_after_skills_is_over_checked` below.
+    """
+    from tests.template_content import composer_headings
+
+    s = _sources(body="Ran the rebuild.", skills="Example Query",
+                 baseline="Example Alpha.")
+
+    # SCOPE. A `composer_headings()` that returned nothing would satisfy every assertion
+    # in the loop below by sweeping zero rows -- the empty-sweep shape CLAUDE.md names.
+    headings = composer_headings() - {"SKILLS"}
+    assert headings, "composer_headings() yielded no terminator to sweep"
+
+    for heading in sorted(headings):
+        cv = _GROUPED_TAIL_CV.replace("Languages\n", f"{heading}\n")
+        assert f"\n{heading}\n" in cv, f"the replace no-opped for {heading}"
+        _p, _w, skills = V.section_spans(cv)
+        assert [t.strip() for _n, t in skills] == ["- Example Query"], (
+            f"{heading} is a contract heading and must END the SKILLS run")
+        # Asserted on the GATE too, not the region alone: the bullet must not be
+        # reported as a skill. It may still be reported by ANOTHER check -- after a
+        # second `WORK EXPERIENCE` header it is an uncited work bullet -- which is why
+        # this is scoped to the row this rule governs rather than to `== []`.
+        assert not any("UNSOURCED SKILL" in x for x in V.validate(cv, s)), heading
+
+    # The other direction: shouting a GROUP heading does not end the run, so its bullets
+    # stay containment-checked. This is the row that reds if the ALL-CAPS terminator
+    # comes back.
+    shouted = _GROUPED_TAIL_CV.replace("Languages\n", "LANGUAGES\n")
+    assert "\nLANGUAGES\n" in shouted and "Languages" not in shouted, (
+        "the replace no-opped")
+    _p, _w, skills = V.section_spans(shouted)
+    assert [t.strip() for _n, t in skills] == ["- Example Query",
+                                              "- Totally Invented Skill"]
+    assert any("UNSOURCED SKILL" in x and "Totally Invented Skill" in x
+               for x in V.validate(shouted, s))
+
+
+def test_an_off_contract_section_after_skills_is_over_checked():
+    """The STATED cost of the rule above, pinned so it cannot be quietly denied.
+
+    A section the gate does not model (PUBLICATIONS, PROJECTS, AWARDS -- none of them
+    in `compose._RULES`' format block) emitted AFTER a SKILLS run keeps that run alive,
+    so its bullets are containment-checked as skills and a genuine entry is reported
+    `UNSOURCED SKILL`. That holds for the ALL-CAPS spelling as well as the Title-Case
+    one, so "shout the heading" is no longer an answer to it; the remedy is to emit the
+    section BEFORE SKILLS, or not at all.
+
+    Deliberately over-checking rather than under-checking: a refusal costs the one
+    retry, an unchecked line ships into the PDF. Under the shipped `template` renderer
+    this same document is refused by `parse_cv` whatever the gate says, so the added
+    exposure is `cv.renderer: script` alone.
+    """
     s = _sources(body="Ran the rebuild.", skills="Example Query",
                  baseline="Example Alpha.")
     cv = _GROUPED_TAIL_CV.replace("Languages\n- Totally Invented Skill",
-                                  "PUBLICATIONS\n- Wrote a paper that cut cost by 92%")
+                                  "PUBLICATIONS\n- Example Publication")
+    assert "PUBLICATIONS" in cv, "the replace no-opped"
     _p, _w, skills = V.section_spans(cv)
-    assert [t.strip() for _n, t in skills] == ["- Example Query"]
-    assert V.validate(cv, s) == []
+    assert [t.strip() for _n, t in skills] == ["- Example Query",
+                                              "- Example Publication"]
+    assert any("UNSOURCED SKILL" in x and "Example Publication" in x
+               for x in V.validate(cv, s))
 
 
 def test_a_group_heading_while_work_is_live_still_ends_the_run():

@@ -650,14 +650,15 @@ def test_a_skills_terminator_line_ends_both_the_gate_region_and_the_parse():
     """The obligation THIS task inherits from Task 3's `section_spans`, and the reason a
     single `pytest.raises` is not enough to discharge it.
 
-    `section_spans`' SKILLS run ends at a non-blank non-bullet line that is either
-    ALL-CAPS or reached while `in_work` is live; a line that is NEITHER is read as a group
-    heading and the run continues past it. The terminator below (`Not a bullet line`,
-    inside a live WORK EXPERIENCE) is the `in_work` case, which is the arm where gate and
-    parser still stop together. Before the group-heading fix the rule was simply "the
-    first non-blank non-bullet line", and this docstring said so; it is corrected here
-    rather than left disagreeing with `sluice/cv/validate.py`, whose own comment now
-    states the split and names what pins each arm.
+    `section_spans`' SKILLS run ends at a heading the format contract DEFINES, or at a
+    non-blank non-bullet line reached while `in_work` is live; every other non-bullet line
+    -- a group heading, an off-contract section header in either case -- is read past. The
+    terminator below (`Not a bullet line`, inside a live WORK EXPERIENCE) is the `in_work`
+    case, which is the arm where gate and parser still stop together. This docstring has
+    been corrected twice: it first said "the first non-blank non-bullet line", then
+    "ALL-CAPS or `in_work`", each time because the rule moved and the prose did not. It is
+    stated here rather than left disagreeing with `sluice/cv/validate.py`, whose own
+    comment states the split and names what pins each arm.
 
     Before Task 7 the correspondence was safe "for free": `parse_cv` rejected every SKILLS
     section outright, so the parser and the gate stopped at the same place for a reason
@@ -668,8 +669,8 @@ def test_a_skills_terminator_line_ends_both_the_gate_region_and_the_parse():
     with no containment check behind it.
 
     SCOPE, stated because it was once overstated: this test pins the two halves AGREE on
-    this fixture. It does not pin the terminator rule itself -- measured, deleting either
-    arm of that rule, or the whole block, leaves this file green. The three rows that do
+    this fixture. It does not pin the terminator rule itself -- measured, deleting the
+    `in_work` arm, or the whole block, leaves this file green. The three rows that do
     pin it live in `tests/test_cv_skills_containment.py`; `sluice/cv/validate.py`'s
     comment names them.
 

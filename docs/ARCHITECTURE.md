@@ -457,8 +457,8 @@ whichever neighbour it was written next to:
    untouched, since they do not import `cv/bundle.py` at all.
    `BundleSources`' per-entry allowlist is now a NamedTuple,
    `EntrySources(nums, skills)`, rather than a bare digit set, so the two
-   travel together keyed by the same entry id and no second id-keyed structure
-   can disagree about what an id licenses. `BundleSources` itself grew from two
+   fields travel together keyed by the same entry id and no second id-keyed
+   structure can disagree about what an id licenses. `BundleSources` itself grew from two
    stored fields (`nums`, `baseline`) to three -- `entries` (`dict[str,
    EntrySources]`, replacing the old bare `nums` dict), `baseline` (unchanged),
    and `source_tokens` (new: one token SEQUENCE per source block -- each
@@ -504,24 +504,35 @@ whichever neighbour it was written next to:
    the vocabulary the gate BUILDS cannot drift from the one it SEARCHES with;
    only the case-folding and the corpus differ.
 
-   Row 2's own SKILLS run (`section_spans`' `in_skills` extraction) carries two
-   named residuals, opposite in direction and both accepted on purpose. An
-   ALL-CAPS group heading (`LANGUAGES`) ends the run exactly as a real section
-   header would, so its bullets are checked by NOTHING at all under
-   `cv.renderer: script`, which implements no `precheck` of its own --
-   under-checking, the direction that lets a fabricated line reach the PDF
-   ungated. A Title-Case unmodelled section header straight after SKILLS
-   (`Publications`) is read as a group heading instead and does NOT end the
-   run, so its bullets are swallowed INTO the skills check and flagged
-   `UNSOURCED SKILL` -- over-checking, but answerable without inventing or
-   deleting anything (shout the heading, which the format contract already
-   asks for), so the retry has somewhere to act. The asymmetry is deliberate:
-   over-checking costs a retry a human can answer, under-checking ships an
-   ungated line, and for a containment gate that is the right way round.
-   Pinned by three rows in `tests/test_cv_skills_containment.py`:
+   Row 2's own SKILLS run (`section_spans`' `in_skills` extraction) ends at a
+   heading the FORMAT CONTRACT defines -- `PROFILE`, `WORK EXPERIENCE`,
+   `CERTIFICATES`, `EDUCATION`, each of which already has its own branch in that
+   loop -- or at a non-blank non-bullet line reached while `in_work` is live,
+   and at nothing else. Every other non-bullet line keeps the run alive: a group
+   heading (`Languages`), and an off-contract section header (`PUBLICATIONS`,
+   `PROJECTS`, `AWARDS`) in either capitalisation. The rule used to end the run
+   at any ALL-CAPS line instead, which left a shouted group heading
+   (`LANGUAGES`) ending it and its bullets checked by nothing at all under
+   `cv.renderer: script` -- and decided two identical situations oppositely on
+   capitalisation alone, since the Title-Case spelling of the same unmodelled
+   section WAS swallowed and checked. Replacing the shoutiness heuristic with
+   the contract's own closed set closes that hole and removes the asymmetry.
+   ONE residual remains, in the OVER-checking direction and accepted on purpose:
+   an off-contract section emitted AFTER a SKILLS run has its bullets
+   containment-checked as skills, so a genuine entry there can be flagged
+   `UNSOURCED SKILL`. "Shout the heading" is no longer an answer to that; the
+   remedy is to emit the section BEFORE SKILLS or not at all, since
+   `compose._RULES` asks for none of the three. Under the shipped `template`
+   renderer that document is refused by `parse_cv` whatever the gate says, so
+   the added exposure is `cv.renderer: script` alone. The direction is
+   deliberate: over-checking costs a retry a human can answer, under-checking
+   ships an ungated line, and for a containment gate that is the right way
+   round. Pinned by four rows in `tests/test_cv_skills_containment.py`:
    `test_a_bullet_under_a_group_heading_is_still_row_2_checked`,
-   `test_an_all_caps_line_still_ends_the_run_so_a_real_section_is_not_swallowed`,
-   and `test_a_group_heading_while_work_is_live_still_ends_the_run`.
+   `test_only_a_contract_heading_ends_the_run` (which derives the heading set
+   from `tests/template_content.py`'s `composer_headings()` rather than typing
+   it), `test_an_off_contract_section_after_skills_is_over_checked`, and
+   `test_a_group_heading_while_work_is_live_still_ends_the_run`.
 
    The STYLE tier
    (`cv/slop.py`'s `check_phrases`, ~40 case-insensitive AI-tell stems)
