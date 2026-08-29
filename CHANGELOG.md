@@ -40,6 +40,123 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.2.0](https://github.com/MrReasonable/sluice/compare/v2.1.0...v2.2.0) (2026-08-29)
+
+### What you need to do
+
+**Welcome to the Jungle needs a fresh login, on a different host.** WTTJ moved its matches
+surface off the Otta app onto its own site, and `wttj` now reads
+`www.welcometothejungle.com/en-GB/jobs-matches` instead of `app.welcometothejungle.com/jobs`.
+Authentication is per-host and the two are separate: being signed into the Otta app does not
+sign you into `www`. Until you sign in there, `wttj` reports `drift=login` and yields nothing —
+loudly, not silently, because the redirect target is already in the login-wall vocabulary.
+
+Sign in using the same Camofox profile the scanner drives (the one named by `CAMOFOX_USER`,
+`default` unless you set it), then **end that browser session**. Cookies are persisted on
+session teardown, not at the moment you log in, so a login made and left open is lost whenever
+the browser next restarts — it will appear to work until it doesn't.
+
+If you have a `sources.wttj.searches` override in your config pointing at the old app URL,
+change it: the extractor now reads the list view's markup and the old URL will return nothing.
+No other config key changes meaning, and no new keys were added in this release.
+
+### Also worth knowing
+
+- **`wttj` went from one lead a run to ten.** The old surface showed one job at a time and had
+  to be advanced click by click; the new one renders every match as a card on one page.
+- **`reed` was silently dropping three fields.** Its selectors had rotted against CSS-module
+  class names that change on every deploy, so location and salary were read from *no* card and
+  company from one in twenty. Now 20/20 on all three. Existing reed notes are unaffected — the
+  posting URL is unchanged, so nothing is re-created or duplicated.
+- **`ingest list-sources --health` prints more.** Per-source completeness rates, how many runs
+  old they are, `UNMEASURED` when the latest run recorded none, and `UNGUARDED(<signal>)` for a
+  signal the `blank` drift check cannot fire on. The last one is a standing invitation to look:
+  it means a rot in that field would not be reported, which is legitimate for a board that does
+  not publish it and a real blind spot for one that broke before it was first measured.
+- **Skills are citable CV content.** An `experience` evidence entry can carry a `Skills:` field;
+  the composer may render a `SKILLS` section, gated by the same fabrication rules as work
+  bullets — a skill attributed to an uncited entry, or absent from the bundle, is refused.
+  `job-sluice doctor` reconciles entry skills against the Skills Inventory. Existing vaults are
+  unaffected until you add the field.
+
+### For anyone writing a source
+
+`CarouselSource` is **removed**. It read one-job-at-a-time carousels by clicking an advance
+control, and `wttj` was its only user. Sources now declare `reprobed` (the ISO date a
+retirement was last checked against the live world) and may declare `unpublished_fields` (the
+completeness signals a board does not publish, so the health report stops flagging a rate that
+can never climb).
+
+
+
+### Features
+
+* **cv:** carry per-entry skills and source tokens on BundleSources ([#168](https://github.com/MrReasonable/sluice/issues/168)) ([fdd9456](https://github.com/MrReasonable/sluice/commit/fdd94568471036062069d85914fe8a7b3a67a20a))
+* **cv:** declare Skills on the experience evidence kind ([#168](https://github.com/MrReasonable/sluice/issues/168)) ([f0931f1](https://github.com/MrReasonable/sluice/commit/f0931f1a28a69fc4a9999a09924b0f295d3016dd))
+* **cv:** give section_spans a named SKILLS region ([#168](https://github.com/MrReasonable/sluice/issues/168)) ([4b65669](https://github.com/MrReasonable/sluice/commit/4b65669e892faaaa9e45e76a8c6512fb3c11b794))
+* **cv:** model a SKILLS section in the CV parser ([#168](https://github.com/MrReasonable/sluice/issues/168)) ([0375557](https://github.com/MrReasonable/sluice/commit/0375557dee188a5e1110a25246f34b65754e0e64))
+* **cv:** refuse a skill attributed to an uncited entry ([#168](https://github.com/MrReasonable/sluice/issues/168)) ([7f5b497](https://github.com/MrReasonable/sluice/commit/7f5b497f2747d49c1205de10797e3ed82ff78e88))
+* **cv:** refuse an emitted skill absent from the bundle ([#168](https://github.com/MrReasonable/sluice/issues/168)) ([f85cfe8](https://github.com/MrReasonable/sluice/commit/f85cfe8f9502154a4afd9cb9643d7182c8f73835))
+* **cv:** render the SKILLS section in the shipped template ([#168](https://github.com/MrReasonable/sluice/issues/168)) ([3b42a42](https://github.com/MrReasonable/sluice/commit/3b42a4296e27baab12e3c275b1ee3eea72423f7b))
+* **cv:** request a gated SKILLS section from the composer ([#168](https://github.com/MrReasonable/sluice/issues/168)) ([47efb03](https://github.com/MrReasonable/sluice/commit/47efb03a2b14880c3ddd221581864e29148e6a3e))
+* **doctor:** reconcile entry skills against the inventory ([#168](https://github.com/MrReasonable/sluice/issues/168)) ([cf1ef3a](https://github.com/MrReasonable/sluice/commit/cf1ef3a5b437e646dd209663ba4185d6aadbcbc4))
+* **health:** measure location completeness, and surface what `blank` cannot reach ([784aedd](https://github.com/MrReasonable/sluice/commit/784aedd39bdc8798b7b10a951944bf5c00b9d431))
+* **ingest:** declare `reprobed` on the source contract instead of mining it from prose ([ea38178](https://github.com/MrReasonable/sluice/commit/ea3817895044ee4315507b029faf713e856b3341))
+* **ingest:** read wttj's list view, and retire CarouselSource with its last producer ([694fe97](https://github.com/MrReasonable/sluice/commit/694fe97e7ad6e1c1b6eaff925f95c6a3af67534c)), closes [#207](https://github.com/MrReasonable/sluice/issues/207)
+
+
+### Bug Fixes
+
+* **cv:** close the grouped-SKILLS bypass in the hard gate ([#168](https://github.com/MrReasonable/sluice/issues/168)) ([0fb6fbb](https://github.com/MrReasonable/sluice/commit/0fb6fbb4a987ddb886661b4742570b213f6a9e72))
+* **cv:** end the SKILLS run at a contract heading, not at any all-caps line ([2af4610](https://github.com/MrReasonable/sluice/commit/2af46104084c6bc3f824ee0bbcb4d5bee18e6794))
+* **cv:** gate the row 1 prompt rule on an annotated vault ([#168](https://github.com/MrReasonable/sluice/issues/168)) ([21d41bc](https://github.com/MrReasonable/sluice/commit/21d41bc2356e90f691f3ae525cfe9001d8805a5b))
+* **cv:** give source_tokens the shape guard its comment claimed ([#168](https://github.com/MrReasonable/sluice/issues/168)) ([cda2ed9](https://github.com/MrReasonable/sluice/commit/cda2ed9b4e60a6b45da4f04a416fce903f5c2a51))
+* **cv:** refuse a nameless Skills value, and correct five false claims ([#168](https://github.com/MrReasonable/sluice/issues/168)) ([883a571](https://github.com/MrReasonable/sluice/commit/883a571673ad7b8a2fe29a88b6802929345fbb05))
+* **cv:** stop a digit-bearing skill name reading as a fabricated metric ([#168](https://github.com/MrReasonable/sluice/issues/168)) ([beef506](https://github.com/MrReasonable/sluice/commit/beef506e0c747e40d69315dfc10b331c1dc0445e))
+* **cv:** stop a trailing period splitting a skill from its own name ([#168](https://github.com/MrReasonable/sluice/issues/168)) ([4236d13](https://github.com/MrReasonable/sluice/commit/4236d136ec7d5fcede124457ebfc0e484c56ba73))
+* **doctor:** abstain on a non-string truthy Skills value instead of crashing ([#168](https://github.com/MrReasonable/sluice/issues/168)) ([37fb27e](https://github.com/MrReasonable/sluice/commit/37fb27e6a14241cba5b483bf4abb43a57ef5c5dc))
+* **doctor:** abstain the skills reconciliation when either corpus is empty ([1dbe67d](https://github.com/MrReasonable/sluice/commit/1dbe67d17bcc048131179c475bbc15b481ce9e12))
+* **doctor:** close a None-value crash and a collector-evasion gap in Task 10 ([#168](https://github.com/MrReasonable/sluice/issues/168)) ([ac26d45](https://github.com/MrReasonable/sluice/commit/ac26d45b57d6a43722ed5e8d0f9d6c53132934f8))
+* **doctor:** suffix the skills-reconciliation subjects, not bare corpus names ([#168](https://github.com/MrReasonable/sluice/issues/168)) ([efc9c78](https://github.com/MrReasonable/sluice/commit/efc9c78b19aed7934bc41697541b987362b0e8a9))
+* **evidence:** treat a whitespace-only Skills value as blank in `list` ([693f08c](https://github.com/MrReasonable/sluice/commit/693f08c23a29f5b01ddef32879c10f46526679df))
+* **health:** gate the guard verdict on rate AGE, and require a real re-probe date ([5f27d90](https://github.com/MrReasonable/sluice/commit/5f27d907811c823a275db6e04a4a306ef2e3733c))
+* **ingest:** rebind reed to its data-qa hooks, recovering company/location/salary ([1392b89](https://github.com/MrReasonable/sluice/commit/1392b895444db90d0404b9fa284b823017754d60))
+* **ingest:** stamp wttj's company fallback, and make a guard check what it claims ([5720228](https://github.com/MrReasonable/sluice/commit/5720228d796523a3a60c87ddfaa4f5bad9ee0124)), closes [#207](https://github.com/MrReasonable/sluice/issues/207)
+* **test:** fold the skills collector's opener and narrow what it is handed ([06d11c5](https://github.com/MrReasonable/sluice/commit/06d11c5a9fd965f11907726a9d5e44a1da5a41a1))
+* **test:** resolve constant indirection in the Skills AST collector ([4b04983](https://github.com/MrReasonable/sluice/commit/4b0498344da77af50d12b1891749b214d5ab4de6))
+* **test:** stop the comment strip eating URLs, and correct a claim the file contradicts ([933c3c0](https://github.com/MrReasonable/sluice/commit/933c3c0616d59ee4cbba46e57014bc865a93ae4d)), closes [#207](https://github.com/MrReasonable/sluice/issues/207)
+* **test:** word-bound the re-probe markers so `unverified` stops proving a probe ([2c9f98e](https://github.com/MrReasonable/sluice/commit/2c9f98efa858c4fca13c125942023d7e1e10b9de))
+
+
+### Documentation
+
+* **cv:** add the implementation plan for skills as gated content ([#168](https://github.com/MrReasonable/sluice/issues/168)) ([f27f85d](https://github.com/MrReasonable/sluice/commit/f27f85dd086c9db46ed387a1797d64ee25ea10e2))
+* **cv:** close a code fence that swallowed ten task headings ([1d31816](https://github.com/MrReasonable/sluice/commit/1d318165433a3ce8f5aa29f4a01aa28cc372aacd))
+* **cv:** correct a false claim in section_spans' SKILLS comment ([#168](https://github.com/MrReasonable/sluice/issues/168)) ([af7caf3](https://github.com/MrReasonable/sluice/commit/af7caf34825ae6b40db8b26a2809277a24dcc6ce))
+* **cv:** correct four Task 2 plan defects the implementer found ([9d85d87](https://github.com/MrReasonable/sluice/commit/9d85d87a01648549ca081ad58f571dbaf2dfcb8a))
+* **cv:** correct the claims the SKILLS gate falsifies ([#168](https://github.com/MrReasonable/sluice/issues/168)) ([be966b4](https://github.com/MrReasonable/sluice/commit/be966b4e4db5c5a7d0ae6fc6491035260d585968))
+* **cv:** correct the Skills blast radius and the stated over-refusal ([#168](https://github.com/MrReasonable/sluice/issues/168)) ([224f51e](https://github.com/MrReasonable/sluice/commit/224f51e47fc1501853d944e09a4c9ec7bd7f48c1))
+* **cv:** correct three Task 3 plan defects the implementer found ([5622386](https://github.com/MrReasonable/sluice/commit/562238656f4b3ddc273b13a921be2a45cb7d5161))
+* **cv:** design skills as gated content and the containment gate ([#168](https://github.com/MrReasonable/sluice/issues/168), [#194](https://github.com/MrReasonable/sluice/issues/194)) ([b2c2b57](https://github.com/MrReasonable/sluice/commit/b2c2b57f5e8fa8f03c496b9f1255204e7b1acd04))
+* **cv:** document the two SKILLS-run residuals a [#213](https://github.com/MrReasonable/sluice/issues/213) review found missing ([b3d0cb3](https://github.com/MrReasonable/sluice/commit/b3d0cb3a77a3327cfa1eabef036c13373244b1d2))
+* **cv:** fix two overclaims in the previous correction pass ([#168](https://github.com/MrReasonable/sluice/issues/168)) ([14841e6](https://github.com/MrReasonable/sluice/commit/14841e62fa1774ecc58e0714260db21c02afb760))
+* **cv:** fold review round 3 into the skills design ([0465af3](https://github.com/MrReasonable/sluice/commit/0465af349413be641753a89d004e8a0ae3a1289a))
+* **cv:** fold review round 3's Medium and Low findings into spec and plan ([d30e3a3](https://github.com/MrReasonable/sluice/commit/d30e3a3e9ca989c79648e47d4654b5c0eec11976))
+* **cv:** give Task 5 the seam-coverage gap Task 4's review found ([13de4a2](https://github.com/MrReasonable/sluice/commit/13de4a22dff1329b2437c6ed73551b2bb1465a96))
+* **cv:** name each terminator arm against the deletion that reddens it ([e566b0a](https://github.com/MrReasonable/sluice/commit/e566b0ae7e6e227934bce3eb4fbe10225746eeb1))
+* **cv:** record that SC6's PROFILE vocabulary rule has no falsifier ([dbefaf2](https://github.com/MrReasonable/sluice/commit/dbefaf2005b85d37d44c3c38322a30fdcdc44950))
+* **cv:** require a positive control on Task 6's negative rows ([10f34c6](https://github.com/MrReasonable/sluice/commit/10f34c6067ae74d547bef7d51054536262f60012))
+* **cv:** revise the skills design on a five-reviewer plan review ([4b157b1](https://github.com/MrReasonable/sluice/commit/4b157b1430ee8b285bf62d2972efedd00e6971fb))
+* **cv:** separate the two containment rows after review round 2 ([2485146](https://github.com/MrReasonable/sluice/commit/24851467113a77da7b4077ad6c68ce8ded1cd753))
+* **cv:** stop calling the in_work arm's fixture 'not all-caps' ([c878d7f](https://github.com/MrReasonable/sluice/commit/c878d7fea3def06c5389461c8da7f228383edcb7))
+* **cv:** use the Example &lt;Word&gt; fixture convention, and fix the token rule ([a9c198b](https://github.com/MrReasonable/sluice/commit/a9c198be5ca2738508c27ac44ca0d851d1218ee7))
+* describe the skills containment gate ([#168](https://github.com/MrReasonable/sluice/issues/168)) ([2fd3673](https://github.com/MrReasonable/sluice/commit/2fd36731b17513df8dbbdb41f383b68699b594a0))
+* **health:** record the measured-vs-classified split, the blind spot, and the --health line ([3286820](https://github.com/MrReasonable/sluice/commit/3286820144c3bd35622e7be3d5999e935d87479a))
+* **protocols:** correct a Task 1 comment Tasks 2-8 falsified ([#168](https://github.com/MrReasonable/sluice/issues/168)) ([73df4d5](https://github.com/MrReasonable/sluice/commit/73df4d5c6c69bd15a5c71bb54b30fee51aed2171))
+* **spec:** add the roster ratchet to the section 11.1 collision list ([9e802d2](https://github.com/MrReasonable/sluice/commit/9e802d20669a311f975ac8642fa1199e05afb532))
+* **spec:** classify wttj's new composite location, and record what it exposes ([6773157](https://github.com/MrReasonable/sluice/commit/6773157256797b03fdbb93c220bda432e1adbc73)), closes [#207](https://github.com/MrReasonable/sluice/issues/207)
+* **test:** say the skills opener is case-insensitive where it is first described ([4e05566](https://github.com/MrReasonable/sluice/commit/4e05566cea594e95a963a5ed605f30e5b6d766c3))
+
 ## [2.1.0](https://github.com/MrReasonable/sluice/compare/v2.0.1...v2.1.0) (2026-08-27)
 
 
