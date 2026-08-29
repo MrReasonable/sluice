@@ -39,6 +39,12 @@ ROOT = Path(__file__).parent.parent
 RELEASE_PLEASE = ROOT / ".github" / "workflows" / "release-please.yml"
 TESTPYPI = ROOT / ".github" / "workflows" / "testpypi.yml"
 HOMEBREW_DRY_RUN = ROOT / ".github" / "workflows" / "homebrew-dry-run.yml"
+CI = ROOT / ".github" / "workflows" / "ci.yml"
+
+# Every workflow that fetches nfpm. DERIVED below rather than trusted: the roster is asserted
+# against a sweep of `.github/workflows/`, because the whole failure this guards is a SECOND
+# copy appearing and nobody widening the check to reach it.
+_NFPM_WORKFLOWS = (RELEASE_PLEASE, CI)
 
 
 def _text(path: Path) -> str:
@@ -425,18 +431,113 @@ def test_the_nfpm_download_verifies_its_checksum_before_executing_anything():
     # needle has to sit between the step's `- ` and its `run:` key, which only a `name:` does.
     # (`NFPM_SHA256` and `sha256sum --check` each occur twice in the file besides: once in the
     # shell body and once in the env block or the comment explaining the flag.)
-    body = _run_block_scalar(RELEASE_PLEASE, _NFPM_FETCH_STEP)
-    assert "sha256sum --check --strict" in body, (
-        "the nfpm download must VERIFY its checksum, not merely print one"
+    for path in _NFPM_WORKFLOWS:
+        body = _run_block_scalar(path, _NFPM_FETCH_STEP)
+        assert "sha256sum --check --strict" in body, (
+            f"{path.name}: the nfpm download must VERIFY its checksum, not merely print one"
+        )
+        assert body.index("sha256sum --check") < body.index("tar -xzf"), (
+            f"{path.name}: the checksum must be verified BEFORE the archive is unpacked"
+        )
+        # Scope: a block scalar that failed to extract would make both `in` checks fail loudly,
+        # but an empty one would make the ordering comparison raise rather than assert. Pin that
+        # the body is the script actually shipped.
+        assert "curl" in body and "NFPM_VERSION" in body, (
+            f"{path.name}: the extracted run body does not look like the nfpm step: {body!r}"
+        )
+
+
+def _workflow_files(path):
+    """Every workflow file under `path` that the CI platform will actually read.
+
+    BOTH suffixes: `.yaml` is honoured as well as `.yml`, and a `*.yml` glob is a silent
+    omission rather than an error -- measured, a planted `extra-packages.yaml` carrying the
+    fetch step and NO `sha256sum --check` left both nfpm guards green, while the identical
+    `.yml` reddened this one.
+
+    Takes the directory rather than closing over `ROOT` so its BEHAVIOUR can be tested against
+    a synthetic tree. The first version was checked by reading its own source for both suffix
+    literals, which is prose about the code rather than the code: a change could keep both
+    strings and still exclude `.yaml`, leaving the guard green while a workflow went unguarded.
+    """
+    return sorted(p for p in path.iterdir()
+                  if p.is_file() and p.suffix in {".yml", ".yaml"})
+
+
+def test_every_workflow_that_fetches_nfpm_is_in_the_guarded_roster():
+    """The roster above is a hand-list, so it is wrong the moment a third copy appears -- and
+    the guard going quiet is exactly the failure mode, since a workflow absent from the roster
+    is simply never checked. Swept from the directory instead of trusted.
+
+    Detected by CONTENT, not by the step's NAME. A label is prose: renaming the step to
+    "Install nfpm" would empty this sweep, and an empty sweep satisfies every assertion made
+    over it. `NFPM_VERSION` and the tarball it downloads are what the job cannot work without.
+    """
+    found = {p for p in _workflow_files(ROOT / ".github" / "workflows")
+             if "NFPM_VERSION" in _text(p) and "nfpm.tar.gz" in _text(p)}
+    assert found, (
+        "the sweep matched no workflow at all -- either nfpm is no longer fetched anywhere, or "
+        "the download no longer names NFPM_VERSION and nfpm.tar.gz and this guard is inert")
+    assert found == set(_NFPM_WORKFLOWS), (
+        f"fetches nfpm but is not guarded: {sorted(p.name for p in found - set(_NFPM_WORKFLOWS))}; "
+        f"guarded but no longer fetches: "
+        f"{sorted(p.name for p in set(_NFPM_WORKFLOWS) - found)}"
     )
-    assert body.index("sha256sum --check") < body.index("tar -xzf"), (
-        "the checksum must be verified BEFORE the archive is unpacked"
-    )
-    # Scope: a block scalar that failed to extract would make both `in` checks fail loudly,
-    # but an empty one would make the ordering comparison raise rather than assert. Pin that
-    # the body is the script actually shipped.
-    assert "curl" in body and "NFPM_VERSION" in body, (
-        f"the extracted run body does not look like the nfpm download step: {body!r}"
+
+
+def test_the_workflow_sweep_returns_both_suffixes_and_nothing_else(tmp_path):
+    """Driven against a SYNTHETIC directory, so it asserts what the function returns rather
+    than what its source says.
+
+    The previous version read `_workflow_files`'s own source for the two suffix literals. That
+    is prose about the code: a change could keep both strings present and still exclude
+    `.yaml` -- the guard stays green while an nfpm workflow goes unguarded, which is the exact
+    failure this pair of tests exists to prevent.
+
+    Both directions, because a sweep that returns everything is as wrong as one that returns
+    too little: the non-workflow files must be excluded, and a directory must not be mistaken
+    for a workflow.
+    """
+    (tmp_path / "alpha.yml").write_text("name: a\n")
+    (tmp_path / "beta.yaml").write_text("name: b\n")
+    (tmp_path / "notes.md").write_text("not a workflow\n")
+    (tmp_path / "script.sh").write_text("#!/bin/sh\n")
+    (tmp_path / "config.yml.bak").write_text("stale\n")
+    (tmp_path / "nested.yml").mkdir()          # a DIRECTORY whose name ends .yml
+
+    got = {p.name for p in _workflow_files(tmp_path)}
+    assert got == {"alpha.yml", "beta.yaml"}, (
+        f"the sweep must return exactly the workflow files both suffixes cover, got {sorted(got)}")
+
+    # And it must be the SUFFIX that decides, not a substring: `.yml.bak` is not a workflow.
+    assert "config.yml.bak" not in got, "the sweep matched on substring rather than suffix"
+    assert "nested.yml" not in got, "the sweep returned a directory as a workflow file"
+
+
+def test_the_two_nfpm_pins_agree():
+    """`ci.yml`'s `packages` job builds the .deb/.rpm with nfpm, and `release-please.yml`'s
+    `linux-packages` job builds the ones that SHIP. Each verifies its own checksum, so a hand
+    bump of one copy leaves the other fetching the old packager and NOTHING goes red -- CI then
+    validates a different tool than the release uses, which is the build-time class the
+    `packages` job's own header claims to close.
+
+    `dependabot.yml` records this pin as a known gap needing a manual bump precisely because no
+    ecosystem reaches a `curl`-downloaded GitHub release; that note now names both locations,
+    and this asserts the pair cannot silently diverge in between.
+    """
+    pins = {}
+    for path in _NFPM_WORKFLOWS:
+        text = _text(path)
+        version = re.findall(r"NFPM_VERSION:\s*(\S+)", text)
+        digest = re.findall(r"NFPM_SHA256:\s*(\S+)", text)
+        assert len(version) == 1, f"{path.name}: expected one NFPM_VERSION, got {version}"
+        assert len(digest) == 1, f"{path.name}: expected one NFPM_SHA256, got {digest}"
+        pins[path.name] = (version[0], digest[0])
+
+    assert len(pins) == len(_NFPM_WORKFLOWS), "a workflow was read twice"
+    assert len(set(pins.values())) == 1, (
+        f"the nfpm pins have diverged: {pins} -- bump BOTH, version and digest together, or "
+        "CI verifies a different packager than the release ships"
     )
 
 
@@ -1509,8 +1610,21 @@ _MODULE_HELPER_NAMES = {
     "_permissions_block", "_workflow_wide_directives", "_post_checkout_run_steps",
     "_run_commands", "_publish_action_ref", "_python_version", "_job_names",
     "_artifact_retention_days", "_roster_failure", "_run_block_scalar", "_channel_table_rows",
-    "_artifact_names",
+    "_artifact_names", "_workflow_files",
 }
+
+# Helpers that take NO parameters at all, and so are outside the hazard the rule guards. The
+# rule exists because a DEFAULTED `path` lets a forgotten argument silently read whichever file
+# the default names; a helper with no parameters has no argument to forget. EMPTY today:
+# `_workflow_files` was briefly exempt here, and taking its directory as a parameter instead --
+# which is what made its behaviour testable -- put it back under the ordinary rule. Kept as a
+# named set rather than deleted, so a future exemption is a deliberate edit with the reasoning
+# above attached rather than a quiet widening of the loop below.
+# NO type annotation on this line, deliberately: under PEP 649 (Python 3.14) a module-level
+# annotation materialises an `__annotate__` function in `globals()`, which
+# `test_every_module_level_helper_takes_path_first_with_no_default` then sweeps up as an
+# underscore-prefixed helper and refuses. Cost one confusing failure to find.
+_NO_PATH_HELPERS = set()
 
 
 def test_every_module_level_helper_takes_path_first_with_no_default():
@@ -1527,8 +1641,18 @@ def test_every_module_level_helper_takes_path_first_with_no_default():
     # Pin the SCOPE first: a matcher that silently enumerated nothing (or the wrong set)
     # would make the loop below vacuously true, `all([])`-style.
     assert helpers.keys() == _MODULE_HELPER_NAMES, sorted(helpers)
+    assert _NO_PATH_HELPERS <= _MODULE_HELPER_NAMES, (
+        f"exempted helper that does not exist: {sorted(_NO_PATH_HELPERS - _MODULE_HELPER_NAMES)}"
+    )
     for name, fn in helpers.items():
-        first = next(iter(inspect.signature(fn).parameters.values()))
+        params = list(inspect.signature(fn).parameters.values())
+        if name in _NO_PATH_HELPERS:
+            assert not params, (
+                f"{name} is exempted as taking no parameters, but takes {[p.name for p in params]} "
+                "-- the exemption no longer describes it"
+            )
+            continue
+        first = next(iter(params))
         assert first.name == "path" and first.default is inspect.Parameter.empty, (
             f"{name}'s first parameter must be a required `path`, got {first!r}"
         )

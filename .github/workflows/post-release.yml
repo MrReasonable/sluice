@@ -128,8 +128,12 @@ jobs:
           # every artefact is fetched from a public registry. Leaving credentials in .git
           # would put them in reach of anything this job runs.
           persist-credentials: false
-          sparse-checkout: scripts/smoke_installed.py
-          sparse-checkout-cone-mode: false
+          # NO sparse-checkout in the two `container:` jobs, deliberately. Neither base image
+          # ships `git` (measured: `command -v git` is empty in both), so the action falls back
+          # to downloading a tarball through the REST API, where sparse patterns have nothing to
+          # act on -- the whole repository lands regardless. Declaring them anyway is a setting
+          # that reads as doing something and does not, which this repo treats as drift. The
+          # host-runner jobs below keep theirs, where git is present and they work.
       - name: Install the published .deb and run it as a NON-ROOT user
         env:
           VERSION: ${{ needs.version.outputs.version }}
@@ -146,7 +150,16 @@ jobs:
           useradd -m smoke
           install -m 0644 scripts/smoke_installed.py /tmp/smoke.py
           cd /tmp
-          runuser -u smoke -- python3 /tmp/smoke.py "$VERSION" --channel deb-nonroot
+          # PYTHONPATH, because the .deb/.rpm deliberately do NOT install into system
+          # site-packages -- nfpm.yaml unpacks the wheel to /usr/lib/job-sluice and ships
+          # /usr/bin/job-sluice as a launcher that puts it on the path. So the CLI works
+          # unaided (and the CLI-only checks pass without this), while `import sluice`
+          # does not. Measured on the published 2.2.0 .deb: 3 of 5 checks errored with
+          # ModuleNotFoundError until this was set. Pointing at the shipped tree is what
+          # makes the import-based checks interrogate the INSTALLED files rather than
+          # some other copy.
+          runuser -u smoke -- env PYTHONPATH=/usr/lib/job-sluice \
+            python3 /tmp/smoke.py "$VERSION" --channel deb-nonroot
 
   rpm:
     needs: version
@@ -162,22 +175,31 @@ jobs:
           # every artefact is fetched from a public registry. Leaving credentials in .git
           # would put them in reach of anything this job runs.
           persist-credentials: false
-          sparse-checkout: scripts/smoke_installed.py
-          sparse-checkout-cone-mode: false
+          # No sparse-checkout: see the .deb job above -- this image ships no `git` either, so
+          # the pattern would be inert.
       - name: Install the published .rpm and run it as a NON-ROOT user
         env:
           VERSION: ${{ needs.version.outputs.version }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          dnf install -y -q curl shadow-utils python3 >/dev/null
+          dnf install -y -q curl shadow-utils util-linux python3 >/dev/null
           curl -fsSL -o /tmp/js.rpm \
             "https://github.com/${REPO}/releases/download/v${VERSION}/job-sluice-${VERSION}-1.noarch.rpm"
           dnf install -y -q /tmp/js.rpm >/dev/null
           useradd -m smoke
           install -m 0644 scripts/smoke_installed.py /tmp/smoke.py
           cd /tmp
-          runuser -u smoke -- python3 /tmp/smoke.py "$VERSION" --channel rpm-nonroot
+          # PYTHONPATH, because the .deb/.rpm deliberately do NOT install into system
+          # site-packages -- nfpm.yaml unpacks the wheel to /usr/lib/job-sluice and ships
+          # /usr/bin/job-sluice as a launcher that puts it on the path. So the CLI works
+          # unaided (and the CLI-only checks pass without this), while `import sluice`
+          # does not. Measured on the published 2.2.0 .deb: 3 of 5 checks errored with
+          # ModuleNotFoundError until this was set. Pointing at the shipped tree is what
+          # makes the import-based checks interrogate the INSTALLED files rather than
+          # some other copy.
+          runuser -u smoke -- env PYTHONPATH=/usr/lib/job-sluice \
+            python3 /tmp/smoke.py "$VERSION" --channel rpm-nonroot
 
   docker:
     # The image ships its own interpreter, so the smoke script is mounted in and run through

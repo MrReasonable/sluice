@@ -19,6 +19,7 @@ import re
 import pathlib
 import subprocess
 import sys
+import tempfile
 from unittest import mock
 
 import pytest
@@ -36,9 +37,44 @@ def _load():
 
 smoke = _load()
 
+# The checks a passing smoke run actually performed. A RATCHET, not a floor: set equality
+# below cannot see a check deleted from BOTH the definition and the registry at once, and a
+# `>= 5` floor only catches that while the count happens to be exactly five -- add a sixth
+# check and the same both-ends deletion leaves four registered, five expected, and the floor
+# satisfied. Naming the set makes any change to what "smoke passed" MEANS a deliberate edit
+# here, which is the property worth having: this tuple is the contract every channel's green
+# tick stands on.
+_EXPECTED_CHECKS = {
+    "check_not_the_source_tree",
+    "check_version",
+    "check_sources_load",
+    "check_packaged_template",
+    "check_offline_commands",
+}
+
 
 def _report(_name, _detail):
-    """A `report` callback that records nothing -- these tests assert on raises, not output."""
+    """A `report` callback for the REFUSAL tests, which assert on the raise, not on output."""
+
+
+class _Collector:
+    """A `report` callback that RECORDS, for the acceptance tests.
+
+    The refusal tests are satisfied by a raise, but an accepting branch that simply forgot to
+    call `report(...)` also raises nothing -- measured, deleting `report("package data", ...)`
+    left `test_..._accepts_a_real_template` green while `main` would print a success summary
+    with that row missing. So every accept test asserts the LABEL and DETAIL it emitted.
+    """
+
+    def __init__(self):
+        self.rows = []
+
+    def __call__(self, name, detail):
+        self.rows.append((name, detail))
+
+    @property
+    def labels(self):
+        return [n for n, _d in self.rows]
 
 
 def test_the_source_tree_guard_refuses_a_checkout(tmp_path, monkeypatch):
@@ -80,7 +116,9 @@ def test_the_source_tree_guard_accepts_an_installed_package(tmp_path, monkeypatc
     monkeypatch.setitem(sys.modules, "sluice", fake)
     monkeypatch.chdir(tmp_path)          # cwd is an ANCESTOR of the install -- still valid
 
-    smoke.check_not_the_source_tree(_report)   # must not raise
+    rep = _Collector()
+    smoke.check_not_the_source_tree(rep)
+    assert rep.labels == ["import path"], f"the check must REPORT its success: {rep.rows}"
 
 
 def test_version_disagreement_is_reported_with_every_source_named(monkeypatch):
@@ -117,7 +155,10 @@ def test_an_empty_source_list_fails_rather_than_passing_quietly(monkeypatch):
 def test_a_populated_registry_passes(monkeypatch):
     listing = "\n".join(f"src{i}   browser   enabled" for i in range(22))
     monkeypatch.setattr(smoke, "_run", lambda *a, **k: (0, listing + "\n", ""))
-    smoke.check_sources_load(_report, floor=10)      # must not raise
+    rep = _Collector()
+    smoke.check_sources_load(rep, floor=10)
+    assert rep.labels == ["sources"], f"the check must REPORT its success: {rep.rows}"
+    assert "22" in rep.rows[0][1], rep.rows
 
 
 def test_a_nonzero_exit_is_a_failure_not_an_empty_result(monkeypatch):
@@ -147,12 +188,15 @@ def test_every_check_defined_is_registered_in_the_checks_table():
                and obj.__module__ == smoke.__name__}
     registered = {fn.__name__ for _label, fn in smoke.CHECKS}
 
-    # SCOPE, before the comparison: two empty sets are equal, so the assertion below is
-    # satisfied by a sweep that found nothing at all. A floor is also what catches a check
-    # being deleted at BOTH ends at once, which set equality alone cannot see.
-    assert len(defined) >= 5, (
-        f"the sweep found only {sorted(defined)} -- either it stopped seeing the check "
-        "functions, or a check was deleted along with its registration")
+    # SCOPE, before the comparison: two empty sets are equal, so `defined == registered` is
+    # satisfied by a sweep that found nothing at all. The named set is also what catches a
+    # check deleted at BOTH ends at once, which set equality between the two cannot see --
+    # and unlike a `>= N` floor it keeps doing so after a sixth check is added.
+    assert defined == _EXPECTED_CHECKS, (
+        f"the set of checks changed: added {sorted(defined - _EXPECTED_CHECKS)}, "
+        f"removed {sorted(_EXPECTED_CHECKS - defined)}. If that is intended, update "
+        "`_EXPECTED_CHECKS` in this file -- it is the contract every channel's green tick "
+        "stands on, so changing it should be a deliberate edit rather than a silent one.")
 
     assert defined == registered, (
         f"defined but never registered (so never run): {sorted(defined - registered)}; "
@@ -219,7 +263,10 @@ def test_the_packaged_template_check_accepts_a_real_template(monkeypatch):
 
     import importlib.resources
     monkeypatch.setattr(importlib.resources, "files", lambda _pkg: _Good())
-    smoke.check_packaged_template(_report)          # must not raise
+    rep = _Collector()
+    smoke.check_packaged_template(rep)
+    assert rep.labels == ["package data"], f"the check must REPORT its success: {rep.rows}"
+    assert "cv_plain.html.j2" in rep.rows[0][1], rep.rows
 
 
 def test_the_offline_commands_check_fails_when_a_command_exits_nonzero(monkeypatch):
@@ -246,7 +293,9 @@ def test_the_offline_commands_check_passes_when_both_exit_zero(monkeypatch):
         return 0, "", ""
 
     monkeypatch.setattr(smoke, "_run", _fake)
-    smoke.check_offline_commands(_report)           # must not raise
+    rep = _Collector()
+    smoke.check_offline_commands(rep)
+    assert rep.labels == ["offline commands"], f"the check must REPORT its success: {rep.rows}"
     assert len(seen) == 2, f"both offline commands must run, got {seen}"
     assert any("--help" in a for a in seen), seen
     assert any("--health" in a for a in seen), seen
@@ -262,7 +311,10 @@ def test_the_version_check_accepts_full_agreement(monkeypatch):
     import importlib.metadata
     monkeypatch.setattr(importlib.metadata, "version", lambda _n: "2.2.0")
 
-    smoke.check_version(_report, "2.2.0")           # must not raise
+    rep = _Collector()
+    smoke.check_version(rep, "2.2.0")
+    assert rep.labels == ["version"], f"the check must REPORT its success: {rep.rows}"
+    assert "2.2.0" in rep.rows[0][1], rep.rows
 
 
 @pytest.mark.parametrize("attr,dist,cli,odd", [
@@ -303,18 +355,114 @@ def test_the_subprocess_environment_is_stripped_of_sluice_and_xdg_state():
     probe = ("import os,json;"
              "print(json.dumps({k: os.environ.get(k) for k in "
              "('SLUICE_CONFIG','SLUICE_HEALTH','XDG_STATE_HOME','XDG_CONFIG_HOME','HOME')}))")
+    # HOME is pinned to a real directory the child could plausibly inherit, so the assertion
+    # below is about REPOINTING rather than about the value happening to differ.
+    home = tempfile.mkdtemp(prefix="caller-home-")
     dirty = {**os.environ,
+             "HOME": home,
              "SLUICE_CONFIG": "/dev/null/leaked.yaml",
              "SLUICE_HEALTH": "/dev/null/leaked.json",
              "XDG_STATE_HOME": "/dev/null/leakedstate",
              "XDG_CONFIG_HOME": "/dev/null/leakedconfig"}
-    with mock.patch.dict(os.environ, dirty, clear=True):
-        rc, out, _err = smoke._run([sys.executable, "-c", probe])
+    # RUN FROM INSIDE that home. This is the condition the bug needs and the reason two earlier
+    # versions of this test could not see it: `HOME = os.getcwd()` is only a no-op when cwd IS
+    # the home directory, so asserting from the repo root passes against the broken code and
+    # the fixed code alike. Measured -- reverting to `os.getcwd()` survived both of them.
+    cwd = os.getcwd()
+    try:
+        os.chdir(home)
+        with mock.patch.dict(os.environ, dirty, clear=True):
+            rc, out, _err = smoke._run([sys.executable, "-c", probe])
+    finally:
+        os.chdir(cwd)
     assert rc == 0, out
     got = json.loads(out)
     for key in ("SLUICE_CONFIG", "SLUICE_HEALTH", "XDG_STATE_HOME", "XDG_CONFIG_HOME"):
         assert got[key] is None, f"{key} reached the subprocess as {got[key]!r}"
-    assert got["HOME"] == os.getcwd(), "HOME must be repointed, not merely cleared"
+    # NOT `== os.getcwd()`, which was the original assertion and is the bug it failed to see:
+    # for anyone running from their own home directory, `HOME = os.getcwd()` reassigns HOME to
+    # ITSELF, the stripped XDG vars fall back to `~/.config` and `~/.local/state`, and the run
+    # reads the caller's real install -- while that comparison stays true. What must hold is
+    # that the child's HOME is somewhere the CALLER does not own.
+    assert got["HOME"] != dirty["HOME"], (
+        f"HOME reached the child unchanged ({got['HOME']!r}) -- it must be repointed away from "
+        "the caller's own home, or the stripped XDG_* variables just fall back into it")
+    assert not os.path.samefile(got["HOME"], dirty["HOME"]), (
+        f"the child's HOME resolves to the caller's own ({got['HOME']!r}) -- the XDG defaults "
+        "then fall back into the caller's real config and state")
+
+
+def test_the_env_sweep_covers_every_variable_sluice_reads():
+    """The script is stdlib-only and cannot import `sluice` to discover its own knobs, so
+    `_UNPREFIXED_ENV` is a hand-list -- and a hand-list is wrong within one revision. This
+    derives the REAL roster from `sluice/`'s source and fails when the tuple falls behind.
+
+    It was behind when written: `SEEN_DB`, `VAULT_DIR`, `DOSSIER_DIR` and `TRIAGE_AUDIT` carry
+    no `SLUICE_` prefix, so the prefix sweep missed all four and they reached the child while
+    this file's docstring claimed a clean machine. Inert then -- no check here builds a store --
+    but `sqlite3.connect` creates a 0-byte file merely by opening one, which permanently
+    disarms the relocation refusal, so the latent cost is a store the user never gets warned
+    about.
+    """
+    root = pathlib.Path(__file__).resolve().parent.parent / "sluice"
+    # THREE shapes, because two were not enough: a direct `os.environ` read, `os.getenv`, and
+    # -- the one the first version missed entirely -- the `env_var="NAME"` keyword that
+    # `core/paths.py:resolve` takes, which is how nearly every PATH knob is actually named.
+    # Missing it left the sweep reporting 8 variables where there are 14, and the four it could
+    # not see were exactly the unprefixed ones this guard exists to catch.
+    pat = re.compile(r"""os\.environ(?:\.get)?[(\[]\s*["']([A-Z][A-Z0-9_]*)["']"""
+                     r"""|os\.getenv\(\s*["']([A-Z][A-Z0-9_]*)["']"""
+                     r"""|env_var\s*=\s*["']([A-Z][A-Z0-9_]*)["']""")
+    found = set()
+    for py in root.rglob("*.py"):
+        for match in pat.findall(py.read_text()):
+            found.add(next(name for name in match if name))
+
+    # SCOPE: a regex that stopped matching would make the comparison below vacuous, and two
+    # empty sets compare equal. Named members as well as a floor, so a regex that still matches
+    # SOMETHING but lost one of the three shapes is caught too.
+    assert len(found) >= 12, f"the env sweep over sluice/ found only {sorted(found)}"
+    for expected in ("SLUICE_CONFIG", "SEEN_DB", "VAULT_DIR", "CAMOFOX_URL"):
+        assert expected in found, f"{expected} not found -- the sweep lost a shape: {sorted(found)}"
+
+    with mock.patch.dict(os.environ, {name: "leaked" for name in found}):
+        env = smoke._clean_env()
+    leaked = sorted(name for name in found if name in env)
+    assert not leaked, (
+        f"these variables are read by sluice/ and reach the child anyway: {leaked} -- add them "
+        "to `_UNPREFIXED_ENV` (or a prefix in `_ENV_PREFIXES`) in scripts/smoke_installed.py")
+
+
+def test_the_source_floor_default_is_the_value_every_channel_run_uses(monkeypatch, capsys):
+    """No workflow passes `--source-floor`, so this default governs all eight channel runs and
+    nothing pinned it. Measured: `default=10 -> 0` survived the entire file, and at 0
+    `len(ids) < floor` can never be true -- a package shipping ZERO source plugins then reports
+    `all 5 checks passed`, which is exactly what `check_sources_load` exists to catch.
+
+    Read back off the PARSER, by running `main` with no flag and capturing what the check
+    actually receives, rather than reading the constant -- the constant agreeing with itself
+    would prove nothing.
+    """
+    seen = {}
+
+    def _capture(report, floor, trust_env=False):
+        seen["floor"] = floor
+        report("sources", "probe")
+
+    monkeypatch.setattr(smoke, "CHECKS", (("sources", _capture),))
+    monkeypatch.setattr(smoke, "check_sources_load", _capture)
+    smoke.main(["9.9.9", "--channel", "probe"])
+    capsys.readouterr()
+
+    assert seen.get("floor") == smoke._SOURCE_FLOOR, (
+        f"an unflagged run receives {seen.get('floor')!r} but `_SOURCE_FLOOR` is "
+        f"{smoke._SOURCE_FLOOR} -- the constant is not what a channel run gets")
+    # A RANGE, not the exact number: the floor is deliberately far below the real fleet so
+    # adding a board never edits a test, but it must stay high enough to tell a populated
+    # registry from an empty one. At 0 the comparison is unsatisfiable.
+    assert smoke._SOURCE_FLOOR >= 5, (
+        f"a floor of {smoke._SOURCE_FLOOR} cannot distinguish a populated registry from an "
+        "empty one")
 
 
 def test_the_environment_sweep_is_by_prefix_not_a_hand_list():
@@ -371,7 +519,7 @@ def test_the_script_is_executable_and_self_contained():
             assert node.level == 0, "smoke_installed.py must not use a relative import"
             imported.add(node.module)
 
-    allowed = {"argparse", "json", "os", "subprocess", "sys", "sluice",
+    allowed = {"argparse", "json", "os", "subprocess", "sys", "tempfile", "sluice",
                "importlib.metadata", "importlib.resources"}
     roots = {a.split(".")[0] for a in allowed}
     for name in sorted(imported):

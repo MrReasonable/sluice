@@ -100,12 +100,17 @@ updates:
   # there is nothing upstream there to bump.
   #
   # NOT COVERED, and named here rather than left to be discovered: the nfpm release pinned by
-  # NFPM_VERSION + NFPM_SHA256 in .github/workflows/release-please.yml's `linux-packages` job
-  # (#104 PR 5). No Dependabot ecosystem reaches a `curl`-downloaded GitHub release, so that
-  # pair is the one third-party binary in this repo with no updater behind it and must be
-  # bumped by hand -- version and digest together, since either alone fails closed at the
-  # checksum. It is a build-time tool that never ships to a user, which is why this is recorded
-  # as a known gap rather than treated the way the base-image pin above is.
+  # NFPM_VERSION + NFPM_SHA256 in TWO workflows -- release-please.yml's `linux-packages` job
+  # (#104 PR 5), which builds the packages that SHIP, and ci.yml's `packages` job (#218), which
+  # builds the ones every PR is checked against. No Dependabot ecosystem reaches a
+  # `curl`-downloaded GitHub release, so that pair is the one third-party binary in this repo
+  # with no updater behind it and must be bumped by hand -- version and digest together, since
+  # either alone fails closed at the checksum, and BOTH copies together, since each verifies
+  # only its own and a half-bump leaves CI validating a different packager than the release
+  # uses. `test_the_two_nfpm_pins_agree` is what stops that being silent; this note is what
+  # stops the second copy being a surprise. It is a build-time tool that never ships to a
+  # user, which is why this is recorded as a known gap rather than treated the way the
+  # base-image pin above is.
   - package-ecosystem: docker
     directory: /
     schedule:

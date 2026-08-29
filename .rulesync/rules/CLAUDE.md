@@ -94,9 +94,21 @@ found by running the guard rather than reading it:
 
 The suite is fast and hermetic — there is no reason not to run all of it. `run_tests.sh` is the same
 thing via `.venv/bin/python`, so it needs a `.venv/` (gitignored) to exist first. CI
-(`.github/workflows/ci.yml`) runs four jobs: `lint` (ruff + zizmor), `test` (pytest on Python
+(`.github/workflows/ci.yml`) runs `lint` (ruff + zizmor), `test` (pytest on Python
 3.12/3.13/3.14), `rulesync` (regenerates `.rulesync/`'s outputs and fails the build on any drift
-or hand-edited generated file), and `ci-success`, the aggregate gate over the first three.
+or hand-edited generated file), `docker` (builds the image, runs the
+smoke script against it, renders the compose file and checks the ssh key path does not leak
+into the container environment), and `packages` (#218: builds the wheel, sdist, .deb and .rpm
+and installs each into a clean environment; the .deb and .rpm legs additionally RUN AS A
+NON-ROOT user, which is the only way the #104 directory-mode class is visible -- the wheel and
+sdist legs have no such step, and attaching that property to all four would read as a
+guarantee three of them do not carry) -- plus `ci-success`, the aggregate gate over every one
+of them. Deliberately NO COUNT in that sentence: it read "four jobs ... the aggregate gate
+over the first three" while five were already running, having gone stale when `docker` was
+added and never noticed, which is this repo's most-repeated finding shape applied to its own
+documentation. `tests/test_ci_wiring.py::test_every_real_job_is_aggregated_by_ci_success` is
+what actually pins the roster -- it sweeps the `jobs:` block and fails if any defined job is
+missing from `ci-success`, which a prose count cannot do and a reader cannot verify.
 
 Running the pipeline:
 

@@ -12,6 +12,17 @@ Run against an INSTALLED `job-sluice`, never against a checkout:
 
     python3 scripts/smoke_installed.py 2.2.0
 
+FOR THE .deb/.rpm, POINT PYTHONPATH AT THE SHIPPED TREE:
+
+    PYTHONPATH=/usr/lib/job-sluice python3 scripts/smoke_installed.py 2.2.0
+
+Those packages deliberately do NOT install into system site-packages -- `nfpm.yaml` unpacks the
+wheel to /usr/lib/job-sluice and ships /usr/bin/job-sluice as a launcher that adds it to the
+path. So the CLI works unaided and `import sluice` does not, which splits this script's checks
+in two: the CLI-driven ones pass either way, and the import-driven ones fail with
+ModuleNotFoundError unless pointed at the tree. Measured on the published 2.2.0 .deb -- 3 of 5
+errored before PYTHONPATH was set, which reads as a broken package and is nothing of the kind.
+
 Every check below is OFFLINE and needs no config, no vault, no browser and no API key. That is
 a hard constraint rather than a convenience: a smoke test that needs credentials is one that
 gets skipped in the environment it was written for, and the point is to run it everywhere the
@@ -28,36 +39,76 @@ import argparse
 import os
 import subprocess
 import sys
+import tempfile
+
+
+# The floor every channel run actually uses: NO workflow passes `--source-floor`, so this
+# literal governs all of them. Named rather than inlined in `add_argument` so a guard can pin
+# it -- measured, `default=10 -> 0` survived the whole suite, and at 0 `len(ids) < floor` can
+# never be true, so a package shipping ZERO source plugins reports `all 5 checks passed`. That
+# is the exact failure `check_sources_load` exists to catch, switched off by a literal.
+_SOURCE_FLOOR = 10
 
 
 class SmokeFailure(Exception):
     """A check failed. Raised rather than `sys.exit` so every check can run and report."""
 
 
+# Variables `sluice/` reads that carry NO `SLUICE_` prefix. A prefix sweep alone misses every
+# one of them -- measured, all five reached the child while this file's docstring claimed a
+# clean machine. Hand-listed here because nothing in a stdlib-only script can discover them,
+# and kept honest by `test_the_env_sweep_covers_every_variable_sluice_reads`, which derives the
+# real roster from `sluice/`'s own source and fails when this tuple falls behind.
+_UNPREFIXED_ENV = ("SEEN_DB", "VAULT_DIR", "DOSSIER_DIR", "TRIAGE_AUDIT", "EDITOR")
+
+# Prefixes covering the rest. `CAMOFOX_` is here rather than above because it is a family.
+_ENV_PREFIXES = ("SLUICE_", "XDG_", "CAMOFOX_")
+
+_SANDBOX_HOME = None
+
+
+def _sandbox_home():
+    """A HOME the caller demonstrably does not own, created once and reused.
+
+    NOT `os.getcwd()`, which was the first version and is a NO-OP for anyone running the script
+    from their own home directory: `HOME` is then reassigned to itself, the stripped `XDG_*`
+    variables fall back to `~/.config` and `~/.local/state`, and the run reads the caller's real
+    install while reporting a clean machine. Measured from a seeded home -- two shipped-enabled
+    sources came back `disabled`. The guard that was supposed to catch this compared the child's
+    `HOME` against `os.getcwd()`, which is equally true in that case, so it asserted that the
+    assignment happened rather than that it changed anything.
+    """
+    global _SANDBOX_HOME
+    if _SANDBOX_HOME is None:
+        _SANDBOX_HOME = tempfile.mkdtemp(prefix="sluice-smoke-home-")
+    return _SANDBOX_HOME
+
+
 def _clean_env():
     """The environment a machine that has never run sluice would have.
 
-    DERIVED BY PREFIX, never hand-listed. `core/paths.py:resolve` consults an explicitly-named
-    value -- env var first, then config key -- BEFORE any XDG fallback, so one variable
-    inherited from the caller's shell retargets a check at their real install. Measured: an
-    exported `SLUICE_CONFIG` flipped two sources enabled->disabled, and a seeded `SLUICE_HEALTH`
-    moved the reported baseline from 0 to 37. That is not an exotic state -- this repo's own
-    CLAUDE.md instructs a developer to export `SLUICE_CONFIG`, so it is the NORMAL local one,
-    and the docstrings below claim a clean machine on every run.
+    `core/paths.py:resolve` consults an explicitly-named value -- env var first, then config key
+    -- BEFORE any XDG fallback, so one variable inherited from the caller's shell retargets a
+    check at their real install. Measured against a SYNTHETIC config and a SYNTHETIC health
+    store: an exported `SLUICE_CONFIG` flipped two sources enabled->disabled, and a seeded
+    `SLUICE_HEALTH` moved the reported baseline off zero. That is not an exotic state -- this
+    repo's own CLAUDE.md instructs a developer to export `SLUICE_CONFIG`, so it is the NORMAL
+    local one, and the docstrings below claim a clean machine on every run.
 
-    Stripping by prefix rather than by name is the load-bearing part: a hand-list is wrong
-    within one revision, and a new `SLUICE_*` or `XDG_*` knob is covered here the day it is
-    added rather than the day someone remembers this file.
+    Two rosters, because one is not enough: the PREFIX families above, and the UNPREFIXED names
+    a prefix sweep cannot see. An earlier version claimed to be "derived by prefix, never
+    hand-listed" and was wrong twice over -- the prefixes ARE a hand-list, and they missed
+    `SEEN_DB`/`VAULT_DIR`/`DOSSIER_DIR`/`TRIAGE_AUDIT` entirely. Inert at the time, because no
+    check here builds a store; the cost was latent, since `sqlite3.connect` creates a 0-byte
+    file merely by opening one, which permanently disarms the relocation refusal.
     """
     env = {k: v for k, v in os.environ.items()
-           if not k.startswith(("SLUICE_", "XDG_"))}
-    # A HOME the caller does not own, so the XDG defaults that hang off it (`~/.config`,
-    # `~/.local/state`) land in the throwaway directory this script is run from.
-    env["HOME"] = os.getcwd()
+           if not k.startswith(_ENV_PREFIXES) and k not in _UNPREFIXED_ENV}
+    env["HOME"] = _sandbox_home()
     return env
 
 
-def _run(args, **kw):
+def _run(args, *, trust_env=False, **kw):
     """Run a command, returning `(rc, stdout, stderr)`. Never raises on a non-zero exit.
 
     `cwd` is deliberately NOT the repository: see `check_not_the_source_tree`.
@@ -65,10 +116,19 @@ def _run(args, **kw):
     Sandboxed by DEFAULT rather than per-call: the two call sites that passed no `env=` were
     the ones reading the caller's real config, and a guard every caller must remember to opt
     into is one that a later caller silently does not.
+
+    `trust_env` is the one deliberate exception, and it exists for the CONTAINER channel. The
+    shipped image SETS `XDG_CONFIG_HOME`/`XDG_STATE_HOME`/`XDG_CACHE_HOME` (`Dockerfile`), so
+    there the variables this function strips ARE the artefact under test -- sandboxing them
+    would certify paths the image does not use and leave its real ones unexercised. Nothing a
+    developer exported can reach a process inside a freshly pulled image, which is why the
+    exception is safe exactly there and nowhere else.
     """
-    kw.setdefault("env", _clean_env())
+    if not trust_env:
+        kw.setdefault("env", _clean_env())
     p = subprocess.run(args, capture_output=True, text=True, timeout=120, **kw)
     return p.returncode, p.stdout, p.stderr
+
 
 
 def check_not_the_source_tree(report):
@@ -101,7 +161,7 @@ def check_not_the_source_tree(report):
     report("import path", module)
 
 
-def check_version(report, expected):
+def check_version(report, expected, trust_env=False):
     """`job-sluice --version`, `sluice.__version__` and the installed distribution metadata
     must all agree with the released tag.
 
@@ -116,7 +176,7 @@ def check_version(report, expected):
     import sluice
     attr = sluice.__version__
     dist = dist_version("job-sluice")
-    rc, out, err = _run(["job-sluice", "--version"])
+    rc, out, err = _run(["job-sluice", "--version"], trust_env=trust_env)
     if rc != 0:
         raise SmokeFailure(f"`job-sluice --version` exited {rc}: {err.strip() or out.strip()}")
     cli = out.strip().split()[-1] if out.strip() else ""
@@ -131,7 +191,7 @@ def check_version(report, expected):
     report("version", f"{expected} (attribute, metadata and CLI agree)")
 
 
-def check_sources_load(report, floor):
+def check_sources_load(report, floor, trust_env=False):
     """`ingest list-sources` must enumerate real sources.
 
     Proves three things at once that `--version` cannot: the console script resolves, the
@@ -144,7 +204,7 @@ def check_sources_load(report, floor):
     is far below the real fleet, because what is being distinguished is "the plugins shipped"
     from "they did not", not one count from another.
     """
-    rc, out, err = _run(["job-sluice", "ingest", "list-sources"])
+    rc, out, err = _run(["job-sluice", "ingest", "list-sources"], trust_env=trust_env)
     if rc != 0:
         raise SmokeFailure(f"`ingest list-sources` exited {rc}: {err.strip() or out.strip()}")
     ids = [ln.split()[0] for ln in out.splitlines() if ln.strip()]
@@ -177,7 +237,7 @@ def check_packaged_template(report):
     report("package data", "cv_plain.html.j2 present and non-empty")
 
 
-def check_offline_commands(report):
+def check_offline_commands(report, trust_env=False):
     """A handful of commands must work with NO config, NO vault and NO network.
 
     `--help` proves argparse builds its whole tree, which is more than it sounds: `cli.py`
@@ -191,7 +251,7 @@ def check_offline_commands(report):
     machine its failure is correct behaviour and would make this test a liar.
     """
     for args in (["--help"], ["ingest", "list-sources", "--health"]):
-        rc, out, err = _run(["job-sluice", *args])
+        rc, out, err = _run(["job-sluice", *args], trust_env=trust_env)
         if rc != 0:
             raise SmokeFailure(
                 f"`job-sluice {' '.join(args)}` exited {rc} on a clean machine: "
@@ -213,8 +273,11 @@ def main(argv=None) -> int:
     ap.add_argument("version", help="the released version the artefact must claim, e.g. 2.2.0")
     ap.add_argument("--channel", default="unknown",
                     help="label for the output only (pypi, deb, rpm, docker, ...)")
-    ap.add_argument("--source-floor", type=int, default=10,
+    ap.add_argument("--source-floor", type=int, default=_SOURCE_FLOOR,
                     help="minimum sources `ingest list-sources` must enumerate")
+    ap.add_argument("--trust-env", action="store_true",
+                    help="do not sandbox the environment -- for the CONTAINER channel, where "
+                         "the image's own XDG_* variables are the artefact under test")
     args = ap.parse_args(argv)
 
     lines, failures = [], []
@@ -225,9 +288,11 @@ def main(argv=None) -> int:
     for name, fn in CHECKS:
         try:
             if fn is check_version:
-                fn(report, args.version)
+                fn(report, args.version, trust_env=args.trust_env)
             elif fn is check_sources_load:
-                fn(report, args.source_floor)
+                fn(report, args.source_floor, trust_env=args.trust_env)
+            elif fn is check_offline_commands:
+                fn(report, trust_env=args.trust_env)
             else:
                 fn(report)
         except SmokeFailure as exc:
