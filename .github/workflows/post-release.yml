@@ -1,0 +1,250 @@
+name: Post-release install check
+
+# Installs the PUBLISHED artefact from each real channel and runs it.
+#
+# `ci.yml` and `tests/test_packaging.py` cover what can be known from the source tree: the
+# suite passes, and a wheel built here carries the right metadata, templates and console
+# script. Neither can answer the question this workflow asks -- does the thing that reached
+# the registry install onto a clean machine and work? Those fail differently: a runtime
+# dependency that is declared but not installable, package data the wheel carries and the
+# .deb's unpack step drops, an image whose entrypoint is wrong.
+#
+# It runs AFTER the release, and that is deliberate rather than a compromise. The artefacts do
+# not exist until release-please has published them, so this cannot gate the release; what it
+# can do is say quickly that a published version is broken, which is the difference between
+# finding out now and finding out from a user.
+#
+# NON-ROOT is the point of the deb/rpm jobs. Verifying a Linux package as root cannot see a
+# non-root failure and looks identical to success: root bypasses directory traversal checks, so
+# a package whose directories are mode `drw-r--r--` works perfectly for root and is unusable
+# for everyone else. That shipped here once (#104). `release-please.yml` now checks the modes
+# statically with `dpkg-deb -c`/`rpm -qlvp`; importing the package as an ordinary user is the
+# direct evidence rather than the proxy.
+#
+# EVERY `${{ }}` REACHES THE SHELL THROUGH `env`, never inlined into a script body. Expression
+# substitution happens before the shell parses, so an inlined value containing a quote runs as
+# code -- and validating it afterwards is worthless, because by then it has already run. The
+# version is attacker-influenced on both triggers: a dispatch input, and a tag name chosen by
+# whoever cut the release.
+
+on:
+  release:
+    types: [published]
+  # Re-runnable against any released version. That is what makes this useful for a release
+  # published before this workflow existed, and for re-checking after a registry incident;
+  # without it the only way to exercise the workflow at all is to cut a release.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Released version to check, e.g. 2.2.0'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.version || github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    # Resolved once and passed down, so every job below checks the SAME version rather than
+    # each re-deriving it from the trigger.
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.pick.outputs.version }}
+    steps:
+      - id: pick
+        env:
+          RAW: ${{ inputs.version || github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          v="${RAW#v}"
+          # Fail loudly rather than let every job below run against an empty string, which
+          # would make the version check compare "" with "" and pass.
+          if ! printf '%s' "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::not a version: ${RAW}"; exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "checking job-sluice $v"
+
+  pypi:
+    # Wheel and sdist are separate artefacts that fail differently -- `--no-binary` forces a
+    # real build from the sdist, which is how a missing build-time file surfaces.
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.12', '3.13', '3.14']
+        form: [wheel, sdist]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # No token is needed here -- the only checked-out file is the smoke script, and
+          # every artefact is fetched from a public registry. Leaving credentials in .git
+          # would put them in reach of anything this job runs.
+          persist-credentials: false
+          sparse-checkout: scripts/smoke_installed.py
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install from PyPI and smoke it
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          FORM: ${{ matrix.form }}
+          PY: ${{ matrix.python }}
+        run: |
+          set -euo pipefail
+          # Run from a directory that is NOT the checkout. Python puts the working directory on
+          # sys.path, so running here would import the SOURCE and certify a package it never
+          # loaded. `smoke_installed.py` refuses that case outright; not creating it is better
+          # than being caught by it.
+          smoke="$PWD/scripts/smoke_installed.py"
+          work="$(mktemp -d)"; cd "$work"
+          python -m venv v
+          ./v/bin/pip install --quiet --upgrade pip
+          if [ "$FORM" = sdist ]; then
+            ./v/bin/pip install --quiet --no-binary :all: "job-sluice==${VERSION}"
+          else
+            ./v/bin/pip install --quiet "job-sluice==${VERSION}"
+          fi
+          PATH="${work}/v/bin:$PATH" ./v/bin/python "$smoke" "$VERSION" \
+            --channel "pypi-${FORM}-py${PY}"
+
+  deb:
+    needs: version
+    runs-on: ubuntu-latest
+    container:
+      # Pinned by digest like every action in this repo. Refresh deliberately:
+      # a floating tag would change what this test ran against without a commit.
+      image: debian@sha256:04634311a8d5fc442b6eb06d792293c4f3e2268652ca7634e00ce8ef5cc0a28a  # stable-slim
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # No token is needed here -- the only checked-out file is the smoke script, and
+          # every artefact is fetched from a public registry. Leaving credentials in .git
+          # would put them in reach of anything this job runs.
+          persist-credentials: false
+          sparse-checkout: scripts/smoke_installed.py
+          sparse-checkout-cone-mode: false
+      - name: Install the published .deb and run it as a NON-ROOT user
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -y -qq curl ca-certificates python3 >/dev/null
+          curl -fsSL -o /tmp/js.deb \
+            "https://github.com/${REPO}/releases/download/v${VERSION}/job-sluice_${VERSION}_all.deb"
+          apt-get install -y -qq /tmp/js.deb >/dev/null
+          # The whole point of this job: the install above proves nothing on its own, because
+          # root bypasses the traversal checks an ordinary user is subject to.
+          useradd -m smoke
+          install -m 0644 scripts/smoke_installed.py /tmp/smoke.py
+          cd /tmp
+          runuser -u smoke -- python3 /tmp/smoke.py "$VERSION" --channel deb-nonroot
+
+  rpm:
+    needs: version
+    runs-on: ubuntu-latest
+    container:
+      # Pinned by digest -- `latest` is a floating tag, and a smoke test whose base
+      # image moves under it cannot tell a package regression from a distro change.
+      image: fedora@sha256:43b29f65a41eb9c35e1cd5323e3bdf3b655c2357a9f4f1ff2f9c2798e5045d80  # latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # No token is needed here -- the only checked-out file is the smoke script, and
+          # every artefact is fetched from a public registry. Leaving credentials in .git
+          # would put them in reach of anything this job runs.
+          persist-credentials: false
+          sparse-checkout: scripts/smoke_installed.py
+          sparse-checkout-cone-mode: false
+      - name: Install the published .rpm and run it as a NON-ROOT user
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          dnf install -y -q curl shadow-utils python3 >/dev/null
+          curl -fsSL -o /tmp/js.rpm \
+            "https://github.com/${REPO}/releases/download/v${VERSION}/job-sluice-${VERSION}-1.noarch.rpm"
+          dnf install -y -q /tmp/js.rpm >/dev/null
+          useradd -m smoke
+          install -m 0644 scripts/smoke_installed.py /tmp/smoke.py
+          cd /tmp
+          runuser -u smoke -- python3 /tmp/smoke.py "$VERSION" --channel rpm-nonroot
+
+  docker:
+    # The image ships its own interpreter, so the smoke script is mounted in and run through
+    # `python3`. `--entrypoint` is overridden because the image's own entrypoint is the CLI,
+    # which would otherwise swallow the script path as an argument.
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # No token is needed here -- the only checked-out file is the smoke script, and
+          # every artefact is fetched from a public registry. Leaving credentials in .git
+          # would put them in reach of anything this job runs.
+          persist-credentials: false
+          sparse-checkout: scripts/smoke_installed.py
+          sparse-checkout-cone-mode: false
+      - name: Run the published image
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          # A registry reference must be lowercase, and `github.repository_owner` preserves the
+          # account's real casing -- measured: `docker pull ghcr.io/MrReasonable/job-sluice:2.2.0`
+          # is rejected at PARSE with "repository name must be lowercase", so this job would have
+          # failed on every single run and `report` (needs: docker, always()) would have redded
+          # the whole workflow while the image channel was never exercised once. Folded rather
+          # than hardcoded: the literal owner was deliberately removed from here as a drift
+          # surface, and `release-please.yml` pushes to the lowercase form independently.
+          img="ghcr.io/$(printf '%s' "${OWNER}" | tr '[:upper:]' '[:lower:]')/job-sluice:${VERSION}"
+          docker pull -q "$img"
+          docker run --rm --entrypoint python3 \
+            -v "${PWD}/scripts/smoke_installed.py:/tmp/smoke.py:ro" -w /tmp \
+            "$img" /tmp/smoke.py "$VERSION" --channel docker
+
+  report:
+    # One place to read the verdict. `always()` so a failed channel still reports rather than
+    # leaving the summary blank -- and the step FAILS if any channel did, because a green
+    # summary sitting above a red job is worse than no summary at all.
+    needs: [version, pypi, deb, rpm, docker]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          VERSION: ${{ needs.version.outputs.version }}
+          R_PYPI: ${{ needs.pypi.result }}
+          R_DEB: ${{ needs.deb.result }}
+          R_RPM: ${{ needs.rpm.result }}
+          R_DOCKER: ${{ needs.docker.result }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Post-release install check — job-sluice ${VERSION}"
+            echo
+            echo "| channel | result |"
+            echo "|---|---|"
+            echo "| PyPI (wheel + sdist, py3.12–3.14) | ${R_PYPI} |"
+            echo "| .deb, installed and run as non-root | ${R_DEB} |"
+            echo "| .rpm, installed and run as non-root | ${R_RPM} |"
+            echo "| ghcr image | ${R_DOCKER} |"
+            echo
+            echo "Homebrew is not listed because it is already covered upstream:"
+            echo "\`release-please.yml\`'s \`homebrew\` job renders, audits, installs and tests"
+            echo "the formula before the tap is pushed."
+          } >> "$GITHUB_STEP_SUMMARY"
+          for r in "$R_PYPI" "$R_DEB" "$R_RPM" "$R_DOCKER"; do
+            if [ "$r" != success ]; then
+              echo "::error::a published artefact failed its install check"; exit 1
+            fi
+          done
