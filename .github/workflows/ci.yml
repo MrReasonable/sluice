@@ -178,6 +178,30 @@ jobs:
       # ship an image silently missing google, mcp or completion with nothing red anywhere.
       - name: Smoke -- every baked extra imports, system libraries included
         run: docker run --rm --entrypoint python job-sluice:ci -c "import weasyprint, jinja2, googleapiclient, mcp, argcomplete"
+      # The compose file is a shipped artefact too -- docs/INSTALL.md tells people to use it --
+      # and `tests/test_docker_channel.py` asserts a great deal about it, but only STATICALLY,
+      # from the file's own text. Rendering is a different question: whether the real Compose
+      # implementation accepts it, and what it actually produces after interpolation, env_file
+      # merge and the `x-sluice` anchor are applied. The long-form `env_file:` here needs
+      # Compose v2.24+, which no amount of reading the file can establish.
+      - name: Smoke -- the compose file renders, and does not leak the ssh key path
+        run: |
+          set -euo pipefail
+          docker compose -f docker-compose.yml config >/dev/null
+          # THE assertion, and it falsifies a claim the compose file makes in prose rather than
+          # restating it. That file pins `SLUICE_CLAUDE_KEY: ""` in `environment:` specifically
+          # because `env_file: .env` would otherwise inject the HOST key path into the container
+          # environment -- a leak found once by rendering by hand. The variable legitimately
+          # appears as a bind-mount SOURCE; what must never happen is it reaching the container
+          # as an environment value.
+          work="$(mktemp -d)"; cp docker-compose.yml "$work/"
+          printf 'SLUICE_CLAUDE_KEY=/host/only/id_leak\n' > "$work/.env"
+          rendered="$(cd "$work" && docker compose config)"
+          printf '%s\n' "$rendered" | grep -q 'source: /host/only/id_leak' || {
+            echo "::error::the ssh key path no longer reaches the bind mount -- the mount is broken"; exit 1; }
+          if printf '%s\n' "$rendered" | grep -E '^\s+SLUICE_CLAUDE_KEY: .*id_leak'; then
+            echo "::error::the host ssh key path leaked into the container environment"; exit 1
+          fi
       # `doctor` exits 1 in ANY container by design: DoctorReport.exit_code() returns 1 whenever
       # a check is DEAD, and claude-max is DEAD whenever the `claude` CLI is absent from PATH,
       # which it always is here. So the status is asserted in NEITHER direction -- 0 would fail
@@ -185,6 +209,21 @@ jobs:
       # changed. It is captured rather than discarded with a trailing `|| true`, because a bare
       # "no traceback" negative passes against a container that prints nothing or dies before
       # doctor runs at all; the report must be positively present too.
+      - name: Smoke -- the built image installs and runs
+        run: |
+          set -euo pipefail
+          v="$(sed -n 's/^__version__ = "\(.*\)".*/\1/p' sluice/__init__.py)"
+          [ -n "$v" ] || { echo "::error::could not read the version"; exit 1; }
+          # The same split rule the `packages` job is built on: the image is assembled from
+          # `dist/*.whl` in the build CONTEXT, so everything this asserts -- package data
+          # surviving the copy, the plugin registry populating, three version sources agreeing
+          # -- is determined at BUILD time and belongs before merge. Only a corrupt push or a
+          # wrong tag needs the registry, and post-release.yml covers that.
+          # `--trust-env` because the image SETS its own XDG_* roots (see the Dockerfile): here
+          # those variables are the artefact, not contamination from a caller's shell.
+          docker run --rm --entrypoint python3 \
+            -v "${PWD}/scripts/smoke_installed.py:/tmp/smoke.py:ro" -w /tmp \
+            job-sluice:ci /tmp/smoke.py "$v" --channel ci-docker --trust-env
       - name: Smoke -- doctor renders its report
         run: |
           set -uo pipefail
@@ -205,8 +244,132 @@ jobs:
             *Traceback*) echo "::error::doctor raised inside the image (exit $doctor_status)"; exit 1 ;;
           esac
 
+
+  # The install path, exercised on every pull request rather than after the tag is public.
+  #
+  # WHY THIS EXISTS is the argument the `docker` job above already makes, applied to the other
+  # artefacts: the release workflow's `linux-packages` job is gated on `release_created`, so a
+  # .deb that installs into an unusable state is discovered by whoever downloads it. #104 is
+  # the precedent -- packages whose directories were mode `drw-r--r--` worked perfectly for
+  # root, and root is who verified them.
+  #
+  # NON-ROOT is therefore the point. Root bypasses directory traversal checks, so installing as
+  # root and running as root cannot see the failure and looks identical to success. The release
+  # workflow's static `dpkg-deb -c` / `rpm -qlvp` mode check is a good proxy for the same
+  # property; this is the direct evidence, and the two are cheap enough to keep both.
+  #
+  # `scripts/smoke_installed.py` is shared with `post-release.yml`, which runs the same checks
+  # against the PUBLISHED artefacts. The split is deliberate: everything determined at BUILD
+  # time is caught here, before merge, and only what the registry itself can get wrong -- a
+  # corrupted upload, a wrong tag -- has to wait for the release.
+  packages:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      # Same reasoning as the `docker` job's build: a smoke fixture discarded at the end of the
+      # job, not an artefact anyone publishes, so it is deliberately NOT hash-pinned against the
+      # release supply chain.
+      - run: pip install build
+      # BOTH artefacts, because both are published. The split this job exists to enforce is
+      # that everything determined at BUILD time is checked before merge, and only what the
+      # REGISTRY can get wrong waits for the release -- and whether an sdist builds is a pure
+      # function of the tagged tree, not of the upload. Building the wheel alone left
+      # `pip install --no-binary` (post-release.yml's own "how a missing build-time file
+      # surfaces") first executing AFTER the tag was public, which is the position this job
+      # was created to stop things being in.
+      - run: python -m build
+      - name: The built wheel installs and runs in a clean environment
+        env:
+          VERSION_FROM: sluice/__init__.py
+        run: |
+          set -euo pipefail
+          v="$(sed -n 's/^__version__ = "\(.*\)".*/\1/p' "$VERSION_FROM")"
+          [ -n "$v" ] || { echo "::error::could not read the version"; exit 1; }
+          # From a directory that is NOT the checkout: Python puts the working directory on
+          # sys.path, so running here would import the source tree and certify a package it
+          # never loaded. The smoke script refuses that case, but not creating it is better.
+          smoke="$PWD/scripts/smoke_installed.py"
+          wheel="$(ls "$PWD"/dist/*.whl)"
+          work="$(mktemp -d)"; cd "$work"
+          python -m venv v
+          ./v/bin/pip install --quiet "$wheel"
+          PATH="${work}/v/bin:$PATH" ./v/bin/python "$smoke" "$v" --channel ci-wheel
+      - name: The built sdist builds, installs and runs in a clean environment
+        env:
+          VERSION_FROM: sluice/__init__.py
+        run: |
+          set -euo pipefail
+          v="$(sed -n 's/^__version__ = "\(.*\)".*/\1/p' "$VERSION_FROM")"
+          [ -n "$v" ] || { echo "::error::could not read the version"; exit 1; }
+          smoke="$PWD/scripts/smoke_installed.py"
+          sdist="$(ls "$PWD"/dist/*.tar.gz)"
+          work="$(mktemp -d)"; cd "$work"
+          python -m venv v
+          # No `--no-binary` here, and the reason is worth stating because the obvious
+          # instinct is wrong in BOTH directions. Passing the sdist by PATH already forces a
+          # real build of it: `dist/` is on no finder path, so the wheel sitting beside it
+          # never competes (measured -- `Building wheels for collected packages: job-sluice`).
+          # And `--no-binary :all:` is not a harmless belt-and-braces, because pip forwards
+          # format control into the isolated PEP 517 build environment: setuptools, PyYAML's C
+          # extension and tzdata would all build from source, making third-party sdist
+          # buildability a gate on every PR through `ci-success`. `post-release.yml` keeps its
+          # copy of the flag -- that leg installs by NAME from a real index, where a wheel
+          # genuinely would win and the flag is load-bearing.
+          ./v/bin/pip install --quiet "$sdist"
+          PATH="${work}/v/bin:$PATH" ./v/bin/python "$smoke" "$v" --channel ci-sdist
+      - name: Fetch and verify nfpm
+        run: |
+          set -euo pipefail
+          curl -fsSL --proto '=https' --tlsv1.2 -o nfpm.tar.gz \
+            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
+          echo "${NFPM_SHA256}  nfpm.tar.gz" | sha256sum --check --strict -
+          tar -xzf nfpm.tar.gz nfpm
+        env:
+          NFPM_VERSION: 2.47.0
+          NFPM_SHA256: 0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783
+      - name: Build the .deb and .rpm from that wheel
+        run: |
+          set -euo pipefail
+          python scripts/build_linux_packages.py
+          v="$(sed -n 's/^__version__ = "\(.*\)".*/\1/p' sluice/__init__.py)"
+          VERSION="$v" ./nfpm package -f nfpm.yaml -p deb -t build/
+          VERSION="$v" ./nfpm package -f nfpm.yaml -p rpm -t build/
+      - name: Install each package and run it as a NON-ROOT user
+        run: |
+          set -euo pipefail
+          v="$(sed -n 's/^__version__ = "\(.*\)".*/\1/p' sluice/__init__.py)"
+          # Pinned by digest, like every image this repo depends on: a floating tag would make
+          # a distro change indistinguishable from a package regression.
+          deb_img=debian@sha256:04634311a8d5fc442b6eb06d792293c4f3e2268652ca7634e00ce8ef5cc0a28a
+          rpm_img=fedora@sha256:43b29f65a41eb9c35e1cd5323e3bdf3b655c2357a9f4f1ff2f9c2798e5045d80
+          docker run --rm -v "$PWD:/w" -w /w -e V="$v" "$deb_img" bash -eux -c '
+            apt-get update -qq && apt-get install -y -qq python3 >/dev/null
+            apt-get install -y -qq ./build/*.deb >/dev/null
+            useradd -m smoke
+            install -m 0644 scripts/smoke_installed.py /tmp/smoke.py
+            # PYTHONPATH: the package unpacks the wheel to /usr/lib/job-sluice rather
+            # than system site-packages, so `import sluice` needs pointing at it.
+            cd /tmp && runuser -u smoke -- env PYTHONPATH=/usr/lib/job-sluice \
+              python3 /tmp/smoke.py "$V" --channel ci-deb-nonroot'
+          docker run --rm -v "$PWD:/w" -w /w -e V="$v" "$rpm_img" bash -eux -c '
+            dnf install -y -q python3 shadow-utils util-linux >/dev/null
+            dnf install -y -q ./build/*.rpm >/dev/null
+            useradd -m smoke
+            install -m 0644 scripts/smoke_installed.py /tmp/smoke.py
+            # PYTHONPATH: the package unpacks the wheel to /usr/lib/job-sluice rather
+            # than system site-packages, so `import sluice` needs pointing at it.
+            cd /tmp && runuser -u smoke -- env PYTHONPATH=/usr/lib/job-sluice \
+              python3 /tmp/smoke.py "$V" --channel ci-rpm-nonroot'
+
   ci-success:
-    needs: [lint, test, rulesync, docker]
+    needs: [lint, test, rulesync, docker, packages]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -214,4 +377,5 @@ jobs:
           [ "${{ needs.lint.result }}" = success ] && \
           [ "${{ needs.test.result }}" = success ] && \
           [ "${{ needs.rulesync.result }}" = success ] && \
-          [ "${{ needs.docker.result }}" = success ]
+          [ "${{ needs.docker.result }}" = success ] && \
+          [ "${{ needs.packages.result }}" = success ]

@@ -298,6 +298,44 @@ def test_every_needed_job_is_checked_in_the_success_chain():
         )
 
 
+def test_every_real_job_is_aggregated_by_ci_success():
+    """The test above derives its expectation FROM `needs:`, so removing a job from the needs
+    list AND the check chain together satisfies it -- both ends move and nothing notices. That
+    is not hypothetical bookkeeping: an unaggregated job can fail while `ci-success` stays
+    green, and `ci-success` is the only context the `qa-gates` ruleset requires, so the PR
+    merges on a red job. `packages` (#218) builds and installs every artefact, which is exactly
+    the job whose silent absence looks identical to its success.
+
+    The third end -- the jobs the file actually DEFINES -- is what closes it, swept from the
+    file rather than listed here.
+    """
+    text = _ci_text()
+    # Scoped to the `jobs:` block, not the whole file: an unscoped two-space sweep also matches
+    # the trigger keys under `on:` (`push:` is one), which would make this compare job names
+    # against a set that is not job names at all.
+    assert "\njobs:\n" in text, "ci.yml has no top-level `jobs:` block"
+    jobs_block = text.split("\njobs:\n", 1)[1]
+    # GitHub allows a job id to start with a letter OR an underscore and to contain letters,
+    # digits, `-` and `_`. A lowercase-and-hyphen-only pattern silently omits any other job
+    # from BOTH sides of the comparison below, so it can never be reported missing: measured,
+    # dropping `packages` from `ci-success` and renaming it `build_packages` left the whole
+    # suite green. The floor does not help -- five lowercase jobs remain to satisfy it.
+    defined = set(re.findall(r"^  ([A-Za-z_][A-Za-z0-9_-]*):$", jobs_block, re.M))
+    assert len(defined) >= 5, f"the job sweep found only {sorted(defined)} -- it is not working"
+
+    block = text.split("ci-success:")[1]
+    needed = {j.strip() for j in
+              re.search(r"needs:\s*\[([^\]]*)\]", block).group(1).split(",") if j.strip()}
+
+    # `ci-success` cannot aggregate itself; everything else must be in its needs list.
+    expected = defined - {"ci-success"}
+    assert needed == expected, (
+        f"defined but not aggregated by ci-success (can fail while the required check stays "
+        f"green): {sorted(expected - needed)}; "
+        f"aggregated but not defined: {sorted(needed - expected)}"
+    )
+
+
 def test_the_rulesync_job_sets_pipefail():
     """`bash -e {0}` is the default -- `-e` but NOT pipefail, so `cmd | tee` reports tee's
     status and a rulesync exit 1 would be swallowed.
@@ -767,6 +805,29 @@ def test_ci_builds_the_image_for_real():
     )
 
 
+def test_the_docker_job_smokes_the_built_image():
+    """The image is assembled from `dist/*.whl` in the build CONTEXT, so package data surviving
+    the copy, the plugin registry populating and the three version sources agreeing are all
+    determined at BUILD time -- the same argument that puts the wheel, sdist, .deb and .rpm in
+    the `packages` job rather than in `post-release.yml`. Without this step the image's first
+    real interrogation is after the tag is public, which is the position these jobs exist to
+    stop things being in.
+
+    Measured before this guard existed: deleting the step left the whole of `test_ci_wiring.py`
+    green, so the coverage was one careless edit from silently reverting.
+
+    Anchored on the INVOCATION, never the step's title -- this module's standing rule.
+    """
+    job = _job_directives("docker")
+    assert "/tmp/smoke.py" in job and "--channel ci-docker" in job, (
+        "the docker job must run scripts/smoke_installed.py against the image it just built "
+        "(`--channel ci-docker`) -- otherwise the image is only ever smoked post-release")
+    assert "--trust-env" in job, (
+        "the image smoke must pass --trust-env: the Dockerfile SETS XDG_CONFIG_HOME/"
+        "XDG_STATE_HOME/XDG_CACHE_HOME, so sandboxing them would certify paths the image does "
+        "not use and leave its real ones unexercised")
+
+
 def test_ci_image_smoke_covers_every_baked_extra():
     """`--version` passes on an image with no system libraries at all, so it cannot see the
     failure this image exists to prevent. And `pip install` only WARNS on an unknown extra
@@ -781,8 +842,14 @@ def test_ci_image_smoke_covers_every_baked_extra():
     # Anchored on the INVOCATION, not the step's title -- this module's own rule, stated at
     # the coverage-summary guard above: "assert the invocation, never the phrase". A title is
     # prose someone may reword, and a reword would fail the build for correct CI while the
-    # message blamed a missing extra. `--entrypoint python` occurs exactly once in ci.yml.
-    step = _step_containing("docker", "--entrypoint python")
+    # message blamed a missing extra.
+    #
+    # The needle carries the IMAGE as well, and that is not decoration: `--entrypoint python`
+    # alone stopped being unique the moment #218 added an image-smoke step invoking
+    # `--entrypoint python3`, of which it is a strict prefix. `_step_containing` refused as
+    # ambiguous rather than silently pinning the wrong step -- the right behaviour, and the
+    # reason this is tightened here rather than the arity check being relaxed there.
+    step = _step_containing("docker", '--entrypoint python job-sluice:ci')
     for module in ("weasyprint", "jinja2", "googleapiclient", "mcp", "argcomplete"):
         assert module in step, (
             f"ci.yml's docker job no longer smoke-imports {module!r}; a missing extra would "

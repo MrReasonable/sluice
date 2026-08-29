@@ -24,12 +24,22 @@ A one-shot skill: invoke it on a PR, and it drives the PR to green and merges it
 
 ## What "green" means in sluice
 
-`.github/workflows/ci.yml` defines four jobs:
+`.github/workflows/ci.yml` defines these jobs -- deliberately NOT stated as a count, because this line said "four" while six existed, having gone stale when `docker` was added and again when `packages` was. `tests/test_ci_wiring.py::test_every_real_job_is_aggregated_by_ci_success` is what actually pins the roster, by sweeping the `jobs:` block:
 
 - **`lint`**: `ruff check sluice tests scripts` (ruff pinned to `0.15.21`), then `zizmor --offline --strict-collection .github/workflows/`.
 - **`test`**: `pip install -e ".[test]"` then `python -m pytest --cov`, across a matrix of Python 3.12, 3.13 and 3.14, each leg publishing its coverage report to the run summary. Coverage REPORTS and does not gate (#11): there is no `--cov-fail-under`, so this job can never be red for coverage being too LOW. It is NOT immune to coverage altogether -- `coverage report` exits 1 on "No data to report", under `set -euo pipefail` -- so read the failing step before assuming a test failed.
 - **`rulesync`**: `npm ci --ignore-scripts` then `npm run rulesync`, asserting the regeneration wrote every output it should (`scripts/guard_rulesync_drift.py`, a count-based check -- a clean `git status` alone cannot see a dropped hook command), that the emitted `.claude/settings.json` still carries the no-bypass hook, and that the tree is clean afterward. This is the drift gate: it fails whenever `.rulesync/` and its generated outputs (`CLAUDE.md`, `AGENTS.md`, `.claude/`, ...) have come apart.
-- **`ci-success`**: the aggregate gate. It requires all three of the above to succeed.
+- **`docker`**: builds the image, smokes that every baked extra imports, runs
+  `scripts/smoke_installed.py` against the built image (`--channel ci-docker`), renders
+  `docker-compose.yml` and asserts the ssh key path does not leak into the container
+  environment, and checks `doctor` prints a report.
+- **`packages`** (#218): builds the wheel AND the sdist, installs each into a clean venv and
+  runs the smoke script; then builds the `.deb` and `.rpm` with a checksum-pinned nfpm,
+  installs both, and runs them **as a non-root user** -- root bypasses directory traversal
+  checks, so a root-only verification cannot see the failure this job exists to catch.
+- **`ci-success`**: the aggregate gate over every job above. It is the only context the
+  `qa-gates` ruleset requires, so a job missing from its `needs:` can fail while the PR still
+  merges -- which is why the roster is guarded by a test rather than by this list.
 
 The local bar is identical and is quick. The suite is fast and fully offline:
 
