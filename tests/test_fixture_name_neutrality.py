@@ -158,6 +158,9 @@ import hashlib
 import json
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
+
+from tests.markdown_fences import fenced_blocks, unclosed_fence
 
 import pytest
 
@@ -2615,3 +2618,269 @@ def test_the_ast_skill_collector_sees_every_shape_it_claims_to():
     # An unparseable module contributes nothing rather than raising -- the swallow
     # `test_every_test_module_parses_for_the_ast_collector` above keeps honest.
     assert _ast_skill_values("def (:") == set()
+
+
+# --- README's illustrative lead note (#221) -------------------------------------------------
+#
+# Every identity sweep above reads `_TESTS_DIR`, so README.md is outside ALL of them; the one
+# neutrality guard that reaches it is test_no_leaked_files.py's absolute-home-path gate, which
+# is repo-wide because its pathspec is empty. That cost nothing until #221 rewrote README with
+# a full lead-identity block in it -- company, role, location, salary, url, role_type -- in the
+# file `pyproject.toml` names as `readme`, so it is published to PyPI as well as GitHub.
+#
+# NARROW on purpose. A roster sweep over README PROSE is not the fix: it would fire on
+# MrReasonable, Camofox, Homebrew, WeasyPrint, Obsidian and every other legitimate proper noun,
+# and a guard that fires on good content is a guard that gets suppressed.
+#
+# SWEPT: the identities with a decidable rule -- company, location and every url -- read from
+# the WHOLE block, both its frontmatter keys and the rendered restatements below the closing
+# `---`. NOT `role`, `salary` or `role_type`: no roster exists for a job title or a day rate,
+# and inventing one would be the classifier this file's own docstring argues against.
+#
+# Naming the KEYS rather than the identities is what went wrong twice. "the note's frontmatter
+# keys" read to three reviewers as covering all six; correcting it to name three keys then
+# described the code exactly while leaving the note's rendered half -- `# <company> - <role>`,
+# `**Location:**`, `**URL:**` -- swept by nothing, so a real employer, place and ATS host all
+# shipped GREEN past the guard written to stop precisely that. Scope this comment by IDENTITY,
+# never by spelling, or the next spelling is unguarded again.
+#
+# The block is ISOLATED FIRST, and the sweep runs INSIDE it. Sweeping the whole file lets any
+# other `company:` line anywhere in README satisfy the non-vacuity assertion while the sample
+# note itself is reformatted or deleted -- measured on this guard's first cut, where a second
+# note carrying an unreviewed employer and a real host shipped green.
+#
+# Values are read QUOTED OR BARE. The first cut matched `key: "value"` only, and README's own
+# note already mixes bare scalars (`status: new`, `score: 0`), so a bare `company: Real Ltd`
+# was invisible to the sweep while the scope assertion stayed satisfied by the quoted `url:`.
+_README_PATH = _TESTS_DIR.parent / "README.md"
+# Fence handling lives in `tests/markdown_fences.py`, shared with tests/test_docs_claims.py
+# and implemented line by line against CommonMark 4.5. It was a regex duplicated across the two
+# files until PR #222 round 6; CodeRabbit corrected those regexes on three consecutive rounds,
+# one spec clause per round, and the round-4 attempt to stop the drift -- pinning the two
+# patterns to each other -- did not survive round 5, because both were wrong in the same way.
+# One implementation with a named branch per rule is what generalises; the agreement test that
+# policed the duplication is gone with the duplication.
+_README_FM_FIELD = re.compile(
+    r"^(?P<key>company|location|url):[ \t]*(?P<val>.*?)[ \t]*$", re.M)
+
+# The block does not stop at its frontmatter. Below the closing `---` the note RESTATES the
+# same three identities in rendered form -- `# <company> - <role>`, a `**Location:**` line and
+# a `**URL:**` line -- and none of those spellings is anchored `^key:`, so the frontmatter
+# sweep alone cannot see them. Measured: a real employer in the heading, a real place in
+# `**Location:**` and an ATS host in `**URL:**` all shipped GREEN, individually and together,
+# while the identical substitutions in the frontmatter half all failed. Two reviewers found
+# this independently. Sweep the WHOLE block: every url-shaped token through `_is_reserved`,
+# and the rendered company/location restatements against the same rosters as their keys.
+_RENDERED_URL = re.compile(r"(?<![\w@:])(?P<url>[a-zA-Z][a-zA-Z0-9+.-]*://[^\s<>()\[\]`'\"]+)")
+_RENDERED_HEADING = re.compile(r"^#[ \t]+(?P<company>.+?)[ \t]+-[ \t]+.+$", re.M)
+_RENDERED_LOCATION = re.compile(r"^\*\*Location:\*\*[ \t]*(?P<location>[^|\n]+?)[ \t]*(?:\||$)", re.M)
+
+# `Example City` is deliberately NOT added to `_REVIEWED_CORPUS_LOCATIONS`. That roster is for
+# CAPTURED board values whose internal token structure has to survive `_norm_location` -- its
+# own comment says to use the generated family for anything invented -- and README's note is an
+# illustration written by hand, not a capture. A separate one-value set keeps the two scopes
+# from being conflated by whoever extends either next.
+_README_REVIEWED_LOCATIONS = frozenset({"Example City"})
+
+
+def _readme_sample_note_fields() -> dict:
+    """{"frontmatter": {key: [value, ...]}, "rendered": {...}} for README's sample lead note.
+
+    The two halves are kept APART rather than merged. Merged, the non-vacuity assertion below
+    is satisfied by whichever half still has the key -- measured, ALL SIX half-removals (each
+    of company/location/url, from either half) left the guard green, so a frontmatter key
+    renamed to `employer:` would carry a real employer with nothing sweeping it while the
+    rendered heading kept the check happy. A guard whose scope assertion can be satisfied by
+    the half that did not change is not asserting scope.
+    """
+    text = _README_PATH.read_text(encoding="utf-8")
+    assert not unclosed_fence(text), (
+        "README has an unclosed code fence. Refusing to select a sample note from it: an "
+        "unclosed fence runs to the end of the document, so a second identity block placed "
+        "after one is swallowed by it -- the count below would still read 1 and the new block "
+        "would never be swept.")
+    blocks = [b for b in fenced_blocks(text) if _README_FM_FIELD.search(b)]
+    assert len(blocks) == 1, (
+        f"expected exactly ONE fenced block in README carrying lead frontmatter, found "
+        f"{len(blocks)}. Zero means the sample note was reformatted or removed and this sweep "
+        f"is enumerating nothing; more than one means a second identity block shipped and this "
+        f"guard needs to say which it covers.")
+
+    lines = blocks[0].split("\n")
+    marks = [i for i, ln in enumerate(lines) if ln.strip() == "---"]
+    assert len(marks) >= 2, (
+        "README's sample note has no closing `---`, so its frontmatter and rendered halves "
+        "cannot be told apart and only one of them would be swept.")
+    frontmatter = "\n".join(lines[marks[0] + 1:marks[1]])
+    rendered = "\n".join(lines[marks[1] + 1:])
+
+    fm = {}
+    for m in _README_FM_FIELD.finditer(frontmatter):
+        value = m.group("val")
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]      # quoted or bare: both are valid YAML, both are swept
+        fm.setdefault(m.group("key"), []).append(value)
+
+    # The rendered half restates the same identities in different spellings, none of them
+    # anchored `^key:`. A url is self-identifying, so it needs no per-spelling pattern and is
+    # swept wherever it sits in this half -- `**URL:**` line or prose.
+    rend = {}
+    for m in _RENDERED_HEADING.finditer(rendered):
+        rend.setdefault("company", []).append(m.group("company").strip())
+    for m in _RENDERED_LOCATION.finditer(rendered):
+        rend.setdefault("location", []).append(m.group("location").strip())
+    for m in _RENDERED_URL.finditer(rendered):
+        rend.setdefault("url", []).append(m.group("url"))
+
+    # SCOPE and VALUES are different questions, and conflating them cost a hole in each
+    # direction. The per-half lists above answer "is this half still being swept"; they must
+    # stay per-half, or a missing `**URL:**` line is covered for by the frontmatter key (that
+    # was the defect the halves were split to fix). This third list answers "is every url in
+    # the note reserved", and it must span the WHOLE block: scoped to `rendered`, a real host
+    # in an EXTRA frontmatter field -- `applied_url:`, say, which no per-key pattern names --
+    # bypassed `_is_reserved` entirely while the ordinary `url:` kept both scope checks happy.
+    # Measured, both directions. Fixing this by pointing the rendered sweep at the whole block
+    # (the shape first proposed in review) closes the value gap and reopens the scope one.
+    return {"frontmatter": fm, "rendered": rend,
+            "urls": [m.group("url") for m in _RENDERED_URL.finditer(blocks[0])]}
+
+
+def _readme_note_values(key: str) -> list:
+    """Every value for `key`, both halves, for the roster checks."""
+    halves = _readme_sample_note_fields()
+    return halves["frontmatter"].get(key, []) + halves["rendered"].get(key, [])
+
+
+def test_readmes_illustrative_lead_note_uses_reviewed_identities():
+    """An employer, a place or a real host anywhere in README's sample note ships to PyPI.
+
+    "Anywhere" is load-bearing: the note states each identity twice, once as a frontmatter key
+    and once rendered below the closing `---`, and an earlier cut of this guard read only the
+    first. Both halves are swept now.
+
+    Nothing local can tell a real employer from an invented one, so this is a RATCHET like the
+    sweeps above rather than a classifier: a new value fails until a human rules on it. The URL
+    half is decidable without a human -- RFC 2606 reserves the TLDs -- so it is structural.
+    """
+    halves = _readme_sample_note_fields()
+
+    # SCOPE, PER HALF. Every identity must be found in BOTH halves, because each half is swept
+    # by its own patterns and either can be lost on its own. Merged into one list this was
+    # nearly inert: measured, ALL SIX half-removals (company/location/url x frontmatter/
+    # rendered) left the guard green, since the surviving half kept the key non-empty. A
+    # frontmatter `company:` renamed to `employer:` would then carry a real employer with
+    # nothing sweeping it at all.
+    for half in ("frontmatter", "rendered"):
+        for key in ("company", "location", "url"):
+            assert halves[half].get(key), (
+                f"README's sample lead note has no {key} in its {half} half -- that half's "
+                f"sweep is enumerating nothing, so anything placed there would go unchecked "
+                f"while the other half kept this assertion satisfied")
+
+    fields = {k: halves["frontmatter"].get(k, []) + halves["rendered"].get(k, [])
+              for k in ("company", "location")}
+    # Values come from the whole-block sweep, which is a SUPERSET of what the halves found --
+    # asserted, so this cannot silently narrow back to one half's view.
+    fields["url"] = halves["urls"]
+    per_half_urls = set(halves["frontmatter"].get("url", [])) | set(halves["rendered"].get("url", []))
+    assert per_half_urls <= set(fields["url"]), (
+        f"the whole-block url sweep missed {sorted(per_half_urls - set(fields['url']))}, which "
+        f"the per-half sweeps found -- it is meant to cover at least everything they do")
+
+    unreviewed = sorted({c for c in fields["company"] if c not in _REVIEWED_FIXTURE_IDENTITIES})
+    assert not unreviewed, (
+        f"README's sample lead note names {unreviewed}, which no human has reviewed. Nothing "
+        f"here can tell a real employer from an invented one, and README ships to PyPI -- so "
+        f"a person must rule on it and add it to _REVIEWED_FIXTURE_IDENTITIES.")
+
+    unreviewed_places = sorted(
+        {p for p in fields["location"] if p not in _README_REVIEWED_LOCATIONS})
+    assert not unreviewed_places, (
+        f"README's sample lead note is located in {unreviewed_places}, which no human has "
+        f"reviewed. A real place here reads as one person's hunt geography (#27), in the file "
+        f"published to PyPI -- rule on it and add it to _README_REVIEWED_LOCATIONS.")
+
+    for url in fields["url"]:
+        # urlsplit, not a hand regex: the first cut captured USERINFO into the host, so
+        # `https://example.invalid@real.example.com/x` read as reserved. urlsplit knows the
+        # difference, and strips the port too.
+        host = urlsplit(url).hostname or ""
+        assert host, f"README's sample note has an unparseable url: {url!r}"
+        assert _is_reserved(host), (
+            f"README's sample lead note points at {host!r}, which is not an RFC 2606 reserved "
+            f"domain. A real host in the PyPI description reads as a real posting.")
+
+
+def test_the_readme_location_roster_carries_no_value_the_note_stopped_using():
+    """The reverse direction, which `_README_REVIEWED_LOCATIONS` was missing.
+
+    Same reasoning as `test_the_corpus_rosters_carry_no_value_the_fixtures_stopped_using`
+    above, and it applies harder here: this roster has ONE member and two references, so it is
+    the cheapest place in the file to append a value and the likeliest to accumulate an
+    approval nobody remembers granting. A roster that outlives the note it approves says a
+    human ruled on something that is no longer shipping.
+    """
+    stale = _README_REVIEWED_LOCATIONS - set(_readme_note_values("location"))
+    assert not stale, (
+        "_README_REVIEWED_LOCATIONS names values README's sample lead note no longer uses:\n  "
+        + "\n  ".join(sorted(map(repr, stale)))
+        + "\n\nDrop them, so the roster stays a list of what is actually shipping.")
+
+
+# The scanner in `tests/markdown_fences.py` is the one place fence rules are implemented, so
+# this is where they are checked against the SPEC. It replaces an agreement test that compared
+# the two old duplicated patterns to each other: they agreed, and were both wrong, which is the
+# failure a pattern-to-pattern comparison cannot see and a spec-derived table can.
+#
+# A row per CommonMark 4.5 clause, not per shape anyone remembered. Note the expected column
+# for an UNCLOSED fence: the block runs to end of document, so its content IS inside it and IS
+# stripped -- the protection callers rely on is `unclosed_fence` refusing, never the content
+# happening to survive. Writing that column from the old regexes' behaviour instead of from the
+# spec is what hid the mixed-delimiter closer bug, which this table then caught.
+_FENCE_SHAPES = (
+    # name,                          document,                              stripped, unclosed
+    ("plain backtick pair",          "a\n```md\nX\n```\nb\n",              True,  False),
+    ("plain tilde pair",             "a\n~~~md\nX\n~~~\nb\n",              True,  False),
+    ("four open four close",         "a\n````md\nX\n````\nb\n",            True,  False),
+    ("four open five close",         "a\n````md\nX\n`````\nb\n",           True,  False),
+    ("three open four close",        "a\n```md\nX\n````\nb\n",             True,  False),
+    ("four open THREE close",        "a\n````md\nX\n```\nb\n",             True,  True),
+    ("mixed-delimiter closer",       "a\n```md\nX\n```~\nb\n",             True,  True),
+    ("tilde open backtick close",    "a\n~~~md\nX\n```\nb\n",              True,  True),
+    ("unterminated",                 "a\n```md\nX\n",                      True,  True),
+    ("indented three both lines",    "a\n   ```md\nX\n   ```\nb\n",        True,  False),
+    ("indented open flush close",    "a\n   ```md\nX\n```\nb\n",           True,  False),
+    ("flush open indented close",    "a\n```md\nX\n   ```\nb\n",           True,  False),
+    ("four spaces is not a fence",   "a\n    ```md\nX\n    ```\nb\n",      False, False),
+    ("backtick in backtick info",    "a\n```js `no`\nX\n```\nb\n",         False, True),
+    ("backtick in TILDE info is ok", "a\n~~~js `ok`\nX\n~~~\nb\n",         True,  False),
+    ("closer may carry no info",     "a\n```md\nX\n``` info\n```\nb\n",   True,  False),
+    # CommonMark 2.1: a line ending is \n, \r, or \r\n. Splitting on \n alone left a
+    # trailing \r that no closing-fence pattern accepts, so a well-formed CRLF block read
+    # as UNCLOSED. Not reachable from this repo's callers (universal newlines translate on
+    # text reads, measured), but the scanner is general and the rows are per spec clause.
+    ("CRLF pair",                    "a\r\n```md\r\nX\r\n```\r\nb\r\n",   True,  False),
+    ("CRLF unterminated",            "a\r\n```md\r\nX\r\n",              True,  True),
+    ("lone CR pair",                 "a\r```md\rX\r```\rb\r",             True,  False),
+)
+
+
+def test_the_fence_scanner_matches_commonmark():
+    """Both README guards depend on this; a missed rule is a bypass in each of them.
+
+    Every row is a CommonMark clause rather than a case someone hit in review -- which is the
+    difference between a check that generalises and three consecutive rounds of adding the
+    shape a reviewer just named.
+    """
+    from tests.markdown_fences import strip_fenced_blocks
+
+    for name, doc, want_stripped, want_unclosed in _FENCE_SHAPES:
+        assert ("X" not in strip_fenced_blocks(doc)) == want_stripped, (
+            f"strip_fenced_blocks gets {name!r} wrong (expected stripped={want_stripped})")
+        assert unclosed_fence(doc) == want_unclosed, (
+            f"unclosed_fence gets {name!r} wrong (expected {want_unclosed})")
+
+    # SCOPE, both columns: a table whose rows all expect the same answer would pass over a
+    # scanner that always strips, or never reports an unclosed fence.
+    assert len({s for _, _, s, _ in _FENCE_SHAPES}) == 2, "the stripped column tests one outcome"
+    assert len({u for _, _, _, u in _FENCE_SHAPES}) == 2, "the unclosed column tests one outcome"

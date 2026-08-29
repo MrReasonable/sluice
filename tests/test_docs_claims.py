@@ -20,6 +20,7 @@ import pytest
 
 from sluice.cli import _build_parser
 from sluice.core.protocols import EVIDENCE_KINDS
+from tests.markdown_fences import strip_fenced_blocks, unclosed_fence
 
 # What a user reads. Same shape as tests/test_no_copy_instruction.py's `_SHIPPED_PROSE`: docs
 # under superpowers/ are deliberately excluded there and here, for the same reason -- they are
@@ -198,6 +199,134 @@ def test_every_real_command_is_documented_in_usage_md():
             if (group, sub) not in claimed:
                 missing.append(f"{group} {sub}")
     assert not missing, f"docs/USAGE.md never mentions: {missing}"
+
+
+# README's Commands table, as {group: {subcommand, ...}}. A dedicated parse rather than
+# `_claimed_pairs`, which cannot see this shape: the table names a group once as
+# `job-sluice ingest` and then lists its subcommands as bare backticked tokens in the NEXT
+# cell (`list-sources`, `run`, ...), never re-prefixed with `job-sluice`. Sweeping the row's
+# own cells is what makes the subcommand half of this checkable at all.
+#
+# SCOPED to the `## Commands` section, and fences are stripped from the WHOLE FILE BEFORE that
+# section is located -- not from the section afterwards. The row pattern matches any markdown
+# row shaped like one, so a table ANYWHERE else in README would be parsed as though it were the
+# real thing. Two measured masking defects, one per cut:
+#   1. Parsing the whole file into a last-wins dict let a later fenced row MASK a stale real
+#      row, and the guard stayed green on a stale README.
+#   2. Stripping fences only from the section body still searched RAW text for the heading, so
+#      a fenced `## Commands` plus a correct table EARLIER in the file won the section search
+#      and the real, stale table below was never read. Same defect one level up.
+# A duplicate row raises rather than quietly winning, for the same reason.
+#
+# Fence handling lives in `tests/markdown_fences.py`, implemented line by line against
+# CommonMark 4.5 and shared with tests/test_fixture_name_neutrality.py. It was a regex here
+# until PR #222 round 6, and CodeRabbit corrected that regex on three consecutive rounds --
+# one spec clause each time (same-delimiter closer and run length, then a 0-3 space indent,
+# then a backtick fence's info string). Round 4 tried to stop the drift by pinning this
+# pattern to its sibling; round 5 walked past that, because both were wrong identically.
+# One implementation, each rule a named branch, is the fix that generalises.
+_README_COMMANDS_SECTION = re.compile(r"^## Commands\s*$(?P<body>.*?)(?=^## |\Z)", re.M | re.S)
+_README_COMMAND_ROW = re.compile(r"^\|\s*`job-sluice\s+([a-z][a-z-]*)`\s*\|(.*)\|\s*$", re.M)
+_BACKTICKED = re.compile(r"`([a-z][a-z-]*)`")
+
+
+def _readme_command_table() -> dict:
+    with open("README.md", encoding="utf-8") as f:
+        text = f.read()
+    # Reported as a fact by the scanner, not inferred from leftover delimiter markers. The
+    # marker heuristic this replaces only worked while a malformed opener still LOOKED like
+    # one: a mixed-delimiter closer and a backtick-in-info-string opener each left ZERO
+    # residual markers while swallowing the real Commands section whole.
+    assert not unclosed_fence(text), (
+        "README has an unclosed code fence. Refusing to parse: an unclosed fence runs to the "
+        "end of the document, so everything after it -- the real Commands table included -- is "
+        "inside it, and a `## Commands` heading in an earlier illustration would win the "
+        "section search unopposed.")
+    defenced = strip_fenced_blocks(text)
+    # Exactly ONE `## Commands` heading. The section search takes the first match, so a second
+    # top-level Commands section carrying a correct table MASKS a stale real one below it --
+    # measured green before this line, and found while witnessing the fence fixes rather than
+    # reported by any review round. It is the same masking class the fence work closed, minus
+    # the fence: duplicate rows already raise rather than last-wins, and a duplicate SECTION
+    # has to for the same reason.
+    headings = re.findall(r"^## Commands\s*$", defenced, re.M)
+    assert len(headings) == 1, (
+        f"README has {len(headings)} `## Commands` headings outside code fences. The parse "
+        f"takes the first, so a second one would silently decide what this guard checks.")
+    section = _README_COMMANDS_SECTION.search(defenced)
+    assert section, (
+        "README has no `## Commands` heading -- without it this parse would fall back to the "
+        "whole file and pick up any table-shaped row anywhere in it")
+    table = {}
+    for row in _README_COMMAND_ROW.finditer(section.group("body")):
+        group, cells = row.group(1), row.group(2)
+        assert group not in table, (
+            f"README's command table has two rows for `{group}` -- one would mask the other, "
+            f"so this is an error rather than last-wins")
+        table[group] = set(_BACKTICKED.findall(cells))
+    return table
+
+
+def test_readmes_command_table_covers_every_real_group_and_subcommand():
+    """README's command TABLE drifts on its own, and nothing checked the table as a table.
+
+    Precisely, because the loose version of this sentence was itself wrong: the parser WAS
+    already walked against README by `test_every_documented_command_claim_is_real` above,
+    which sweeps every file in `_DOCS` for `job-sluice <group> <sub>` invocations. What that
+    cannot see is the table's own shape -- a row names its group once and lists its
+    subcommands as bare backticked tokens in the next cell, an adjacency that sweep never
+    matches -- nor the real->claimed direction, which is what a completeness index needs.
+
+    Measured on the pre-#221 file: the table listed TEN groups and the prose said "Ten
+    top-level command groups", while the real tree had THIRTEEN -- `experience`, `skills` and
+    `stories` shipped with #164 and README was never updated. The `leads` row was stale in the
+    subcommand direction too, naming four of its five (`rename` was absent). Both went
+    unnoticed because `test_every_real_command_is_documented_in_usage_md` above reads
+    docs/USAGE.md ONLY, which did carry all of them -- so the CLI reference was right and the
+    front page, which is also the PyPI description, was wrong.
+
+    Completeness in BOTH directions is the point: the table is an index of the command
+    surface, so a group or subcommand that exists and is not in it is a silent omission, and
+    one that is in it and does not exist is a stale claim. Deliberately no COUNT is asserted
+    and README no longer states one -- a spelled-out number in prose is the drift surface this
+    repo keeps rediscovering, and for a number that earns a reader nothing, removing it beats
+    guarding it.
+    """
+    tree = _command_tree()
+    table = _readme_command_table()
+    # SCOPE. NOT what stops this going vacuous: the group set-equality below already fails on
+    # an empty table -- measured, by deleting this line and breaking the table, which died
+    # there rather than here. It is kept for the DIAGNOSIS, which names the parse instead of
+    # reporting thirteen simultaneously-absent groups.
+    assert table, "README's command table did not parse"
+
+    assert set(table) == set(tree), (
+        f"README's command table lists {sorted(table)} but the real parser tree has "
+        f"{sorted(tree)}. Missing from README: {sorted(set(tree) - set(table))}; "
+        f"claimed by README but not real: {sorted(set(table) - set(tree))}")
+
+    for group, subs in tree.items():
+        if subs is None:
+            # Leaf group (health/init/doctor): nothing to enumerate, so the row must name
+            # nothing. `continue` alone was the SAME hole as the intersection below, one
+            # branch over -- measured, a fabricated `` `frobnicate` `` in the `init` row
+            # passed the whole suite while the identical token in a non-leaf row failed.
+            # "Both directions" has to hold for every row, not for the rows that happen to
+            # reach the comparison.
+            assert not table[group], (
+                f"README's `{group}` row backticks {sorted(table[group])}, but `{group}` has "
+                f"no subcommands at all -- a leaf row may name none")
+            continue
+        # EQUALITY, never `table[group] & set(subs)`. An intersection discards a README token
+        # naming no real subcommand BEFORE comparing, so the check collapses to a subset test
+        # and a fabricated `leads frobnicate` passed the whole suite -- measured, by three
+        # reviewers independently, on this guard's first cut. The cost of equality is that a
+        # row's cells may backtick ONLY real subcommand names; a flag cannot collide, since
+        # `_BACKTICKED` requires a leading letter and so never matches `--write`.
+        assert table[group] == set(subs), (
+            f"README's `{group}` row names {sorted(table[group])} but the real subcommands "
+            f"are {sorted(subs)} -- missing: {sorted(set(subs) - table[group])}; "
+            f"claimed but not real: {sorted(table[group] - set(subs))}")
 
 
 # Config keys that RAISE if set (retired), keyed to the exact shape a doc would write them in.

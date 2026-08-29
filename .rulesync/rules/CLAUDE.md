@@ -950,11 +950,33 @@ consistently engineers out; see `_select_backend`'s guard in `cli.py`.
 - **`README.md` and everything under `docs/`, plus `CONTRIBUTING.md`/`SECURITY.md`, are the
   opposite of the point above: tracked, hand-written, human-facing documentation, not generated
   outputs.** Edit them directly; there is no source-of-truth file to regenerate them from, the way
-  there is for `CLAUDE.md`/`AGENTS.md`. `docs/USAGE.md` is the one exception with an automated
-  check on it rather than a generator: `tests/test_docs_claims.py` walks the real `cli.py` parser
-  and fails the build if a command it documents stops existing, or a real command goes
-  undocumented -- the same generate-then-diff discipline as the `rulesync` CI job, applied to a
-  hand-written file instead of a generated one. `docs/ARCHITECTURE.md` is the living technical
+  there is for `CLAUDE.md`/`AGENTS.md`. Several of them DO carry automated checks rather than a
+  generator. **State NO COUNT of them, here or anywhere.** Three successive attempts to write
+  one in this bullet were each wrong -- "the one exception", then "TWO of them, both in
+  `tests/test_docs_claims.py`" (contradicted six lines below by INSTALL's own list), then "Two
+  walk the real `cli.py` parser" (`_command_tree()` has seven call sites, and the sweeps built
+  on it validate command claims across every file in `_DOCS`). Each fix wrote a new number
+  instead of deleting the number. `tests/test_docs_claims.py` is the file; read it for the
+  roster.
+  Two checks are worth naming for what they DO, without implying they are the whole set:
+  `docs/USAGE.md` fails the build if a command it documents stops existing or a real command
+  goes undocumented, and (#221) `README.md`'s Commands table fails it if the table and the
+  parser tree disagree in EITHER direction, on groups or on subcommands. That second one exists
+  because nothing checked the table AS A TABLE -- the parser was already swept against README's
+  prose invocations, but a row names its group once and lists its subcommands as bare backticked
+  tokens in the next cell, an adjacency no prose sweep matches. It claimed ten top-level groups
+  against a real thirteen, and named four of `leads`' five subcommands, while `USAGE.md` carried
+  all of them and stayed green. Same generate-then-diff discipline as the `rulesync` CI job,
+  applied to hand-written files instead of generated ones. Note README is ALSO
+  `pyproject.toml`'s `readme`, so a false claim there ships to PyPI as the package description;
+  its sample lead note is swept for identities too (`tests/test_fixture_name_neutrality.py`) --
+  the company, the location and every url INSIDE that one fenced block, in BOTH halves of it
+  (the frontmatter keys and the rendered restatements below the closing `---`), never README's
+  prose, and never `role`/`salary`/`role_type`, for which no roster exists and inventing one
+  would be the classifier that file's own docstring argues against. Scope that claim by
+  IDENTITY, never by spelling: an earlier cut said "frontmatter keys", which described the code
+  exactly while leaving the rendered half unswept, and a real employer, place and ATS host all
+  shipped green past it. `docs/ARCHITECTURE.md` is the living technical
   description (module-by-module, the seams, the store contract); `docs/USAGE.md` is the CLI
   reference; `docs/CONFIGURATION.md` is the config-key reference; `docs/TROUBLESHOOTING.md` is
   fixes for specific failures; `docs/INSTALL.md` is the per-channel install guide (#104). That
