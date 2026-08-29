@@ -1,118 +1,81 @@
 # Sluice
 
-Sluice is an engineered, config-driven job-hunting pipeline. It scans job
-boards into a lead store, triages leads with deterministic rules plus an LLM
-judge, composes a fabrication-gated CV tailored to each shortlisted role,
-preps and records applications, and reconciles the funnel from email and
-calendar signals. Every stage is config-first: sane defaults ship in code,
-a single YAML file overrides them, and secrets come from the environment.
-
-Installed as the `job-sluice` command (`pip install job-sluice` from 1.0.0
-onward, or `pip install -e .` from a checkout — see [Install](#install)). The
-PyPI distribution and the console script are both
-`job-sluice`; the import package stays `sluice`, so nothing under the hood or
-in your config changes because of the name. `job-sluice`, not `sluice`, is
-what a fresh checkout gives you on `$PATH` — see [Naming](#naming) if you are
-wondering why.
-
-## Ships no preferences
-
-Sluice expresses no opinion about which jobs are good. That is deliberate, and it is
-enforced rather than promised:
-
-- `accept_titles` / `reject_titles`, `target_locations` / `reject_locations`,
-  `reject_companies`, and the coarse ingest gate (`relevance_keep` / `relevance_drop`)
-  all default to **empty**. An unconfigured gate **abstains** and passes every lead
-  through, rather than silently filtering your job hunt against a stranger's taste.
-  Pay floors default to `0` (off).
-
-  Note that empty means *abstain*, not *match nothing*: an empty `target_locations`
-  keeps every lead, it does not reject every lead that names a location. That
-  distinction is enforced by a test, because getting it backwards would bin someone's
-  entire job hunt in silence.
-- The judge's criteria - who you are, what you want, what you refuse - are read at
-  runtime from an Obsidian note (`Job Applications/Judging Profile.md`), never from this
-  repository. The fallback compiled into the code states only that nothing is configured
-  and declines to invent an opinion.
-- The test suite generates its own synthetic job titles (seeded `faker`, see
-  `tests/conftest.py`), so no real person's preferences are encoded in the fixtures or the
-  assertions. `test_shipped_prompt_expresses_no_role_or_culture_preference` fails the
-  build if a role or culture preference is ever baked back into the shipped prompt.
-
-If you are contributing: your job search belongs in your config and your vault. It must
-not land in this repo.
-
-## Pipeline
+Sluice is a config-driven job-hunting pipeline for people who keep their job search in an
+Obsidian-style markdown vault. It scrapes job boards into lead notes, triages them against
+criteria you write in your own vault, composes a CV tailored to each shortlisted role behind a
+hard anti-fabrication gate, and reconciles the funnel from your email and calendar.
 
 ```
 ingest -> triage -> cv -> apply -> track
 ```
 
-- **ingest**: scan job boards (via declarative sources) into the lead store, deduping and gating for relevance as it goes.
-- **triage**: deterministic classification resolves obvious cases for free; ambiguous leads go to an LLM judge, and verdicts are written back without touching any lead already in the application lifecycle.
-- **cv**: select verified source material, compose a tailored CV against a closed bundle, gate it for fabricated claims, render, and serve.
-- **apply**: select eligible leads, stage the CV and a prep packet; the actual ATS form-fill is human-driven, this sub-app prepares the material.
-- **track**: reconcile the application funnel from email and calendar signals, never regressing a lead's status.
+It ships **no opinion about which jobs are good.** Every preference gate defaults to empty, and
+an empty gate passes every lead through rather than filtering your search against a stranger's
+taste. What the judge is looking for is read at runtime from a note in your vault, never from
+this repository.
 
-`core/` underlies all five: layered config, the lead/experience store, LLM
-backend clients, the shared status vocabulary, the dedup database, and the
-resilience helpers (retry, timeout, rate-limit) that every stage wraps its
-I/O in.
+Installed as the `job-sluice` command — see [Install](#install), and [Naming](#naming) for why
+it isn't `sluice`.
 
-Five more command groups sit alongside the pipeline rather than inside it: `job-sluice init`
-(scaffold a config), `job-sluice doctor` (preflight everything below before you spend an LLM
-call finding out it's broken), `job-sluice health` (per-source scrape state), `job-sluice leads`
-(dedupe/expire/reconcile maintenance passes), and `job-sluice mcp` (a Model Context Protocol
-server, so an agent can drive sluice directly). See [Commands](#commands) for
-the full list, and [`docs/ARCHITECTURE.md`](https://github.com/MrReasonable/sluice/blob/main/docs/ARCHITECTURE.md) for the module-by-module
-detail.
+## What you end up with
 
-## Status: work in progress
+Plain markdown in your own vault, editable in Obsidian, which sluice reads back on the next run.
+A newly-created lead note, exactly as written (illustrative values):
 
-Sluice currently assumes:
+```markdown
+---
+base: "[[Job Leads.base]]"
+company: "Example Systems"
+role: "Senior Engineer"
+location: "Example City"
+status: new
+score: 0
+source: "manual"
+salary: "£500/day"
+role_type: "contract"
+url: "https://example.invalid/jobs/1234"
+glassdoor_rating: ""
+culture_flags: ""
+relevance_notes: ""
+first_seen: 2026-08-29
+last_seen: 2026-08-29
+---
 
-- an Obsidian-style markdown vault as the lead and experience store
-- a Claude CLI backend (run locally or shelled out over SSH) as one option for
-  the LLM judge and composer, with direct API backends (Anthropic, OpenAI,
-  DeepSeek) as the alternative — see `--backend` in
-  [`docs/USAGE.md`](https://github.com/MrReasonable/sluice/blob/main/docs/USAGE.md)
-- a bundled renderer (`cv.renderer: template`, the default) that fills your
-  own Jinja2 template -- or the packaged one, if you don't supply one -- with
-  the composed CV and turns it into a PDF via WeasyPrint; `script`, shelling
-  out to an external render pipeline you supply, remains as a full-control
-  escape hatch
-- a browser for ATS forms: an automated browser (Camofox) for ingest
-  sourcing, and a human at the keyboard for filling in application forms
-- a Google OAuth token for track's Gmail and Calendar access
+# Example Systems - Senior Engineer
 
-Each of those started life as a seam meant to become a pluggable adapter, and
-most of that work is now done rather than planned:
+**Status:** new
+**Location:** Example City | **Salary:** £500/day
+**URL:** https://example.invalid/jobs/1234
+```
 
-- **LLM backend adapters** — DONE. `sluice/backends/` self-registers four
-  providers (`anthropic`, `openai`, `deepseek`, plus the flat-rate `claude-max`
-  CLI shell-out); `--backend {auto,primary,fallback}` selects a *role*, and
-  which provider fills each role is config (`primary_backend`,
-  `fallback_backend`).
-- **Bundled renderer** — DONE. `cv.renderer: template` fills a Jinja2 template
-  via WeasyPrint; see [Rendering prerequisites](#rendering-prerequisites-cvrenderer-template-only)
-  below. `script` (the original external-script renderer) remains as an
-  escape hatch.
-- **Store adapter** — the seam shipped (`core/protocols.py: Store`,
-  `sluice/stores/`, a conformance suite in `tests/conformance/`), with one
-  production implementation: the Obsidian vault.
-  A second implementation is future work, not yet started.
-- **Fetch/browser adapter** — the seam shipped
-  (`core/protocols.py: Fetcher`, `sluice/fetchers/camofox.py`), with one
-  production implementation: Camofox. Same status as the store seam.
-- **Docs and CI** — this file, `docs/INSTALL.md`, `docs/ARCHITECTURE.md`,
-  `docs/USAGE.md`, `docs/CONFIGURATION.md`, `docs/TROUBLESHOOTING.md`, `CONTRIBUTING.md`,
-  `SECURITY.md`; CI runs lint, a 3-Python-version test matrix, and a
-  rulesync-drift gate (`.github/workflows/ci.yml`), and release-please cuts
-  versioned releases from Conventional Commits.
+The three blank keys are enrichment slots triage fills in and then owns.
 
-What's still genuinely ahead: a second store/fetcher implementation (nobody
-has needed one yet). Install-channel status is tracked in the table under
-[Install](#install) rather than restated here.
+`status` is the spine, and it has two owners. Triage owns `new`, `shortlist`, `research`,
+`needs_review`, `dismiss` and `unjudgeable`; once an application is sent, the lead crosses into
+the set `track` owns — `applied`, `phone_screen`, `interview`, `offer`, and the terminals
+`accepted`, `rejected` and `withdrawn` — which triage may never touch again. Your own edits to a
+note survive every later run — see [What it guarantees](#what-it-guarantees).
+
+## What it costs to run
+
+Sluice orchestrates things it does not bundle. This is the honest list, so you can decide before
+installing rather than after:
+
+| You supply | Needed by | Without it |
+|---|---|---|
+| A vault directory | everything | `job-sluice init` creates one |
+| An LLM backend — an API key, or the `claude` CLI | `triage`'s judge, `cv`'s composer | `triage run --no-llm` still classifies deterministically |
+| A [Camofox](https://github.com/jo-inc/camofox-browser) browser server | `ingest run`, `ingest test-source`, and job-description fetches in `triage`/`cv` | no scraping; the rest of the pipeline works on leads already in the vault |
+| At least one **verified** experience entry | `cv run` | **not** checked up front: the run fetches the job description and calls the composer anyway, then fails the fabrication gate — so it costs tokens before telling you |
+| A baseline CV at `baseline_rel` (default `My CV/CV.md`) | `cv run` | also not checked up front. The run fetches the job description, then fails on the missing file — as a traceback under `--lead`, or as a per-lead `cv: error …` line and exit 0 under `--all-shortlist`. No composer call either way |
+| A Candidate Profile note with a name and contact details | `cv run`, `apply prep` | `cv run` refuses before any fetch or backend call (`skipped-config`); `apply prep` does not refuse — it builds the packet with your identity simply absent |
+| cairo, pango and gdk-pixbuf, plus the `render` extra | PDF output | set `cv.renderer: script` to shell out to your own renderer instead |
+| A [Google OAuth token](https://github.com/MrReasonable/sluice/blob/main/docs/INSTALL.md#google-access-for-track), which you mint yourself | `track` | `track run` logs a failure and exits 0 |
+
+`job-sluice doctor --offline` reports which of these you are missing and which commands each gap
+blocks. Running it immediately after installing is the fastest way to see where you stand — a
+bare install honestly reports several dead components, and that is expected rather than a broken
+install.
 
 ## Install
 
@@ -125,25 +88,15 @@ has needed one yet). Install-channel status is tracked in the table under
 | deb / rpm | shipped | download from the [latest release](https://github.com/MrReasonable/sluice/releases/latest), then `apt install ./job-sluice_*_all.deb` or `dnf install ./job-sluice-*.noarch.rpm` |
 | Homebrew | shipped | `brew install MrReasonable/tap/job-sluice` |
 
-That table is the single place this repository states which channels exist. Prose elsewhere
-links here rather than restating it, and `tests/test_release_publish_wiring.py` fails the
-build if a row disagrees with the jobs declared in `.github/workflows/release-please.yml` —
-in either direction. **"Shipped" means the release workflow builds and publishes that channel**,
-so a row becomes shipped when its job lands and takes effect from the next release onward; it
-is not a claim that every past release carries it. It is a table rather than a sentence because two sentences in this file
-went on saying there was no Docker image for a day after one shipped, and nothing in the
-suite could notice. [#104](https://github.com/MrReasonable/sluice/issues/104) is the tracking
-issue for this table's channels; a future channel starts here as *planned* and only becomes
-*shipped* once its release job lands.
+That table is the single place this repository states which channels exist; prose elsewhere links
+here rather than restating it, and `tests/test_release_publish_wiring.py` fails the build if a row
+disagrees with the jobs declared in `.github/workflows/release-please.yml`, in either direction.
+**"Shipped" means the release workflow builds and publishes that channel**, so a row takes effect
+from the next release onward rather than claiming every past release carries it.
 
-Per-channel instructions — extras, the system libraries PDF rendering needs, Camofox, backend
-credentials, and how to pin an older release — are in
-[`docs/INSTALL.md`](https://github.com/MrReasonable/sluice/blob/main/docs/INSTALL.md).
-
-Use the **fully-qualified** name in the Homebrew command above. Homebrew 6 requires explicit trust
-for non-official taps, and installing a fully-qualified formula is what grants trust to that one
-item, tapping and installing in a single step; installing by short name needs `brew tap` and
-`brew trust --formula` first. `docs/INSTALL.md` spells both forms out.
+Use the **fully-qualified** name in the Homebrew command. Homebrew 6 requires explicit trust for
+non-official taps, and installing a fully-qualified formula grants trust to that one item, tapping
+and installing in a single step.
 
 From a checkout:
 
@@ -154,298 +107,272 @@ pip install -e .
 job-sluice --version
 ```
 
-That gives you the CLI with `pyyaml` and `tzdata` as the only runtime
-dependencies — everything else in `sluice/` is standard library. Two things it
-does **not** give you, both opt-in extras:
+That gives you the CLI with `pyyaml` and `tzdata` as the only runtime dependencies — everything
+else in `sluice/` is standard library. Opt-in extras add the rest:
 
 ```bash
-pip install -e '.[render]'   # cv.renderer: template (the default) -- see below
-pip install -e '.[google]'   # track's Gmail + Calendar access
+pip install -e '.[render]'      # PDF rendering (cv.renderer: template, the default)
+pip install -e '.[google]'      # track's Gmail + Calendar access
+pip install -e '.[mcp]'         # job-sluice mcp serve
+pip install -e '.[completion]'  # shell completion
 ```
 
-(The path form because the commands above install a checkout. From a release you name the
-distribution instead — `pip install 'job-sluice[render]'` — because extras attach to the
-*distribution* name, `job-sluice`, not the import package: dropping the `job-` prefix resolves
-to a different, unrelated package. See [Naming](#naming).)
+The `render` extra is necessary but **not sufficient**: WeasyPrint links natively against cairo,
+pango and gdk-pixbuf, which no Python package can supply — see
+[system libraries for PDF rendering](https://github.com/MrReasonable/sluice/blob/main/docs/INSTALL.md#system-libraries-for-pdf-rendering).
+The packaged channels install them for you, which is the main reason to prefer one over pip.
 
-`pip install job-sluice` installs from PyPI from 1.0.0 onward — the first release this
-project publishes there, so nothing on the index precedes it. For the other channels, see the
-table above. See [Naming](#naming) for why the distribution is `job-sluice` rather than
-`sluice`.
+Per-channel instructions, the platform-specific library names, the macOS dynamic-linker step, and
+how to pin an older release are all in
+[`docs/INSTALL.md`](https://github.com/MrReasonable/sluice/blob/main/docs/INSTALL.md).
 
 ### Shell completion
 
 ```bash
 pip install -e '.[completion]'
-```
-
-installs [argcomplete](https://github.com/kislyuk/argcomplete), which completes group and
-subcommand names, every flag, and — for `--source`/`ingest enable|disable ID` and
-`track confirm --to` — real values, read live from the registered sources and the status
-vocabulary rather than a static list that could go stale. Activate it for zsh:
-
-```bash
 eval "$(register-python-argcomplete job-sluice)"
 ```
 
-or drop that line in your `.zshrc` via [`plugins/job-sluice/`](https://github.com/MrReasonable/sluice/tree/main/plugins/job-sluice), which is
-shaped as a normal oh-my-zsh/zinit plugin:
-
-```bash
-# oh-my-zsh
-ln -s "$(pwd)/plugins/job-sluice" "$ZSH_CUSTOM/plugins/job-sluice"
-# then add job-sluice to the plugins=(...) array in ~/.zshrc
-
-# zinit -- `pick` is relative to the repo root, since the plugin file lives in a subdirectory
-zinit ice pick"plugins/job-sluice/job-sluice.plugin.zsh"
-zinit light MrReasonable/sluice
-```
-
-Both forms are a no-op until `job-sluice` and `register-python-argcomplete` are both on
-`$PATH` — sourcing the plugin before installing the extra does nothing rather than erroring.
+Completes command and flag names, and — for `--source`, `ingest enable|disable` and
+`track confirm --to` — real values read live from the registered sources and the status
+vocabulary, rather than a static list that could go stale. There is an oh-my-zsh/zinit plugin at
+[`plugins/job-sluice/`](https://github.com/MrReasonable/sluice/tree/main/plugins/job-sluice); both
+forms are a no-op until `job-sluice` and `register-python-argcomplete` are on `$PATH`, so sourcing
+before installing does nothing rather than erroring.
 
 ### Naming
 
-The PyPI name `sluice` has been squatted since 2015 by an unrelated, dormant
-zfs-snapshot tool (last release 2015-08-28) with no console script of its
-own, so there's no binary collision — but `pip install sluice` could never
-resolve to this project. Rather than ship under a name nobody could install,
-the distribution and the console script are both `job-sluice`. The import
-package (`import sluice`), the `SLUICE_*` environment variables, and the
-`~/.config/sluice/` XDG paths are unaffected: those are invisible to a user
-and renaming them would be a breaking **config** change (this project's own
-[CHANGELOG](https://github.com/MrReasonable/sluice/blob/main/CHANGELOG.md) policy rates that above a breaking API change) for
-no user-visible benefit. Only the thing you type at a shell prompt changed.
+The PyPI name `sluice` has been squatted since 2015 by an unrelated, dormant zfs-snapshot tool with
+no console script of its own — no binary collision, but `pip install sluice` could never resolve
+here. So the distribution and the console script are both `job-sluice`. The import package
+(`import sluice`), the `SLUICE_*` environment variables and the `~/.config/sluice/` paths are
+unchanged: those are invisible to a user, and renaming them would be a breaking **config** change
+for no user-visible benefit. Only what you type at a shell prompt is different.
+
+Extras attach to the distribution name, so it is `pip install 'job-sluice[render]'` from a release
+— dropping the `job-` prefix resolves to that unrelated package.
 
 ## Quickstart
 
-```bash
-job-sluice init                 # asks a few questions, writes a config and a Judging Profile
-                                 # (and a Candidate Profile, if you answer any of its questions)
-job-sluice doctor --offline     # sanity-check config, renderer and store artefacts, no network
-job-sluice ingest run --help
-job-sluice triage run --help
+Everything below is offline. No backend, no browser, no credentials.
+
+**1. Scaffold a config and a vault.**
+
+```console
+$ job-sluice init --no-input --vault ./vault
+  wrote   ~/jobhunt/sluice.local.yaml
+  wrote   ~/jobhunt/vault/Job Applications/Judging Profile.md
+
+created a new vault directory at ~/jobhunt/vault
+if you meant an existing one, re-run with --vault pointing at it
+...
 ```
 
-`job-sluice init` resolves the config location for you, so nothing here has to
-reason about `XDG_CONFIG_HOME`. It never overwrites an artefact that already
-exists -- re-running it is safe, and it reports what it left alone. Every
-question is optional except where your vault is: a blank answer leaves that
-preference gate UNSET, and an unset gate passes every lead through rather than
-filtering on a value you did not choose. `--no-input --vault PATH` does the
-whole thing without prompting.
+(`init` prints those paths fully resolved, and goes on to summarise your config and list what to
+do next; `~` above stands in for your home directory, and `...` for output cut for length.)
 
-Do **not** copy `sluice.yaml.example` into place instead. It is a catalogue that
-ships illustrative values ACTIVE rather than commented, so a verbatim copy
-arrives with its title, relevance and pay gates already closed and nothing
-saying so -- measured, `is_relevant("Senior Software Engineer")` is `False`
-against a fresh copy. Read it to see what a knob does; let `job-sluice init` write
-the file.
+`init` never overwrites an existing artefact, so re-running it is safe. Every question is optional
+except where your vault is, and a blank answer leaves that gate **unset** — which passes every lead
+through. Drop `--no-input` to be asked. The config it writes has every unanswered key commented
+out, so it is field-for-field equivalent to having no config file at all except for `vault_dir`.
 
-`job-sluice` reads `$XDG_CONFIG_HOME/sluice/config.yaml` (`~/.config/sluice/config.yaml`
-on a default setup) and keeps its own state and caches under the matching XDG
-directories, so its config and state no longer follow your working directory.
+Do **not** copy `sluice.yaml.example` into place instead. It is a catalogue to read, not a
+template: it ships illustrative values *active*, so a verbatim copy arrives with its title,
+relevance and pay gates already closed and nothing saying so.
 
-Your **vault** is the exception, and it is deliberate: it defaults to `./vault`,
-relative to wherever you run the command, because it is your own Obsidian
-directory rather than per-system state sluice owns. Set `vault_dir` in the config
-file (or `VAULT_DIR`) before running from anywhere else, or you will get a second,
-empty vault beside you instead of the one you meant.
+**2. See where you stand.**
 
-`$SLUICE_CONFIG` still overrides the config location if you would rather keep the
-file elsewhere:
+```console
+$ job-sluice doctor --offline
+claude-max  claude-sonnet-4-5  ok        primary: triage, cv, track
+deepseek    deepseek-v4-flash  degraded  fallback: ...  DEEPSEEK_API_KEY unset - primary-only
 
-```bash
-export SLUICE_CONFIG="$(pwd)/sluice.local.yaml"   # quoted: a path with spaces
-job-sluice init                 # writes to $SLUICE_CONFIG when it is set
+renderer  cv.renderer         dead    renderer 'template' could not load its rendering backend...  blocks: cv
+store     baseline_rel        dead    baseline CV not found at the configured path  blocks: cv
+store     Judging Profile     ok      found
+store     Experience Library  notice  0 verified / 0 total entries -- only verified entries are citable
+store     Candidate Profile   dead    no name or no contact details  blocks: cv
+gates     TriageConfig.accept_titles   notice  abstaining (empty)
+...
+1 ok, 1 degraded, 3 dead, 19 notice
 ```
 
-Either way the config file holds personal material (locations, employer lists,
-contact details, hosts), so keep it out of any public repo -- `sluice.local.yaml`
-is git-ignored for that reason.
+Dead components on a fresh install are the expected state, not a fault. Each names the command it
+blocks, so you only fix what you need — above, every one of them blocks `cv`, while `ingest` and
+`triage` need none of them.
 
-Upgrading from a version that kept `seen.db`, `track-seen.db`,
-`sluice_health.json`, `sluice_disabled.json`, `triage-audit.jsonl`,
-`google_token.json` or `dossiers/` next to where you ran it? sluice never moves
-your data. It prints the `mv` commands for each one -- including the companion files
-a store has to move with it -- and for the two dedup databases it refuses to run
-until you have moved them, because starting with an empty dedup set can re-create
-leads you merged away and risks applying to the same job twice. `ingest` refuses
-only on a run that would write dedup state, so `--dry-run` and `--sink json` still
-work; every `track` command refuses, dry runs included.
+Your backend rows will differ: that capture had the `claude` CLI on `$PATH`, so `claude-max` reads
+`ok`. Without it you get `dead  CLI 'claude' not on PATH` and a correspondingly different summary
+line, which is the same information arriving one row earlier.
 
-That only applies where sluice picked the location itself. If you name a path --
-an environment variable or a config key -- it is used as given, with no warning
-and no refusal, because there is nothing to migrate from.
+The `gates` rows are a generic sweep of every **list-valued** setting reporting its posture, not a
+list of preference gates — most are gates, where `abstaining (empty)` means every lead passes, but
+a few are not: `dossier_allow_hosts` is a security allowlist where empty means *no exceptions
+granted*, and `cv.slop_allow` empty leaves the full phrase list **active**. The numeric pay floors
+(`contract_floor_gbp_day`, `perm_floor_gbp`) are genuine preference gates that get no row here at
+all; they default to `0`, which is off.
 
-## Before you run the pipeline for real
+**3. Look at the boards.**
 
-`job-sluice doctor` (offline, then live) is the fast way to find out which of
-these you're still missing — see [`docs/TROUBLESHOOTING.md`](https://github.com/MrReasonable/sluice/blob/main/docs/TROUBLESHOOTING.md)
-for what a `dead`/`degraded` line means and how to fix it. In outline:
+```console
+$ job-sluice ingest list-sources
+bayt             browser   enabled
+bwork            browser   disabled
+cord             browser   enabled
+...
+wttj             browser   enabled
+```
 
-- **A baseline CV** at `My CV/CV.md` in your vault (`baseline_rel`), and at
-  least one **verified** entry in `Job Applications/Experience Library/` — the
-  fabrication gate's only citable evidence. **A Candidate Profile** at `Job
-  Applications/Candidate Profile.md` in your vault, with at least a name and a
-  contact channel declared (`job-sluice init` asks for both and writes the
-  note) — `cv run` refuses to compose before any spend while either is blank.
-- **A backend** for triage's judge and cv's composer: either the `claude`
-  CLI on `$PATH` (or reachable over SSH — `triage.claude_max_host`), or an
-  API key for one of the direct backends (`ANTHROPIC_API_KEY`,
-  `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`). `triage run --no-llm` needs neither.
-- **A Camofox server** for `ingest run`/`ingest test-source`, and for `triage`
-  and `cv` whenever a job dossier isn't already cached (the two share one
-  dossier cache — see `docs/ARCHITECTURE.md`). Camofox is a separate,
-  persistent headless-browser service this repository does not bundle — see
-  [jo-inc/camofox-browser](https://github.com/jo-inc/camofox-browser).
-  By default sluice looks for it at `http://127.0.0.1:9377`
-  (`CAMOFOX_URL`); see [`docs/CONFIGURATION.md`](https://github.com/MrReasonable/sluice/blob/main/docs/CONFIGURATION.md) for the
-  full set of `CAMOFOX_*` variables. `track` and a non-`--offline` `doctor` still
-  reach the network for their own reasons; see the genuinely-offline command
-  list in `CHANGELOG.md`.
-- **A Google OAuth token** for `track`, which you produce yourself and place at
-  `track.token_path`: sluice reads and refreshes that credential but never runs
-  the consent flow itself. Needs the `google` extra; [`docs/INSTALL.md`](https://github.com/MrReasonable/sluice/blob/main/docs/INSTALL.md#google-access-for-track)
-  has the scopes and the procedure.
+Boards ship enabled by default; a few are disabled, each module recording why and the date its
+retirement was last checked against the live web. Add `--health` for per-source scrape state once
+you have run something. Each source ships one neutral example search; your real searches belong in
+`sources.<id>.searches` in your config.
+
+**4. Triage what you have.**
+
+```console
+$ job-sluice triage run --no-llm
+triage: {'keep': 1, 'shortlist': 0, 'research': 0, 'dismiss': 0, 'needs_review': 0,
+         'skipped': 0, 'unjudgeable': 0} judged=0 resolved={...} llm_calls=0 backend=None failures=0
+```
+
+`--no-llm` runs the deterministic tiers only — no backend call, nothing billed. On an unconfigured
+install every lead lands in `keep`, which is the empty-config-abstains rule working: nothing was
+discarded because nothing was configured to discard it.
+
+**Next:** fill in the headings in `Job Applications/Judging Profile.md`, add your own searches, and
+work back through the table under [What it costs to run](#what-it-costs-to-run) for whichever
+stages you want. [`docs/USAGE.md`](https://github.com/MrReasonable/sluice/blob/main/docs/USAGE.md)
+is the full command reference.
+
+## What it guarantees
+
+These are enforced by tests, not promised in prose. Each one guards a failure that is silent and
+hard to undo.
+
+- **Your edits survive.** A re-scrape of a lead you already have touches only its `last_seen`
+  marker — never its status, never your notes in the body. Every other write is a surgical
+  compare-and-set against the *current* note, committed atomically, so a concurrent editor's
+  changes survive rather than being clobbered — best-effort rather than a lock, and a sustained
+  race abstains instead of overwriting. Rewriting notes wholesale is the fragility sluice exists
+  to remove.
+- **Status never regresses out of the application lifecycle.** Triage may never touch a lead that has entered the application
+  lifecycle, terminal states are never advanced out of, and an unrecognised status is passed
+  through untouched rather than rewritten. A lead you merged away is not re-created by a later
+  scrape that still matches the identity recorded at merge time — and where the posting's identity
+  has drifted past that, it is re-created *visibly* as a duplicate rather than silently discarded.
+- **The CV cannot invent things.** Every work-experience bullet must cite a real entry from a
+  closed evidence bundle, and every number in that bullet must appear in the entry it cites; the
+  profile prose, which carries no per-bullet citations, is held to a numeric floor over the whole
+  source set. A figure that appears
+  nowhere in your source material blocks rendering outright. The gate is handed its source set
+  rather than re-parsing text, so no line of free text can mint a citable source. Above it sits an
+  advisory LLM audit that withholds the send-ready CV pointer for your sign-off rather than
+  blocking. Note the gate runs on the composed *text*: a custom Jinja2 template is free text sluice
+  does not audit, so it can add prose the gate never saw.
+- **An empty setting abstains.** Unconfigured means "no opinion", never "match nothing". Getting
+  this backwards would bin an entire job hunt in silence — it happened once, and a test now fails
+  the build if it recurs.
+- **No personal data in this repository.** No employer names, locations, contact details or
+  preferences in `sluice/` or `tests/`. Fixtures are synthetic and swept by a guard. Your search
+  belongs in your config and your vault.
 
 ## Commands
-
-Ten top-level command groups. Full flag reference, exit codes, and which
-stream each command writes to: [`docs/USAGE.md`](https://github.com/MrReasonable/sluice/blob/main/docs/USAGE.md).
 
 | Command | Purpose |
 |---|---|
 | `job-sluice init` | scaffold a config, a Judging Profile and a Candidate Profile |
-| `job-sluice doctor` | preflight backends, the renderer, cv identity, store artefacts, gate posture |
-| `job-sluice ingest` | scrape configured job boards into the lead store (`list-sources`, `run`, `test-source`, `enable`, `disable`) |
+| `job-sluice doctor` | preflight backends, renderer, cv identity, store artefacts, gate posture |
+| `job-sluice ingest` | scrape configured boards into the lead store (`list-sources`, `run`, `test-source`, `enable`, `disable`) |
 | `job-sluice triage` | classify leads: deterministic rules, then an LLM judge (`run`, `normalize-status`) |
 | `job-sluice cv` | compose, gate and render a tailored CV, then sign off on it (`run`, `signoff`) |
-| `job-sluice apply` | stage a CV + prep packet, then record a submitted application (`prep`, `record`) |
-| `job-sluice track` | reconcile the funnel from email + calendar signals (`run`, `confirm`, `dismiss`) |
-| `job-sluice leads` | maintenance passes -- report by default, write only when told (`dedupe`, `expire`, `reconcile`); `dismiss` writes unconditionally, like a pipeline command |
-| `job-sluice health` | per-source scrape baseline + retire state |
-| `job-sluice mcp` | run a Model Context Protocol server over stdio, for an agent to drive sluice directly (`serve [--write]`) |
+| `job-sluice apply` | stage a CV and a prep packet, then record a submitted application (`prep`, `record`) |
+| `job-sluice track` | reconcile the funnel from email and calendar signals (`run`, `confirm`, `dismiss`) |
+| `job-sluice leads` | maintenance passes (`dedupe`, `expire`, `dismiss`, `reconcile`, `rename`) |
+| `job-sluice experience` | capture and verify experience evidence — the CV gate's only citable source (`add`, `list`, `verify`) |
+| `job-sluice skills` | capture and verify skills evidence, shown to the composer as framing (`add`, `list`, `verify`) |
+| `job-sluice stories` | capture and verify STAR stories (`add`, `list`, `verify`) |
+| `job-sluice health` | per-source scrape baseline and retire state |
+| `job-sluice mcp` | run a Model Context Protocol server over stdio (`serve`, plus `--write` for the write tools) |
+
+The `leads` passes **report by default** and change nothing until told otherwise (`--merge`,
+`--expire`, `--apply`), because they write over a set the tool computed. `dismiss` is the
+exception: it writes on every call, because the verdict is the one you typed. The pipeline
+commands invert that and write by default.
+
+Full flag reference, exit codes and which stream each command writes to:
+[`docs/USAGE.md`](https://github.com/MrReasonable/sluice/blob/main/docs/USAGE.md).
 
 ## MCP server
 
-`job-sluice mcp serve` runs sluice as a Model Context Protocol server over stdio, so
-an agent (Claude Code or otherwise) can call `list_leads`/`get_lead`/`doctor`/`health`/
-`list_evidence` directly instead of shelling out to the CLI and parsing its stdout. Read-only by
-default -- see [`docs/ARCHITECTURE.md`](https://github.com/MrReasonable/sluice/blob/main/docs/ARCHITECTURE.md)'s surface/adapter section. Needs `pip install -e '.[mcp]'`.
-
-Pass `--write` to also register five write-capable tools -- `dismiss_lead`,
-`apply_record`, `cv_run`, `cv_signoff`, `create_lead` -- each a thin translation
-layer over one `Sluice` write method, never a raw store write. `--write` is a
-per-registration trust decision about one MCP client, not a property of the
-installation: every existing read-only registration is unaffected, and a read-only
-server's `tools/list` genuinely omits the five write tools' names and schemas, not
-merely refusing them at call time.
-
-Register it with Claude Code (read-only):
+`job-sluice mcp serve` runs sluice as a Model Context Protocol server over stdio, so an agent can
+call `list_leads`/`get_lead`/`doctor`/`health`/`list_evidence` directly instead of parsing CLI
+output. Read-only by default; needs `pip install 'job-sluice[mcp]'`.
 
 ```bash
 claude mcp add job-sluice -- job-sluice mcp serve
 ```
 
-...or with write tools enabled:
-
-```bash
-claude mcp add job-sluice -- job-sluice mcp serve --write
-```
-
-## Rendering prerequisites (`cv.renderer: template` only)
-
-Everything in this section is a prerequisite of ONE renderer -- `template`, the default.
-`cv.renderer: script` needs none of it: it shells out to a render script you supply and
-never imports jinja2 or WeasyPrint, so if you are on `script` you need neither the
-`render` extra nor WeasyPrint's system libraries, and a `script` setup that works today
-is unaffected by anything below.
-
-`cv.renderer` defaults to `template`: sluice fills a Jinja2 template -- the packaged
-default, or your own via `cv.template`, e.g. `docs/cv-template-example.html.j2` -- with
-the parsed CV, then hands the result to WeasyPrint to produce a PDF. The fabrication
-gate runs on the composed text *before* any template exists, so the PDF is derived
-from gate-approved content rather than identical to it: your own template is free text
-sluice does not audit, so it can add prose the gate never saw or a conditional that
-drops a gated section, either of which the gate cannot catch after the fact. Rendering
-needs the `render` extra, and on a **pip install** there is no way to skip it:
-
-```bash
-pip install -e '.[render]'
-```
-
-...and, separately, WeasyPrint's own **system** libraries -- cairo, pango, and
-gdk-pixbuf. Those are **not** a Python dependency and cannot be made one (WeasyPrint
-links against them natively), so on a pip install you install them with your platform's
-package manager (Homebrew on macOS, `apt`/`dnf` on Linux -- see WeasyPrint's own
-installation docs for the exact package names on your system).
-
-The packaged channels do this for you, which is the main reason to prefer one: the
-container image ships the libraries already installed, and the `.deb`/`.rpm` recommend
-WeasyPrint so a default `apt`/`dnf` install pulls them in. See the table under
-[Install](#install) for what exists today.
-
-**macOS, measured rather than assumed:** with cairo/pango/gdk-pixbuf installed via
-Homebrew, `import weasyprint` still failed under a non-Homebrew Python until the dynamic
-linker was told where to look:
-
-```bash
-export DYLD_FALLBACK_LIBRARY_PATH="$(brew --prefix)/lib"
-```
-
-The variable that decides this is the **interpreter**, not the libraries. Homebrew's own
-CPython patches `ctypes`' library-search fallback to include the Homebrew prefix, so a
-`brew install` of job-sluice needs no such export -- while a `pip install` under a
-version-manager Python does.
-
-None of this is new work removing a real limitation -- a bare `pip install -e .`
-still cannot produce a PDF with `template`, because those system libraries sit outside
-pip's reach no matter what this project ships. What changed is *when* the failure
-surfaces: `template` with the extra or the libraries missing now raises at renderer
-construction, before a CV is ever composed, instead of arriving silently after an LLM
-composition and a fabrication-gate pass have already spent tokens on a CV that was
-never going to render. `script` gained the same timing for its own, different
-precondition -- a `cv.render_script` that is missing or is not a file -- which is why
-both renderers fail early even though only one of them has anything to do with
-WeasyPrint.
-
-`cv.renderer: script` remains available if you would rather shell out to your own
-render pipeline than use `template`; see `sluice.yaml.example`.
-
-More renderer/backend/store/browser failures and their fixes:
-[`docs/TROUBLESHOOTING.md`](https://github.com/MrReasonable/sluice/blob/main/docs/TROUBLESHOOTING.md).
+`--write` additionally registers the write tools (`dismiss_lead`, `apply_record`, `cv_run`,
+`cv_signoff`, `create_lead`), each a thin layer over one facade method rather than a raw store
+write. It is a per-registration trust decision: a read-only server's `tools/list` genuinely omits
+their names and schemas rather than refusing them at call time. Nothing at any level can mark
+evidence verified — that stays a human action at a prompt.
 
 ## Configuration
 
-Every config key is optional and falls back to a code default. See
-[`sluice.yaml.example`](https://github.com/MrReasonable/sluice/blob/main/sluice.yaml.example) for the full catalogue with
-inline comments, and [`docs/CONFIGURATION.md`](https://github.com/MrReasonable/sluice/blob/main/docs/CONFIGURATION.md) for a
-reference organized by block with each key's default and what leaving it
-unset means.
+Every key is optional and falls back to a code default, so sluice runs with no config file at all.
+Config resolves as code defaults < the YAML file at `$SLUICE_CONFIG` (else
+`$XDG_CONFIG_HOME/sluice/config.yaml`) < environment variables.
+
+Most paths relocate to the XDG directories. Your **vault** does not: it defaults to `./vault`,
+relative to wherever you run the command, because it is your Obsidian directory rather than state
+sluice owns. Set `vault_dir` before running from elsewhere, or you will get a second, empty vault
+beside you. The CV working directories (`cv.output_dir`, `cv.served_dir`, `cv.render_home`, and
+apply's upload directory) behave the same way, for the same reason — they name a workspace you are
+standing in — so `cv run` from an unexpected directory leaves its artefacts there too.
+
+Sluice never migrates your state for you. If you are upgrading from a version that kept its state
+next to your working directory, it prints the `mv` commands — and the commands that would write
+dedup state refuse to start until you have moved them, because starting from an empty dedup set can
+re-create leads you merged away and risks applying to the same job twice. That refusal is
+deliberately uneven: `ingest run --dry-run` and `--sink json` proceed, every `track` command
+refuses including its dry runs, and `doctor` only reports, since a relocated file is exactly what
+you run it to hear about. (The user-invoked `leads` passes do move notes inside your vault — that
+is what you asked them to do.)
+
+- [`sluice.yaml.example`](https://github.com/MrReasonable/sluice/blob/main/sluice.yaml.example) —
+  the full catalogue with inline comments. A catalogue to read, not a file to copy.
+- [`docs/CONFIGURATION.md`](https://github.com/MrReasonable/sluice/blob/main/docs/CONFIGURATION.md)
+  — every key by block, with its default and what leaving it unset means.
+
+## Documentation
+
+| | |
+|---|---|
+| [`docs/INSTALL.md`](https://github.com/MrReasonable/sluice/blob/main/docs/INSTALL.md) | per-channel install, extras, system libraries, Camofox, credentials |
+| [`docs/USAGE.md`](https://github.com/MrReasonable/sluice/blob/main/docs/USAGE.md) | command reference: flags, exit codes, output streams |
+| [`docs/CONFIGURATION.md`](https://github.com/MrReasonable/sluice/blob/main/docs/CONFIGURATION.md) | config keys by block |
+| [`docs/TROUBLESHOOTING.md`](https://github.com/MrReasonable/sluice/blob/main/docs/TROUBLESHOOTING.md) | specific failures and their fixes |
+| [`docs/ARCHITECTURE.md`](https://github.com/MrReasonable/sluice/blob/main/docs/ARCHITECTURE.md) | module-by-module, the adapter seams, the store contract |
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](https://github.com/MrReasonable/sluice/blob/main/CONTRIBUTING.md) for
-the dev setup, the test/lint commands, and the invariants a change is expected to respect.
-[`SECURITY.md`](https://github.com/MrReasonable/sluice/blob/main/SECURITY.md) covers
-vulnerability reporting.
+[`CONTRIBUTING.md`](https://github.com/MrReasonable/sluice/blob/main/CONTRIBUTING.md) has the dev
+setup, the test and lint commands, and the invariants a change is expected to respect.
+[`SECURITY.md`](https://github.com/MrReasonable/sluice/blob/main/SECURITY.md) covers vulnerability
+reporting. The test suite is fully offline and hermetic — no browser, no network.
 
 ## Releases
 
-Version history and migration notes live in [`CHANGELOG.md`](https://github.com/MrReasonable/sluice/blob/main/CHANGELOG.md), and
+Version history and migration notes are in
+[`CHANGELOG.md`](https://github.com/MrReasonable/sluice/blob/main/CHANGELOG.md);
 `job-sluice --version` reports what you have installed.
 
-A breaking **config** change counts for more here than a breaking API change -- nothing
-imports sluice as a library, so what you have invested in is your `sluice.yaml` and your
-vault. Changes to what an unset value MEANS, to a load-bearing default, to where a file is
-read or written, or to what a status transition may do all carry an explicit migration
-note, even when no key is renamed.
-
-Releases are cut by [release-please](https://github.com/googleapis/release-please) from
-Conventional Commit subjects, with the changelog entry edited by hand in the release PR
-before it merges -- a generated subject cannot tell you your config now means something
-different, which is the change class that matters most here.
+A breaking **config** change counts for more here than a breaking API change — nothing imports
+sluice as a library, so what you have invested in is your config and your vault. Changes to what an
+unset value means, to a load-bearing default, to where a file is read or written, or to what a
+status transition may do all carry an explicit migration note, even when no key is renamed.
 
 ## License
 
