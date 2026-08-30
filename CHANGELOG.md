@@ -40,6 +40,13 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.2.1](https://github.com/MrReasonable/sluice/compare/v2.2.0...v2.2.1) (2026-08-30)
+
+
+### Documentation
+
+* **readme:** rewrite as an onboarding document and guard its command table ([665f167](https://github.com/MrReasonable/sluice/commit/665f1679f70aba27d511cf6ed55bbc524c18d6a4))
+
 ## [2.2.0](https://github.com/MrReasonable/sluice/compare/v2.1.0...v2.2.0) (2026-08-29)
 
 ### What you need to do
