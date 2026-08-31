@@ -219,9 +219,10 @@ class DossierCache:
         # Do NOT persist a fetch that produced no JD (#169). Caching one made every later
         # run serve the failure for the whole TTL: triage judged the lead on a document
         # nobody read, and because "unjudgeable" collapsed into `research`, the nightly
-        # `--status new,research` run re-selected it and paid for the same non-answer
-        # until the entry expired. The judging half of that loop is closed elsewhere on
-        # this branch (triage/engine.py short-circuits before the judge call, and
+        # triage run over `_status.DEFAULT_TRIAGE_STATUSES` (triage/engine.py) re-selected
+        # it and paid for the same non-answer until the entry expired. The judging half
+        # of that loop is closed elsewhere on this branch (triage/engine.py
+        # short-circuits before the judge call, and
         # `unjudgeable` is now its own status inside the default selection); what THIS
         # guard still buys is the REFETCH -- one per run, rather than a cached non-answer
         # no later run can get past. The FRESHLY FETCHED dossier is still returned, never

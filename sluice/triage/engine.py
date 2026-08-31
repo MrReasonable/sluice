@@ -294,11 +294,12 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
                 continue
             # The JD never arrived (#169). Spending a judge call here buys a verdict on
             # page chrome -- and because "unjudgeable" used to collapse into `research`,
-            # the nightly `--status new,research` run re-selected the lead and paid for
-            # the same non-answer every night until the cache entry expired. Nothing was
-            # cached this run (see DossierCache.get_or_build), so the next run refetches;
-            # marking the lead `unjudgeable` is what separates "the pipeline should retry
-            # this" from "a human should investigate this", which is what `research` means.
+            # the nightly run over `_status.DEFAULT_TRIAGE_STATUSES` re-selected the lead
+            # and paid for the same non-answer every night until the cache entry expired.
+            # Nothing was cached this run (see DossierCache.get_or_build), so the next
+            # run refetches; marking the lead `unjudgeable` is what separates "the
+            # pipeline should retry this" from "a human should investigate this", which
+            # is what `research` means.
             #
             # `continue` BEFORE dossiers.append(d) below is the whole saving: the lead
             # never enters the batch handed to the judge, so it costs no judge call --

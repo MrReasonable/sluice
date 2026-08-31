@@ -5,7 +5,10 @@
 Shared by every sub-app:
 
 - `config.py`: layered config. Code defaults, overridden by a `sluice.yaml`
-  file, overridden last by environment variables.
+  file, overridden last by environment variables. Also holds
+  `validate_search_entry`, the shared `sources.<id>.searches`/`searches_spec`
+  grammar `ingest/base.py` imports rather than the reverse -- see the source
+  contract discussion below.
 - `vault.py`: the lead/experience store. Reads and writes an Obsidian-style
   markdown vault without clobbering status, scores, or notes a human or
   another agent has already set: a fresh scrape touches only a `last_seen`
@@ -1721,6 +1724,36 @@ Four points in the config are the seams for pluggable adapters.
   replaces; the field carries only the WHEN. `tests/test_drifted_boards.py`
   holds the policy half -- that a DISABLED source must carry one, and that it
   must fall between the re-probe floor and today.
+
+  `searches_spec` is also validated at construction, beside `posting_paths` and
+  `reprobed` (#212 round 2), and it is different in kind from both: it
+  is simultaneously a plugin declaration AND the field a user's own
+  `sources.<id>.searches` config key replaces wholesale (`SourceConfig.searches`,
+  `core/config.py`). Because a config key and a plugin declaration must accept the
+  identical shape, its grammar cannot live purely beside `validate_posting_paths`/
+  `validate_reprobed` here -- it lives in `core/config.py` as `validate_search_entry`,
+  called from THREE rungs: `load_config` (a user's own config, caught at load time),
+  `_mk_search` here (defence in depth for anything building a `Search` without going
+  through `load_config`), and `BrowserListSource.__post_init__` (this class's own
+  construction-time check, so a malformed BUILT-IN example is caught by the registry's
+  per-plugin isolation at import time rather than at first use). See
+  `validate_search_entry`'s own docstring for the full three-rung picture and why the
+  function lives in `core/` rather than here.
+
+  A `Search` also records whether it came from `sources.<id>.searches` or from the
+  source's shipped example (`Search.configured`, #212). `searches_for` is the only thing
+  that ever sets it TRUE -- it is the one function that chooses between the two; `_mk_search`
+  is the actual writer, defaulting to `False`, which is what a shipped example IS, so a
+  producer that never thinks about provenance is treated as the tool's guess rather than
+  the user's assertion. Two
+  read-only consumers surface it: the run report's `example_searches=N` and `ingest
+  list-sources`'s `EXAMPLE-SEARCH(n/m)` (shown on the plain listing too, not only under
+  `--health`), both sparse, so a fully configured install sees neither. The flag exists
+  because a plain `list[Search]` could
+  not distinguish the two, which is what stopped #223 telling a `job_type` the user
+  asserted from one a source's `extra` guessed. Unlike the declarations above it
+  is neither a plugin declaration nor a user config key -- it is DERIVED, per search,
+  at the moment `searches_for` picks a side.
 
 `job-sluice doctor` is a read-only preflight over the whole pipeline, not only the backend
 seam: it enumerates every configured backend (primary and fallback, per sub-app) and
